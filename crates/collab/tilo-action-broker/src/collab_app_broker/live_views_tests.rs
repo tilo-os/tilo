@@ -101,7 +101,7 @@ fn broker(
     let mut workspace = Workspace::new(WorkspaceId(9), "Live");
     workspace.set_owner(owner.clone());
     grants(&mut workspace);
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let tree = tree.shared();
@@ -117,7 +117,7 @@ fn broker(
             ..Default::default()
         },
     );
-    (state, tree, owner, room)
+    (state, tree, owner, workspace_id)
 }
 
 fn follow() -> InvokeRequest {
@@ -188,8 +188,8 @@ fn count(update: &InvocationUpdate) -> Option<u64> {
 #[test]
 fn a_live_view_sends_each_new_result_until_cancelled() {
     let counter = Arc::new(Counter::new());
-    let (state, _tree, owner, room) = broker(Arc::clone(&counter), |_| {});
-    let person = Caller::local_person(owner).in_room(room);
+    let (state, _tree, owner, workspace) = broker(Arc::clone(&counter), |_| {});
+    let person = Caller::local_person(owner).in_room(workspace);
     let request = follow();
     invoked(&state, &person, &request).expect("the person follows the view");
     let first = observed(&state, &person, &request, |update| count(update) == Some(0));
@@ -224,18 +224,18 @@ fn a_live_view_sends_each_new_result_until_cancelled() {
 #[test]
 fn a_caller_without_read_permission_is_refused_and_a_withdrawn_grant_ends_the_view() {
     let counter = Arc::new(Counter::new());
-    let (state, tree, _owner, room) = broker(Arc::clone(&counter), |workspace| {
+    let (state, tree, _owner, workspace) = broker(Arc::clone(&counter), |workspace| {
         workspace.admit_agent("scribe", KindSet::READ);
     });
 
-    let stranger = Caller::local_agent("intruder").in_room(room.clone());
+    let stranger = Caller::local_agent("intruder").in_room(workspace.clone());
     assert!(
         invoked(&state, &stranger, &follow()).is_err(),
-        "an agent the room never admitted reads nothing"
+        "an agent the workspace never admitted reads nothing"
     );
     assert_eq!(counter.reads.load(Ordering::SeqCst), 0, "nothing was read");
 
-    let agent = Caller::local_agent("scribe").in_room(room.clone());
+    let agent = Caller::local_agent("scribe").in_room(workspace.clone());
     let request = follow();
     invoked(&state, &agent, &request).expect("the admitted agent follows the view");
     observed(&state, &agent, &request, |update| count(update) == Some(0));
@@ -243,7 +243,7 @@ fn a_caller_without_read_permission_is_refused_and_a_withdrawn_grant_ends_the_vi
     tree.write()
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.room().to_string() == room)
+        .find(|candidate| candidate.room().to_string() == workspace)
         .unwrap()
         .deny(
             Subject::agent("scribe"),

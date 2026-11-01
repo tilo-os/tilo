@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use super::ShellNetwork;
 use crate::shell::state::RoomId;
-use tilo_action_broker::services::{RoomNodeAsk, RoomNodeOutcome};
+use tilo_action_broker::services::{WorkspaceNodeAsk, WorkspaceNodeOutcome};
 use tilo_action_policy::share::ShareAccess;
 use tilo_action_policy::{ActionKind, TreePath};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
@@ -168,8 +168,8 @@ impl ShellNetwork {
         self: &Arc<Self>,
         room: RoomId,
         node: &str,
-        ask: RoomNodeAsk,
-    ) -> Result<tilo_actions::remote::Pending<RoomNodeOutcome>, String> {
+        ask: WorkspaceNodeAsk,
+    ) -> Result<tilo_actions::remote::Pending<WorkspaceNodeOutcome>, String> {
         let runtime = self
             .runtime
             .as_ref()
@@ -191,22 +191,27 @@ impl ShellNetwork {
     /// What `ask` of `node` in `room` comes to, as the room's member actions
     /// answered it: `grants` a share holds, `revoked` by its end, or `read`
     /// and `undoable` at the node.
-    fn answer_room_node(&self, room: RoomId, node: &str, ask: RoomNodeAsk) -> RoomNodeOutcome {
+    fn answer_room_node(
+        &self,
+        room: RoomId,
+        node: &str,
+        ask: WorkspaceNodeAsk,
+    ) -> WorkspaceNodeOutcome {
         let parsed = || -> Result<TreePath, String> {
             node.parse()
                 .map_err(|_| "`node` is not a node of the room's tree".to_owned())
         };
         Ok(match ask {
-            RoomNodeAsk::Share { share, access } => {
+            WorkspaceNodeAsk::Share { share, access } => {
                 let access: ShareAccess = access
                     .parse()
                     .map_err(|_| "`access` is `view` or `edit`".to_owned())?;
                 serde_json::json!({ "grants": self.share_node(room, &share, parsed()?, access)? })
             }
-            RoomNodeAsk::Unshare { share } => {
+            WorkspaceNodeAsk::Unshare { share } => {
                 serde_json::json!({ "revoked": self.unshare_node(room, &share)? })
             }
-            RoomNodeAsk::Permits => {
+            WorkspaceNodeAsk::Permits => {
                 let (read, undoable) = self.node_permits(room, &parsed()?)?;
                 serde_json::json!({ "read": read, "undoable": undoable })
             }

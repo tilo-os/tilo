@@ -182,7 +182,7 @@ struct CollabLaunchHandoff {
 
 impl CollabLaunchHandoff {
     /// The launch `service` holds for the process `pid` this handoff came
-    /// from, as the app, room and window it names.
+    /// from, as the app, workspace and window it names.
     fn authenticated_launch(
         &self,
         service: &dyn crate::services::LauncherServices,
@@ -196,7 +196,7 @@ impl CollabLaunchHandoff {
 struct VerifiedJoinIdentity {
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
-    /// A foreign device in a room it does not govern: its role is capped.
+    /// A foreign device in a workspace it does not govern: its role is capped.
     capped: bool,
 }
 
@@ -209,38 +209,38 @@ impl VerifiedJoinIdentity {
         }
     }
 
-    /// Whether `cluster_id` is this identity's own person room: the room
+    /// Whether `cluster_id` is this identity's own person room: the workspace
     /// every device its root certified owns, and no other device enters.
     fn owns_person_room(&self, cluster_id: &str) -> bool {
         uuid::Uuid::parse_str(cluster_id)
-            .is_ok_and(|room| collab_types::is_person_room(&self.user_public_key, &room))
+            .is_ok_and(|workspace| collab_types::is_person_room(&self.user_public_key, &workspace))
     }
 }
 
-/// Whether a device is held to the foreign-device cap in `room`, as far as
+/// Whether a device is held to the foreign-device cap in `workspace`, as far as
 /// `authority` knows who governs it; `device` `None` is this host's own.
 fn cap_applies_in(
     authority: Option<&dyn super::peer_actions::CertificateAuthority>,
-    room: &str,
+    workspace: &str,
     foreign: bool,
     device: Option<&[u8; 32]>,
 ) -> bool {
     let governs = authority
-        .zip(uuid::Uuid::parse_str(room).ok()) // optional-decode: a non-uuid room is governed by no authority: the stricter bound applies
-        .is_some_and(|(authority, room)| authority.governs(room, device));
-    // A foreign device is held to the bound only in a room it does not govern.
+        .zip(uuid::Uuid::parse_str(workspace).ok()) // optional-decode: a non-uuid workspace is governed by no authority: the stricter bound applies
+        .is_some_and(|(authority, workspace)| authority.governs(workspace, device));
+    // A foreign device is held to the bound only in a workspace it does not govern.
     foreign && !governs
 }
 
 /// [`cap_applies_in`] for `cert`'s device.
 fn cert_capped_in(
     authority: Option<&dyn super::peer_actions::CertificateAuthority>,
-    room: &str,
+    workspace: &str,
     cert: &tilo_user_identity::DeviceCert,
 ) -> bool {
     cap_applies_in(
         authority,
-        room,
+        workspace,
         cert.capabilities.foreign,
         Some(&cert.device_public_key),
     )
@@ -268,10 +268,10 @@ pub(crate) struct AdmittedJoinIdentity {
     agent_id: Option<String>,
     /// The agent is one this person's own device handed the session to (an
     /// MCP client): it carries the delegation a device gives its agents,
-    /// not grants the room holds for it.
+    /// not grants the workspace holds for it.
     session_delegated: bool,
     /// The task delegation a task agent joined under, verified: the asking
-    /// device's chain to its person, for one task in this room. Every
+    /// device's chain to its person, for one task in this workspace. Every
     /// revalidation verifies it again and asks whether its task still goes.
     task: Option<Box<TaskDelegation>>,
 }
@@ -284,7 +284,7 @@ use task_agents::{admit_task_delegation, verify_task_agent_join, verify_task_del
 pub struct BrokerActor {
     id: String,
     is_agent: bool,
-    /// A person acting from a foreign device in a room it does not govern.
+    /// A person acting from a foreign device in a workspace it does not govern.
     capped: bool,
     /// The person an agent acts for, when one delegated it: the agent then
     /// may do only what both may.
@@ -330,7 +330,7 @@ impl BrokerActor {
     }
 
     /// The application `app`, acting under its own identity: it may do what
-    /// the room grants it and nothing it borrows from a person. A reading it
+    /// the workspace grants it and nothing it borrows from a person. A reading it
     /// takes is decided the same way.
     #[must_use]
     pub fn app(app: &str) -> Self {
@@ -434,7 +434,7 @@ impl BrokerActor {
     /// What this actor may do in `workspace`: a person's own authority (held
     /// to `foreign_bound` from a device not theirs); an agent's bounded by
     /// the person it acts for; an application, or an agent nobody delegated,
-    /// only what the room grants it.
+    /// only what the workspace grants it.
     pub(crate) fn with_authority_in<T>(
         &self,
         workspace: &tilo_desktop_model::Workspace,
@@ -472,14 +472,14 @@ impl BrokerActor {
         }
     }
 
-    /// The delegation a session-delegated agent carries in `room`, given by
+    /// The delegation a session-delegated agent carries in `workspace`, given by
     /// `person`; nothing for any other actor.
-    fn session_grants(&self, room: &str, person: &str) -> Vec<Grant> {
+    fn session_grants(&self, workspace: &str, person: &str) -> Vec<Grant> {
         if !self.session_delegated {
             return Vec::new();
         }
         let agent = self.id.strip_prefix("agent:").unwrap_or(&self.id);
-        roles::AgentPreset::Operator.grants(room, agent, &Subject::Person(person.to_owned()))
+        roles::AgentPreset::Operator.grants(workspace, agent, &Subject::Person(person.to_owned()))
     }
 
     /// Whether this actor is a person acting from their own device: the one
@@ -490,7 +490,7 @@ impl BrokerActor {
     }
 
     /// The person this actor is, when a person acts from their own device:
-    /// the only actor a host lets govern a room.
+    /// the only actor a host lets govern a workspace.
     #[must_use]
     pub fn direct_person(&self) -> Option<&str> {
         self.direct().then_some(self.id.as_str())
@@ -545,7 +545,7 @@ impl BrokerActor {
     }
 
     /// Admit `action`, published on `surface`, in `workspace` at `now`:
-    /// whether the room's grants ask first (`true`), when the invocation
+    /// whether the workspace's grants ask first (`true`), when the invocation
     /// then needs the confirmation of the person it is made for, and the
     /// `Once` grants admitting it spends. Decided on one sample: the action
     /// where it is published, by the run's agent working on its issue when
@@ -652,7 +652,7 @@ impl BrokerActor {
     }
 
     /// Whether this actor takes part in `workspace` at `now`: it may at
-    /// least read the room.
+    /// least read the workspace.
     pub(crate) fn reads_in(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> bool {
         self.answer_in(workspace, &workspace.node(), ActionKind::Read, now) != Answer::Deny
     }
@@ -780,8 +780,8 @@ impl AdmittedJoinIdentity {
         actor.capped(self.verified.capped)
     }
 
-    /// The caller this admitted connection is, confined to its room.
-    fn caller(&self, room: &str) -> tilo_actions::remote::Caller {
+    /// The caller this admitted connection is, confined to its workspace.
+    fn caller(&self, workspace: &str) -> tilo_actions::remote::Caller {
         let foreign = self
             .certificate
             .as_ref()
@@ -790,14 +790,14 @@ impl AdmittedJoinIdentity {
             Some(agent) => tilo_actions::remote::Caller::local_agent(agent.clone()),
             None => tilo_actions::remote::Caller::local_person(self.principal_id.clone()),
         }
-        .in_room(room)
+        .in_room(workspace)
         .from_foreign_device(foreign)
     }
 
-    /// The caller this certified identity is in `room`, from its own
+    /// The caller this certified identity is in `workspace`, from its own
     /// device: foreign when it was held to the cap there or the host keeps
     /// a stricter restriction for it.
-    fn certified_caller(&self, room: &str, restricted: bool) -> tilo_actions::remote::Caller {
+    fn certified_caller(&self, workspace: &str, restricted: bool) -> tilo_actions::remote::Caller {
         let verified = &self.verified;
         match &self.agent_id {
             Some(agent) => tilo_actions::remote::Caller::delegated_agent(
@@ -810,46 +810,46 @@ impl AdmittedJoinIdentity {
                 verified.device_public_key,
             ),
         }
-        .in_room(room)
+        .in_room(workspace)
         .from_foreign_device(verified.capped || restricted)
     }
 
-    /// Run `decide` with what this identity may do in `room` (its person
-    /// room, or a workspace in `tree`).
+    /// Run `decide` with what this identity may do in `workspace` (its person
+    /// workspace, or a workspace in `tree`).
     /// [`Self::with_authority`] over the committed authority of
     /// `membership`, borrowed for the one decision.
     fn with_current_authority<T>(
         &self,
         membership: Option<&WorkspaceTreeHandle>,
-        room: &str,
+        workspace: &str,
         decide: impl FnOnce(&Authority<'_>) -> T,
     ) -> Result<T, String> {
         match membership {
             Some(membership) => membership
-                .decide_in_tree(|tree| self.with_authority(Some(tree), room, decide))
+                .decide_in_tree(|tree| self.with_authority(Some(tree), workspace, decide))
                 .and_then(std::convert::identity),
-            None => self.with_authority(None, room, decide),
+            None => self.with_authority(None, workspace, decide),
         }
     }
 
     fn with_authority<T>(
         &self,
         tree: Option<&DesktopTree>,
-        room: &str,
+        workspace_id: &str,
         decide: impl FnOnce(&Authority<'_>) -> T,
     ) -> Result<T, String> {
         let bound = roles::foreign_device_bound();
         if (self.agent_id.is_none() || self.session_delegated)
-            && self.verified.owns_person_room(room)
+            && self.verified.owns_person_room(workspace_id)
         {
             // The person room's devices are its owner's; a foreign one is
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
-            let policy = WorkspacePolicy::new(room, self.principal_id.clone());
+            let policy = WorkspacePolicy::new(workspace_id, self.principal_id.clone());
             let authority =
                 policy.person_on_device(&self.principal_id, self.verified.capped, &bound);
             let actor = self.broker_actor();
-            let carried = actor.session_grants(room, &self.principal_id);
+            let carried = actor.session_grants(workspace_id, &self.principal_id);
             let authority = match actor.delegate() {
                 Some(delegate) => authority.bounded_by(actor.party(&[], delegate, &carried)),
                 None => authority,
@@ -860,7 +860,7 @@ impl AdmittedJoinIdentity {
             .ok_or("the identity has no workspace authority")?
             .workspaces
             .iter()
-            .find(|workspace| workspace.room().to_string() == room)
+            .find(|workspace| workspace.room().to_string() == workspace_id)
             .ok_or("the identity's workspace is no longer hosted")?;
         Ok(self
             .broker_actor()
@@ -903,13 +903,13 @@ fn admit_verified_join(
     verified: VerifiedJoinIdentity,
 ) -> Result<AdmittedJoinIdentity, String> {
     admit_verified_join_at(
-        crate::services::room_in(tree, &route.cluster_id),
+        crate::services::workspace_in(tree, &route.cluster_id),
         route,
         verified,
         tilo_clock::try_unix_now().ok_or("legacy clock unavailable")?,
     )
 }
-/// Admit a verified identity into `route`'s room. `workspace` is the
+/// Admit a verified identity into `route`'s workspace. `workspace` is the
 /// committed workspace of exactly `route.cluster_id` from one authority
 /// sample (`None` when this host has none).
 fn admit_verified_join_at(
@@ -920,9 +920,9 @@ fn admit_verified_join_at(
 ) -> Result<AdmittedJoinIdentity, String> {
     let principal_id = principal_id_for_root(verified.user_public_key);
     // The person room has no roster to consult: its members are, by the
-    // room id's derivation, exactly the devices this root certified, each
-    // acting as the room's owner — a foreign device with the foreign-device
-    // cap's role, there as in any room. Any other room id is a workspace.
+    // workspace id's derivation, exactly the devices this root certified, each
+    // acting as the workspace's owner — a foreign device with the foreign-device
+    // cap's role, there as in any workspace. Any other workspace id is a workspace.
     if verified.owns_person_room(&route.cluster_id) {
         let role = CapRole::Owner;
         return Ok(AdmittedJoinIdentity {
@@ -940,7 +940,7 @@ fn admit_verified_join_at(
     }
     let workspace = workspace
         .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
-    // Taking part is being allowed to read the room now: as a member, or
+    // Taking part is being allowed to read the workspace now: as a member, or
     // by a grant for a while.
     if !BrokerActor::person(principal_id.clone()).reads_in(workspace, now) {
         return Err("certified collaboration identity is not a workspace member".into());
@@ -968,7 +968,7 @@ fn admit_agent_delegation(
     agent_id: &str,
 ) -> Result<(), String> {
     admit_agent_delegation_at(
-        crate::services::room_in(tree, &route.cluster_id),
+        crate::services::workspace_in(tree, &route.cluster_id),
         admitted,
         agent_id,
         tilo_clock::try_unix_now().ok_or("legacy clock unavailable")?,
@@ -994,7 +994,7 @@ fn admit_agent_delegation_at(
     {
         return Err("only a workspace administrator may launch a delegated agent session".into());
     }
-    // The agent takes part with the role its room admission (its preset)
+    // The agent takes part with the role its workspace admission (its preset)
     // grants, never more than its person's: revoking either ends it here,
     // and every revalidation of the session asks again.
     let granted = workspace
@@ -1007,12 +1007,12 @@ fn admit_agent_delegation_at(
 }
 
 /// Whether the launched app `app` may join `route` in its person's own
-/// room: only a record of the person's whose kind its surface declares
-/// (its own, or another app's it reads). The person's room holds nothing
+/// workspace: only a record of the person's whose kind its surface declares
+/// (its own, or another app's it reads). The person's workspace holds nothing
 /// else for an app.
 fn person_record_join(app: &str, route: &CrdtRoute) -> Result<(), String> {
     let kind = collab_types::person_record_kind(&route.record_id)
-        .ok_or("an app joins the person's room only for one of their records")?;
+        .ok_or("an app joins the person's workspace only for one of their records")?;
     if !ui::app_surface::keeps_person_record(app, kind) {
         return Err(format!(
             "{app} declares no record of the person's of kind {kind}"
@@ -1058,17 +1058,17 @@ fn verify_join_presentation(
     }
     let proof = <[u8; 64]>::try_from(presentation.proof.as_slice())
         .map_err(|_| "collaboration join proof must be 64 bytes".to_string())?;
-    let room = presentation.workspace_id.as_str();
-    admission_memo::join_proof_verified(&cert.device_public_key, room, &proof, || {
+    let workspace = presentation.workspace_id.as_str();
+    admission_memo::join_proof_verified(&cert.device_public_key, workspace, &proof, || {
         VerifyingKey::from_bytes(&cert.device_public_key)
             .map_err(|_| "device certificate contains an invalid device key".to_string())?
             .verify(
-                &runtime_identity::collaboration_join_signing_bytes(room),
+                &runtime_identity::collaboration_join_signing_bytes(workspace),
                 &Signature::from_bytes(&proof),
             )
             .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())
     })?;
-    // Without an authority to ask who governs the room, every foreign device
+    // Without an authority to ask who governs the workspace, every foreign device
     // is held to the cap; the caller refines this where it has one.
     Ok(VerifiedJoinIdentity::of(&cert, cert.capabilities.foreign))
 }
@@ -1162,7 +1162,7 @@ fn admit_join_presentation(
     };
     let membership = membership
         .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
-    let mut admitted = membership.decide_in_room(&route.cluster_id, |workspace| {
+    let mut admitted = membership.decide_in_workspace(&route.cluster_id, |workspace| {
         admit_verified_join_at(workspace, route, verified, now_ns / 1_000_000_000)
     })??;
     admitted.certificate = Some(cert);
@@ -1170,7 +1170,7 @@ fn admit_join_presentation(
     Ok(admitted)
 }
 
-/// Whether `cert` may join `route`: the host worker scope, else the room's
+/// Whether `cert` may join `route`: the host worker scope, else the workspace's
 /// certificate authority (device list, revocations), else the trusted keys.
 /// Answers the root expected to certify it, and whether it is revoked or enrolled.
 fn authorize_join_certificate(
@@ -1192,8 +1192,9 @@ fn authorize_join_certificate(
     } else if cert.capabilities.can_act_as_host {
         return Err("host certificate requires a private host worker descriptor".into());
     } else if let Some(authority) = authority {
-        let room = uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid exact room")?;
-        authority.authorize_join(room, cert)?;
+        let workspace =
+            uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid exact workspace")?;
+        authority.authorize_join(workspace, cert)?;
         (cert.user_public_key, false, true)
     } else if let Some(devices) = trusted_devices {
         (
@@ -1601,7 +1602,7 @@ struct PreparedEffectCommit {
 /// construction and every operation rechecks current certificate/membership.
 #[derive(Clone)]
 pub(crate) struct VerifiedActionCaller {
-    room: String,
+    workspace: String,
     presentation: Vec<u8>,
     network: Option<tilo_relay_session::client::CertifiedAction>,
     policy_time: Option<crate::peer_actions::PolicyTime>,
@@ -1808,7 +1809,7 @@ impl AppBrokerState {
 enum ContinuingCaller {
     /// Host-admitted native person, revalidated for every continuation.
     NativePerson {
-        room: String,
+        workspace: String,
         certificate: Box<tilo_user_identity::DeviceCert>,
         time: crate::peer_actions::PolicyTime,
         direct: tilo_actions::remote::Caller,
@@ -1824,9 +1825,9 @@ enum ContinuingCaller {
         /// knew one; it continues only while that execution is live.
         direct: Option<tilo_actions::remote::Caller>,
     },
-    /// A person or agent on a connection this host admitted, in a room.
+    /// A person or agent on a connection this host admitted, in a workspace.
     Admitted {
-        room: String,
+        workspace: String,
         admitted: Box<AdmittedJoinIdentity>,
     },
 }
@@ -1840,9 +1841,9 @@ impl ContinuingCaller {
                 direct: None,
             },
             DurableContext::Task { caller, .. } => {
-                let (room, admitted) = caller.admitted_in();
+                let (workspace, admitted) = caller.admitted_in();
                 Self::Admitted {
-                    room,
+                    workspace,
                     admitted: Box::new(admitted),
                 }
             }
@@ -1852,18 +1853,18 @@ impl ContinuingCaller {
     fn from_origin(origin: &InvocationCaller) -> Self {
         match origin {
             InvocationCaller::NativePerson {
-                room,
+                workspace,
                 certificate,
                 time,
                 ..
             } => Self::NativePerson {
-                room: room.clone(),
+                workspace: workspace.clone(),
                 certificate: Box::new(certificate.clone()),
                 time: time.clone(),
                 direct: tilo_actions::remote::Caller::local_person(principal_id_for_root(
                     certificate.user_public_key,
                 ))
-                .in_room(room.clone()),
+                .in_room(workspace.clone()),
             },
             InvocationCaller::Certified {
                 caller,
@@ -1876,7 +1877,7 @@ impl ContinuingCaller {
             InvocationCaller::Local {
                 route, admitted, ..
             } => Self::Admitted {
-                room: route.cluster_id.clone(),
+                workspace: route.cluster_id.clone(),
                 admitted: admitted.clone(),
             },
         }
@@ -1893,13 +1894,13 @@ impl ContinuingCaller {
             (
                 Some(direct),
                 Some(InvocationCaller::NativePerson {
-                    room,
+                    workspace,
                     certificate,
                     time,
                     ..
                 }),
             ) => Some(Self::NativePerson {
-                room: room.clone(),
+                workspace: workspace.clone(),
                 certificate: Box::new(certificate.clone()),
                 time: time.clone(),
                 direct: direct.clone(),
@@ -1925,17 +1926,17 @@ impl ContinuingCaller {
     /// The caller as they stand now: a certified caller whose certificate
     /// no longer verifies, who changed, or whose execution ended, is nobody.
     /// A certified caller keeps their own device, so they stay held to the
-    /// foreign-device cap wherever that device does not govern the room.
+    /// foreign-device cap wherever that device does not govern the workspace.
     fn current(&self, state: &AppBrokerState) -> Option<tilo_actions::remote::Caller> {
         match self {
             Self::NativePerson {
-                room,
+                workspace,
                 certificate,
                 time,
                 direct,
             } => {
                 state.checked_policy_time(Some(time)).ok()?;
-                state.current_native_person(room, certificate).ok()?;
+                state.current_native_person(workspace, certificate).ok()?;
                 (direct.execution_id().is_none() || direct.execution_is_live())
                     .then(|| direct.clone())
             }
@@ -1949,10 +1950,15 @@ impl ContinuingCaller {
                 match direct {
                     Some(direct) => (direct.execution_id().is_none() || direct.execution_is_live())
                         .then(|| direct.clone()),
-                    None => Some(admitted.certified_caller(&caller.room, *foreign_restriction)),
+                    None => {
+                        Some(admitted.certified_caller(&caller.workspace, *foreign_restriction))
+                    }
                 }
             }
-            Self::Admitted { room, admitted } => Some(admitted.caller(room)),
+            Self::Admitted {
+                workspace,
+                admitted,
+            } => Some(admitted.caller(workspace)),
         }
     }
 }
@@ -2000,8 +2006,8 @@ pub use launchable::launchable_provider;
 pub(crate) mod peer_action_broker;
 #[path = "policy_context.rs"]
 mod policy_context;
-#[path = "room_service.rs"]
-mod room_service;
+#[path = "published_service.rs"]
+mod published_service;
 
 impl AppBrokerState {
     /// Attach the authority a harness admits its devices under, when it
@@ -2051,25 +2057,25 @@ impl AppBrokerState {
 
     pub(crate) fn verify_action_caller(
         &self,
-        room: &str,
+        workspace: &str,
         presentation: &[u8],
     ) -> Result<VerifiedActionCaller, String> {
-        // The local certified presentation format also binds the exact room.
+        // The local certified presentation format also binds the exact workspace.
         // No caller-controlled `is_agent` or principal string enters this door.
-        if uuid::Uuid::parse_str(room).is_err() || presentation.len() > 16 * 1024 {
+        if uuid::Uuid::parse_str(workspace).is_err() || presentation.len() > 16 * 1024 {
             return Err("invalid certified invocation caller".into());
         }
         #[cfg(test)]
         admission_memo::count_verification();
         let admitted = verify_join_identity(
-            &CrdtRoute::cluster(room),
+            &CrdtRoute::cluster(workspace),
             presentation,
             self.membership.as_ref(),
             self.trusted_devices.as_deref().map(Vec::as_slice),
             self.certificate_authority.get().map(Arc::as_ref),
         )?;
         Ok(VerifiedActionCaller {
-            room: room.into(),
+            workspace: workspace.into(),
             presentation: presentation.into(),
             native_projection_verified: false,
             network: None,
@@ -2079,33 +2085,37 @@ impl AppBrokerState {
         })
     }
 
-    /// Whether `cert`'s device is held to the foreign-device cap in `room`.
-    fn capped_in(&self, room: &str, cert: &tilo_user_identity::DeviceCert) -> bool {
+    /// Whether `cert`'s device is held to the foreign-device cap in `workspace`.
+    fn capped_in(&self, workspace: &str, cert: &tilo_user_identity::DeviceCert) -> bool {
         cert_capped_in(
             self.certificate_authority.get().map(AsRef::as_ref),
-            room,
+            workspace,
             cert,
         )
     }
 
-    /// The broker actor `caller` is in `room`.
+    /// The broker actor `caller` is in `workspace`.
     pub(super) fn caller_actor(
         &self,
         caller: &tilo_actions::remote::Caller,
-        room: &str,
+        workspace: &str,
     ) -> BrokerActor {
         BrokerActor::for_caller(caller).capped(cap_applies_in(
             self.certificate_authority.get().map(AsRef::as_ref),
-            room,
+            workspace,
             caller.is_foreign_device(),
             caller.device_public_key(),
         ))
     }
 
-    /// The person `cert` certifies, acting in `room` from that certificate's device.
-    fn certified_person(&self, room: &str, cert: &tilo_user_identity::DeviceCert) -> BrokerActor {
+    /// The person `cert` certifies, acting in `workspace` from that certificate's device.
+    fn certified_person(
+        &self,
+        workspace: &str,
+        cert: &tilo_user_identity::DeviceCert,
+    ) -> BrokerActor {
         BrokerActor {
-            capped: self.capped_in(room, cert),
+            capped: self.capped_in(workspace, cert),
             ..BrokerActor::person(principal_id_for_root(cert.user_public_key))
         }
     }
@@ -2133,7 +2143,7 @@ impl AppBrokerState {
                 caller.policy_time.as_ref(),
             )?
         } else {
-            self.verify_action_caller(&caller.room, &caller.presentation)?
+            self.verify_action_caller(&caller.workspace, &caller.presentation)?
         };
         // The fresh verification re-establishes the person and device; the
         // session delegation this caller carries is the one the person's own
@@ -2156,7 +2166,7 @@ impl AppBrokerState {
         invocation: tilo_actions::InvocationId,
     ) -> Result<InvocationKey, String> {
         Ok(InvocationKey {
-            room: caller.room.clone(),
+            workspace: caller.workspace.clone(),
             host: self.invocation_host()?,
             owner: caller.owner()?,
             invocation,
@@ -2203,13 +2213,13 @@ impl AppBrokerState {
             .and_then(serde_json::Value::as_str)
             .ok_or("journal action invalid")?;
         self.authorize_invocation_permission(
-            &caller.room,
+            &caller.workspace,
             (app, resource_kind, resource, action),
             &contract.need(),
             &current.broker_actor(),
             now,
         )?;
-        self.authorize_checkpoint_result(&caller.room, current.certificate.as_ref(), record)?;
+        self.authorize_checkpoint_result(&caller.workspace, current.certificate.as_ref(), record)?;
         Ok(())
     }
 
@@ -2280,7 +2290,7 @@ impl AppBrokerState {
             .cloned()
             .filter(|surface| {
                 surface.live
-                    && surface.route.cluster_id == caller.room
+                    && surface.route.cluster_id == caller.workspace
                     && surface.app_id == request.app_id
                     && surface.route.record_id == request.record_id
             })
@@ -2292,7 +2302,7 @@ impl AppBrokerState {
                     .clone();
                 Some((surface, action))
             })
-            .ok_or("action no longer offered in this exact room/app/record")?;
+            .ok_or("action no longer offered in this exact workspace/app/record")?;
         self.dispatch_invocation_from_offered(
             request.peer_id,
             offered,
@@ -2479,7 +2489,7 @@ impl AppBrokerState {
 #[derive(Clone)]
 struct RegisteredActionDirectory {
     pagination: directory_pagination::DirectoryPagination,
-    /// Certified publishing person, never a participant label or room role.
+    /// Certified publishing person, never a participant label or workspace role.
     publishing_person: Option<String>,
     app_id: String,
     route: CrdtRoute,
@@ -3212,7 +3222,7 @@ struct Witness {
 pub(crate) struct WitnessBinding {
     actor: String,
     provider: String,
-    room: String,
+    workspace: String,
     revision: Option<String>,
     publication: (u64, u64),
     invocation: tilo_actions::InvocationId,
@@ -3273,7 +3283,7 @@ struct ContextSub {
     native: Option<NativeContext>,
     /// Shares the original receiver; membership refresh belongs to its document row.
     private_alias: bool,
-    /// The room's verified agents this receiver was last told.
+    /// The workspace's verified agents this receiver was last told.
     history_agents: Vec<collab_types::history::RosterAgent>,
 }
 
@@ -3460,9 +3470,9 @@ pub struct AppBrokerState {
     /// action it holds no grant for. Nobody, until the host installs its
     /// sheet: such a request is then refused.
     app_action_consent: RwLock<Option<Arc<dyn crate::app_actions::AppActionConsentPrompter>>>,
-    /// The notices of runs' questions given, by handle, with their room.
+    /// The notices of runs' questions given, by handle, with their workspace.
     run_question_notices: Mutex<HashMap<String, String>>,
-    /// Applications with a grant question on screen, by room: one at a
+    /// Applications with a grant question on screen, by workspace: one at a
     /// time each, so an app cannot bury the person in sheets.
     app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
     /// Bumped whenever a pending or completed invocation changes, so hosts
@@ -3479,9 +3489,9 @@ pub struct AppBrokerState {
     committing_invocations: Mutex<HashSet<u64>>,
     local_report_receipts: Mutex<local_document_action::ReceiptCache>,
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
-    /// Broker-owned governed membership surface per native room.
+    /// Broker-owned governed membership surface per native workspace.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
-    /// Opens waiting for a room's membership actions to be published, each
+    /// Opens waiting for a workspace's membership actions to be published, each
     /// told after the next refresh of the membership surfaces whether they
     /// are ([`Self::await_membership_surface`]).
     membership_surface_waiters: Mutex<Vec<(String, std::sync::mpsc::Sender<bool>)>>,
@@ -3699,7 +3709,8 @@ impl AppBrokerState {
             .certificate_authority
             .get()
             .ok_or("current certificate authority unavailable")?;
-        let room = uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid worker room")?;
+        let workspace =
+            uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid worker workspace")?;
         let host_scope = if certificate.capabilities.can_act_as_host {
             authority.authorize_host_worker(&route, certificate)?;
             Some(LocalHostWorkerScope {
@@ -3707,7 +3718,7 @@ impl AppBrokerState {
                 certificate: certificate.clone(),
             })
         } else {
-            authority.authorize_join(room, certificate)?;
+            authority.authorize_join(workspace, certificate)?;
             None
         };
         let now = self.policy_now_ns()?;
@@ -3718,7 +3729,7 @@ impl AppBrokerState {
         self.membership
             .as_ref()
             .ok_or("current workspace authority unavailable")?
-            .decide_in_room(&route.cluster_id, |workspace| {
+            .decide_in_workspace(&route.cluster_id, |workspace| {
                 admit_verified_join_at(workspace, &route, verified, now / 1_000_000_000)
             })??;
         let mut workers = self
@@ -5135,7 +5146,7 @@ impl AppBrokerState {
                 if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) =>
             {
                 // Without a confirmation policy, a confirmation given anyway
-                // answers the room's ask, if the grants ask; admission
+                // answers the workspace's ask, if the grants ask; admission
                 // decides whether they do.
             }
             tilo_actions::ConfirmationPolicy::None => return Ok(None),
@@ -5186,7 +5197,7 @@ impl AppBrokerState {
             BrokerError::failed("the action broker has no workspace authority".into())
         })?;
         membership
-            .decide_in_room(cluster_id, |workspace| {
+            .decide_in_workspace(cluster_id, |workspace| {
                 let workspace = workspace
                     .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
                 Ok::<Vec<Answer>, String>(
@@ -5248,7 +5259,7 @@ impl AppBrokerState {
             .collect::<Vec<_>>();
         let retained = self.launchable.surfaces().into_iter().filter(|surface| {
             scope.is_none()
-                && self.task_admitted_room(cluster_id)
+                && self.task_admitted_workspace(cluster_id)
                 && !routes.contains(&surface.route)
         });
         let published = live
@@ -5318,7 +5329,7 @@ impl AppBrokerState {
         // One policy sample decides every row; serialization runs after the
         // committed authority is released.
         let (published, applications, task_steps) =
-            membership.decide_in_room(cluster_id, |workspace| {
+            membership.decide_in_workspace(cluster_id, |workspace| {
                 let workspace = workspace
                     .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
                 let published = published
@@ -5812,9 +5823,9 @@ impl AppBrokerState {
             None => self.invocation_owner(origin.as_ref(), &offered.0.route.cluster_id, actor)?,
         };
         owner.validate()?;
-        // In native rooms an agent's action authority comes only from the
+        // In native workspaces an agent's action authority comes only from the
         // authenticated task admission callback, never from ambient context
-        // or a room grant alone (including after its run has stopped).
+        // or a workspace grant alone (including after its run has stopped).
         if actor.is_agent && self.confines_agents_to_tasks(&offered.0.route.cluster_id) {
             match durable {
                 Some(DurableContext::Task { binding, .. })
@@ -5830,7 +5841,7 @@ impl AppBrokerState {
         // Never trust an envelope's invoker: the host sets it.
         let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
         // A certified local origin retains its original registered clock and
-        // exact person/room through an asynchronous directory lookup. Never
+        // exact person/workspace through an asynchronous directory lookup. Never
         // recapture a replacement origin at dispatch or accept a payload actor.
         let original_time = if let Some(InvocationCaller::Certified { caller, .. }) = &origin {
             let admitted = self.current_action_caller(caller)?;
@@ -5845,7 +5856,7 @@ impl AppBrokerState {
                 }
                 None => !actor.is_agent && actor.id == admitted.principal_id,
             };
-            if caller.room != offered.0.route.cluster_id || !admitted_actor {
+            if caller.workspace != offered.0.route.cluster_id || !admitted_actor {
                 return Err("original caller does not match the invocation route or actor".into());
             }
             Some(
@@ -5855,14 +5866,14 @@ impl AppBrokerState {
                     .ok_or("original policy clock unavailable")?,
             )
         } else if let Some(InvocationCaller::NativePerson {
-            room,
+            workspace,
             certificate,
             time,
             ..
         }) = &origin
         {
-            self.current_native_person(room, certificate)?;
-            if room != &offered.0.route.cluster_id
+            self.current_native_person(workspace, certificate)?;
+            if workspace != &offered.0.route.cluster_id
                 || actor.is_agent
                 || actor.id != principal_id_for_root(certificate.user_public_key)
             {
@@ -5937,7 +5948,7 @@ impl AppBrokerState {
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
-            .decide_in_room(&offered.0.route.cluster_id, |workspace| {
+            .decide_in_workspace(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
                 let run = match durable {
                     Some(DurableContext::Task { binding, .. }) => Some(binding),
@@ -6046,7 +6057,7 @@ impl AppBrokerState {
             }
             return Ok(self.retained_answer(&record));
         }
-        // Where the room's grants ask first, the person's confirmation in
+        // Where the workspace's grants ask first, the person's confirmation in
         // the host is the answer: the invocation needs a confirmation token
         // even when the action itself asks for none.
         let confirmed = asks
@@ -6075,7 +6086,7 @@ impl AppBrokerState {
                 || grant.argument_digest != argument_digest(argument)
                 || grant.actor != actor.id
                 || grant.host_witnessed.as_ref().is_some_and(|binding| {
-                    binding.room != offered.0.route.cluster_id
+                    binding.workspace != offered.0.route.cluster_id
                         || Some(binding.invocation)
                             != requested
                                 .or_else(|| durable.map(DurableContext::invocation))
@@ -6111,7 +6122,7 @@ impl AppBrokerState {
         let mut admitted = invocation_journal::Durable::settled();
         let journal_key = if let Some(journal) = journal.as_mut() {
             let key = InvocationKey {
-                room: offered.0.route.cluster_id.clone(),
+                workspace: offered.0.route.cluster_id.clone(),
                 host: journal.host(),
                 invocation,
                 owner: owner.clone(),
@@ -6505,7 +6516,7 @@ impl AppBrokerState {
     /// The fixed 256-event buffer reports `Lagged` rather than concealing loss;
     /// consumers must clear stale presence on lag/closure. Dropping a receiver
     /// changes neither sessions nor app state. This is host-local provenance,
-    /// not a substitute for authenticated transport or current room authority.
+    /// not a substitute for authenticated transport or current workspace authority.
     #[must_use]
     pub fn subscribe_execution_activity(
         &self,
@@ -6597,7 +6608,7 @@ impl AppBrokerState {
         // asks only when it removes what a person may want back.
         let policy = offered.contract.confirmation_for_argument(argument);
         if matches!(policy, tilo_actions::ConfirmationPolicy::None) {
-            // A confirmation given anyway answers the room's ask, if the
+            // A confirmation given anyway answers the workspace's ask, if the
             // grants ask; admission decides whether they do.
             if !witnessed && !matches!(own, Some(Confirmation::Confirmed)) {
                 return Ok(None);
@@ -6865,7 +6876,7 @@ impl AppBrokerState {
             .unwrap_or(false)
     }
 
-    /// Whether this room currently has a subscribed, admitted agent that can
+    /// Whether this workspace currently has a subscribed, admitted agent that can
     /// receive a task lease. Presence or membership alone is not sufficient.
     pub fn agent_is_live_task_capable(&self, cluster_id: &str, agent_id: &str) -> bool {
         self.task_subscribers.lock().is_ok_and(|subscribers| {
@@ -7285,10 +7296,10 @@ impl AppBrokerState {
                     ));
                 }
                 if let Some(authority) = self.certificate_authority.get() {
-                    let room = uuid::Uuid::parse_str(&route.cluster_id)
-                        .map_err(|_| BrokerError::failed("invalid exact room".into()))?;
+                    let workspace = uuid::Uuid::parse_str(&route.cluster_id)
+                        .map_err(|_| BrokerError::failed("invalid exact workspace".into()))?;
                     authority
-                        .authorize_join(room, cert)
+                        .authorize_join(workspace, cert)
                         .map_err(BrokerError::failed)?;
                 }
             }
@@ -7308,7 +7319,7 @@ impl AppBrokerState {
         };
         // The person and any delegated agent are revalidated on one sample.
         membership
-            .decide_in_room(&route.cluster_id, |workspace| {
+            .decide_in_workspace(&route.cluster_id, |workspace| {
                 let mut current =
                     admit_verified_join_at(workspace, route, verified, now / 1_000_000_000)
                         .map_err(|error| {
@@ -7323,7 +7334,7 @@ impl AppBrokerState {
                     .clone_from(&admitted.worker_registration);
                 if let Some(task) = &admitted.task {
                     // The chain again, now: the device still certified and in
-                    // the room's device list (checked above), the delegation
+                    // the workspace's device list (checked above), the delegation
                     // inside its window, its task still going.
                     let cert = admitted
                         .certificate
@@ -7395,9 +7406,9 @@ impl AppBrokerState {
             }
             collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
         };
-        // A room that seals its records takes every write encrypted under
+        // A workspace that seals its records takes every write encrypted under
         // the record channel's keys. An unencrypted one is refused here, on
-        // the device that wrote it, and never reaches the room.
+        // the device that wrote it, and never reaches the workspace.
         if envelope.encryption.is_none()
             && self
                 .services
@@ -7407,11 +7418,11 @@ impl AppBrokerState {
         {
             tracing::warn!(
                 app = %route.app_id,
-                room = %route.cluster_id,
-                "an unencrypted write to a sealed room was refused"
+                workspace = %route.cluster_id,
+                "an unencrypted write to a sealed workspace was refused"
             );
             return Err(BrokerError::failed(
-                "this room seals every write: an unencrypted write is refused".into(),
+                "this workspace seals every write: an unencrypted write is refused".into(),
             ));
         }
         let broker_channels = self.broker_channels.lock().map_err(|_| {
@@ -7698,7 +7709,7 @@ impl AppBrokerState {
         }
     }
 
-    /// One arm of [`Self::fanout_to_route`]: the room's collaborator +
+    /// One arm of [`Self::fanout_to_route`]: the workspace's collaborator +
     /// permission context.
     fn fanout_context<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
@@ -7819,7 +7830,7 @@ impl AppBrokerState {
                 });
         }
         // The records of its app's trees this device already holds in the
-        // room ([`BrokerChannels::tree_records_held`]), such as those it was
+        // workspace ([`BrokerChannels::tree_records_held`]), such as those it was
         // replayed when it joined, before any window of the app ran: a
         // window learns those only from here. Read after the subscription
         // is in place, so a record admitted meanwhile is told either here
@@ -7829,8 +7840,8 @@ impl AppBrokerState {
             // A new admitted session brings its own certificate expiry: the
             // policy turn re-checks, and from then on wakes at that expiry.
             tilo_identity_host::policy_change::announce();
-            let room = CrdtRoute::from_channel_key(channel_id).cluster_id;
-            self.publish_certified_people(&room);
+            let workspace = CrdtRoute::from_channel_key(channel_id).cluster_id;
+            self.publish_certified_people(&workspace);
         }
         rx
     }
@@ -7861,7 +7872,7 @@ impl AppBrokerState {
         }
     }
 
-    /// Complete room membership for one retained native receiver. This is
+    /// Complete workspace membership for one retained native receiver. This is
     /// membership metadata, not online presence: it mints no pointer, caret,
     /// arrival frame, or transport permission.
     fn native_membership_roster(
@@ -7874,7 +7885,7 @@ impl AppBrokerState {
             .membership
             .as_ref()
             .ok_or("native context has no membership authority")?
-            .decide_in_room(&route.cluster_id, |workspace| {
+            .decide_in_workspace(&route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("native context workspace is unavailable")?;
                 let mut agents = workspace.agent_members_at(now);
                 agents.sort_by(|left, right| left.0.cmp(&right.0));
@@ -7963,11 +7974,11 @@ impl AppBrokerState {
     /// Both the native roster and current owner-backed membership must agree.
     pub fn certified_agent_identity(
         &self,
-        room: &str,
+        workspace: &str,
         actor: &str,
     ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
         if !self
-            .certified_people_in_room(room)
+            .certified_people_in_workspace(workspace)
             .iter()
             .any(|row| row.id == actor && row.is_agent)
         {
@@ -7988,7 +7999,7 @@ impl AppBrokerState {
         let now = self.policy_now_ns().ok()? / 1_000_000_000;
         self.membership
             .as_ref()?
-            .decide_in_room(room, |workspace| {
+            .decide_in_workspace(workspace, |workspace| {
                 workspace?
                     .agent_members_at(now)
                     .into_iter()
@@ -8006,9 +8017,9 @@ impl AppBrokerState {
             .flatten()
     }
 
-    pub(crate) fn certified_people_in_room(
+    pub(crate) fn certified_people_in_workspace(
         &self,
-        room: &str,
+        workspace: &str,
     ) -> Vec<ui::collaboration::Collaborator> {
         let Ok(channels) = self.channels.lock() else {
             return Vec::new();
@@ -8017,7 +8028,7 @@ impl AppBrokerState {
             std::collections::BTreeMap::<String, ui::collaboration::Collaborator>::new();
         for (channel, subscribers) in channels.iter() {
             let route = CrdtRoute::from_channel_key(channel);
-            if route.cluster_id != room {
+            if route.cluster_id != workspace {
                 continue;
             }
             for native in subscribers
@@ -8047,7 +8058,7 @@ impl AppBrokerState {
     pub(crate) fn certified_people_for_shell(
         &self,
     ) -> Vec<(String, Vec<ui::collaboration::Collaborator>)> {
-        let rooms = self
+        let workspaces = self
             .channels
             .lock()
             .map(|channels| {
@@ -8063,11 +8074,11 @@ impl AppBrokerState {
                     .collect::<std::collections::BTreeSet<_>>()
             })
             .unwrap_or_default();
-        rooms
+        workspaces
             .into_iter()
-            .map(|room| {
-                let people = self.certified_people_in_room(&room);
-                (room, people)
+            .map(|workspace| {
+                let people = self.certified_people_in_workspace(&workspace);
+                (workspace, people)
             })
             .collect()
     }
@@ -8080,7 +8091,7 @@ impl AppBrokerState {
         let Some(owner) = self.services.workspace_memberships.as_ref() else {
             return Ok(None);
         };
-        if !owner.requires_room(&route.cluster_id) {
+        if !owner.requires_workspace(&route.cluster_id) {
             return Ok(None);
         }
         let current = self
@@ -8093,32 +8104,32 @@ impl AppBrokerState {
         }))
     }
 
-    fn publish_certified_people(&self, room: &str) {
+    fn publish_certified_people(&self, workspace: &str) {
         if let Some(fanout) = self.fanout.upgrade() {
-            fanout.publish_certified_people(room);
+            fanout.publish_certified_people(workspace);
         }
     }
 
-    /// The delegated agents of the room `channel` belongs to whose person's
+    /// The delegated agents of the workspace `channel` belongs to whose person's
     /// root signed the delegation for exactly that device, as the host's
     /// authority verified them. Presentation only: history names who wrote
     /// from it, and nothing is admitted by it.
     fn history_agents_of(&self, channel: &str) -> Vec<collab_types::history::RosterAgent> {
-        let room = CrdtRoute::from_channel_key(channel).cluster_id;
+        let workspace = CrdtRoute::from_channel_key(channel).cluster_id;
         self.membership
             .as_ref()
-            .map(|membership| membership.history_agents(&room))
+            .map(|membership| membership.history_agents(&workspace))
             .unwrap_or_default()
     }
 
-    /// Tell every context receiver whose room's verified agents changed
+    /// Tell every context receiver whose workspace's verified agents changed
     /// since it was last told. The authority is read before the channel
-    /// lock is taken, once per room.
+    /// lock is taken, once per workspace.
     fn refresh_history_agents(&self) {
         let Ok(channels) = self.channels.lock() else {
             return;
         };
-        let rooms = channels
+        let workspaces = channels
             .iter()
             .filter(|(_, subscribers)| !subscribers.context.is_empty())
             .map(|(channel, _)| CrdtRoute::from_channel_key(channel).cluster_id)
@@ -8127,19 +8138,19 @@ impl AppBrokerState {
         let Some(membership) = self.membership.as_ref() else {
             return;
         };
-        let agents = rooms
+        let agents = workspaces
             .into_iter()
-            .map(|room| {
-                let agents = membership.history_agents(&room);
-                (room, agents)
+            .map(|workspace| {
+                let agents = membership.history_agents(&workspace);
+                (workspace, agents)
             })
             .collect::<HashMap<_, _>>();
         let Ok(mut channels) = self.channels.lock() else {
             return;
         };
         for (channel, subscribers) in channels.iter_mut() {
-            let room = CrdtRoute::from_channel_key(channel).cluster_id;
-            let Some(current) = agents.get(&room) else {
+            let workspace = CrdtRoute::from_channel_key(channel).cluster_id;
+            let Some(current) = agents.get(&workspace) else {
                 continue;
             };
             subscribers.context.retain_mut(|subscriber| {
@@ -8260,10 +8271,10 @@ impl AppBrokerState {
     /// the next re-check must come on the one-second clock instead of on an
     /// announcement: an input nothing announces, or a check that failed.
     fn refresh_policy_surfaces(self: &Arc<Self>) -> bool {
-        // A room's verified agents change with its governance, which every
+        // A workspace's verified agents change with its governance, which every
         // host announces; apps' history follows on the same turn.
         self.refresh_history_agents();
-        // Only the opens waiting before this refresh reads the rooms are
+        // Only the opens waiting before this refresh reads the workspaces are
         // told its outcome; a later one waits for the next.
         let waiting = self.take_membership_surface_waiters();
         if self.services.workspace_memberships.is_none() || self.membership.is_none() {
@@ -8361,7 +8372,7 @@ impl AppBrokerState {
     /// its document snapshot, on behalf of no local connection: how another
     /// device that just came back catches up on what it missed. Returns how
     /// many channels were asked.
-    pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
+    pub fn request_workspace_snapshots(&self, cluster_id: &str) -> usize {
         let channels: Vec<String> = self
             .channels
             .lock()
@@ -8777,7 +8788,7 @@ fn private_display_control(
         };
         service.command(
             &crate::services::DisplayControlContext {
-                room: route.cluster_id.clone(),
+                workspace: route.cluster_id.clone(),
                 root: certificate.user_public_key,
                 device: certificate.device_public_key,
             },
@@ -9322,7 +9333,7 @@ impl JoinedChannel {
     ) -> Result<Rc<dyn crate::services::WorkspaceControlSession>, BrokerError> {
         let route = self.route();
         revalidate_workspace_control(&self.state, &route, &self.verified_identity)?;
-        let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
+        let Some(workspace) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
             return Err(BrokerError::failed(
                 "workspace control requires a workspace-scoped channel".into(),
             ));
@@ -9338,7 +9349,7 @@ impl JoinedChannel {
                 .map_err(|error| error.to_string())
         });
         service
-            .open(room, target, revalidate)
+            .open(workspace, target, revalidate)
             .map_err(BrokerError::failed)
     }
 }
@@ -9389,7 +9400,7 @@ fn policy_system_time(state: &AppBrokerState) -> Option<std::time::SystemTime> {
     std::time::UNIX_EPOCH.checked_add(Duration::from_nanos(now))
 }
 
-/// `envelope` validated against its author's current authority in the room
+/// `envelope` validated against its author's current authority in the workspace
 /// and the channel's state, or `None` when either is unavailable.
 fn validate_signed_op(
     state: &Arc<AppBrokerState>,
@@ -9652,14 +9663,14 @@ impl HostWorkerReadGuard {
 // second reader wait its turn — the two calls serialize instead of racing.
 
 /// What the host is told each time an invocation is handed to `app` in
-/// `room`; nothing when no launcher hosts it.
+/// `workspace`; nothing when no launcher hosts it.
 fn invocation_delivery_notice(
     services: &HostServices,
     app: String,
-    room: String,
+    workspace: String,
 ) -> Option<Box<dyn Fn()>> {
     let launcher = services.launcher.clone().filter(|_| !app.is_empty())?;
-    Some(Box::new(move || launcher.note_acted_on(&app, &room)))
+    Some(Box::new(move || launcher.note_acted_on(&app, &workspace)))
 }
 
 type InvocationQueue = Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>;
@@ -9826,7 +9837,7 @@ impl NativeContextReadGuard {
                 .services
                 .workspace_memberships
                 .as_ref()
-                .is_some_and(|owner| owner.requires_room(&guard.route.cluster_id))
+                .is_some_and(|owner| owner.requires_workspace(&guard.route.cluster_id))
             {
                 return Err(BrokerError::failed(
                     "native context owner is no longer current".into(),
@@ -10263,14 +10274,14 @@ impl Drop for BrokerThreadShutdown {
 }
 
 /// Say where the broker listens and whether what apps write there reaches
-/// the room.
+/// the workspace.
 fn log_bound(socket_path: &Path, wired: bool) {
     tracing::info!(
         peer_sync = wired,
         "collaboration broker: bound {} for native SDK access ({})",
         socket_path.display(),
         if wired {
-            "edits from apps on this socket will reach the room"
+            "edits from apps on this socket will reach the workspace"
         } else {
             "LOCAL ONLY — no peer network, so edits from apps on this \
              socket stay on this machine"
@@ -10506,7 +10517,7 @@ async fn serve_broker_thread(
         tilo_identity_host::policy_change::Watch::new(move || turn.notify_one())
     };
     let mut policy = crate::policy_schedule::PolicySchedule::default();
-    // Runs are delivered, and their questions told, as the room's record
+    // Runs are delivered, and their questions told, as the workspace's record
     // that holds them announces each publication: the epoch they were last
     // delivered at.
     let mut delivered = None;
@@ -10704,7 +10715,7 @@ fn peek_launch_marker(
 struct LaunchRefusal {
     error: BrokerError,
     /// What the connection said it was, as far as it got: the process and
-    /// the app and room its launcher named.
+    /// the app and workspace its launcher named.
     peer: String,
     /// The handoff was read whole, so the app can still be told the reason
     /// on the wire instead of seeing its connection reset.
@@ -10740,7 +10751,7 @@ async fn authenticate_launcher_handoff(
         }
     };
     let peer = format!(
-        "pid {pid} launching {} in room {}",
+        "pid {pid} launching {} in workspace {}",
         handoff.app_id, handoff.workspace_id
     );
     if handoff.protocol != launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION
@@ -10801,7 +10812,7 @@ async fn authenticate_launcher_handoff(
             .map(|ticket| workspace_open::ConnectedLaunch {
                 ticket,
                 app_id: handoff.app_id.clone(),
-                room: handoff.workspace_id.clone(),
+                workspace: handoff.workspace_id.clone(),
             });
         return Ok(AuthenticatedHandoff {
             local_media: native_media::LocalAppConnection::from_launch(
@@ -10817,7 +10828,7 @@ async fn authenticate_launcher_handoff(
         "collaboration launch cannot be attested: this broker has no launcher service"
     } else {
         "collaboration launch is not an authenticated shell-managed process: the \
-         shell holds no launch record for this live process, app and room (an app \
+         shell holds no launch record for this live process, app and workspace (an app \
          started by hand through tilo-launcher, or a process that has exited)"
     };
     Err(LaunchRefusal {
@@ -11374,13 +11385,13 @@ pub mod tests {
     }
 
     /// What tilo-launcher writes first on its collaboration connection: the
-    /// marker, then the framed handoff naming the app and room.
+    /// marker, then the framed handoff naming the app and workspace.
     #[cfg(test)]
-    fn launcher_handoff_bytes(app_id: &str, room: &str) -> (Vec<u8>, Vec<u8>) {
+    fn launcher_handoff_bytes(app_id: &str, workspace: &str) -> (Vec<u8>, Vec<u8>) {
         let handoff = serde_json::to_vec(&serde_json::json!({
             "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
             "app_id": app_id,
-            "workspace_id": room,
+            "workspace_id": workspace,
         }))
         .expect("handoff json");
         (
@@ -11408,22 +11419,22 @@ pub mod tests {
         ) -> Result<(), String> {
             Err("this broker launches nothing".into())
         }
-        fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
+        fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
             self.0
                 .lock()
                 .expect("records")
                 .iter()
-                .any(|(recorded, a, r)| *recorded == pid && a == app && r == room)
+                .any(|(recorded, a, r)| *recorded == pid && a == app && r == workspace)
         }
         /// Every recorded launch was started by the `open` holding ticket 31.
         fn authenticated_launch(
             &self,
             pid: u32,
             app: &str,
-            room: &str,
+            workspace: &str,
             _window_instance: Option<u64>,
         ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
-            Ok(self.attest_process(pid, app, room).then_some(
+            Ok(self.attest_process(pid, app, workspace).then_some(
                 crate::services::AuthenticatedApplicationLaunch {
                     creation: None,
                     continuation_instance: None,
@@ -11443,20 +11454,20 @@ pub mod tests {
     async fn launcher_attestation_decides_on_one_look() {
         use tokio::io::AsyncWriteExt as _;
         const APP: &str = "so.tilo.calculator";
-        const ROOM: &str = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
+        const WORKSPACE: &str = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
         let launches = Arc::new(RecordedLaunches(Mutex::new(Vec::new())));
         let services = HostServices {
             launcher: Some(Arc::clone(&launches) as Arc<dyn crate::services::LauncherServices>),
             ..Default::default()
         };
-        let (marker, handoff) = launcher_handoff_bytes(APP, ROOM);
+        let (marker, handoff) = launcher_handoff_bytes(APP, WORKSPACE);
         for recorded in [false, true] {
             let (mut broker_end, mut launcher_end) = tokio::net::UnixStream::pair().unwrap();
             if recorded {
                 launches.0.lock().expect("records").push((
                     std::process::id(),
                     APP.to_owned(),
-                    ROOM.to_owned(),
+                    WORKSPACE.to_owned(),
                 ));
             }
             launcher_end.write_all(&marker).await.expect("marker");
@@ -11472,12 +11483,16 @@ pub mod tests {
                 Ok(handoff) => {
                     assert!(recorded, "an unrecorded launcher was attested");
                     // The connection names the launch that started it, from
-                    // the host's record, for the app and room it was
+                    // the host's record, for the app and workspace it was
                     // admitted for.
                     let launch = handoff.launch.expect("the recorded launch's ticket");
                     assert_eq!(
-                        (launch.ticket, launch.app_id.as_str(), launch.room.as_str()),
-                        (31, APP, ROOM)
+                        (
+                            launch.ticket,
+                            launch.app_id.as_str(),
+                            launch.workspace.as_str()
+                        ),
+                        (31, APP, WORKSPACE)
                     );
                 }
                 Err(refusal) => {
@@ -11584,8 +11599,8 @@ pub mod tests {
             .expect("broker holder")
             .as_ref()
             .expect("broker")
-            .subscribe_rooms(
-                vec!["self-drop-room".into()],
+            .subscribe_workspaces(
+                vec!["self-drop-workspace".into()],
                 Box::new(move |_, _| {
                     let broker = holder_for_sink
                         .lock()
@@ -11605,7 +11620,7 @@ pub mod tests {
             fanout_for_callback.fanout_to_route(
                 &CollabEvent::FollowChanged { peer_id: None },
                 u64::MAX,
-                &CrdtRoute::cluster("self-drop-room"),
+                &CrdtRoute::cluster("self-drop-workspace"),
             );
         }));
         tilo_test_env::recv(
@@ -11627,7 +11642,7 @@ pub mod tests {
                 peer_id: Some("stale".into()),
             },
             u64::MAX,
-            &CrdtRoute::cluster("self-drop-room"),
+            &CrdtRoute::cluster("self-drop-workspace"),
         );
         let replacement = crate::collab_broker::spawn_with_test_services(
             socket,
@@ -11667,8 +11682,8 @@ pub mod tests {
             .expect("broker holder")
             .as_ref()
             .expect("broker")
-            .subscribe_rooms(
-                vec!["off-thread-room".into()],
+            .subscribe_workspaces(
+                vec!["off-thread-workspace".into()],
                 Box::new(move |_, _| {
                     let broker = holder_for_sink
                         .lock()
@@ -11684,7 +11699,7 @@ pub mod tests {
             fanout_for_thread.fanout_to_route(
                 &CollabEvent::FollowChanged { peer_id: None },
                 u64::MAX,
-                &CrdtRoute::cluster("off-thread-room"),
+                &CrdtRoute::cluster("off-thread-workspace"),
             );
         });
         tilo_test_env::recv(
@@ -12596,10 +12611,10 @@ pub mod tests {
                     let person = principal_id_for_root([0; 32]);
                     let mut other_workspace = crate::test_support::Workspace::new(
                         crate::test_support::WorkspaceId(72),
-                        "Other publication room",
+                        "Other publication workspace",
                     );
                     other_workspace.set_owner(person.clone());
-                    let other_room = other_workspace.room().to_string();
+                    let other_workspace_id = other_workspace.room().to_string();
                     {
                         let mut tree = fixture.membership.as_ref().unwrap().write();
                         tree.workspaces[0].set_owner(person);
@@ -12628,11 +12643,11 @@ pub mod tests {
                     };
                     let original = binding();
                     let token = fixture.state.witness_confirmation(&original).unwrap();
-                    // Both another provider in this room and another room may publish,
+                    // Both another provider in this workspace and another workspace may publish,
                     // reregister and disconnect while the person's sheet is open.
-                    for room in [fixture.cluster_id.clone(), other_room] {
+                    for workspace in [fixture.cluster_id.clone(), other_workspace_id] {
                         let other_peer = fixture.peer_id + 1;
-                        let route = CrdtRoute::record("org.example.unrelated", room, "main");
+                        let route = CrdtRoute::record("org.example.unrelated", workspace, "main");
                         let other = fixture.invocation_channel_for(other_peer, &route);
                         for other_directory in [false, true] {
                             witness_publish(&fixture, &other, other_directory).await;
@@ -12675,7 +12690,7 @@ pub mod tests {
         let mut tree = crate::test_support::WorkspaceTree::default();
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(71),
-            "Directory test room",
+            "Directory test workspace",
         );
         workspace.set_owner("fixture-owner".to_string());
         tree.workspaces.push(workspace);
@@ -12727,7 +12742,7 @@ pub mod tests {
             .snapshot()
             .unwrap()
             .active_workspace()
-            .expect("fixture active room")
+            .expect("fixture active workspace")
             .room()
             .to_string();
         let route = CrdtRoute::record("so.tilo.atlas", cluster_id.clone(), "atlas");
@@ -13426,10 +13441,13 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    fn downgrade_member_to_viewer(membership: &WorkspaceTreeHandle, principal: &str, room: &str) {
+    fn downgrade_member_to_viewer(
+        membership: &WorkspaceTreeHandle,
+        principal: &str,
+        _workspace: &str,
+    ) {
         let mut tree = membership.write();
         let workspace = &mut tree.workspaces[0];
-        let _ = room;
         workspace.policy.owner = None;
         workspace.admit(principal, Role::Viewer);
         drop(tree);
@@ -13439,8 +13457,10 @@ pub mod tests {
     fn certified_join_admission_uses_workspace_membership_and_role() {
         let root = SigningKey::from_bytes(&[20; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(1), "Member room");
+        let mut workspace = crate::test_support::Workspace::new(
+            crate::test_support::WorkspaceId(1),
+            "Member workspace",
+        );
         let route = CrdtRoute::cluster(workspace.room().to_string());
         workspace.admit(principal.clone(), crate::test_support::Role::Editor);
         let mut tree = WorkspaceTree::default();
@@ -13483,8 +13503,8 @@ pub mod tests {
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(4), "Actions");
         workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
-        let room = workspace.room().to_string();
-        let route = CrdtRoute::cluster(room.clone());
+        let workspace_id = workspace.room().to_string();
+        let route = CrdtRoute::cluster(&workspace_id);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let native = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
@@ -13502,7 +13522,7 @@ pub mod tests {
         );
         let authorize = |admitted: &AdmittedJoinIdentity, kind| {
             state.authorize_invocation_permission(
-                &room,
+                &workspace_id,
                 (
                     "so.tilo.settings",
                     "settings.workspace",
@@ -13525,7 +13545,7 @@ pub mod tests {
         authorize(&foreign, Undoable).unwrap();
     }
 
-    /// Governs every room for one device; admits every certificate.
+    /// Governs every workspace for one device; admits every certificate.
     #[cfg(test)]
     struct GovernedBy([u8; 32]);
 
@@ -13533,23 +13553,23 @@ pub mod tests {
     impl crate::peer_actions::CertificateAuthority for GovernedBy {
         fn authorize(
             &self,
-            _room: uuid::Uuid,
+            _workspace: uuid::Uuid,
             _certificate: &tilo_user_identity::DeviceCert,
         ) -> Result<(), String> {
             Ok(())
         }
-        fn governs(&self, _room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+        fn governs(&self, _workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
             device == Some(&self.0)
         }
     }
 
     #[test]
-    fn a_foreign_device_is_capped_only_in_rooms_it_does_not_govern() {
+    fn a_foreign_device_is_capped_only_in_workspaces_it_does_not_govern() {
         let root = SigningKey::from_bytes(&[25; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(5), "Own");
         workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new(
@@ -13576,12 +13596,12 @@ pub mod tests {
             signature: [0; 64],
         };
         let admin = |cert: &tilo_user_identity::DeviceCert| {
-            let identity = VerifiedJoinIdentity::of(cert, state.capped_in(&room, cert));
+            let identity = VerifiedJoinIdentity::of(cert, state.capped_in(&workspace_id, cert));
             let admitted =
-                admit_verified_join(&tree, &CrdtRoute::cluster(&room), identity).unwrap();
-            let actor = state.certified_person(&room, cert);
+                admit_verified_join(&tree, &CrdtRoute::cluster(&workspace_id), identity).unwrap();
+            let actor = state.certified_person(&workspace_id, cert);
             let admin = state.authorize_invocation_permission(
-                &room,
+                &workspace_id,
                 (
                     "so.tilo.settings",
                     "settings.workspace",
@@ -13644,7 +13664,7 @@ pub mod tests {
         assert_eq!(
             changes(&admitted, &tree),
             Answer::Deny,
-            "the room bounds devices that are not their owner's further"
+            "the workspace bounds devices that are not their owner's further"
         );
     }
 
@@ -13652,8 +13672,10 @@ pub mod tests {
     fn agent_delegation_uses_agent_caps_and_is_revoked_live() {
         let root = SigningKey::from_bytes(&[44; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(44), "Agent room");
+        let mut workspace = crate::test_support::Workspace::new(
+            crate::test_support::WorkspaceId(44),
+            "Agent workspace",
+        );
         workspace.set_owner(principal);
         let route = CrdtRoute::cluster(workspace.room().to_string());
         let agent_membership = workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
@@ -13702,7 +13724,7 @@ pub mod tests {
         );
     }
 
-    /// In a room this desktop hosts itself, a delegated agent takes part
+    /// In a workspace this desktop hosts itself, a delegated agent takes part
     /// with exactly its preset, capped by its person's role, and revoking
     /// either the person or the agent cuts an open session off.
     #[test]
@@ -13715,13 +13737,13 @@ pub mod tests {
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(45), "Hosted");
         workspace.set_owner(owner.clone());
-        let room = workspace.policy.workspace.clone();
-        // Bob comments, and may launch the room's agents.
+        let workspace_id = workspace.policy.workspace.clone();
+        // Bob comments, and may launch the workspace's agents.
         workspace.admit(bob.clone(), Role::Commenter);
         workspace.grant(tilo_action_policy::Grant::new(
             "fixture:bob-launches-agents",
             crate::test_support::Subject::Person(bob.clone()),
-            roles::governance_action(&room, governance::GRANT),
+            roles::governance_action(&workspace_id, governance::GRANT),
             crate::test_support::KindSet::OUTSIDE,
             Answer::Allow,
             crate::test_support::Subject::Person(owner.clone()),
@@ -13731,7 +13753,7 @@ pub mod tests {
         workspace.admit_agent_preset("reader", AgentPreset::Observer, &granted_by);
         let route = CrdtRoute::cluster(workspace.room().to_string());
         let notes = workspace.node().app("so.tilo.notes");
-        let set_role = roles::governance_action(&room, governance::SET_ROLE);
+        let set_role = roles::governance_action(&workspace_id, governance::SET_ROLE);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
@@ -13763,7 +13785,7 @@ pub mod tests {
         assert_eq!(
             answer(&scribe, &tree, &set_role, roles::GOVERNANCE_KIND),
             Answer::Deny,
-            "the owner's agent does not govern the room"
+            "the owner's agent does not govern the workspace"
         );
         // The owner's Observer agent reads, and is no Editor anywhere.
         let reader = delegate(&owner_root, "reader", &tree).unwrap();
@@ -13824,10 +13846,10 @@ pub mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
-        struct NativeRoom(String);
-        impl crate::services::WorkspaceMemberships for NativeRoom {
-            fn requires_room(&self, room: &str) -> bool {
-                room == self.0
+        struct NativeWorkspace(String);
+        impl crate::services::WorkspaceMemberships for NativeWorkspace {
+            fn requires_workspace(&self, workspace: &str) -> bool {
+                workspace == self.0
             }
 
             fn execute(
@@ -13845,25 +13867,25 @@ pub mod tests {
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(46), "Roster");
         workspace.set_owner(person.clone());
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let other_person = "other-person";
         workspace.admit(other_person, crate::test_support::Role::Viewer);
         workspace.policy.joined.insert(other_person.into(), 7_000);
-        workspace.allow_in_room(
-            crate::test_support::Subject::person("person-in-other-room"),
+        workspace.allow_in_workspace(
+            crate::test_support::Subject::person("person-in-other-workspace"),
             &uuid::Uuid::new_v4().to_string(),
             crate::test_support::KindSet::READ,
         );
         let collision = workspace.admit_agent(&person, crate::test_support::KindSet::READ);
         workspace.admit_agent(tide, crate::test_support::KindSet::READ);
-        workspace.allow_in_room(
-            crate::test_support::Subject::agent("wrong-room"),
+        workspace.allow_in_workspace(
+            crate::test_support::Subject::agent("wrong-workspace"),
             &uuid::Uuid::new_v4().to_string(),
             crate::test_support::KindSet::READ,
         );
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let route = CrdtRoute::record("so.tilo.chat", &room, "main");
+        tree.workspaces.push(workspace.clone());
+        let route = CrdtRoute::record("so.tilo.chat", &workspace_id, "main");
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
         admitted.display_handle = Some(tide.into());
         assert_eq!(AppBrokerState::participant_id(&admitted), person);
@@ -13874,8 +13896,8 @@ pub mod tests {
             Vec<ui::collaboration::Collaborator>,
         )>::new()));
         let observed_sink = Arc::clone(&observed);
-        let _people = fanout.subscribe_certified_people(Arc::new(move |room, people| {
-            observed_sink.lock().unwrap().push((room, people));
+        let _people = fanout.subscribe_certified_people(Arc::new(move |workspace, people| {
+            observed_sink.lock().unwrap().push((workspace, people));
         }));
         let (state, _bridge_rx) = AppBrokerState::new_configured(
             &fanout,
@@ -13885,7 +13907,7 @@ pub mod tests {
             None,
             None,
             HostServices {
-                workspace_memberships: Some(Arc::new(NativeRoom(room.clone()))),
+                workspace_memberships: Some(Arc::new(NativeWorkspace(workspace_id.clone()))),
                 ..Default::default()
             },
         );
@@ -13899,18 +13921,22 @@ pub mod tests {
                 .native_roster_for_subscriber(&legacy_route, &admitted)
                 .unwrap()
                 .is_none(),
-            "a room the native owner did not select keeps ordinary app context"
+            "a workspace the native owner did not select keeps ordinary app context"
         );
         assert_eq!(roster.iter().filter(|row| row.is_self).count(), 1);
         assert!(roster.iter().any(|row| row.id == person && !row.is_agent));
-        assert!(roster.iter().all(|row| row.id != "person-in-other-room"));
+        assert!(
+            roster
+                .iter()
+                .all(|row| row.id != "person-in-other-workspace")
+        );
         assert!(
             roster
                 .iter()
                 .any(|row| { row.id == other_person && !row.is_agent && !row.is_self })
         );
         // When each person joined travels with their row, so every replica
-        // numbers namesakes alike; the owner holds the room from its start.
+        // numbers namesakes alike; the owner holds the workspace from its start.
         let joined = |id: &str| roster.iter().find(|row| row.id == id).unwrap().joined_at;
         assert_eq!(joined(other_person), Some(7_000));
         assert_eq!(
@@ -13929,8 +13955,8 @@ pub mod tests {
                 .any(|row| row.id == format!("agent:{tide}") && row.is_agent)
         );
         assert!(
-            roster.iter().all(|row| row.id != "agent:wrong-room"),
-            "a grant for another room is not native membership here"
+            roster.iter().all(|row| row.id != "agent:wrong-workspace"),
+            "a grant for another workspace is not native membership here"
         );
         assert!(
             state
@@ -13945,7 +13971,7 @@ pub mod tests {
         let native = state
             .native_roster_for_subscriber(&route, &admitted)
             .unwrap()
-            .expect("the actual owner selects this native room");
+            .expect("the actual owner selects this native workspace");
         assert!(state.host_workers.lock().unwrap().is_empty());
         let mut parallel = state.subscribe_context(&channel, 46, Some(native.clone()));
         assert!(matches!(
@@ -13959,13 +13985,17 @@ pub mod tests {
             Ok(ContextUpdate::Snapshot { .. })
         ));
         assert_eq!(
-            state.certified_agent_identity(&room, &format!("agent:{tide}")),
+            state.certified_agent_identity(&workspace_id, &format!("agent:{tide}")),
             Some(ui::collaboration::CertifiedAgentIdentity {
                 participant_id: format!("agent:{tide}"),
                 agent_key: tide.into(),
             }),
         );
-        assert!(state.certified_agent_identity(&room, &person).is_none());
+        assert!(
+            state
+                .certified_agent_identity(&workspace_id, &person)
+                .is_none()
+        );
         let forged = ui::collaboration::Collaborator {
             id: "agent:forged".into(),
             name: "forged".into(),
@@ -14112,13 +14142,13 @@ pub mod tests {
         );
         assert!(
             state
-                .certified_agent_identity(&room, &format!("agent:{tide}"))
+                .certified_agent_identity(&workspace_id, &format!("agent:{tide}"))
                 .is_none(),
             "an empty certified roster immediately revokes marker activation identity"
         );
         assert!(
             state
-                .certified_agent_identity(&room, "agent:forged")
+                .certified_agent_identity(&workspace_id, "agent:forged")
                 .is_none()
         );
     }
@@ -14129,7 +14159,7 @@ pub mod tests {
         let member_id = principal_id_for_root(member.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(45),
-            "Delegation room",
+            "Delegation workspace",
         );
         let route = CrdtRoute::cluster(workspace.room().to_string());
         workspace.admit(member_id, crate::test_support::Role::Editor);
@@ -14148,7 +14178,7 @@ pub mod tests {
         let member_id = principal_id_for_root(member.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(2),
-            "Revocation room",
+            "Revocation workspace",
         );
         let route = CrdtRoute::cluster(workspace.room().to_string());
         workspace.admit(member_id.clone(), crate::test_support::Role::Viewer);
@@ -14178,11 +14208,15 @@ pub mod tests {
     fn certified_join_admission_rejects_cross_workspace_replay() {
         let root = SigningKey::from_bytes(&[23; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut member_workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(3), "Member room");
+        let mut member_workspace = crate::test_support::Workspace::new(
+            crate::test_support::WorkspaceId(3),
+            "Member workspace",
+        );
         member_workspace.set_owner(&principal);
-        let other_workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(4), "Other room");
+        let other_workspace = crate::test_support::Workspace::new(
+            crate::test_support::WorkspaceId(4),
+            "Other workspace",
+        );
         let replay_route = CrdtRoute::cluster(other_workspace.room().to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(member_workspace);
@@ -14277,7 +14311,7 @@ pub mod tests {
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(5),
-            "Typed document room",
+            "Typed document workspace",
         );
         workspace.set_owner(&principal);
         let route = CrdtRoute::record(
@@ -14416,14 +14450,14 @@ pub mod tests {
     /// The person room is admitted from the joiner's own root alone, with no
     /// workspace in the tree, and its documents reach the other local
     /// connections on the record and the peer publisher. Nobody else's root
-    /// enters it, and nobody enters another person's room.
+    /// enters it, and nobody enters another person's workspace.
     #[test]
     fn person_room_admits_only_its_own_roots_devices_as_owner() {
         let root = SigningKey::from_bytes(&[26; 32]);
         let device = SigningKey::from_bytes(&[27; 32]);
         let stranger = SigningKey::from_bytes(&[28; 32]);
-        let own_room = collab_types::person_room(&root.verifying_key().to_bytes());
-        let route = CrdtRoute::record("so.tilo.tube", own_room.to_string(), "watch-history");
+        let own_workspace = collab_types::person_room(&root.verifying_key().to_bytes());
+        let route = CrdtRoute::record("so.tilo.tube", own_workspace.to_string(), "watch-history");
         let membership = WorkspaceTree::default().shared();
         let own_device = VerifiedJoinIdentity {
             user_public_key: root.verifying_key().to_bytes(),
@@ -14440,7 +14474,7 @@ pub mod tests {
         );
         assert!(
             admit_verified_join(&membership.read(), &route, verified_device(&stranger)).is_err(),
-            "another root's device never joins this person's room"
+            "another root's device never joins this person's workspace"
         );
         let foreign = admit_verified_join(
             &membership.read(),
@@ -14467,14 +14501,14 @@ pub mod tests {
             Answer::Deny,
             "a foreign device keeps the foreign-device bound in the person room too"
         );
-        let strangers_room = CrdtRoute::record(
+        let strangers_workspace = CrdtRoute::record(
             "so.tilo.tube",
             collab_types::person_room(&stranger.verifying_key().to_bytes()).to_string(),
             "watch-history",
         );
         assert!(
-            admit_verified_join(&membership.read(), &strangers_room, own_device).is_err(),
-            "a device never joins another person's room"
+            admit_verified_join(&membership.read(), &strangers_workspace, own_device).is_err(),
+            "a device never joins another person's workspace"
         );
 
         let fanout = Arc::new(FanoutState::new());
@@ -14527,10 +14561,10 @@ pub mod tests {
     }
 
     /// A device that came back is caught up by the local apps holding the
-    /// person room's records: each record channel of that room, and only of
-    /// that room, is asked for its snapshot.
+    /// person room's records: each record channel of that workspace, and only of
+    /// that workspace, is asked for its snapshot.
     #[test]
-    fn room_snapshot_requests_reach_only_that_rooms_record_channels() {
+    fn workspace_snapshot_requests_reach_only_that_workspaces_record_channels() {
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = AppBrokerState::new(
             &fanout,
@@ -14544,7 +14578,7 @@ pub mod tests {
         let history = CrdtRoute::record("so.tilo.tube", person_room.as_str(), "watch-history");
         let words = CrdtRoute::record("so.tilo.dict", person_room.as_str(), "learned");
         let unscoped = CrdtRoute::cluster(person_room.as_str());
-        let shared = CrdtRoute::record("so.tilo.tube", "room-1", "watch-history");
+        let shared = CrdtRoute::record("so.tilo.tube", "workspace-1", "watch-history");
         let mut receivers: Vec<_> = [&history, &words, &unscoped, &shared]
             .into_iter()
             .zip(2_u64..)
@@ -14554,7 +14588,7 @@ pub mod tests {
             })
             .collect();
 
-        assert_eq!(fanout.request_room_snapshots(&person_room), 2);
+        assert_eq!(fanout.request_workspace_snapshots(&person_room), 2);
         let asked: Vec<bool> = receivers
             .iter_mut()
             .map(|rx| matches!(rx.try_recv(), Ok(ContextUpdate::SnapshotRequested)))
@@ -14574,14 +14608,14 @@ pub mod tests {
         );
         fanout.attach_app_broker(Arc::clone(&state));
 
-        let target = CrdtRoute::record("so.tilo.notes", "room-1", "note-a");
-        let other_record = CrdtRoute::record("so.tilo.notes", "room-1", "note-b");
-        let other_app = CrdtRoute::record("so.tilo.files", "room-1", "note-a");
-        let other_room = CrdtRoute::record("so.tilo.notes", "room-2", "note-a");
+        let target = CrdtRoute::record("so.tilo.notes", "workspace-1", "note-a");
+        let other_record = CrdtRoute::record("so.tilo.notes", "workspace-1", "note-b");
+        let other_app = CrdtRoute::record("so.tilo.files", "workspace-1", "note-a");
+        let other_workspace = CrdtRoute::record("so.tilo.notes", "workspace-2", "note-a");
         let mut target_rx = state.subscribe_ops(&target.channel_key(), 2);
         let mut other_record_rx = state.subscribe_ops(&other_record.channel_key(), 3);
         let mut other_app_rx = state.subscribe_ops(&other_app.channel_key(), 4);
-        let mut other_room_rx = state.subscribe_ops(&other_room.channel_key(), 5);
+        let mut other_workspace_rx = state.subscribe_ops(&other_workspace.channel_key(), 5);
 
         let (_signing, author) = collab_types::generate_keypair();
         let envelope = SignedOp::new_unsigned(
@@ -14612,7 +14646,7 @@ pub mod tests {
         for (label, received) in [
             ("another record", other_record_rx.try_recv()),
             ("another app", other_app_rx.try_recv()),
-            ("another room", other_room_rx.try_recv()),
+            ("another workspace", other_workspace_rx.try_recv()),
         ] {
             assert!(
                 matches!(received, Err(tokio::sync::mpsc::error::TryRecvError::Empty)),
@@ -14631,7 +14665,7 @@ pub mod tests {
 
     #[cfg(test)]
     impl crate::services::WorkspaceAuthority for CountingCatalogueAuthority {
-        /// Every sample (`with_tree`, and `with_room`/`snapshot` through it)
+        /// Every sample (`with_tree`, and `with_workspace`/`snapshot` through it)
         /// counts once.
         fn with_tree(
             &self,
@@ -14694,7 +14728,7 @@ pub mod tests {
     fn counting_catalogue_state(owner: &str) -> CountingCatalogueFixture {
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(29),
-            "Catalogue room",
+            "Catalogue workspace",
         );
         workspace.set_owner(owner);
         let cluster = workspace.room().to_string();
@@ -14802,7 +14836,7 @@ pub mod tests {
             .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
         let mut other = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(30),
-            "Other catalogue room",
+            "Other catalogue workspace",
         );
         other.set_owner("same");
         let other_cluster = other.room().to_string();
@@ -14965,7 +14999,7 @@ pub mod tests {
     fn exact_published_action_uses_current_live_routes_before_archived_descriptors() {
         let broker = AppBrokerState::test_broker_with_idle_directory_queue();
         let state = broker.state();
-        let retained = catalogue_surface(7, "room", "notebook");
+        let retained = catalogue_surface(7, "workspace", "notebook");
         state.launchable.retain(&retained);
         let route = retained.route.clone();
         let (archived, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
@@ -14990,7 +15024,7 @@ pub mod tests {
         assert_eq!(live.peer_id, 8);
         assert!(live.actions.is_empty());
         assert_eq!(descriptor.action_label, "Current live action");
-        let foreign = CrdtRoute::record(&route.app_id, "another-room", &route.record_id);
+        let foreign = CrdtRoute::record(&route.app_id, "another-workspace", &route.record_id);
         assert!(
             state
                 .published_action(&foreign, "notebook", "open")
@@ -15016,7 +15050,7 @@ pub mod tests {
     fn exact_catalogue_scope_avoids_unrelated_oversized_descriptors() {
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(30),
-            "Scoped action room",
+            "Scoped action workspace",
         );
         workspace.set_owner("owner");
         let cluster = workspace.room().to_string();
@@ -15208,7 +15242,7 @@ pub mod tests {
     fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(31),
-            "Action room",
+            "Action workspace",
         );
         workspace.set_owner("owner");
         let route = CrdtRoute::app("so.tilo.files", workspace.room().to_string());
@@ -15529,9 +15563,10 @@ pub mod tests {
             None,
             None,
         );
-        let room = uuid::Uuid::new_v4().to_string();
-        let key =
-            |app: &str, record: &str| CrdtRoute::record(app, room.clone(), record).channel_key();
+        let workspace = uuid::Uuid::new_v4().to_string();
+        let key = |app: &str, record: &str| {
+            CrdtRoute::record(app, workspace.clone(), record).channel_key()
+        };
         let mut addressed =
             state.subscribe_context(&key("dev.tilo.notes", "continuation:5"), 7, None);
         let mut sibling =
@@ -15545,7 +15580,7 @@ pub mod tests {
                 request: request.clone(),
             },
             u64::MAX,
-            &CrdtRoute::record("dev.tilo.notes", room.clone(), "continuation:5"),
+            &CrdtRoute::record("dev.tilo.notes", workspace.clone(), "continuation:5"),
         );
         assert!(matches!(
             addressed.try_recv(),
@@ -15568,9 +15603,9 @@ pub mod tests {
             None,
             None,
         );
-        let room = uuid::Uuid::new_v4().to_string();
-        let document = CrdtRoute::record("so.tilo.code-editor", &room, "native-project");
-        let private = CrdtRoute::record("so.tilo.code-editor", &room, "continuation:42");
+        let workspace = uuid::Uuid::new_v4().to_string();
+        let document = CrdtRoute::record("so.tilo.code-editor", &workspace, "native-project");
+        let private = CrdtRoute::record("so.tilo.code-editor", &workspace, "continuation:42");
         let mut old = state.subscribe_context(&document.channel_key(), 7, None);
         let mut sibling = state.subscribe_context(&document.channel_key(), 8, None);
         state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
@@ -15614,7 +15649,7 @@ pub mod tests {
             None,
             None,
         );
-        let channel = "dev.tilo.notes#room:test#record:daily";
+        let channel = "dev.tilo.notes#workspace:test#record:daily";
         let mut first = state.subscribe_context(channel, 7, None);
         let mut second = state.subscribe_context(channel, 9, None);
         let _requester = state.subscribe_context(channel, 12, None);
@@ -15625,7 +15660,7 @@ pub mod tests {
             Ok(ContextUpdate::SnapshotRequested)
         ));
         assert!(second.try_recv().is_err(), "only one holder may respond");
-        let requester_only_channel = "dev.tilo.notes#room:test#record:empty";
+        let requester_only_channel = "dev.tilo.notes#workspace:test#record:empty";
         let mut requester_only = state.subscribe_context(requester_only_channel, 12, None);
         assert!(
             !state.request_document_snapshot(requester_only_channel, 12),
@@ -15647,7 +15682,7 @@ pub mod tests {
     fn remote_agent_effect_terminals_become_redacted_workspace_receipts() {
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(32),
-            "Agent effect room",
+            "Agent effect workspace",
         );
         workspace.set_owner("owner");
         let cluster_id = workspace.room().to_string();
@@ -15804,16 +15839,16 @@ impl AppBrokerState {
             .as_ref()
             .and_then(|(_, identity)| HostWorkerReadGuard::for_channel(state, peer_id, identity));
         // Copy only the local routing key before awaiting; never hold the registry lock across the owner turn.
-        let owner_room = state
+        let owner_workspace = state
             .pending_invocations
             .lock()
             .map_err(|_| BrokerError::failed("invocation registry unavailable".into()))?
             .get(&id)
             .map(|pending| pending.cluster_id.clone());
         let requires_owner = state.durable_owner_required
-            || owner_room
+            || owner_workspace
                 .as_ref()
-                .is_some_and(|room| state.publisher.records_effects_for(room));
+                .is_some_and(|workspace| state.publisher.records_effects_for(workspace));
         let _owner_order = if requires_owner {
             Some(state.owner_commit_order.lock().await)
         } else {

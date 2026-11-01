@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 /// Callback an in-process fanout subscriber registers to receive
 /// delivered events. Aliased because the raw `Box<dyn Fn(...)>` shape
-/// recurs across [`RoomSubscription`], [`FanoutState::subscribe_rooms`]
-/// and [`BrokerHandle::subscribe_rooms`], and the last of those is public
+/// recurs across [`WorkspaceSubscription`], [`FanoutState::subscribe_workspaces`]
+/// and [`BrokerHandle::subscribe_workspaces`], and the last of those is public
 /// API other modules call.
 pub type FanoutSink = Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>;
 
@@ -56,11 +56,11 @@ pub struct FanoutState {
     stopped: AtomicBool,
     peer_id_counter: AtomicU64,
     app_broker: Mutex<Option<Arc<AppBrokerState>>>,
-    local_subs: Mutex<Vec<Arc<RoomSubscription>>>,
+    local_subs: Mutex<Vec<Arc<WorkspaceSubscription>>>,
     certified_people: Mutex<Vec<std::sync::Weak<CertifiedPeopleSubscription>>>,
 }
 
-/// Host-local observer of complete, owner-certified room membership. This is
+/// Host-local observer of complete, owner-certified workspace membership. This is
 /// intentionally separate from ordinary app Context fanout: only the broker's
 /// native membership refresh can publish it.
 pub type CertifiedPeopleSink =
@@ -70,37 +70,37 @@ pub struct CertifiedPeopleSubscription {
     sink: CertifiedPeopleSink,
 }
 
-/// A subscriber inside the shell process, addressed by room — how the
+/// A subscriber inside the shell process, addressed by workspace — how the
 /// compositor reads presence its apps publish. Delivery goes through the
 /// same [`CrdtRoute::delivers_to`] check as a typed subscriber, against
-/// `CrdtRoute::cluster(room)`; since presence widens to cluster scope on
-/// the way out, two apps in one room reach one subscription, so a cursor
+/// `CrdtRoute::cluster(workspace)`; since presence widens to cluster scope on
+/// the way out, two apps in one workspace reach one subscription, so a cursor
 /// crossing between them is one peer moving, not a second appearing.
-/// Rooms are mutable — workspaces are created, and join a peer's room
+/// Workspaces are mutable — workspaces are created, and join a peer's workspace
 /// when an invite is accepted.
-pub struct RoomSubscription {
-    rooms: Mutex<Vec<String>>,
+pub struct WorkspaceSubscription {
+    workspaces: Mutex<Vec<String>>,
     sink: FanoutSink,
 }
 
-impl RoomSubscription {
-    /// Replace the set of rooms this subscription covers.
-    pub fn set_rooms(&self, rooms: Vec<String>) {
-        if let Ok(mut g) = self.rooms.lock() {
-            *g = rooms;
+impl WorkspaceSubscription {
+    /// Replace the set of workspaces this subscription covers.
+    pub fn set_workspaces(&self, workspaces: Vec<String>) {
+        if let Ok(mut g) = self.workspaces.lock() {
+            *g = workspaces;
         }
     }
 
-    /// Whether `route` addresses any room this subscription holds. Uses
+    /// Whether `route` addresses any workspace this subscription holds. Uses
     /// the broker's own delivery predicate, so it never receives
-    /// anything a socket peer in the same room wouldn't.
+    /// anything a socket peer in the same workspace wouldn't.
     fn wants(&self, route: &CrdtRoute) -> bool {
-        let Ok(rooms) = self.rooms.lock() else {
+        let Ok(workspaces) = self.workspaces.lock() else {
             return false;
         };
-        rooms
+        workspaces
             .iter()
-            .any(|room| route.delivers_to(&CrdtRoute::cluster(room.clone())))
+            .any(|workspace| route.delivers_to(&CrdtRoute::cluster(workspace.clone())))
     }
 }
 
@@ -127,10 +127,14 @@ impl FanoutState {
     }
 
     /// Register an in-process subscriber, returning a handle the caller
-    /// can use to keep its room set current.
-    pub fn subscribe_rooms(&self, rooms: Vec<String>, sink: FanoutSink) -> Arc<RoomSubscription> {
-        let sub = Arc::new(RoomSubscription {
-            rooms: Mutex::new(rooms),
+    /// can use to keep its workspace set current.
+    pub fn subscribe_workspaces(
+        &self,
+        workspaces: Vec<String>,
+        sink: FanoutSink,
+    ) -> Arc<WorkspaceSubscription> {
+        let sub = Arc::new(WorkspaceSubscription {
+            workspaces: Mutex::new(workspaces),
             sink,
         });
         if self.stopped.load(Ordering::Acquire) {
@@ -146,7 +150,7 @@ impl FanoutState {
 
     /// Snapshot the in-process subscribers so the sinks run without
     /// the registry lock held.
-    fn local_subs(&self) -> Vec<Arc<RoomSubscription>> {
+    fn local_subs(&self) -> Vec<Arc<WorkspaceSubscription>> {
         self.local_subs
             .lock()
             .map(|g| g.clone())
@@ -162,24 +166,24 @@ impl FanoutState {
         if let Ok(mut observers) = self.certified_people.lock() {
             observers.push(Arc::downgrade(&subscription));
             if let Some(state) = state {
-                for (room, people) in state.certified_people_for_shell() {
-                    (subscription.sink)(room, people);
+                for (workspace, people) in state.certified_people_for_shell() {
+                    (subscription.sink)(workspace, people);
                 }
             }
         }
         subscription
     }
 
-    pub(crate) fn publish_certified_people(&self, room: &str) {
-        let people = self
-            .app_broker()
-            .map_or_else(Vec::new, |state| state.certified_people_in_room(room));
+    pub(crate) fn publish_certified_people(&self, workspace: &str) {
+        let people = self.app_broker().map_or_else(Vec::new, |state| {
+            state.certified_people_in_workspace(workspace)
+        });
         if let Ok(mut observers) = self.certified_people.lock() {
             observers.retain(|observer| {
                 let Some(observer) = observer.upgrade() else {
                     return false;
                 };
-                (observer.sink)(room.to_owned(), people.clone());
+                (observer.sink)(workspace.to_owned(), people.clone());
                 true
             });
         }
@@ -235,10 +239,10 @@ impl FanoutState {
     /// fanout. The broker releases its journal before this method detaches it,
     /// and a replacement can never be cleared by the old thread's guard.
     pub(crate) fn shutdown_app_broker(&self, state: &Arc<AppBrokerState>) {
-        let certified_rooms = state
+        let certified_workspaces = state
             .certified_people_for_shell()
             .into_iter()
-            .map(|(room, _)| room)
+            .map(|(workspace, _)| workspace)
             .collect::<Vec<_>>();
         self.request_shutdown();
         state.stop();
@@ -261,8 +265,8 @@ impl FanoutState {
         match self.certified_people.lock() {
             Ok(mut observers) => {
                 for observer in observers.iter().filter_map(std::sync::Weak::upgrade) {
-                    for room in &certified_rooms {
-                        (observer.sink)(room.clone(), Vec::new());
+                    for workspace in &certified_workspaces {
+                        (observer.sink)(workspace.clone(), Vec::new());
                     }
                 }
                 observers.clear();
@@ -303,14 +307,14 @@ impl FanoutState {
     }
 
     /// Ask the local apps holding records in `cluster_id` to publish their
-    /// snapshots; see [`AppBrokerState::request_room_snapshots`].
-    pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
+    /// snapshots; see [`AppBrokerState::request_workspace_snapshots`].
+    pub fn request_workspace_snapshots(&self, cluster_id: &str) -> usize {
         self.app_broker()
-            .map_or(0, |state| state.request_room_snapshots(cluster_id))
+            .map_or(0, |state| state.request_workspace_snapshots(cluster_id))
     }
 
     /// [`Self::fanout_to_route`] for a local app's presence: delivered to
-    /// whoever `scope` (the room) addresses, while in-process subscribers
+    /// whoever `scope` (the workspace) addresses, while in-process subscribers
     /// are told the `origin` route it came from — which app, which record —
     /// as the shell needs to know what a window under the pointer shows.
     pub fn fanout_presence(
@@ -373,20 +377,20 @@ impl SessionFollowDispatcher {
     pub fn new(fanout: Arc<FanoutState>) -> Self {
         Self { fanout }
     }
-    pub fn set(&self, room: &str, peer_id: Option<String>) {
+    pub fn set(&self, workspace: &str, peer_id: Option<String>) {
         self.fanout.fanout_to_route(
             &CollabEvent::FollowChanged { peer_id },
             u64::MAX,
-            &CrdtRoute::cluster(room.to_string()),
+            &CrdtRoute::cluster(workspace.to_string()),
         );
     }
 
     /// Ask exactly one application instance, addressed by its primary route
-    /// in `room`, for the next step of moving its window. Session-local like
+    /// in `workspace`, for the next step of moving its window. Session-local like
     /// Follow; the answer arrives through the host's continuation services.
     pub fn request_handoff(
         &self,
-        room: &str,
+        workspace: &str,
         app: &str,
         instance: u64,
         request: collab_types::handoff::HandoffRequest,
@@ -394,7 +398,7 @@ impl SessionFollowDispatcher {
         self.fanout.fanout_to_route(
             &CollabEvent::Handoff { request },
             u64::MAX,
-            &CrdtRoute::record(app, room, format!("continuation:{instance}")),
+            &CrdtRoute::record(app, workspace, format!("continuation:{instance}")),
         );
     }
 }
@@ -439,14 +443,14 @@ impl WeakAppActionBroker {
     }
 }
 
-/// Why an app opening in a room was not let author there
+/// Why an app opening in a workspace was not let author there
 /// ([`AppActionBroker::grant_app_authorship`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AppAuthorshipError {
     /// The grant was not asked: the broker is shutting down, or this device
-    /// may not ask it in the room.
+    /// may not ask it in the workspace.
     Unasked(String),
-    /// The room's owner refused the grant or could not commit it.
+    /// The workspace's owner refused the grant or could not commit it.
     Refused(String),
 }
 
@@ -471,11 +475,11 @@ impl AppActionBroker {
     /// Exact current owner-backed agent identity while the session is live.
     pub fn certified_agent_identity(
         &self,
-        room: &str,
+        workspace: &str,
         actor: &str,
     ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
         self.state
-            .while_live(|state| Ok(state.certified_agent_identity(room, actor)))
+            .while_live(|state| Ok(state.certified_agent_identity(workspace, actor)))
             .ok()
             .flatten()
     }
@@ -487,45 +491,45 @@ impl AppActionBroker {
     }
     /// Invoke one closed native workspace-membership command as the retained
     /// certified person. The owner still rechecks current Admin authority.
-    /// Told whether `room`'s membership actions are published, once the
+    /// Told whether `workspace`'s membership actions are published, once the
     /// broker's loop has looked (see
     /// `AppBrokerState::await_membership_surface`). Ask before
-    /// [`Self::change_workspace_membership`] in a room that may have
-    /// appeared since the broker last published its rooms' actions.
+    /// [`Self::change_workspace_membership`] in a workspace that may have
+    /// appeared since the broker last published its workspaces' actions.
     ///
     /// # Errors
     /// The broker is shutting down.
     pub fn await_membership_surface(
         &self,
-        room: &str,
+        workspace: &str,
     ) -> Result<std::sync::mpsc::Receiver<bool>, String> {
         self.state
-            .while_live(|state| Ok(state.await_membership_surface(room)))
+            .while_live(|state| Ok(state.await_membership_surface(workspace)))
     }
 
-    /// Let `app` author in `room`, as `certificate`'s person, this device,
+    /// Let `app` author in `workspace`, as `certificate`'s person, this device,
     /// opening it there: checked as their membership invocation is, and
-    /// committed by the room's owner before this returns
+    /// committed by the workspace's owner before this returns
     /// (`AppBrokerState::app_authorship_commit`). Blocks on the owner's
     /// commit: call it off the broker's loop and the frame loop.
     ///
     /// # Errors
     /// [`AppAuthorshipError::Unasked`]: the broker is shutting down, or the
-    /// device may not ask it in this room; [`AppAuthorshipError::Refused`]:
-    /// the room's owner refused or could not commit it.
+    /// device may not ask it in this workspace; [`AppAuthorshipError::Refused`]:
+    /// the workspace's owner refused or could not commit it.
     pub fn grant_app_authorship(
         &self,
-        room: &str,
+        workspace: &str,
         app: &str,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), AppAuthorshipError> {
         use AppAuthorshipError::{Refused, Unasked};
-        // A room this device just made or joined holds its membership here
+        // A workspace this device just made or joined holds its membership here
         // once its replica is projected: told so by the refresh that
-        // publishes the room's membership, never on a clock.
+        // publishes the workspace's membership, never on a clock.
         let projected = self
             .state
-            .while_live(|state| Ok(state.membership_projection(room)))
+            .while_live(|state| Ok(state.membership_projection(workspace)))
             .map_err(Unasked)?;
         if let Some(published) = projected
             && !published.recv().map_err(|_| {
@@ -537,13 +541,13 @@ impl AppActionBroker {
         {
             return Err(Unasked(
                 "the workspace's membership is not held on this device, and it neither holds, \
-                 joins nor places the workspace's room"
+                 joins nor places the workspace"
                     .into(),
             ));
         }
         let (service, request) = self
             .state
-            .while_live(|state| state.app_authorship_commit(room, app, certificate))
+            .while_live(|state| state.app_authorship_commit(workspace, app, certificate))
             .map_err(Unasked)?;
         let receipt =
             futures::executor::block_on(service.execute(request.clone())).map_err(Refused)?;
@@ -552,12 +556,12 @@ impl AppActionBroker {
 
     pub fn change_workspace_membership(
         &self,
-        room: &str,
+        workspace: &str,
         command: &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<crate::collab_app_broker::InvocationJob, String> {
         self.state
-            .while_live(|state| state.invoke_workspace_membership(room, command, certificate))
+            .while_live(|state| state.invoke_workspace_membership(workspace, command, certificate))
     }
 
     /// Construct the shell-facing facade around a real broker state for
@@ -615,7 +619,7 @@ impl AppActionBroker {
             })
     }
 
-    /// A local action door bound to an already-issued signed room admission and
+    /// A local action door bound to an already-issued signed workspace admission and
     /// one host-issued execution. No device is enrolled and no grant is minted.
     ///
     /// # Errors
@@ -724,13 +728,13 @@ impl AppActionBroker {
     pub fn native_checkout(
         &self,
         app: &str,
-        room: &str,
+        workspace: &str,
         instance: u64,
         pid: u32,
         start: u64,
     ) -> Option<crate::collab_app_broker::ActionDirectoryRoot> {
         self.state
-            .while_live(|state| Ok(state.native_checkout(app, room, instance, pid, start)))
+            .while_live(|state| Ok(state.native_checkout(app, workspace, instance, pid, start)))
             .ok()
             .flatten()
     }
@@ -799,7 +803,7 @@ impl AppActionBroker {
         &self.state
     }
 
-    /// Admit app `caller_app`'s request to open `target` in `room` for the
+    /// Admit app `caller_app`'s request to open `target` in `workspace` for the
     /// running invocation `parent` the broker delivered to it
     /// ([`AppBrokerState::admit_app_open`]).
     ///
@@ -809,11 +813,12 @@ impl AppActionBroker {
     pub fn admit_app_open(
         &self,
         caller_app: &str,
-        room: &str,
+        workspace: &str,
         parent: tilo_actions::InvocationId,
         target: &str,
     ) -> Result<crate::collab_app_broker::AppOpen, String> {
-        self.state.admit_app_open(caller_app, room, parent, target)
+        self.state
+            .admit_app_open(caller_app, workspace, parent, target)
     }
 
     /// Read what each application declared on the action door from
@@ -845,23 +850,23 @@ impl AppActionBroker {
         self.state.has_finished_shortcut_runs()
     }
 
-    /// The shortcut runs going in `room`: what the workspace says is
+    /// The shortcut runs going in `workspace`: what the workspace says is
     /// running, and what can be stopped.
     #[must_use]
-    pub fn running_shortcut_runs(&self, room: &str) -> Vec<crate::automation::RunningRun> {
-        self.state.running_shortcut_runs(room)
+    pub fn running_shortcut_runs(&self, workspace: &str) -> Vec<crate::automation::RunningRun> {
+        self.state.running_shortcut_runs(workspace)
     }
 
-    /// Stop the shortcut runs `request` names in `room`, before their next
+    /// Stop the shortcut runs `request` names in `workspace`, before their next
     /// step. What they already did stands and stays undoable as one step.
     #[must_use]
     pub fn stop_shortcut_runs(
         &self,
-        room: &str,
+        workspace: &str,
         request: &crate::automation::StopRequest,
         reason: &str,
     ) -> Vec<crate::automation::RunningRun> {
-        self.state.stop_shortcut_runs(room, request, reason)
+        self.state.stop_shortcut_runs(workspace, request, reason)
     }
 
     /// Agent runs of workspace tasks that ended since the last call, oldest
@@ -878,7 +883,7 @@ impl AppActionBroker {
         self.state.has_ended_task_runs()
     }
 
-    /// Run saved shortcut `shortcut` in `room` for `caller`, who is at the
+    /// Run saved shortcut `shortcut` in `workspace` for `caller`, who is at the
     /// screen; its confirmations and questions wait for the compositor's
     /// sheet ([`Self::take_step_prompt`]). Answers with the broker job the
     /// run reports on.
@@ -889,12 +894,12 @@ impl AppActionBroker {
     pub fn start_interactive_shortcut_run(
         &self,
         caller: &tilo_actions::remote::Caller,
-        room: &str,
+        workspace: &str,
         shortcut: &str,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         self.state
-            .start_interactive_shortcut_run(caller, room, shortcut, inputs)
+            .start_interactive_shortcut_run(caller, workspace, shortcut, inputs)
     }
 
     /// [`Self::start_interactive_shortcut_run`], going on from where an
@@ -910,14 +915,14 @@ impl AppActionBroker {
     pub fn continue_interactive_shortcut_run(
         &self,
         caller: &tilo_actions::remote::Caller,
-        room: &str,
+        workspace: &str,
         shortcut: &str,
         inputs: serde_json::Map<String, serde_json::Value>,
         from: tilo_automation::Continuation,
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         self.state.start_interactive_shortcut_run_continuing(
             caller,
-            room,
+            workspace,
             shortcut,
             inputs,
             Some(from),
@@ -931,7 +936,7 @@ impl AppActionBroker {
         self.state.take_step_prompt()
     }
 
-    /// Start saved shortcut `shortcut` in `room` because its `trigger`
+    /// Start saved shortcut `shortcut` in `workspace` because its `trigger`
     /// fired, on behalf of `caller`, the person who saved it, with `inputs`
     /// the values the trigger gives the shortcut's inputs. Answers with
     /// the broker job the run reports on.
@@ -944,14 +949,14 @@ impl AppActionBroker {
     pub fn start_triggered_shortcut_run(
         &self,
         caller: &tilo_actions::remote::Caller,
-        room: &str,
+        workspace: &str,
         shortcut: &str,
         trigger: &tilo_automation::TriggerSpec,
         run: tilo_automation::RunId,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         self.state
-            .start_triggered_shortcut_run(caller, room, shortcut, trigger, run, inputs)
+            .start_triggered_shortcut_run(caller, workspace, shortcut, trigger, run, inputs)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1032,9 +1037,9 @@ impl AppActionBroker {
     }
 
     /// True only while the named admitted agent has a live task subscription.
-    pub fn agent_is_live_task_capable(&self, room: &str, agent: &str) -> bool {
+    pub fn agent_is_live_task_capable(&self, workspace: &str, agent: &str) -> bool {
         self.state
-            .while_live(|state| Ok(state.agent_is_live_task_capable(room, agent)))
+            .while_live(|state| Ok(state.agent_is_live_task_capable(workspace, agent)))
             .unwrap_or(false)
     }
 
@@ -1146,13 +1151,17 @@ impl BrokerHandle {
         }
     }
 
-    /// Subscribe this process to the rooms it hosts. The sink runs on
+    /// Subscribe this process to the workspaces it hosts. The sink runs on
     /// the reader thread that decoded the frame: keep it short.
-    pub fn subscribe_rooms(&self, rooms: Vec<String>, sink: FanoutSink) -> Arc<RoomSubscription> {
-        self.fanout.subscribe_rooms(rooms, sink)
+    pub fn subscribe_workspaces(
+        &self,
+        workspaces: Vec<String>,
+        sink: FanoutSink,
+    ) -> Arc<WorkspaceSubscription> {
+        self.fanout.subscribe_workspaces(workspaces, sink)
     }
 
-    /// Observe complete native room membership after broker admission. The
+    /// Observe complete native workspace membership after broker admission. The
     /// callback never receives ordinary application Context fanout.
     pub fn observe_certified_people(
         &self,
@@ -1164,12 +1173,12 @@ impl BrokerHandle {
     /// Exact current owner-backed agent identity for a native participant.
     pub fn certified_agent_identity(
         &self,
-        room: &str,
+        workspace: &str,
         actor: &str,
     ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
         self.fanout
             .app_broker()?
-            .certified_agent_identity(room, actor)
+            .certified_agent_identity(workspace, actor)
     }
 
     /// The bound collaboration socket.
@@ -1444,18 +1453,18 @@ mod presence_origin_tests {
 
     /// The shell learns which record a window shows from its app pointing
     /// in it: cursor chat over that window is sealed for and placed in that
-    /// record. A local app's presence is delivered room-wide, and the
+    /// record. A local app's presence is delivered workspace-wide, and the
     /// shell's subscription is told the app and record it came from.
     #[test]
     fn a_local_apps_presence_names_the_app_and_record_it_came_from() {
         let fanout = FanoutState::new();
         let heard = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&heard);
-        let _shell = fanout.subscribe_rooms(
-            vec!["room".into()],
+        let _shell = fanout.subscribe_workspaces(
+            vec!["workspace".into()],
             Box::new(move |_, route| sink.lock().unwrap().push(route.clone())),
         );
-        let origin = CrdtRoute::record("so.tilo.chat", "room", "derived:main");
+        let origin = CrdtRoute::record("so.tilo.chat", "workspace", "derived:main");
         let event = CollabEvent::RemotePresenceUpdate {
             user_id: "peer@1".into(),
             key: ui::presence::PresenceKey::pointer_default(),

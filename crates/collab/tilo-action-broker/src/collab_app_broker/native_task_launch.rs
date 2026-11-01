@@ -149,7 +149,7 @@ impl NativeLaunch {
             .membership
             .as_ref()
             .ok_or("native launch membership absent")?
-            .decide_in_room(&self.run.cluster_id, |workspace| {
+            .decide_in_workspace(&self.run.cluster_id, |workspace| {
                 workspace
                     .cloned()
                     .ok_or_else(|| "native launch workspace absent".to_string())
@@ -279,7 +279,7 @@ impl NativeLaunch {
                             .membership
                             .as_ref()
                             .ok_or("native launch membership absent")?
-                            .decide_in_room(&self.run.cluster_id, |workspace| {
+                            .decide_in_workspace(&self.run.cluster_id, |workspace| {
                                 workspace.cloned().ok_or("native launch workspace absent")
                             })??;
                         // Recheck before consuming one-use authority, so this
@@ -493,7 +493,7 @@ fn host_activation_key(
         .ok_or("launch digest invalid")?;
     let binding = &run.native;
     Ok(InvocationKey {
-        room: run.cluster_id.clone(),
+        workspace: run.cluster_id.clone(),
         host: state.invocation_host()?,
         owner: InvocationOwner::NativeTask {
             agent: binding.agent_id.clone(),
@@ -575,7 +575,7 @@ impl AppBrokerState {
         let run = self.task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)?;
         let target = reask.target;
         let bootstrap = workspace_provider_room(target.provider)
-            .is_some_and(|room| room == run.cluster_id)
+            .is_some_and(|workspace| workspace == run.cluster_id)
             && target.action == "open"
             && target.resource.starts_with("app.");
         let (app, record, retained) = if bootstrap {
@@ -588,8 +588,8 @@ impl AppBrokerState {
                 None,
                 None,
             )
-        } else if let Some((room, app)) = application_provider(target.provider) {
-            if room != run.cluster_id {
+        } else if let Some((workspace, app)) = application_provider(target.provider) {
+            if workspace != run.cluster_id {
                 return Err("native launch changed workspace".into());
             }
             (app.to_owned(), None, None)

@@ -1,8 +1,8 @@
-//! A durable owner of one room its own device governs, behind a bounded
+//! A durable owner of one workspace its own device governs, behind a bounded
 //! commit mailbox: the owner-commit boundary the broker's tests cross.
 //!
 //! Each applied commit admits the signed document (or records the effect
-//! receipt in the room) on a candidate peer, writes the candidate and its
+//! receipt in the workspace) on a candidate peer, writes the candidate and its
 //! generation to `session.bin`, and only then replaces the live peer and
 //! answers. A failed write leaves the live owner unchanged.
 #![allow(
@@ -36,7 +36,7 @@ struct Stored {
     person: [u8; 32],
     key: [u8; 32],
     authority: DeviceCert,
-    room: String,
+    workspace: String,
     peer: Vec<u8>,
     generation: u64,
 }
@@ -44,7 +44,7 @@ struct Stored {
 /// What the owner has durably committed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Status {
-    pub room: String,
+    pub workspace: String,
     pub generation: u64,
     pub aggregate: [u8; 32],
 }
@@ -59,16 +59,16 @@ pub struct SessionOwner {
 }
 
 /// The Writer record as a record store reserves it, carrying its identity.
-fn writer_seed(room: &str) -> Result<Vec<u8>, String> {
+fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
     use ui::record::{RecordCheckout, RecordId, RecordOwners};
     let definition = word_processor::definition();
     let checkout = RecordCheckout::new(RecordId::for_tab(1), definition.record_kind.clone());
     let mut owners = RecordOwners::portable(ui::portable_storage::PortableStorage::new(
         "test-owner-initialize",
-        room,
+        workspace,
     )?);
     let records = owners
-        .open(definition.app_id(), room)
+        .open(definition.app_id(), workspace)
         .map_err(|e| e.to_string())?;
     records
         .reserve_record(&checkout)
@@ -81,7 +81,7 @@ fn writer_seed(room: &str) -> Result<Vec<u8>, String> {
 }
 
 impl SessionOwner {
-    /// A new room under `dir`, governed by a fresh device with a Writer record.
+    /// A new workspace under `dir`, governed by a fresh device with a Writer record.
     pub fn initialize(dir: &Path) -> Result<Self, String> {
         Self::initialize_with_documents(dir, |_| Ok(Vec::new()))
     }
@@ -91,13 +91,13 @@ impl SessionOwner {
         dir: &Path,
         documents: impl FnOnce(&str) -> Result<Vec<SeedDocument>, String>,
     ) -> Result<Self, String> {
-        Self::initialize_in_room(dir, &uuid::Uuid::new_v4().to_string(), documents)
+        Self::initialize_in_workspace(dir, &uuid::Uuid::new_v4().to_string(), documents)
     }
 
-    /// Keep multiple real owners in the same authenticated fixture room.
-    pub fn initialize_in_room(
+    /// Keep multiple real owners in the same authenticated fixture workspace.
+    pub fn initialize_in_workspace(
         dir: &Path,
-        room: &str,
+        workspace: &str,
         documents: impl FnOnce(&str) -> Result<Vec<SeedDocument>, String>,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -116,17 +116,17 @@ impl SessionOwner {
             signature: [0; 64],
         };
         sign_device_cert(&mut authority, &person).map_err(|e| e.to_string())?;
-        let room = room.to_owned();
+        let workspace = workspace.to_owned();
         let now = SystemTime::now();
         let mut peer = StatePeer::new(
-            &room,
+            &workspace,
             authority.clone(),
             vec![authority.clone()],
             RevocationList::new(),
             now,
         )?;
-        let writer = writer_seed(&room)?;
-        let mut seeded = documents(&room)?;
+        let writer = writer_seed(&workspace)?;
+        let mut seeded = documents(&workspace)?;
         seeded.push(SeedDocument {
             app_id: WRITER.0.into(),
             record_id: WRITER.1.into(),
@@ -136,7 +136,7 @@ impl SessionOwner {
         peer.install_seed(
             SeedState {
                 room_changes: tilo_peer_state::seed_room(
-                    &room,
+                    &workspace,
                     &authority,
                     std::slice::from_ref(&authority),
                 )?,
@@ -164,7 +164,7 @@ impl SessionOwner {
     }
 
     /// A second device of this owner's person, certified by them: the same
-    /// root and room, a different device.
+    /// root and workspace, a different device.
     pub fn second_device(&self) -> DeviceCert {
         let mut certificate = DeviceCert {
             user_public_key: self.person.verifying_key().to_bytes(),
@@ -179,8 +179,8 @@ impl SessionOwner {
         certificate
     }
 
-    /// Admit [`Self::second_device`] into this owner's room, as the
-    /// governing device, and commit the room that admits it.
+    /// Admit [`Self::second_device`] into this owner's workspace, as the
+    /// governing device, and commit the workspace that admits it.
     pub fn admit_second_device(&mut self) -> Result<(), String> {
         let certificate = self.second_device();
         let now = SystemTime::now();
@@ -195,7 +195,7 @@ impl SessionOwner {
         let stored: Stored = postcard::from_bytes(&bytes).map_err(|e| e.to_string())?;
         let peer = StatePeer::restore(
             &stored.peer,
-            &stored.room,
+            &stored.workspace,
             stored.authority.clone(),
             vec![stored.authority],
             RevocationList::new(),
@@ -234,16 +234,16 @@ impl SessionOwner {
             .owner_certificates()
             .into_iter()
             .find(|cert| cert.device_public_key == device)
-            .expect("the owner fixture's device is in its room")
+            .expect("the owner fixture's device is in its workspace")
     }
     pub fn status(&self) -> Status {
         Status {
-            room: self.peer.room().into(),
+            workspace: self.peer.room().into(),
             generation: self.generation,
             aggregate: *blake3::hash(&self.peer.durable().unwrap()).as_bytes(),
         }
     }
-    /// The room's current signed checkpoint, for a replica to converge on.
+    /// The workspace's current signed checkpoint, for a replica to converge on.
     pub fn outgoing(&self) -> &[Vec<u8>] {
         &self.outgoing
     }
@@ -265,7 +265,7 @@ impl SessionOwner {
             person: self.person.to_bytes(),
             key: self.key.to_bytes(),
             authority: self.device(),
-            room: peer.room().into(),
+            workspace: peer.room().into(),
             peer: peer.durable()?,
             generation,
         })

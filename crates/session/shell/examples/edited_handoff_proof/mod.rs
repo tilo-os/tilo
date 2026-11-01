@@ -214,7 +214,7 @@ pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
     let session = Session::start(root)?;
     let captured = Arc::new(Mutex::new(Vec::new()));
     let received = captured.clone();
-    let _subscription = session.broker.subscribe_rooms(
+    let _subscription = session.broker.subscribe_workspaces(
         vec![session.room.clone()],
         Box::new(move |event, route| {
             if route.app_id == WRITER

@@ -48,27 +48,27 @@ impl WorkspaceAuthority for Rooms {
         Ok(())
     }
 
-    /// The profile's own room first, as in the merged tree; otherwise only
-    /// the requested joined room is built.
-    fn with_room(
+    /// The profile's own workspace first, as in the merged tree; otherwise only
+    /// the requested joined workspace is built.
+    fn with_workspace(
         &self,
-        room: &str,
+        workspace: &str,
         read: &mut dyn FnMut(Option<&Workspace>),
     ) -> Result<(), String> {
         let mut read = Some(read);
-        self.profile.with_room(room, &mut |workspace| {
-            if workspace.is_some()
+        WorkspaceAuthority::with_workspace(self.profile.as_ref(), workspace, &mut |held| {
+            if held.is_some()
                 && let Some(read) = read.take()
             {
-                read(workspace);
+                read(held);
             }
         })?;
         let Some(read) = read else {
             return Ok(());
         };
-        let joined = RoomId::parse(room)
+        let joined = RoomId::parse(workspace)
             .and_then(|id| self.joined.workspace(id))
-            .filter(|workspace| workspace.room().to_string() == room);
+            .filter(|held| held.room().to_string() == workspace);
         read(joined.as_ref());
         Ok(())
     }
@@ -79,14 +79,14 @@ impl WorkspaceAuthority for Rooms {
 }
 
 impl WorkspaceMembership for Rooms {
-    fn with_workspace(&self, room: &RoomId, read: &mut dyn FnMut(&Workspace)) {
+    fn with_workspace(&self, workspace: &RoomId, read: &mut dyn FnMut(&Workspace)) {
         let mut found = false;
-        self.profile.with_workspace(room, &mut |workspace| {
+        WorkspaceMembership::with_workspace(self.profile.as_ref(), workspace, &mut |held| {
             found = true;
-            read(workspace);
+            read(held);
         });
-        if !found && let Some(workspace) = self.joined.workspace(*room) {
-            read(&workspace);
+        if !found && let Some(held) = self.joined.workspace(*workspace) {
+            read(&held);
         }
     }
 }

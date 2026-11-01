@@ -15,7 +15,7 @@ pub(crate) enum PeerRefusal {
     SignatureRequired,
     /// The signature, its freshness or its uniqueness failed.
     Signature(ActionSignatureError),
-    /// The certified caller is not admitted to this room or action now.
+    /// The certified caller is not admitted to this workspace or action now.
     NotAuthorised,
     /// The exact route, revision or action is not offered.
     UnknownAction,
@@ -87,7 +87,7 @@ impl AppBrokerState {
         submitted: Option<&crate::peer_actions::PolicyTime>,
     ) -> Result<VerifiedActionCaller, String> {
         let cert = evidence.certificate();
-        let room = evidence.action().room.to_string();
+        let workspace_id = evidence.action().room.to_string();
         let (policy_time, now) = self.checked_policy_time(submitted)?;
         tilo_user_identity::verify_device_cert_at(cert, now).map_err(|_| "certificate rejected")?;
         if cert.capabilities.can_act_as_host || evidence.action().source != cert.device_public_key {
@@ -110,22 +110,22 @@ impl AppBrokerState {
         } else {
             return Err("current certificate authority unavailable".into());
         }
-        let verified = VerifiedJoinIdentity::of(cert, self.capped_in(&room, cert));
+        let verified = VerifiedJoinIdentity::of(cert, self.capped_in(&workspace_id, cert));
         let admitted = self
             .membership
             .as_ref()
             .ok_or("membership unavailable")?
-            .decide_in_room(&room, |workspace| {
+            .decide_in_workspace(&workspace_id, |workspace| {
                 admit_verified_join_at(
                     workspace,
-                    &CrdtRoute::cluster(&room),
+                    &CrdtRoute::cluster(&workspace_id),
                     verified,
                     now / 1_000_000_000,
                 )
             })??;
 
         Ok(VerifiedActionCaller {
-            room,
+            workspace: workspace_id,
             presentation: Vec::new(),
             native_projection_verified: false,
             network: Some(evidence.clone()),
@@ -255,7 +255,7 @@ impl AppBrokerState {
         match &evidence.action().message {
             ActionMessage::CatalogueRefresh { scope } => {
                 let catalogue = serde_json::from_str(&self.action_catalogue_json_for(
-                    &caller.room,
+                    &caller.workspace,
                     &caller.admitted.broker_actor(),
                     scope.as_ref(),
                 )?)
@@ -320,7 +320,7 @@ impl AppBrokerState {
                         .resolve_invocation_offer(
                             directories,
                             &actor,
-                            &caller.room,
+                            &caller.workspace,
                             request.peer_id,
                             revision,
                             resource,
@@ -349,7 +349,7 @@ impl AppBrokerState {
                         .filter(|s| {
                             s.live
                                 && s.app_id == *app_id
-                                && s.route.cluster_id == caller.room
+                                && s.route.cluster_id == caller.workspace
                                 && s.route.record_id == *record_id
                         })
                         .ok_or(PeerRefusal::UnknownAction)?;
@@ -362,7 +362,7 @@ impl AppBrokerState {
                     (surface, published)
                 };
                 // The directory await is outside admission serialization. Recheck
-                // current certificate, room permission and duplicate before a grant.
+                // current certificate, workspace permission and duplicate before a grant.
                 let admission = self
                     .admission_lock
                     .lock()

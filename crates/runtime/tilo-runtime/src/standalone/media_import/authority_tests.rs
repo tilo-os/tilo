@@ -37,7 +37,7 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
     let invocation = WorkspaceGovernanceRequest {
         local_device: true,
         execution_lease: caller.execution_lease(),
-        room,
+        workspace: room,
         actor: &actor,
         resource: RESOURCE,
         action: ACTION,

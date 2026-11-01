@@ -119,8 +119,8 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         context.revalidate()?;
         Ok(committed)
     }
-    fn requires_room(&self, room: &str) -> bool {
-        super::super::state::RoomId::parse(room)
+    fn requires_workspace(&self, workspace: &str) -> bool {
+        super::super::state::RoomId::parse(workspace)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
     }
     fn seals_records(&self, room: &str) -> bool {

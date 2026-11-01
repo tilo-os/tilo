@@ -11,7 +11,7 @@
 //! publishes is the authority, and a resource it does not publish is refused.
 //! A resource whose reading is the person's own declares it
 //! ([`Granted`]), and then the broker decides the reading where the
-//! resource sits from the room's grants, as it decides its actions.
+//! resource sits from the workspace's grants, as it decides its actions.
 
 use std::fmt;
 
@@ -31,7 +31,7 @@ pub struct Caller {
 /// read at, and the reading as JSON; `None` when no service publishes it.
 pub type Reading = (u64, Option<Vec<u8>>);
 
-/// What a resource declares of its reading when the room's grants decide who
+/// What a resource declares of its reading when the workspace's grants decide who
 /// reads it ([`Readers::Granted`](tilo_actions::Readers::Granted)): the app
 /// publishing it and its kind. The resource is read at the node those name,
 /// exactly where its actions are decided.
@@ -80,7 +80,7 @@ pub trait PublishedResources: Send + Sync {
     /// `resource` as it reads now, answered on the session's next pass.
     fn snapshot(&self, caller: &Caller, resource: &str) -> oneshot::Receiver<Reading>;
 
-    /// Where the room's grants decide `resource`'s reading, when its
+    /// Where the workspace's grants decide `resource`'s reading, when its
     /// publisher declares it theirs ([`Granted`]); `None` for a resource
     /// everyone who reaches the door reads.
     fn granted(&self, _resource: &str) -> Option<Granted> {

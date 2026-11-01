@@ -45,11 +45,11 @@ impl AppBrokerState {
     }
 
     /// The offload request for an admitted invocation of `action` in
-    /// `room` with wire `argument`, when it declares an offload and this
+    /// `workspace` with wire `argument`, when it declares an offload and this
     /// device routes offloads; `None` runs it here as any other.
     pub(super) fn offload_request(
         &self,
-        (room, app_id): (&str, &str),
+        (workspace, app_id): (&str, &str),
         action: &runtime_collab::ExportedAction,
         argument: Option<&str>,
     ) -> Option<(Arc<dyn ActionOffload>, OffloadRequest)> {
@@ -66,7 +66,7 @@ impl AppBrokerState {
         Some((
             route,
             OffloadRequest {
-                room: room.to_owned(),
+                room: workspace.to_owned(),
                 app_id: app_id.to_owned(),
                 address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
                 offload,

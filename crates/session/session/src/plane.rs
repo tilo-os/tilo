@@ -401,7 +401,7 @@ impl ShortcutLibraryServices for ShortcutLibrary {
             let (done, applied) = tokio::sync::oneshot::channel();
             changes
                 .send(StoreRequest {
-                    room: request.room,
+                    room: request.workspace,
                     actor: request.actor,
                     change: request.change,
                     done,
@@ -465,9 +465,9 @@ impl WorkspaceAuthority for DeskAuthority {
     /// joined, or one it left — revokes nothing here: the shortcuts it shows
     /// are proven by what it does hold, and a call it can no longer make is
     /// refused elsewhere.
-    fn room_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
+    fn workspace_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
         let tree = self.tree.lock_recover();
-        tilo_action_broker::services::room_in(&tree, room)?;
+        tilo_action_broker::services::workspace_in(&tree, room)?;
         Some((self.revocations)(room).unwrap_or_default())
     }
 }

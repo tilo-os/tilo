@@ -220,7 +220,7 @@ impl ProfileGrants {
             return None;
         }
         let context = tilo_desktop_model::grants::app_action_grant_context(
-            &request.room,
+            &request.workspace,
             &self.apps.display_name(&request.app_id),
             &self.apps.display_name(&request.target_app),
             &request.action_label,
@@ -231,7 +231,7 @@ impl ProfileGrants {
             let workspace = tree
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room().to_string() == request.room)?
+                .find(|workspace| workspace.room().to_string() == request.workspace)?
                 .id;
             let stored = tree
                 .grant_in_workspace_at(workspace, &request.person, grant, now)

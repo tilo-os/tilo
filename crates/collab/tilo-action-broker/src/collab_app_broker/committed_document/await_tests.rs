@@ -12,7 +12,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-const ROOM: &str = "7851d1ef-c4fa-4d23-aa65-5ad85f80a6af";
+const WORKSPACE: &str = "7851d1ef-c4fa-4d23-aa65-5ad85f80a6af";
 
 /// What the owner would answer an Open now.
 #[derive(Clone, Copy)]
@@ -44,7 +44,7 @@ impl Service {
     }
 }
 impl NativeDocumentReads for Service {
-    fn requires_room(&self, _: &str) -> bool {
+    fn requires_workspace(&self, _: &str) -> bool {
         true
     }
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
@@ -114,7 +114,7 @@ fn context(custody: &Arc<AtomicBool>) -> NativeDocumentReadContext {
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let custody = Arc::clone(custody);
     NativeDocumentReadContext {
-        route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", ROOM, ""),
+        route: crate::collab_broker::CrdtRoute::record("so.tilo.notes", WORKSPACE, ""),
         certificate,
         record_kind: None,
         creation: None,
@@ -142,7 +142,7 @@ fn holds(
 ) -> bool {
     read_unchanged(
         service,
-        service.record_read(ROOM, "so.tilo.notes", ""),
+        service.record_read(WORKSPACE, "so.tilo.notes", ""),
         || Ok(context(custody)),
         &Arc::new(Budget::default()),
         known,
@@ -222,7 +222,7 @@ fn a_refusal_ends_the_wait_so_the_reader_s_open_meets_it() {
     assert!(
         read_unchanged(
             service.as_ref(),
-            service.as_ref().record_read(ROOM, "so.tilo.notes", ""),
+            service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
             || Err("committed read admission ended".into()),
             &Arc::new(Budget::default()),
             Some([1; 32]),
@@ -253,7 +253,7 @@ fn a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget() {
     assert!(
         read_unchanged(
             service.as_ref(),
-            service.as_ref().record_read(ROOM, "so.tilo.notes", ""),
+            service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
             || Ok(context(&custody)),
             &budget,
             Some([1; 32]),
@@ -267,7 +267,7 @@ fn a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget() {
     assert!(
         read_unchanged(
             service.as_ref(),
-            service.as_ref().record_read(ROOM, "so.tilo.notes", ""),
+            service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
             || Ok(context(&custody)),
             &budget,
             Some([1; 32]),

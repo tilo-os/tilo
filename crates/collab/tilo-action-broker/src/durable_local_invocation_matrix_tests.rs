@@ -67,7 +67,7 @@ mod durable_local_matrix {
                 tilo_desktop_model::RoomId::parse(owner.peer().room()).unwrap(),
                 "Durable actual RPC",
             );
-            // Someone the room grants everything until 50 seconds after the
+            // Someone the workspace grants everything until 50 seconds after the
             // start, and nothing after.
             let principal = principal_id_for_root(cert.user_public_key);
             let changes = tilo_action_policy::Grant::new(

@@ -44,8 +44,8 @@ mod launch_child;
 mod own_device;
 mod publishers;
 mod readmit;
-mod room_nodes;
 mod shortcut_run;
+mod workspace_nodes;
 use directory::bridge_error;
 
 /// The longest a waiter on a running invocation sleeps without a signalled
@@ -100,7 +100,7 @@ impl BrokerActor {
                 // A person's own device handed this connection to the agent
                 // (`Caller::delegated_to`); an agent member the host admitted
                 // acts for the person who admitted it, with no more than the
-                // room grants it (`Caller::acting_for`); a delegated agent
+                // workspace grants it (`Caller::acting_for`); a delegated agent
                 // device acts for the person its certificate chains to.
                 match (caller.acting_for_person(), caller.user_public_key()) {
                     (Some(person), _) if caller.is_session_delegated() => {
@@ -664,8 +664,8 @@ impl AppBrokerState {
         use tilo_actions::remote::{RemoteActionMessage, refuse};
         let access = self.app_action_access(app_id);
         let mut as_app = Caller::local_app(app_id);
-        if let Some(room) = person.room() {
-            as_app = as_app.in_room(room);
+        if let Some(workspace) = person.room() {
+            as_app = as_app.in_room(workspace);
         }
         let permitted = match message {
             RemoteActionMessage::CatalogueRequest { query, .. } => {
@@ -681,13 +681,13 @@ impl AppBrokerState {
                     .is_ok_and(|invocation| invocation.app == app_id)
                     .then(|| person.clone())
             }
-            // A node of the person's own workspace asked about, shared or
+            // A node of the person's own room asked about, shared or
             // unshared: what the person did in the app (a window shared to a
-            // channel), which the room bounds by what the person holds there.
-            // Never under the app's own identity, which the room knows not.
+            // channel), which the workspace bounds by what the person holds there.
+            // Never under the app's own identity, which the workspace knows not.
             RemoteActionMessage::Invoke(request)
-                if room_nodes::node_ask(request)
-                    .is_some_and(|(room, _)| person.room() == Some(room)) =>
+                if workspace_nodes::node_ask(request)
+                    .is_some_and(|(workspace, _)| person.room() == Some(workspace)) =>
             {
                 Some(person.clone())
             }
@@ -805,12 +805,12 @@ impl AppBrokerState {
                 .any(|root| root.peer_id == peer_id && root.app_id == app_id)
     }
 
-    /// Whether `caller` may act in `workspace`. A caller confined to a room
+    /// Whether `caller` may act in `workspace`. A caller confined to a workspace
     /// was admitted to it by its connection; any other caller must be a
     /// member.
     fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
         match caller.room() {
-            // Confinement says which room a connection was admitted to, not
+            // Confinement says which workspace a connection was admitted to, not
             // that an agent still belongs to it: an agent whose membership
             // was removed must lose its catalogue and authority at once. It
             // takes part as the unconfined branch decides: an enrolled agent
@@ -828,10 +828,10 @@ impl AppBrokerState {
                     }
             }
             None => match caller.principal() {
-                // An application or a bot is always admitted into one room;
+                // An application or a bot is always admitted into one workspace;
                 // unconfined, it takes part in none.
                 CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => false,
-                // Anyone else takes part in a room they may read; a foreign
+                // Anyone else takes part in a workspace they may read; a foreign
                 // device reads wherever its person does.
                 CallerPrincipal::Person(_) | CallerPrincipal::Agent(_) => {
                     BrokerActor::for_caller(caller).reads_in(workspace, now)
@@ -840,13 +840,13 @@ impl AppBrokerState {
         }
     }
 
-    /// Why an agent confined to a room is served nothing there when the
-    /// reason is not that the room holds nothing: this session's workspaces
+    /// Why an agent confined to a workspace is served nothing there when the
+    /// reason is not that the workspace holds nothing: this session's workspaces
     /// are not attached, the policy clock cannot be read, the workspace is
     /// gone, or the agent may no longer read in it. `None` for any other
-    /// caller, and for an agent that may act in its room.
-    fn agent_room_unreachable(&self, caller: &Caller) -> Option<String> {
-        let room = caller.room()?;
+    /// caller, and for an agent that may act in its workspace.
+    fn agent_workspace_unreachable(&self, caller: &Caller) -> Option<String> {
+        let workspace_id = caller.room()?;
         let CallerPrincipal::Agent(agent) = caller.principal() else {
             return None;
         };
@@ -860,7 +860,7 @@ impl AppBrokerState {
         let found = membership.decide_in_tree(|tree| {
             tree.workspaces
                 .iter()
-                .find(|workspace| workspace.room().to_string() == room)
+                .find(|workspace| workspace.room().to_string() == workspace_id)
                 .map(|workspace| {
                     (
                         workspace.name.clone(),
@@ -880,14 +880,14 @@ impl AppBrokerState {
         }
     }
 
-    /// One policy sample of `room` for `caller`: `decide` runs once on the
+    /// One policy sample of `workspace` for `caller`: `decide` runs once on the
     /// borrowed committed workspace with the caller's policy actor there, or
-    /// not at all (`None`) when `caller` may not act in `room`. Nothing is
+    /// not at all (`None`) when `caller` may not act in `workspace`. Nothing is
     /// copied; `decide` must not block or call host services.
     pub(super) fn decide_for<R>(
         &self,
         caller: &Caller,
-        room: &str,
+        workspace: &str,
         decide: impl FnOnce(&Workspace, &BrokerActor, u64) -> R,
     ) -> Option<R> {
         let membership = self.membership.as_ref()?;
@@ -896,9 +896,9 @@ impl AppBrokerState {
         let now = self.policy_now_ns().ok()? / 1_000_000_000;
         // The actor consults the certificate authority: asked before the
         // workspace is borrowed, never under it.
-        let actor = self.caller_actor(caller, room);
+        let actor = self.caller_actor(caller, workspace);
         membership
-            .decide_in_room(room, |workspace| {
+            .decide_in_workspace(workspace, |workspace| {
                 let workspace =
                     workspace.filter(|workspace| Self::may_act_in(caller, workspace, now))?;
                 Some(decide(workspace, &actor, now))
@@ -907,8 +907,8 @@ impl AppBrokerState {
             .flatten()
     }
 
-    /// The rooms `caller` may act in, decided on one borrowed sample.
-    fn rooms_for(&self, caller: &Caller) -> Vec<String> {
+    /// The workspaces `caller` may act in, decided on one borrowed sample.
+    fn workspace_ids_for(&self, caller: &Caller) -> Vec<String> {
         let (Some(membership), Ok(now)) = (
             self.membership.as_ref(),
             self.policy_now_ns().map(|now| now / 1_000_000_000),
@@ -1075,17 +1075,17 @@ impl AppBrokerState {
         };
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let first = rows.len();
-            let room = workspace.room().to_string();
+            let workspace_id = workspace.room().to_string();
             let mut live_apps = std::collections::HashSet::new();
             for surface in surfaces
                 .iter()
-                .filter(|surface| surface.live && surface.route.cluster_id == room)
+                .filter(|surface| surface.live && surface.route.cluster_id == workspace_id)
             {
                 live_apps.insert(surface.app_id.clone());
                 providers.push(CatalogueProvider {
                     provider: surface.peer_id.to_string(),
                     app_id: surface.app_id.clone(),
-                    room: room.clone(),
+                    room: workspace_id.clone(),
                     record_id: surface.route.record_id.clone(),
                     browsable: roots.iter().any(|root| root.peer_id == surface.peer_id),
                 });
@@ -1147,7 +1147,7 @@ impl AppBrokerState {
             let unlisted = roots
                 .iter()
                 .filter(|root| {
-                    root.cluster_id == room
+                    root.cluster_id == workspace_id
                         && !providers
                             .iter()
                             .any(|provider| provider.provider == root.peer_id.to_string())
@@ -1158,12 +1158,12 @@ impl AppBrokerState {
                 providers.push(CatalogueProvider {
                     provider: root.peer_id.to_string(),
                     app_id: root.app_id.clone(),
-                    room: room.clone(),
+                    room: workspace_id.clone(),
                     record_id: root.record_id.clone(),
                     browsable: true,
                 });
             }
-            if caller.room() == Some(room.as_str()) {
+            if caller.room() == Some(workspace_id.as_str()) {
                 for steps in &host_steps {
                     // The host's own services are publishers like an app's
                     // window: listed whatever rows were asked for (a query
@@ -1172,7 +1172,7 @@ impl AppBrokerState {
                     providers.push(CatalogueProvider {
                         provider: steps.provider().to_owned(),
                         app_id: steps.app_id().to_owned(),
-                        room: room.clone(),
+                        room: workspace_id.clone(),
                         record_id: String::new(),
                         browsable: true,
                     });
@@ -1181,7 +1181,7 @@ impl AppBrokerState {
                     }
                 }
             }
-            let provider = workspace_provider(&room);
+            let provider = workspace_provider(&workspace_id);
             if !scope.wants(&provider) {
                 continue;
             }
@@ -1334,7 +1334,7 @@ impl AppBrokerState {
         (rows, providers)
     }
 
-    /// Mark each of `rows` whose action the room's grants let `actor` take
+    /// Mark each of `rows` whose action the workspace's grants let `actor` take
     /// only after asking: it asks for confirmation, which the person gives
     /// on their own device.
     /// The rows of host steps `steps` that `actor` is offered in
@@ -1417,12 +1417,12 @@ impl AppBrokerState {
         (scope, rows): (RowScope<'_>, &mut Vec<CatalogueRow>),
         providers: &mut Vec<CatalogueProvider>,
     ) -> RetainedAddresses {
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let in_room = self
             .launchable
             .surfaces()
             .into_iter()
-            .filter(|surface| surface.route.cluster_id == room)
+            .filter(|surface| surface.route.cluster_id == workspace_id)
             .collect::<Vec<_>>();
         let retained = in_room
             .iter()
@@ -1473,7 +1473,7 @@ impl AppBrokerState {
             providers.push(CatalogueProvider {
                 provider,
                 app_id: surface.app_id.clone(),
-                room: room.clone(),
+                room: workspace_id.clone(),
                 record_id: surface.route.record_id.clone(),
                 browsable: false,
             });
@@ -1494,7 +1494,7 @@ impl AppBrokerState {
         applications: &[crate::services::LaunchableApplication],
         (scope, rows): (RowScope<'_>, &mut Vec<CatalogueRow>),
     ) {
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         for app in applications.iter().filter(|app| {
             scope.wants_app(&app.package_id)
                 && !app.unconfined
@@ -1507,9 +1507,13 @@ impl AppBrokerState {
                     now,
                 )
         }) {
-            let provider =
-                tilo_actions::remote::application_action_target(&room, &app.package_id, "", "")
-                    .provider;
+            let provider = tilo_actions::remote::application_action_target(
+                &workspace_id,
+                &app.package_id,
+                "",
+                "",
+            )
+            .provider;
             if !scope.wants(&provider) {
                 continue;
             }
@@ -1622,11 +1626,11 @@ impl AppBrokerState {
             (None, None) => RowScope::All,
         };
         let (rows, providers) = self.eager_catalogue_with_origin(caller, origin, scope);
-        // Nothing at all may mean the room holds nothing, or that this
+        // Nothing at all may mean the workspace holds nothing, or that this
         // agent cannot reach it: only the first is an empty page.
         if rows.is_empty()
             && providers.is_empty()
-            && let Some(reason) = self.agent_room_unreachable(caller)
+            && let Some(reason) = self.agent_workspace_unreachable(caller)
         {
             return Pending::ready(Err(ActionHostError::Unavailable { reason }));
         }
@@ -1712,18 +1716,18 @@ impl AppBrokerState {
         {
             return self.invoke_launchable(caller, origin, request);
         }
-        if room_nodes::node_ask(request).is_some() {
-            return self.invoke_room_node(caller, origin, request);
+        if workspace_nodes::node_ask(request).is_some() {
+            return self.invoke_workspace_node(caller, origin, request);
         }
         if let Some(root) = self.directory_target(caller, request) {
             return self.invoke_directory(caller, root, origin, request);
         }
         if self.services.shortcut_library.is_some()
-            && let Some(room) = workspace_provider_room(&request.target.provider)
+            && let Some(workspace) = workspace_provider_room(&request.target.provider)
             && let Some(shortcut) = automation::run_target(&request.target.address)
         {
             return Pending::ready(
-                self.invoke_shortcut_run(caller, origin, room, shortcut, request),
+                self.invoke_shortcut_run(caller, origin, workspace, shortcut, request),
             );
         }
         if let Some(steps) =
@@ -1858,61 +1862,63 @@ impl AppBrokerState {
         let earlier = self.earlier_ids();
         let resource = earlier.current_resource(&request.target.address.resource);
         let address = &current_address(resource.as_deref(), request);
-        let (room, app_id, record, offered) =
-            if let Some((room, app_id)) = application_provider(&request.target.provider) {
-                let current = earlier.current(app_id).to_owned();
-                let app_id = current.as_str();
-                let offered = self
-                    .published_surfaces()
-                    .into_iter()
-                    .chain(self.launchable.surfaces())
-                    .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == room)
-                    .find_map(|surface| {
-                        surface.actions.into_iter().find(|action| {
-                            action.resource == address.resource && action.action == address.action
-                        })
-                    })
-                    .or_else(|| self.manifest_offer(app_id, address));
-                let record = application_provider_record(&request.target.provider);
-                (
-                    room.to_owned(),
-                    current.clone(),
-                    record.map(str::to_owned),
-                    offered,
-                )
-            } else {
-                let retained = self
-                    .launchable
-                    .surface_for(&request.target.provider)
-                    .ok_or(ActionHostError::UnknownAction)?;
-                let offered = retained
-                    .actions
-                    .into_iter()
-                    .find(|action| {
+        let (workspace, app_id, record, offered) = if let Some((workspace, app_id)) =
+            application_provider(&request.target.provider)
+        {
+            let current = earlier.current(app_id).to_owned();
+            let app_id = current.as_str();
+            let offered = self
+                .published_surfaces()
+                .into_iter()
+                .chain(self.launchable.surfaces())
+                .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == workspace)
+                .find_map(|surface| {
+                    surface.actions.into_iter().find(|action| {
                         action.resource == address.resource && action.action == address.action
                     })
-                    .ok_or(ActionHostError::UnknownAction)?;
-                (
-                    retained.route.cluster_id,
-                    retained.app_id,
-                    Some(retained.route.record_id),
-                    Some(offered),
-                )
-            };
+                })
+                .or_else(|| self.manifest_offer(app_id, address));
+            let record = application_provider_record(&request.target.provider);
+            (
+                workspace.to_owned(),
+                current.clone(),
+                record.map(str::to_owned),
+                offered,
+            )
+        } else {
+            let retained = self
+                .launchable
+                .surface_for(&request.target.provider)
+                .ok_or(ActionHostError::UnknownAction)?;
+            let offered = retained
+                .actions
+                .into_iter()
+                .find(|action| {
+                    action.resource == address.resource && action.action == address.action
+                })
+                .ok_or(ActionHostError::UnknownAction)?;
+            (
+                retained.route.cluster_id,
+                retained.app_id,
+                Some(retained.route.record_id),
+                Some(offered),
+            )
+        };
         // Only a caller on this machine launches apps on this desktop.
         if caller.room().is_none() {
             return Err(ActionHostError::UnknownAction);
         }
-        // The launcher keeps the workspace past the read: only this room's
-        // workspace is copied, once every check on the same sample passed.
+        // The launcher keeps the workspace past the read: only this
+        // workspace's authority is copied, once every check on the same sample passed.
+        let workspace_id = workspace;
         let workspace = self
-            .decide_for(caller, &room, |workspace, policy, now| {
+            .decide_for(caller, &workspace_id, |workspace, policy, now| {
                 // A live application target is a route to an existing action,
                 // not a request to launch another instance. Reads retain their
                 // read-only authority while actual launches still require
                 // write, unless they only show what exists (`launch_kind`).
                 if self
-                    .ready_delivery(&app_id, &room, record.as_deref(), address)
+                    .ready_delivery(&app_id, &workspace_id, record.as_deref(), address)
                     .is_none()
                     && !policy.may_in(
                         workspace,
@@ -2018,15 +2024,15 @@ impl AppBrokerState {
         let stopped_waiting = || ActionHostError::Unavailable {
             reason: "the caller stopped waiting for admission".into(),
         };
-        let room = destination.workspace.room().to_string();
+        let workspace_id = destination.workspace.room().to_string();
         let app_id = &destination.app_id;
         let address = &current_address(destination.resource.as_deref(), request);
         let timeout = self.launchable.delivery_timeout();
         let deadline = tokio::time::sleep(timeout);
-        let expired = || self.not_offered(app_id, &room, address, timeout);
+        let expired = || self.not_offered(app_id, &workspace_id, address, timeout);
         let abandoned = completer.abandoned();
         tokio::pin!(deadline, abandoned);
-        let shows = self.action_shows(app_id, &room, address);
+        let shows = self.action_shows(app_id, &workspace_id, address);
         // Taken before the first look, so a publication between that look
         // and the wait below still wakes it.
         let mut changes = self.publisher_changes();
@@ -2034,7 +2040,7 @@ impl AppBrokerState {
         // The start of the instance with no window asked for, until it ends.
         let mut starting: Option<crate::services::WindowlessStart> = None;
         loop {
-            self.check_launch_origin(caller, origin, &room)?;
+            self.check_launch_origin(caller, origin, &workspace_id)?;
             if let Some(native) = native {
                 native.check(self).map_err(refusal)?;
             }
@@ -2046,7 +2052,12 @@ impl AppBrokerState {
             }
             let ready = match native {
                 Some(native) => native.ready(self).map(|peer_id| (peer_id, address.clone())),
-                None => self.ready_delivery(app_id, &room, destination.record.as_deref(), address),
+                None => self.ready_delivery(
+                    app_id,
+                    &workspace_id,
+                    destination.record.as_deref(),
+                    address,
+                ),
             };
             if let Some((peer_id, published)) = ready {
                 return self
@@ -2059,7 +2070,7 @@ impl AppBrokerState {
             if !launched
                 && !shows
                 && address.action != APPLICATION_OPEN_ACTION
-                && let Some(start) = self.run_windowless(app_id, &room)?
+                && let Some(start) = self.run_windowless(app_id, &workspace_id)?
             {
                 starting = Some(start);
                 launched = true;
@@ -2113,12 +2124,12 @@ impl AppBrokerState {
         }
     }
 
-    /// `app_id` was launched in `room` but did not offer `address` within
+    /// `app_id` was launched in `workspace` but did not offer `address` within
     /// `timeout`: why, with what its connections publish.
     fn not_offered(
         &self,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         address: &tilo_actions::ActionAddress,
         timeout: std::time::Duration,
     ) -> ActionHostError {
@@ -2127,7 +2138,7 @@ impl AppBrokerState {
                 "{app_id} was launched but did not offer \"{}\" within {:.1} s ({})",
                 address.action,
                 timeout.as_secs_f32(),
-                self.publishers_seen(app_id, room, address),
+                self.publishers_seen(app_id, workspace, address),
             ),
         }
     }
@@ -2143,7 +2154,7 @@ impl AppBrokerState {
         deadline: (tokio::time::Instant, &str),
     ) -> Result<(), ActionHostError> {
         let app_id = current.app_id.clone();
-        let room = current.workspace.room().to_string();
+        let workspace_id = current.workspace.room().to_string();
         let timeout = self.launchable.delivery_timeout();
         let stopped_waiting = || ActionHostError::Unavailable {
             reason: "the caller stopped waiting for admission".into(),
@@ -2159,7 +2170,7 @@ impl AppBrokerState {
         let abandoned = completer.abandoned();
         tokio::pin!(deadline, abandoned);
         let state = Arc::clone(self);
-        let place = self.launch_place(caller, &room, None);
+        let place = self.launch_place(caller, &workspace_id, None);
         let caller = caller.clone();
         let origin = custody.0.cloned();
         let parent = custody.1.clone();
@@ -2200,7 +2211,7 @@ impl AppBrokerState {
         &self,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
-        room: &str,
+        workspace: &str,
     ) -> Result<(), ActionHostError> {
         check_execution(caller)?;
         if !self.is_accepting() {
@@ -2211,7 +2222,7 @@ impl AppBrokerState {
                 caller: original,
                 ..
             }) => {
-                if original.room != room {
+                if original.workspace != workspace {
                     return Err(ActionHostError::NotPermitted);
                 }
                 // A durable barrier can outlive the synchronous admission
@@ -2225,7 +2236,7 @@ impl AppBrokerState {
                         original.policy_time.as_ref(),
                     )
                 } else {
-                    self.verify_action_caller(&original.room, &original.presentation)
+                    self.verify_action_caller(&original.workspace, &original.presentation)
                 }
                 .map_err(refusal)?;
                 // The barrier re-verifies the original person and device, and
@@ -2239,7 +2250,7 @@ impl AppBrokerState {
                     .map_err(|_| ActionHostError::NotPermitted)?;
                 if caller.device_public_key().is_none() {
                     self.current_native_person(
-                        room,
+                        workspace,
                         current
                             .admitted
                             .certificate
@@ -2256,10 +2267,10 @@ impl AppBrokerState {
                 time,
             }) => {
                 self.checked_policy_time(time.as_ref()).map_err(refusal)?;
-                if route.cluster_id != room {
+                if route.cluster_id != workspace {
                     return Err(ActionHostError::NotPermitted);
                 }
-                // Revalidation checks current certificate and room policy, but
+                // Revalidation checks current certificate and workspace policy, but
                 // carries the registration forward without checking its liveness.
                 // Local custody must still name the exact private connection.
                 if let Some(registration) = &admitted.worker_registration {
@@ -2281,13 +2292,13 @@ impl AppBrokerState {
                 Some(current)
             }
             Some(super::published_invocation::InvocationCaller::NativePerson {
-                room: original_room,
+                workspace: original_workspace,
                 certificate,
                 time,
                 ..
             }) => {
                 self.checked_policy_time(Some(time)).map_err(refusal)?;
-                if original_room != room
+                if original_workspace != workspace
                     || caller.principal()
                         != &tilo_actions::remote::CallerPrincipal::Person(
                             super::principal_id_for_root(certificate.user_public_key),
@@ -2295,7 +2306,7 @@ impl AppBrokerState {
                 {
                     return Err(ActionHostError::NotPermitted);
                 }
-                self.current_native_person(room, certificate)
+                self.current_native_person(workspace, certificate)
                     .map_err(refusal)?;
                 None
             }
@@ -2334,9 +2345,9 @@ impl AppBrokerState {
         admitted: &super::host_action_admission::AdmittedHostAction,
         (app_id, kind): (&str, tilo_action_policy::ActionKind),
     ) -> Result<Workspace, ActionHostError> {
-        let (caller, origin, room) = custody;
+        let (caller, origin, workspace) = custody;
         let result = self
-            .current_framework_authority(caller, origin, room)
+            .current_framework_authority(caller, origin, workspace)
             .and_then(|(workspace, policy, now)| {
                 policy
                     .may_in(&workspace, &app_node(&workspace, app_id), kind, now)
@@ -2379,7 +2390,7 @@ impl AppBrokerState {
             .launch(app_id, workspace, record, place)
     }
 
-    /// Where a view `caller`'s action needs opens in `room`: where a person
+    /// Where a view `caller`'s action needs opens in `workspace`: where a person
     /// is looking, for the person's own invocation and for an app's request
     /// the person's own press in it is behind (a link clicked in Chat, a
     /// file opened from Files), which takes them there; beside the asking
@@ -2391,7 +2402,7 @@ impl AppBrokerState {
     pub(super) fn launch_place(
         &self,
         caller: &Caller,
-        room: &str,
+        workspace: &str,
         launch: Option<&LaunchScope>,
     ) -> LaunchPlace {
         let pressed_for = |app_id: &str| {
@@ -2416,21 +2427,21 @@ impl AppBrokerState {
             },
             CallerPrincipal::Agent(_) | CallerPrincipal::Bot(_) => self
                 .launchable
-                .view_of(room, &BrokerActor::for_caller(caller).id)
+                .view_of(workspace, &BrokerActor::for_caller(caller).id)
                 .map_or(LaunchPlace::Aside, |app_id| LaunchPlace::Beside { app_id }),
         }
     }
 
-    /// The live connection of `app_id` in `room` that publishes `address`
+    /// The live connection of `app_id` in `workspace` that publishes `address`
     /// and can receive invocations.
     pub(super) fn ready_publisher(
         &self,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         record: Option<&str>,
         address: &tilo_actions::ActionAddress,
     ) -> Option<u64> {
-        self.publisher_of(app_id, room, record, address, false)
+        self.publisher_of(app_id, workspace, record, address, false)
             .map(|(peer_id, _)| peer_id)
     }
 
@@ -2446,19 +2457,19 @@ impl AppBrokerState {
     pub(super) fn ready_delivery(
         &self,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         record: Option<&str>,
         address: &tilo_actions::ActionAddress,
     ) -> Option<(u64, tilo_actions::ActionAddress)> {
-        self.publisher_of(app_id, room, record, address, true)
+        self.publisher_of(app_id, workspace, record, address, true)
     }
 
-    /// What `app_id`'s connections in `room` publish of `address`'s action
+    /// What `app_id`'s connections in `workspace` publish of `address`'s action
     /// and why none is ready for it: said with a delivery that found none.
     fn publishers_seen(
         &self,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         address: &tilo_actions::ActionAddress,
     ) -> String {
         let Ok(subscribers) = self.invocation_subscribers.lock() else {
@@ -2469,7 +2480,7 @@ impl AppBrokerState {
         };
         let seen: Vec<String> = surfaces
             .values()
-            .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == room)
+            .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == workspace)
             .map(|surface| {
                 let resources: Vec<String> = surface
                     .actions
@@ -2500,7 +2511,7 @@ impl AppBrokerState {
             })
             .collect();
         if seen.is_empty() {
-            format!("no connection of {app_id} published in this room")
+            format!("no connection of {app_id} published in this workspace")
         } else {
             seen.join("; ")
         }
@@ -2512,14 +2523,14 @@ impl AppBrokerState {
     fn publisher_of(
         &self,
         app_id: &str,
-        room: &str,
+        workspace: &str,
         record: Option<&str>,
         address: &tilo_actions::ActionAddress,
         aliases: bool,
     ) -> Option<(u64, tilo_actions::ActionAddress)> {
         // Asked before the tables are held: it reads them itself. An action
         // that shows something needs a window to show it in.
-        let shows = self.action_shows(app_id, room, address);
+        let shows = self.action_shows(app_id, workspace, address);
         let subscribers = self.invocation_subscribers.lock().ok()?;
         let surfaces = self.surfaces.lock().ok()?;
         surfaces
@@ -2529,7 +2540,7 @@ impl AppBrokerState {
                     && self.shows(surface.peer_id, &address.action)
                     && !(shows && self.is_windowless(surface.peer_id))
                     && surface.app_id == app_id
-                    && surface.route.cluster_id == room
+                    && surface.route.cluster_id == workspace
                     && record.is_none_or(|record| surface.route.record_id == record)
                     && subscribers.contains_key(&surface.peer_id)
             })
@@ -2695,9 +2706,16 @@ impl AppBrokerState {
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
-        if let Some(room) = workspace_provider_room(provider) {
+        if let Some(workspace) = workspace_provider_room(provider) {
             return self
-                .start_workspace_action(caller, room, launch, origin, request, argument.as_deref())
+                .start_workspace_action(
+                    caller,
+                    workspace,
+                    launch,
+                    origin,
+                    request,
+                    argument.as_deref(),
+                )
                 .map(Started::Now);
         }
         let peer_id = if provider == OWN_PROVIDER {
@@ -2709,7 +2727,7 @@ impl AppBrokerState {
         };
         // Only the one action this peer offers is copied out, not every
         // app's published surface.
-        let (app_id, room, action) = self
+        let (app_id, workspace, action) = self
             .surfaces
             .lock()
             .ok()
@@ -2727,8 +2745,8 @@ impl AppBrokerState {
             .ok_or(ActionHostError::UnknownAction)?;
         // Offered when the caller may take it or would be asked first;
         // admission requires the confirmation an ask needs.
-        let (offered, room) = self
-            .decide_for(caller, &room, |workspace, policy, now| {
+        let (offered, workspace) = self
+            .decide_for(caller, &workspace, |workspace, policy, now| {
                 Self::offered(
                     workspace,
                     policy,
@@ -2738,9 +2756,9 @@ impl AppBrokerState {
                     &action.contract,
                 )
             })
-            .and_then(|allowed| allowed.then_some((action, room)))
+            .and_then(|allowed| allowed.then_some((action, workspace)))
             .ok_or(ActionHostError::UnknownAction)?;
-        let actor = self.caller_actor(caller, &room);
+        let actor = self.caller_actor(caller, &workspace);
         let token = self.confirmation_token(
             peer_id,
             &app_id,
@@ -2748,7 +2766,7 @@ impl AppBrokerState {
             argument.as_deref(),
             &actor,
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.id(), &room, original_request),
+            &self.witness_binding(actor.id(), &workspace, original_request),
         )?;
         self.start_invocation_confirmed_for_origin(
             peer_id,
@@ -2767,7 +2785,7 @@ impl AppBrokerState {
             origin.cloned(),
         )
         .map(|staged| {
-            self.launchable.note_view(&room, &actor.id, &app_id);
+            self.launchable.note_view(&workspace, &actor.id, &app_id);
             Started::Staged(staged)
         })
         .map_err(refusal)
@@ -2775,12 +2793,12 @@ impl AppBrokerState {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one ordered door for a workspace action: the room's copied authority, then each host service's admission in turn"
+        reason = "one ordered door for a workspace action: the workspace's copied authority, then each host service's admission in turn"
     )]
     fn start_workspace_action(
         self: &Arc<Self>,
         caller: &Caller,
-        room: &str,
+        workspace_id: &str,
         launch: Option<&LaunchScope>,
         origin: Option<&super::InvocationCaller>,
         request: &InvokeRequest,
@@ -2789,9 +2807,9 @@ impl AppBrokerState {
         let address = &request.target.address;
         // Workspace actions hand the workspace to host services (launcher,
         // shortcut library), which cannot run under the borrow: copy only
-        // this one room's workspace.
+        // this one workspace's authority.
         let Some((workspace, policy, now)) =
-            self.decide_for(caller, room, |workspace, policy, now| {
+            self.decide_for(caller, workspace_id, |workspace, policy, now| {
                 (workspace.clone(), policy.clone(), now)
             })
         else {
@@ -2853,14 +2871,14 @@ impl AppBrokerState {
                 caller,
                 origin,
                 super::host_action_admission::HostActionAdmission {
-                    room,
+                    workspace: workspace_id,
                     app_id,
                     descriptor: &app_open_descriptor(&app),
                     request,
                 },
             )?;
             return self.launch_application(
-                (caller, origin, room),
+                (caller, origin, workspace_id),
                 admitted,
                 app_id,
                 crate::services::LaunchContent {
@@ -2868,7 +2886,7 @@ impl AppBrokerState {
                     caller: launch,
                     author,
                 },
-                &self.launch_place(caller, room, launch),
+                &self.launch_place(caller, workspace_id, launch),
             );
         }
         if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
@@ -2899,19 +2917,19 @@ impl AppBrokerState {
                 caller,
                 origin,
                 super::host_action_admission::HostActionAdmission {
-                    room,
+                    workspace: workspace_id,
                     app_id,
                     descriptor: &app_close_descriptor(app_id, app_id),
                     request,
                 },
             )?;
-            return self.close_application((caller, origin, room), admitted, app_id);
+            return self.close_application((caller, origin, workspace_id), admitted, app_id);
         }
         Err(ActionHostError::UnknownAction)
     }
 
     /// Admit `descriptor`, published by `app`, for `policy` in `workspace`
-    /// at `now`: allowed; or, where the room's grants ask first, with the
+    /// at `now`: allowed; or, where the workspace's grants ask first, with the
     /// confirmation of the person — their own word when they act
     /// themselves, else the answer they gave on their device. Admitted, it
     /// spends the `Once` grants it relied on.
@@ -3282,7 +3300,7 @@ mod own_view_lookup_tests {
             appearance: None,
         };
         let record = "record:so.tilo.notes:";
-        let app = "application:room-1:so.tilo.notes:uuid:1";
+        let app = "application:workspace-1:so.tilo.notes:uuid:1";
         assert!(super::reference_request(&request(record, "share-link")));
         assert!(!super::reference_request(&request(
             record,
@@ -3325,15 +3343,15 @@ mod foreign_caller_tests {
     use tilo_actions::remote::Caller;
 
     #[test]
-    fn an_admitted_bot_sees_only_its_confined_room() {
+    fn an_admitted_bot_sees_only_its_confined_workspace() {
         let user = [27; 32];
         let mut tree = WorkspaceTree::default();
         for id in [7, 8] {
-            let mut workspace = Workspace::new(WorkspaceId(id), "Bot room");
+            let mut workspace = Workspace::new(WorkspaceId(id), "Bot workspace");
             workspace.set_owner(hex::encode(user));
             tree.workspaces.push(workspace);
         }
-        let room = tree.workspaces[0].room().to_string();
+        let workspace_id = tree.workspaces[0].room().to_string();
         let (state, _bridge_rx) = AppBrokerState::new(
             &Arc::new(FanoutState::new()),
             Arc::new(Mutex::new(BrokerChannels::default())),
@@ -3342,29 +3360,36 @@ mod foreign_caller_tests {
             None,
         );
         let bot = Caller::bot("bridge", user, [9; 32]);
-        assert!(state.rooms_for(&bot).is_empty());
-        assert_eq!(state.rooms_for(&bot.clone().in_room(&room)), vec![room]);
-        assert!(state.rooms_for(&bot.in_room("unknown-room")).is_empty());
+        assert!(state.workspace_ids_for(&bot).is_empty());
+        assert_eq!(
+            state.workspace_ids_for(&bot.clone().in_room(&workspace_id)),
+            vec![workspace_id]
+        );
+        assert!(
+            state
+                .workspace_ids_for(&bot.in_room("unknown-workspace"))
+                .is_empty()
+        );
     }
 
-    /// Every room is governed by one device.
+    /// Every workspace is governed by one device.
     struct GovernedBy([u8; 32]);
 
     impl crate::peer_actions::CertificateAuthority for GovernedBy {
         fn authorize(
             &self,
-            _room: uuid::Uuid,
+            _workspace: uuid::Uuid,
             _certificate: &tilo_user_identity::DeviceCert,
         ) -> Result<(), String> {
             Ok(())
         }
-        fn governs(&self, _room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+        fn governs(&self, _workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
             device == Some(&self.0)
         }
     }
 
     #[test]
-    fn a_foreign_caller_is_capped_only_in_rooms_its_device_does_not_govern() {
+    fn a_foreign_caller_is_capped_only_in_workspaces_its_device_does_not_govern() {
         let user = [26; 32];
         let mut workspace = Workspace::new(WorkspaceId(6), "Callers");
         workspace.set_owner(hex::encode(user));
@@ -3462,7 +3487,7 @@ mod app_close_tests {
         let user = [31; 32];
         let mut workspace = Workspace::new(WorkspaceId(8), "Close");
         workspace.set_owner(hex::encode(user));
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = AppBrokerState::new_configured(
@@ -3481,13 +3506,13 @@ mod app_close_tests {
             state.replace_published_surfaces_for_test(vec![PublishedSurface {
                 peer_id: 4,
                 app_id: "so.tilo.word-processor".into(),
-                route: CrdtRoute::record("so.tilo.word-processor", &room, "doc"),
+                route: CrdtRoute::record("so.tilo.word-processor", &workspace_id, "doc"),
                 actions: Vec::new(),
                 live: true,
             }]);
         }
-        let caller = Caller::local_person(hex::encode(user)).in_room(room.clone());
-        (state, caller, room)
+        let caller = Caller::local_person(hex::encode(user)).in_room(workspace_id.clone());
+        (state, caller, workspace_id)
     }
 
     fn app_actions(state: &AppBrokerState, caller: &Caller) -> Vec<String> {
@@ -3501,11 +3526,11 @@ mod app_close_tests {
             .collect()
     }
 
-    fn close_request(room: &str) -> tilo_actions::remote::InvokeRequest {
+    fn close_request(workspace: &str) -> tilo_actions::remote::InvokeRequest {
         tilo_actions::remote::InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
-                provider: tilo_actions::remote::workspace_provider(room),
+                provider: tilo_actions::remote::workspace_provider(workspace),
                 address: tilo_actions::ActionAddress::new("app.so.tilo.word-processor", "close"),
             },
             argument: tilo_actions::remote::InvokeArgument::None,
@@ -3540,10 +3565,10 @@ mod app_close_tests {
         });
         let (state, caller, _) = broker(Arc::clone(&launcher), false);
         assert_eq!(app_actions(&state, &caller), ["open"]);
-        let (state, caller, room) = broker(Arc::clone(&launcher), true);
+        let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
         assert_eq!(app_actions(&state, &caller), ["close"]);
 
-        let request = close_request(&room);
+        let request = close_request(&workspace);
         let job = invoke_close(&state, &caller, &request).unwrap();
         assert!(matches!(
             state.invocation_status(job),
@@ -3551,13 +3576,13 @@ mod app_close_tests {
         ));
         assert_eq!(
             *launcher.closed.lock().unwrap(),
-            [("so.tilo.word-processor".to_string(), room)]
+            [("so.tilo.word-processor".to_string(), workspace)]
         );
 
         let unsupported = Arc::new(Launcher::default());
-        let (state, caller, room) = broker(unsupported, true);
+        let (state, caller, workspace) = broker(unsupported, true);
         assert!(app_actions(&state, &caller).is_empty());
-        assert!(invoke_close(&state, &caller, &close_request(&room)).is_err());
+        assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
     }
 
     #[allow(
@@ -3570,7 +3595,7 @@ mod app_close_tests {
             closes: true,
             ..Default::default()
         });
-        let (state, caller, room) = broker(Arc::clone(&launcher), true);
+        let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
         let scratch = tempfile::tempdir().unwrap();
         *state.journal.lock().unwrap() = Ok(Some(
             super::super::invocation_journal::InvocationJournal::open(
@@ -3578,7 +3603,7 @@ mod app_close_tests {
             )
             .unwrap(),
         ));
-        let request = close_request(&room);
+        let request = close_request(&workspace);
         let job = invoke_close(&state, &caller, &request).unwrap();
         let terminal = state.invocation_status(job).unwrap();
         assert_eq!(terminal.invocation(), request.invocation);
@@ -3589,7 +3614,7 @@ mod app_close_tests {
         let journal = state.journal.lock().unwrap();
         let journal = journal.as_ref().unwrap().as_ref().unwrap();
         let key = super::super::InvocationKey {
-            room,
+            workspace,
             host: journal.host(),
             owner: super::super::InvocationOwner::Local {
                 actor: hex::encode([31; 32]),
@@ -3606,9 +3631,9 @@ mod app_close_tests {
             closes: true,
             ..Default::default()
         });
-        let (state, _, room) = broker(Arc::clone(&launcher), true);
-        let caller = Caller::authenticated([31; 32], [32; 32]).in_room(&room);
-        assert!(invoke_close(&state, &caller, &close_request(&room)).is_err());
+        let (state, _, workspace) = broker(Arc::clone(&launcher), true);
+        let caller = Caller::authenticated([31; 32], [32; 32]).in_room(&workspace);
+        assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
         assert!(launcher.closed.lock().unwrap().is_empty());
         assert!(state.completed_invocations.lock().unwrap().is_empty());
     }
@@ -3619,7 +3644,7 @@ mod app_close_tests {
             closes: true,
             ..Default::default()
         });
-        let (state, caller, room) = broker(Arc::clone(&launcher), true);
+        let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
         let scratch = tempfile::tempdir().unwrap();
         let mut journal = super::super::invocation_journal::InvocationJournal::open(
             &scratch.path().join("journal"),
@@ -3627,7 +3652,7 @@ mod app_close_tests {
         .unwrap();
         journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
         *state.journal.lock().unwrap() = Ok(Some(journal));
-        assert!(invoke_close(&state, &caller, &close_request(&room)).is_err());
+        assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
         assert!(launcher.closed.lock().unwrap().is_empty());
         assert!(state.completed_invocations.lock().unwrap().is_empty());
     }
@@ -3658,8 +3683,8 @@ mod app_close_tests {
             closes: true,
             ..Default::default()
         });
-        let (state, caller, room) = broker(Arc::clone(&launcher), true);
-        let workspace = tilo_actions::remote::workspace_provider(&room);
+        let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
+        let provider = tilo_actions::remote::workspace_provider(&workspace);
         let query = |provider: Option<&str>, max_results| tilo_actions::remote::CatalogueQuery {
             provider: provider.map(str::to_owned),
             max_results,
@@ -3679,9 +3704,9 @@ mod app_close_tests {
                 .iter()
                 .any(|provider| provider.provider == "4")
         );
-        let (page, listed) = answered(&state, &launcher, &caller, &query(Some(&workspace), 64));
+        let (page, listed) = answered(&state, &launcher, &caller, &query(Some(&provider), 64));
         assert_eq!(listed, 1);
-        assert!(page.rows.iter().all(|row| row.provider == workspace));
+        assert!(page.rows.iter().all(|row| row.provider == provider));
         assert!(page.rows.iter().any(|row| {
             row.action
                 .as_ref()
@@ -3693,7 +3718,7 @@ mod app_close_tests {
         // A scope only leaves other providers' rows out: what it builds is
         // what the whole catalogue offers that provider, and nothing else.
         let (all, providers) = state.eager_catalogue(&caller, RowScope::All);
-        for provider in ["4", workspace.as_str()] {
+        for provider in ["4", provider.as_str()] {
             let (scoped, scoped_providers) =
                 state.eager_catalogue(&caller, RowScope::Provider(provider));
             let expected = all
@@ -3710,8 +3735,8 @@ mod app_close_tests {
 
         // Authority is still decided per row: a caller without a role is
         // offered nothing, scoped or not.
-        let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(room);
-        let (rows, _) = state.eager_catalogue(&stranger, RowScope::Provider(&workspace));
+        let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(workspace);
+        let (rows, _) = state.eager_catalogue(&stranger, RowScope::Provider(&provider));
         assert!(rows.is_empty());
     }
 
@@ -3721,8 +3746,8 @@ mod app_close_tests {
             closes: true,
             ..Default::default()
         });
-        let (state, _, room) = broker(Arc::clone(&launcher), true);
-        let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(room);
+        let (state, _, workspace) = broker(Arc::clone(&launcher), true);
+        let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(workspace);
         assert!(app_actions(&state, &stranger).is_empty());
         assert!(launcher.closed.lock().unwrap().is_empty());
     }
@@ -3813,7 +3838,7 @@ mod device_pairing_tests {
 
         fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
             self.started.lock().unwrap().push((
-                request.room.to_owned(),
+                request.workspace.to_owned(),
                 request.actor.id().to_owned(),
                 request.address.action.clone(),
             ));
@@ -3866,7 +3891,7 @@ mod device_pairing_tests {
         );
         let state = fixture.state.clone();
         let person = fixture.caller.clone();
-        let room = fixture.room.clone();
+        let workspace = fixture.workspace.clone();
         let owner = match person.principal() {
             tilo_actions::remote::CallerPrincipal::Person(owner) => owner.clone(),
             _ => panic!("the settings caller is a person"),
@@ -3904,7 +3929,7 @@ mod device_pairing_tests {
         assert_eq!(
             *host.started.lock().unwrap(),
             [(
-                room.clone(),
+                workspace.clone(),
                 owner.clone(),
                 device_pairing::APPROVE.to_owned()
             )]
@@ -3928,7 +3953,7 @@ mod device_pairing_tests {
 
         fixture.assert_signed(&approved, true);
 
-        // A remote device, or a caller confined to no room, is never offered
+        // A remote device, or a caller confined to no workspace, is never offered
         // pairing on this machine.
         let super::super::InvocationCaller::Local { admitted, .. } = &fixture.origin else {
             panic!("the settings fixture retains local custody")
@@ -3936,7 +3961,7 @@ mod device_pairing_tests {
         let certificate = admitted.certificate.as_ref().unwrap();
         let remote =
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
-                .in_room(room);
+                .in_room(workspace);
         assert!(
             state
                 .eager_catalogue(&remote, RowScope::Provider(device_pairing::PROVIDER))

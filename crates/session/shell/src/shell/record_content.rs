@@ -23,7 +23,7 @@ impl ContentShelf for SessionShelf {
         // Only what this device keeps: asking for missing content would set
         // the daemon fetching it, and a request from a peer must not.
         let result = super::broker_services::with_session_blobs(|client| {
-            let scoped = client.scope(&scope.room, &scope.app)?;
+            let scoped = client.scope(&scope.workspace, &scope.app)?;
             if !scoped.has(hash)? {
                 return Ok(None);
             }
@@ -41,7 +41,7 @@ impl ContentShelf for SessionShelf {
     fn keep(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) -> Result<(), String> {
         let kept = super::broker_services::with_session_blobs(|client| {
             client
-                .scope(&scope.room, &scope.app)?
+                .scope(&scope.workspace, &scope.app)?
                 .put(bytes, "application/octet-stream")
         })
         .map_err(|error| error.to_string())?;

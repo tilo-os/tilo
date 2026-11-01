@@ -147,8 +147,8 @@ impl ShellNetwork {
                     InboundChannelGovernance::from_message(input.message().clone())
                     && matches!(
                         &governance,
-                        InboundChannelGovernance::Frame { room: named, .. }
-                            | InboundChannelGovernance::AccessRequest { room: named, .. }
+                        InboundChannelGovernance::Frame { workspace: named, .. }
+                            | InboundChannelGovernance::AccessRequest { workspace: named, .. }
                             if *named == room
                     )
                 {

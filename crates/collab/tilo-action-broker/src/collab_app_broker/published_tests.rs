@@ -17,7 +17,7 @@ use super::super::*;
 use super::*;
 
 /// The session's services as a test publishes them: a `sound` resource
-/// everyone reads, a `clipboard` one the room's grants decide, and the
+/// everyone reads, a `clipboard` one the workspace's grants decide, and the
 /// watches it was asked for and those it let go of.
 #[derive(Default)]
 struct Provider {
@@ -39,7 +39,7 @@ fn reading_of(resource: &str) -> Option<Vec<u8>> {
 
 impl PublishedResources for Provider {
     /// What the person copied is the session's own: the `session` kind of
-    /// the session's app, which only the room's grants read.
+    /// the session's app, which only the workspace's grants read.
     fn granted(&self, resource: &str) -> Option<Granted> {
         (resource == "clipboard").then(|| Granted {
             publisher: tilo_action_policy::roles::SESSION_APP.to_owned(),
@@ -102,12 +102,12 @@ fn app(provider: Arc<Provider>) -> App {
     app_in(provider, "so.tilo.settings", "the-workspace", None)
 }
 
-/// An app the launcher attested as `id` in `room`, reading what `provider`
-/// publishes, with what `membership` says the room grants.
+/// An app the launcher attested as `id` in `workspace_id`, reading what `provider`
+/// publishes, with what `membership` says the workspace grants.
 fn app_in(
     provider: Arc<Provider>,
     id: &str,
-    room: &str,
+    workspace_id: &str,
     membership: Option<WorkspaceTreeHandle>,
 ) -> App {
     let (state, bridge_rx) = AppBrokerState::new_configured(
@@ -127,7 +127,7 @@ fn app_in(
     let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
     let local = native_media::LocalAppConnection::attested(
         id.into(),
-        room.into(),
+        workspace_id.into(),
         native_media::PeerProcess::from_socket(&host).unwrap(),
         crate::services::AuthenticatedApplicationLaunch {
             creation: None,
@@ -158,9 +158,10 @@ fn app_in(
     }
 }
 
-/// A room `owner` owns, as a desk keeps it, with the session's panel granted
-/// to read the session's own readings: what every session's room holds.
-fn panel_room() -> (
+/// A workspace `owner` owns, as a desk keeps it, with the session's panel
+/// granted to read the session's own readings: what every session's workspace
+/// holds.
+fn panel_workspace() -> (
     crate::test_support::WorkspaceTreeHandle,
     crate::services::WorkspaceAuthorityHandle,
     String,
@@ -168,31 +169,31 @@ fn panel_room() -> (
     use crate::test_support::{Subject, Workspace, WorkspaceId, WorkspaceTree};
     let mut workspace = Workspace::new(WorkspaceId(41), "Readings");
     workspace.set_owner("owner");
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     workspace.grant(tilo_action_policy::roles::device_panel(
-        &room,
+        &workspace_id,
         Subject::Person("owner".into()),
     ));
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let tree = tree.shared();
     let membership = tree.authority();
-    (tree, membership, room)
+    (tree, membership, workspace_id)
 }
 
 /// The reading of what the person copied reaches the panel's launch, and no
-/// other app: the room grants the panel, and nothing an app borrows from the
+/// other app: the workspace grants the panel, and nothing an app borrows from the
 /// person reads it.
 #[tokio::test(flavor = "current_thread")]
 async fn a_granted_app_reads_the_session_reading_and_another_is_refused() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let provider = Arc::new(Provider::default());
-            let (_tree, membership, room) = panel_room();
+            let (_tree, membership, workspace_id) = panel_workspace();
             let panel = app_in(
                 Arc::clone(&provider),
                 tilo_action_policy::roles::DEVICE_PANEL,
-                &room,
+                &workspace_id,
                 Some(Arc::clone(&membership)),
             );
             assert_eq!(
@@ -215,11 +216,11 @@ async fn a_granted_app_reads_the_session_reading_and_another_is_refused() {
             let other = app_in(
                 Arc::clone(&provider),
                 "so.tilo.settings",
-                &room,
+                &workspace_id,
                 Some(membership),
             );
             let refused = other.client.services().snapshot("clipboard").await;
-            let refusal = refused.expect_err("an app the room does not grant is refused");
+            let refusal = refused.expect_err("an app the workspace does not grant is refused");
             assert!(
                 refusal.to_string().contains("not granted"),
                 "refused as a reading nobody granted it: {refusal}"
@@ -228,18 +229,18 @@ async fn a_granted_app_reads_the_session_reading_and_another_is_refused() {
         .await;
 }
 
-/// A watch the room does not grant is not opened at all, and one it does is
+/// A watch the workspace does not grant is not opened at all, and one it does is
 /// served its reading.
 #[tokio::test(flavor = "current_thread")]
 async fn only_a_granted_app_watches_the_session_reading() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let provider = Arc::new(Provider::default());
-            let (_tree, membership, room) = panel_room();
+            let (_tree, membership, workspace_id) = panel_workspace();
             let panel = app_in(
                 Arc::clone(&provider),
                 tilo_action_policy::roles::DEVICE_PANEL,
-                &room,
+                &workspace_id,
                 Some(Arc::clone(&membership)),
             );
             let readings = panel.client.services().watch("clipboard").await.unwrap();
@@ -252,12 +253,12 @@ async fn only_a_granted_app_watches_the_session_reading() {
             let other = app_in(
                 Arc::clone(&provider),
                 "so.tilo.settings",
-                &room,
+                &workspace_id,
                 Some(membership),
             );
             let refused = other.client.services().watch("clipboard").await;
             let Err(refusal) = refused else {
-                panic!("an app the room does not grant watches nothing");
+                panic!("an app the workspace does not grant watches nothing");
             };
             assert!(
                 refusal.to_string().contains("not granted"),

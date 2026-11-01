@@ -89,7 +89,7 @@ fn configured_native_seat_never_admits_an_unsigned_actor_label() {
                 &caller,
                 None,
                 HostActionAdmission {
-                    room: "room",
+                    workspace: "workspace",
                     app_id: "host-test",
                     descriptor: &descriptor,
                     request: &request,
@@ -125,7 +125,7 @@ fn configured_certificates_without_a_native_seat_never_admit_unsigned_owners() {
     let caller = Caller::local_person("owner");
     assert!(
         state
-            .host_action_owner(&caller, None, "room", InvocationId::new())
+            .host_action_owner(&caller, None, "workspace", InvocationId::new())
             .is_err()
     );
     let descriptor = descriptor();
@@ -136,7 +136,7 @@ fn configured_certificates_without_a_native_seat_never_admit_unsigned_owners() {
                 &caller,
                 None,
                 HostActionAdmission {
-                    room: "room",
+                    workspace: "workspace",
                     app_id: "host-test",
                     descriptor: &descriptor,
                     request: &request,
@@ -156,10 +156,10 @@ fn certificate_less_local_origin_is_compatible_only_without_identity_authority()
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     let root_key = [17; 32];
     let actor = principal_id_for_root(root_key);
-    let mut workspace = Workspace::new(WorkspaceId(17), "Owner room");
+    let mut workspace = Workspace::new(WorkspaceId(17), "Owner workspace");
     workspace.set_owner(actor.clone());
-    let room = workspace.room().to_string();
-    let route = crate::route::CrdtRoute::cluster(&room);
+    let workspace_id = workspace.room().to_string();
+    let route = crate::route::CrdtRoute::cluster(&workspace_id);
     let admitted = super::super::admit_verified_join_at(
         Some(&workspace),
         &route,
@@ -180,17 +180,19 @@ fn certificate_less_local_origin_is_compatible_only_without_identity_authority()
         admitted: Box::new(admitted),
         time: None,
     };
-    let caller = Caller::local_person(actor).in_room(&room);
+    let caller = Caller::local_person(actor).in_room(&workspace_id);
     for configured in [false, true] {
         let mut services = membership.services();
         if configured {
             services.native_certificates = Some(Arc::new(ClosedCertificates));
         }
         let broker = AppBrokerState::test_broker_with_authority(membership.authority(), services);
-        let result =
-            broker
-                .state()
-                .host_action_owner(&caller, Some(&original), &room, InvocationId::new());
+        let result = broker.state().host_action_owner(
+            &caller,
+            Some(&original),
+            &workspace_id,
+            InvocationId::new(),
+        );
         if configured {
             assert!(
                 matches!(result, Err(ActionHostError::Unavailable { reason })
@@ -218,7 +220,7 @@ fn host_uuid_and_terminal_use_the_same_durable_record() {
             &caller,
             None,
             HostActionAdmission {
-                room: "room",
+                workspace: "workspace",
                 app_id: "host-test",
                 descriptor: &descriptor,
                 request: &request,
@@ -309,7 +311,7 @@ fn failed_admission_barrier_returns_no_dispatch_permit_or_accepted_update() {
                     &Caller::local_person("owner"),
                     None,
                     HostActionAdmission {
-                        room: "room",
+                        workspace: "workspace",
                         app_id: "host-test",
                         descriptor: &descriptor,
                         request: &request,
@@ -336,7 +338,7 @@ fn failed_terminal_barrier_does_not_publish_success() {
             &Caller::local_person("owner"),
             None,
             HostActionAdmission {
-                room: "room",
+                workspace: "workspace",
                 app_id: "host-test",
                 descriptor: &descriptor,
                 request: &request,

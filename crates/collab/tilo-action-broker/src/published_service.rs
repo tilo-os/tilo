@@ -1,10 +1,10 @@
-//! The shared loop behind the broker's own room services: one published
-//! surface, answered invocation by invocation from the durable stream.
+//! The shared loop behind the broker's own published surfaces: one surface,
+//! answered invocation by invocation from the durable stream.
 use std::future::Future;
 
 use super::{AppBrokerState, Arc, InvocationEnvelope, PublishedSurface};
 
-/// How one invocation of a broker room service ended.
+/// How one invocation of a broker's published service ended.
 pub(super) enum ServiceOutcome {
     Succeeded(serde_json::Value),
     Failed(tilo_actions::ActionFailure),
@@ -29,7 +29,7 @@ impl AppBrokerState {
     /// then unpublishes the surface, answers what was still pending on it as
     /// a peer that went away is answered, and runs `stopped` with whether
     /// the surface was still published.
-    pub(super) fn serve_room<S, F>(
+    pub(super) fn serve_published<S, F>(
         self: &Arc<Self>,
         surface: PublishedSurface,
         serve: S,
@@ -77,7 +77,7 @@ impl AppBrokerState {
                         peer_id,
                         id,
                         %error,
-                        "a room service's answer could not be recorded; its asker is told why"
+                        "a published service's answer could not be recorded; its asker is told why"
                     );
                     state.fail_unrecorded_invocation(peer_id, id, &error.to_string());
                 }

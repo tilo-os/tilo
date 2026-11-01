@@ -662,7 +662,7 @@ fn channel_keys(
     if !reads {
         return Response::Denied("identity may not read this workspace".into());
     }
-    // Only the room's canonical form: the channel is the hash of the route
+    // Only the workspace's canonical form: the channel is the hash of the route
     // in it, which a participant checks the route against.
     let Some(room) =
         RoomId::parse(route.workspace_id).filter(|room| room.to_string() == route.workspace_id)
@@ -1289,7 +1289,7 @@ params = []
     }
 
     /// Any app of a room writes the records every app of it opens (the
-    /// workspace's emoji, Chat's), decided by the room's grants on them,
+    /// workspace's emoji, Chat's), decided by the workspace's grants on them,
     /// and no other record of their owner's.
     #[test]
     fn any_app_of_the_room_signs_its_workspace_records_and_no_other_of_their_owner() {

@@ -1,6 +1,6 @@
 #![allow(
     clippy::significant_drop_tightening,
-    reason = "each test's room outlives the endpoints it serves; dropping it early would close them"
+    reason = "each test's workspace outlives the endpoints it serves; dropping it early would close them"
 )]
 
 use super::*;
@@ -10,7 +10,7 @@ use collab_types::{PeerPresence, PeerPresencePayload, sign_op};
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 
-struct Room {
+struct Workspace {
     state: Arc<AppBrokerState>,
     route: CrdtRoute,
     sink: Arc<RecordingSink>,
@@ -19,8 +19,8 @@ struct Room {
     fanout: Arc<FanoutState>,
 }
 
-impl Room {
-    /// A room whose members are the roots seeded with `members`.
+impl Workspace {
+    /// A workspace whose members are the roots seeded with `members`.
     fn new(members: &[u8]) -> Self {
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(9), "Wire");
@@ -62,13 +62,13 @@ impl Room {
     }
 
     /// An endpoint of `seed`'s person on its own wire connection, holding
-    /// the room's channel.
+    /// the workspace's channel.
     fn endpoint(&self, seed: u8) -> Endpoint {
         let (connection, outgoing, channel) = self.connection(seed);
         Endpoint::serve(connection, outgoing, channel)
     }
 
-    /// A connection of `seed`'s person holding the room's channel, not yet
+    /// A connection of `seed`'s person holding the workspace's channel, not yet
     /// served.
     fn connection(
         &self,
@@ -227,9 +227,9 @@ impl Endpoint {
 async fn presence_crosses_the_wire_attributed_and_replicated() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = Room::new(&[1, 2]);
-            let mut watcher = room.endpoint(1);
-            let mut author = room.endpoint(2);
+            let workspace = Workspace::new(&[1, 2]);
+            let mut watcher = workspace.endpoint(1);
+            let mut author = workspace.endpoint(2);
             let channel = watcher.channel;
             let subscription = watcher.send(Operation::Subscribe {
                 channel,
@@ -276,14 +276,14 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                 "the broker trims a status before it travels"
             );
             assert!(
-                room.sink.snapshot().iter().any(|sent| matches!(
+                workspace.sink.snapshot().iter().any(|sent| matches!(
                     sent,
                     Sent::Presence { presence, .. } if presence.payload == PeerPresencePayload::Status {
                         text: "Reviewing Q2".into(),
                         automatic: false,
                     }
                 )),
-                "the same update is replicated to the room's peers"
+                "the same update is replicated to the workspace's peers"
             );
 
             assert!(
@@ -329,9 +329,9 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
 async fn a_signed_change_crosses_the_wire_to_the_channel_subscribers() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = Room::new(&[4, 5]);
-            let mut watcher = room.endpoint(4);
-            let mut author = room.endpoint(5);
+            let workspace = Workspace::new(&[4, 5]);
+            let mut watcher = workspace.endpoint(4);
+            let mut author = workspace.endpoint(5);
             let channel = watcher.channel;
             let subscription = watcher
                 .send(Operation::Subscribe {
@@ -347,7 +347,7 @@ async fn a_signed_change_crosses_the_wire_to_the_channel_subscribers() {
                 }
             );
 
-            let route = &room.route;
+            let route = &workspace.route;
             let mut op = SignedOp::new_unsigned(
                 DocumentMutation::Snapshot(b"automerge snapshot".to_vec())
                     .encode()
@@ -408,9 +408,9 @@ async fn a_signed_change_crosses_the_wire_to_the_channel_subscribers() {
 async fn a_late_joiner_asks_a_context_subscriber_for_the_document() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = Room::new(&[6, 8]);
-            let mut holder = room.endpoint(6);
-            let mut joiner = room.endpoint(8);
+            let workspace = Workspace::new(&[6, 8]);
+            let mut holder = workspace.endpoint(6);
+            let mut joiner = workspace.endpoint(8);
             let channel = holder.channel;
             assert_eq!(
                 holder
@@ -446,9 +446,9 @@ async fn a_late_joiner_asks_a_context_subscriber_for_the_document() {
 async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = Room::new(&[3]);
-            let mut endpoint = room.joining_endpoint();
-            let channel = room.route.channel_key();
+            let workspace = Workspace::new(&[3]);
+            let mut endpoint = workspace.joining_endpoint();
+            let channel = workspace.route.channel_key();
             assert_eq!(
                 endpoint
                     .call(Operation::Room {
@@ -462,7 +462,7 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
                 .call(Operation::Join(Join {
                     channel: channel.clone(),
                     identity: crate::collab_app_broker::tests::certified_join(
-                        &room.route.cluster_id,
+                        &workspace.route.cluster_id,
                         &SigningKey::from_bytes(&[3; 32]),
                         &device(4),
                     )
@@ -476,13 +476,13 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
                 .await;
             assert!(
                 refused.is_err(),
-                "a device the room never enrolled joins nothing"
+                "a device the workspace never enrolled joins nothing"
             );
             let Ok(Reply::Opened(handle)) = endpoint
                 .call(Operation::Join(Join {
                     channel,
                     identity: crate::collab_app_broker::tests::certified_join(
-                        &room.route.cluster_id,
+                        &workspace.route.cluster_id,
                         &SigningKey::from_bytes(&[3; 32]),
                         &device(3),
                     )
@@ -515,8 +515,8 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
 async fn a_service_command_is_answered_or_refused_on_its_call() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = Room::new(&[9]);
-            let mut endpoint = room.endpoint(9);
+            let workspace = Workspace::new(&[9]);
+            let mut endpoint = workspace.endpoint(9);
             let channel = endpoint.channel;
             for service in [
                 Service::AudioOutput,
@@ -571,7 +571,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                         })
                         .await
                         .is_err(),
-                    "{report:?}: a channel with no instance or durable room reports nothing"
+                    "{report:?}: a channel with no instance or durable workspace reports nothing"
                 );
             }
             assert!(
@@ -615,8 +615,8 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
 async fn task_runs_and_their_calls_are_only_for_a_delegated_agent() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = Room::new(&[10]);
-            let mut endpoint = room.endpoint(10);
+            let workspace = Workspace::new(&[10]);
+            let mut endpoint = workspace.endpoint(10);
             let channel = endpoint.channel;
             assert!(
                 endpoint
@@ -626,7 +626,7 @@ async fn task_runs_and_their_calls_are_only_for_a_delegated_agent() {
                     })
                     .await
                     .is_err(),
-                "task runs go only to a delegated agent in a room that runs tasks"
+                "task runs go only to a delegated agent in a workspace that runs tasks"
             );
             let step = TaskStep {
                 peer_id: 0,
@@ -664,8 +664,8 @@ async fn task_runs_and_their_calls_are_only_for_a_delegated_agent() {
 async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = Room::new(&[13]);
-            let mut endpoint = room.endpoint(13);
+            let workspace = Workspace::new(&[13]);
+            let mut endpoint = workspace.endpoint(13);
             let channel = endpoint.channel;
             assert_eq!(
                 endpoint
@@ -748,8 +748,8 @@ async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own
 async fn an_app_publishes_its_action_surface_whole_or_as_a_change() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = Room::new(&[14]);
-            let mut endpoint = room.endpoint(14);
+            let workspace = Workspace::new(&[14]);
+            let mut endpoint = workspace.endpoint(14);
             let channel = endpoint.channel;
             let reset = serde_json::to_string(&runtime_collab::SurfaceDelta {
                 reset: true,
@@ -795,9 +795,9 @@ async fn the_wire_client_calls_and_subscribes_against_the_host() {
     use runtime_collab::wire::client::{Client, Delivery};
     tokio::task::LocalSet::new()
         .run_until(async {
-            let room = Room::new(&[11, 12]);
+            let workspace = Workspace::new(&[11, 12]);
             let connect = |seed: u8| {
-                let (connection, outgoing, channel) = room.connection(seed);
+                let (connection, outgoing, channel) = workspace.connection(seed);
                 let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
                 let (reader, writer) = host.into_split();
                 tokio::task::spawn_local(serve(connection, outgoing, reader, writer));

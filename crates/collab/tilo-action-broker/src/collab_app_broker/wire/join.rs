@@ -5,7 +5,7 @@ use super::*;
 
 impl AppConnection {
     /// Admit `join` and hold its channel for this connection: the identity
-    /// is verified, a room still being joined or placed is waited for, the
+    /// is verified, a workspace still being joined or placed is waited for, the
     /// route's access and the participant's delegation are decided, and the
     /// route is held and published.
     #[expect(
@@ -75,13 +75,13 @@ impl AppConnection {
             })?,
         };
         phases.mark("verify");
-        // A room still being joined or placed on its host holds the join
+        // A workspace still being joined or placed on its host holds the join
         // until apps can open documents in it, whichever client asks.
         if let Some(memberships) = state.services.workspace_memberships.clone() {
-            let mut status = memberships.room_status(&route.cluster_id);
+            let mut status = memberships.workspace_status(&route.cluster_id);
             while matches!(status, runtime_collab::RoomStatus::Waiting { .. }) {
                 status = memberships
-                    .room_status_change(&route.cluster_id, status)
+                    .workspace_status_change(&route.cluster_id, status)
                     .await;
             }
             if let runtime_collab::RoomStatus::Refused(reason) = status {
@@ -208,7 +208,7 @@ impl AppConnection {
                 })?;
                 let now = state.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
                 membership
-                    .decide_in_room(&route.cluster_id, |workspace| {
+                    .decide_in_workspace(&route.cluster_id, |workspace| {
                         admit_agent_delegation_at(
                             workspace,
                             &mut verified_identity,
@@ -223,9 +223,9 @@ impl AppConnection {
             }
         }
         // An app the person opens, launched or restored into a tab, is
-        // let author the room as its person may let it: asked where
+        // let author the workspace as its person may let it: asked where
         // every opening of an app joins. The join goes on meanwhile:
-        // the app asks for the room's keys again until the grant is in.
+        // the app asks for the workspace's keys again until the grant is in.
         if person
             && verified_identity.agent_id.is_none()
             && let Some(certificate) = verified_identity.certificate.clone()
@@ -235,10 +235,10 @@ impl AppConnection {
             tokio::task::spawn_local(async move {
                 if let Err(error) = state.admit_opening_app(&route, &certificate).await {
                     tracing::warn!(
-                        room = %route.cluster_id,
+                        workspace = %route.cluster_id,
                         app = %route.app_id,
                         %error,
-                        "an opening app was not let author its room"
+                        "an opening app was not let author its workspace"
                     );
                 }
             });

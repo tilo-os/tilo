@@ -1,11 +1,11 @@
 //! An app's ask of one node of its workspace's tree: sharing a record or an
-//! item of it with the room's members (Chat's live window share), ending
+//! item of it with the workspace's members (Chat's live window share), ending
 //! that share, or asking what the person may do there.
 //!
-//! The broker admits the ask for the person at this device in that room
-//! only, and hands it to the host, which asks the room: the room decides it
+//! The broker admits the ask for the person at this device in that workspace
+//! only, and hands it to the host, which asks the workspace: the workspace decides it
 //! as it decides every read and write a share's grant then covers. This
-//! device keeps nothing of it, so a share whose room cannot be asked is
+//! device keeps nothing of it, so a share whose workspace cannot be asked is
 //! refused rather than shown as access no grant backs.
 
 use std::sync::Arc;
@@ -17,21 +17,21 @@ use tilo_actions::remote::{
 };
 
 use super::super::AppBrokerState;
-use crate::services::RoomNodeAsk;
+use crate::services::WorkspaceNodeAsk;
 
-/// The room and node `request` asks of, when it is a node ask.
+/// The workspace and node `request` asks of, when it is a node ask.
 pub(super) fn node_ask(request: &InvokeRequest) -> Option<(&str, &str)> {
-    let room = workspace_provider_room(&request.target.provider)?;
+    let workspace = workspace_provider_room(&request.target.provider)?;
     let node = request
         .target
         .address
         .resource
         .strip_prefix(NODE_RESOURCE_PREFIX)?;
-    Some((room, node))
+    Some((workspace, node))
 }
 
 /// The ask `request` makes, from its action and arguments.
-fn ask_of(request: &InvokeRequest) -> Result<RoomNodeAsk, ActionHostError> {
+fn ask_of(request: &InvokeRequest) -> Result<WorkspaceNodeAsk, ActionHostError> {
     let text = |name: &str| {
         match &request.argument {
             InvokeArgument::Json(arguments) => arguments
@@ -45,45 +45,45 @@ fn ask_of(request: &InvokeRequest) -> Result<RoomNodeAsk, ActionHostError> {
         })
     };
     Ok(match request.target.address.action.as_str() {
-        SHARE_NODE_ACTION => RoomNodeAsk::Share {
+        SHARE_NODE_ACTION => WorkspaceNodeAsk::Share {
             share: text("share")?,
             access: text("access")?,
         },
-        UNSHARE_NODE_ACTION => RoomNodeAsk::Unshare {
+        UNSHARE_NODE_ACTION => WorkspaceNodeAsk::Unshare {
             share: text("share")?,
         },
-        NODE_PERMITS_ACTION => RoomNodeAsk::Permits,
+        NODE_PERMITS_ACTION => WorkspaceNodeAsk::Permits,
         _ => return Err(ActionHostError::UnknownAction),
     })
 }
 
 impl AppBrokerState {
-    /// Ask the room `request`'s node is in what it asks, for `caller`: the
-    /// person at this device, in that room. Answered whole once the room
+    /// Ask the workspace `request`'s node is in what it asks, for `caller`: the
+    /// person at this device, in that workspace. Answered whole once the workspace
     /// answers.
-    pub(super) fn invoke_room_node(
+    pub(super) fn invoke_workspace_node(
         self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&super::super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let started = (|| {
-            let (room, node) = node_ask(request).ok_or(ActionHostError::UnknownAction)?;
+            let (workspace, node) = node_ask(request).ok_or(ActionHostError::UnknownAction)?;
             let ask = ask_of(request)?;
-            if !super::own_device::is_person_here(caller, origin) || caller.room() != Some(room) {
+            if !super::own_device::is_person_here(caller, origin)
+                || caller.room() != Some(workspace)
+            {
                 return Err(ActionHostError::NotPermitted);
             }
-            self.decide_for(caller, room, |_, _, _| ())
+            self.decide_for(caller, workspace, |_, _, _| ())
                 .ok_or(ActionHostError::NotPermitted)?;
-            let service =
-                self.services
-                    .room_nodes
-                    .as_ref()
-                    .ok_or_else(|| ActionHostError::Unavailable {
-                        reason: "This device can't ask the room about what it shares".into(),
-                    })?;
+            let service = self.services.workspace_nodes.as_ref().ok_or_else(|| {
+                ActionHostError::Unavailable {
+                    reason: "This device can't ask the workspace about what it shares".into(),
+                }
+            })?;
             service
-                .ask(room, node, ask)
+                .ask(workspace, node, ask)
                 .map_err(|reason| ActionHostError::Unavailable { reason })
         })();
         let answered = match started {
@@ -105,7 +105,7 @@ impl AppBrokerState {
                 },
                 None => ReceiptStatus::Rejected {
                     error: ActionHostError::Unavailable {
-                        reason: "The room did not answer".into(),
+                        reason: "The workspace did not answer".into(),
                     },
                 },
             };
@@ -120,7 +120,7 @@ mod tests {
     use super::*;
     use tilo_actions::remote::node_target;
 
-    const NODE: &str = "room:r1/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1";
+    const NODE: &str = "workspace:r1/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1";
 
     fn request(action: &str, arguments: serde_json::Value) -> InvokeRequest {
         InvokeRequest {
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn a_node_ask_names_its_room_node_and_what_it_asks() {
+    fn a_node_ask_names_its_workspace_node_and_what_it_asks() {
         let share = request(
             SHARE_NODE_ACTION,
             serde_json::json!({ "share": "m1", "access": "edit" }),
@@ -148,15 +148,15 @@ mod tests {
         assert_eq!(node_ask(&share), Some(("r1", NODE)));
         assert!(matches!(
             ask_of(&share),
-            Ok(RoomNodeAsk::Share { share, access }) if share == "m1" && access == "edit"
+            Ok(WorkspaceNodeAsk::Share { share, access }) if share == "m1" && access == "edit"
         ));
         assert!(matches!(
             ask_of(&request(UNSHARE_NODE_ACTION, serde_json::json!({ "share": "m1" }))),
-            Ok(RoomNodeAsk::Unshare { share }) if share == "m1"
+            Ok(WorkspaceNodeAsk::Unshare { share }) if share == "m1"
         ));
         assert!(matches!(
             ask_of(&request(NODE_PERMITS_ACTION, serde_json::Value::Null)),
-            Ok(RoomNodeAsk::Permits)
+            Ok(WorkspaceNodeAsk::Permits)
         ));
         assert!(matches!(
             ask_of(&request(

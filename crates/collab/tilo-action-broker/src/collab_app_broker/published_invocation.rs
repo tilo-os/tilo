@@ -13,7 +13,7 @@ use ui::invocation_scope::{
 pub(super) enum InvocationCaller {
     NativePerson {
         invocation: tilo_actions::InvocationId,
-        room: String,
+        workspace: String,
         certificate: tilo_user_identity::DeviceCert,
         time: crate::peer_actions::PolicyTime,
     },
@@ -450,12 +450,14 @@ impl OriginalInvocationData {
         state.checked_policy_time(Some(&self.time))?;
         match &self.caller {
             InvocationCaller::NativePerson {
-                room, certificate, ..
+                workspace,
+                certificate,
+                ..
             } => {
-                if room != &self.route.cluster_id {
+                if workspace != &self.route.cluster_id {
                     return Err("original native caller route changed".into());
                 }
-                state.current_native_person(room, certificate)?;
+                state.current_native_person(workspace, certificate)?;
             }
             InvocationCaller::Certified { caller, .. } => {
                 state.current_action_caller(caller)?;
@@ -495,12 +497,14 @@ impl OriginalInvocationData {
         let (_, now) = state.checked_policy_time(Some(&self.time))?;
         let certificate = match &self.caller {
             InvocationCaller::NativePerson {
-                room, certificate, ..
+                workspace,
+                certificate,
+                ..
             } => {
-                if room != &self.route.cluster_id {
+                if workspace != &self.route.cluster_id {
                     return Err("original native caller route changed".into());
                 }
-                state.current_native_person(room, certificate)?;
+                state.current_native_person(workspace, certificate)?;
                 certificate.clone()
             }
             InvocationCaller::Certified { caller, .. } => {
@@ -550,7 +554,7 @@ impl OriginalInvocationData {
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
-            .decide_in_room(&self.route.cluster_id, |workspace| {
+            .decide_in_workspace(&self.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("original invocation workspace unavailable")?;
                 if !person.may_in(
                     workspace,
@@ -566,14 +570,14 @@ impl OriginalInvocationData {
     }
 
     /// Recover a person's original certified custody for a native owner turn.
-    /// This is not an allow decision: the owner rechecks current room rights.
+    /// This is not an allow decision: the owner rechecks current workspace rights.
     pub(super) fn owner_person_certificate(
         &self,
         state: &AppBrokerState,
-        room: &str,
+        workspace: &str,
         envelope: &super::InvocationEnvelope,
     ) -> Result<tilo_user_identity::DeviceCert, String> {
-        if self.route.cluster_id != room
+        if self.route.cluster_id != workspace
             || self.request.wire_id != envelope.id
             || self.request.invocation != envelope.invocation
             || self.request.address.resource != envelope.resource
@@ -630,13 +634,13 @@ impl OriginalInvocationData {
             && matches!(&self.caller, InvocationCaller::Local { route, .. } if route.app_id == app)
     }
 
-    /// Whether this was delivered to application `app` in `room`.
-    pub(super) fn delivered_to(&self, app: &str, room: &str) -> bool {
-        self.route.app_id == app && self.route.cluster_id == room
+    /// Whether this was delivered to application `app` in `workspace`.
+    pub(super) fn delivered_to(&self, app: &str, workspace: &str) -> bool {
+        self.route.app_id == app && self.route.cluster_id == workspace
     }
 
-    pub(super) fn permits_launch_in(&self, room: &str) -> bool {
-        self.route.cluster_id == room
+    pub(super) fn permits_launch_in(&self, workspace: &str) -> bool {
+        self.route.cluster_id == workspace
             && self.spec.contract.kind >= tilo_actions::ActionKind::Undoable
             && self
                 .execution
@@ -647,9 +651,9 @@ impl OriginalInvocationData {
     pub(super) fn launch_person_certificate(
         &self,
         state: &AppBrokerState,
-        room: &str,
+        workspace: &str,
     ) -> Result<tilo_user_identity::DeviceCert, String> {
-        if !self.permits_launch_in(room) {
+        if !self.permits_launch_in(workspace) {
             return Err("original invocation cannot authorize this launch".into());
         }
         self.current_person_certificate(state)
@@ -658,11 +662,11 @@ impl OriginalInvocationData {
     pub(super) fn launch_administrator_certificate(
         &self,
         state: &AppBrokerState,
-        room: &str,
+        workspace: &str,
     ) -> Result<tilo_user_identity::DeviceCert, String> {
-        let certificate = self.launch_person_certificate(state, room)?;
+        let certificate = self.launch_person_certificate(state, workspace)?;
         let (_, now) = state.checked_policy_time(Some(&self.time))?;
-        let mut actor = state.certified_person(room, &certificate);
+        let mut actor = state.certified_person(workspace, &certificate);
         if let InvocationCaller::Certified {
             foreign_restriction,
             ..
@@ -670,7 +674,7 @@ impl OriginalInvocationData {
         {
             actor.capped |= super::cap_applies_in(
                 state.certificate_authority.get().map(AsRef::as_ref),
-                room,
+                workspace,
                 *foreign_restriction,
                 Some(&certificate.device_public_key),
             );
@@ -680,7 +684,7 @@ impl OriginalInvocationData {
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
-            .decide_in_room(room, |workspace| {
+            .decide_in_workspace(workspace, |workspace| {
                 let workspace = workspace.ok_or("original launch workspace unavailable")?;
                 if !actor.may_in(
                     workspace,
@@ -797,7 +801,7 @@ impl OriginalInvocation {
     pub fn certificate(&self) -> Result<&tilo_user_identity::DeviceCert, String> {
         match &self.data.caller {
             // A network caller's verified device certificate is its signed
-            // evidence; room admission alone carries only the key identity.
+            // evidence; workspace admission alone carries only the key identity.
             InvocationCaller::Certified { caller, .. } => {
                 caller.admitted.certificate.as_ref().or_else(|| {
                     caller
@@ -1066,7 +1070,7 @@ impl OriginalInvocation {
     }
 
     /// The original person caller, decided while `state` can still say who
-    /// governs the room; `None` for an agent caller.
+    /// governs the workspace; `None` for an agent caller.
     fn original_person(
         &self,
         state: &AppBrokerState,
@@ -1074,9 +1078,9 @@ impl OriginalInvocation {
         if self.agent_id().is_some() {
             return Ok(None);
         }
-        let room = &self.data.route.cluster_id;
+        let workspace = &self.data.route.cluster_id;
         let certificate = self.certificate()?;
-        let mut person = state.certified_person(room, certificate);
+        let mut person = state.certified_person(workspace, certificate);
         if let InvocationCaller::Certified {
             foreign_restriction,
             ..
@@ -1086,7 +1090,7 @@ impl OriginalInvocation {
             // never let a weaker certificate erase the host's retained restriction.
             person.capped |= super::cap_applies_in(
                 state.certificate_authority.get().map(AsRef::as_ref),
-                room,
+                workspace,
                 *foreign_restriction,
                 Some(&certificate.device_public_key),
             );
@@ -1149,9 +1153,11 @@ impl OriginalInvocation {
         }
         match &self.data.caller {
             InvocationCaller::NativePerson {
-                room, certificate, ..
+                workspace,
+                certificate,
+                ..
             } => {
-                state.current_native_person(room, certificate)?;
+                state.current_native_person(workspace, certificate)?;
             }
             InvocationCaller::Certified { caller, .. } => {
                 state.current_action_caller(caller)?;
@@ -1174,7 +1180,7 @@ impl OriginalInvocation {
         let person = self.original_person(&state)?;
         drop(state);
         let seconds = self.data.time.now_ns().map_err(|error| error.to_string())? / 1_000_000_000;
-        membership.decide_in_room(&self.data.route.cluster_id, |workspace| {
+        membership.decide_in_workspace(&self.data.route.cluster_id, |workspace| {
             let workspace = workspace.ok_or("original invocation workspace unavailable")?;
             let actor = self.original_actor(person, workspace, seconds)?;
             if !actor.may_in(
@@ -1232,7 +1238,7 @@ impl AppBrokerState {
             original.check_lifecycle()?;
             let route = runtime_collab::route::RouteSpec {
                 app_id: worker.route.app_id.clone(),
-                cluster_id: worker.route.cluster_id.parse().map_err(|_| "invalid original worker room")?,
+                cluster_id: worker.route.cluster_id.parse().map_err(|_| "invalid original worker workspace")?,
                 record: (!worker.route.record_id.is_empty()).then(|| worker.route.record_id.clone()),
             };
             let check = original.clone();

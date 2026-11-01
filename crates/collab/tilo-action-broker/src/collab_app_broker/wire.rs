@@ -32,7 +32,7 @@ use presence::presence_event;
 
 /// What a subscription receives from the broker's fanout. A host worker's
 /// feed ends with an error once that worker is no longer current, and a
-/// native window's once its room or document custody ended, checked on
+/// native window's once its workspace or document custody ended, checked on
 /// both sides of every wait.
 pub(super) struct Feed<T> {
     host_guard: Option<HostWorkerReadGuard>,
@@ -266,7 +266,7 @@ impl JoinedChannel {
 impl JoinedChannel {
     /// Answer a committed-document request. An `Await` is held until the
     /// read may have changed, and an Open whose record is still being
-    /// decided (the room's host's replay) or created on another device is
+    /// decided (the workspace's host's replay) or created on another device is
     /// awaited, all on this `LocalSet`, so every channel's calls keep
     /// flowing meanwhile.
     pub(super) async fn committed_document_answer(
@@ -398,7 +398,7 @@ impl std::ops::Deref for ChannelSession {
 }
 
 impl JoinedChannel {
-    /// Admit, commit where the room's owner must hold it first, and fan out
+    /// Admit, commit where the workspace's owner must hold it first, and fan out
     /// one signed document change.
     pub(super) async fn publish_document(&self, envelope: SignedOp) -> Result<(), BrokerError> {
         self.writable()?;
@@ -573,9 +573,8 @@ impl JoinedChannel {
             Report::SearchIndex(_) => None,
             _ => Some(self.continuation_instance().map_err(BrokerError::failed)?),
         };
-        let room = tilo_desktop_model::RoomId::parse(&route.cluster_id).ok_or_else(|| {
-            BrokerError::failed(format!("{verb} route has no durable workspace room"))
-        })?;
+        let workspace = tilo_desktop_model::RoomId::parse(&route.cluster_id)
+            .ok_or_else(|| BrokerError::failed(format!("{verb} route has no durable workspace")))?;
         let services = &self.state.services;
         let continuations = |unsupported: &str| {
             services
@@ -590,12 +589,12 @@ impl JoinedChannel {
                 schema_version,
                 metadata,
             } => continuations("continuation reporting unsupported").and_then(|service| {
-                service.report(room, app_id, instance, schema_version, metadata)
+                service.report(workspace, app_id, instance, schema_version, metadata)
             }),
             Report::ClearContinuation => continuations("continuation clearing unsupported")
-                .and_then(|service| service.clear(room, &app_id, instance)),
+                .and_then(|service| service.clear(workspace, &app_id, instance)),
             Report::Handoff(message) => continuations("handoff unsupported")
-                .and_then(|service| service.handoff(room, app_id, instance, message)),
+                .and_then(|service| service.handoff(workspace, app_id, instance, message)),
             Report::SearchIndex(delta) => {
                 if delta.len() > crate::services::MAX_SEARCH_INDEX_DELTA_BYTES {
                     return Err(BrokerError::failed(
@@ -606,14 +605,16 @@ impl JoinedChannel {
                     .search_index
                     .as_ref()
                     .ok_or_else(|| "search index publication unsupported".to_owned())
-                    .and_then(|service| service.publish(room, &app_id, &route.record_id, &delta))
+                    .and_then(|service| {
+                        service.publish(workspace, &app_id, &route.record_id, &delta)
+                    })
             }
         }
         .map_err(BrokerError::failed)
     }
 
     /// Record a terminal effect this app ran itself on one of the actions
-    /// it publishes, as workspace activity: committed by the room's owner
+    /// it publishes, as workspace activity: committed by the workspace's owner
     /// where one keeps effect receipts, else projected here.
     pub(super) fn record_local_effect_dispatch(
         &self,
@@ -956,7 +957,7 @@ impl JoinedChannel {
     /// A replacement subscription is handed the approved run again.
     pub(super) fn task_run_feed(&self) -> Result<Feed<TaskRunEnvelope>, BrokerError> {
         if self.state.services.legacy_workspace.is_none()
-            && !self.state.task_admitted_room(&self.route().cluster_id)
+            && !self.state.task_admitted_workspace(&self.route().cluster_id)
         {
             return Err(BrokerError::failed(
                 "task execution service unsupported".into(),
@@ -1341,7 +1342,7 @@ impl JoinedChannel {
         drop(admission);
         self.state.invocation_streams_changed();
         // The app the launcher attested, else the one this channel names.
-        let (app, room) = self
+        let (app, workspace) = self
             .lease
             .as_ref()
             .and_then(|lease| lease.local_media.as_ref())
@@ -1352,7 +1353,7 @@ impl JoinedChannel {
                 },
                 |app| (app.app_id.clone(), app.workspace_id.clone()),
             );
-        let delivered = invocation_delivery_notice(&self.state.services, app, room);
+        let delivered = invocation_delivery_notice(&self.state.services, app, workspace);
         Ok(InvocationStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -2052,7 +2053,7 @@ impl WireConnection {
 
     /// Answer one call. A reply, and the events a subscription it starts
     /// delivers, take the outgoing queue in that order; a call that waits (a
-    /// join, a room's change, a document change the room's owner commits
+    /// join, a workspace's change, a document change the workspace's owner commits
     /// first) answers when done.
     #[expect(
         clippy::too_many_lines,
@@ -2089,13 +2090,13 @@ impl WireConnection {
                     .service
                     .as_ref()
                     .and_then(|service| service.state.services.workspace_memberships.clone());
-                let room = CrdtRoute::from_channel_key(&channel).cluster_id;
+                let workspace = CrdtRoute::from_channel_key(&channel).cluster_id;
                 Box::pin(async move {
                     Ok(Reply::Room(match (memberships, seen) {
                         (Some(memberships), Some(seen)) => {
-                            memberships.room_status_change(&room, seen).await
+                            memberships.workspace_status_change(&workspace, seen).await
                         }
-                        (Some(memberships), None) => memberships.room_status(&room),
+                        (Some(memberships), None) => memberships.workspace_status(&workspace),
                         (None, _) => runtime_collab::RoomStatus::default(),
                     }))
                 })
@@ -2548,7 +2549,7 @@ impl WireConnection {
                 if self.subscriptions.borrow().contains_key(&id) {
                     return Err(format!("subscription {id} is already live"));
                 }
-                // A watch begins only where the room's grants let the caller
+                // A watch begins only where the workspace's grants let the caller
                 // read, and each reading is decided again as it is served.
                 super::published::gate(
                     &publishing.state,

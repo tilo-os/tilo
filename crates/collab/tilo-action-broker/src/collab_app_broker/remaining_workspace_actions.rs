@@ -93,7 +93,7 @@ impl AppBrokerState {
             caller,
             origin,
             HostActionAdmission {
-                room: &authority.0.room().to_string(),
+                workspace: &authority.0.room().to_string(),
                 app_id: action.0,
                 descriptor: action.1,
                 request: input.0,
@@ -112,10 +112,10 @@ impl AppBrokerState {
     ) -> Result<bool, ActionHostError> {
         let (workspace, actor, _) = authority;
         let (request, argument) = input;
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let witnessed = self.consume_answer(
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.id(), &room, request),
+            &self.witness_binding(actor.id(), &workspace_id, request),
         );
         if !Self::confirmed_as_asked(
             actor,
@@ -142,7 +142,7 @@ impl AppBrokerState {
         &self,
         caller: &Caller,
         origin: Option<&InvocationCaller>,
-        room: &str,
+        workspace: &str,
     ) -> Result<(Workspace, BrokerActor, u64), ActionHostError> {
         let unavailable = |reason| ActionHostError::Unavailable { reason };
         if !self.is_accepting() || (caller.execution_id().is_some() && !caller.execution_is_live())
@@ -161,17 +161,17 @@ impl AppBrokerState {
                     .certificate
                     .as_ref()
                     .ok_or(ActionHostError::NotPermitted)?;
-                if original.room != room {
+                if original.workspace != workspace {
                     return Err(ActionHostError::NotPermitted);
                 }
                 if caller.device_public_key().is_none() {
-                    self.current_native_person(room, certificate)
+                    self.current_native_person(workspace, certificate)
                         .map_err(unavailable)?;
                 }
                 let mut actor = current.broker_actor();
                 actor.capped |= super::cap_applies_in(
                     self.certificate_authority.get().map(AsRef::as_ref),
-                    room,
+                    workspace,
                     *foreign_restriction,
                     Some(&certificate.device_public_key),
                 );
@@ -184,7 +184,7 @@ impl AppBrokerState {
             }) => {
                 self.checked_policy_time(time.as_ref())
                     .map_err(unavailable)?;
-                if route.cluster_id != room {
+                if route.cluster_id != workspace {
                     return Err(ActionHostError::NotPermitted);
                 }
                 if let Some(registration) = &admitted.worker_registration {
@@ -207,23 +207,23 @@ impl AppBrokerState {
                 Some(current.broker_actor())
             }
             Some(InvocationCaller::NativePerson {
-                room: original,
+                workspace: original,
                 certificate,
                 time,
                 ..
             }) => {
-                if original != room {
+                if original != workspace {
                     return Err(ActionHostError::NotPermitted);
                 }
                 self.checked_policy_time(Some(time)).map_err(unavailable)?;
-                self.current_native_person(room, certificate)
+                self.current_native_person(workspace, certificate)
                     .map_err(unavailable)?;
-                Some(self.certified_person(room, certificate))
+                Some(self.certified_person(workspace, certificate))
             }
             None => None,
         };
         let (workspace, actor, now) = self
-            .decide_for(caller, room, |workspace, actor, now| {
+            .decide_for(caller, workspace, |workspace, actor, now| {
                 (workspace.clone(), actor.clone(), now)
             })
             .ok_or(ActionHostError::NotPermitted)?;
@@ -312,7 +312,7 @@ impl AppBrokerState {
             caller,
             origin,
             HostActionAdmission {
-                room: &authority.0.room().to_string(),
+                workspace: &authority.0.room().to_string(),
                 app_id: tilo_automation::SHORTCUTS_APP_ID,
                 descriptor: &descriptor,
                 request,
@@ -320,9 +320,10 @@ impl AppBrokerState {
         )?;
         #[cfg(test)]
         tests::at_effect_barrier();
-        let room = authority.0.room().to_string();
+        let workspace_id = authority.0.room().to_string();
         let (plan, actor) = self.framework_effect_ready(&admitted, || {
-            let (workspace, actor, _) = self.current_framework_authority(caller, origin, &room)?;
+            let (workspace, actor, _) =
+                self.current_framework_authority(caller, origin, &workspace_id)?;
             // Replan on the current document: a valid old plan can overwrite a
             // concurrent shortcut edit even when the caller still has permission.
             let operation =
@@ -345,7 +346,7 @@ impl AppBrokerState {
             )
             .map_err(|reason| ActionHostError::Refused { reason })?;
             let (current_workspace, actor, now) =
-                self.current_framework_authority(caller, origin, &room)?;
+                self.current_framework_authority(caller, origin, &workspace_id)?;
             if serde_json::to_value(&workspace).ok()
                 != serde_json::to_value(&current_workspace).ok()
             {
@@ -369,7 +370,7 @@ impl AppBrokerState {
             }
             crate::automation::LibraryPlan::Stop(stop) => {
                 let stopped = self.ended_runs.running.running.stop(
-                    &room,
+                    &workspace_id,
                     &stop,
                     "asked for from the shortcuts library",
                 );
@@ -388,7 +389,7 @@ impl AppBrokerState {
                 retryable: false,
             })
         };
-        // The change commits at the room's governor, which may be another
+        // The change commits at the workspace's governor, which may be another
         // device's host: awaited on the library's runtime, and the invocation
         // finishes when it does.
         let runtime = match library.runtime() {
@@ -396,7 +397,7 @@ impl AppBrokerState {
             Err(message) => return self.finish_framework_action(admitted, Err(failed(message))),
         };
         let stored = library.store(crate::services::ShortcutLibraryRequest {
-            room,
+            workspace: workspace_id,
             actor: actor.id().to_owned(),
             change,
             context: request
@@ -525,7 +526,7 @@ impl AppBrokerState {
             caller,
             origin,
             HostActionAdmission {
-                room: &authority.0.room().to_string(),
+                workspace: &authority.0.room().to_string(),
                 app_id: service.app_id(),
                 descriptor: &descriptor,
                 request,
@@ -540,13 +541,14 @@ impl AppBrokerState {
             }
             _ => serde_json::json!({}),
         };
-        let room = authority.0.room().to_string();
+        let workspace_id = authority.0.room().to_string();
         let actor = self.framework_effect_ready(&admitted, || {
-            let (workspace, _, _) = self.current_framework_authority(caller, origin, &room)?;
+            let (workspace, _, _) =
+                self.current_framework_authority(caller, origin, &workspace_id)?;
             let fresh = governance_descriptor(service.as_ref(), &workspace, &descriptor.address)
                 .ok_or(ActionHostError::UnknownAction)?;
             let (current_workspace, actor, now) =
-                self.current_framework_authority(caller, origin, &room)?;
+                self.current_framework_authority(caller, origin, &workspace_id)?;
             if serde_json::to_value(&fresh).ok() != serde_json::to_value(&descriptor).ok()
                 || serde_json::to_value(&workspace).ok()
                     != serde_json::to_value(&current_workspace).ok()
@@ -569,13 +571,13 @@ impl AppBrokerState {
                     super::InvocationOwner::Certified { device, .. }
                     | super::InvocationOwner::AuthenticatedLocal { device, agent: None, .. }
                     if self.services.native_certificates.as_ref().is_some_and(|authority|
-                        uuid::Uuid::parse_str(&room).is_ok_and(|room|
-                            authority.governs(room, Some(device))))))
+                        uuid::Uuid::parse_str(&workspace_id).is_ok_and(|workspace|
+                            authority.governs(workspace, Some(device))))))
                 && caller.shortcut().is_none()
                 && caller.acting_for_person().is_none()
                 && request.on_behalf_of.is_none(),
             execution_lease: caller.execution_lease(),
-            room: &room,
+            workspace: &workspace_id,
             actor: &actor,
             resource: &request.target.address.resource,
             action: &request.target.address.action,

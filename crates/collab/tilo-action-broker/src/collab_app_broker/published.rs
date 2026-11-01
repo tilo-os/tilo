@@ -8,7 +8,7 @@ use crate::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use runtime_collab::wire::{Event, HostFrame, Receipt, Reply};
 use tokio::sync::{mpsc, oneshot};
 
-/// Refuse `resource` when the room's grants do not let `caller` read it: what
+/// Refuse `resource` when the workspace's grants do not let `caller` read it: what
 /// its publisher declares the person's own (see [`super::readings`]).
 ///
 /// # Errors

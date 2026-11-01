@@ -4,7 +4,7 @@
 //! A publish is addressed by the same [`CrdtRoute`] the caller handed to
 //! the local fanout, rebuilt remotely through [`CrdtRoute::delivers_to`].
 //! Scope follows the payload: documents publish the
-//! route verbatim, records included; presence reaches the room only,
+//! route verbatim, records included; presence reaches the workspace only,
 //! since the wire frame has no record field.
 //!
 //! Every refusal to publish is logged once per publisher for
@@ -32,11 +32,11 @@ pub trait PeerPublishSink: Send + Sync {
     /// Republish typed presence independently of the local app transport.
     fn app_presence(&self, app_id: String, cluster_id: String, presence: PeerPresence);
 
-    /// Ask the room `cluster_id` whether anyone still holds a range of
+    /// Ask the workspace `cluster_id` whether anyone still holds a range of
     /// history; only its members are asked, and only they may answer.
     fn scrollback_request(&self, cluster_id: &str, artifact: ArtifactId, before_seq: u64, max: u16);
 
-    /// Also show typed presence on the room's live plane, where browsers and
+    /// Also show typed presence on the workspace's live plane, where browsers and
     /// agents draw it in `record_id` (empty when the app announced none).
     fn app_live_presence(
         &self,
@@ -94,17 +94,17 @@ impl PeerPublisher {
         })
     }
     /// Consult the actual installed owner; wiring a network sink grants nothing.
-    pub fn requires_owner_for(&self, room: &str) -> bool {
+    pub fn requires_owner_for(&self, workspace: &str) -> bool {
         self.owner_commit
             .as_ref()
-            .is_some_and(|owner| owner.requires_room(room))
+            .is_some_and(|owner| owner.requires_room(workspace))
     }
-    /// Whether `room`'s effect receipts are the installed owner's to
+    /// Whether `workspace`'s effect receipts are the installed owner's to
     /// commit ([`tilo_peer_state::owner_commit::OwnerCommitService::records_effects`]).
-    pub fn records_effects_for(&self, room: &str) -> bool {
+    pub fn records_effects_for(&self, workspace: &str) -> bool {
         self.owner_commit
             .as_ref()
-            .is_some_and(|owner| owner.records_effects(room))
+            .is_some_and(|owner| owner.records_effects(workspace))
     }
     /// Health of the installed durable owner commit.
     pub fn owner_commit_health(&self) -> Result<(), String> {
@@ -149,7 +149,7 @@ impl PeerPublisher {
         if let Some(n) = net {
             tracing::info!(
                 "collab outbound: peer sync wired; local edits will be \
-                 republished to the room"
+                 republished to the workspace"
             );
             Self::new(n as Arc<dyn PeerPublishSink>)
         } else {
@@ -184,7 +184,7 @@ impl PeerPublisher {
     }
 
     /// The app id rides along so the receiver can attribute the caret;
-    /// the record is dropped since "who else is here" is a room fact,
+    /// the record is dropped since "who else is here" is a workspace fact,
     /// and a peer editing a different document is still a legitimate audience.
     pub fn presence(&self, route: &CrdtRoute, presence: PeerPresence) -> bool {
         let Some(sink) = self.ready_quietly(route, "presence") else {
@@ -258,14 +258,14 @@ impl PeerPublisher {
             return None;
         };
         // Fail closed on an unaddressable route: publishing an empty or
-        // nil cluster would put a frame in a room no receiver can place.
+        // nil cluster would put a frame in a workspace no receiver can place.
         if !route.is_publishable() {
             if loud {
                 tracing::warn!(
                     app_id = %route.app_id,
                     cluster_id = %route.cluster_id,
                     "collab outbound: NOT publishing {what} — the sender's \
-                     route names no room, so it would reach nobody. An app in \
+                     route names no workspace, so it would reach nobody. An app in \
                      this state is collaborating with itself.",
                 );
             } else {
@@ -273,7 +273,7 @@ impl PeerPublisher {
                     app_id = %route.app_id,
                     cluster_id = %route.cluster_id,
                     "collab outbound: not publishing {what} whose route names \
-                     no room",
+                     no workspace",
                 );
             }
             return None;
@@ -472,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn presence_reaches_the_room_and_leaves_the_record_behind() {
+    fn presence_reaches_the_workspace_and_leaves_the_record_behind() {
         let (pubr, sink) = wired();
         let route = CrdtRoute::record("words", "77777777-7777-4777-8777-777777777777", "letter");
         let presence = presence();

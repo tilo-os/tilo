@@ -18,7 +18,7 @@ pub(super) enum RouteAccess {
 }
 
 /// What the attested launch of `app` may do on `route`: its own route, or
-/// one of the room's workspace records
+/// one of the workspace's records
 /// ([`collab_types::WORKSPACE_RECORDS`]); or, read-only, a record of another app whose kinds its surface declares it
 /// reads, when the person may read that record (`reads_record`). In the
 /// person's own room only the records of theirs its surface declares
@@ -36,8 +36,8 @@ pub(super) fn attested_route_access(
     if route.app_id.is_empty() || route.app_id == app {
         return Ok(RouteAccess::Own);
     }
-    // A workspace record is changed from any app's window of its room; the
-    // room's grants on its owner decide each change.
+    // A workspace record is changed from any app's window of its workspace; the
+    // workspace's grants on its owner decide each change.
     if collab_types::workspace_record(&route.app_id, &route.record_id).is_some() {
         return Ok(RouteAccess::Own);
     }
@@ -57,7 +57,7 @@ pub(super) fn attested_route_access(
     Ok(RouteAccess::ReadOnly)
 }
 
-/// Whether `identity` may read the record `route` names, as the room's
+/// Whether `identity` may read the record `route` names, as the workspace's
 /// committed authority decides now.
 pub(super) fn identity_reads_record(
     membership: Option<&WorkspaceTreeHandle>,
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(
             attested_route_access("test.lang-board", &workspace_route(""), false, unread),
             Ok(RouteAccess::Own),
-            "a route of no app is the room's"
+            "a route of no app is the workspace's"
         );
         assert_eq!(
             attested_route_access(
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(
             attested_route_access("test.lang-board", &emoji, false, unread),
             Ok(RouteAccess::Own),
-            "a workspace record is any app's of the room, as its grants decide"
+            "a workspace record is any app's of the workspace, as its grants decide"
         );
         assert!(
             attested_route_access(

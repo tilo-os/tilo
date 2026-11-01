@@ -1,6 +1,6 @@
 // A person's unsent editor reaches the Chat app only through the private
 // command lane, for the invocation that adopts it, and never enters the
-// room, its history or the invocation journal.
+// workspace, its history or the invocation journal.
 fn assert_private_editor_absent(bytes: &[u8], editor: &runtime_collab::private_draft::Editor) {
     for secret in [&editor.text, &editor.preedit] {
         assert!(!secret.is_empty(), "privacy canaries must not be empty");
@@ -378,7 +378,7 @@ async fn private_draft_belongs_to_the_record_its_adoption_targets() {
             let mut services = env.membership.services();
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
-                room: env.route.cluster_id.clone(),
+                workspace: env.route.cluster_id.clone(),
             }));
             services.local_person = Some(Arc::new(super::signed_worker::NativePerson(
                 env.authority.clone(),

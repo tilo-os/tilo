@@ -215,7 +215,7 @@ mod tests {
             adoption_id: uuid::Uuid::new_v4(),
             surface_id: 55,
             package_id: "so.tilo.calculator".into(),
-            room: "room".into(),
+            workspace: "room".into(),
         };
         observations.adopted_window(&ancestry(std::process::id()), Some(window.clone()));
         assert_eq!(
@@ -247,7 +247,7 @@ mod tests {
                 adoption_id: uuid::Uuid::new_v4(),
                 surface_id: 55,
                 package_id: "so.tilo.calculator".into(),
-                room: "room".into(),
+                workspace: "room".into(),
             }),
         );
         assert!(

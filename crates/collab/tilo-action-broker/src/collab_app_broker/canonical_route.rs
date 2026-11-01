@@ -184,7 +184,7 @@ impl AppBrokerState {
         })?;
         if uuid::Uuid::parse_str(&requested.room).is_err() {
             return Err(ActionHostError::InvalidRequest {
-                reason: "invalid canonical room route".into(),
+                reason: "invalid canonical workspace route".into(),
             });
         }
         let route = CrdtRoute::record(&requested.app_id, &requested.room, &requested.record_id);
@@ -269,8 +269,8 @@ impl AppBrokerState {
             .selected
             .iter()
             .find(|(_, selected)| selected.token == uuid)
-            .map(|((room, app_id, record_id), _)| CanonicalActionRoute {
-                room: room.clone(),
+            .map(|((workspace, app_id, record_id), _)| CanonicalActionRoute {
+                room: workspace.clone(),
                 app_id: app_id.clone(),
                 record_id: record_id.clone(),
             })

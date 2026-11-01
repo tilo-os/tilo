@@ -10,7 +10,7 @@ use crate::collab_app_broker::peer_action_broker::PeerRefusal;
 
 /// Host-owned current certificate/revocation authority. Implementations read
 /// the owner's explicit identity store on every check; this is never supplied
-/// by a wire request. Signature, expiry, device role, room membership and action
+/// by a wire request. Signature, expiry, device role, workspace membership and action
 /// policy remain mandatory broker checks independent of this provider.
 pub trait CertificateAuthority: Send + Sync {
     /// Installed local runtime clock/origin; never supplied by a wire peer.
@@ -21,14 +21,14 @@ pub trait CertificateAuthority: Send + Sync {
     fn policy_time(&self) -> Result<Option<PolicyTime>, String> {
         Ok(None)
     }
-    /// Checks `_certificate` for `_room` at the retained policy `_time`.
+    /// Checks `_certificate` for `_workspace` at the retained policy `_time`.
     ///
     /// # Errors
     ///
     /// Returns a message when the certificate is not authorized then; the default always refuses.
     fn authorize_with_policy_time(
         &self,
-        _room: Uuid,
+        _workspace: Uuid,
         _certificate: &tilo_user_identity::DeviceCert,
         _time: &PolicyTime,
     ) -> Result<(), String> {
@@ -48,16 +48,16 @@ pub trait CertificateAuthority: Send + Sync {
         Err("local host worker authority unavailable".into())
     }
 
-    /// Checks `certificate` against the owner's current identity store for `room`.
+    /// Checks `certificate` against the owner's current identity store for `workspace`.
     fn authorize(
         &self,
-        room: Uuid,
+        workspace: Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String>;
-    /// Whether `_device` governs `_room`; `None` is this host's own device.
-    /// A foreign device is held to the workspace's cap only in rooms it does
+    /// Whether `_device` governs `_workspace`; `None` is this host's own device.
+    /// A foreign device is held to the workspace's cap only in workspaces it does
     /// not govern; the default governs none.
-    fn governs(&self, _room: Uuid, _device: Option<&[u8; 32]>) -> bool {
+    fn governs(&self, _workspace: Uuid, _device: Option<&[u8; 32]>) -> bool {
         false
     }
     /// Local SDK admission may additionally require a host's current enrollment record.
@@ -67,10 +67,10 @@ pub trait CertificateAuthority: Send + Sync {
     /// Returns a message when [`Self::authorize`] refuses or the certificate acts as a host.
     fn authorize_join(
         &self,
-        room: Uuid,
+        workspace: Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        self.authorize(room, certificate)?;
+        self.authorize(workspace, certificate)?;
         if certificate.capabilities.can_act_as_host {
             return Err("device authority required".into());
         }
@@ -79,7 +79,7 @@ pub trait CertificateAuthority: Send + Sync {
 }
 
 /// Explicit inputs for an ordinary peer hosting the native broker service.
-/// The owner supplies its real publisher and current room tree separately.
+/// The owner supplies its real publisher and current workspace tree separately.
 #[derive(Clone)]
 pub struct NativePeerBrokerConfig {
     pub journal_root: std::path::PathBuf,
@@ -274,10 +274,10 @@ impl PeerActionQueue {
     pub async fn serve(
         &self,
         session: Arc<tilo_relay_session::RelayCoeditSession>,
-        room: Uuid,
+        workspace: Uuid,
         host: Uuid,
     ) -> Result<(), ()> {
-        let result = self.serve_attached(session.clone(), room, host).await;
+        let result = self.serve_attached(session.clone(), workspace, host).await;
         session.close().await;
         result.map_err(|_| ())
     }
@@ -285,7 +285,7 @@ impl PeerActionQueue {
     async fn serve_attached(
         &self,
         session: Arc<tilo_relay_session::RelayCoeditSession>,
-        room: Uuid,
+        workspace: Uuid,
         host: Uuid,
     ) -> Result<(), PeerActionAttachmentError> {
         let ActionMessage::BrokerCatalogue { host: current, .. } = self
@@ -299,10 +299,10 @@ impl PeerActionQueue {
             return Err(PeerActionAttachmentError::Failed);
         }
         session
-            .enable_actions(room)
+            .enable_actions(workspace)
             .map_err(attachment_send_error)?;
         session
-            .register_action_broker(room, host)
+            .register_action_broker(workspace, host)
             .map_err(attachment_send_error)?;
         let mut watches: Vec<(CertifiedAction, tilo_actions::InvocationId, ActionMessage)> =
             Vec::new();
@@ -312,7 +312,7 @@ impl PeerActionQueue {
             tokio::select! {
                 event = session.recv_certified_action() => match event {
                     Some(CertifiedActionEvent::Delivered(evidence)) => {
-                        if evidence.action().room != room { return Err(PeerActionAttachmentError::Failed); }
+                        if evidence.action().room != workspace { return Err(PeerActionAttachmentError::Failed); }
                         let response = match self.admit_delivery(&evidence) {
                             Err(error) => ActionMessage::Rejected { code: error.code().into() },
                             Ok(()) => self.request("delivered_action", Some(evidence.clone()), None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?,
@@ -336,7 +336,7 @@ impl PeerActionQueue {
                 transition = transitions.recv() => {
                     let (source, update) = transition.map_err(|_| PeerActionAttachmentError::Failed)?;
                     let update = update.ok_or(PeerActionAttachmentError::Failed)?;
-                    if source.action().room != room { continue; }
+                    if source.action().room != workspace { continue; }
                     if let Some((evidence, invocation, previous)) = watches.iter_mut().find(|(evidence, invocation, _)| evidence.action().source == source.action().source && *invocation == update.invocation()) {
                         if let ActionMessage::Observation { update: Some(prior), .. } = previous
                             && sequence(&update).zip(sequence(prior)).is_some_and(|(next, old)| next <= old) { continue; }

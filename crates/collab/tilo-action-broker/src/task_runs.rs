@@ -19,7 +19,7 @@ const MAX_ENDED_RUNS: usize = 64;
 /// An agent's run of an issue that ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EndedTaskRun {
-    pub room: String,
+    pub workspace: String,
     /// The group id the run's changes are stamped with.
     pub group: String,
     /// The issue's title, which history shows the run under.
@@ -54,7 +54,7 @@ impl TaskRuns {
     pub fn push(&self, run: EndedTaskRun) {
         if let Ok(mut ended) = self.ended.lock() {
             // A run reported twice (a retried report) is recorded once.
-            ended.retain(|queued| queued.room != run.room || queued.group != run.group);
+            ended.retain(|queued| queued.workspace != run.workspace || queued.group != run.group);
             ended.push_back(run);
             while ended.len() > MAX_ENDED_RUNS {
                 ended.pop_front();
@@ -82,7 +82,7 @@ mod tests {
 
     fn ended(group: &str, outcome: &str) -> EndedTaskRun {
         EndedTaskRun {
-            room: "room".into(),
+            workspace: "workspace".into(),
             group: group.into(),
             title: "Tidy".into(),
             agent: "agent:scribe".into(),

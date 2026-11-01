@@ -366,11 +366,11 @@ pub fn trigger_summary(trigger: &TriggerSpec) -> String {
     }
 }
 
-/// The action-door address a chord runs `shortcut_id` in `room` through.
+/// The action-door address a chord runs `shortcut_id` in `workspace` through.
 #[must_use]
-pub fn chord_target(room: &str, shortcut_id: &str) -> ActionChordTarget {
+pub fn chord_target(workspace: &str, shortcut_id: &str) -> ActionChordTarget {
     ActionChordTarget {
-        provider: workspace_provider(room),
+        provider: workspace_provider(workspace),
         resource: shortcut_resource_id(shortcut_id),
         action: SHORTCUT_RUN_ACTION.into(),
     }
@@ -443,9 +443,9 @@ pub fn check_triggers(
             ));
         }
     }
-    let room = workspace.room().to_string();
+    let workspace_id = workspace.room().to_string();
     let others = &tilo_automation::decode_saved(&workspace.shortcuts);
-    let target = chord_target(&room, &shortcut.id);
+    let target = chord_target(&workspace_id, &shortcut.id);
     let mut keyboard = None;
     for trigger in &shortcut.triggers {
         validate_trigger(trigger)?;
@@ -693,7 +693,7 @@ pub struct RunLedger {
     pub running: RunningRuns,
 }
 
-/// The runs this broker has going, by the room and the shortcut each runs.
+/// The runs this broker has going, by the workspace and the shortcut each runs.
 ///
 /// A run registers itself before its first step and leaves when it ends;
 /// A run of a shortcut going on from where an earlier one got to: the run
@@ -715,7 +715,7 @@ pub struct RunningRuns {
 /// One run going, as a stop names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunningRun {
-    pub room: String,
+    pub workspace: String,
     pub shortcut: String,
     /// What the shortcut is called, for a person reading the answer.
     pub name: String,
@@ -763,15 +763,15 @@ impl RunningRuns {
             .clone()
     }
 
-    /// Stop the runs `request` names, in `room`. Returns those it stopped;
+    /// Stop the runs `request` names, in `workspace`. Returns those it stopped;
     /// a run that is not going is not an error, since stopping one that has
     /// just finished is what someone asking for it wanted anyway.
-    pub fn stop(&self, room: &str, request: &StopRequest, reason: &str) -> Vec<RunningRun> {
+    pub fn stop(&self, workspace: &str, request: &StopRequest, reason: &str) -> Vec<RunningRun> {
         let Some(mut running) = self.running.lock().ok() else {
             return Vec::new();
         };
         let named = |run: &RunningRun| {
-            run.room == room
+            run.workspace == workspace
                 && match request {
                     StopRequest::Shortcut(id) => run.shortcut == *id,
                     StopRequest::All => true,
@@ -789,23 +789,23 @@ impl RunningRuns {
         stopping
     }
 
-    /// Every run going in `room`.
-    pub fn going(&self, room: &str) -> Vec<RunningRun> {
+    /// Every run going in `workspace`.
+    pub fn going(&self, workspace: &str) -> Vec<RunningRun> {
         self.running
             .lock()
             .map(|running| {
                 running
                     .iter()
-                    .filter(|run| run.room == room)
+                    .filter(|run| run.workspace == workspace)
                     .cloned()
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    /// The shortcuts a run about to start in `room` is told are running
+    /// The shortcuts a run about to start in `workspace` is told are running
     /// above it: the shortcut it is being started for, plus the shortcut of
-    /// every run going in the room whose own id is the group its steps will
+    /// every run going in the workspace whose own id is the group its steps will
     /// carry (`parent`), which is how a run reads the shortcut that called
     /// it.
     ///
@@ -815,15 +815,15 @@ impl RunningRuns {
     /// calls it made. Two shortcuts that call each other are therefore one
     /// run inside the other and the inner one is refused; two runs a person
     /// started side by side carry their own groups and are not each other's
-    /// parents, and neither is a run in another room.
+    /// parents, and neither is a run in another workspace.
     #[must_use]
-    pub fn above(&self, room: &str, parent: Option<&str>, own: &str) -> Vec<String> {
+    pub fn above(&self, workspace: &str, parent: Option<&str>, own: &str) -> Vec<String> {
         let Ok(running) = self.running.lock() else {
             return Vec::new();
         };
         let mut above: Vec<String> = running
             .iter()
-            .filter(|run| run.room == room)
+            .filter(|run| run.workspace == workspace)
             .filter(|run| parent.is_some_and(|parent| parent == run.run.0.to_string()))
             .map(|run| run.shortcut.clone())
             .collect();
@@ -1108,8 +1108,8 @@ pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpd
 /// One run the door finished, waiting to be recorded in history.
 #[derive(Clone, Debug)]
 pub struct FinishedShortcutRun {
-    /// The room of the workspace the shortcut is saved in.
-    pub room: String,
+    /// The workspace the shortcut is saved in.
+    pub workspace: String,
     pub shortcut: Shortcut,
     /// Policy id of the person or agent who invoked it.
     pub invoker: String,
@@ -1229,7 +1229,7 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
             Err("an app-event trigger names the event the application declares".into())
         }
         TriggerSpec::Connector { .. } => Err(
-            "connector triggers run only bots, on the room's host; a Shortcut cannot watch one"
+            "connector triggers run only bots, on the workspace's host; a Shortcut cannot watch one"
                 .into(),
         ),
         TriggerSpec::AppOpened { .. }
@@ -1337,9 +1337,9 @@ mod tests {
         assert!(decode_library("rename", None).is_err());
     }
 
-    fn going(room: &str, shortcut: &str, name: &str) -> RunningRun {
+    fn going(workspace: &str, shortcut: &str, name: &str) -> RunningRun {
         RunningRun {
-            room: room.into(),
+            workspace: workspace.into(),
             shortcut: shortcut.into(),
             name: name.into(),
             run: RunId::new(),
@@ -1349,7 +1349,7 @@ mod tests {
     }
 
     #[test]
-    fn stopping_names_one_shortcuts_runs_or_every_run_going_in_the_room() {
+    fn stopping_names_one_shortcuts_runs_or_every_run_going_in_the_workspace() {
         let runs = RunningRuns::default();
         let tidy = going("desk", "tidy", "Tidy");
         let sweep = going("desk", "sweep", "Sweep");
@@ -1362,7 +1362,7 @@ mod tests {
         assert_eq!(stopped.len(), 1);
         assert_eq!(stopped[0].shortcut, "tidy");
         assert_eq!(stopped[0].at.as_deref(), Some("1"));
-        // The other room's run of the same shortcut is somebody else's.
+        // The other workspace's run of the same shortcut is somebody else's.
         assert!(runs.stopped(elsewhere.run).is_none());
         assert!(runs.stopped(sweep.run).is_none());
 
@@ -1396,7 +1396,7 @@ mod tests {
             runs.above("desk", Some(&group), "inner"),
             ["outer", "inner"]
         );
-        // Another room's outer run above the same group is somebody else's.
+        // Another workspace's outer run above the same group is somebody else's.
         runs.register(going("study", "other", "Other"));
         assert_eq!(
             runs.above("desk", Some(&group), "inner"),

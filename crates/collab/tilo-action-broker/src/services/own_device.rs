@@ -44,7 +44,7 @@ pub trait OwnDeviceActions: Send + Sync {
     /// # Errors
     ///
     /// Why it cannot be asked: this device holds no identity of its own to
-    /// carry the answer back on, the question names no room this device can
+    /// carry the answer back on, the question names no workspace this device can
     /// reach the person in, or no own device of theirs is reachable.
     fn ask_person(
         &self,

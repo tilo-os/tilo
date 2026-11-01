@@ -31,7 +31,7 @@ mod pump {
     use collab_types::ChannelId;
     use std::time::Instant;
     use tilo_action_broker::{
-        channel_encryption::testing::{Directory, Endpoint, Policy, Room, key, public},
+        channel_encryption::testing::{Directory, Endpoint, Policy, Workspace, key, public},
         collab_core::BrokerChannels,
     };
 
@@ -54,7 +54,7 @@ mod pump {
 
     /// A pump on endpoint `id` of `room`, woken as `channels::open` wires it.
     fn parked(
-        room: &Arc<Room>,
+        room: &Arc<Workspace>,
         room_id: RoomId,
         id: usize,
         service: ChannelEncryption,
@@ -71,7 +71,7 @@ mod pump {
         (access, wake, pump)
     }
 
-    fn queued(room: &Room, id: usize) -> usize {
+    fn queued(room: &Workspace, id: usize) -> usize {
         room.queues.lock().unwrap().get(&id).map_or(0, Vec::len)
     }
 
@@ -94,7 +94,7 @@ mod pump {
 
     #[test]
     fn a_first_channel_is_announced_without_waiting_for_a_timer() {
-        let room = Arc::new(Room::default());
+        let room = Arc::new(Workspace::default());
         let room_id = RoomId::new();
         let dir = tempfile::tempdir().unwrap();
         let listener = Endpoint::join(&room, room_id, 1);
@@ -113,7 +113,7 @@ mod pump {
 
     #[test]
     fn arriving_governance_wakes_a_parked_pump() {
-        let room = Arc::new(Room::default());
+        let room = Arc::new(Workspace::default());
         let room_id = RoomId::new();
         let governor_dir = tempfile::tempdir().unwrap();
         let member_dir = tempfile::tempdir().unwrap();
@@ -141,7 +141,7 @@ mod pump {
     #[cfg(target_os = "linux")]
     #[test]
     fn an_idle_pump_with_no_channel_is_never_scheduled() {
-        let room = Arc::new(Room::default());
+        let room = Arc::new(Workspace::default());
         let room_id = RoomId::new();
         let dir = tempfile::tempdir().unwrap();
         let ((access, _, _pump), tid) =

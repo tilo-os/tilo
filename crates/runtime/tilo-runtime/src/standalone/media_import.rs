@@ -252,11 +252,12 @@ impl MediaImport {
         anyhow::ensure!(argument.len() <= 32 * 1024, "legacy import argument limit");
         let request: LegacyImportRequest = serde_json::from_str(argument)?;
         anyhow::ensure!(
-            request.destination_room == invocation.room && invocation.room == self.workspace.room(),
+            request.destination_room == invocation.workspace
+                && invocation.workspace == self.workspace.room(),
             "legacy import destination is not this runtime's owned room"
         );
-        let revision = owner_revision(self.workspace.as_ref(), invocation.room, account)?;
-        let (_, cert) = tilo_identity_host::broker::trusted_current_device(invocation.room)?;
+        let revision = owner_revision(self.workspace.as_ref(), invocation.workspace, account)?;
+        let (_, cert) = tilo_identity_host::broker::trusted_current_device(invocation.workspace)?;
         let approval = LegacyImportApproval {
             account: account.into(),
             device: hex::encode(cert.device_public_key),

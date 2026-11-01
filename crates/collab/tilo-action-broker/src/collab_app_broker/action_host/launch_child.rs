@@ -9,13 +9,13 @@ use crate::collab_app_broker::{InvocationCaller, host_action_admission::HostActi
 use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 use tilo_actions::{InvocationId, InvocationUpdate};
 
-/// Domain-separated, length-framed derivation: neither room/app boundaries nor
+/// Domain-separated, length-framed derivation: neither workspace/app boundaries nor
 /// the original application invocation can alias this child request.
-fn child_id(parent: InvocationId, room: &str, app: &str) -> InvocationId {
+fn child_id(parent: InvocationId, workspace: &str, app: &str) -> InvocationId {
     let mut hash = blake3::Hasher::new();
     hash.update(b"tilo.retained-app-launch.v1\0");
     hash.update(parent.0.as_bytes());
-    for part in [room, app] {
+    for part in [workspace, app] {
         hash.update(&(part.len() as u64).to_le_bytes());
         hash.update(part.as_bytes());
     }
@@ -29,14 +29,14 @@ fn child_id(parent: InvocationId, room: &str, app: &str) -> InvocationId {
 
 fn child_request(
     parent: InvocationId,
-    room: &str,
+    workspace: &str,
     descriptor: &ActionDescriptor,
     app: &str,
 ) -> InvokeRequest {
     InvokeRequest {
-        invocation: child_id(parent, room, app),
+        invocation: child_id(parent, workspace, app),
         target: RemoteActionTarget {
-            provider: workspace_provider(room),
+            provider: workspace_provider(workspace),
             address: descriptor.address.clone(),
         },
         argument: InvokeArgument::None,
@@ -75,8 +75,8 @@ impl AppBrokerState {
         if parent.invocation.0.is_nil() {
             return Err(ActionHostError::NotPermitted);
         }
-        let room = destination.workspace.room().to_string();
-        self.check_launch_origin(caller, Some(origin), &room)?;
+        let workspace = destination.workspace.room().to_string();
+        self.check_launch_origin(caller, Some(origin), &workspace)?;
         let app = self
             .services
             .launcher
@@ -89,7 +89,7 @@ impl AppBrokerState {
             })
             .ok_or(ActionHostError::UnknownAction)?;
         let descriptor = app_open_descriptor(&app);
-        let request = child_request(parent.invocation, &room, &descriptor, &app.package_id);
+        let request = child_request(parent.invocation, &workspace, &descriptor, &app.package_id);
         let mut child_origin = origin.clone();
         if let InvocationCaller::NativePerson { invocation, .. } = &mut child_origin {
             // Only retained, protected native evidence may be rebound, and only
@@ -103,7 +103,7 @@ impl AppBrokerState {
             caller,
             Some(&child_origin),
             HostActionAdmission {
-                room: &room,
+                workspace: &workspace,
                 app_id: &app.package_id,
                 descriptor: &descriptor,
                 request: &request,
@@ -119,7 +119,7 @@ impl AppBrokerState {
             })),
         )?;
         let workspace = self.reauthorize_launch_effect_as(
-            (caller, Some(&child_origin), &room),
+            (caller, Some(&child_origin), &workspace),
             &admitted,
             (&app.package_id, super::launch_kind(parent)),
         )?;

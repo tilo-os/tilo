@@ -45,7 +45,7 @@ const LABEL_TTL: Duration = Duration::from_secs(2);
 pub use tilo_action_broker::route::CrdtRoute;
 
 pub use tilo_action_broker::collab_broker::{
-    AppActionBroker, FanoutSink, FanoutState, RoomSubscription, SessionFollowDispatcher,
+    AppActionBroker, FanoutSink, FanoutState, SessionFollowDispatcher, WorkspaceSubscription,
 };
 
 pub struct BrokerHandle {
@@ -427,7 +427,7 @@ pub(crate) fn scrollback_answer(
         return Vec::new();
     };
     if !ch
-        .room_of(entry.artifact)
+        .workspace_of(entry.artifact)
         .is_some_and(|room| net.scrollback_answer_allowed(&room, entry.workspace_topic))
     {
         return Vec::new();
@@ -745,7 +745,7 @@ impl DrainQueues {
     /// it over the personal fabric like any other edit.
     fn drain_person_snapshot_requests(&self) -> bool {
         while let Some(person_room) = self.net.take_person_snapshot_request() {
-            let asked = self.table.request_room_snapshots(&person_room);
+            let asked = self.table.request_workspace_snapshots(&person_room);
             tracing::debug!(asked, "asked local apps to catch a returning device up");
         }
         true
@@ -1735,7 +1735,7 @@ mod tests {
             let table = Arc::new(super::FanoutState::new());
             let seen = Arc::new(Mutex::new(Vec::new()));
             let sink_seen = Arc::clone(&seen);
-            let _sub = table.subscribe_rooms(
+            let _sub = table.subscribe_workspaces(
                 vec!["room-1".to_string()],
                 Box::new(move |event, _route| {
                     if let CollabEvent::FollowChanged { peer_id } = event
@@ -1798,7 +1798,7 @@ mod tests {
             let table = Arc::new(super::FanoutState::new());
             let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
             let sink = Arc::clone(&heard);
-            let _sub = table.subscribe_rooms(
+            let _sub = table.subscribe_workspaces(
                 vec!["room-1".to_string()],
                 Box::new(move |event, _route| {
                     if let CollabEvent::Context { collaborators, .. } = event {
@@ -1861,7 +1861,7 @@ mod tests {
             let table = Arc::new(super::FanoutState::new());
             let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
             let sink_seen = Arc::clone(&seen);
-            let _sub = table.subscribe_rooms(
+            let _sub = table.subscribe_workspaces(
                 vec!["room-1".to_string()],
                 Box::new(move |event, _route| {
                     if let CollabEvent::Context { collaborators, .. } = event {
@@ -1930,7 +1930,7 @@ mod tests {
             let table = Arc::new(super::FanoutState::new());
             let heard: Heard = Arc::new(Mutex::new(Vec::new()));
             let sink = Arc::clone(&heard);
-            let _sub = table.subscribe_rooms(
+            let _sub = table.subscribe_workspaces(
                 vec!["room-1".to_string()],
                 Box::new(move |event, _route| {
                     if let CollabEvent::Context { collaborators, .. } = event {

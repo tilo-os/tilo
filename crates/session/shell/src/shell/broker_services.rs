@@ -264,24 +264,24 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         })
     }
 
-    fn room_status(&self, room: &str) -> runtime_collab::RoomStatus {
+    fn workspace_status(&self, room: &str) -> runtime_collab::RoomStatus {
         super::state::RoomId::parse(room).map_or_else(runtime_collab::RoomStatus::default, |room| {
             self.rooms().status(room)
         })
     }
 
-    fn room_status_change(
+    fn workspace_status_change(
         &self,
         room: &str,
         seen: runtime_collab::RoomStatus,
-    ) -> tilo_action_broker::services::RoomStatusFuture {
+    ) -> tilo_action_broker::services::WorkspaceStatusFuture {
         match super::state::RoomId::parse(room) {
             Some(room) => Box::pin(self.rooms().change(room, seen)),
             None => Box::pin(std::future::ready(runtime_collab::RoomStatus::default())),
         }
     }
-    fn requires_room(&self, room: &str) -> bool {
-        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
+    fn requires_workspace(&self, workspace: &str) -> bool {
+        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, workspace)
     }
 
     /// The one app-access decision every opening of an app takes
@@ -438,7 +438,7 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
             .map(|room| self.0.read().verified_agents(room))
             .unwrap_or_default()
     }
-    fn room_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
+    fn workspace_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
         super::state::RoomId::parse(room).and_then(|room| self.0.read().room_revocations(room))
     }
 }
@@ -1316,7 +1316,7 @@ impl ShortcutLibraryServices for NativeShortcutLibrary {
         let network = self.1.clone();
         Box::pin(async move {
             let room =
-                super::state::RoomId::parse(&request.room).ok_or("invalid workspace room")?;
+                super::state::RoomId::parse(&request.workspace).ok_or("invalid workspace room")?;
             let committed = Self::commit(
                 tree.clone(),
                 network,
@@ -1460,13 +1460,13 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             .direct_person()
             .ok_or_else(|| "only a person governs a workspace".to_string())?
             .to_owned();
-        let governor = self.governor_of(request.room);
+        let governor = self.governor_of(request.workspace);
         let mut tree = self.0.write();
         let workspace_index = tree
             .desktop
             .workspaces
             .iter()
-            .position(|workspace| workspace.room().to_string() == request.room)
+            .position(|workspace| workspace.room().to_string() == request.workspace)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let workspace = tree
             .desktop
@@ -1616,7 +1616,7 @@ impl NativeAppActionGrants {
             .as_ref()
             .map_or_else(|| label(&request.app_id), |scope| format!("“{scope}”"));
         let context = tilo_desktop_model::grants::app_action_grant_context(
-            &request.room,
+            &request.workspace,
             &grantee,
             &label(&request.target_app),
             &format!("{} · {}", request.resource_label, request.action_label),
@@ -1681,7 +1681,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
         grant: tilo_action_policy::Grant,
         answer: tilo_action_broker::app_actions::AppActionConsent,
     ) -> tilo_action_broker::services::GrantRecording {
-        let Some(room) = super::state::RoomId::parse(&request.room) else {
+        let Some(room) = super::state::RoomId::parse(&request.workspace) else {
             return Box::pin(std::future::ready(Err("no such workspace".into())));
         };
         let receipt = Self::receipt(request, answer);
@@ -2079,7 +2079,7 @@ pub fn native_services(
         }),
         nearby_transfer,
         own_device: NativeOwnDevice::service(network.as_ref()),
-        room_nodes: room_nodes::NativeRoomNodes::service(network.as_ref()),
+        workspace_nodes: room_nodes::NativeRoomNodes::service(network.as_ref()),
         workspace_control: network.map(|network| {
             Arc::new(NativeWorkspaceControl(network)) as Arc<dyn WorkspaceControlServices>
         }),

@@ -4,7 +4,7 @@
 //!
 //! The budget is a queue, not a gate: a read that finds it held waits its
 //! turn ([`Budget::wait`]), served in order as reservations are released or
-//! shrink. Running out of room is load, never a refusal.
+//! shrink. Running out of workspace is load, never a refusal.
 use runtime_collab::committed_document::{
     CHANGES_FIRST_BYTES, CHUNK_BYTES, MAX_CHANGES_BASE, MAX_DOCUMENT_BYTES,
 };
@@ -48,7 +48,7 @@ impl Budget {
     fn admitted(&self) -> u32 {
         u32::try_from(MAX_DOCUMENT_BYTES.min(self.total)).unwrap_or(u32::MAX)
     }
-    /// A reservation now, if the budget has room and no read is waiting for
+    /// A reservation now, if the budget has workspace and no read is waiting for
     /// it: a read never overtakes one that waits.
     pub(in crate::collab_app_broker) fn try_reserve(self: &Arc<Self>) -> Option<Reservation> {
         let admitted = self.admitted();
@@ -58,7 +58,7 @@ impl Budget {
             .map(|permit| Reservation::of(&self.permits, permit, admitted))
     }
     /// A reservation once this read's turn comes: after every read that
-    /// waited before it, as soon as releases leave room. `None` only if the
+    /// waited before it, as soon as releases leave workspace. `None` only if the
     /// budget were closed, which it never is.
     pub(in crate::collab_app_broker) fn wait(
         self: &Arc<Self>,
@@ -268,11 +268,11 @@ mod tests {
             signature: [0; 64],
         };
         tilo_user_identity::sign_device_cert(&mut certificate, &person).unwrap();
-        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let roster = vec![certificate.clone()];
         let now = std::time::SystemTime::now();
         let mut source = StatePeer::new(
-            room,
+            workspace,
             certificate.clone(),
             roster.clone(),
             RevocationList::new(),
@@ -282,7 +282,8 @@ mod tests {
         source
             .install_seed(
                 SeedState {
-                    room_changes: tilo_peer_state::seed_room(room, &certificate, &roster).unwrap(),
+                    room_changes: tilo_peer_state::seed_room(workspace, &certificate, &roster)
+                        .unwrap(),
                     documents: vec![SeedDocument {
                         app_id: "test.app".into(),
                         record_id: String::new(),
@@ -315,8 +316,8 @@ mod tests {
             receipt: CreationReceipt {
                 token: [7; 16],
                 workspace: CreationWorkspace {
-                    id: room.into(),
-                    name: "Empty fixture room".into(),
+                    id: workspace.into(),
+                    name: "Empty fixture workspace".into(),
                 },
             },
             chunk: CreationChunk::from_reply(stream.chunk(0, [0; 16]).unwrap()).unwrap(),

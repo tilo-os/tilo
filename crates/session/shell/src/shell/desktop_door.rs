@@ -580,7 +580,7 @@ impl HostStepServices for BrokerDoor {
         if request.address.resource != RESOURCE {
             return Err("the desktop publishes its layout on desktop:session".into());
         }
-        let room = RoomId::parse(request.room).ok_or("the step names no workspace")?;
+        let room = RoomId::parse(request.workspace).ok_or("the step names no workspace")?;
         let arguments = arguments_of(request.argument)?;
         let actor = Actor {
             id: request.actor.id().to_owned(),

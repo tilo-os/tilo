@@ -231,7 +231,7 @@ async fn durable_admission_survives_restart_and_journal_barrier_failures() {
                 } else {
                     // The journal keeps the outcome across the restart.
                     let key = crate::collab_app_broker::invocation_journal::InvocationKey {
-                        room: env.route.cluster_id.clone(),
+                        workspace: env.route.cluster_id.clone(),
                         host: restarted.state.invocation_host().unwrap(),
                         owner: crate::collab_app_broker::invocation_journal::InvocationOwner::AuthenticatedLocal {
                             root: env.cert.user_public_key,
@@ -409,7 +409,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
             use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
             let env = Environment::new();
             let rig = Rig::new(&env).await;
-            let room = env.route.cluster_id.clone();
+            let workspace = env.route.cluster_id.clone();
             {
                 use crate::test_support::{Grants as _, KindSet, Subject, TreePath};
                 let workspace = &mut env.membership.write().workspaces[0];
@@ -439,7 +439,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                 .expect("the durable invocation's caller");
             assert_eq!(
                 continued,
-                tilo_actions::remote::Caller::local_agent("scribe").in_room(room.clone())
+                tilo_actions::remote::Caller::local_agent("scribe").in_room(workspace.clone())
             );
             assert!(rig.state.continuing_caller(904, invocation).is_none());
 
@@ -504,7 +504,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
             // time: revoked, it continues nothing.
             let certified = rig
                 .state
-                .verify_action_caller(&room, &presentation(&room, &env.cert, &env.key))
+                .verify_action_caller(&workspace, &presentation(&workspace, &env.cert, &env.key))
                 .unwrap();
             let certified = crate::collab_app_broker::ContinuingCaller::Certified {
                 caller: Box::new(certified),
@@ -518,7 +518,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                         env.cert.user_public_key,
                         env.cert.device_public_key
                     )
-                    .in_room(room.clone())
+                    .in_room(workspace.clone())
                 )
             );
             *env.authority.certificate.lock().unwrap() = None;

@@ -16,7 +16,7 @@ struct ShortcutAdmission<'a> {
 }
 
 impl AppBrokerState {
-    /// Admit a run of saved shortcut `shortcut_id` in `room` for `caller`
+    /// Admit a run of saved shortcut `shortcut_id` in `workspace` for `caller`
     /// and start it. The run invokes every step through this broker as
     /// `caller`, so each step meets `caller`'s own authority as well as the
     /// shortcut's grant; the admission answers at once and the run reports
@@ -26,7 +26,7 @@ impl AppBrokerState {
         self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&InvocationCaller>,
-        room: &str,
+        workspace: &str,
         shortcut_id: &str,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
@@ -43,7 +43,7 @@ impl AppBrokerState {
                 .map(|job| self.receipt_for(request.invocation, job))
                 .ok_or(ActionHostError::UnknownInvocation);
         }
-        let shortcut = match self.saved_shortcut(caller, room, shortcut_id) {
+        let shortcut = match self.saved_shortcut(caller, workspace, shortcut_id) {
             Ok(shortcut) => shortcut,
             Err(refused) => return Err(abandon(refused)),
         };
@@ -59,7 +59,7 @@ impl AppBrokerState {
         let job = self
             .start_shortcut_run(
                 caller,
-                room,
+                workspace,
                 shortcut,
                 automation::RunStart {
                     run: tilo_automation::RunId(request.invocation.0),
@@ -93,7 +93,7 @@ impl AppBrokerState {
         Ok(self.receipt_for(request.invocation, job))
     }
 
-    /// Run saved shortcut `shortcut_id` in `room` for `caller`, who is at
+    /// Run saved shortcut `shortcut_id` in `workspace` for `caller`, who is at
     /// the screen: every step that needs confirmation and every question
     /// waits in [`Self::take_step_prompt`] until the compositor's sheet
     /// answers it.
@@ -104,17 +104,17 @@ impl AppBrokerState {
     pub(crate) fn start_interactive_shortcut_run(
         self: &Arc<Self>,
         caller: &Caller,
-        room: &str,
+        workspace: &str,
         shortcut_id: &str,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, ActionHostError> {
-        self.start_interactive_shortcut_run_continuing(caller, room, shortcut_id, inputs, None)
+        self.start_interactive_shortcut_run_continuing(caller, workspace, shortcut_id, inputs, None)
     }
 
     /// [`Self::start_interactive_shortcut_run`], continuing the run `from`
     /// names: its steps before `from` are taken as they happened and the run
     /// goes on from `from`, as it stands in the shortcut now. The origin run
-    /// has to be one of this shortcut's runs in `room`.
+    /// has to be one of this shortcut's runs in `workspace`.
     ///
     /// # Errors
     ///
@@ -123,12 +123,12 @@ impl AppBrokerState {
     pub(crate) fn start_interactive_shortcut_run_continuing(
         self: &Arc<Self>,
         caller: &Caller,
-        room: &str,
+        workspace: &str,
         shortcut_id: &str,
         inputs: serde_json::Map<String, serde_json::Value>,
         from: Option<tilo_automation::Continuation>,
     ) -> Result<u64, ActionHostError> {
-        let shortcut = self.saved_shortcut(caller, room, shortcut_id)?;
+        let shortcut = self.saved_shortcut(caller, workspace, shortcut_id)?;
         let origin = match &from {
             Some(continuation) => Some(self.earlier_run(continuation, shortcut_id)?),
             None => None,
@@ -146,7 +146,7 @@ impl AppBrokerState {
             move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
         self.start_shortcut_run(
             caller,
-            room,
+            workspace,
             shortcut,
             automation::RunStart {
                 run: tilo_automation::RunId::new(),
@@ -187,7 +187,7 @@ impl AppBrokerState {
     }
 
     /// Start one of saved shortcut `shortcut_id`'s triggers, `trigger`, in
-    /// `room` on behalf of `caller`, who must be the person who saved it.
+    /// `workspace` on behalf of `caller`, who must be the person who saved it.
     ///
     /// A keyboard trigger means the person is at the screen: its run asks
     /// them through the compositor's sheet, like a palette run. Nobody is
@@ -204,23 +204,23 @@ impl AppBrokerState {
     pub fn start_triggered_shortcut_run(
         self: &Arc<Self>,
         caller: &Caller,
-        room: &str,
+        workspace: &str,
         shortcut_id: &str,
         trigger: &tilo_automation::TriggerSpec,
         run: tilo_automation::RunId,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, ActionHostError> {
-        let shortcut = self.saved_shortcut(caller, room, shortcut_id)?;
+        let shortcut = self.saved_shortcut(caller, workspace, shortcut_id)?;
         // The one rule arming holds too: started for its saver only, the
-        // person a device of theirs proved saved it in this room.
+        // person a device of theirs proved saved it in this workspace.
         let actor = BrokerActor::for_caller(caller).id;
         let revocations = self
             .membership
             .as_ref()
-            .and_then(|membership| membership.room_revocations(room))
+            .and_then(|membership| membership.workspace_revocations(workspace))
             .ok_or(ActionHostError::NotPermitted)?;
         if tilo_peer_state::room::proven_saver(
-            room,
+            workspace,
             &shortcut,
             &revocations,
             tilo_clock::unix_now_ns(),
@@ -236,7 +236,7 @@ impl AppBrokerState {
         let catalog =
             tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, RowScope::All).0);
         let others = self
-            .decide_for(caller, room, |workspace, _, _| {
+            .decide_for(caller, workspace, |workspace, _, _| {
                 tilo_automation::decode_saved(&workspace.shortcuts)
             })
             .unwrap_or_default();
@@ -258,7 +258,7 @@ impl AppBrokerState {
                 move |runtime, run| automation::SheetHooks::new(prompts, name, runtime, runs, run);
             return self.start_shortcut_run(
                 caller,
-                room,
+                workspace,
                 shortcut,
                 automation::RunStart {
                     run,
@@ -274,7 +274,7 @@ impl AppBrokerState {
         }
         self.start_shortcut_run(
             caller,
-            room,
+            workspace,
             shortcut,
             automation::RunStart {
                 run,
@@ -296,7 +296,7 @@ impl AppBrokerState {
         )
     }
 
-    /// Shortcut `shortcut_id` as saved in `room`, when `caller` is offered
+    /// Shortcut `shortcut_id` as saved in `workspace`, when `caller` is offered
     /// that workspace.
     ///
     /// # Errors
@@ -306,17 +306,17 @@ impl AppBrokerState {
     fn saved_shortcut(
         &self,
         caller: &Caller,
-        room: &str,
+        workspace_id: &str,
         shortcut_id: &str,
     ) -> Result<tilo_automation::Shortcut, ActionHostError> {
-        self.decide_for(caller, room, |workspace, _, _| {
+        self.decide_for(caller, workspace_id, |workspace, _, _| {
             workspace
                 .shortcuts
                 .iter()
                 .find(|shortcut| shortcut.id() == shortcut_id)
                 .map(|shortcut| {
                     shortcut.decode().map_err(|error| {
-                        tracing::warn!(room, shortcut = shortcut_id, %error, "saved shortcut does not decode");
+                        tracing::warn!(workspace_id, shortcut = shortcut_id, %error, "saved shortcut does not decode");
                         ActionHostError::Unavailable {
                             reason: format!("the saved shortcut cannot be read: {error}"),
                         }
@@ -333,7 +333,7 @@ impl AppBrokerState {
     fn start_shortcut_run<K>(
         self: &Arc<Self>,
         caller: &Caller,
-        room: &str,
+        workspace: &str,
         shortcut: tilo_automation::Shortcut,
         start: automation::RunStart,
         hooks: impl FnOnce(tokio::runtime::Handle, tilo_automation::RunId) -> K,
@@ -359,18 +359,18 @@ impl AppBrokerState {
                 reason: "broker lifecycle unavailable".into(),
             })?;
         let (admitted, origin) =
-            self.prepare_shortcut_run(caller, room, &shortcut, &start, admission)?;
+            self.prepare_shortcut_run(caller, workspace, &shortcut, &start, admission)?;
         let job = admitted.id;
         let invocation = admitted.invocation;
         let host = BrokerDoor::for_run(Arc::clone(self), origin);
         let state = Arc::clone(self);
         let caller = caller.clone().running_shortcut(shortcut.id.clone());
-        let room = room.to_string();
+        let workspace = workspace.to_string();
         let parent = start.parent.clone();
         // Registered before the first step, so a stop can find it; it leaves
         // as it ends, whether or not it was stopped.
         let running = automation::RunningRun {
-            room: room.clone(),
+            workspace: workspace.clone(),
             shortcut: shortcut.id.clone(),
             name: shortcut.name.clone(),
             run: start.run,
@@ -388,7 +388,7 @@ impl AppBrokerState {
             self.ended_runs
                 .running
                 .running
-                .above(&room, Some(group.as_str()), &shortcut.id);
+                .above(&workspace, Some(group.as_str()), &shortcut.id);
         self.ended_runs.running.running.register(running);
         let registered = self.ended_runs.running.running.clone();
         runtime.spawn(async move {
@@ -422,7 +422,7 @@ impl AppBrokerState {
                 .ended_runs
                 .shortcuts
                 .push(automation::FinishedShortcutRun {
-                    room,
+                    workspace,
                     shortcut,
                     invoker: actor,
                     report,
@@ -434,7 +434,7 @@ impl AppBrokerState {
     fn prepare_shortcut_run(
         &self,
         caller: &Caller,
-        room: &str,
+        workspace: &str,
         shortcut: &tilo_automation::Shortcut,
         start: &automation::RunStart,
         admission: Option<ShortcutAdmission<'_>>,
@@ -448,13 +448,13 @@ impl AppBrokerState {
         let admission = if let Some(admission) = admission {
             admission
         } else {
-            if caller.room() != Some(room) {
+            if caller.room() != Some(workspace) {
                 return Err(ActionHostError::NotPermitted);
             }
             request = InvokeRequest {
                 invocation: tilo_actions::InvocationId(start.run.0),
                 target: tilo_actions::remote::RemoteActionTarget {
-                    provider: workspace_provider(room),
+                    provider: workspace_provider(workspace),
                     address: automation::run_descriptor(shortcut).address,
                 },
                 argument: tilo_actions::remote::InvokeArgument::Json(start.inputs.clone()),
@@ -475,7 +475,7 @@ impl AppBrokerState {
                         .ok_or(ActionHostError::NotPermitted)?;
                     Ok(InvocationCaller::NativePerson {
                         invocation: request.invocation,
-                        room: room.into(),
+                        workspace: workspace.into(),
                         certificate,
                         time,
                     })
@@ -499,7 +499,7 @@ impl AppBrokerState {
             caller,
             admission.origin,
             HostActionAdmission {
-                room,
+                workspace,
                 app_id: SHORTCUTS_APP_ID,
                 descriptor: &automation::run_descriptor(shortcut),
                 request: admission.request,
@@ -525,18 +525,21 @@ impl AppBrokerState {
         self.ended_runs.shortcuts.has_finished()
     }
 
-    /// The runs going in `room`, so it can offer to stop one.
-    pub fn running_shortcut_runs(&self, room: &str) -> Vec<automation::RunningRun> {
-        self.ended_runs.running.running.going(room)
+    /// The runs going in `workspace`, so it can offer to stop one.
+    pub fn running_shortcut_runs(&self, workspace: &str) -> Vec<automation::RunningRun> {
+        self.ended_runs.running.running.going(workspace)
     }
 
     /// Stop the runs `request` names before their next step.
     pub fn stop_shortcut_runs(
         &self,
-        room: &str,
+        workspace: &str,
         request: &automation::StopRequest,
         reason: &str,
     ) -> Vec<automation::RunningRun> {
-        self.ended_runs.running.running.stop(room, request, reason)
+        self.ended_runs
+            .running
+            .running
+            .stop(workspace, request, reason)
     }
 }

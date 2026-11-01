@@ -8,7 +8,7 @@ mod external_moderation_rpc_tests {
 
     struct ExactLaunch {
         app: String,
-        room: String,
+        workspace: String,
     }
 
     impl crate::services::LauncherServices for ExactLaunch {
@@ -24,26 +24,26 @@ mod external_moderation_rpc_tests {
         ) -> Result<(), String> {
             Err("fixture never launches applications".into())
         }
-        fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
-            pid == std::process::id() && app == self.app && room == self.room
+        fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
+            pid == std::process::id() && app == self.app && workspace == self.workspace
         }
     }
 
-    struct Room {
-        original: signed_worker::OriginalRoom,
+    struct Workspace {
+        original: signed_worker::OriginalWorkspace,
         route: CrdtRoute,
         state: Arc<AppBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
         _owner_mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
     }
 
-    impl Room {
+    impl Workspace {
         fn new(native: bool) -> Self {
             Self::with_document(native, None)
         }
 
         fn with_document(native: bool, document: Option<Arc<dyn NativeDocumentReads>>) -> Self {
-            let original = signed_worker::OriginalRoom::new(
+            let original = signed_worker::OriginalWorkspace::new(
                 if native {
                     tilo_user_identity::DeviceCapabilities::primary()
                 } else {
@@ -58,10 +58,10 @@ mod external_moderation_rpc_tests {
         fn with_original(
             native: bool,
             document: Option<Arc<dyn NativeDocumentReads>>,
-            original: signed_worker::OriginalRoom,
+            original: signed_worker::OriginalWorkspace,
         ) -> Self {
             let route = CrdtRoute::record("so.tilo.store", &original.route.cluster_id, "store");
-            // This fixture replaces OriginalRoom's broker, not its journal.
+            // This fixture replaces OriginalWorkspace's broker, not its journal.
             // Release that unused writer before opening the Store broker.
             drop(
                 original
@@ -79,7 +79,7 @@ mod external_moderation_rpc_tests {
             if native {
                 services.launcher = Some(Arc::new(ExactLaunch {
                     app: route.app_id.clone(),
-                    room: route.cluster_id.clone(),
+                    workspace: route.cluster_id.clone(),
                 }));
             }
             let (owner_handle, owner_mailbox) =
@@ -346,26 +346,26 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
-                    let room = Room::new(false);
-                    let target = room.worker(980).await;
+                    let workspace = Workspace::new(false);
+                    let target = workspace.worker(980).await;
                     let descriptor = descriptor(action);
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
-                    let offered = room.state.surfaces.lock().unwrap()[&980].actions[0].clone();
-                    let (actor, origin) = room.caller();
+                    let offered = workspace.state.surfaces.lock().unwrap()[&980].actions[0].clone();
+                    let (actor, origin) = workspace.caller();
                     let operation = operation(action == "appeal");
                     let exact = argument(&operation);
-                    let surface = room.state.surfaces.lock().unwrap()[&980].clone();
-                    let binding = room.state.native_witness_binding(
+                    let surface = workspace.state.surfaces.lock().unwrap()[&980].clone();
+                    let binding = workspace.state.native_witness_binding(
                         actor.id(),
                         &(surface, offered.clone()),
                         Some(&exact),
                         tilo_actions::InvocationId::new(),
                     );
                     assert!(matches!(
-                        room.state.confirmation_token(
+                        workspace.state.confirmation_token(
                             980,
-                            &room.route.app_id,
+                            &workspace.route.app_id,
                             &offered,
                             Some(&exact),
                             &actor,
@@ -376,9 +376,9 @@ mod external_moderation_rpc_tests {
                     ));
                     assert!(actor.direct(), "the app's own identity is a direct person");
                     assert!(matches!(
-                        room.state.confirmation_token(
+                        workspace.state.confirmation_token(
                             980,
-                            &room.route.app_id,
+                            &workspace.route.app_id,
                             &offered,
                             Some(&exact),
                             &actor,
@@ -388,12 +388,12 @@ mod external_moderation_rpc_tests {
                         Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)
                     ));
                     for altered in ["missing", "payload", "destination"] {
-                        let witness = room.state.witness_confirmation(&binding).unwrap();
-                        let token = room
+                        let witness = workspace.state.witness_confirmation(&binding).unwrap();
+                        let token = workspace
                             .state
                             .confirmation_token(
                                 980,
-                                &room.route.app_id,
+                                &workspace.route.app_id,
                                 &offered,
                                 Some(&exact),
                                 &actor,
@@ -418,7 +418,7 @@ mod external_moderation_rpc_tests {
                             _ => unreachable!(),
                         }
                         let changed = argument(&changed);
-                        let result = room.state.start_invocation_confirmed_for_origin(
+                        let result = workspace.state.start_invocation_confirmed_for_origin(
                             980,
                             &offered.resource,
                             action,
@@ -440,7 +440,7 @@ mod external_moderation_rpc_tests {
                             .expect("unconfirmed or changed operation must be refused");
                         assert!(error.contains("confirmation"), "{altered}: {error}");
                     }
-                    room.invoke(980, &offered.resource, action, &exact);
+                    workspace.invoke(980, &offered.resource, action, &exact);
                     let id = stream.read().await.unwrap().invocation_uuid;
                     let request = Request {
                         protocol: PROTOCOL.into(),
@@ -458,27 +458,27 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
-                    let room = Room::new(false);
-                    let target = room.worker(980).await;
+                    let workspace = Workspace::new(false);
+                    let target = workspace.worker(980).await;
                     let mut descriptor = descriptor(action);
                     descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let _stream = target.handle.subscribe_stable_invocations().await.unwrap();
-                    let offered = room.state.surfaces.lock().unwrap()[&980].actions[0].clone();
-                    let (actor, _) = room.caller();
+                    let offered = workspace.state.surfaces.lock().unwrap()[&980].actions[0].clone();
+                    let (actor, _) = workspace.caller();
                     assert!(actor.direct());
                     let exact = argument(&operation(action == "appeal"));
-                    let surface = room.state.surfaces.lock().unwrap()[&980].clone();
-                    let binding = room.state.native_witness_binding(
+                    let surface = workspace.state.surfaces.lock().unwrap()[&980].clone();
+                    let binding = workspace.state.native_witness_binding(
                         actor.id(),
                         &(surface, offered.clone()),
                         Some(&exact),
                         tilo_actions::InvocationId::new(),
                     );
                     assert!(matches!(
-                        room.state.confirmation_token(
+                        workspace.state.confirmation_token(
                             980,
-                            &room.route.app_id,
+                            &workspace.route.app_id,
                             &offered,
                             Some(&exact),
                             &actor,
@@ -489,12 +489,12 @@ mod external_moderation_rpc_tests {
                     ));
                     // A generic internal/native-task approval is not evidence
                     // that the host showed this external disclosure.
-                    let generic = room
+                    let generic = workspace
                         .state
                         .mint_confirmation_grant(980, &offered, Some(&exact), &actor)
                         .unwrap();
                     for token in [None, Some(generic.as_str())] {
-                        let result = room.state.start_invocation_confirmed_for_origin(
+                        let result = workspace.state.start_invocation_confirmed_for_origin(
                             980,
                             &offered.resource,
                             action,
@@ -508,7 +508,7 @@ mod external_moderation_rpc_tests {
                                 confirmation_token: token,
                                 context: None,
                             },
-                            Some(room.caller().1),
+                            Some(workspace.caller().1),
                         );
                         let error = result
                             .err()
@@ -529,7 +529,7 @@ mod external_moderation_rpc_tests {
     }
 
     impl NativeDocumentReads for ReportDocument {
-        fn requires_room(&self, _: &str) -> bool {
+        fn requires_workspace(&self, _: &str) -> bool {
             true
         }
         fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
@@ -587,8 +587,9 @@ mod external_moderation_rpc_tests {
             .run_until(async {
                 for altered in ["digest", "summary", "package", "category", "none"] {
                     let note = "The package description is misleading";
-                    let room = Room::with_document(false, Some(committed_report(note, None)));
-                    let target = room.worker(977).await;
+                    let workspace =
+                        Workspace::with_document(false, Some(committed_report(note, None)));
+                    let target = workspace.worker(977).await;
                     let descriptor = descriptor("submit-report");
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -625,7 +626,7 @@ mod external_moderation_rpc_tests {
                             .unwrap()
                         },
                     };
-                    room.invoke(
+                    workspace.invoke(
                         977,
                         "workspace:atlas",
                         "submit-report",
@@ -667,9 +668,11 @@ mod external_moderation_rpc_tests {
             .run_until(async {
                 for altered in ["case", "reason", "digest", "none"] {
                     let note = "The reported problem has been addressed";
-                    let room =
-                        Room::with_document(false, Some(committed_report(note, Some("case-one"))));
-                    let target = room.worker(978).await;
+                    let workspace = Workspace::with_document(
+                        false,
+                        Some(committed_report(note, Some("case-one"))),
+                    );
+                    let target = workspace.worker(978).await;
                     let descriptor = descriptor("appeal");
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
@@ -690,7 +693,7 @@ mod external_moderation_rpc_tests {
                         .into(),
                         evidence_digest_hex: (altered == "digest").then(|| "cd".repeat(32)),
                     };
-                    room.invoke(978, "workspace:atlas", "appeal", &argument(&operation));
+                    workspace.invoke(978, "workspace:atlas", "appeal", &argument(&operation));
                     let id = stream.read().await.unwrap().invocation_uuid;
                     let request = Request {
                         protocol: PROTOCOL.into(),
@@ -730,14 +733,14 @@ mod external_moderation_rpc_tests {
                         temp.path().join("registries.toml"),
                         format!("[[registry]]\nname = 'Custom'\nbase_url = '{base}'\nowner_pubkey_hex = '{owner}'\nenabled = {enabled}\n"),
                     ).unwrap();
-                    let room = Room::new(false);
-                    let target = room.worker(976).await;
+                    let workspace = Workspace::new(false);
+                    let target = workspace.worker(976).await;
                     let descriptor = descriptor("submit-report");
                     target.handle.publish_actions(&[descriptor]).await.unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let mut operation = operation(false);
                     operation.destination.base_url = "https://custom.example".into();
-                    room.invoke(976, "workspace:atlas", "submit-report", &argument(&operation));
+                    workspace.invoke(976, "workspace:atlas", "submit-report", &argument(&operation));
                     let delivered = stream.read().await.unwrap();
                     let id = delivered.invocation_uuid;
                     let request = Request {
@@ -755,15 +758,15 @@ mod external_moderation_rpc_tests {
     async fn external_moderation_rpc_refuses_expired_exact_operation_before_signing() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let room = Room::new(false);
-                let target = room.worker(975).await;
+                let workspace = Workspace::new(false);
+                let target = workspace.worker(975).await;
                 let descriptor = descriptor("submit-report");
                 target.handle.publish_actions(&[descriptor]).await.unwrap();
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                 let mut operation = operation(false);
                 operation.issued_at_unix = 1;
                 operation.expires_at_unix = 100;
-                room.invoke(
+                workspace.invoke(
                     975,
                     "workspace:atlas",
                     "submit-report",
@@ -785,8 +788,8 @@ mod external_moderation_rpc_tests {
     async fn external_moderation_rpc_native_target_requires_original_channel_and_publication() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let room = Room::new(true);
-                let (rpc, presentation, target) = room.launched(973).await;
+                let workspace = Workspace::new(true);
+                let (rpc, presentation, target) = workspace.launched(973).await;
                 let descriptor = descriptor("submit-report");
                 target
                     .handle
@@ -795,7 +798,7 @@ mod external_moderation_rpc_tests {
                     .unwrap();
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                 let operation = operation(false);
-                let wire = room.invoke(
+                let wire = workspace.invoke(
                     973,
                     &descriptor.resource,
                     "submit-report",
@@ -810,8 +813,11 @@ mod external_moderation_rpc_tests {
                     operation,
                 };
                 refused(&target.handle, &request, id, "HTTPS").await;
-                let foreign_route =
-                    CrdtRoute::record(&room.route.app_id, &room.route.cluster_id, "foreign-store");
+                let foreign_route = CrdtRoute::record(
+                    &workspace.route.app_id,
+                    &workspace.route.cluster_id,
+                    "foreign-store",
+                );
                 let foreign = rpc
                     .join_channel(&foreign_route.channel_key(), &presentation)
                     .await
@@ -822,7 +828,7 @@ mod external_moderation_rpc_tests {
                 replacement.resource = "replacement-store-resource".into();
                 target.handle.publish_actions(&[replacement]).await.unwrap();
                 refused(&target.handle, &request, id, "publication retired").await;
-                room.state.remove_connection(973);
+                workspace.state.remove_connection(973);
                 assert!(
                     target
                         .handle
@@ -838,8 +844,8 @@ mod external_moderation_rpc_tests {
     async fn external_moderation_rpc_rechecks_expired_original_policy() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let room = Room::new(false);
-                let target = room.worker(974).await;
+                let workspace = Workspace::new(false);
+                let target = workspace.worker(974).await;
                 let descriptor = descriptor("submit-report");
                 target
                     .handle
@@ -848,7 +854,7 @@ mod external_moderation_rpc_tests {
                     .unwrap();
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                 let operation = operation(false);
-                let wire = room.invoke(
+                let wire = workspace.invoke(
                     974,
                     &descriptor.resource,
                     "submit-report",
@@ -863,7 +869,8 @@ mod external_moderation_rpc_tests {
                     operation,
                 };
                 refused(&target.handle, &request, id, "HTTPS").await;
-                room.original
+                workspace
+                    .original
                     .time_control
                     .advance_monotonic(std::time::Duration::from_secs(51));
                 let error = target
@@ -890,17 +897,17 @@ mod external_moderation_rpc_tests {
     }
 
     /// The original caller cancels the invocation `wire` they made.
-    fn cancel_as_original(room: &Room, wire: u64) {
-        let (_, InvocationCaller::Local { admitted, .. }) = room.caller() else {
-            unreachable!("the room's original caller is local")
+    fn cancel_as_original(workspace: &Workspace, wire: u64) {
+        let (_, InvocationCaller::Local { admitted, .. }) = workspace.caller() else {
+            unreachable!("the workspace's original caller is local")
         };
         let owner = InvocationOwner::AuthenticatedLocal {
-            root: room.original.cert.user_public_key,
-            device: room.original.cert.device_public_key,
+            root: workspace.original.cert.user_public_key,
+            device: workspace.original.cert.device_public_key,
             agent: admitted.agent_id.clone(),
         };
-        assert!(room.state.can_cancel_for_owner(wire, &owner));
-        let _ = room
+        assert!(workspace.state.can_cancel_for_owner(wire, &owner));
+        let _ = workspace
             .state
             .request_cancellation_for_owner(wire, &owner)
             .unwrap();
@@ -911,9 +918,9 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
-                    let room = Room::new(false);
-                    let target = room.worker(971).await;
-                    let other = room.worker(972).await;
+                    let workspace = Workspace::new(false);
+                    let target = workspace.worker(971).await;
+                    let other = workspace.worker(972).await;
                     let descriptor = descriptor(action);
                     target
                         .handle
@@ -923,7 +930,7 @@ mod external_moderation_rpc_tests {
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let operation = operation(action == "appeal");
                     let wire =
-                        room.invoke(971, &descriptor.resource, action, &argument(&operation));
+                        workspace.invoke(971, &descriptor.resource, action, &argument(&operation));
                     let delivered = stream.read().await.unwrap();
                     assert_eq!(delivered.id, wire);
                     let id = delivered.invocation_uuid;
@@ -982,9 +989,9 @@ mod external_moderation_rpc_tests {
                         .await
                         .unwrap();
                     refused(&target.handle, &request, id, "HTTPS").await;
-                    cancel_as_original(&room, wire);
+                    cancel_as_original(&workspace, wire);
                     refused(&target.handle, &request, id, "retired or cancelled").await;
-                    room.state.remove_connection(971);
+                    workspace.state.remove_connection(971);
                     assert!(
                         target
                             .handle
@@ -1002,8 +1009,8 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for action in ["submit-report", "appeal"] {
-                    let room = Room::new(false);
-                    let target = room.worker(979).await;
+                    let workspace = Workspace::new(false);
+                    let target = workspace.worker(979).await;
                     let mut descriptor = descriptor(action);
                     descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
                     let resource = descriptor.resource.clone();
@@ -1033,7 +1040,9 @@ mod external_moderation_rpc_tests {
                     });
                     // The app's own directory answers on the broker's turn.
                     let answer = loop {
-                        room.state.drain_action_directory_bridge(&room.directories);
+                        workspace
+                            .state
+                            .drain_action_directory_bridge(&workspace.directories);
                         if asked.is_finished() {
                             break (&mut asked).await.unwrap().unwrap();
                         }
@@ -1053,14 +1062,15 @@ mod external_moderation_rpc_tests {
     async fn external_moderation_rpc_holds_a_launched_app_to_the_same_execution_frontier() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let room = Room::new(true);
-                let (_rpc, _presentation, target) = room.launched(974).await;
+                let workspace = Workspace::new(true);
+                let (_rpc, _presentation, target) = workspace.launched(974).await;
                 assert!(
-                    room.state
+                    workspace
+                        .state
                         .host_workers
                         .lock()
                         .unwrap()
-                        .get(974, &room.route)
+                        .get(974, &workspace.route)
                         .is_some_and(|admitted| admitted.worker_registration.is_some()),
                     "the launched Store is the registered worker of its own route"
                 );
@@ -1072,7 +1082,7 @@ mod external_moderation_rpc_tests {
                     .unwrap();
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                 let operation = operation(false);
-                let wire = room.invoke(
+                let wire = workspace.invoke(
                     974,
                     &descriptor.resource,
                     "submit-report",
@@ -1087,9 +1097,9 @@ mod external_moderation_rpc_tests {
                     operation,
                 };
                 refused(&target.handle, &request, id, "HTTPS").await;
-                cancel_as_original(&room, wire);
+                cancel_as_original(&workspace, wire);
                 refused(&target.handle, &request, id, "retired or cancelled").await;
-                room.state.remove_connection(974);
+                workspace.state.remove_connection(974);
                 assert!(
                     target
                         .handle

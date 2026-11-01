@@ -104,7 +104,7 @@ const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
 
 /// Whether the identity service answered and declined to sign, as opposed
 /// to being unreachable: it reports a refusal as permission denied.
-/// Presence is a room signal, not the app's request: a publish the peer
+/// Presence is a workspace signal, not the app's request: a publish the peer
 /// refused is logged where it happened, and the request that carried the
 /// update still answers.
 async fn publish_presence(
@@ -3511,10 +3511,10 @@ enum InitStatus {
     Failed(runtime_portal::NotAvailable),
 }
 
-/// Report what holds up the pending join of the room `channel` names, as the
-/// broker says it ([`super::JoinHold`]): the room is waiting on this device,
-/// for each change of its status, or the broker cannot be asked. Ends once
-/// the room is ready or refused (the join itself then answers), or the
+/// Report what holds up the pending join of the workspace `channel` names, as
+/// the broker says it ([`super::JoinHold`]): the workspace is waiting on this
+/// device, for each change of its status, or the broker cannot be asked. Ends
+/// once the workspace is ready or refused (the join itself then answers), or the
 /// broker cannot be reached; the join is what ends the wait, never this.
 #[allow(
     clippy::future_not_send,
@@ -3888,7 +3888,7 @@ async fn drive_shovel(
                 // The join ends when the broker answers it or it fails, with
                 // the broker's reason; a broker that goes away fails it. No
                 // clock guesses that an answer is not coming: under load
-                // the broker's join, and the room's host behind it, take
+                // the broker's join, and the workspace's host behind it, take
                 // what they take. While it is pending the broker says what
                 // holds it up, which the owner shows.
                 let joined = {
@@ -7113,7 +7113,7 @@ mod tests {
         pub join_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
         /// Refuse every ungated join, as a broker does for a revoked peer.
         pub join_refusal: Option<String>,
-        /// The room's status as the broker reports it, or why the broker
+        /// The workspace's status as the broker reports it, or why the broker
         /// cannot be asked; without it the host refuses to say.
         pub room_status:
             Option<tokio::sync::watch::Receiver<Result<runtime_collab::RoomStatus, String>>>,
@@ -9829,7 +9829,7 @@ mod tests {
     }
 
     /// A route the channel service answered as waiting, or as unavailable
-    /// (its room's governance unknown yet), is told when that changes: it is not asked
+    /// (its workspace's governance unknown yet), is told when that changes: it is not asked
     /// about on a timer while the broker pushes, and a pushed change asks.
     #[test]
     #[cfg(unix)]

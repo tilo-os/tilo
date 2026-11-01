@@ -80,7 +80,7 @@ mod owner_commit_tests {
 
     struct RequiredNativeReadUnavailable;
     impl NativeDocumentReads for RequiredNativeReadUnavailable {
-        fn requires_room(&self, _: &str) -> bool {
+        fn requires_workspace(&self, _: &str) -> bool {
             true
         }
         fn authorize(&self, _: &NativeDocumentReadContext) -> Result<(), String> {
@@ -258,13 +258,16 @@ mod owner_commit_tests {
     fn session_owner_commit_checked_writer_publishes_before_terminal() {
         use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
         use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
-        let room = uuid::Uuid::new_v4();
+        let workspace = uuid::Uuid::new_v4();
         let cache = ui::portable_storage::PortableStorage::new("worker-test", "device").unwrap();
         let mut owners = ui::record::RecordOwners::portable(cache.clone());
         let definition = word_processor::definition();
-        let records = owners.open(definition.app_id(), &room.to_string()).unwrap();
+        let records = owners
+            .open(definition.app_id(), &workspace.to_string())
+            .unwrap();
         let views = Rc::new(
-            ui::application_view::InstanceViewStore::portable(cache, &room.to_string()).unwrap(),
+            ui::application_view::InstanceViewStore::portable(cache, &workspace.to_string())
+                .unwrap(),
         );
         let context = HostContext::prepare(
             definition,
@@ -286,7 +289,7 @@ mod owner_commit_tests {
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
-        let route = RouteSpec::record(definition.app_id(), room, record.id.as_str());
+        let route = RouteSpec::record(definition.app_id(), workspace, record.id.as_str());
         let sent = Rc::new(RefCell::new(vec![]));
         let events = Rc::new(RefCell::new(vec![]));
         let mut manager = CollaborationManager::with_peer_transport(WorkerTransport {
@@ -297,7 +300,7 @@ mod owner_commit_tests {
         });
         manager.send(CollabRequest::Hello {
             app_id: definition.app_id().into(),
-            cluster_id: room,
+            cluster_id: workspace,
             record: Some(record.id.as_str().into()),
             record_kind: None,
             handle: None,
@@ -382,10 +385,10 @@ mod owner_commit_tests {
     impl crate::peer_actions::CertificateAuthority for OwnerAuthority {
         fn authorize(
             &self,
-            room: uuid::Uuid,
+            workspace: uuid::Uuid,
             cert: &tilo_user_identity::DeviceCert,
         ) -> Result<(), String> {
-            if room.to_string() != self.0.room() || !self.0.certificates().contains(cert) {
+            if workspace.to_string() != self.0.room() || !self.0.certificates().contains(cert) {
                 return Err("certificate outside actual owner authority".into());
             }
             self.0
@@ -476,13 +479,13 @@ mod owner_commit_tests {
     struct AlteredReceipt {
         inner: crate::test_owner::owner_commit::OwnerCommitHandle,
         fault: u8,
-        required_room: Option<String>,
+        required_workspace: Option<String>,
     }
     impl tilo_peer_state::owner_commit::OwnerCommitService for AlteredReceipt {
-        fn requires_room(&self, room: &str) -> bool {
-            self.required_room
+        fn requires_room(&self, workspace: &str) -> bool {
+            self.required_workspace
                 .as_deref()
-                .is_none_or(|required| required == room)
+                .is_none_or(|required| required == workspace)
         }
         fn health(&self) -> Result<(), String> {
             self.inner.health()
@@ -522,7 +525,7 @@ mod owner_commit_tests {
         enrolled: bool,
     ) -> OwnerFixture {
         let mut owner = crate::test_owner::SessionOwner::initialize(&root.join("owner")).unwrap();
-        // The room's own person has a second device, so a test can present
+        // The workspace's own person has a second device, so a test can present
         // the same root from another device and only the device differs.
         owner.admit_second_device().unwrap();
         let (handle, mailbox) = crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(2);
@@ -552,7 +555,7 @@ mod owner_commit_tests {
                 Arc::new(AlteredReceipt {
                     inner: handle,
                     fault,
-                    required_room: native.then(|| {
+                    required_workspace: native.then(|| {
                         if enrolled {
                             route.cluster_id.clone()
                         } else {
@@ -729,7 +732,7 @@ mod owner_commit_tests {
     ) {
         let invocation = tilo_actions::InvocationId::new();
         let key = InvocationKey {
-            room: f.route.cluster_id.clone(),
+            workspace: f.route.cluster_id.clone(),
             host: f.state.invocation_host().unwrap(),
             invocation,
             owner: InvocationOwner::Certified {
@@ -953,12 +956,12 @@ mod owner_commit_tests {
         impl crate::peer_actions::CertificateAuthority for CurrentOwner {
             fn authorize(
                 &self,
-                room: uuid::Uuid,
+                workspace: uuid::Uuid,
                 cert: &tilo_user_identity::DeviceCert,
             ) -> Result<(), String> {
                 let guard = self.0.lock().map_err(|_| "owner authority unavailable")?;
                 let peer = guard.as_ref().ok_or("owner authority unavailable")?;
-                if peer.room() != room.to_string() || !peer.certificates().contains(cert) {
+                if peer.room() != workspace.to_string() || !peer.certificates().contains(cert) {
                     return Err("certificate not admitted by owner".into());
                 }
                 peer.permissions(cert.device_public_key, SystemTime::now())
@@ -982,7 +985,7 @@ mod owner_commit_tests {
                     uuid::Uuid::parse_str(peer.room())
                         .map_err(|e| e.to_string())?
                         .into(),
-                    name.unwrap_or_else(|| "Owner room".into()),
+                    name.unwrap_or_else(|| "Owner workspace".into()),
                 );
                 workspace.policy = policy;
                 let mut tree = tilo_desktop_model::DesktopTree::default();
@@ -1005,11 +1008,11 @@ mod owner_commit_tests {
         let initial_generation = owner.status().generation;
         let mut remote = owner.peer().clone();
         let cert = owner.device();
-        let room: uuid::Uuid = owner.peer().room().parse().unwrap();
+        let workspace: uuid::Uuid = owner.peer().room().parse().unwrap();
         let key = owner.signing_key().clone();
         let record = RecordId::for_tab(1);
         let definition = word_processor::definition();
-        let route = CrdtRoute::record(definition.app_id(), room.to_string(), record.as_str());
+        let route = CrdtRoute::record(definition.app_id(), workspace.to_string(), record.as_str());
         let initial = owner
             .peer()
             .document(definition.app_id(), record.as_str())
@@ -1049,11 +1052,11 @@ mod owner_commit_tests {
             owner
         });
         let presentation = runtime_collab::CertifiedJoinIdentity {
-            workspace_id: room.to_string(),
+            workspace_id: workspace.to_string(),
             device_certificate: serde_json::to_vec(&cert).unwrap(),
             proof: key
                 .sign(&runtime_identity::collaboration_join_signing_bytes(
-                    &room.to_string(),
+                    &workspace.to_string(),
                 ))
                 .to_bytes()
                 .to_vec(),
@@ -1067,7 +1070,7 @@ mod owner_commit_tests {
             CollaborationManager::for_route_fd_with_identity(
                 raw.into_raw_fd(),
                 definition.app_id(),
-                room,
+                workspace,
                 Some(record.as_str().into()),
                 None,
                 endpoint()
@@ -1079,7 +1082,7 @@ mod owner_commit_tests {
             CollaborationManager::for_route_fd_with_identity(
                 wrong.into_raw_fd(),
                 definition.app_id(),
-                room,
+                workspace,
                 Some("other-record".into()),
                 None,
                 endpoint()
@@ -1090,7 +1093,7 @@ mod owner_commit_tests {
         let manager = CollaborationManager::for_route_fd_with_identity(
             stream.into_raw_fd(),
             definition.app_id(),
-            room,
+            workspace,
             Some(record.as_str().into()),
             None,
             endpoint(),
@@ -1101,7 +1104,7 @@ mod owner_commit_tests {
             .hydrate(
                 StorageKey::Record {
                     package: definition.app_id().into(),
-                    workspace: room.to_string(),
+                    workspace: workspace.to_string(),
                     record: record.as_str().into(),
                 },
                 initial.clone(),
@@ -1109,9 +1112,12 @@ mod owner_commit_tests {
             )
             .unwrap();
         let mut owners = RecordOwners::portable(cache.clone());
-        let records = owners.open(definition.app_id(), &room.to_string()).unwrap();
+        let records = owners
+            .open(definition.app_id(), &workspace.to_string())
+            .unwrap();
         let views = Rc::new(
-            ui::application_view::InstanceViewStore::portable(cache, &room.to_string()).unwrap(),
+            ui::application_view::InstanceViewStore::portable(cache, &workspace.to_string())
+                .unwrap(),
         );
         let checkout = RecordCheckout::new(record.clone(), definition.record_kind.clone());
         let target = LaunchTarget::Record {
@@ -1337,7 +1343,7 @@ mod owner_commit_tests {
             );
             let mut workspace = crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceId(81),
-                "Host worker room",
+                "Host worker workspace",
             );
             workspace.set_owner(principal_id_for_root(cert.user_public_key));
             let route = CrdtRoute::record(
@@ -1982,16 +1988,18 @@ mod owner_commit_tests {
 
     /// A member device of the fixture's own person, other than the one that
     /// admitted: the same root, a second device. It is a real device of this
-    /// room's person, so only its device key tells the two apart.
+    /// workspace's person, so only its device key tells the two apart.
     fn sibling_device_caller(f: &OwnerFixture) -> VerifiedActionCaller {
         let certificate = f.owner.second_device();
         let device = crate::test_owner::SessionOwner::second_device_key();
-        let room = f.route.cluster_id.clone();
+        let workspace = f.route.cluster_id.clone();
         let presentation = runtime_collab::CertifiedJoinIdentity {
-            workspace_id: room.clone(),
+            workspace_id: workspace.clone(),
             device_certificate: serde_json::to_vec(&certificate).unwrap(),
             proof: device
-                .sign(&runtime_identity::collaboration_join_signing_bytes(&room))
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &workspace,
+                ))
                 .to_bytes()
                 .to_vec(),
         }

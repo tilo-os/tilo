@@ -103,7 +103,7 @@ fn member_device(
 fn question(room: RoomId, person: &str) -> AppActionConsentRequest {
     AppActionConsentRequest {
         handle: "app-action:test".into(),
-        room: room.to_string(),
+        workspace: room.to_string(),
         person: person.to_owned(),
         app_id: INVOKER.into(),
         target_app: TARGET.into(),

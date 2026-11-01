@@ -55,7 +55,7 @@ impl ContentShelf for ProfileShelf {
         use runtime_fs::blobs::{BlobClient, ReadOutcome};
 
         let scoped = BlobClient::connect_session(&self.0)
-            .and_then(|session| session.scope(&scope.room, &scope.app))
+            .and_then(|session| session.scope(&scope.workspace, &scope.app))
             .ok()?;
         // Only what this device keeps.
         if !scoped.has(hash).ok()? {
@@ -69,7 +69,7 @@ impl ContentShelf for ProfileShelf {
 
     fn keep(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) -> Result<(), String> {
         let kept = runtime_fs::blobs::BlobClient::connect_session(&self.0)
-            .and_then(|session| session.scope(&scope.room, &scope.app))
+            .and_then(|session| session.scope(&scope.workspace, &scope.app))
             .and_then(|scoped| scoped.put(bytes, "application/octet-stream"))
             .map_err(|error| error.to_string())?;
         if kept.hash == hash {

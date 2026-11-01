@@ -5,7 +5,7 @@ mod tests {
     #![allow(
         clippy::similar_names,
         clippy::arithmetic_side_effects,
-        reason = "fixture keys pair root/room names; epoch offsets are small constants"
+        reason = "fixture keys pair root/workspace names; epoch offsets are small constants"
     )]
     use super::*;
     use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
@@ -26,9 +26,9 @@ mod tests {
             signature: [0; 64],
         };
         sign_device_cert(&mut cert, &root).unwrap();
-        let room = uuid::Uuid::from_u128(33).to_string();
+        let workspace = uuid::Uuid::from_u128(33).to_string();
         let roster = vec![cert.clone()];
-        let changes = tilo_peer_state::seed_room(&room, &cert, &roster).unwrap();
+        let changes = tilo_peer_state::seed_room(&workspace, &cert, &roster).unwrap();
         let mut doc = AutoCommit::new();
         for bytes in changes {
             doc.apply_incoming([automerge::Change::from_bytes(bytes).unwrap()])
@@ -42,7 +42,7 @@ mod tests {
         doc.put(ROOT, "name", title).unwrap();
         doc.commit();
         let mut peer = tilo_peer_state::StatePeer::new(
-            &room,
+            &workspace,
             cert,
             roster,
             RevocationList::new(),
@@ -115,7 +115,7 @@ mod tests {
         }
     }
     #[test]
-    fn private_policy_basis_preserves_missing_room_and_general_revision_scope() {
+    fn private_policy_basis_preserves_missing_workspace_and_general_revision_scope() {
         let source = peer(&[cap(Lifetime::Once)], "policy");
         assert_eq!(
             PrivatePolicyBasis::from_peer(&source).unwrap_err(),

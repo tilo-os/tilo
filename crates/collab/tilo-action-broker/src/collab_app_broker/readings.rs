@@ -1,16 +1,16 @@
-//! The session's granted readings, as the room's grants decide them.
+//! The session's granted readings, as the workspace's grants decide them.
 //!
 //! Most of what a session publishes is everyone's to read: the sound outputs,
 //! the displays. A resource the person's own is not, so its publisher declares
 //! it ([`Readers::Granted`](tilo_actions::Readers::Granted)), and its reading
-//! is decided where the resource sits — `room › app › kind › resource`, the
-//! node its actions are decided at too — against the grants the room holds for
+//! is decided where the resource sits — `workspace › app › kind › resource`, the
+//! node its actions are decided at too — against the grants the workspace holds for
 //! the app reading it. A reading asks nobody: a grant that would ask first
 //! refuses it, because there is no one to ask about a screenful of state that
 //! is redrawn every pass.
 //!
 //! The decision is the same the action door makes, from the same tree, for the
-//! same app: an app reads here exactly the readings the room grants it, and
+//! same app: an app reads here exactly the readings the workspace grants it, and
 //! borrowing nothing from the person who started it.
 
 use crate::services::{Caller, Granted};
@@ -20,7 +20,7 @@ use super::{AppBrokerState, BrokerActor};
 /// What a refused reading says, as a refused action says why it was refused.
 pub(super) const REFUSED: &str = "caller is not granted this reading";
 
-/// Whether `caller` may read `resource`, which `granted` declares the room's
+/// Whether `caller` may read `resource`, which `granted` declares the workspace's
 /// grants decide, now.
 ///
 /// # Errors
@@ -39,7 +39,7 @@ pub(super) fn admit(
     let now = state.policy_now_ns().map_err(|_| REFUSED.to_owned())? / 1_000_000_000;
     let actor = BrokerActor::app(&caller.app_id);
     let allowed = membership
-        .decide_in_room(&caller.workspace, |workspace| {
+        .decide_in_workspace(&caller.workspace, |workspace| {
             workspace.is_some_and(|workspace| {
                 let node = tilo_actions::resource_node(
                     &workspace.node(),

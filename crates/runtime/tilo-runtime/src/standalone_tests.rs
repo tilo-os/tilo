@@ -636,11 +636,11 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
         Some("person-1")
     );
     let mut seen = None;
-    reopened.with_workspace(&tree.workspaces[0].room(), &mut |workspace| {
+    WorkspaceMembership::with_workspace(&reopened, &tree.workspaces[0].room(), &mut |workspace| {
         seen = Some(workspace.name.clone());
     });
     assert_eq!(seen.as_deref(), Some("Home"));
-    reopened.with_workspace(&RoomId::new(), &mut |_| panic!("no such room"));
+    WorkspaceMembership::with_workspace(&reopened, &RoomId::new(), &mut |_| panic!("no such room"));
 }
 
 #[test]
@@ -767,7 +767,7 @@ fn the_desktop_sessions_workspace_is_served_read_only() {
 fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActionConsentRequest {
     tilo_action_broker::app_actions::AppActionConsentRequest {
         handle: "question-1".into(),
-        room: room.into(),
+        workspace: room.into(),
         person: person.into(),
         app_id: "so.tilo.caller".into(),
         target_app: "so.tilo.target-app".into(),

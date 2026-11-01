@@ -17,12 +17,12 @@ use std::{
 use tilo_action_policy::Standing;
 
 /// A document op as the transport delivered it: the route its publishing
-/// host stamped, and the author's standing in the room.
+/// host stamped, and the author's standing in the workspace.
 pub struct RemoteDocument {
     pub app_id: String,
     pub cluster_id: String,
     pub record_id: String,
-    /// The author, the room's policy and any bound on them (a device not
+    /// The author, the workspace's policy and any bound on them (a device not
     /// theirs), as the host established them for the authenticated peer.
     pub author: Standing,
     /// A workspace host replayed it from its retained, host-ordered history
@@ -66,7 +66,7 @@ pub enum Delivery {
     Halted,
     /// Refused live because it is sealed under content keys older than the
     /// channel's latest membership change: its writer had not caught up
-    /// with that change yet. The room's host, which admits only the room's
+    /// with that change yet. The workspace's host, which admits only the workspace's
     /// members, kept it; replayed as history it is taken, so the caller asks
     /// the host to replay.
     SealedBehind,
@@ -74,7 +74,7 @@ pub enum Delivery {
 
 /// One author's writes to one record that wait on an earlier write of
 /// theirs, which was refused live as [`Delivery::SealedBehind`] and which
-/// the room's host replays.
+/// the workspace's host replays.
 ///
 /// An author's sequence only moves forward: admitting a later write first
 /// would refuse the earlier one when its replay arrives. So a later write is
@@ -537,9 +537,9 @@ mod tests {
     use super::*;
     use collab_types::{document_artifact_id, document_attestation_id};
 
-    /// An editor of the room the ops are written in.
+    /// An editor of the workspace the ops are written in.
     fn editor() -> Standing {
-        let mut policy = tilo_action_policy::WorkspacePolicy::new("room", "owner");
+        let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace", "owner");
         policy
             .members
             .insert("editor".into(), tilo_action_policy::Role::Editor);
@@ -553,9 +553,9 @@ mod tests {
         let (mutation, _) = collab_types::field_edit_mutation("note", "title", "old").unwrap();
         let mut op = SignedOp::new_unsigned(
             mutation.encode().unwrap(),
-            document_artifact_id("notes", "room", "record"),
+            document_artifact_id("notes", "workspace", "record"),
             collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-            document_attestation_id("notes", "room", "record"),
+            document_attestation_id("notes", "workspace", "record"),
             OpKind::Change,
             an_hour_ago,
             1,
@@ -564,7 +564,7 @@ mod tests {
         let now = std::time::SystemTime::now();
         let channel = || {
             let mut state = ChannelState {
-                room: "room".into(),
+                room: "workspace".into(),
                 ..ChannelState::default()
             };
             state.artifacts.insert(op.artifact, ArtifactKind::Note);
@@ -595,9 +595,9 @@ mod tests {
             let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
             let mut op = SignedOp::new_unsigned(
                 mutation.encode().unwrap(),
-                document_artifact_id("notes", "room", "record"),
+                document_artifact_id("notes", "workspace", "record"),
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-                document_attestation_id("notes", "room", "record"),
+                document_attestation_id("notes", "workspace", "record"),
                 OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
@@ -607,7 +607,7 @@ mod tests {
         };
         let document = |envelope: SignedOp, replayed: bool| RemoteDocument {
             app_id: "notes".into(),
-            cluster_id: "room".into(),
+            cluster_id: "workspace".into(),
             record_id: "record".into(),
             author: editor(),
             replayed,
@@ -617,8 +617,8 @@ mod tests {
         let fanout = FanoutState::new();
         let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seen = Arc::clone(&delivered);
-        let _app = fanout.subscribe_rooms(
-            vec!["room".into()],
+        let _app = fanout.subscribe_workspaces(
+            vec!["workspace".into()],
             Box::new(move |event, _| {
                 if matches!(event, CollabEvent::Document { .. }) {
                     seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -658,7 +658,7 @@ mod tests {
     }
 
     /// How a write reaches the member over the net: as it was written, or in
-    /// the room's host's replay of its history.
+    /// the workspace's host's replay of its history.
     #[derive(serde::Serialize, serde::Deserialize)]
     struct Carried {
         replayed: bool,
@@ -670,7 +670,7 @@ mod tests {
     /// under the current ones (epoch 2), each its own Automerge change.
     fn two_sealed_writes(key: &ed25519_dalek::SigningKey) -> [SignedOp; 2] {
         use automerge::transaction::Transactable as _;
-        let channel = collab_types::document_channel_id("notes", "room", "record");
+        let channel = collab_types::document_channel_id("notes", "workspace", "record");
         let mut note = automerge::AutoCommit::new();
         let mut write = |epoch: u64, field: &str, text: &str| {
             let heads = note.get_heads();
@@ -679,9 +679,9 @@ mod tests {
             let now = SystemTime::now();
             let mut op = SignedOp::new_unsigned_with_encryption(
                 change,
-                document_artifact_id("notes", "room", "record"),
+                document_artifact_id("notes", "workspace", "record"),
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-                document_attestation_id("notes", "room", "record"),
+                document_attestation_id("notes", "workspace", "record"),
                 OpKind::Change,
                 now,
                 collab_types::next_unordered_document_sequence(now),
@@ -720,7 +720,7 @@ mod tests {
         let [first, second] = two_sealed_writes(&key);
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
         channels.lock().unwrap().register_channel_gate(
-            collab_types::document_channel_id("notes", "room", "record"),
+            collab_types::document_channel_id("notes", "workspace", "record"),
             channel_crypto::ChannelGate {
                 encryption_required: true,
                 head_epoch: Some(2),
@@ -729,8 +729,8 @@ mod tests {
         let fanout = FanoutState::new();
         let shown = Arc::new(Mutex::new(Vec::new()));
         let app = Arc::clone(&shown);
-        let _app = fanout.subscribe_rooms(
-            vec!["room".into()],
+        let _app = fanout.subscribe_workspaces(
+            vec!["workspace".into()],
             Box::new(move |event, _| {
                 if let CollabEvent::Document { envelope, .. } = event {
                     app.lock().unwrap().push((**envelope).clone());
@@ -764,7 +764,7 @@ mod tests {
                     &fanout,
                     RemoteDocument {
                         app_id: "notes".into(),
-                        cluster_id: "room".into(),
+                        cluster_id: "workspace".into(),
                         record_id: "record".into(),
                         author: editor(),
                         replayed,

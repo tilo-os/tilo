@@ -13,7 +13,7 @@ pub struct CertifiedPersonFixture {
 }
 struct FixturePersonAuthority {
     certificate: tilo_user_identity::DeviceCert,
-    room: uuid::Uuid,
+    workspace: uuid::Uuid,
     time: crate::peer_actions::PolicyTime,
     current: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -23,11 +23,11 @@ impl crate::peer_actions::CertificateAuthority for FixturePersonAuthority {
     }
     fn authorize(
         &self,
-        room: uuid::Uuid,
+        workspace: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
         if self.current.load(Ordering::Acquire)
-            && room == self.room
+            && workspace == self.workspace
             && certificate == &self.certificate
         {
             Ok(())
@@ -74,10 +74,10 @@ pub fn certified_person_fixture_for_seeds(
         signature: [0; 64],
     };
     tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
-    let room = collab_types::person_room(&certificate.user_public_key);
+    let workspace_id = collab_types::person_room(&certificate.user_public_key);
     let mut workspace = crate::test_support::Workspace::in_room(
         crate::test_support::WorkspaceId(71),
-        tilo_desktop_model::RoomId::parse(&room.to_string()).unwrap(),
+        tilo_desktop_model::RoomId::parse(&workspace_id.to_string()).unwrap(),
         "Synthetic personal room",
     );
     workspace.set_owner(hex::encode(certificate.user_public_key));
@@ -99,7 +99,7 @@ pub fn certified_person_fixture_for_seeds(
             .certificate_authority
             .set(Arc::new(FixturePersonAuthority {
                 certificate: certificate.clone(),
-                room,
+                workspace: workspace_id,
                 time: origin.capture().unwrap(),
                 current: current.clone(),
             }))
@@ -109,14 +109,14 @@ pub fn certified_person_fixture_for_seeds(
         certificate.user_public_key,
         certificate.device_public_key,
     )
-    .in_room(room.to_string())
+    .in_room(workspace_id.to_string())
     .in_new_execution();
     let presentation = runtime_collab::CertifiedJoinIdentity {
-        workspace_id: room.to_string(),
+        workspace_id: workspace_id.to_string(),
         device_certificate: serde_json::to_vec(&certificate).unwrap(),
         proof: ed25519_dalek::Signer::sign(
             &device,
-            &runtime_identity::collaboration_join_signing_bytes(&room.to_string()),
+            &runtime_identity::collaboration_join_signing_bytes(&workspace_id.to_string()),
         )
         .to_bytes()
         .to_vec(),

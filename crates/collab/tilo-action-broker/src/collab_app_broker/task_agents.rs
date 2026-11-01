@@ -22,14 +22,14 @@ pub(super) fn admit_task_delegation(admitted: &mut AdmittedJoinIdentity, task: T
 }
 
 /// Verify `task`, carried by a join presented with `cert`, at `now_ns`: the
-/// device certificate signed it for `room`, inside both windows.
+/// device certificate signed it for `workspace`, inside both windows.
 pub(super) fn verify_task_delegation(
     task: &TaskDelegation,
     cert: &tilo_user_identity::DeviceCert,
-    room: &str,
+    workspace: &str,
     now_ns: u64,
 ) -> Result<(), String> {
-    task.verify(cert, room, now_ns)
+    task.verify(cert, workspace, now_ns)
         .map_err(|error| format!("task delegation refused: {error}"))
 }
 
@@ -83,11 +83,11 @@ pub(super) fn task_still_heard(
 }
 
 /// Admit a task agent's join: the asking device's certificate is admitted
-/// to the room as any device's is (in its device list, not revoked), it
-/// signed the task delegation for this room inside both windows, and the
+/// to the workspace as any device's is (in its device list, not revoked), it
+/// signed the task delegation for this workspace inside both windows, and the
 /// join proof is the task key's. The session is then the person's, handed
 /// to the task agent ([`admit_task_delegation`]). Whether its task still
-/// goes is the caller's to ask, with the room's tracker.
+/// goes is the caller's to ask, with the workspace's tracker.
 pub(super) fn verify_task_agent_join(
     route: &CrdtRoute,
     presentation: &runtime_collab::TaskAgentJoinIdentity,
@@ -126,7 +126,7 @@ pub(super) fn verify_task_agent_join(
         VerifiedJoinIdentity::of(&cert, cert_capped_in(authority, &route.cluster_id, &cert));
     let membership = membership
         .ok_or_else(|| "task agent join has no workspace membership authority".to_string())?;
-    let mut admitted = membership.decide_in_room(&route.cluster_id, |workspace| {
+    let mut admitted = membership.decide_in_workspace(&route.cluster_id, |workspace| {
         admit_verified_join_at(workspace, route, verified, now_ns / 1_000_000_000)
     })??;
     admitted.certificate = Some(cert);
@@ -169,7 +169,7 @@ impl AppBrokerState {
     /// Another id, or the task ended or cannot be read.
     pub(super) fn admit_task_join(
         &self,
-        room: &str,
+        workspace: &str,
         handle: &str,
         admitted: &AdmittedJoinIdentity,
     ) -> Result<(), String> {
@@ -177,33 +177,33 @@ impl AppBrokerState {
         if handle.trim() != task.agent_id {
             return Err("a task agent joins under the id its delegation names".into());
         }
-        self.task_goes(room, task)
+        self.task_goes(workspace, task)
             .map_err(|error| format!("task agent join rejected: {error}"))
     }
 
     /// Whether the session of the task agent `task` was delegated for is
-    /// still heard in `room` ([`task_still_heard`]).
+    /// still heard in `workspace` ([`task_still_heard`]).
     ///
     /// # Errors
     /// The tracker cannot be read, or the task ended other than by its agent.
-    pub(super) fn task_heard(&self, room: &str, task: &TaskDelegation) -> Result<(), String> {
+    pub(super) fn task_heard(&self, workspace: &str, task: &TaskDelegation) -> Result<(), String> {
         let runs = self
-            .tracker_runs(room)
-            .ok_or("the room's tracker is unavailable")?
-            .runs(room)?;
+            .tracker_runs(workspace)
+            .ok_or("the workspace's tracker is unavailable")?
+            .runs(workspace)?;
         task_still_heard(&runs, task)
     }
 
-    /// Whether the task `task` was delegated for still goes in `room`'s
+    /// Whether the task `task` was delegated for still goes in `workspace`'s
     /// tracker ([`task_still_goes`]).
     ///
     /// # Errors
     /// The tracker cannot be read, or the task ended.
-    pub(super) fn task_goes(&self, room: &str, task: &TaskDelegation) -> Result<(), String> {
+    pub(super) fn task_goes(&self, workspace: &str, task: &TaskDelegation) -> Result<(), String> {
         let runs = self
-            .tracker_runs(room)
-            .ok_or("the room's tracker is unavailable")?
-            .runs(room)?;
+            .tracker_runs(workspace)
+            .ok_or("the workspace's tracker is unavailable")?
+            .runs(workspace)?;
         task_still_goes(&runs, task)
     }
 }

@@ -1,60 +1,60 @@
-//! In-memory rooms and directories the channel service's tests drive.
+//! In-memory workspaces and directories the channel service's tests drive.
 use super::*;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// An in-memory room: every endpoint publishes to all the others while
-/// the room is up, and loses what it publishes while it is down.
+/// An in-memory workspace: every endpoint publishes to all the others while
+/// the workspace is up, and loses what it publishes while it is down.
 #[derive(Default)]
-pub struct Room {
+pub struct Workspace {
     pub queues: Mutex<HashMap<usize, Vec<InboundChannelGovernance>>>,
     pub down: AtomicBool,
 }
 
 pub struct Endpoint {
-    pub room: Arc<Room>,
+    pub workspace: Arc<Workspace>,
     pub id: usize,
-    pub room_id: RoomId,
+    pub workspace_id: RoomId,
 }
 
 impl Endpoint {
-    pub fn join(room: &Arc<Room>, room_id: RoomId, id: usize) -> Self {
-        room.queues.lock().unwrap().entry(id).or_default();
+    pub fn join(workspace: &Arc<Workspace>, workspace_id: RoomId, id: usize) -> Self {
+        workspace.queues.lock().unwrap().entry(id).or_default();
         Self {
-            room: Arc::clone(room),
+            workspace: Arc::clone(workspace),
             id,
-            room_id,
+            workspace_id,
         }
     }
 }
 
 impl GovernanceTransport for Endpoint {
     fn publish(&self, message: NeighbourMsg) -> bool {
-        if self.room.down.load(Ordering::SeqCst) {
+        if self.workspace.down.load(Ordering::SeqCst) {
             return false;
         }
-        let room = self.room_id;
+        let workspace = self.workspace_id;
         let inbound = match message {
             NeighbourMsg::MlsGovernance { frame, .. } => {
-                InboundChannelGovernance::Frame { room, frame }
+                InboundChannelGovernance::Frame { workspace, frame }
             }
             NeighbourMsg::MlsAccessRequest { request, .. } => {
                 InboundChannelGovernance::AccessRequest {
-                    room,
+                    workspace,
                     request,
                     route: None,
                 }
             }
             NeighbourMsg::MlsRoutedAccessRequest { request, route, .. } => {
                 InboundChannelGovernance::AccessRequest {
-                    room,
+                    workspace,
                     request,
                     route: Some(route),
                 }
             }
             _ => return false,
         };
-        for (id, queue) in self.room.queues.lock().unwrap().iter_mut() {
+        for (id, queue) in self.workspace.queues.lock().unwrap().iter_mut() {
             if *id != self.id {
                 queue.push(inbound.clone());
             }
@@ -63,7 +63,14 @@ impl GovernanceTransport for Endpoint {
     }
 
     fn take_inbound(&self) -> Vec<InboundChannelGovernance> {
-        std::mem::take(self.room.queues.lock().unwrap().entry(self.id).or_default())
+        std::mem::take(
+            self.workspace
+                .queues
+                .lock()
+                .unwrap()
+                .entry(self.id)
+                .or_default(),
+        )
     }
 }
 
