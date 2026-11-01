@@ -533,8 +533,8 @@ fn run_app_reads_the_workspace_flag_it_had_another_name_for() {
     );
 }
 
-/// The status probe of a daemon started before the field was called
-/// `workspace` answers `room`, which reads as the same.
+/// The status probe answers the served workspace as `room` and reads
+/// `workspace` as the same.
 #[test]
 fn the_status_probe_reads_the_field_name_it_had() {
     let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
@@ -548,6 +548,11 @@ fn the_status_probe_reads_the_field_name_it_had() {
     ))
     .unwrap();
     assert_eq!(new.workspace, old.workspace);
+    // Launchers and scripts read the answer's `room`.
+    assert_eq!(
+        serde_json::to_value(&new).unwrap()["room"],
+        serde_json::json!(workspace)
+    );
 }
 
 #[test]
