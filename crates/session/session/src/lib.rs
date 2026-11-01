@@ -911,9 +911,9 @@ pub struct Session {
     /// there: the bar and what else the desktop runs as a process of its
     /// own.
     surface_apps: Vec<surfaces::Surface>,
-    /// No program draws the shell's window menu on this machine, so it is
-    /// not looked for again.
-    window_menu_view_absent: bool,
+    /// The views the person bound to the shell's slots, and the one running
+    /// each slot now.
+    slots: mount::slots::Slots,
     /// The displays as the person arranged them, kept in step with the ones
     /// attached.
     displays: display_settings::Displays,
@@ -1709,7 +1709,7 @@ impl Session {
             _settings_watch: settings_watch,
             surfaces,
             surface_apps,
-            window_menu_view_absent: false,
+            slots: mount::slots::Slots::default(),
             displays: display_settings::Displays::default(),
             displays_service,
             confirmation: display_confirm::Confirmation::default(),
@@ -2149,45 +2149,48 @@ impl Session {
         &self.input
     }
 
-    /// Start the view of the shell's window menu while the reading says one
-    /// is up, and stop it when the reading says none is. Many a machine has
-    /// no such view installed, or another one bound in its place: the menu
-    /// is a reading either way, and this only puts it on the screen.
+    /// Put the view of the shell's window menu up while the reading says one
+    /// is up, and stop it when the reading says none is: the view the person
+    /// bound to the slot, or the one the session ships with. Many a machine
+    /// has no such view installed, or another one bound in its place: the
+    /// menu is a reading either way, and this only puts it on the screen.
+    ///
+    /// Rebinding the slot while the menu is up starts the view bound to it
+    /// now, on the next pass, over the reading it already drew.
     fn follow_window_menu(&mut self) {
-        /// The view's surface name; its program is found by the crate's own
-        /// name.
+        /// The view's surface name, whatever view draws it.
         const VIEW: &str = "window-menu";
+        /// The app whose view the session shows the menu through until the
+        /// person binds another.
+        const SHIPPED: (&str, &str) = ("so.tilo.window-menu", "window-menu");
         let up = self
             .read(mount::shell::WINDOW_MENU)
             .is_some_and(|reading| reading.get("tab").is_some_and(|tab| !tab.is_null()));
-        if up == self.surfaces.running(VIEW) || self.window_menu_view_absent {
-            return;
-        }
-        if !up {
-            self.surfaces.stop(VIEW);
-            return;
-        }
-        let program = match surfaces::program_path("tilo-window-menu") {
-            Ok(program) => program,
-            Err(error) => {
-                // Nothing draws the menu here: the reading still offers it,
-                // and whoever is bound to the slot on this machine draws it.
-                tracing::debug!(%error, "no window menu view to start");
-                self.window_menu_view_absent = true;
-                return;
+        let settings = self.read(mount::slots::BINDINGS);
+        let bound = self.slots.bound(VIEW, SHIPPED, settings.as_ref());
+        match self.slots.follow(VIEW, SHIPPED, up, settings.as_ref()) {
+            mount::slots::Mount::Nothing => {}
+            mount::slots::Mount::Stop => self.surfaces.stop(VIEW),
+            mount::slots::Mount::Start { program, restart } => {
+                if restart {
+                    // The person bound another view: the one that drew the
+                    // slot goes before the new one takes it.
+                    self.surfaces.stop(VIEW);
+                }
+                let surface = surfaces::Surface::new(VIEW, program)
+                    .layer(surfaces::Layer::Overlay)
+                    .anchor(
+                        surfaces::Anchor::TOP
+                            | surfaces::Anchor::BOTTOM
+                            | surfaces::Anchor::LEFT
+                            | surfaces::Anchor::RIGHT,
+                    )
+                    .keyboard(surfaces::Keyboard::OnDemand);
+                if let Err(error) = self.start_surface(&surface) {
+                    tracing::warn!(%error, "the window menu view did not start");
+                    self.slots.failed(VIEW, bound);
+                }
             }
-        };
-        let surface = surfaces::Surface::new(VIEW, program)
-            .layer(surfaces::Layer::Overlay)
-            .anchor(
-                surfaces::Anchor::TOP
-                    | surfaces::Anchor::BOTTOM
-                    | surfaces::Anchor::LEFT
-                    | surfaces::Anchor::RIGHT,
-            )
-            .keyboard(surfaces::Keyboard::OnDemand);
-        if let Err(error) = self.start_surface(&surface) {
-            tracing::warn!(%error, "the window menu view did not start");
         }
     }
 

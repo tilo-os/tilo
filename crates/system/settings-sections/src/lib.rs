@@ -16,6 +16,7 @@ pub mod osk;
 pub mod prefs;
 pub mod providers;
 pub mod search;
+pub mod shell_views;
 pub mod shortcuts;
 
 /// The app whose settings they are, whose controls change them and under
@@ -84,6 +85,7 @@ sections!(
     tilo_locale::Locale,
     continuity::ContinuityPrivacy,
     shortcuts::ShortcutPrefs,
+    shell_views::ShellViews,
     desktop::DesktopControls,
     desktop::DesktopControlsDevice,
     providers::AgentProviders,

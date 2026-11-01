@@ -46,6 +46,7 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     ("locale", Holder::Person),
     ("notifications", Holder::Person),
     ("quick_settings", Holder::Person),
+    ("shell_views", Holder::Person),
     ("shortcuts", Holder::Person),
     ("text_assistance", Holder::Person),
     // This device's.

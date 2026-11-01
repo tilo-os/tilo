@@ -25,5 +25,6 @@ pub(crate) mod services;
 pub(crate) mod settings_sync;
 pub(crate) mod sheets;
 pub mod shell;
+pub mod slots;
 pub(crate) mod vpn;
 pub(crate) mod wake;
