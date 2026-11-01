@@ -358,3 +358,55 @@ scenario "resources standing as content" -> Arrangement {
     }
     a
 }
+
+/// The traditional desktop: the preset furthest from the strips and the canvas. Three windows
+/// stand on a floating desk where the person dropped them, the one in front a window of the
+/// shell's own settings — a real resource, so its bar of commands is the actions that resource
+/// publishes, in the runs their declarations name — and the dock rides the foot. The desk
+/// preset is the desktop and the chrome preset is the traditional one, so this is exactly what
+/// a person sees when they pick it.
+scenario "the traditional desktop" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.weekday = "Thursday"
+    d.date = "October 30"
+    d.unread = 2
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.here = "none"
+    d.title = "Studio — Drafts"
+    d.workspaces.insert(Workspace(key: "home", name: "Home"))
+    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(Person(key: "mia", name: "Mia Clayton"))
+    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
+    d.windows.insert(Win(key: "w1", title: "Shell settings", origin_app: "Settings", icon: "settings", strip: "Desk", workspace: "Studio", recency: 1, focused: true, preview: "live"))
+    d.windows.insert(Win(key: "w2", title: "Release notes", origin_app: "Notes", icon: "notebook", strip: "Desk", workspace: "Studio", recency: 2, focused: false, preview: "live"))
+    d.windows.insert(Win(key: "w3", title: "Design review", origin_app: "Figma", icon: "pen_tool", strip: "Desk", workspace: "Studio", recency: 3, focused: false, preview: "withheld"))
+    seed(shell)
+    let s = shell
+    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
+    s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
+    s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
+    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    apply(s, .windows_desktop)
+    let v = viewing
+    v.showing = .desktop
+    let a = root Arrangement
+    let row = a_workspace(a, "Desk")
+    let desk = a_strip(a, row, "Desk", 667)
+    if let held = a.strips.find(st -> st.key == desk) {
+        held.canvas_x = 40
+        held.canvas_y = 48
+        held.canvas_width = 760
+        held.canvas_height = 560
+        held.placed = true
+    }
+    a.places.insert(ArrangementPlace(key: "p1", strip: desk, shows: "so.tilo.shell", record: s.id(), title: "Shell settings", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "p2", strip: desk, shows: "so.tilo.lang.notes", record: "", title: "Release notes", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "p3", strip: desk, shows: "so.tilo.lang.figma", record: "", title: "Design review", shell: "so.tilo.shell.strips"))
+    if let strip = a.strips.find(st -> st.key == desk) {
+        strip.active = "p1"
+    }
+    v.focused = desk
+}

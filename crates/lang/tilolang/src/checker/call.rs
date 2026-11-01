@@ -103,6 +103,7 @@ impl Checker<'_> {
             "run_block" => return self.builtin_run_block(args, span),
             "set" => return self.builtin_set(args, span),
             "open" => return self.builtin_open(args, span),
+            "resource" => return self.builtin_resource(args, span),
             "person" => return self.builtin_person(args, span),
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),

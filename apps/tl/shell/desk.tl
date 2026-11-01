@@ -82,9 +82,15 @@ view bar_on_edge(s: Shell, d: Desk) {
 }
 
 /// The bar's parts in the person's order, as the run the person reorders by dragging a part:
-/// what the desk's bar and the desk window's bar both draw.
+/// what the desk's bar and the desk window's bar both draw. The traditional desktop shows its
+/// own bar instead (`traditional.tl`), where the focused window's commands stand beside the
+/// parts the person chose, so a person picks between the two by picking the preset.
 view top_bar(d: Desk) {
-    bar(d)
+    if shell.based_on == .windows_desktop and shell.preset == .windows_desktop {
+        traditional_bar(d)
+    } else {
+        bar(d)
+    }
 }
 
 /// What stands under the bar: the desk at rest, or the surface the person is in.
