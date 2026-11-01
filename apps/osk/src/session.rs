@@ -61,9 +61,7 @@ impl Said {
 /// reads, and `None` when this keyboard has no session to follow — one the
 /// person opened for themselves shows by its input method's focus alone.
 pub(crate) fn follow(wake: WakeHandle) -> Option<Said> {
-    if std::env::var_os(SURFACE_LAYER_ENV).is_none() {
-        return None;
-    }
+    std::env::var_os(SURFACE_LAYER_ENV)?;
     let said = Said::default();
     let writing = said.clone();
     let spawned = std::thread::Builder::new()

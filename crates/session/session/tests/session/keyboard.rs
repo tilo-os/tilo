@@ -422,7 +422,7 @@ fn an_always_on_keyboard_is_up_where_the_person_works_with_no_field_at_all() {
         drawn > CLOSE,
         "the keyboard draws with no field to serve: {drawn:.0} of 255 from the desk under it"
     );
-    let beside = if at == 0 { 1 } else { 0 };
+    let beside = usize::from(at == 0);
     let elsewhere = pictures(&mut session, &[&displays[beside]]).remove(0);
     let untouched = apart(&elsewhere, &desk[beside]);
     assert!(
@@ -514,9 +514,8 @@ fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
         "the keyboard is gone from the display the person left it on: {rest:.0} of 255 from the \
          desk under it"
     );
-    assert_eq!(
-        session.compositor().text_entry().wants_typing,
-        false,
+    assert!(
+        !session.compositor().text_entry().wants_typing,
         "no field has the focus any more"
     );
 }
