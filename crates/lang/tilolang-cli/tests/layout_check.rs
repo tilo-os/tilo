@@ -92,6 +92,24 @@ fn a_view_whose_body_is_layers_lays_its_children_over_each_other() {
     );
 }
 
+/// A desk bounded by its window: a middle longer than the window scrolls between the bar and
+/// the dock (a filled share takes no more than its share, in a stack and in layers), and a dock
+/// holding more than the window is wide is as wide as the window, its items scrolling along it
+/// (a chrome body narrows to the room it has).
+#[test]
+fn a_desk_longer_and_wider_than_its_window_scrolls_inside_it() {
+    let report = layout_check::check(&Options {
+        dirs: vec![manifest().join("tests/layout_check/bounded")],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(
+        report.findings.is_empty(),
+        "the middle and the dock scroll inside the window:\n{}",
+        layout_check::render(&report)
+    );
+}
+
 #[test]
 fn edges_sized_in_fractions_of_a_rem_land_on_device_pixels_at_every_display_scale() {
     let scales = layout_check::layouts()
