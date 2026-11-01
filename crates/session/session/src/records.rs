@@ -89,7 +89,7 @@ impl Records {
     #[must_use]
     pub fn of(root: PathBuf) -> Self {
         let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(&root));
-        let indexes = store.room_indexes().unwrap_or_else(|error| {
+        let indexes = store.workspace_indexes().unwrap_or_else(|error| {
             tracing::warn!(%error, "the room indexes of this device are not listed");
             Vec::new()
         });
@@ -99,7 +99,7 @@ impl Records {
         // others is what tells the worker to read the indexes again.
         let mut directories: BTreeSet<PathBuf> = BTreeSet::new();
         for (package, room) in &indexes {
-            match app_state::room_index_directory(&root, package, room) {
+            match app_state::workspace_index_directory(&root, package, room) {
                 Ok(directory) => {
                     if let Some(rooms) = directory.parent() {
                         directories.insert(rooms.to_path_buf());
@@ -188,7 +188,7 @@ impl Records {
             .name("tilo-search-bring".into())
             .spawn(move || {
                 let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(&data_home));
-                let key = StorageKey::room_index(&package, &room);
+                let key = StorageKey::workspace_index(&package, &room);
                 let mut index = match DocStore::shared(store, key) {
                     Ok(index) => index,
                     Err(error) => {
@@ -227,7 +227,7 @@ fn reader(root: PathBuf) -> impl Fn() -> Vec<Held> + Send + Sync + 'static {
 /// record.
 fn read_indexes(root: &Path) -> Vec<Held> {
     let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(root));
-    let indexes = match store.room_indexes() {
+    let indexes = match store.workspace_indexes() {
         Ok(indexes) => indexes,
         Err(error) => {
             tracing::warn!(%error, "the room indexes of this device are not listed");
@@ -257,7 +257,7 @@ fn read_indexes(root: &Path) -> Vec<Held> {
 /// Read without taking a writer: an app of the workspace owns the index, and
 /// a lane of search opening must not wait for it.
 fn named_in(store: &dyn DurableStore, package: &str, room: &str) -> Vec<RecordCheckout> {
-    let key = StorageKey::room_index(package, room);
+    let key = StorageKey::workspace_index(package, room);
     let stored = match store.read(&key) {
         Ok(Some(stored))
             if !stored.bytes.is_empty()

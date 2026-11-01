@@ -74,21 +74,12 @@ view desktop_frame(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace, foc
 /// the frame's own bar naming the place. The controls stay the shell's, so a press there never
 /// reaches the app.
 view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool) {
-    let shown = placed_resource(p.record)
     ui.WindowFrame(name: .some(place_title(p)), focused: focused, fill) {
         controls: {
             frame_buttons(a, p)
         }
         body: {
-            if let r = shown {
-                if meta(r).opens {
-                    show(r, fill)
-                } else {
-                    ui.WindowWell(place: p.key, min: 12rem, fill)
-                }
-            } else {
-                ui.WindowWell(place: p.key, min: 12rem, fill)
-            }
+            place_view(p, fill)
         }
     }
 }
@@ -109,14 +100,14 @@ view frame_buttons(a: Arrangement, p: ArrangementPlace) {
                 for r in a.rows {
                     if r.key != p.strip {
                         ui.MenuItem(r.name) {
-                            on choose: move_place(p.key, r.key)
+                            on choose: move_place(arrangement, p.key, r.key)
                         }
                     }
                 }
             }
         }
         ui.Button("Close", icon: .x, icon_only: true, role: .bar) {
-            on press: close_place(p.key)
+            on press: close_place(arrangement, p.key)
         }
     }
 }
@@ -263,12 +254,12 @@ view window_commands(a: Arrangement, p: ArrangementPlace) {
         for r in a.rows {
             if r.key != p.strip {
                 ui.MenuItem(r.name, icon: .navigation) {
-                    on choose: move_place(p.key, r.key)
+                    on choose: move_place(arrangement, p.key, r.key)
                 }
             }
         }
         ui.MenuItem("Close", icon: .x) {
-            on choose: close_place(p.key)
+            on choose: close_place(arrangement, p.key)
         }
     }
 }

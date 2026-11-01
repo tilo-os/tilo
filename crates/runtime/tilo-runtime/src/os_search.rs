@@ -26,7 +26,7 @@ where
 {
     let search = Arc::new(OsSearch::new(
         Arc::new(host),
-        Caller::local_person(actor).in_room(workspace),
+        Caller::local_person(actor).in_workspace(workspace),
     ));
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let feeding = Arc::clone(&search);

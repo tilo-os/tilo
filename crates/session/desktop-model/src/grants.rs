@@ -150,7 +150,7 @@ mod tests {
                 name,
                 "",
                 vec![Rule::new(
-                    TreePath::room(&room).app("so.tilo.notes"),
+                    TreePath::workspace(&room).app("so.tilo.notes"),
                     KindSet::READ,
                     Answer::Allow,
                 )],
@@ -171,7 +171,7 @@ mod tests {
         workspace.grant(Grant::new(
             "scribe-reads-notes",
             Subject::agent("scribe"),
-            TreePath::room(&room).app("so.tilo.notes"),
+            TreePath::workspace(&room).app("so.tilo.notes"),
             KindSet::READ,
             Answer::Allow,
             Subject::person("owner"),
@@ -201,7 +201,7 @@ mod tests {
             "another set is not"
         );
         let reading = TreePath::root()
-            .push(Level::Room, room.as_str())
+            .push(Level::Workspace, room.as_str())
             .app("so.tilo.notes");
         assert_eq!(
             workspace.answer_at("ada", &reading, tilo_action_policy::ActionKind::Read, 0),
@@ -213,7 +213,7 @@ mod tests {
         Grant::new(
             "app-open",
             Subject::app("so.tilo.caller"),
-            TreePath::room(room)
+            TreePath::workspace(room)
                 .app("so.tilo.target")
                 .resource("target.document")
                 .action("open"),

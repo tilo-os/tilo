@@ -217,12 +217,14 @@ mod keychain {
             let _keychain = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
             vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap();
             std::fs::write(&path, [9; 32]).unwrap();
-            let error = vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap_err();
+            let error =
+                vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap_err();
             assert!(error.to_string().contains("different"), "{error}");
         }
         {
             let _keychain = tilo_secrets::scope_thread(std::sync::Arc::new(Locked));
-            let error = vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap_err();
+            let error =
+                vault_key(directory.path(), workspace_id, IdentityStorage::Platform).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         }
         assert_eq!(std::fs::read(&path).unwrap(), [9; 32]);

@@ -31,7 +31,7 @@ fn prepare(
         .ok_or_else(|| io::Error::other("Active native identity is unavailable"))?;
     let signer = runtime_identity::load_from_path(active).map_err(io::Error::other)?;
     let room: tilo_desktop_model::RoomId =
-        collab_types::person_room(&signer.group_public_key()).into();
+        collab_types::personal_cluster(&signer.group_public_key()).into();
     drop(signer);
     let app = installed_apps()
         .map_err(|error| io::Error::other(error.user_message()))?

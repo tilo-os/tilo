@@ -63,9 +63,13 @@ fn kept_notebook(dir: &std::path::Path, n: usize) {
     let packages = tilolang_tilo::bench::compile(&notes).unwrap();
     let mut doc = tilolang_tilo::bench::seeded_record(&packages, n).unwrap();
     let profile = ui::application::NativeProfile::open(dir, None).unwrap();
-    let landing =
-        ui::record::transfer::install_room_document(profile.store(), NOTES, WORKSPACE, &mut doc)
-            .unwrap();
+    let landing = ui::record::transfer::install_workspace_document(
+        profile.store(),
+        NOTES,
+        WORKSPACE,
+        &mut doc,
+    )
+    .unwrap();
     profile.store().flush(None).unwrap();
     assert!(matches!(
         landing.durability(&**profile.store()),

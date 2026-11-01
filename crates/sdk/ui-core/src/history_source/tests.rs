@@ -739,7 +739,7 @@ fn a_change_naming_no_finer_action_says_so_in_the_frameworks_words() {
     let report = tilo_actions::ActionContext::for_resource("r", "doc", "Report");
     doc.commit_with(CommitOptions::default().with_message(report.change_message().unwrap()));
     // Moving the record between workspaces is a row of its own.
-    doc.put(ROOT, "room", "elsewhere").unwrap();
+    doc.put(ROOT, "workspace", "elsewhere").unwrap();
     doc.commit_with(
         CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Transfer.change_message()),
@@ -796,7 +796,9 @@ fn an_action_context_names_its_change() {
 fn a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did() {
     use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, genesis_actor};
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-    let store = RecordOwners::portable(cache).open("test", "room").unwrap();
+    let store = RecordOwners::portable(cache)
+        .open("test", "workspace")
+        .unwrap();
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
     store.create_record(&checkout).unwrap();
     let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
@@ -845,7 +847,9 @@ fn a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did() {
 fn a_package_primary_documents_genesis_is_left_out_of_a_feed_too() {
     use crate::record::{RecordCheckout, RecordKind, RecordOwners, genesis_actor};
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-    let store = RecordOwners::portable(cache).open("test", "room").unwrap();
+    let store = RecordOwners::portable(cache)
+        .open("test", "workspace")
+        .unwrap();
     let checkout = RecordCheckout::package_primary(RecordKind::new("chat"));
     store
         .reserve_record(&checkout)

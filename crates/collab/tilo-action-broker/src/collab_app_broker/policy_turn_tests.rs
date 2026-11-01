@@ -85,7 +85,7 @@ fn expiring_workspace(guest_until: u64, agent_until: u64) -> (WorkspaceTree, Str
         Grant::new(
             id,
             subject,
-            TreePath::room(&workspace_id),
+            TreePath::workspace(&workspace_id),
             KindSet::READ,
             Answer::Allow,
             Subject::person(owner.clone()),

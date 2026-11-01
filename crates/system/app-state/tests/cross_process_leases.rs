@@ -89,7 +89,7 @@ fn leases_exclude_across_processes_and_release_on_exit() {
 }
 
 /// A second window of one app is a second instance of the same process tree
-/// opening the same room document: it joins as a secondary writer under an
+/// opening the same workspace document: it joins as a secondary writer under an
 /// actor of its own, and the first window keeps the stored author, its own
 /// values and its own compatibility with what it wrote.
 #[test]

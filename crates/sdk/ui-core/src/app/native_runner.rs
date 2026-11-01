@@ -254,8 +254,8 @@ impl AppHandler {
 impl AppHandler {
     /// Tell the app how far the compositor's input reached it: what the person did in the
     /// window's bar after that input runs now, in its place among the window's own input.
+    #[cfg(target_os = "linux")]
     fn follow_handled_input(&mut self) {
-        #[cfg(target_os = "linux")]
         if let Some(serial) = winit::platform::wayland::delivered_input_serial() {
             self.app.input_handled(serial);
         }
@@ -798,7 +798,7 @@ fn create_window_render(
     transparent: bool,
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
-    // Drawn by the room's render service: no device in this process.
+    // Drawn by the workspace's render service: no device in this process.
     if crate::render_thread::remote::requested() {
         match crate::render_thread::remote::spawn(
             window.clone(),
@@ -1276,7 +1276,7 @@ impl AppHandler {
         // after the wait.
         #[cfg(any(windows, target_os = "linux"))]
         {
-            // Drawn by the room's render service: the launch prepared its
+            // Drawn by the workspace's render service: the launch prepared its
             // connection, not a device (`startup::prepare_native_renderer`).
             if crate::render_thread::remote::requested() {
                 self.app.startup_renderer = None;
@@ -2747,7 +2747,7 @@ impl AppHandler {
             Some(culling) => &mut culling.scenes.layers,
             None => &mut scene,
         };
-        // An empty state waiting for its room's first sync turns a spinner
+        // An empty state waiting for its workspace's first sync turns a spinner
         // no widget's damage covers (`crate::workspace_sync`): a new pose damages
         // its slot, in scene pixels.
         let spinner_damage = crate::workspace_sync::take_spinner_damage();
@@ -3883,6 +3883,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         event: WindowEvent,
     ) {
         // What the person did in the window's bar before this input runs first.
+        #[cfg(target_os = "linux")]
         self.follow_handled_input();
         // Wheel deltas reported in one wake route as one event; anything
         // else routes the waiting sum first.
@@ -4043,6 +4044,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
         // The wake's input is all handled: what the person did in the bar after it runs.
+        #[cfg(target_os = "linux")]
         self.follow_handled_input();
         if self.apply_floating_host_messages(event_loop) {
             self.app.invalidate_widget_resource_cache();

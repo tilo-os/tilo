@@ -7,7 +7,7 @@ use crate::{ActionKind, Answer, Context, Grant, GrantId, Lifetime, Subject, Tree
 pub enum Basis<'g> {
     /// The most specific live grant covering the node and kind.
     Grant(&'g Grant),
-    /// The party owns the room the node is in.
+    /// The party owns the workspace the node is in.
     Owner,
     /// No live grant covers the node and kind.
     NoGrant,
@@ -75,7 +75,7 @@ pub fn decide<'g>(
 }
 
 /// One source of authority: the subjects someone is known by, the grants that
-/// may name them, and the rooms they own.
+/// may name them, and the workspaces they own.
 #[derive(Clone, Debug, Default)]
 pub struct Party<'g> {
     pub subjects: Vec<Subject>,
@@ -83,9 +83,9 @@ pub struct Party<'g> {
     /// Nodes owned structurally: everything under them is allowed, whatever
     /// the grants say.
     pub owns: Vec<TreePath>,
-    /// Denies no more specific grant lifts: the room's ban or restriction
+    /// Denies no more specific grant lifts: the workspace's ban or restriction
     /// of this person. A grant to their role (a share of one item with the
-    /// room, a role's rule on comments) speaks for the role, not for a
+    /// workspace, a role's rule on comments) speaks for the role, not for a
     /// decision about them.
     pub held_off: Vec<&'g Grant>,
 }
@@ -119,7 +119,7 @@ impl<'g> Party<'g> {
         self
     }
 
-    /// Adds grants from another source (a room's grants and a delegation's own,
+    /// Adds grants from another source (a workspace's grants and a delegation's own,
     /// for instance).
     #[must_use]
     pub fn with_grants(mut self, grants: impl IntoIterator<Item = &'g Grant>) -> Self {
@@ -138,7 +138,7 @@ impl<'g> Party<'g> {
 
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
-        // A member's own record is that person's alone, whatever the room's
+        // A member's own record is that person's alone, whatever the workspace's
         // grants or owner say ([`crate::member_record`]). A delegation, known
         // by no person, is decided by its grants as anywhere else.
         if let Some(member) = crate::member_record::owner_of(node)
@@ -266,7 +266,7 @@ pub struct Verdict<'g> {
 
 impl<'g> Verdict<'g> {
     /// This verdict for a privileged action, one that exercises authority
-    /// over the room or others in it: the person's own grants must allow it.
+    /// over the workspace or others in it: the person's own grants must allow it.
     /// Where they only ask, the person's confirmation is no authority they
     /// lack, so it is refused. A delegation's Ask still asks the person.
     #[must_use]
@@ -329,7 +329,7 @@ impl<'g> Verdict<'g> {
             .position(|part| part.answer == self.answer)
             .unwrap_or(0);
         let reason = match self.parts.get(index).map(|part| part.basis) {
-            Some(Basis::Owner) => "the person owns the room".to_owned(),
+            Some(Basis::Owner) => "the person owns the workspace".to_owned(),
             Some(Basis::Grant(grant)) => format!(
                 "{} give {} on {} the answer \"{}\" (grant {})",
                 who(index),

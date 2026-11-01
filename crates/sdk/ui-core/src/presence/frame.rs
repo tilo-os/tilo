@@ -1,4 +1,4 @@
-//! The room's presence as state of the frame: the host lends it around the
+//! The workspace's presence as state of the frame: the host lends it around the
 //! pass every widget gets whether or not it is drawn
 //! ([`crate::widget::Widget::update`]), so a widget that is not on screen
 //! still knows who is here.

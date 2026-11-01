@@ -99,7 +99,7 @@ async fn an_admitted_offloadable_invocation_runs_where_the_route_places_it() {
             let thumbnail = tilo_actions::content_resource(&"b".repeat(64)).unwrap();
             let invoke = |fixture: &LocalDirectoryFixture| {
                 let caller =
-                    Caller::local_person("fixture-owner").in_room(fixture.cluster_id.clone());
+                    Caller::local_person("fixture-owner").in_workspace(fixture.cluster_id.clone());
                 let request = InvokeRequest {
                     invocation: tilo_actions::InvocationId::new(),
                     target: RemoteActionTarget {

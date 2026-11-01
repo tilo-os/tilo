@@ -19,7 +19,7 @@ trait Policy {
         }
         let role = self.members().get(person).copied()?;
         let subject = Subject::Person(person.to_owned());
-        let node = tilo_action_policy::TreePath::room(workspace);
+        let node = tilo_action_policy::TreePath::workspace(workspace);
         let blocked = self.grants().iter().any(|grant| {
             grant.subject == subject
                 && grant.node == node

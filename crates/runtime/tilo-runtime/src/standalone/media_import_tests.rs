@@ -16,7 +16,7 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
     // The persistent OS-search door and CLI use this same runtime facade.
     // It retains certified custody without installing a native seat service.
     let host = session.action_host().unwrap();
-    let owner = Caller::local_person(session.actor()).in_room(session.workspace());
+    let owner = Caller::local_person(session.actor()).in_workspace(session.workspace());
     let runtime = session.media_host().handle().unwrap();
     let store = session.media_host().store();
     let first = runtime
@@ -171,17 +171,17 @@ fn refuse_scoped_imports(
     let workspace = session.workspace();
     refused(
         host,
-        &Caller::local_agent("limited").in_room(workspace),
+        &Caller::local_agent("limited").in_workspace(workspace),
         asked.clone(),
     );
     refused(
         host,
-        &Caller::local_app("so.tilo.photos").in_room(workspace),
+        &Caller::local_app("so.tilo.photos").in_workspace(workspace),
         asked.clone(),
     );
     refused(
         host,
-        &Caller::local_person("other-owner").in_room(workspace),
+        &Caller::local_person("other-owner").in_workspace(workspace),
         asked.clone(),
     );
     refused(
@@ -205,7 +205,7 @@ fn refuse_scoped_imports(
         .unwrap();
     refused(
         host,
-        &Caller::authenticated(selected.user_public_key, [9; 32]).in_room(workspace),
+        &Caller::authenticated(selected.user_public_key, [9; 32]).in_workspace(workspace),
         asked.clone(),
     );
     let mut spoofed = asked.clone();
@@ -246,7 +246,7 @@ fn owner_import_through_the_canonical_door_grants_only_the_selected_workspace() 
     let session = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
     let host = session.action_host().unwrap();
     let workspace = session.workspace();
-    let owner = Caller::local_person(session.actor()).in_room(workspace);
+    let owner = Caller::local_person(session.actor()).in_workspace(workspace);
     // Historical raw content in the actual runtime profile store, without a
     // media workspace tag. No synthetic source-workspace root is manufactured.
     let store = session.media_host().store();

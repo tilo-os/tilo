@@ -143,7 +143,7 @@ fn governed_grant(
     Ok(tilo_action_policy::Grant::new(
         format!("grant:{}", uuid::Uuid::new_v4()),
         subject,
-        tilo_action_policy::TreePath::room(room.to_string()).join(&node),
+        tilo_action_policy::TreePath::workspace(room.to_string()).join(&node),
         kinds,
         answer,
         tilo_action_policy::Subject::Person(String::new()),

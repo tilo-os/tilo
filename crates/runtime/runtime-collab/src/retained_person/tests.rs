@@ -121,7 +121,7 @@ fn proof(
             operation_id: "a3a5760f-066e-4c9a-92d7-07a3ee73c650".into(),
             app_id: "so.tilo.files".into(),
             package_sha256: "a".repeat(64),
-            room: personal_room(&cert.user_public_key),
+            room: personal_cluster(&cert.user_public_key),
             resource_record: "owned-fixture-record".into(),
             target_uid: peer.uid(),
             target_pid: peer.pid(),
@@ -132,7 +132,6 @@ fn proof(
         certificate: serde_json::to_vec(cert).unwrap(),
         revocations: vec![],
         execution_id: "39b8f599-0d98-4d89-9c11-4d8ea6401c1e".into(),
-        person_room: personal_room(&cert.user_public_key),
     };
     let signature = device
         .sign(&claims.signing_bytes().unwrap())
@@ -431,10 +430,13 @@ fn correctly_signed_other_workspace_binding_cannot_borrow_personal_source_contex
     let cert = certificate(&root, &device);
     let mut foreign = proof(&fixture.peer, &cert, &device);
     foreign.claims.binding.room = "ee242d82-6913-4b20-a719-aeb96a6e052a".into();
-    assert_ne!(foreign.claims.binding.room, foreign.claims.person_room);
+    assert_ne!(
+        foreign.claims.binding.room,
+        personal_cluster(&cert.user_public_key)
+    );
     resign(&mut foreign, &device);
     // Expected request agrees with the foreign room and the outer signature is
-    // genuine. Rejection must come from the personal-room authority boundary.
+    // genuine. Rejection must come from the person's own cluster.
     assert!(
         foreign
             .authenticated_revocations(

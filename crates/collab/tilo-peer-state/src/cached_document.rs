@@ -42,7 +42,7 @@ impl PolicyData {
             grants: self
                 .grants
                 .iter()
-                .filter(|grant| grant.node.room_id() == Some(workspace))
+                .filter(|grant| grant.node.workspace_id() == Some(workspace))
                 .cloned()
                 .collect(),
         }

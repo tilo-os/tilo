@@ -31,6 +31,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
 use crate::portable_storage::PortableStorage;
+mod personal_scope;
+use personal_scope::PersonScope;
 mod portable;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -575,6 +577,12 @@ pub struct RecordSet {
     /// records kept in a workspace, and for a person's records on a device
     /// whose identity derives no cluster.
     person: Option<uuid::Uuid>,
+    /// The workspace this person's records were kept in before their own
+    /// store existed ([`collab_types::retired_person_workspace`]): a record
+    /// whose own key holds nothing is read here once and taken into the
+    /// person's own scope. `None` for any other scope, and for a device that
+    /// never had one.
+    retired: Option<String>,
     open: HashMap<RecordId, Parked>,
     /// Names currently granted by the workspace index.  Discovery is intentionally
     /// separate from `open`: a hostile or merely large index must not create
@@ -611,7 +619,7 @@ pub struct RecordSet {
     /// ([`RecordStore::announce`]).
     announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
     /// Records the workspace's hosts sent everything they hold of
-    /// ([`RecordStore::note_room_answered`]), until something of them
+    /// ([`RecordStore::note_workspace_answered`]), until something of them
     /// arrives.
     answered: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
     /// The windows that read this store's records
@@ -674,6 +682,7 @@ impl RecordSet {
             package_id: package_id.into(),
             home: home.into(),
             person: None,
+            retired: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
@@ -706,6 +715,7 @@ impl RecordSet {
             package_id: String::new(),
             home: String::new(),
             person: None,
+            retired: None,
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
@@ -796,7 +806,7 @@ impl RecordSet {
     /// A removed/tombstoned index entry disappears from future discovery, but
     /// already-open data remains in memory: revocation stops future access;
     /// it cannot un-share bytes the process has already received.
-    pub fn discover_room(&mut self, workspace: &AutoCommit) -> Vec<RecordCheckout> {
+    pub fn discover_workspace(&mut self, workspace: &AutoCommit) -> Vec<RecordCheckout> {
         let found = index::discoverable_references(workspace);
         self.known = found
             .iter()
@@ -1325,7 +1335,7 @@ impl RecordSet {
             app_state::validate_record_identity(&self.package_id, &self.home, "index")?;
             return Ok((
                 Rc::clone(backend),
-                StorageKey::room_index(&self.package_id, &self.home),
+                StorageKey::workspace_index(&self.package_id, &self.home),
             ));
         }
         let record = want.id.storage_key();
@@ -1462,22 +1472,26 @@ impl RecordSet {
             let autosave = app_state::DocWriter::try_start(&owner)?;
             (doc, autosave)
         } else {
-            // Nothing under the new id: continue a former identity's record,
-            // written in full under the new key before it is shown.
-            let mut doc = adopt_former(
-                &backend,
-                want,
-                &self.home,
-                |former| StorageKey::record(&self.package_id, &self.home, former.storage_key()),
-                |key| {
-                    Ok(
-                        app_state::DocOwner::acquire(Rc::clone(&backend), key.clone())?
-                            .load_complete()?
-                            .map(|loaded| loaded.document().clone()),
-                    )
-                },
-            )?
-            .ok_or(RecordOpenError::MissingRecord)?;
+            // Nothing under the new id: a record the person kept before their
+            // own store existed, or a former identity's, is written in full
+            // under the new key before it is shown.
+            let mut doc = match self.take_from_retired_workspace(&backend, want)? {
+                Some(taken) => taken,
+                None => adopt_former(
+                    &backend,
+                    want,
+                    &self.home,
+                    |former| StorageKey::record(&self.package_id, &self.home, former.storage_key()),
+                    |key| {
+                        Ok(
+                            app_state::DocOwner::acquire(Rc::clone(&backend), key.clone())?
+                                .load_complete()?
+                                .map(|loaded| loaded.document().clone()),
+                        )
+                    },
+                )?
+                .ok_or(RecordOpenError::MissingRecord)?,
+            };
             doc.set_actor(owner.actor().clone());
             if !init_scoped(&mut doc, &want.id, &want.kind, &self.home, Some(&self.home)) {
                 return Err(RecordOpenError::IdentityMismatch);
@@ -1824,7 +1838,7 @@ impl RecordOwners {
             package_id,
             person::PERSONAL_SCOPE,
             false,
-            collab_types::person_room_of(person),
+            PersonScope::of(person),
         )
     }
 
@@ -1842,7 +1856,7 @@ impl RecordOwners {
         package_id: &str,
         workspace_id: &str,
         joins_construction: bool,
-        person: Option<uuid::Uuid>,
+        person: Option<PersonScope>,
     ) -> Result<RecordStore, RecordOpenError> {
         // A cluster of the person's own routes their own scope only: a
         // workspace's records name the workspace.
@@ -1870,7 +1884,8 @@ impl RecordOwners {
         let store = RecordStore::new(RecordSet {
             package_id: package_id.to_owned(),
             home: workspace_id.to_owned(),
-            person,
+            person: person.as_ref().map(|person| person.cluster),
+            retired: person.map(|person| person.retired),
             open: HashMap::new(),
             known: BTreeMap::new(),
             active: None,
@@ -1977,7 +1992,7 @@ pub struct RecordRefusal {
 /// A record no host replicates is decided by nobody else: what is said of
 /// it is said at once. A replicated one holds each notice with the heads it
 /// was said at; the next publication carries them, and once the workspace
-/// answered every commit of the record ([`RecordStore::room_settled`]) the
+/// answered every commit of the record ([`RecordStore::workspace_settled`]) the
 /// notices are said. A refusal withdraws the changes, and a notice whose
 /// heads went with them is dropped: the refusal is said instead.
 #[derive(Debug, Default)]
@@ -2081,7 +2096,7 @@ pub enum RecordOpenError {
     /// ([`RecordId::arrives_on_demand`]) is not here yet: it was asked for,
     /// and the store wakes its readers when it arrives
     /// ([`RecordStore::wake_on_arrival`]) or when the workspace's hosts say they
-    /// have none of it ([`RecordStore::room_answered`]).
+    /// have none of it ([`RecordStore::workspace_answered`]).
     #[error("the record is on its way from the workspace")]
     Arriving,
     /// The record left this workspace (see [`transfer`]); its history stays, but
@@ -2727,16 +2742,24 @@ impl RecordStore {
             .map(|(_, index)| index)
             .collect();
         if !set.home.is_empty() {
-            let kept = match (
-                &set.portable,
-                set.backend.as_ref().or(set.documents.as_ref()),
-            ) {
-                (Some(cache), _) => cache.records(&set.package_id, &set.home),
-                (None, Some(store)) => store
-                    .records(&set.package_id, &set.home)
-                    .unwrap_or_default(),
-                (None, None) => Vec::new(),
-            };
+            // What the person kept before their own store existed is listed
+            // with what it holds now: asking for a part opens it, which takes
+            // that record into the store.
+            let kept: Vec<String> = std::iter::once(set.home.as_str())
+                .chain(set.retired.as_deref())
+                .flat_map(|workspace| {
+                    match (
+                        &set.portable,
+                        set.backend.as_ref().or(set.documents.as_ref()),
+                    ) {
+                        (Some(cache), _) => cache.records(&set.package_id, workspace),
+                        (None, Some(store)) => store
+                            .records(&set.package_id, workspace)
+                            .unwrap_or_default(),
+                        (None, None) => Vec::new(),
+                    }
+                })
+                .collect();
             // A portable cache keys a record by its id, a store by its
             // storage key.
             held.extend(kept.iter().filter_map(|key| {
@@ -2794,7 +2817,7 @@ impl RecordStore {
     }
 
     /// Moves whenever the store is told something arrived for what follows
-    /// it: [`Self::note_kept`], [`Self::announce`], [`Self::note_room_answered`].
+    /// it: [`Self::note_kept`], [`Self::announce`], [`Self::note_workspace_answered`].
     #[must_use]
     pub fn kept_revision(&self) -> u64 {
         self.0.try_borrow().map_or(0, |set| set.kept.get())
@@ -2844,13 +2867,19 @@ impl RecordStore {
                 return Vec::new();
             }
         };
-        let mut found = keys
+        // Windows of the person's kept before their own store existed are
+        // listed with the ones it starts here; opening one of them takes it
+        // into the store, as opening any other record of theirs does.
+        let ids = keys
             .iter()
             .filter_map(|key| RecordId::window_default_of_storage_key(key))
+            .collect::<Vec<_>>();
+        let mut found = ids
+            .iter()
             .filter_map(|id| {
                 let origin = transfer::Origin::Record(RecordCheckout::new(id.clone(), kind.clone()));
                 match transfer::read(&store, &package, &home, &origin) {
-                    Ok(doc) => Some((id, doc)),
+                    Ok(doc) => Some((id.clone(), doc)),
                     Err(error) => {
                         tracing::warn!(record = %id, workspace = %home, %error, "window record not readable; left out");
                         None
@@ -2858,6 +2887,7 @@ impl RecordStore {
                 }
             })
             .collect::<Vec<_>>();
+        found.extend(self.0.borrow().retired_window_records(&store, kind, &ids));
         found.compact_sort_by(|a, b| a.0.cmp(&b.0));
         found
     }
@@ -3796,7 +3826,7 @@ impl RecordStore {
 
     /// The workspace's host answered every commit of record `id` it published:
     /// what was held for them is said ([`Self::take_said`]).
-    pub fn room_settled(&self, id: &RecordId) {
+    pub fn workspace_settled(&self, id: &RecordId) {
         if let Ok(mut set) = self.0.try_borrow_mut()
             && let Some(parked) = set.open.get_mut(id)
         {

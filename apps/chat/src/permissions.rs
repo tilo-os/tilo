@@ -92,7 +92,7 @@ impl ChatPermissions {
 
     /// The workspace this peer is in, as its host names it.
     pub fn workspace(&self) -> &str {
-        self.ctx.standing().room()
+        self.ctx.standing().workspace()
     }
 
     /// May this peer remove other people's messages? Moderation in chat is

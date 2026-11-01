@@ -2025,7 +2025,10 @@ impl DesktopChrome {
 
     /// Whether anything of the chrome is due a redraw.
     fn chrome_needs_redraw(&self) -> bool {
-        self.switcher.is_active()
+        // An intent waiting to be carried out asks for the frame that
+        // carries it.
+        !self.intents.borrow().is_empty()
+            || self.switcher.is_active()
             || self.emoji.needs_redraw()
             || self.emoji_link.has_delivered()
             || self.navigator.needs_animation_frame(ui::time::now())

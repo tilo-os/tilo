@@ -72,7 +72,7 @@ pub fn seed_workspace(
     doc.put(ROOT, "owner", owner.id()).map_err(err)?;
     doc.put_object(ROOT, "members", ObjType::Map).map_err(err)?;
     let grants = doc.put_object(ROOT, "grants", ObjType::Map).map_err(err)?;
-    for grant in tilo_action_policy::roles::room_role_grants(
+    for grant in tilo_action_policy::roles::workspace_role_grants(
         workspace,
         &Subject::Person(owner.id().to_owned()),
     ) {

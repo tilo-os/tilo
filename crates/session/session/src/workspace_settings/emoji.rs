@@ -260,7 +260,8 @@ impl Emoji {
             Standing::person(workspace.policy.clone(), person.clone()),
         )
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-        let records = WorkspaceRecords::in_room(self.owners.clone(), room.clone(), author.clone());
+        let records =
+            WorkspaceRecords::in_workspace(self.owners.clone(), room.clone(), author.clone());
         let record = WorkspaceRecord::<Record>::open(
             &records,
             OWNER,

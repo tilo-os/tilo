@@ -535,7 +535,7 @@ fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
 fn application_definition(
     app: &AppHooks,
     opens: &'static [&'static str],
-    room_record: bool,
+    workspace_record: bool,
     create: ComponentFactory,
 ) -> ApplicationDefinition {
     ApplicationDefinition {
@@ -546,9 +546,9 @@ fn application_definition(
         required: vec![],
         optional: vec![],
         opens,
-        room_record,
+        workspace_record,
         member_record: (app.member_record)(),
-        opens_before_record: room_record && app.opens_before_record,
+        opens_before_record: workspace_record && app.opens_before_record,
         create,
     }
 }
@@ -1429,7 +1429,7 @@ pub(crate) fn prepare_on(
     match named {
         // A launch naming the workspace's own record (a notification about
         // something in it) opens it as a launch naming nothing does.
-        Some(id) if !(id.is_package_primary() && definition.keeps_room_record()) => {
+        Some(id) if !(id.is_package_primary() && definition.keeps_workspace_record()) => {
             host.prepare_record(definition, instance, RecordCheckout::new(id, kind), inputs)
         }
         _ => host.prepare_default(

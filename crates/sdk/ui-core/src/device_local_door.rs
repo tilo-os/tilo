@@ -10,7 +10,7 @@
 //! ([`AppWidget::invoke_device_local_action`]) and [`publishes`] what the
 //! app offers now ([`AppWidget::device_local_resources`]). The catalogue
 //! reads [`SharedDoor::actions`] and queues with [`SharedDoor::invoke`];
-//! the answer arrives once the host served it. Nothing here reaches a room
+//! the answer arrives once the host served it. Nothing here reaches a workspace
 //! or another device.
 //!
 //! [`serves`]: SharedDoor::serve

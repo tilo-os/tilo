@@ -313,7 +313,7 @@ async fn bridge_query(
 ) -> tilo_actions::remote::CataloguePage {
     use tilo_actions::remote::{Caller, CatalogueQuery, PendingPoll};
     let caller = Caller::local_person(person.id())
-        .in_room(&route.cluster_id)
+        .in_workspace(&route.cluster_id)
         .in_new_execution();
     let mut pending = state.action_query(
         &caller,

@@ -176,7 +176,7 @@ fn list_windows_request(invocation: u128) -> InvokeRequest {
 /// The connection's own caller, as the door's MCP server makes it.
 fn connection(host: &TaskRunHost) -> Caller {
     Caller::local_agent(host.agent())
-        .in_room(host.workspace())
+        .in_workspace(host.workspace())
         .acting_for(host.person())
         .in_new_execution()
 }

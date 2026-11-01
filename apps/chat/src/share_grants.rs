@@ -61,7 +61,7 @@ pub(crate) fn share_node(
 ) -> Option<TreePath> {
     let (app, record) = crate::live_share::app_and_record(provider)?;
     let id = reference.id.as_str();
-    let at = |kind: &str| TreePath::room(workspace).app(app).kind(kind);
+    let at = |kind: &str| TreePath::workspace(workspace).app(app).kind(kind);
     if let Some((collection, item)) = id.rsplit_once('/')
         && let Some((kind, field)) = collection.split_once('/')
         && !field.contains('/')
@@ -260,21 +260,21 @@ mod tests {
         assert_eq!(
             share_node(workspace, "record:so.tilo.notes:", &note).map(|node| node.to_string()),
             Some(format!(
-                "room:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1"
+                "workspace:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1"
             )),
             "a note of the workspace's notebook"
         );
         assert_eq!(
             share_node(workspace, "record:so.tilo.notes:r1", &note).map(|node| node.to_string()),
             Some(format!(
-                "room:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:r1/item:p1"
+                "workspace:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:r1/item:p1"
             ))
         );
         let deck = reference("slides.deck", "d1");
         assert_eq!(
             share_node(workspace, "record:so.tilo.slides:d1", &deck).map(|node| node.to_string()),
             Some(format!(
-                "room:{workspace}/app:so.tilo.slides/kind:slides.deck/resource:d1"
+                "workspace:{workspace}/app:so.tilo.slides/kind:slides.deck/resource:d1"
             )),
             "a whole record"
         );

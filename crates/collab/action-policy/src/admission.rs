@@ -13,7 +13,7 @@
 use crate::{ActionKind, Answer};
 
 /// How far an invocation was admitted to reach: the kind of action it is,
-/// and whether it exercises authority over the room or others in it.
+/// and whether it exercises authority over the workspace or others in it.
 ///
 /// What an invocation's effect asks for while it runs (another resource's
 /// action, an edit of its own resource) continues it, and goes no further

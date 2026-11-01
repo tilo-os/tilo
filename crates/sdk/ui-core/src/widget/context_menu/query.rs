@@ -40,7 +40,10 @@ impl ContextMenu {
     /// opened. For a host with its own agent composer (the desktop's menus);
     /// an app's menus ask through the desktop with no code of their own.
     pub fn set_owner_asks(&mut self, asks: bool) {
-        self.owner_asks = asks;
+        if self.owner_asks != asks {
+            self.owner_asks = asks;
+            self.dirty = true;
+        }
     }
 
     /// The sentence the person asked, exactly once, for an owner that
@@ -96,6 +99,7 @@ impl ContextMenu {
                 .push(MenuItem::action(String::new(), || {}).with_icon(Icon::Sparkles));
         }
         self.refilter();
+        self.dirty = true;
     }
 
     /// The owner's rows: every row but the one the menu adds itself.
@@ -192,6 +196,7 @@ impl ContextMenu {
             None
         };
         self.layout_at_position();
+        self.dirty = true;
         crate::widget::note_resource_presentation_changed();
     }
 
@@ -234,6 +239,8 @@ impl ContextMenu {
             && let Some(selection) = query.composition.pointer_selection(&query.text, point)
         {
             query.selection = selection;
+            // The caret moved.
+            self.dirty = true;
         }
         true
     }
@@ -280,7 +287,11 @@ impl ContextMenu {
         );
         match change {
             QueryEventChange::Ignored => false,
-            QueryEventChange::Display => true,
+            QueryEventChange::Display => {
+                // The composition or the caret changed under the field.
+                self.dirty = true;
+                true
+            }
             QueryEventChange::Edited => {
                 self.query_edited();
                 true

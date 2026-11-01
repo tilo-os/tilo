@@ -230,6 +230,8 @@ impl Automation {
         self.keep_finished();
         self.apply_saved();
         // What fired while the broker was starting starts now that it serves.
+        // What it fired was decided against a desk this loop had already
+        // published, so the broker knows the room the run belongs to.
         if self.broker.is_some() {
             let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
             self.start(waiting);
@@ -258,8 +260,7 @@ impl Automation {
         if tick {
             *self.last_tick.borrow_mut() = Some(now);
         }
-        self.observe(tick);
-        self.publish_desk(desk);
+        self.observe(tick, desk);
     }
 
     /// A chord was pressed that nothing else of the desktop's answers: it
@@ -296,7 +297,7 @@ impl Automation {
     /// Arm the shortcuts the desk shows, show every source what this device
     /// sees now, and start what fired. `tick` says the passing of time came
     /// round, which the schedules alone are shown.
-    fn observe(&mut self, tick: bool) {
+    fn observe(&mut self, tick: bool, desk: Option<&crate::plane::DeskAuthority>) {
         self.devices.set(devices_of(self.fabric.as_ref()));
         let now_ns = unix_ns(self.triggers.clock().now());
         let armed = self.armed(now_ns);
@@ -304,6 +305,12 @@ impl Automation {
         self.armed_now.clone_from(&armed);
         self.follow_records(&armed);
         self.armed_at = Some(self.handle.revision());
+        // A firing is started on the broker's thread, which decides it
+        // against the desk this loop published: it has to see the workspace
+        // a shortcut was armed from before the run it starts is asked for,
+        // or a fire time would be spent on a run the broker cannot find a
+        // room for.
+        self.publish_desk(desk);
         let mut firings = if tick {
             let mut firings = self.triggers.observe(TriggerEvent::Tick, &armed);
             let running = self.launches.running_apps();
@@ -436,8 +443,9 @@ impl Automation {
             if let Some(claim) = &firing.claim {
                 self.claim(&firing.room, claim);
             }
-            let caller = Caller::local_person(self.person_in(&firing.room)).in_room(&firing.room);
-            match broker.start_triggered_shortcut_run(
+            let caller =
+                Caller::local_person(self.person_in(&firing.room)).in_workspace(&firing.room);
+            if let Err(error) = broker.start_triggered_shortcut_run(
                 &caller,
                 &firing.room,
                 &firing.shortcut,
@@ -445,18 +453,15 @@ impl Automation {
                 firing.run,
                 firing.inputs.clone(),
             ) {
-                Ok(_) => {}
-                Err(error) => {
-                    // A shortcut deleted or changed elsewhere, or one whose
-                    // saver may not run it here: nothing started, and the
-                    // next arming drops it.
-                    tracing::info!(
-                        shortcut = %firing.shortcut,
-                        trigger = firing.trigger.kind(),
-                        %error,
-                        "a shortcut trigger fired but the shortcut did not start"
-                    );
-                }
+                // A shortcut deleted or changed elsewhere, or one whose saver
+                // may not run it here: nothing started, and the next arming
+                // drops it.
+                tracing::info!(
+                    shortcut = %firing.shortcut,
+                    trigger = firing.trigger.kind(),
+                    %error,
+                    "a shortcut trigger fired but the shortcut did not start"
+                );
             }
         }
     }

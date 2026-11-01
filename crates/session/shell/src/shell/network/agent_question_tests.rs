@@ -186,7 +186,7 @@ fn the_persons_device_answers_a_relay_agents_question_on_its_sheet() {
         root.verifying_key().to_bytes(),
         agent_key.verifying_key().to_bytes(),
     )
-    .in_room(ROOM.to_owned());
+    .in_workspace(ROOM.to_owned());
     let ask = || {
         let (given, answer) = mpsc::channel();
         witness

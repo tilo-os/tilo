@@ -689,7 +689,7 @@ fn bound_components_keep_child_binding() {
             required: vec![],
             optional: vec![],
             opens: &[],
-            room_record: false,
+            workspace_record: false,
             member_record: false,
             opens_before_record: false,
             create: factory,
@@ -915,7 +915,7 @@ impl ActionFixture {
                 required: vec![],
                 optional: vec![],
                 opens: &[],
-                room_record: false,
+                workspace_record: false,
                 member_record: false,
                 opens_before_record: false,
                 create,
@@ -1499,10 +1499,10 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     use collab_types::action_authority::AppActionAuthorityProjection;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    const ROOM: &str = "00000000-0000-0000-0000-000000000004";
+    const WORKSPACE: &str = "00000000-0000-0000-0000-000000000004";
     const APP: &str = "so.tilo.binding-probe";
     let owner = AppActionAuthorityProjection::project(
-        &tilo_action_policy::WorkspacePolicy::new(ROOM, "fixture-user"),
+        &tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "fixture-user"),
         APP,
         "fixture-user",
         false,
@@ -1521,13 +1521,13 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     fixture.permissions.set(
         crate::application::follow_host_authority(
             crate::permissions::PermissionContext::member_of(
-                ROOM,
+                WORKSPACE,
                 "fixture-user",
                 crate::permissions::Role::Viewer,
             ),
             read,
             watch,
-            ROOM,
+            WORKSPACE,
             APP,
         )
         .unwrap(),
@@ -2625,7 +2625,7 @@ fn a_hosted_components_search_request_becomes_a_host_intent() {
         title: "Probe".into(),
         icon: IconDescriptor::Glyph("P"),
         record_kind: crate::record::RecordKind::new("probe"),
-        room_record: true,
+        workspace_record: true,
         member_record: false,
         opens_before_record: false,
         required: vec![],
@@ -2836,7 +2836,7 @@ fn input_surfaces_keep_their_controls_without_native_document_chrome() {
         assert_eq!(
             app.document_sync_status(),
             None,
-            "neither a local document outside any room nor an intentionally \
+            "neither a local document outside any workspace nor an intentionally \
              unattached input service has lost a route"
         );
         for (width, height) in [(800, 600), (600, 800)] {

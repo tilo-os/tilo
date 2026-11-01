@@ -1125,7 +1125,7 @@ impl Tiles {
         let store = self.store(definition)?;
         let (target, named_new) = self.launch_target(definition, &store, tab.id)?;
         if named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew) {
-            self.may_start_room_record(tab)?;
+            self.may_start_workspace_record(tab)?;
         }
         let restore = self
             .inputs
@@ -1347,7 +1347,7 @@ impl Tiles {
     /// writes there starts it. Anyone else's window waits for the room's
     /// record (it opens once it arrives, or once the room says they write)
     /// instead of showing a fresh one of its own as if it were the room's.
-    fn may_start_room_record(&self, tab: &Tab) -> Result<(), Unready> {
+    fn may_start_workspace_record(&self, tab: &Tab) -> Result<(), Unready> {
         if self.shared.room_actions.peer.is_none() {
             return Ok(());
         }
@@ -1380,7 +1380,7 @@ impl Tiles {
                 },
                 None,
             )),
-            None if definition.keeps_room_record() => Ok((
+            None if definition.keeps_workspace_record() => Ok((
                 definition
                     .unsaved_target(store)
                     .map_err(|error| error.to_string())?,

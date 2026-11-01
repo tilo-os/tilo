@@ -395,7 +395,7 @@ fn an_earlier_part_the_workspace_lacks_ends_in_a_final_state() {
     assert_eq!(held(&mut bo), vec![0, 1, 2]);
     assert_eq!(chain_of(&mut bo).waiting(0), Some(PartArrival::Arriving));
 
-    bo.room_answered(crate::parts::part(0));
+    bo.workspace_answered(crate::parts::part(0));
     bo.harness().relayout();
     let state = |bo: &mut Window| {
         bo.with_chat(|surface| {

@@ -67,7 +67,7 @@ struct PhraseField {
 
 impl ConfirmState {
     /// Ask about `pending`, labelled `label` and described by `description`;
-    /// `asked` says who decides where a room's grants ask rather than the
+    /// `asked` says who decides where a workspace's grants ask rather than the
     /// action itself.
     pub(super) fn new(
         pending: PendingOperation,

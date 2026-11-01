@@ -153,21 +153,21 @@ fn presence_publishes_on_workspace_scope_through_the_sink() {
     // The scope is what sends `Arrived`, so opt-in would mean an app that
     // forgets to set it never receives state written before it opened.
     {
-        let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
+        let workspace = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_WORKSPACE_ID", room);
+        env.set("TILO_WORKSPACE_ID", workspace);
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert_eq!(
             app.presence_broadcast_scope(),
             Some(&PresenceKey::Workspace {
-                id: room.to_string()
+                id: workspace.to_string()
             }),
             "a workspace in the environment is a scope, with no app-side call"
         );
     }
 
     // Case `an_app_with_no_workspace_publishes_nothing`:
-    // The nil cluster addresses nobody, so no room means nothing published.
+    // The nil cluster addresses nobody, so no workspace means nothing published.
     {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.remove("TILO_WORKSPACE_ID");

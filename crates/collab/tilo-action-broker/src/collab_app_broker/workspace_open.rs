@@ -336,7 +336,7 @@ mod tests {
     }
 
     fn open(state: &Arc<AppBrokerState>, workspace: &str) -> u64 {
-        let caller = Caller::local_person(hex::encode([41; 32])).in_room(workspace);
+        let caller = Caller::local_person(hex::encode([41; 32])).in_workspace(workspace);
         invoke(state, &caller, &request(workspace)).unwrap()
     }
 
@@ -455,7 +455,7 @@ mod tests {
             )
             .unwrap(),
         ));
-        let caller = Caller::local_person(person).in_room(&workspace_id);
+        let caller = Caller::local_person(person).in_workspace(&workspace_id);
         for step in 0..6 {
             match step {
                 4 => *launcher.outcome.lock().unwrap() = Some(Ok(Launched::Unconfirmed)),
@@ -575,7 +575,7 @@ mod tests {
             )
             .unwrap(),
         ));
-        let caller = Caller::local_person(hex::encode([41; 32])).in_room(&workspace);
+        let caller = Caller::local_person(hex::encode([41; 32])).in_workspace(&workspace);
         let request = request(&workspace);
         let job = invoke(&state, &caller, &request).unwrap();
         assert_ne!(request.invocation.0, uuid::Uuid::from_u128(u128::from(job)));
@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn missing_original_custody_cannot_launch_or_allocate_a_ticket() {
         let (state, workspace) = broker();
-        let caller = Caller::authenticated([41; 32], [42; 32]).in_room(&workspace);
+        let caller = Caller::authenticated([41; 32], [42; 32]).in_workspace(&workspace);
         assert!(invoke(&state, &caller, &request(&workspace)).is_err());
         assert!(state.workspace_opens.next_deadline().is_none());
         assert!(state.completed_invocations.lock().unwrap().is_empty());
@@ -627,7 +627,7 @@ mod tests {
         .unwrap();
         journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
         *state.journal.lock().unwrap() = Ok(Some(journal));
-        let caller = Caller::local_person(hex::encode([41; 32])).in_room(&workspace);
+        let caller = Caller::local_person(hex::encode([41; 32])).in_workspace(&workspace);
         assert!(invoke(&state, &caller, &request(&workspace)).is_err());
         assert!(state.workspace_opens.next_deadline().is_none());
         assert!(state.completed_invocations.lock().unwrap().is_empty());

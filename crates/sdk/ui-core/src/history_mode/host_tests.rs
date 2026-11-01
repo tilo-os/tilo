@@ -956,7 +956,7 @@ fn header_history_control_opens_the_registered_history() {
     assert_eq!(driver.state_mut().doc.get_heads(), before);
 }
 
-/// Opening History narrows the window's room for the app: its `NavShell`
+/// Opening History narrows the window's workspace for the app: its `NavShell`
 /// lays its header rows out again at the width it is given, so header
 /// actions keep their own places and never fold onto one another.
 #[test]

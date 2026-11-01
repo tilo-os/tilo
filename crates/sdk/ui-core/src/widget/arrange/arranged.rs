@@ -487,8 +487,13 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         event: &winit::event::WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) {
+        // A child holding the pointer (a drag it latched, a menu open in it) owns the input:
+        // what stands over its menu, drawn later and so asked first, never takes a press on it.
+        let owner = self.slots.iter().enumerate().position(|(index, slot)| {
+            !self.layout.hidden(index) && crate::widget::holds_pointer(slot.element.as_ref())
+        });
         for (index, slot) in self.slots.iter_mut().enumerate().rev() {
-            if self.layout.hidden(index) {
+            if self.layout.hidden(index) || owner.is_some_and(|owner| owner != index) {
                 continue;
             }
             let Some(wrapper) = slot.wrapper else {

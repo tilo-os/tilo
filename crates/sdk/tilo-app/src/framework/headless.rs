@@ -226,11 +226,11 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::with_role(Role::Owner)
     }
 
-    /// The app as its owner opens it on a fresh private profile, in `room`:
-    /// one of several windows of the app in one process, each in a room of
-    /// its own.
-    pub fn in_room(room: &str) -> Result<Self, LaunchError> {
-        Self::fresh(room, Role::Owner, AUTHOR)
+    /// The app as its owner opens it on a fresh private profile, in
+    /// `workspace`: one of several windows of the app in one process, each in
+    /// a workspace of its own.
+    pub fn in_workspace(workspace: &str) -> Result<Self, LaunchError> {
+        Self::fresh(workspace, Role::Owner, AUTHOR)
     }
 
     /// The app as its owner opens it on a fresh profile on the device
@@ -528,7 +528,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         {
             let native =
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
-            let _installed = ui_core::record::transfer::install_room_document(
+            let _installed = ui_core::record::transfer::install_workspace_document(
                 native.store(),
                 super::app::hooks::<A>().id(),
                 TEST_ROOM,
@@ -845,9 +845,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The room's hosts sent everything they hold of `id`, a record this
     /// window asked for, or none is connected to ask
-    /// ([`ui_core::record::RecordStore::note_room_answered`]).
-    pub fn room_answered(&mut self, id: RecordId) {
-        self.records.note_room_answered(id);
+    /// ([`ui_core::record::RecordStore::note_workspace_answered`]).
+    pub fn workspace_answered(&mut self, id: RecordId) {
+        self.records.note_workspace_answered(id);
     }
 
     /// The room's default records of the app's windows kept on this
@@ -1382,7 +1382,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let mut frontier = ui_core::state::DocumentFrontier::default();
         frontier.advance(heads);
         self.room = Some(frontier);
-        self.records.room_settled(&self.checkout.id);
+        self.records.workspace_settled(&self.checkout.id);
         Ok(())
     }
 
@@ -1405,7 +1405,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The room answered every commit the host published, keeping them,
     /// and the frame that tells the app runs.
     pub fn room_keeps(&mut self) {
-        self.records.room_settled(&self.checkout.id);
+        self.records.workspace_settled(&self.checkout.id);
         self.harness().relayout();
         self.settle();
     }

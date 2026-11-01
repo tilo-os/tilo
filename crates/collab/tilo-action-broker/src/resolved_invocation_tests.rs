@@ -211,7 +211,7 @@ async fn admit_directory_invoke(
 ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError> {
     use tilo_actions::remote::{Caller, PendingPoll};
     let caller = Caller::local_person("fixture-owner")
-        .in_room(fixture.cluster_id.clone())
+        .in_workspace(fixture.cluster_id.clone())
         .in_new_execution();
     let mut pending = fixture.state.action_invoke(&caller, None, None, request);
     tilo_test_env::within("bounded directory admission", async {
@@ -238,7 +238,7 @@ async fn a_directory_invoke_naming_no_revision_resolves_the_directory_as_it_is_n
             let mut fixture = local_directory_fixture();
             let revisions = record_resolutions(&fixture, Some("r9"));
             let caller = Caller::local_person("fixture-owner")
-                .in_room(fixture.cluster_id.clone())
+                .in_workspace(fixture.cluster_id.clone())
                 .in_new_execution();
             let mut request = directory_request(&fixture, Some(""), None);
             assert!(matches!(

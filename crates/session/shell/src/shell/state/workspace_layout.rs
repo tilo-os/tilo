@@ -143,7 +143,7 @@ impl WorkspaceTree {
             .iter()
             .map(super::Workspace::room)
             .filter(|room| {
-                !room.is_nil() && !super::is_local_person_room(*room) && self.holds_room(*room)
+                !room.is_nil() && !super::is_local_personal_cluster(*room) && self.holds_room(*room)
             })
             .collect()
     }

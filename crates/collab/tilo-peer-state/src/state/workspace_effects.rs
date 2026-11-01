@@ -68,7 +68,7 @@ impl PeerWorkspace<'_> {
             return Err("checkpoint caller is not exact current admitted evidence".into());
         }
         if !self.peer.membership(caller.device_public_key, now)?.allows(
-            &tilo_action_policy::TreePath::room(&self.peer.core.workspace),
+            &tilo_action_policy::TreePath::workspace(&self.peer.core.workspace),
             tilo_action_policy::ActionKind::Undoable,
             now,
         ) {
@@ -240,7 +240,7 @@ impl PeerWorkspaceMut<'_> {
         }
         let member = self.peer.membership(caller.device_public_key, now)?;
         if !member.allows(
-            &tilo_action_policy::TreePath::room(&self.peer.core.workspace),
+            &tilo_action_policy::TreePath::workspace(&self.peer.core.workspace),
             tilo_action_policy::ActionKind::Read,
             now,
         ) {

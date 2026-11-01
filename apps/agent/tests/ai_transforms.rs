@@ -254,7 +254,7 @@ fn ai_shortcut(prompt: &str, output: Option<Value>, input: Option<Binding>) -> S
         output: Some(Binding::step("ai", "")),
         grant: vec![tilo_action_policy::Rule::new(
             tilo_action_policy::TreePath::root()
-                .any(tilo_action_policy::Level::Room)
+                .any(tilo_action_policy::Level::Workspace)
                 .app(AGENT_APP_ID),
             tilo_action_policy::KindSet::READ_UNDOABLE,
             tilo_action_policy::Answer::Allow,

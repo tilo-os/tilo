@@ -30,7 +30,7 @@ pub fn describe_node(node: &TreePath, labels: &dyn Labels) -> String {
         .iter()
         .map(|segment| match segment {
             Segment::Name(level, id) => labels.label(*level, id).unwrap_or_else(|| match level {
-                Level::Room => format!("room {id}"),
+                Level::Workspace => format!("workspace {id}"),
                 _ => id.clone(),
             }),
             Segment::Any(level) => format!("every {}", level.noun()),

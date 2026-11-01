@@ -101,7 +101,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
     let owner = Caller::local_person(actor)
-        .in_room(&workspace_id)
+        .in_workspace(&workspace_id)
         .in_new_execution();
     let host = RuntimeActionHost {
         broker,
@@ -599,7 +599,7 @@ fn a_running_host_holds_the_persons_own_documents_store() {
     // of theirs need agree on.
     assert_eq!(
         personal.store_key(),
-        collab_types::person_room(&identity.user_public_key).to_string()
+        collab_types::personal_cluster(&identity.user_public_key).to_string()
     );
     assert!(personal.rows().is_empty(), "nothing is written yet");
 }
@@ -795,7 +795,7 @@ fn app_grant(workspace: &str) -> tilo_action_policy::Grant {
     tilo_action_policy::Grant::new(
         "caller-opens-target",
         tilo_action_policy::Subject::App("so.tilo.caller".into()),
-        tilo_action_policy::TreePath::room(workspace)
+        tilo_action_policy::TreePath::workspace(workspace)
             .app("so.tilo.target-app")
             .any(tilo_action_policy::Level::Kind)
             .resource("target.document")

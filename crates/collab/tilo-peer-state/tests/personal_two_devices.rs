@@ -11,6 +11,7 @@ tilo_automerge_isolate::test_worker!();
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
+use durable_store::DurableStore as _;
 use ed25519_dalek::SigningKey;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use std::time::Duration;
@@ -237,7 +238,7 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
         .route()
         .expect("the person's cluster carries the record");
     assert_eq!(route, on_b.route().expect("one route per app and record"));
-    assert_eq!(route.cluster_id, collab_types::person_room(&root_key));
+    assert_eq!(route.cluster_id, collab_types::personal_cluster(&root_key));
     assert_eq!(route.cluster_id.to_string(), a.store().store_key());
     assert_eq!(route.cluster_id.to_string(), b.store().store_key());
 
@@ -316,4 +317,249 @@ async fn an_apps_record_written_on_one_device_is_read_on_another() {
     link.abort();
     a_router.shutdown().await.unwrap();
     b_endpoint.close().await;
+}
+
+/// What the person's app wrote while their records were still filed under a
+/// workspace of their own: the record of `kind` under its own id, with the
+/// history it had then. Answers the key it is kept under there.
+fn kept_before_the_store(
+    store: &durable_store::MemoryStore,
+    retired: &str,
+    id: &ui::record::RecordId,
+    kind: &RecordKind,
+) -> durable_store::StorageKey {
+    let key = durable_store::StorageKey::record(NOTES, retired, id.storage_key());
+    let mut written = AutoCommit::new();
+    written.put(ROOT, "chapter", "three").unwrap();
+    written.commit_edit(NOTES, "chapter");
+    assert!(
+        ui::record::init_scoped(&mut written, id, kind, retired, Some(retired)),
+        "the record was stamped for that workspace then"
+    );
+    // A document written then names the workspace under the key of its time.
+    let (_, meta) = written.get(ROOT, "tilo:record").unwrap().unwrap();
+    written.delete(&meta, "workspace").unwrap();
+    written
+        .put(&meta, ui::record::LEGACY_WORKSPACE_KEY, retired)
+        .unwrap();
+    store
+        .write(&key, durable_store::WriteOp::Replace(written.save()), None)
+        .unwrap();
+    key
+}
+
+/// The person's store carries the record `id` names to their other device,
+/// which reads it as the record of theirs it is: filed there before their
+/// store existed too, and taken into their own scope with the same identity,
+/// history and attribution.
+async fn carries_to_the_other_device(
+    person: &str,
+    retired: &str,
+    old: &[u8],
+    document: Vec<u8>,
+    id: &ui::record::RecordId,
+    taken: &str,
+    a: (&SigningKey, &DeviceCert),
+    b: (&SigningKey, &DeviceCert),
+) {
+    let now = SystemTime::now();
+    let root_key = a.1.user_public_key;
+    let a_sync = PersonalSync::new(
+        PersonalStore::open(root_key, a.1.clone(), now).unwrap(),
+        a.0.clone(),
+    );
+    let b_sync = PersonalSync::new(
+        PersonalStore::open(root_key, b.1.clone(), now).unwrap(),
+        b.0.clone(),
+    );
+    a_sync
+        .publish(|store, key, now| {
+            store.publish(
+                NOTES,
+                taken,
+                &collab_types::DocumentMutation::Snapshot(document),
+                key,
+                now,
+            )
+        })
+        .unwrap();
+    let a_endpoint = endpoint(a.0).await;
+    let a_router = iroh::protocol::Router::builder(a_endpoint.clone())
+        .accept(PERSONAL_ALPN, a_sync.clone())
+        .spawn();
+    let b_endpoint = endpoint(b.0).await;
+    let link = tokio::spawn({
+        let b_sync = b_sync.clone();
+        let b_endpoint = b_endpoint.clone();
+        let a_addr = addr(&a_endpoint);
+        async move { b_sync.connect(&b_endpoint, a_addr).await }
+    });
+    until(&b_sync, |store| store.holds_document(NOTES, taken)).await;
+    let held = b_sync.store().document(NOTES, taken).unwrap();
+    assert_eq!(
+        field(&held, "chapter").as_deref(),
+        Some("three"),
+        "the phone's store holds what the laptop kept before the store existed"
+    );
+
+    {
+        // The phone kept the same record before their store existed: its own copy
+        // of the same document, filed under the same workspace then. Opening it
+        // takes it into their own scope here too, as the record it is.
+        let phone = std::rc::Rc::new(durable_store::MemoryStore::new());
+        let filed_there = durable_store::StorageKey::record(NOTES, retired, id.storage_key());
+        phone
+            .write(
+                &filed_there,
+                durable_store::WriteOp::Replace(old.to_vec()),
+                None,
+            )
+            .unwrap();
+        let mut owners = ui::record::RecordOwners::with_store(phone.clone());
+        let on_b = PersonRecords::open(&mut owners, NOTES, UserId(person.to_owned()))
+            .unwrap()
+            .open_record(RecordKind::new(KIND), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(&on_b.checkout().id, id);
+        assert_eq!(
+            chapter(&on_b).as_deref(),
+            Some("three"),
+            "the phone reads what it kept, under the same record id"
+        );
+
+        assert!(
+            !phone.claim(&filed_there, "another-record").unwrap(),
+            "the phone took its copy into their own scope too"
+        );
+
+        // Both devices' copies are one record: what the laptop's app did since
+        // reaches the phone's, which is where their own history still is.
+        assert!(on_b.merge_peer_document(held.clone()).unwrap());
+        assert_eq!(chapter(&on_b).as_deref(), Some("three"));
+        set_chapter(&on_b, "five");
+        assert!(on_b.undo(), "their own edit is theirs to take back");
+        assert_eq!(chapter(&on_b).as_deref(), Some("three"));
+
+        // A device that never had the record at all starts without it, and reads
+        // it out of their store as the same record.
+        let fresh = std::rc::Rc::new(durable_store::MemoryStore::new());
+        fresh
+            .write(
+                &durable_store::StorageKey::record(
+                    NOTES,
+                    ui::record::person::PERSONAL_SCOPE,
+                    id.storage_key(),
+                ),
+                durable_store::WriteOp::Replace(held),
+                None,
+            )
+            .unwrap();
+        let mut fresh_owners = ui::record::RecordOwners::with_store(fresh);
+        let on_c = PersonRecords::open(&mut fresh_owners, NOTES, UserId(person.to_owned()))
+            .unwrap()
+            .open_record(RecordKind::new(KIND), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(&on_c.checkout().id, id);
+        assert_eq!(chapter(&on_c).as_deref(), Some("three"));
+    }
+
+    link.abort();
+    a_router.shutdown().await.unwrap();
+    b_endpoint.close().await;
+}
+
+/// A record the person kept before their own store existed — filed under the
+/// workspace their records were keyed by then — is still theirs: the app
+/// opens the same record id with what was in it, on the person's own
+/// cluster, and their store carries it to their other device.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_record_kept_before_the_store_reads_on_the_persons_other_device() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let root_key = root.verifying_key().to_bytes();
+    let person = hex::encode(root_key);
+    let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
+    let (b_key, b_cert) = device(&root, 3, DeviceCapabilities::member());
+    let store = std::rc::Rc::new(durable_store::MemoryStore::new());
+    let kind = RecordKind::new(KIND);
+    let id = ui::record::person::record_id(&kind);
+    let retired = collab_types::retired_person_workspace(&root_key).to_string();
+    let retired_key = kept_before_the_store(&store, &retired, &id, &kind);
+    let old = store
+        .read(&retired_key)
+        .unwrap()
+        .expect("the record was kept there")
+        .bytes;
+
+    // The app opens its record as it does on any device: the same id, now in
+    // the person's own scope, with what the person had in it.
+    let mut owners = ui::record::RecordOwners::with_store(store.clone());
+    let records = PersonRecords::open(&mut owners, NOTES, UserId(person.clone())).unwrap();
+    let on_a = records
+        .open_record(RecordKind::new(KIND), &|_| Ok(()))
+        .unwrap();
+    assert_eq!(on_a.checkout().id, id, "the record keeps its id");
+    assert_eq!(
+        chapter(&on_a).as_deref(),
+        Some("three"),
+        "what the person had is still there"
+    );
+    let route = on_a.route().expect("the person's cluster carries it now");
+    assert_eq!(route.cluster_id, collab_types::personal_cluster(&root_key));
+
+    // It is the person's own record now: they change it and take the change
+    // back, and what they had before the change is under it.
+    set_chapter(&on_a, "four");
+    assert_eq!(chapter(&on_a).as_deref(), Some("four"));
+    assert!(on_a.undo(), "their own edit is theirs to take back");
+    assert_eq!(chapter(&on_a).as_deref(), Some("three"));
+    // The device's own store records the handover: no other record can take
+    // the same one afterwards.
+    assert!(
+        !store.claim(&retired_key, "another-record").unwrap(),
+        "the record was taken into the person's own scope"
+    );
+
+    // It is the person's own record from here on: another start reads it
+    // with nothing left in the workspace it used to be filed under.
+    records.flush().unwrap();
+    drop(on_a);
+    drop(records);
+    drop(owners);
+    let kept = store
+        .read(&durable_store::StorageKey::record(
+            NOTES,
+            ui::record::person::PERSONAL_SCOPE,
+            id.storage_key(),
+        ))
+        .unwrap();
+    assert!(
+        kept.is_some_and(|stored| !stored.bytes.is_empty()),
+        "the record is written in the person's own scope"
+    );
+    store
+        .write(
+            &retired_key,
+            durable_store::WriteOp::Replace(Vec::new()),
+            None,
+        )
+        .unwrap();
+    let mut reopened = ui::record::RecordOwners::with_store(store.clone());
+    let again = PersonRecords::open(&mut reopened, NOTES, UserId(person.clone()))
+        .unwrap()
+        .open_record(RecordKind::new(KIND), &|_| Ok(()))
+        .unwrap();
+    assert_eq!(chapter(&again).as_deref(), Some("three"));
+
+    let taken = route.record.clone().expect("the record has a name");
+    carries_to_the_other_device(
+        &person,
+        &retired,
+        &old,
+        again.document().expect("the record's document"),
+        &again.checkout().id,
+        &taken,
+        (&a_key, &a_cert),
+        (&b_key, &b_cert),
+    )
+    .await;
 }

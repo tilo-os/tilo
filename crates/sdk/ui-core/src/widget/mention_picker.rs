@@ -1,10 +1,10 @@
 //! The `@` picker every rich-text field offers: typing `@` and a few letters
-//! lists the room's people and agents under the caret, narrowed as the name
+//! lists the workspace's people and agents under the caret, narrowed as the name
 //! is typed, and picking one puts a mention of them in the text — one marked
 //! run naming their participant id ([`Mark::Mention`](super::Mark::Mention)),
 //! not prose that happens to start with `@`.
 //!
-//! Who is offered is the room's roster ([`PresenceCtx::roster`]), the same
+//! Who is offered is the workspace's roster ([`PresenceCtx::roster`]), the same
 //! participants and names every app's presence shows; an owner can add
 //! participants its record knows of that the roster does not (someone who
 //! wrote in a channel and has since left). What was typed stays in the text
@@ -32,15 +32,15 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::autocomplete::{Suggestion, SuggestionList, SuggestionPerson};
 
-/// Someone a field can mention: a participant of the room.
+/// Someone a field can mention: a participant of the workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MentionCandidate {
     /// Their participant id: what the mention records.
     pub id: String,
-    /// What the room calls them; the mention reads `@name`.
+    /// What the workspace calls them; the mention reads `@name`.
     pub name: String,
     pub kind: ParticipantKind,
-    /// The colour they wear in the room.
+    /// The colour they wear in the workspace.
     pub color: (u8, u8, u8),
     /// This session's own participant.
     pub is_self: bool,
@@ -175,7 +175,7 @@ pub fn merged_roster(presence: &PresenceCtx, extra: &[MentionCandidate]) -> Vec<
         }
         let known = out.iter().any(|known| {
             known.id == candidate.id
-                // The room may spell this session's own participant
+                // The workspace may spell this session's own participant
                 // differently from the id an owner recorded.
                 || (known.is_self && presence.is_own_identity(&candidate.id))
         });
@@ -458,7 +458,7 @@ fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggest
 mod tests {
     use super::*;
 
-    fn room() -> Vec<MentionCandidate> {
+    fn workspace() -> Vec<MentionCandidate> {
         vec![
             MentionCandidate::new("u_ada", "Ada Lovelace", false),
             MentionCandidate::new("u_alan", "Alan Turing", false),
@@ -485,33 +485,33 @@ mod tests {
     fn ranking_prefers_a_whole_name_prefix_then_a_word_prefix() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        let room = room();
-        let names: Vec<_> = rank(&room, "t")
+        let workspace = workspace();
+        let names: Vec<_> = rank(&workspace, "t")
             .into_iter()
             .map(|c| c.name.as_str())
             .collect();
         assert_eq!(names, ["Tide", "Alan Turing"]);
-        assert_eq!(rank(&room, "").len(), 3);
-        assert!(rank(&room, "zz").is_empty());
+        assert_eq!(rank(&workspace, "").len(), 3);
+        assert!(rank(&workspace, "zz").is_empty());
     }
 
     #[test]
     fn the_picker_follows_the_caret_and_stays_closed_after_escape() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        let room = room();
+        let workspace = workspace();
         let mut picker = MentionPicker::default();
-        assert!(picker.follow(0, "hello @a", |_| false, &room));
+        assert!(picker.follow(0, "hello @a", |_| false, &workspace));
         assert!(picker.is_open());
         assert_eq!(picker.typed(), 2);
         let escape = crate::synthetic_input::key_press(Key::Named(NamedKey::Escape), None);
         assert_eq!(picker.handle_key(&escape), PickerKey::Handled);
         assert!(!picker.is_open());
-        picker.follow(0, "hello @al", |_| false, &room);
+        picker.follow(0, "hello @al", |_| false, &workspace);
         assert!(!picker.is_open(), "the dismissed @ stays closed");
-        picker.follow(0, "hello @al @t", |_| false, &room);
+        picker.follow(0, "hello @al @t", |_| false, &workspace);
         assert!(picker.is_open(), "a new @ opens it again");
-        picker.follow(0, "hello @Tide", |at| at == 6, &room);
+        picker.follow(0, "hello @Tide", |at| at == 6, &workspace);
         assert!(!picker.is_open(), "a finished mention offers nothing");
     }
 }
@@ -522,7 +522,7 @@ mod roster_tests {
     use crate::permissions::UserId;
 
     #[test]
-    fn the_room_and_an_owners_candidates_merge_once_by_id_sorted_by_name() {
+    fn the_workspace_and_an_owners_candidates_merge_once_by_id_sorted_by_name() {
         let mut presence = crate::presence::PresenceCtx::empty();
         presence
             .names

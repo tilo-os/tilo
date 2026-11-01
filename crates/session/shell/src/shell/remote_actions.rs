@@ -542,7 +542,7 @@ mod tests {
             },
         );
         let host = BrokerActionHost::new(broker);
-        let caller = Caller::local_person("displayed-person").in_room("room");
+        let caller = Caller::local_person("displayed-person").in_workspace("room");
         let request = refresh(tilo_actions::InvocationId::new());
         assert_eq!(
             wait(host.invoke(&caller, request.clone())),
@@ -591,7 +591,7 @@ mod tests {
             },
         );
         let host = BrokerActionHost::new(broker.clone());
-        let native = Caller::local_person("displayed-person").in_room("room");
+        let native = Caller::local_person("displayed-person").in_workspace("room");
         assert!(now(host.query(&native, CatalogueQuery::default())).is_ok());
         let id = tilo_actions::InvocationId::new();
         assert!(host.observe(&native, &id).is_none());
@@ -609,9 +609,9 @@ mod tests {
         assert_eq!(service.0.load(Ordering::Relaxed), 1);
         // These paths own their own authority. In particular, an MCP agent
         // cannot turn its person's display label into native certificate custody.
-        let agent = Caller::local_agent("agent").in_room("room");
+        let agent = Caller::local_agent("agent").in_workspace("room");
         let delegated = native.clone().delegated_to("agent");
-        for caller in [agent, delegated, owner().in_room("room")] {
+        for caller in [agent, delegated, owner().in_workspace("room")] {
             drop(host.query(&caller, CatalogueQuery::default()));
             drop(host.invoke(&caller, refresh(tilo_actions::InvocationId::new())));
         }
@@ -718,7 +718,7 @@ mod tests {
     #[test]
     fn a_room_confined_caller_sees_only_its_room() {
         let (host, _) = host();
-        let elsewhere = Caller::local_person("a1".repeat(32)).in_room("not-this-room");
+        let elsewhere = Caller::local_person("a1".repeat(32)).in_workspace("not-this-room");
         assert!(
             catalogue(&host, &elsewhere).rows.is_empty(),
             "a connection admitted to another room reaches nothing here"
@@ -778,7 +778,7 @@ mod tests {
             .find_map(|row| tilo_actions::remote::workspace_provider_room(&row.provider))
             .map(str::to_owned)
             .expect("the workspace is offered");
-        let caller = Caller::local_person("a1".repeat(32)).in_room(&room);
+        let caller = Caller::local_person("a1".repeat(32)).in_workspace(&room);
         let open = InvokeRequest {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),

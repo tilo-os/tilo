@@ -432,7 +432,7 @@ fn local_projection_current_document_restriction_blocks_sign_and_send_but_preser
     let restriction = tilo_action_policy::Grant::new(
         "projection-write-denial",
         tilo_action_policy::Subject::Person(person.clone()),
-        tilo_action_policy::TreePath::room(member.workspace_id()).app("test.app"),
+        tilo_action_policy::TreePath::workspace(member.workspace_id()).app("test.app"),
         tilo_action_policy::KindSet::UNDOABLE.union(tilo_action_policy::KindSet::OUTSIDE),
         tilo_action_policy::Answer::Deny,
         tilo_action_policy::Subject::Role(collab_types::Role::Owner),

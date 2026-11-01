@@ -1375,7 +1375,7 @@ pub(crate) async fn ensure_guest_policy(
     let deny = Grant::new(
         "public-room-guests-no-outside",
         Subject::Role(Role::Editor),
-        TreePath::room(room),
+        TreePath::workspace(room),
         KindSet::OUTSIDE,
         Answer::Deny,
         Subject::Person(hex::encode(cert.user_public_key)),

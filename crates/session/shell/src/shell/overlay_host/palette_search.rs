@@ -341,7 +341,7 @@ impl ShellOverlayHost {
                     tilo_actions::remote::Caller::local_person(
                         state.local_user_for_room(&workspace.room()),
                     )
-                    .in_room(&workspace_room),
+                    .in_workspace(&workspace_room),
                     workspace_room,
                 )
             });

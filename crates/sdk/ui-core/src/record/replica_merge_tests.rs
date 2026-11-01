@@ -198,9 +198,9 @@ fn the_workspace_answering_for_a_record_wakes_its_readers_until_it_arrives() {
     store.wake_on_arrival(window.handle());
     let kept = store.kept_revision();
 
-    assert!(!store.room_answered(&want.id));
-    store.note_room_answered(want.id.clone());
-    assert!(store.room_answered(&want.id));
+    assert!(!store.workspace_answered(&want.id));
+    store.note_workspace_answered(want.id.clone());
+    assert!(store.workspace_answered(&want.id));
     assert_eq!(woken.load(Ordering::SeqCst), 1);
     assert_ne!(
         store.kept_revision(),
@@ -218,7 +218,10 @@ fn the_workspace_answering_for_a_record_wakes_its_readers_until_it_arrives() {
             collab_types::DocumentMutation::Incremental(peer.save_after(&before)),
         )
         .unwrap();
-    assert!(!store.room_answered(&want.id), "something of it arrived");
+    assert!(
+        !store.workspace_answered(&want.id),
+        "something of it arrived"
+    );
 }
 
 fn large_text_record() -> (RecordOwners, RecordStore, RecordCheckout, ObjId, String) {

@@ -1,5 +1,5 @@
-//! One actor's standing in one room, as owned data a host hands to a door or
-//! an app: the person, the room's policy, and the delegations bounding them.
+//! One actor's standing in one workspace, as owned data a host hands to a door or
+//! an app: the person, the workspace's policy, and the delegations bounding them.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// A delegation bounding a person: its subject and the grants it carries
-/// itself (an agent delegation's, a Shortcut's). The room's own grants naming
+/// itself (an agent delegation's, a Shortcut's). The workspace's own grants naming
 /// the subject count too.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bound {
@@ -34,12 +34,12 @@ impl Bound {
         Self { subject, grants }
     }
 
-    /// The party this delegation stands for in a room whose own grants are
-    /// `room_grants`: its own grants and the room's grants naming its
+    /// The party this delegation stands for in a workspace whose own grants are
+    /// `workspace_grants`: its own grants and the workspace's grants naming its
     /// subject.
     #[must_use]
-    pub fn party<'a>(&'a self, room_grants: &'a [Grant]) -> Party<'a> {
-        Party::new(vec![self.subject.clone()], room_grants).with_grants(&self.grants)
+    pub fn party<'a>(&'a self, workspace_grants: &'a [Grant]) -> Party<'a> {
+        Party::new(vec![self.subject.clone()], workspace_grants).with_grants(&self.grants)
     }
 }
 
@@ -57,7 +57,7 @@ fn subject_key(subject: &Subject) -> String {
     }
 }
 
-/// Who is acting in a room and everything their authority depends on.
+/// Who is acting in a workspace and everything their authority depends on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Standing {
     pub person: String,
@@ -104,11 +104,11 @@ impl Standing {
     }
 
     #[must_use]
-    pub fn room(&self) -> &str {
+    pub fn workspace(&self) -> &str {
         &self.policy.workspace
     }
 
-    /// `relative` (a path below the room) as a node of this room.
+    /// `relative` (a path below the workspace) as a node of this workspace.
     #[must_use]
     pub fn node(&self, relative: &TreePath) -> TreePath {
         self.policy.node().joined(relative)

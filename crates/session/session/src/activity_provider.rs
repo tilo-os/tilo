@@ -83,7 +83,7 @@ fn caller_of(request: &HostStepRequest<'_>) -> Caller {
     } else {
         Caller::local_person(request.actor.id())
     };
-    caller.in_room(request.workspace)
+    caller.in_workspace(request.workspace)
 }
 
 /// Whether `action` overwrites what documents hold with an earlier state, so

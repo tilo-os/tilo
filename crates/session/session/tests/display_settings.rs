@@ -299,6 +299,52 @@ fn a_change_that_could_dark_a_screen_waits_and_is_put_back() {
 }
 
 #[test]
+fn a_countdown_tick_keeps_the_keyboard_where_the_person_tabbed() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let _clock = tilo_test_env::held_wall_clock();
+    let mut session = session(2);
+    attached(&mut session);
+    let mine = DisplayTool::new(
+        std::env::current_exe()
+            .expect("the test binary")
+            .to_string_lossy(),
+    );
+    let mut tool = Tool::connect(&mut session);
+    tool.until_heads(&mut session);
+
+    // The clock the question and its countdown are read on is the test's, so
+    // the countdown ticks when this test says it does and not when the
+    // machine gets to the next second.
+    let start = tilo_clock::now();
+    let asked = tilo_clock::testing::with_monotonic_time(start, || {
+        tool.rescale(&mut session, "HEADLESS-1", 2.0);
+        until(&mut session, |session| {
+            asking(session).is_some_and(|question| question.displays.len() == 2)
+        });
+        // The person tabs to the second answer.
+        tap(&mut session, KEY_TAB);
+        asking(&session).expect("the question stands").status
+    });
+    tilo_clock::testing::with_monotonic_time(start + Duration::from_secs(1), || {
+        // A second goes by while the person is still choosing: the sheet is
+        // drawn again under their hands.
+        until(&mut session, |session| {
+            asking(session).is_some_and(|question| question.status != asked)
+        });
+        // The answer they tabbed to is still theirs, and the third answer is
+        // the one they tab to next: Keep and stop asking about this tool.
+        tap(&mut session, KEY_TAB);
+        tap(&mut session, KEY_ENTER);
+        until(&mut session, |session| asking(session).is_none());
+    });
+    assert!(
+        TrustedDisplayTools::load().contains(&mine),
+        "the answer the person tabbed to is the one Enter gives"
+    );
+}
+
+#[test]
 fn a_change_that_could_dark_a_screen_asks_and_keep_leaves_it() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();

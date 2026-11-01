@@ -324,6 +324,15 @@ pub fn share_row(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
     }
 }
 
+/// Whether `child` holds the pointer for its subtree: it latched a drag, or a menu or modal
+/// is open somewhere in it. A container that hands input to its children asks this before
+/// routing by place, so a press over an open menu reaches the menu wherever the container
+/// stands and whichever sibling lies under it.
+#[must_use]
+pub fn holds_pointer(child: &dyn Widget) -> bool {
+    child.wants_pointer_capture() || child.modal_capture().is_some()
+}
+
 /// Route `event` through a container's children, first handler wins. A
 /// child latching a drag gets it exclusively, so the drag survives the
 /// cursor crossing a peer whose handler would otherwise claim it first; a
@@ -1367,7 +1376,7 @@ pub trait Widget {
 
     /// Records this widget keeps open beside the document it shows, each
     /// synced on its own route: a framework app's records in the person's
-    /// own room ([`crate::record::person`]). They take no part in this
+    /// own workspace ([`crate::record::person`]). They take no part in this
     /// widget's history or controls.
     fn record_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
         Vec::new()

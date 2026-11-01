@@ -91,7 +91,7 @@ impl InProcessApps {
         room: &str,
         author: &str,
     ) -> ui::record::workspace::WorkspaceRecords {
-        ui::record::workspace::WorkspaceRecords::in_room(
+        ui::record::workspace::WorkspaceRecords::in_workspace(
             self.owners.clone(),
             room.to_owned(),
             UserId(author.to_owned()),
@@ -449,7 +449,7 @@ impl InProcessApps {
         }
         // The records every app of the room opens (the workspace's emoji),
         // in the owners every in-process app shares: one writer per room.
-        context.provide_workspace_records(ui::record::workspace::WorkspaceRecords::in_room(
+        context.provide_workspace_records(ui::record::workspace::WorkspaceRecords::in_workspace(
             self.owners.clone(),
             room.to_owned(),
             self.author.clone(),

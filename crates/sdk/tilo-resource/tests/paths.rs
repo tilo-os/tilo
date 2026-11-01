@@ -729,7 +729,7 @@ fn a_path_reads_its_value_and_names_its_tree_node() {
         .tree_path("room", "app", "record");
     assert_eq!(
         tree,
-        tilo_action_policy::TreePath::room("room")
+        tilo_action_policy::TreePath::workspace("room")
             .app("app")
             .kind("test.library")
             .resource("record")

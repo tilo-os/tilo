@@ -604,5 +604,5 @@ impl crate::services::LocalPersonServices for NativePerson {
 /// The host's own person, invoking through its native seat.
 pub fn native_person(workspace: &CrdtRoute, cert: &DeviceCert) -> tilo_actions::remote::Caller {
     tilo_actions::remote::Caller::local_person(principal_id_for_root(cert.user_public_key))
-        .in_room(workspace.cluster_id.clone())
+        .in_workspace(workspace.cluster_id.clone())
 }

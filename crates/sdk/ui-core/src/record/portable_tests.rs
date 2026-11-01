@@ -90,7 +90,7 @@ fn a_notice_waits_for_the_workspace_that_decides_the_record() {
     let (_, heads) = store.replication_snapshot(&checkout.id).unwrap();
     let mut frontier = crate::state::DocumentFrontier::default();
     frontier.advance(heads);
-    store.room_settled(&checkout.id);
+    store.workspace_settled(&checkout.id);
     commit("title", "shared");
     hold("Saved shared");
     assert!(
@@ -106,7 +106,7 @@ fn a_notice_waits_for_the_workspace_that_decides_the_record() {
         store.take_said(&checkout.id).is_empty(),
         "the workspace has not answered"
     );
-    store.room_settled(&checkout.id);
+    store.workspace_settled(&checkout.id);
     assert_eq!(store.take_said(&checkout.id), ["Saved shared"]);
     assert!(store.take_said(&checkout.id).is_empty(), "said once");
 
@@ -124,7 +124,7 @@ fn a_notice_waits_for_the_workspace_that_decides_the_record() {
         )
         .unwrap()
         .expect("withdrawn");
-    store.room_settled(&checkout.id);
+    store.workspace_settled(&checkout.id);
     assert!(
         store.take_said(&checkout.id).is_empty(),
         "a refused change is never said done"
@@ -202,5 +202,69 @@ fn a_refused_change_is_withdrawn_with_what_was_built_on_it() {
             .unwrap(),
         None,
         "a change the record no longer holds withdraws nothing"
+    );
+}
+
+/// A record the person kept in a page before their own store existed — filed
+/// under the workspace their records were keyed by then — opens as theirs:
+/// the same record id, in their own scope, with what was in it.
+#[test]
+fn a_record_a_page_kept_before_the_store_reads_in_the_persons_own_scope() {
+    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+    let root = [7u8; 32];
+    let person = hex::encode(root);
+    let kind = RecordKind::new("so.tilo.test.personal");
+    let id = RecordId::derived(kind.as_str(), &RecordId::for_tab(0));
+    let retired = collab_types::retired_person_workspace(&root).to_string();
+    let mut written = AutoCommit::new();
+    written.put(automerge::ROOT, "chapter", "three").unwrap();
+    assert!(crate::record::init_scoped(
+        &mut written,
+        &id,
+        &kind,
+        &retired,
+        Some(&retired)
+    ));
+    let former = crate::portable_storage::StorageKey::Record {
+        package: "so.tilo.test".into(),
+        workspace: retired,
+        record: id.as_str().into(),
+    };
+    cache
+        .put(
+            former,
+            written.save(),
+            Some(written.get_actor().to_bytes().to_vec()),
+        )
+        .unwrap();
+
+    let mut owners = RecordOwners::portable(cache.clone());
+    let store = owners.open_personal("so.tilo.test", &person).unwrap();
+    let checkout = RecordCheckout::new(id.clone(), kind.clone());
+    store.try_open_record(&checkout).unwrap();
+    assert_eq!(
+        store
+            .read(&checkout.id, |doc| str_at(doc, &ROOT, "chapter"))
+            .flatten()
+            .as_deref(),
+        Some("three"),
+        "what the person had in it is still there"
+    );
+    assert!(
+        cache
+            .get(&crate::portable_storage::StorageKey::Record {
+                package: "so.tilo.test".into(),
+                workspace: crate::record::person::PERSONAL_SCOPE.into(),
+                record: id.as_str().into(),
+            })
+            .is_some(),
+        "the record is kept in the person's own scope now"
+    );
+    assert_eq!(
+        store
+            .route(&checkout)
+            .expect("the person's own cluster carries it")
+            .cluster_id,
+        collab_types::personal_cluster(&root)
     );
 }

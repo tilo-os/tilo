@@ -852,7 +852,7 @@ mod tests {
             (
                 "a-foreign",
                 Subject::person("person-a"),
-                tilo_action_policy::TreePath::room("foreign-room"),
+                tilo_action_policy::TreePath::workspace("foreign-room"),
             ),
         ] {
             workspace.grant(tilo_action_policy::Grant::new(

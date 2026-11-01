@@ -45,7 +45,7 @@ impl ContentReads {
     }
 
     /// The content at `hash`, as a read: the first read of content this
-    /// device lacks asks the room for it. Each call brings the read to
+    /// device lacks asks the workspace for it. Each call brings the read to
     /// where the content stands, so a view that reads it as it draws
     /// follows it.
     #[must_use]
@@ -103,7 +103,7 @@ mod tests {
     }
 
     #[test]
-    fn content_reads_arrive_from_the_room_and_content_here_is_ready_at_once() {
+    fn content_reads_arrive_from_the_workspace_and_content_here_is_ready_at_once() {
         use crate::arriving::Arrival;
         let (store, lane) = record_store("read-as-arriving");
         let here = store.put(b"a picture here").unwrap();
@@ -117,10 +117,10 @@ mod tests {
         let bytes = b"bytes on another device".to_vec();
         let away = tilo_content::hash_bytes(&bytes);
         let read = reads.read(&away);
-        assert!(read.get().is_pending(), "on its way from the room");
+        assert!(read.get().is_pending(), "on its way from the workspace");
         assert!(
             lane.take_requests().wants.contains(&away),
-            "the first read asks the room for it"
+            "the first read asks the workspace for it"
         );
         lane.stands(away.clone(), ContentState::Unavailable);
         assert_eq!(reads.read(&away).get(), Arrival::Failed(ContentUnavailable));

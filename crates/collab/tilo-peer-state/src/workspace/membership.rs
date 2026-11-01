@@ -496,7 +496,7 @@ fn assignments(
     (actor, authority, cx): Writer<'_>,
 ) -> Result<Vec<Grant>, MembershipRefusal> {
     let presets = tilo_desktop_model::projection::workspace_presets_of(at);
-    let workspace_node = tilo_action_policy::TreePath::room(workspace);
+    let workspace_node = tilo_action_policy::TreePath::workspace(workspace);
     let mut assigned = Vec::new();
     for grant in &wanted.grants {
         if held.grants.iter().any(|kept| kept.id == grant.id) {

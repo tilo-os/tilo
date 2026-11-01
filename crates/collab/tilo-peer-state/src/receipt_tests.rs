@@ -602,7 +602,7 @@ fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
     use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
     let edit = Rule::new(
         TreePath::root()
-            .any(Level::Room)
+            .any(Level::Workspace)
             .app(APP)
             .kind(KIND)
             .resource(RECORD)

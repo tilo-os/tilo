@@ -196,6 +196,11 @@ impl SurfaceHost for Setup {
         self.up() && self.widgets.prepare_frame()
     }
 
+    /// Setup that is not up asks for no frames.
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.up().then(|| self.widgets.next_deadline()).flatten()
+    }
+
     fn cursor(&self) -> tilo_compositor::CursorIcon {
         self.widgets.cursor()
     }

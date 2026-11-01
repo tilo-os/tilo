@@ -1,7 +1,7 @@
 //! The place of earlier lines a conversation cannot get.
 //!
 //! A conversation kept in parts reads earlier ones back from the room as
-//! its reader scrolls up, showing them arriving meanwhile. When the room's
+//! its reader scrolls up, showing them arriving meanwhile. When the workspace's
 //! hosts sent everything they hold without them, or no host is connected,
 //! nothing more is coming: the place says so, quietly and with nothing
 //! moving, where the earlier lines would be.

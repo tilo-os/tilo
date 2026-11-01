@@ -15,7 +15,7 @@
               outlives every call made into it"
 )]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -413,11 +413,57 @@ impl AppActions for Host {
     }
 }
 
+/// The player the session hosts: what plays here, published as the audio
+/// service publishes it, and whether that reading moved since the session
+/// last read it.
+struct Player {
+    playing: Rc<RefCell<Option<serde_json::Value>>>,
+    moved: Rc<Cell<bool>>,
+}
+
+impl tilo_session::Service for Player {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        vec![tilo_actions::ResourceSpec::new(
+            tilo_session::MEDIA,
+            "media",
+            "Player",
+        )]
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        if resource != tilo_session::MEDIA {
+            return None;
+        }
+        self.playing.borrow().clone()
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        _arguments: &Arguments,
+    ) -> Result<tilo_service::Started, DoorError> {
+        // It offers no actions: the tests move what plays between devices
+        // through the fabric, never through its own transport.
+        Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
+            resource, action,
+        )))
+    }
+
+    fn poll(&mut self) -> bool {
+        self.moved.replace(false)
+    }
+}
+
 /// The session and the device host behind its panel, which the test hands
 /// what plays.
 struct Harness {
     session: Session,
     device: Rc<RefCell<Option<DeviceHost>>>,
+    /// What the player publishes, as the fixture hands it what plays.
+    playing: Rc<RefCell<Option<serde_json::Value>>>,
+    /// Whether that moved since the session read it.
+    moved: Rc<Cell<bool>>,
 }
 
 fn session(link: &FakeLink, host: Rc<Host>) -> Harness {
@@ -436,9 +482,15 @@ fn session_with(
     let fabric: SharedLink = Arc::new(link.clone());
     let held: Rc<RefCell<Option<DeviceHost>>> = Rc::default();
     let given = Rc::clone(&held);
+    let playing: Rc<RefCell<Option<serde_json::Value>>> = Rc::default();
+    let moved: Rc<Cell<bool>> = Rc::default();
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
+            services: vec![Box::new(Player {
+                playing: Rc::clone(&playing),
+                moved: Rc::clone(&moved),
+            })],
             quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
                 let device = DeviceHost::new(
                     Device {
@@ -480,6 +532,8 @@ fn session_with(
     Harness {
         session,
         device: Rc::new(RefCell::new(Some(device))),
+        playing,
+        moved,
     }
 }
 
@@ -494,7 +548,11 @@ impl Harness {
     /// What plays here: a browser stream, playing at 1:12, as the audio
     /// service publishes it.
     fn playing(&self) {
-        self.device().media(what_plays(), None);
+        *self.playing.borrow_mut() = Some(
+            serde_json::to_value(what_plays())
+                .expect("what plays, as the audio service publishes it"),
+        );
+        self.moved.set(true);
     }
 
     fn step(&mut self) {
@@ -528,7 +586,15 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
     harness.playing();
     for _ in 0..40 {
         harness.step();
-        if !harness.device().state().device_rows.is_empty() {
+        // The rows come before what the player published is read, so the
+        // wait is for the row that answers with it.
+        if harness
+            .device()
+            .state()
+            .device_rows
+            .iter()
+            .any(|row| row.key == "laptop" && row.actions != HostedActions::None)
+        {
             break;
         }
     }
