@@ -13,7 +13,7 @@ description = "Signed workspace invitations, join and membership proofs, and tra
 # Producers of the layouts earlier builds wrote, for replaying their records.
 test-support = []
 
-# The invitation and join contract, below room state: pure types and signature
+# The invitation and join contract, below workspace state: pure types and signature
 # checks, no Automerge, admission or transport. Browsers and the relay client
 # speak it; `tilo-peer-state` re-exports it as `tilo_peer_state::join`.
 [package.metadata.cargo-machete]
@@ -30,7 +30,7 @@ ed25519-dalek.workspace = true
 base64.workspace = true
 # Invite ids and tagged proof digests.
 blake3.workspace = true
-# A room id is a canonical UUID; a transport hint's payload is JSON.
+# A workspace id is a canonical UUID; a transport hint's payload is JSON.
 uuid.workspace = true
 serde_json.workspace = true
 # A member role maps onto the collaboration role.

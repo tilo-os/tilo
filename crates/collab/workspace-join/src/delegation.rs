@@ -4,10 +4,14 @@
 //!
 //! Agents and bots hold the same kind of delegation, so one verification
 //! rule serves both: the device's certificate root must have signed it,
-//! it must name that device and the room, and it must be inside its
-//! window. A bot's additionally names exactly one room and lasts at most
-//! 30 days, because the room it was installed in is all it may touch and a
-//! bot nobody renews should stop on its own.
+//! it must name that device and the workspace, and it must be inside its
+//! window. A bot's additionally names exactly one workspace and lasts at
+//! most 30 days, because the workspace it was installed in is all it may
+//! touch and a bot nobody renews should stop on its own.
+//!
+//! The `rooms` field of a scope keeps its name: a delegation's signer and
+//! readers (agents, bots, hosts and the desktop shell) name it, and postcard
+//! encodes by field order, so the scope's bytes are the same either way.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -63,9 +67,9 @@ impl Delegate {
 /// Where a delegate may act.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegateScope {
-    /// Room uuids, 1..=[`MAX_DELEGATED_ROOMS`]; exactly one for a bot.
+    /// Workspace uuids, 1..=[`MAX_DELEGATED_ROOMS`]; exactly one for a bot.
     pub rooms: Vec<String>,
-    /// App ids; empty means every app in those rooms.
+    /// App ids; empty means every app in those workspaces.
     pub apps: Vec<String>,
 }
 
@@ -198,7 +202,7 @@ impl Delegation {
                 .scope
                 .rooms
                 .iter()
-                .any(|room| crate::room_workspace_id(room).is_err())
+                .any(|workspace| crate::room_workspace_id(workspace).is_err())
         {
             return Err(DelegationError::Invalid("rooms"));
         }
@@ -217,7 +221,7 @@ impl Delegation {
         if let Delegate::Bot { .. } = self.delegate {
             if self.scope.rooms.len() != 1 {
                 return Err(DelegationError::Invalid(
-                    "a bot delegation names exactly one room",
+                    "a bot delegation names exactly one workspace",
                 ));
             }
             if self.expires_at_ns.saturating_sub(self.issued_at_ns) > MAX_BOT_DELEGATION_NS {
@@ -255,12 +259,14 @@ impl Delegation {
         self.scope
             .rooms
             .iter()
-            .any(|room| crate::room_workspace_id(room).is_ok_and(|id| id == workspace_id))
+            .any(|workspace| crate::room_workspace_id(workspace).is_ok_and(|id| id == workspace_id))
     }
 
+    /// Whether the delegate may be in the workspace whose canonical UUID is
+    /// `workspace`.
     #[must_use]
-    pub fn permits_room(&self, room: &str) -> bool {
-        crate::room_workspace_id(room).is_ok_and(|id| self.permits_workspace(id))
+    pub fn permits_workspace_uuid(&self, workspace: &str) -> bool {
+        crate::room_workspace_id(workspace).is_ok_and(|id| self.permits_workspace(id))
     }
 
     /// Whether the delegate may act in `app_id`.
@@ -324,8 +330,8 @@ impl DelegateProposal {
     }
 
     /// Whether `delegation` grants no more than this proposal: the same
-    /// delegate, label and colour, rooms and apps within it, and an expiry
-    /// no later.
+    /// delegate, label and colour, workspaces and apps within it, and an
+    /// expiry no later.
     pub fn admits(&self, delegation: &Delegation) -> Result<(), &'static str> {
         if delegation.delegate != self.delegate
             || delegation.label != self.label
@@ -337,9 +343,9 @@ impl DelegateProposal {
         if !scope
             .rooms
             .iter()
-            .all(|room| self.scope.rooms.contains(room))
+            .all(|workspace| self.scope.rooms.contains(workspace))
         {
-            return Err("the delegation names a room that was not proposed");
+            return Err("the delegation names a workspace that was not proposed");
         }
         if !self.scope.apps.is_empty()
             && (scope.apps.is_empty()
@@ -358,8 +364,8 @@ impl DelegateProposal {
 mod tests {
     use super::*;
 
-    const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    const OTHER_ROOM: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const OTHER_WORKSPACE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const INSTALLATION: &str = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6";
     const DAY_NS: u64 = 24 * 3600 * 1_000_000_000;
 
@@ -367,14 +373,17 @@ mod tests {
         SigningKey::from_bytes(&[1; 32])
     }
 
-    fn scope(rooms: &[&str]) -> DelegateScope {
+    fn scope(workspaces: &[&str]) -> DelegateScope {
         DelegateScope {
-            rooms: rooms.iter().map(|room| (*room).to_owned()).collect(),
+            rooms: workspaces
+                .iter()
+                .map(|workspace| (*workspace).to_owned())
+                .collect(),
             apps: Vec::new(),
         }
     }
 
-    fn bot(rooms: &[&str], issued: u64, expires: u64) -> Result<Delegation, DelegationError> {
+    fn bot(workspaces: &[&str], issued: u64, expires: u64) -> Result<Delegation, DelegationError> {
         Delegation::sign(
             &root(),
             [9; 32],
@@ -383,7 +392,7 @@ mod tests {
             },
             "Discord Bridge",
             [88, 101, 242],
-            scope(rooms),
+            scope(workspaces),
             issued,
             expires,
         )
@@ -399,7 +408,7 @@ mod tests {
             },
             "Scribe",
             [10, 20, 30],
-            scope(&[ROOM, OTHER_ROOM]),
+            scope(&[WORKSPACE, OTHER_WORKSPACE]),
             10,
             20,
         )
@@ -411,7 +420,7 @@ mod tests {
             .unwrap();
         assert_eq!(decoded.delegate.agent_id(), Some("scribe"));
         assert_eq!(decoded.delegate.installation(), None);
-        assert!(decoded.permits_room(OTHER_ROOM));
+        assert!(decoded.permits_workspace_uuid(OTHER_WORKSPACE));
         assert_eq!(
             decoded.verify(&root().verifying_key().to_bytes(), 20),
             Err(DelegationError::Expired)
@@ -423,18 +432,18 @@ mod tests {
     }
 
     #[test]
-    fn a_bot_delegation_names_one_room_for_at_most_thirty_days() {
-        bot(&[ROOM], DAY_NS, DAY_NS + MAX_BOT_DELEGATION_NS).unwrap();
+    fn a_bot_delegation_names_one_workspace_for_at_most_thirty_days() {
+        bot(&[WORKSPACE], DAY_NS, DAY_NS + MAX_BOT_DELEGATION_NS).unwrap();
         assert_eq!(
-            bot(&[ROOM], DAY_NS, DAY_NS + MAX_BOT_DELEGATION_NS + 1),
+            bot(&[WORKSPACE], DAY_NS, DAY_NS + MAX_BOT_DELEGATION_NS + 1),
             Err(DelegationError::Invalid(
                 "a bot delegation lasts at most 30 days"
             ))
         );
         assert_eq!(
-            bot(&[ROOM, OTHER_ROOM], DAY_NS, 2 * DAY_NS),
+            bot(&[WORKSPACE, OTHER_WORKSPACE], DAY_NS, 2 * DAY_NS),
             Err(DelegationError::Invalid(
-                "a bot delegation names exactly one room"
+                "a bot delegation names exactly one workspace"
             ))
         );
         let not_uuid = Delegation::sign(
@@ -445,7 +454,7 @@ mod tests {
             },
             "Discord Bridge",
             [0; 3],
-            scope(&[ROOM]),
+            scope(&[WORKSPACE]),
             1,
             2,
         );
@@ -470,7 +479,7 @@ mod tests {
         }
         let root = root();
         let user = root.verifying_key().to_bytes();
-        let scope = scope(&[ROOM]);
+        let scope = scope(&[WORKSPACE]);
         let mut old = b"tilo-agent-delegation-v1\0".to_vec();
         old.extend(
             postcard::to_allocvec(&OldUnsigned {
@@ -503,7 +512,7 @@ mod tests {
 
     #[test]
     fn changing_the_delegate_breaks_the_signature() {
-        let mut delegation = bot(&[ROOM], 1, 2).unwrap();
+        let mut delegation = bot(&[WORKSPACE], 1, 2).unwrap();
         delegation.delegate = Delegate::Bot {
             installation: "7f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into(),
         };
@@ -521,7 +530,7 @@ mod tests {
             },
             label: "Discord Bridge".into(),
             color: [88, 101, 242],
-            scope: scope(&[ROOM]),
+            scope: scope(&[WORKSPACE]),
             expires_at_ns: 10 * DAY_NS,
         };
         let signed = proposal.sign(&root(), [9; 32], DAY_NS).unwrap();
@@ -531,7 +540,7 @@ mod tests {
             agent_id: "scribe".into(),
         };
         assert!(other.admits(&signed).is_err());
-        let later = bot(&[ROOM], DAY_NS, 11 * DAY_NS).unwrap();
+        let later = bot(&[WORKSPACE], DAY_NS, 11 * DAY_NS).unwrap();
         assert!(proposal.admits(&later).is_err());
     }
 }
