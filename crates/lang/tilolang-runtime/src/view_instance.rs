@@ -649,6 +649,41 @@ impl ViewInstance {
         self.fire(key, "press")
     }
 
+    /// Send the edit of `field` of `target`, a resource of the app `app` this runtime does not
+    /// run, to the host's invoker.
+    fn edit_foreign(
+        &self,
+        app: String,
+        target: &ResourceRef,
+        field: &crate::registry::FieldInfo,
+        value: &Value,
+    ) -> Result<EditOutcome, RuntimeError> {
+        use crate::delegate::{Invocation, Invoked};
+        let invocation = Invocation::Edit {
+            app,
+            target: target.clone(),
+            field: field.name.clone(),
+            field_id: field.id.clone(),
+            value: value.clone(),
+        };
+        let answer = match self.core.invoker.borrow().as_ref() {
+            Some(invoker) => invoker.invoke(&invocation),
+            None => {
+                return Err(RuntimeError::Package(format!(
+                    "`{}` is a resource of an app this host does not run, and it sends no \
+                     change on",
+                    target.id_string()
+                )));
+            }
+        };
+        match answer {
+            Invoked::Done(_) => Ok(EditOutcome::Applied),
+            Invoked::Failed(reason) => Err(RuntimeError::Trap(reason)),
+            Invoked::Refused(_) => Ok(EditOutcome::Denied),
+            Invoked::Asks(_) => Ok(EditOutcome::NeedsApproval),
+        }
+    }
+
     /// Edit the field a node is bound to, as an attributed change.
     ///
     /// # Errors
@@ -669,8 +704,10 @@ impl ViewInstance {
             BindTarget::State { key, ty, .. } => return self.edit_state(&key, &ty, value),
         };
         let reg = self.core.registry.borrow();
+        // Another app's resource names its type as `app#Type`.
         let (pkg, info) = reg
-            .type_info(&target.ty)
+            .type_id(&target.ty)
+            .and_then(|ty| reg.type_info(&ty))
             .ok_or_else(|| RuntimeError::NotFound(format!("type {}", target.ty)))?;
         let field = info
             .field(&field_id)
@@ -698,27 +735,13 @@ impl ViewInstance {
             Decision::Ask => return Ok(EditOutcome::NeedsApproval),
             Decision::Allow => {}
         }
-        let mutation = match (field.kind, value) {
-            (FieldKind::Text, Value::Text(t)) => Mutation::SetText {
-                field: field.id.clone(),
-                text: t.clone(),
-            },
-            (FieldKind::RichText, Value::Rich(r)) => Mutation::SetRich {
-                field: field.id.clone(),
-                value: r.clone(),
-            },
-            (FieldKind::Register, v) => Mutation::SetRegister {
-                field: field.id.clone(),
-                value: to_scalar(v, &field.ty).map_err(RuntimeError::BadArgs)?,
-            },
-            _ => {
-                return Err(RuntimeError::BadArgs(format!(
-                    "field `{}` cannot be edited with a {}",
-                    field.name,
-                    value.kind_name()
-                )));
-            }
-        };
+        // A resource of an app this runtime does not run is changed where that app runs: the
+        // edit goes to the host's invoker, which sends it to the resource's door, and the new
+        // reading that comes back draws it.
+        if crate::foreign::is_foreign(&target) {
+            return self.edit_foreign(pkg.meta.app.clone(), &target, &field, value);
+        }
+        let mutation = field_mutation(&field, value)?;
         // A control hands over the whole of what it holds, so a field drawn again and given
         // back exactly what it already says is no edit: nothing is written, and nothing is
         // recorded as a step of the resource's history.
@@ -801,4 +824,32 @@ fn collect_lists(node: &UiNode, out: &mut Vec<String>) {
     for child in &node.children {
         collect_lists(child, out);
     }
+}
+
+/// The change that sets `field` to `value`, as an edit of a control bound to it gives it.
+fn field_mutation(
+    field: &crate::registry::FieldInfo,
+    value: &Value,
+) -> Result<Mutation, RuntimeError> {
+    Ok(match (field.kind, value) {
+        (FieldKind::Text, Value::Text(t)) => Mutation::SetText {
+            field: field.id.clone(),
+            text: t.clone(),
+        },
+        (FieldKind::RichText, Value::Rich(r)) => Mutation::SetRich {
+            field: field.id.clone(),
+            value: r.clone(),
+        },
+        (FieldKind::Register, v) => Mutation::SetRegister {
+            field: field.id.clone(),
+            value: to_scalar(v, &field.ty).map_err(RuntimeError::BadArgs)?,
+        },
+        _ => {
+            return Err(RuntimeError::BadArgs(format!(
+                "field `{}` cannot be edited with a {}",
+                field.name,
+                value.kind_name()
+            )));
+        }
+    })
 }

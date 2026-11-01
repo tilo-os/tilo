@@ -21936,6 +21936,7 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-render-protocol",
  "tilo-resource",
+ "tilo-service",
  "tilo-topbar",
  "tilo-ui",
  "tilo-ui-host",
