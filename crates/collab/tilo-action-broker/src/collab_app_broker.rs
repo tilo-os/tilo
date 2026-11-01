@@ -70,6 +70,7 @@ mod private_draft;
 mod process_binding;
 mod published;
 mod published_invocation;
+mod readings;
 mod resolved_invocation;
 mod route_holds;
 mod tracker_runs;
@@ -319,6 +320,22 @@ impl BrokerActor {
     pub fn agent(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
+            is_agent: true,
+            capped: false,
+            for_person: None,
+            session_delegated: false,
+            issue: None,
+            ceiling: None,
+        }
+    }
+
+    /// The application `app`, acting under its own identity: it may do what
+    /// the room grants it and nothing it borrows from a person. A reading it
+    /// takes is decided the same way.
+    #[must_use]
+    pub fn app(app: &str) -> Self {
+        Self {
+            id: format!("app:{app}"),
             is_agent: true,
             capped: false,
             for_person: None,

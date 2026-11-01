@@ -111,7 +111,7 @@ impl BrokerActor {
                     (None, None) => agent,
                 }
             }
-            CallerPrincipal::App(id) => Self::agent(format!("app:{id}")),
+            CallerPrincipal::App(id) => Self::app(id),
             CallerPrincipal::Bot(id) => match caller.user_public_key() {
                 Some(root) => Self::bot(id, super::principal_id_for_root(*root)),
                 // A bot nobody installed has no authority to borrow: acting

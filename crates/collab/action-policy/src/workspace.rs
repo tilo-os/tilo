@@ -262,6 +262,15 @@ impl WorkspacePolicy {
                 .map_or(Subject::Role(Role::Owner), Subject::Person);
             self.grants.push(roles::session_app(&self.workspace, by));
         }
+        // And the one the device's panel reads the session's own readings
+        // through, which a room written before it was granted gains too.
+        if !self.grants.iter().any(roles::is_device_panel) {
+            let by = self
+                .owner
+                .clone()
+                .map_or(Subject::Role(Role::Owner), Subject::Person);
+            self.grants.push(roles::device_panel(&self.workspace, by));
+        }
         self
     }
 

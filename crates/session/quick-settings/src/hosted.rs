@@ -256,7 +256,7 @@ pub struct HostedRow {
 
 /// One copy the desktop keeps, as the Clipboard section lists it: the row's
 /// face without its bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClipboardCopy {
     /// Names the copy in the panel's effects.
     pub key: String,

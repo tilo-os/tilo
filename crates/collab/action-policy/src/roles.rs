@@ -530,7 +530,10 @@ pub fn room_role_grants(room: &str, granted_by: &Subject) -> Vec<Grant> {
                 &Lifetime::UntilRevoked,
             )
         })
-        .chain([session_app(room, granted_by.clone())])
+        .chain([
+            session_app(room, granted_by.clone()),
+            device_panel(room, granted_by.clone()),
+        ])
         .collect()
 }
 
@@ -889,6 +892,41 @@ pub fn session_app(room: &str, granted_by: Subject) -> Grant {
         granted_by,
     )
 }
+
+/// The id of the grant [`device_panel`] makes.
+pub const DEVICE_PANEL_GRANT: &str = "device-panel";
+
+/// Whether `grant` is the one [`device_panel`] makes: part of the room's
+/// make-up, like [`session_app`]'s.
+#[must_use]
+pub fn is_device_panel(grant: &Grant) -> bool {
+    grant.id.as_str() == DEVICE_PANEL_GRANT
+        && matches!(&grant.subject, Subject::App(app) if app == DEVICE_PANEL)
+}
+
+/// The app a person's device shows the session's own state in: quick
+/// settings, which is a panel of the session's rather than an app of its own.
+pub const DEVICE_PANEL: &str = "so.tilo.quick-settings";
+
+/// The grant letting the device's panel, [`DEVICE_PANEL`], read what the
+/// session publishes for it in `room`: the readings of its own resources
+/// that are nobody else's to read, such as what the person copied. It reads
+/// them, and nothing about them: changing the device stays the person's.
+#[must_use]
+pub fn device_panel(room: &str, granted_by: Subject) -> Grant {
+    Grant::new(
+        DEVICE_PANEL_GRANT,
+        Subject::App(DEVICE_PANEL.to_owned()),
+        TreePath::room(room).app(SESSION_APP).kind(SESSION_KIND),
+        KindSet::READ,
+        Answer::Allow,
+        granted_by,
+    )
+}
+
+/// The kind the session publishes its own resources under: the compositor's
+/// state, the clipboard, the lock.
+pub const SESSION_KIND: &str = "session";
 
 /// What a person may do from a device that is not theirs, in any room: read
 /// and change content, ask first before reaching outside it, never govern.

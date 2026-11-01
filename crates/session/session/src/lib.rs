@@ -330,7 +330,10 @@ struct Shared {
     personal: Option<RefCell<workspaces::Personal>>,
     /// The copies the person can paste again, and what the Clipboard section
     /// was last fed of them.
-    clipboard: mount::clipboard::Clipboard,
+    clipboard: Rc<mount::clipboard::Clipboard>,
+    /// What the panel's Clipboard section was last fed, so what did not
+    /// change is not fed again.
+    clipboard_view: RefCell<Option<tilo_quick_settings::ClipboardView>>,
     /// The person's settings, kept in step with their other devices.
     settings: mount::settings_sync::SettingsSync,
     /// The overview's pictures and the clock they fly on, which its panel
@@ -519,14 +522,30 @@ impl Shared {
     }
 
     /// Feed the panel's Clipboard section when it changed: every copy the
-    /// person can paste again, newest first.
+    /// person can paste again, newest first, as the clipboard service
+    /// publishes them.
     fn feed_clipboard(&self) {
         let Some(device) = &self.device else {
             return;
         };
-        let Some(view) = self.clipboard.changed_view(ui::time::unix_now_ms()) else {
+        let Some(state) = self.services.borrow().read(CLIPBOARD_RESOURCE) else {
             return;
         };
+        let copies = match serde_json::from_value::<Vec<tilo_quick_settings::hosted::ClipboardCopy>>(
+            state,
+        ) {
+            Ok(copies) => copies,
+            Err(error) => {
+                tracing::warn!(%error, "the clipboard reading did not parse");
+                return;
+            }
+        };
+        let view = tilo_quick_settings::hosted::clipboard_view(&copies, ui::time::unix_now_ms());
+        let mut fed = self.clipboard_view.borrow_mut();
+        if fed.as_ref() == Some(&view) {
+            return;
+        }
+        *fed = Some(view.clone());
         device.update(|state| state.clipboard = view);
     }
 
@@ -1588,7 +1607,8 @@ impl Session {
             engine,
             _channels: channels,
             personal,
-            clipboard: mount::clipboard::Clipboard::new(),
+            clipboard: Rc::new(mount::clipboard::Clipboard::new()),
+            clipboard_view: RefCell::new(None),
             settings: mount::settings_sync::SettingsSync::new(),
             overview,
             dictation,
@@ -1603,6 +1623,23 @@ impl Session {
             app_sheets,
         };
         shared.start_search();
+        // What the person copied is personal: the clipboard publishes the
+        // copies itself, as a reading only a caller the room grants reads.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(mount::clipboard::Served::new(
+                Rc::clone(&shared.clipboard),
+                Rc::clone(&shared.commands),
+            )));
+        // The broker decides a granted reading when the app asks, which is
+        // before this loop's first pass: what the services declare is read
+        // here, with every service mounted, so a connection that arrives as
+        // the session starts meets the room's grants and not an empty
+        // declaration.
+        if let Some(plane) = &action_plane {
+            plane.link.declare(&shared.services.borrow());
+        }
         // What the portal brings comes from any thread, and wakes the loop
         // instead of waiting for its next turn.
         if let Some(portal) = &options.portal {

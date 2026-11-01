@@ -8,16 +8,17 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::services::Caller;
 use crate::services::HostServices;
+use crate::services::{Caller, Granted};
 use runtime_collab::wire::{Event, Receipt};
 use tokio::sync::{mpsc, oneshot};
 
 use super::super::*;
 use super::*;
 
-/// The session's services as a test publishes them: one `sound` resource,
-/// with the watches it was asked for and those it let go of.
+/// The session's services as a test publishes them: a `sound` resource
+/// everyone reads, a `clipboard` one the room's grants decide, and the
+/// watches it was asked for and those it let go of.
 #[derive(Default)]
 struct Provider {
     watched: Mutex<Vec<ResourceWatch>>,
@@ -27,25 +28,42 @@ struct Provider {
     next: AtomicU64,
 }
 
+/// What the session publishes of `resource`, for a test that reads it.
+fn reading_of(resource: &str) -> Option<Vec<u8>> {
+    match resource {
+        "sound" => Some(br#"{"output":40,"volume":0.4}"#.to_vec()),
+        "clipboard" => Some(br#"["the copied line"]"#.to_vec()),
+        _ => None,
+    }
+}
+
 impl PublishedResources for Provider {
+    /// What the person copied is the session's own: the `session` kind of
+    /// the session's app, which only the room's grants read.
+    fn granted(&self, resource: &str) -> Option<Granted> {
+        (resource == "clipboard").then(|| Granted {
+            publisher: tilo_action_policy::roles::SESSION_APP.to_owned(),
+            kind: tilo_action_policy::roles::SESSION_KIND.to_owned(),
+        })
+    }
+
     fn snapshot(&self, _caller: &Caller, resource: &str) -> oneshot::Receiver<Reading> {
         let (reply, answered) = oneshot::channel();
-        let reading = (resource == "sound").then(|| br#"{"output":40,"volume":0.4}"#.to_vec());
-        let _ = reply.send((7, reading));
+        let _ = reply.send((7, reading_of(resource)));
         answered
     }
 
     fn watch(
         &self,
         _caller: &Caller,
-        _resource: &str,
+        resource: &str,
         sink: mpsc::UnboundedSender<Event>,
     ) -> ResourceWatch {
         let watch = ResourceWatch::new(self.next.fetch_add(1, Ordering::Relaxed));
         let _ = sink.send(Event::Reading {
-            resource: "sound".into(),
+            resource: resource.into(),
             revision: 8,
-            reading: Some(br#"{"output":40,"volume":0.4}"#.to_vec()),
+            reading: reading_of(resource),
         });
         self.watched.lock().unwrap().push(watch);
         self.sinks.lock().unwrap().push((watch, sink));
@@ -81,11 +99,22 @@ struct App {
 }
 
 fn app(provider: Arc<Provider>) -> App {
+    app_in(provider, "so.tilo.settings", "the-workspace", None)
+}
+
+/// An app the launcher attested as `id` in `room`, reading what `provider`
+/// publishes, with what `membership` says the room grants.
+fn app_in(
+    provider: Arc<Provider>,
+    id: &str,
+    room: &str,
+    membership: Option<WorkspaceTreeHandle>,
+) -> App {
     let (state, bridge_rx) = AppBrokerState::new_configured(
         &Arc::new(FanoutState::new()),
         Arc::new(Mutex::new(BrokerChannels::default())),
         PeerPublisher::disabled(),
-        None,
+        membership,
         None,
         None,
         HostServices {
@@ -97,8 +126,8 @@ fn app(provider: Arc<Provider>) -> App {
     let peer_id = state.next_peer_id();
     let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
     let local = native_media::LocalAppConnection::attested(
-        "so.tilo.settings".into(),
-        "the-workspace".into(),
+        id.into(),
+        room.into(),
         native_media::PeerProcess::from_socket(&host).unwrap(),
         crate::services::AuthenticatedApplicationLaunch {
             creation: None,
@@ -127,6 +156,120 @@ fn app(provider: Arc<Provider>) -> App {
         client: wire_client(connection, outgoing),
         _state: state,
     }
+}
+
+/// A room `owner` owns, as a desk keeps it, with the session's panel granted
+/// to read the session's own readings: what every session's room holds.
+fn panel_room() -> (
+    crate::test_support::WorkspaceTreeHandle,
+    crate::services::WorkspaceAuthorityHandle,
+    String,
+) {
+    use crate::test_support::{Subject, Workspace, WorkspaceId, WorkspaceTree};
+    let mut workspace = Workspace::new(WorkspaceId(41), "Readings");
+    workspace.set_owner("owner");
+    let room = workspace.room().to_string();
+    workspace.grant(tilo_action_policy::roles::device_panel(
+        &room,
+        Subject::Person("owner".into()),
+    ));
+    let mut tree = WorkspaceTree::default();
+    tree.workspaces.push(workspace);
+    let tree = tree.shared();
+    let membership = tree.authority();
+    (tree, membership, room)
+}
+
+/// The reading of what the person copied reaches the panel's launch, and no
+/// other app: the room grants the panel, and nothing an app borrows from the
+/// person reads it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_granted_app_reads_the_session_reading_and_another_is_refused() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let provider = Arc::new(Provider::default());
+            let (_tree, membership, room) = panel_room();
+            let panel = app_in(
+                Arc::clone(&provider),
+                tilo_action_policy::roles::DEVICE_PANEL,
+                &room,
+                Some(Arc::clone(&membership)),
+            );
+            assert_eq!(
+                panel.client.services().snapshot("clipboard").await.unwrap(),
+                runtime_collab::Snapshot {
+                    revision: 7,
+                    reading: Some(r#"["the copied line"]"#.into()),
+                },
+                "the panel reads what the person copied"
+            );
+            assert_eq!(
+                panel.client.services().snapshot("sound").await.unwrap(),
+                runtime_collab::Snapshot {
+                    revision: 7,
+                    reading: Some(r#"{"output":40,"volume":0.4}"#.into()),
+                },
+                "and what everyone reads stays everyone's"
+            );
+
+            let other = app_in(
+                Arc::clone(&provider),
+                "so.tilo.settings",
+                &room,
+                Some(membership),
+            );
+            let refused = other.client.services().snapshot("clipboard").await;
+            let refusal = refused.expect_err("an app the room does not grant is refused");
+            assert!(
+                refusal.to_string().contains("not granted"),
+                "refused as a reading nobody granted it: {refusal}"
+            );
+        })
+        .await;
+}
+
+/// A watch the room does not grant is not opened at all, and one it does is
+/// served its reading.
+#[tokio::test(flavor = "current_thread")]
+async fn only_a_granted_app_watches_the_session_reading() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let provider = Arc::new(Provider::default());
+            let (_tree, membership, room) = panel_room();
+            let panel = app_in(
+                Arc::clone(&provider),
+                tilo_action_policy::roles::DEVICE_PANEL,
+                &room,
+                Some(Arc::clone(&membership)),
+            );
+            let readings = panel.client.services().watch("clipboard").await.unwrap();
+            assert_eq!(
+                readings.read().await.unwrap().reading.as_deref(),
+                Some(r#"["the copied line"]"#),
+                "the panel is sent the reading it watches"
+            );
+
+            let other = app_in(
+                Arc::clone(&provider),
+                "so.tilo.settings",
+                &room,
+                Some(membership),
+            );
+            let refused = other.client.services().watch("clipboard").await;
+            let Err(refusal) = refused else {
+                panic!("an app the room does not grant watches nothing");
+            };
+            assert!(
+                refusal.to_string().contains("not granted"),
+                "refused as a reading nobody granted it: {refusal}"
+            );
+            assert_eq!(
+                provider.watched.lock().unwrap().len(),
+                1,
+                "only the granted watch was opened"
+            );
+        })
+        .await;
 }
 
 /// A watch an app opened ends with the connection that opened it: the

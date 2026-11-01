@@ -2081,6 +2081,58 @@ fn built_in_roles_load_as_the_code_defines_them_and_a_room_keeps_its_own_grants(
 }
 
 #[test]
+fn the_device_panel_reads_the_session_kind_and_no_other_app_does() {
+    let copied = || {
+        TreePath::room("r")
+            .app(roles::SESSION_APP)
+            .kind(roles::SESSION_KIND)
+            .resource("clipboard")
+    };
+    let reads = |grants: &[Grant], app: &str| {
+        decide(
+            grants,
+            &[Subject::App(app.to_owned())],
+            &copied(),
+            ActionKind::Read,
+            &cx(),
+        )
+        .answer
+    };
+
+    let room = room_with(&[]);
+    let panel = room
+        .grants
+        .iter()
+        .find(|grant| roles::is_device_panel(grant))
+        .expect("a new room grants its device's panel");
+    assert_eq!(panel.subject, Subject::App(roles::DEVICE_PANEL.to_owned()));
+    assert_eq!(
+        panel.node,
+        TreePath::room("r")
+            .app(roles::SESSION_APP)
+            .kind(roles::SESSION_KIND)
+    );
+    assert_eq!(panel.kinds, KindSet::READ, "the panel reads, never writes");
+    assert_eq!(panel.answer, Answer::Allow);
+    assert_eq!(reads(&room.grants, roles::DEVICE_PANEL), Answer::Allow);
+    assert_eq!(reads(&room.grants, "so.tilo.settings"), Answer::Deny);
+
+    // A room written before the panel was a preset gains its grant, given
+    // by its owner.
+    let mut older = room_with(&[]);
+    older.grants.retain(|grant| !roles::is_device_panel(grant));
+    assert_eq!(reads(&older.grants, roles::DEVICE_PANEL), Answer::Deny);
+    let gained = older.with_current_roles();
+    let panel = gained
+        .grants
+        .iter()
+        .find(|grant| roles::is_device_panel(grant))
+        .expect("an older room gains the panel's grant");
+    assert_eq!(panel.granted_by, Subject::Person(ALICE.to_owned()));
+    assert_eq!(reads(&gained.grants, roles::DEVICE_PANEL), Answer::Allow);
+}
+
+#[test]
 fn a_room_neither_revokes_nor_gives_a_built_in_role_grant() {
     let room = room_with(&[]);
     let owner = Authority::person(room.party(ALICE));

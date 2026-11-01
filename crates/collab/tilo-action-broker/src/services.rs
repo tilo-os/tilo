@@ -5,7 +5,7 @@ mod published;
 mod room_nodes;
 mod task_execution;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
-pub use published::{Caller, PublishedResources, Reading, ResourceWatch};
+pub use published::{Caller, Granted, PublishedResources, Reading, ResourceWatch};
 pub use room_nodes::{RoomNodeActions, RoomNodeAsk, RoomNodeOutcome};
 pub use task_execution::{
     NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,

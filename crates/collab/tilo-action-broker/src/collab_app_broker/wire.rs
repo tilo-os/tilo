@@ -1932,6 +1932,15 @@ fn close_control(control: Rc<dyn crate::services::WorkspaceControlSession>) {
     });
 }
 
+/// What a connection reaches of the session's published resources: the
+/// provider, the caller it reads them for, and the broker state a granted
+/// reading is decided from.
+struct Publishing {
+    published: Arc<dyn crate::services::PublishedResources>,
+    caller: crate::services::Caller,
+    state: Arc<AppBrokerState>,
+}
+
 impl WireConnection {
     /// A connection and the queue of the frames it sends.
     pub(super) fn new(
@@ -1983,16 +1992,9 @@ impl WireConnection {
 
     /// What this connection reaches of the session's published resources,
     /// and for whom: the app and workspace its launcher named, when this
-    /// host publishes anything at all.
-    fn publishing(
-        &self,
-    ) -> Result<
-        (
-            std::sync::Arc<dyn crate::services::PublishedResources>,
-            crate::services::Caller,
-        ),
-        String,
-    > {
+    /// host publishes anything at all, and the broker state a granted
+    /// reading is decided from.
+    fn publishing(&self) -> Result<Publishing, String> {
         let unlaunched = || "this connection speaks for no launched app".to_owned();
         let service = self.service.as_ref().ok_or_else(unlaunched)?;
         let published = service
@@ -2002,13 +2004,14 @@ impl WireConnection {
             .clone()
             .ok_or_else(|| "this host publishes no resources".to_owned())?;
         let launch = service.lease.local_media.as_ref().ok_or_else(unlaunched)?;
-        Ok((
+        Ok(Publishing {
             published,
-            crate::services::Caller {
+            caller: crate::services::Caller {
                 app_id: launch.app_id.clone(),
                 workspace: launch.workspace_id.clone(),
             },
-        ))
+            state: Arc::clone(&service.state),
+        })
     }
 
     /// This connection's hold on the session's published resources: one
@@ -2200,11 +2203,26 @@ impl WireConnection {
                     async move { answer?.await.map(Reply::Admitted).map_err(Refusal::refusal) },
                 )
             }
-            Operation::Snapshot { services, resource } => Box::pin(super::published::read(
-                self.holds_published(services)
-                    .and_then(|()| self.publishing())
-                    .map(|(published, caller)| published.snapshot(&caller, &resource)),
-            )),
+            Operation::Snapshot { services, resource } => {
+                let asking = self
+                    .holds_published(services)
+                    .and_then(|()| self.publishing());
+                Box::pin(async move {
+                    let publishing = asking?;
+                    // A reading the person's own is decided before it is read,
+                    // as an action is before it runs.
+                    super::published::gate(
+                        &publishing.state,
+                        publishing.published.as_ref(),
+                        &publishing.caller,
+                        &resource,
+                    )?;
+                    super::published::read(Ok(publishing
+                        .published
+                        .snapshot(&publishing.caller, &resource)))
+                    .await
+                })
+            }
             Operation::Invoke {
                 services,
                 resource,
@@ -2213,8 +2231,13 @@ impl WireConnection {
             } => Box::pin(super::published::invoke(
                 self.holds_published(services)
                     .and_then(|()| self.publishing())
-                    .map(|(published, caller)| {
-                        published.invoke(&caller, &resource, &action, arguments)
+                    .map(|publishing| {
+                        publishing.published.invoke(
+                            &publishing.caller,
+                            &resource,
+                            &action,
+                            arguments,
+                        )
                     }),
             )),
             request => {
@@ -2520,18 +2543,35 @@ impl WireConnection {
             }
             Operation::Watch { services, resource } => {
                 self.holds_published(services)?;
-                let (published, caller) = self.publishing()?;
+                let publishing = self.publishing()?;
                 if self.subscriptions.borrow().contains_key(&id) {
                     return Err(format!("subscription {id} is already live"));
                 }
+                // A watch begins only where the room's grants let the caller
+                // read, and each reading is decided again as it is served.
+                super::published::gate(
+                    &publishing.state,
+                    publishing.published.as_ref(),
+                    &publishing.caller,
+                    &resource,
+                )?;
+                let gate = super::published::ReadingGate {
+                    state: Arc::clone(&publishing.state),
+                    published: Arc::clone(&publishing.published),
+                    caller: publishing.caller.clone(),
+                    resource: resource.clone(),
+                };
                 let (readings, deliveries) = mpsc::unbounded_channel();
-                let watch = published.watch(&caller, &resource, readings);
+                let watch = publishing
+                    .published
+                    .watch(&publishing.caller, &resource, readings);
                 let task = super::published::serving(
-                    published,
+                    publishing.published,
                     watch,
                     deliveries,
                     self.frames.clone(),
                     id,
+                    gate,
                 );
                 self.subscriptions.borrow_mut().insert(id, (services, task));
                 Ok(Reply::Subscribed)
