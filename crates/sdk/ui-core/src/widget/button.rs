@@ -1982,6 +1982,8 @@ impl Widget for Button {
     ) -> NodeId {
         self.observe_i18n_revision();
         self.measured_width = None;
+        // A fresh node holds no margins of the count's.
+        self.count_margin = None;
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
         if let Some((control, side)) = &mut self.transport {
             *side = crate::widget::TransportFace::side(*control, theme);

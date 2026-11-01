@@ -9,7 +9,7 @@
 /// view lays out its place, names it and marks who else is on it, and it is a surface of the
 /// desk: the desk's bar stays above it, so it holds no sidebar of its own.
 view overview(d: Desk) {
-    lens query: Text = ""
+    lens query: Text = d.spotlight
     let windows = d.windows.sort_by(w -> w.recency)
     let here = windows.filter(w -> w.workspace == d.workspace)
     let elsewhere = windows.filter(w -> w.workspace != d.workspace).matching(query)
