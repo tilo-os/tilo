@@ -110,7 +110,7 @@ impl Channels {
         // plane carries a workspace's window streams between the devices it
         // admits from the moment it runs, not only from the workspace's next
         // change.
-        for workspace in engine.rooms() {
+        for workspace in engine.workspaces() {
             link.workspace_changed(workspace);
         }
         engine.attach_link(link);
