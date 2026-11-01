@@ -156,7 +156,7 @@ identifiers in it become spans of their own kind, in every shaping path
 | A link: a scheme, `www.`, a host with a path or port, or a bare host with a common top-level domain | `https://paypa1.com/I0l`, `www.tilo.so`, `example.org/docs` | `Url` |
 | An email address | `Il0@example.org` | `Identifier` |
 | A mention | `@lena_l1`, `@ilya:tilo.so` | `Identifier` |
-| A workspace address (a bare `#tag` is not one) | `#general:tilo.so` | `Identifier` |
+| A channel address (a bare `#tag` is not one) | `#general:tilo.so` | `Identifier` |
 
 Punctuation the sentence wraps a word in (brackets, quotes, a closing full
 stop) stays outside the span, and `file.txt` or `node.js` in a sentence stays

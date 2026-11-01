@@ -1125,7 +1125,7 @@ carries after "Can't sign in" still go through Plymouth's password request.
 
 These are load-bearing and correct. Changing them requires understanding why they are as they are.
 
-- `crates/session/shell/src/shell/state.rs` (`apply_room_changes`) — merges into a **copy** first, because
+- `crates/session/shell/src/shell/state.rs` (`apply_changes`) — merges into a **copy** first, because
   *"a check that runs after the merge has already happened is not a check."* Whole batches are
   refused rather than partially applied.
 - `crates/session/shell/src/shell/state.rs` (`PeerOrigin`) — `PeerOrigin` is *"named as the transport authenticated it —
