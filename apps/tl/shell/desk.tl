@@ -150,5 +150,9 @@ view surface(d: Desk) {
         workspaces(d, fill)
     } else if d.here == "composer" {
         composer(d, fill)
+    } else if d.here == "conversation" {
+        if let r = d.runs.last() {
+            conversation(r, fill)
+        }
     }
 }

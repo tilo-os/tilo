@@ -1173,15 +1173,28 @@ fn placing_actions() -> Vec<ActionSpec> {
             vec![
                 // A workspace's id is its room's, across all of u64: text, as
                 // the arrangement record names it, where an integer stops at
-                // i64.
-                required(
+                // i64. Each left out is the surface in front's: its workspace
+                // and row, and a strip and place id of its own.
+                optional(
                     "workspace",
                     ParamType::Text,
-                    "The workspace whose canvas it stands on, by its id",
+                    "The workspace whose canvas it stands on, by its id; the one in front when left out",
                 ),
-                required("row", ParamType::Integer, "The row it stands in"),
-                required("strip", ParamType::Integer, "The strip it stands in"),
-                required("place", ParamType::Integer, "The id the new place takes"),
+                optional(
+                    "row",
+                    ParamType::Integer,
+                    "The row it stands in; the row in front when left out",
+                ),
+                optional(
+                    "strip",
+                    ParamType::Integer,
+                    "The strip it stands in; a new one when left out",
+                ),
+                optional(
+                    "place",
+                    ParamType::Integer,
+                    "The id the new place takes; a new one when left out",
+                ),
                 required("resource", ParamType::Resource, "The resource it shows"),
                 optional("view", ParamType::Text, "The view it shows it through"),
                 optional("x", ParamType::Integer, "Its canvas x"),
@@ -1373,6 +1386,18 @@ impl Published for ArrangementDoor {
             })
             .find(|action| action.id.as_str() == address.action)
             .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        // A place that names no workspace, row, strip or id of its own stands
+        // on the surface in front, in a strip of its own, under ids minted
+        // here: what a reference activated in a view asks for (shell.md §3),
+        // which knows the point it wants and none of the desk's ids. The
+        // record holds the ids it was given, as for any other place.
+        let completed;
+        let arguments = if address.action == "place" {
+            completed = self.surface_ids(arguments)?;
+            &completed
+        } else {
+            arguments
+        };
         let encoded = built
             .build_json(arguments)
             .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
@@ -1436,6 +1461,47 @@ impl Published for ArrangementDoor {
 }
 
 impl ArrangementDoor {
+    /// `arguments` of a `place`, with the surface in front's workspace and row
+    /// and fresh strip and place ids for whichever of them it leaves out.
+    fn surface_ids(
+        &self,
+        arguments: &serde_json::Map<String, Json>,
+    ) -> Result<serde_json::Map<String, Json>, tilo_actions::DoorError> {
+        let mut completed = arguments.clone();
+        let named = ["workspace", "row", "strip", "place"]
+            .iter()
+            .all(|id| arguments.contains_key(*id));
+        if named {
+            return Ok(completed);
+        }
+        // A row is a row of one workspace: the two come named together, or
+        // both from the surface in front.
+        if arguments.contains_key("workspace") != arguments.contains_key("row") {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "a place names its workspace and its row together, or neither".to_owned(),
+            ));
+        }
+        let surface = self.arrangement.borrow().surface_at().map_err(|why| {
+            tilo_actions::DoorError::Unavailable {
+                code: "nowhere_to_place".to_owned(),
+                reason: why,
+            }
+        })?;
+        completed
+            .entry("workspace")
+            .or_insert_with(|| Json::String(surface.workspace.to_string()));
+        completed
+            .entry("row")
+            .or_insert_with(|| Json::from(surface.row));
+        completed
+            .entry("strip")
+            .or_insert_with(|| Json::from(surface.strip));
+        completed
+            .entry("place")
+            .or_insert_with(|| Json::from(surface.place));
+        Ok(completed)
+    }
+
     /// Undo or redo the session's last change of the record.
     fn step(
         &self,

@@ -58,6 +58,50 @@ type Desk (origin: session.desk) {
     windows: Collection<Win>
     /// The running applications' tray items, in the order they registered.
     tray: Collection<TrayItem>
+    /// The runs of what the person asked the session's agents, oldest first; each is a
+    /// conversation (`conversation.tl`).
+    runs: Collection<Run>
+    run_entries: Collection<RunEntry>
+    entry_refs: Collection<EntryRef>
+}
+
+/// A run of what the person asked one of the session's agents: the conversation they have in
+/// it.
+type Run (origin: session.run) {
+    key: Text merge register
+    title: Text merge register (title)
+    agent: Text merge register
+    phase: Text merge register
+    active: Bool
+    /// What the agent says now, as the model streams it; empty between turns.
+    live: Text merge register
+}
+
+/// One entry of a run's conversation: what the person or the agent said, or a program either
+/// of them ran.
+type RunEntry (origin: session.run_entry) {
+    key: Text merge register
+    run: Text merge register
+    seq: Int
+    author: Text merge register
+    by_agent: Bool
+    step: Bool
+    /// The words, or the program as it ran.
+    text: Text merge register (title)
+    outcome: Text merge register
+    answer: Text merge register
+}
+
+/// A resource a program in a conversation printed (a reference) or changed (a row to undo).
+type EntryRef (origin: session.entry_ref) {
+    key: Text merge register
+    entry: Text merge register
+    changed: Bool
+    resource: Text merge register
+    app_id: Text merge register
+    type_kind: Text merge register
+    label: Text merge register (title)
+    change: Text merge register
 }
 
 /// A workspace on this device.
