@@ -111,9 +111,9 @@ fn open_directory(session: &mut Session) {
         .invoke(CHROME_RESOURCE, "join-workspace", &serde_json::Map::new())
         .expect("the session opens the directory");
     session.step(Duration::from_millis(1)).unwrap();
-    let deadline = std::time::Instant::now()
-        .checked_add(Duration::from_secs(20))
-        .expect("a deadline");
+    // The site's directories are answered by other runtimes, and a busy
+    // machine takes as long at that as the suite allows, not a second count.
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let standing = session
             .workspace_directory()
@@ -368,9 +368,9 @@ fn ask_to_join(session: &mut Session, key: &str) {
 /// Run the session until `done` holds, or fail saying what never happened.
 #[track_caller]
 fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
-    let deadline = std::time::Instant::now()
-        .checked_add(Duration::from_secs(20))
-        .expect("a deadline");
+    // What this waits for is other runtimes' work (the site's answer, the
+    // record arriving), so the bound is the suite's, not a second count.
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         session.step(Duration::from_millis(10)).unwrap();
         if done(session) {
@@ -967,9 +967,9 @@ impl LoungeHost {
         }
         // The line is the lounge's before anyone joins: the test proves a
         // join brings it, not that a write lands.
-        let deadline = std::time::Instant::now()
-            .checked_add(Duration::from_secs(60))
-            .expect("a deadline");
+        // The page's writes reach the host through other runtimes' work, so the
+        // bound is the suite's, not a second count.
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             for event in page.drain() {
                 if let PeerEvent::CompactionRequested {
