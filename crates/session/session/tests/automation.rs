@@ -225,8 +225,8 @@ fn pass(session: &mut Session, span: Duration) {
 /// Save `rows` (`(id, kind)`) as `package`'s index of `room` holds them, the
 /// way the app of a workspace writes it: published in one rename.
 fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
-    let directory =
-        app_state::room_index_directory(home.data(), PACKAGE, ROOM).expect("an index directory");
+    let directory = app_state::workspace_index_directory(home.data(), PACKAGE, ROOM)
+        .expect("an index directory");
     let staged = directory.with_file_name("staging-chat");
     for old in [&staged, &directory] {
         if old.exists() {

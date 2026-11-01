@@ -497,8 +497,8 @@ fn active_room(session: &Session) -> String {
 /// runs appears as one directory, which is what the worker following the
 /// device's indexes is told about.
 fn write_index(home: &tilo_test_env::TestHome, package: &str, room: &str, rows: &[(&str, &str)]) {
-    let directory =
-        app_state::room_index_directory(home.data(), package, room).expect("an index directory");
+    let directory = app_state::workspace_index_directory(home.data(), package, room)
+        .expect("an index directory");
     let staged = directory.with_file_name(format!("staging-{room}"));
     for old in [&staged, &directory] {
         if old.exists() {

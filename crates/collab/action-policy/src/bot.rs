@@ -1,8 +1,8 @@
-//! A bot's grants: the rules its program needs, held to the room it was
+//! A bot's grants: the rules its program needs, held to the workspace it was
 //! installed in, never reaching governance.
 //!
-//! A program's rules are written over any room, so one program can be
-//! installed anywhere. Installing scopes them to one room. The grant ids
+//! A program's rules are written over any workspace, so one program can be
+//! installed anywhere. Installing scopes them to one workspace. The grant ids
 //! share one prefix per installation, so uninstalling revokes them all
 //! without a list.
 
@@ -13,9 +13,9 @@ use crate::{Answer, Bound, Grant, KindSet, Rule, Subject, TreePath, roles};
 /// Why a program's rules cannot become a bot's grant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BotRuleError {
-    /// A rule names another room.
+    /// A rule names another workspace.
     OutsideWorkspace,
-    /// A rule reaches the room resource, where governance lives.
+    /// A rule reaches the workspace resource, where governance lives.
     Governance,
     /// A rule asks or denies. Nobody is present to answer for a bot, and a
     /// deny in a program narrows nothing a derived grant does not already
@@ -27,7 +27,7 @@ impl fmt::Display for BotRuleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::OutsideWorkspace => "a bot's grant names another workspace",
-            Self::Governance => "a bot's grant never reaches the room's governance",
+            Self::Governance => "a bot's grant never reaches the workspace's governance",
             Self::NotAllow => "a bot's grant only allows",
         })
     }
@@ -35,25 +35,29 @@ impl fmt::Display for BotRuleError {
 
 impl std::error::Error for BotRuleError {}
 
-/// `rules` held to `room`: each node's room segment, named or any, becomes
-/// `room`.
+/// `rules` held to `workspace`: each node's workspace segment, named or any, becomes
+/// `workspace`.
 ///
 /// # Errors
-/// The first rule that names another room, reaches the room resource, or
+/// The first rule that names another workspace, reaches the workspace resource, or
 /// does not allow.
-pub fn scoped_rules(room: &str, rules: &[Rule]) -> Result<Vec<Rule>, BotRuleError> {
-    let room_node = TreePath::room(room);
-    let governed = roles::room_resource(room);
+pub fn scoped_rules(workspace: &str, rules: &[Rule]) -> Result<Vec<Rule>, BotRuleError> {
+    let workspace_node = TreePath::workspace(workspace);
+    let governed = roles::workspace_resource(workspace);
     rules
         .iter()
         .map(|rule| {
             if rule.answer != Answer::Allow {
                 return Err(BotRuleError::NotAllow);
             }
-            if rule.node.room_id().is_some_and(|named| named != room) {
+            if rule
+                .node
+                .workspace_id()
+                .is_some_and(|named| named != workspace)
+            {
                 return Err(BotRuleError::OutsideWorkspace);
             }
-            let node = room_node.join(&rule.node.within_room());
+            let node = workspace_node.join(&rule.node.within_workspace());
             if node.overlaps(&governed) {
                 return Err(BotRuleError::Governance);
             }
@@ -67,14 +71,14 @@ pub fn grant_prefix(installation: &str) -> String {
     format!("bot:{installation}:")
 }
 
-/// The grants installing `installation` in `room` gives, with `installer`
+/// The grants installing `installation` in `workspace` gives, with `installer`
 /// (a user root, hex) as the grantor: the scoped rules, then the deny on
-/// the room resource that agent admissions carry too.
+/// the workspace resource that agent admissions carry too.
 ///
 /// # Errors
 /// See [`scoped_rules`].
 pub fn grants(
-    room: &str,
+    workspace: &str,
     installation: &str,
     installer: &str,
     rules: &[Rule],
@@ -82,7 +86,7 @@ pub fn grants(
     let subject = Subject::bot(installation);
     let granted_by = Subject::person(installer);
     let prefix = grant_prefix(installation);
-    let mut grants: Vec<Grant> = scoped_rules(room, rules)?
+    let mut grants: Vec<Grant> = scoped_rules(workspace, rules)?
         .into_iter()
         .enumerate()
         .map(|(n, rule)| {
@@ -99,7 +103,7 @@ pub fn grants(
     grants.push(Grant::new(
         format!("{prefix}no-governance"),
         subject,
-        roles::room_resource(room),
+        roles::workspace_resource(workspace),
         KindSet::UNDOABLE.union(KindSet::OUTSIDE),
         Answer::Deny,
         granted_by,
@@ -107,7 +111,7 @@ pub fn grants(
     Ok(grants)
 }
 
-/// The bound a bot acts within. Its grants live in the room's policy, so
+/// The bound a bot acts within. Its grants live in the workspace's policy, so
 /// the bound carries none of its own: [`Bound::party`] finds them there.
 #[must_use]
 pub fn bound(installation: &str) -> Bound {

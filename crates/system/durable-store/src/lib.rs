@@ -37,7 +37,7 @@ pub enum StorageKey {
     /// A package's own document, outside any workspace.
     Package { package: String },
     /// The index of records one workspace holds for a package.
-    RoomIndex { package: String, workspace: String },
+    WorkspaceIndex { package: String, workspace: String },
     /// One application instance's local presentation on one device.
     View {
         device: String,
@@ -65,8 +65,8 @@ impl StorageKey {
         }
     }
 
-    pub fn room_index(package: impl Into<String>, workspace: impl Into<String>) -> Self {
-        Self::RoomIndex {
+    pub fn workspace_index(package: impl Into<String>, workspace: impl Into<String>) -> Self {
+        Self::WorkspaceIndex {
             package: package.into(),
             workspace: workspace.into(),
         }
@@ -77,7 +77,7 @@ impl StorageKey {
         match self {
             Self::Record { package, .. }
             | Self::Package { package }
-            | Self::RoomIndex { package, .. } => Some(package),
+            | Self::WorkspaceIndex { package, .. } => Some(package),
             Self::View { .. } => None,
         }
     }
@@ -100,7 +100,9 @@ impl fmt::Display for StorageKey {
                 record,
             } => write!(f, "record {package}/{workspace}/{record}"),
             Self::Package { package } => write!(f, "package {package}"),
-            Self::RoomIndex { package, workspace } => write!(f, "room {package}/{workspace}"),
+            Self::WorkspaceIndex { package, workspace } => {
+                write!(f, "workspace index {package}/{workspace}")
+            }
             Self::View {
                 device,
                 workspace,
@@ -369,14 +371,14 @@ pub trait DurableStore {
         Ok(Vec::new())
     }
 
-    /// Every [`StorageKey::RoomIndex`] the store holds, as its `package` and
+    /// Every [`StorageKey::WorkspaceIndex`] the store holds, as its `package` and
     /// `workspace` components, sorted. Lets a host read which records the
     /// workspaces on this device keep without knowing their names first. A
     /// store that cannot enumerate its keys answers with none.
     ///
     /// # Errors
     /// A failure reading the backing storage.
-    fn room_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {
+    fn workspace_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {
         Ok(Vec::new())
     }
 
@@ -445,8 +447,8 @@ mod tests {
             );
             assert_eq!(StorageKey::package("pkg").to_string(), "package pkg");
             assert_eq!(
-                StorageKey::room_index("pkg", "room").to_string(),
-                "room pkg/room"
+                StorageKey::workspace_index("pkg", "room").to_string(),
+                "workspace index pkg/room"
             );
         }
     }

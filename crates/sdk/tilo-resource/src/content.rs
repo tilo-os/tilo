@@ -60,10 +60,10 @@ pub enum ContentRefusal {
     /// No window runs, or its host lent it no store.
     #[error("this window has no content store to read {0} from")]
     NoStore(String),
-    /// The window's store is not a room's, so a hash would name content from
-    /// anywhere on this machine.
-    #[error("{0} cannot be read here: this window's content store is not a room's")]
-    NotInRoom(String),
+    /// The window's store is not a workspace's, so a hash would name content
+    /// from anywhere on this machine.
+    #[error("{0} cannot be read here: this window's content store does not name a workspace")]
+    NotInWorkspace(String),
     /// The room does not reference the content, or this device does not
     /// hold it.
     #[error("{0} is not readable in this room: put the content into this room first")]
@@ -107,7 +107,7 @@ pub fn read_hash(hash: &str) -> Result<Vec<u8>, ContentRefusal> {
     }
     let store = current().ok_or_else(|| ContentRefusal::NoStore(named.clone()))?;
     if !store.workspace_scoped() {
-        return Err(ContentRefusal::NotInRoom(named));
+        return Err(ContentRefusal::NotInWorkspace(named));
     }
     store
         .read(hash)
@@ -297,7 +297,7 @@ mod tests {
         let _entered = window.enter();
         assert_eq!(
             read_reference(&reference),
-            Err(ContentRefusal::NotInRoom(reference.clone()))
+            Err(ContentRefusal::NotInWorkspace(reference.clone()))
         );
     }
 }

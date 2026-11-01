@@ -226,11 +226,11 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::with_role(Role::Owner)
     }
 
-    /// The app as its owner opens it on a fresh private profile, in `room`:
-    /// one of several windows of the app in one process, each in a room of
-    /// its own.
-    pub fn in_room(room: &str) -> Result<Self, LaunchError> {
-        Self::fresh(room, Role::Owner, AUTHOR)
+    /// The app as its owner opens it on a fresh private profile, in
+    /// `workspace`: one of several windows of the app in one process, each in
+    /// a workspace of its own.
+    pub fn in_workspace(workspace: &str) -> Result<Self, LaunchError> {
+        Self::fresh(workspace, Role::Owner, AUTHOR)
     }
 
     /// The app as its owner opens it on a fresh profile on the device

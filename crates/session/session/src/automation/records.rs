@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
-use app_state::{DOCUMENT_FILE, ROOMS_DIR};
+use app_state::{DOCUMENT_FILE, WORKSPACES_DIR};
 use automerge::{AutoCommit, ChangeHash, LoadOptions, OnPartialLoad};
 use tilo_actions::ActionContext;
 use tilo_automation::dispatch::{RecordEvent, event_of};
@@ -103,7 +103,7 @@ impl RecordFeed {
                 // A record or a room index: the documents this feed reads,
                 // and the directory a record of a room not read yet appears
                 // in.
-                parts.get(1) == Some(&std::ffi::OsStr::new(ROOMS_DIR))
+                parts.get(1) == Some(&std::ffi::OsStr::new(WORKSPACES_DIR))
             },
             move || {
                 let _ = telling.send(());
@@ -222,7 +222,7 @@ impl Worker {
         collect(&mut packages, data_home);
         let mut indexes = Vec::new();
         for package in packages {
-            if let Ok(entries) = std::fs::read_dir(data_home.join(&package).join(ROOMS_DIR)) {
+            if let Ok(entries) = std::fs::read_dir(data_home.join(&package).join(WORKSPACES_DIR)) {
                 for entry in entries.flatten() {
                     let room = entry.file_name().to_string_lossy().into_owned();
                     if self.rooms.contains(&room) {
@@ -287,7 +287,7 @@ fn load(path: &Path) -> Option<AutoCommit> {
 
 /// The records `package`'s index for `room` names, by record id and kind.
 fn named_in(data_home: &Path, package: &str, room: &str) -> Vec<(String, String)> {
-    let directory = match app_state::room_index_directory(data_home, package, room) {
+    let directory = match app_state::workspace_index_directory(data_home, package, room) {
         Ok(directory) => directory,
         Err(error) => {
             tracing::warn!(%error, package, room, "a room's index is not read");

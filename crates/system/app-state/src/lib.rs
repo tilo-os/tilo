@@ -40,7 +40,7 @@ pub use doc_writer::{
     DEFAULT_DEBOUNCE, DecodedBytes, DocOwner, DocWriter, DurabilitySnapshot, StoredBytes,
     StoredLoad,
 };
-pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR, room_index_directory};
+pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR, workspace_index_directory};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
@@ -51,9 +51,12 @@ pub const CANONICAL_GATE: &str = "canonical.lock";
 pub const LOCK_FILE: &str = "writer.lock";
 /// Subdirectory holding one directory per record. See [`DocStore::open_room_record`].
 pub const RECORDS_DIR: &str = "records";
-/// Subdirectory holding one directory per **room** — the index of records
-/// that room holds. See [`DocStore::open_room`].
-pub const ROOMS_DIR: &str = "rooms";
+/// Subdirectory holding one directory per workspace: that workspace's index
+/// of the records it holds. See [`DocStore::open_room`].
+///
+/// The name is what every device already stores, so it stays: a directory
+/// that exists must keep opening.
+pub const WORKSPACES_DIR: &str = "rooms";
 /// Marker in a room record's directory naming the one record that adopted it
 /// under a new identity.
 const RECORD_SUCCESSOR_CLAIM: &str = "successor-claim";
@@ -276,7 +279,7 @@ impl DocStore {
         validate_record_key(room_key)?;
         Self::shared(
             Self::native_store(),
-            StorageKey::room_index(package_id, room_key),
+            StorageKey::workspace_index(package_id, room_key),
         )
     }
 
@@ -353,7 +356,7 @@ impl DocStore {
     ) -> Result<PathBuf, StoreError> {
         validate_record_namespace(package, room)?;
         validate_absolute_directory(profile_root)?;
-        Ok(profile_root.join(package).join(ROOMS_DIR).join(room))
+        Ok(profile_root.join(package).join(WORKSPACES_DIR).join(room))
     }
 
     /// Resolve one record under an explicit profile root without consulting the environment.
@@ -372,7 +375,7 @@ impl DocStore {
         validate_absolute_directory(profile_root)?;
         Ok(profile_root
             .join(package)
-            .join(ROOMS_DIR)
+            .join(WORKSPACES_DIR)
             .join(room)
             .join(RECORDS_DIR)
             .join(record))
@@ -1468,7 +1471,7 @@ mod tests {
     fn a_docstore_save_keeps_a_load_hint_its_next_load_takes() {
         let tmp = TempDir::new().unwrap();
         let store: Rc<dyn DurableStore> = Rc::new(FsStore::new(tmp.path()));
-        let key = StorageKey::room_index("so.tilo.test", "room");
+        let key = StorageKey::workspace_index("so.tilo.test", "room");
         let mut primary = DocStore::shared(Rc::clone(&store), key.clone()).unwrap();
         assert!(primary.is_exclusive_writer());
         // The desktop document's shape: many small changes, few bytes.

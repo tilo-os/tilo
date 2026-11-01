@@ -260,7 +260,7 @@ impl RoomRecords {
             .join(package_id)
             .join(&*SANDBOX_DATA_SUBDIR)
             .join(package_id)
-            .join(app_state::ROOMS_DIR)
+            .join(app_state::WORKSPACES_DIR)
             .join(room.to_string())
             .join(app_state::DOCUMENT_FILE)
     }
@@ -642,7 +642,7 @@ fn open_room_store(room: RoomId, doc: &mut AutoCommit) -> Option<app_state::DocW
 }
 
 fn rooms_dir() -> PathBuf {
-    cli::standalone_state_dir(SHELL_PACKAGE_ID).join(app_state::ROOMS_DIR)
+    cli::standalone_state_dir(SHELL_PACKAGE_ID).join(app_state::WORKSPACES_DIR)
 }
 
 /// The process-wide record scan, started on first use — one walk per
@@ -698,7 +698,7 @@ fn scan_record_stores(root: &Path) -> ScanResult {
             // explicit room scopes.  The latter is bounded by room/record
             // directories, never by arbitrary app data.
             let mut record_roots = vec![state.join(app_state::RECORDS_DIR)];
-            if let Ok(rooms) = std::fs::read_dir(state.join(app_state::ROOMS_DIR)) {
+            if let Ok(rooms) = std::fs::read_dir(state.join(app_state::WORKSPACES_DIR)) {
                 record_roots.extend(
                     rooms
                         .flatten()
@@ -810,7 +810,7 @@ impl LocalRecordReader {
                 .path()
                 .join(&*SANDBOX_DATA_SUBDIR)
                 .join(&package_id)
-                .join(app_state::ROOMS_DIR)
+                .join(app_state::WORKSPACES_DIR)
                 .join(&room_key)
                 .join(app_state::DOCUMENT_FILE);
             let Some(location) = validate_record_location(&scan_root, &document) else {

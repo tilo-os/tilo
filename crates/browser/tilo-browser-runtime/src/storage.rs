@@ -114,7 +114,9 @@ impl From<&StorageKey> for DiskKey {
                 record,
             },
             StorageKey::Package { package } => Self::Package { package },
-            StorageKey::RoomIndex { package, workspace } => Self::RoomIndex { package, workspace },
+            StorageKey::WorkspaceIndex { package, workspace } => {
+                Self::RoomIndex { package, workspace }
+            }
             StorageKey::View {
                 device,
                 workspace,
@@ -142,7 +144,9 @@ impl DiskKey {
                 record,
             },
             Self::Package { package } => StorageKey::Package { package },
-            Self::RoomIndex { package, workspace } => StorageKey::RoomIndex { package, workspace },
+            Self::RoomIndex { package, workspace } => {
+                StorageKey::WorkspaceIndex { package, workspace }
+            }
             Self::PackageRecord { .. } => return None,
             Self::View {
                 device,

@@ -92,7 +92,7 @@ pub fn record_document(
 }
 
 /// The on-disk copy of the room document of `package` in the room `room`:
-/// what an app that keeps one record for the room ([`StorageKey::room_index`])
+/// what an app that keeps one record for the workspace ([`StorageKey::workspace_index`])
 /// holds there, as a shared writer in `documents`.
 ///
 /// # Errors
@@ -104,7 +104,10 @@ pub fn room_document(
     room: &str,
 ) -> Result<DocStore, StoreError> {
     app_state::validate_room_identity(package, room)?;
-    DocStore::shared(Rc::clone(documents), StorageKey::room_index(package, room))
+    DocStore::shared(
+        Rc::clone(documents),
+        StorageKey::workspace_index(package, room),
+    )
 }
 
 /// Open the document `store` holds, as a room this device governs reads it:

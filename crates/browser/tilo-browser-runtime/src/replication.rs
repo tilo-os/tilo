@@ -194,7 +194,7 @@ fn wire_record(id: &RecordId) -> &str {
 /// The page's storage key of wire record `record` of `app` in `room`.
 fn storage_key(app: &str, room: &str, record: &str) -> Result<StorageKey, &'static str> {
     if record.is_empty() {
-        return Ok(StorageKey::room_index(app, room));
+        return Ok(StorageKey::workspace_index(app, room));
     }
     let id = RecordId::parse(record).ok_or("not a record id")?;
     Ok(StorageKey::record(app, room, id.storage_key()))

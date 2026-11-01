@@ -1025,7 +1025,7 @@ fn records_persist_per_file_and_never_alias_across_workspaces() {
         let dir = tmp
             .path()
             .join("so.tilo.test-records")
-            .join(app_state::ROOMS_DIR)
+            .join(app_state::WORKSPACES_DIR)
             .join(workspace_id)
             .join(app_state::RECORDS_DIR);
         let entries: Vec<_> = std::fs::read_dir(&dir)
