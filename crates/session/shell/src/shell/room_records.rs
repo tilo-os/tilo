@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tilo_automerge::ApplyIncoming;
 
 use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
-use ui::record::{RecordCheckout, RecordId, RecordKind, room};
+use ui::record::{RecordCheckout, RecordId, RecordKind, index};
 
 use crate::shell::state::RoomId;
 
@@ -348,7 +348,7 @@ impl RoomRecords {
             return false;
         }
         let slot = self.index_mut(room);
-        let added = room::reference(&mut slot.doc, id, kind);
+        let added = index::reference(&mut slot.doc, id, kind);
         if added && let Some(saver) = slot.autosave.as_mut() {
             saver.request(&mut slot.doc);
         }
@@ -366,7 +366,7 @@ impl RoomRecords {
         let Some(slot) = self.held.get_mut(&room) else {
             return false;
         };
-        let dropped = room::unreference(&mut slot.doc, id);
+        let dropped = index::unreference(&mut slot.doc, id);
         if dropped && let Some(saver) = slot.autosave.as_mut() {
             saver.request(&mut slot.doc);
         }
@@ -378,14 +378,14 @@ impl RoomRecords {
     pub fn holds(&self, room: RoomId, id: &RecordId) -> bool {
         self.held
             .get(&room)
-            .is_some_and(|h| room::holds(&h.doc, id))
+            .is_some_and(|h| index::holds(&h.doc, id))
     }
 
     /// Every record `room`'s index references.
     pub fn records_in(&self, room: RoomId) -> Vec<RecordCheckout> {
         self.held
             .get(&room)
-            .map(|h| room::references(&h.doc))
+            .map(|h| index::references(&h.doc))
             .unwrap_or_default()
     }
 
@@ -450,7 +450,7 @@ impl RoomRecords {
         self.seeded.iter().for_each(&mut observe);
 
         for (room, held) in &self.held {
-            for checkout in room::references(&held.doc) {
+            for checkout in index::references(&held.doc) {
                 let entry = by_id
                     .entry((Some(*room), checkout.id.clone()))
                     .or_insert_with(|| KnownRecord {
