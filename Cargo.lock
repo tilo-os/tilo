@@ -15646,6 +15646,7 @@ dependencies = [
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-frame-metrics",
+ "tilo-identity-authority",
  "tilo-identity-ceremony",
  "tilo-identity-host",
  "tilo-installed-apps",
@@ -19418,6 +19419,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-identity-authority"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 3.0.0",
+ "tempfile",
+ "tilo-action-broker",
+ "tilo-clock",
+ "tilo-identity-host",
+ "tilo-test-env",
+ "tilo-user-identity",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-identity-ceremony"
 version = "0.1.0"
 dependencies = [
@@ -21563,6 +21579,7 @@ dependencies = [
  "tilo-audio-service",
  "tilo-auth",
  "tilo-automation",
+ "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-bluetooth-agent",
@@ -21591,6 +21608,7 @@ dependencies = [
  "tilo-durable-writer",
  "tilo-endpoint-reachability",
  "tilo-files",
+ "tilo-identity-authority",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-liveness",

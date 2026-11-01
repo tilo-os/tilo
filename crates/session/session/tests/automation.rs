@@ -43,12 +43,13 @@ const KEY_J: u32 = 36;
 const KEY_LEFT_CTRL: u32 = 29;
 const KEY_LEFT_ALT: u32 = 56;
 
-/// This computer: a device of the person's, certified for their own root key,
-/// kept in an identity root of the test's own. Returns the root, which must
-/// outlive the session, and the device's key and certificate, which sign what
-/// the person saves.
+/// This computer: the identity store's provisioned identity, and the device
+/// it enrolled here. Returns the root, which must outlive the session, and
+/// the device's key and certificate, which sign what the person saves — a
+/// shortcut runs under the certificate this device acts with, so an identity
+/// that only looks like one would leave nothing to run.
 fn this_computer(
-    env: &mut tilo_test_env::ScopedEnv,
+    home: &mut tilo_test_env::TestHome,
 ) -> (
     tempfile::TempDir,
     ed25519_dalek::SigningKey,
@@ -56,25 +57,20 @@ fn this_computer(
 ) {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
     let paths = tilo_user_identity::IdentityPaths::under(root.path());
-    std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
-        .expect("this computer's key directory");
-    let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-    let device = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device)
-        .expect("this computer's device key");
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "The laptop".to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
+    let identities = home.config().join("tilo/identity");
+    home.env()
+        .set("TILO_IDENTITY_ROOT", root.path())
+        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        &identities,
+        &paths,
+        tilo_identity_host::provisioning::IdentityStorage::Files,
+    )
+    .expect("this computer's identity");
+    let device =
+        tilo_user_identity::persist::load_device_key(&paths).expect("this computer's device key");
+    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this computer's certificate");
-    env.set("TILO_IDENTITY_ROOT", root.path());
     ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
         ui::local_identity::LocalIdentity {
             group_public_key: cert.user_public_key,
@@ -310,7 +306,7 @@ fn until_a_run(session: &mut Session, wanted: usize) -> Vec<String> {
 #[test]
 fn an_edit_that_matches_a_rule_fires_its_action_once() {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let (_identity, device, cert) = this_computer(home.env());
+    let (_identity, device, cert) = this_computer(&mut home);
     let person = person_of(&cert);
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");
@@ -351,7 +347,7 @@ fn an_edit_that_matches_a_rule_fires_its_action_once() {
 #[test]
 fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let (_identity, _device, cert) = this_computer(home.env());
+    let (_identity, _device, cert) = this_computer(&mut home);
     let person = person_of(&cert);
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");
@@ -437,7 +433,7 @@ fn keep_a_schedule_due_at(state: &Path, trigger: &TriggerSpec, due: i64) {
 #[test]
 fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let (_identity, device, cert) = this_computer(home.env());
+    let (_identity, device, cert) = this_computer(&mut home);
     let person = person_of(&cert);
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");
@@ -507,7 +503,7 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
 #[test]
 fn a_shortcut_armed_on_a_chord_runs_once_when_the_person_presses_it() {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let (_identity, device, cert) = this_computer(home.env());
+    let (_identity, device, cert) = this_computer(&mut home);
     let person = person_of(&cert);
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");
@@ -545,7 +541,7 @@ fn a_shortcut_armed_on_a_chord_runs_once_when_the_person_presses_it() {
 #[test]
 fn a_shortcut_armed_on_an_app_runs_once_when_it_starts() {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let (_identity, device, cert) = this_computer(home.env());
+    let (_identity, device, cert) = this_computer(&mut home);
     let person = person_of(&cert);
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");
@@ -583,7 +579,7 @@ fn a_shortcut_armed_on_an_app_runs_once_when_it_starts() {
 #[test]
 fn a_shortcut_armed_on_a_focus_mode_runs_once_when_it_switches_on() {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let (_identity, device, cert) = this_computer(home.env());
+    let (_identity, device, cert) = this_computer(&mut home);
     let person = person_of(&cert);
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");
@@ -619,7 +615,7 @@ fn a_shortcut_armed_on_a_focus_mode_runs_once_when_it_switches_on() {
 #[test]
 fn a_shortcut_armed_on_a_shared_folder_runs_once_when_a_file_in_it_changes() {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let (_identity, device, cert) = this_computer(home.env());
+    let (_identity, device, cert) = this_computer(&mut home);
     let person = person_of(&cert);
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");

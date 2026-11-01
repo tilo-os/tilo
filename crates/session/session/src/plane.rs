@@ -432,19 +432,24 @@ impl ShortcutLibraryServices for ShortcutLibrary {
 pub struct DeskAuthority {
     tree: Mutex<tilo_desktop_model::DesktopTree>,
     revocations: crate::engine::Revocations,
+    journal: Option<std::path::PathBuf>,
 }
 
 impl DeskAuthority {
     /// The authority over `tree`, as the loop sees it now, deciding what each
-    /// of its rooms revokes from `revocations`.
+    /// of its rooms revokes from `revocations`, and journalling what the
+    /// broker admits on the person's behalf under `journal` (`None` for a
+    /// session that keeps no state).
     #[must_use]
     pub fn new(
         tree: tilo_desktop_model::DesktopTree,
         revocations: crate::engine::Revocations,
+        journal: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             tree: Mutex::new(tree),
             revocations,
+            journal,
         }
     }
 
@@ -473,6 +478,16 @@ impl WorkspaceAuthority for DeskAuthority {
         let tree = self.tree.lock_recover();
         tilo_action_broker::services::workspace_in(&tree, room)?;
         Some((self.revocations)(room).unwrap_or_default())
+    }
+
+    /// Where the broker keeps what it admitted on this device's behalf: a
+    /// native action — a shortcut a trigger starts, a schedule firing — is
+    /// recorded before it runs and settled after, so a session that stops
+    /// mid-run neither loses it silently nor runs it twice. The broker
+    /// refuses such actions without it, so a session that keeps state keeps
+    /// this beside the rest of it.
+    fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
+        self.journal.clone()
     }
 }
 
@@ -543,6 +558,19 @@ fn host_services(
             .as_ref()
             .map(|content| content.puts() as std::sync::Arc<dyn ContentStoreServices>),
         record_content: record_content.map(|content| content.route()),
+        // Which devices this person's identity certifies now: what the broker
+        // admits a join with, and what it decides a retained action against.
+        native_certificates: Some(std::sync::Arc::new(
+            tilo_identity_authority::NativeCertificates::default(),
+        )),
+        // The certificate this device acts under when the person starts
+        // something here themselves — a shortcut's press, a schedule's fire
+        // time — rather than an app or a peer asking for it. The broker takes
+        // no action without one once it can check certificates: the seat is
+        // where the identity store says which device that is.
+        local_person: Some(std::sync::Arc::new(
+            tilo_identity_authority::NativeLocalPerson,
+        )),
         ..HostServices::default()
     }
 }
@@ -777,6 +805,7 @@ mod tests {
             desk: std::sync::Arc::new(DeskAuthority::new(
                 tilo_desktop_model::DesktopTree::default(),
                 crate::engine::revocations_of(None),
+                None,
             )),
             shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),

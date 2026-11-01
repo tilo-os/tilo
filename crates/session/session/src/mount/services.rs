@@ -139,8 +139,27 @@ pub(crate) fn start_action_plane(
     };
     let link = plane::Link::new(options.wake.handle());
     // What the broker decides against, from this pass on: the desk as it is
-    // before the person touches anything, and every desk it shows after.
-    let desk = std::sync::Arc::new(DeskAuthority::new(handle.read(Clone::clone), revocations));
+    // before the person touches anything, and every desk it shows after. It
+    // journals what it admits on the person's behalf beside this device's
+    // desk, so a shortcut a trigger starts survives the session stopping
+    // mid-run — once, as it would have run.
+    let journal = match options.state.as_deref() {
+        Some(state) => {
+            let mut path = crate::desk_doc::path(state).into_os_string();
+            path.push(".invocations");
+            let path = std::path::PathBuf::from(path);
+            if let Some(directory) = path.parent() {
+                std::fs::create_dir_all(directory)?;
+            }
+            Some(path)
+        }
+        None => None,
+    };
+    let desk = std::sync::Arc::new(DeskAuthority::new(
+        handle.read(Clone::clone),
+        revocations,
+        journal,
+    ));
     // The workspace's activity, as the apps this session runs read it: the
     // same model the desk serves its own windows.
     let activity_wire = activity_provider::wire(activity.requests());

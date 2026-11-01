@@ -113,9 +113,6 @@ pub struct Automation {
     /// The person at this device, as the session's own identity names them:
     /// a shortcut saved by anyone else is never armed.
     person: String,
-    /// The rooms with a shortcut armed now: the ones the desk is published
-    /// for, because a firing there has to find its shortcut.
-    armed_rooms: BTreeSet<String>,
     /// The shortcuts armed now, as the last look at the desk found them: the
     /// chords the keys answer are theirs.
     armed_now: Vec<Armed>,
@@ -181,7 +178,6 @@ impl Automation {
             revocations,
             handle,
             person,
-            armed_rooms: BTreeSet::new(),
             armed_now: Vec::new(),
             published: None,
             armed_at: None,
@@ -203,8 +199,9 @@ impl Automation {
     }
 
     /// The broker's copy of the desk has to follow the desk the loop shows:
-    /// a firing starts on the broker's thread, which cannot read this one.
-    /// Nothing is published while no shortcut is armed.
+    /// the workspace an app's connection joins is one the broker finds on
+    /// it, and a firing starts on the broker's thread, which cannot read
+    /// this one.
     ///
     /// The desk belongs to the loop ([`DesktopHandle`] hands it out here
     /// only) and `desk` reads it on the broker's thread, so the loop hands
@@ -213,9 +210,6 @@ impl Automation {
         let Some(desk) = desk else {
             return;
         };
-        if self.armed_rooms.is_empty() {
-            return;
-        }
         let revision = self.handle.revision();
         if self.published == Some(revision) {
             return;
@@ -301,7 +295,6 @@ impl Automation {
         self.devices.set(devices_of(self.fabric.as_ref()));
         let now_ns = unix_ns(self.triggers.clock().now());
         let armed = self.armed(now_ns);
-        self.armed_rooms = armed.iter().map(|armed| armed.room.clone()).collect();
         self.armed_now.clone_from(&armed);
         self.follow_records(&armed);
         self.armed_at = Some(self.handle.revision());

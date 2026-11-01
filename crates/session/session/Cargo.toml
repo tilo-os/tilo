@@ -134,6 +134,9 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+# The device's certificate authority the broker admits a join with: the
+# identity store's selected identity and the devices it certifies now.
+tilo-identity-authority = { path = "../identity-authority" }
 # The identity record the launcher bound and the person's own: the directories
 # whose changes a worker follows.
 runtime-identity = { path = "../../runtime/runtime-identity" }
@@ -302,6 +305,9 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # certified room two of one person's devices ask each other in.
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
+# A change another device's app wrote, read back into a record: a receiver's
+# way of taking changes, which the session's own code uses too.
+tilo-automerge = { path = "../../doc/tilo-automerge" }
 
 [lints]
 workspace = true
