@@ -40,9 +40,8 @@ fn the_description_reads_as_the_session_package() {
             .find(|action| action.name == name)
             .unwrap_or_else(|| panic!("the package has no `{name}`"))
     };
-    let show = action("show_surface");
-    assert_eq!(show.params.len(), 1, "the desk's action is a loose one");
-    assert_eq!(show.params[0].name, "surface");
+    let overview = action("toggle_overview");
+    assert!(overview.params.is_empty(), "the chrome's action is a loose one");
     let focus = action("focus");
     assert_eq!(
         focus.params[0].ty, "Window",
@@ -52,15 +51,29 @@ fn the_description_reads_as_the_session_package() {
     assert_eq!(close.params[0].ty, "Int");
     let text = std::fs::read_to_string(dir.join("surface.toml")).expect("the description");
     let addresses = tilolang_tilo::catalogue::addresses(&text).expect("each action one address");
-    assert_eq!(addresses["show-surface"], "session:desk");
     assert_eq!(addresses["close-place"], "shell:arrangement");
     assert_eq!(addresses["toggle-tilo-menu"], "desktop:chrome");
-    // Each quick setting is changed by the setting's own action, where the setting is.
-    assert_eq!(addresses["toggle-wifi"], "network");
-    assert_eq!(addresses["toggle-bluetooth"], "bluetooth");
-    assert_eq!(addresses["toggle-muted"], "sound");
     assert!(
         !addresses.contains_key("focus"),
         "a window's focus goes to the window"
     );
+}
+
+/// Each action is described once, by its owner: the desk and the device's resources are
+/// `so.tilo.device`'s, so the session's package describes none of them.
+#[test]
+fn the_session_package_describes_none_of_the_devices_resources() {
+    let text = std::fs::read_to_string(repo().join(session_package::PATH)).expect("the description");
+    let addresses = tilolang_tilo::catalogue::addresses(&text).expect("each action one address");
+    for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
+        let described: Vec<&String> = addresses
+            .iter()
+            .filter(|(_, address)| address.as_str() == published)
+            .map(|(action, _)| action)
+            .collect();
+        assert!(
+            described.is_empty(),
+            "`{published}` is {ty}'s, yet the session's package describes {described:?} on it"
+        );
+    }
 }

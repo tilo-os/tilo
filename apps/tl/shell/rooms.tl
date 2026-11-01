@@ -43,6 +43,6 @@ view room_card(r: Room) {
                 }
             }
         }
-        on activate: session.switch_workspace(workspace: r.key)
+        on activate: device.switch_workspace(device.desk, workspace: r.key)
     }
 }

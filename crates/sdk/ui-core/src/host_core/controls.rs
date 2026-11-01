@@ -192,11 +192,35 @@ pub(crate) trait ControlHost: HostCore {
     /// Deliver the control intents the tree queued: `registered` ones the
     /// control domain drained, then those the components and the outer
     /// document hold. How many went ahead.
+    ///
+    /// Answering a control's published action runs what the view hung on
+    /// it (a check's `on_view`), which may queue its own resource's action
+    /// in turn. That is answered in the same pass, round after round until
+    /// nothing more is queued, so what the press meant has landed before
+    /// the next event reads the tree.
     fn dispatch_drained_controls(
         &mut self,
         registered: crate::control_custody::RegisteredControls,
     ) -> usize {
         let mut dispatched = 0usize;
+        let mut registered = registered;
+        loop {
+            let (went, delivered) = self.dispatch_control_round(std::mem::take(&mut registered));
+            dispatched = dispatched.saturating_add(went);
+            if delivered == 0 {
+                return dispatched;
+            }
+        }
+    }
+
+    /// One round of [`Self::dispatch_drained_controls`]: how many went ahead,
+    /// and how many were delivered at all.
+    fn dispatch_control_round(
+        &mut self,
+        registered: crate::control_custody::RegisteredControls,
+    ) -> (usize, usize) {
+        let mut dispatched = 0usize;
+        let mut delivered = 0usize;
         let crate::control_custody::RegisteredControls {
             mut outer,
             components,
@@ -208,6 +232,9 @@ pub(crate) trait ControlHost: HostCore {
                 "control traversal incomplete; delivering already drained intents"
             );
         }
+        delivered = delivered
+            .saturating_add(components.len())
+            .saturating_add(bound.pending.len());
         for (target, intent, on_behalf_of, origin) in components
             .into_iter()
             .map(|(target, intent)| (target, intent, None, Origin::Person))
@@ -243,11 +270,12 @@ pub(crate) trait ControlHost: HostCore {
             .map(|intent| (intent, None, Origin::Person))
             .or_else(|| crate::bound_dispatch::take_attributed_with_origin(self.host_root_mut()))
         {
+            delivered = delivered.saturating_add(1);
             if self.dispatch_outer_control_invocation(intent, on_behalf_of, origin) {
                 dispatched = dispatched.saturating_add(1);
             }
         }
-        dispatched
+        (dispatched, delivered)
     }
 
     /// Deliver one control intent the outer document produced. Whether it

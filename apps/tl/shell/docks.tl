@@ -35,7 +35,7 @@ view dock_run(s: Shell, d: Desk) {
                 if item.pinned or s.dock_running {
                     ui.DragItem(item, title: item.title) {
                         on activate: if item.key == "launcher" {
-                            session.show_surface(surface: "launcher")
+                            device.show_surface(device.desk, surface: "launcher")
                         } else {
                             session.open(resource("app.{item.key}", of: session.App))
                         }
@@ -56,7 +56,7 @@ view dock_run(s: Shell, d: Desk) {
                     if item.pinned or s.dock_running {
                         ui.DragItem(item, title: item.title) {
                             on activate: if item.key == "launcher" {
-                                session.show_surface(surface: "launcher")
+                                device.show_surface(device.desk, surface: "launcher")
                             } else {
                                 session.open(resource("app.{item.key}", of: session.App))
                             }
@@ -74,7 +74,7 @@ view dock_run(s: Shell, d: Desk) {
                     if item.pinned or s.dock_running {
                         ui.DragItem(item, title: item.title) {
                             on activate: if item.key == "launcher" {
-                                session.show_surface(surface: "launcher")
+                                device.show_surface(device.desk, surface: "launcher")
                             } else {
                                 session.open(resource("app.{item.key}", of: session.App))
                             }
@@ -95,7 +95,7 @@ view dock_tile(s: Shell, d: Desk, item: DockItem) {
     let name = if item.badge == 0 { item.title } else { "{item.title}, {item.badge} new" }
     ui.Button(name, icon: item.icon, icon_only: true, role: .plain, count: item.badge, dot: item.attention, alert: item.attention) {
         on press: if item.key == "launcher" {
-            session.show_surface(surface: "launcher")
+            device.show_surface(device.desk, surface: "launcher")
         } else {
             session.open(resource("app.{item.key}", of: session.App))
         }

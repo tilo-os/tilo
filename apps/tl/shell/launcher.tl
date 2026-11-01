@@ -65,16 +65,16 @@ view window_row(w: Win) {
 view desk_doors(d: Desk) {
     ui.Section("The desk") {
         ui.ListRow("Overview", secondary: .some("Every strip and window, to search and move"), icon: .layout_grid) {
-            on activate: session.show_surface(surface: "overview")
+            on activate: device.show_surface(device.desk, surface: "overview")
         }
         ui.ListRow("Workspaces", secondary: .some("Who is in each, and what it holds"), icon: .layers) {
-            on activate: session.show_surface(surface: "workspaces")
+            on activate: device.show_surface(device.desk, surface: "workspaces")
         }
         ui.ListRow("Notifications", secondary: .some("What apps and agents told you"), icon: .bell) {
-            on activate: session.show_surface(surface: "centre")
+            on activate: device.show_surface(device.desk, surface: "centre")
         }
         ui.ListRow("Ask an agent", secondary: .some("Run a task over what you point at"), icon: .bot) {
-            on activate: session.show_surface(surface: "composer")
+            on activate: device.show_surface(device.desk, surface: "composer")
         }
     }
 }

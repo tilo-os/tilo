@@ -1,8 +1,9 @@
 //! What the session publishes, read as a package: `apps/tl/session/surface.toml`.
 //!
 //! A shell, the agent and the REPL call the session's actions as an app's: `use
-//! so.tilo.session as session`, then `session.show_surface(surface: "launcher")` or
-//! `session.focus(window: w)`. The description is the native apps' (`surface.toml`, read by
+//! so.tilo.session as session`, then `session.toggle_overview()` or
+//! `session.focus(window: w)`. The device's resources and the desk are `so.tilo.device`'s
+//! ([`crate::shell::device_surfaces`]), never described here too. The description is the native apps' (`surface.toml`, read by
 //! `tilolang_tilo::catalogue`), generated here from the very resources the session's door
 //! publishes, and a test holds the committed file to it, so it never drifts from what the door
 //! takes.
@@ -25,8 +26,8 @@ pub const PATH: &str = "apps/tl/session/surface.toml";
 
 /// The actions of a resource the package leaves out, each because another resource's action
 /// of the same name is the one a call of that name means: `desktop:chrome`'s
-/// `switch-workspace` steps by a count, for the keys; the desk's goes to the workspace a
-/// person picked, by its key.
+/// `switch-workspace` steps by a count, for the keys; the desk's (`so.tilo.device`'s) goes to
+/// the workspace a person picked, by its key.
 const LEFT_OUT: &[(&str, &str)] = &[(
     tilo_desktop::desktop_actions::CHROME_RESOURCE,
     "switch-workspace",
@@ -47,10 +48,11 @@ struct File {
     resources: Vec<Entry>,
 }
 
-/// The resources the session publishes under one address each.
+/// The resources the session publishes under one address each, but the device's: the desk,
+/// the sound, the network and Bluetooth are `so.tilo.device`'s
+/// ([`crate::shell::device_surfaces`]), so each action is described once, by its owner.
 fn singletons() -> Vec<ResourceSpec> {
     vec![
-        crate::desk_resource::desk_spec(String::new()),
         tilo_desktop::desktop_actions::chrome_resource(),
         tilo_desktop::desktop_actions::desk_resource(&[], &[], None),
         crate::arrangement::resources().swap_remove(0),
@@ -59,13 +61,6 @@ fn singletons() -> Vec<ResourceSpec> {
             tilo_agent_runs::RUNS_KIND,
             String::new(),
         )),
-        tilo_connectivity_service::network_resource(
-            &tilo_connectivity_service::model::Network::default(),
-        ),
-        tilo_connectivity_service::bluetooth_resource(
-            &tilo_connectivity_service::model::Bluetooth::default(),
-        ),
-        tilo_audio_service::sound::resource(&tilo_audio_service::sound::Sound::default()),
     ]
 }
 

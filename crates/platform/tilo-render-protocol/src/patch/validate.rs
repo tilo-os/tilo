@@ -394,7 +394,16 @@ impl<'a> Validator<'a> {
             let declared = description
                 .prop(name)
                 .map(|prop| &prop.ty)
-                .or_else(|| description.state(name).map(|state| &state.ty));
+                .or_else(|| description.state(name).map(|state| &state.ty))
+                // A value the view gives a control rather than binds to it (a device's
+                // volume): the control shows it, and its `change` event says what the person
+                // did with it.
+                .or_else(|| {
+                    description
+                        .event("change")
+                        .and(description.binding(name))
+                        .map(|binding| &binding.ty)
+                });
             match declared {
                 Some(ty) => {
                     if !fits(value, ty) {
@@ -842,6 +851,17 @@ mod tests {
                 .to_ui(&open(Node::empty("script", "s")))
                 .is_err()
         );
+    }
+
+    /// A slider over a value the view does not hold (a device's volume) is given that value,
+    /// and says through `change` what the person did with it.
+    #[test]
+    fn a_value_given_to_a_control_with_a_change_event_passes() {
+        let mut slider = component("Slider", "s", &[("value", Value::Float(0.4))]);
+        slider.events.insert("change".to_owned(), Event::default());
+        assert_eq!(validator().to_ui(&open(slider)), Ok(()));
+        let wrong = component("Slider", "s", &[("value", Value::text("loud"))]);
+        assert!(validator().to_ui(&open(wrong)).is_err());
     }
 
     #[test]

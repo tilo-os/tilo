@@ -286,7 +286,7 @@ view traditional_bar(d: Desk) {
             for t in d.tasks {
                 if t.state == "running" {
                     ui.Button(t.title, icon: .bot, role: .bar) {
-                        on press: session.show_surface(surface: "composer")
+                        on press: device.show_surface(device.desk, surface: "composer")
                     }
                 }
             }

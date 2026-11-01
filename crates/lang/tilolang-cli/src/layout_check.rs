@@ -322,8 +322,9 @@ pub fn check(options: &Options) -> Result<Report, String> {
 /// The identity of a finding while it is gathered: kind, app, view, node, widget.
 type Identity = (Kind, String, String, Option<String>, String);
 
-/// The app in `dir` compiled after the packages it uses, found in `search`, and the native
-/// apps' packages among them it calls (each a committed description, `surface.toml`).
+/// The app in `dir` compiled after the packages it uses, found in `search`; and the packages
+/// it uses as metadata rather than as a package directory: the native apps' (each a committed
+/// description, `surface.toml`) and the platform's (the device's, Settings').
 fn build(
     dir: &Path,
     search: &[PathBuf],
@@ -334,13 +335,15 @@ fn build(
     ),
     String,
 > {
-    let natives = tilolang_tilo::catalogue::native_apps(&tilolang::source::search_of(dir, search))?;
-    let provided: Vec<String> = natives.iter().map(|meta| meta.app.clone()).collect();
+    let mut provided_metas =
+        tilolang_tilo::catalogue::native_apps(&tilolang::source::search_of(dir, search))?;
+    provided_metas.extend(tilolang_tilo::platform_apps::platform_packages()?);
+    let provided: Vec<String> = provided_metas.iter().map(|meta| meta.app.clone()).collect();
     let dirs = tilolang::source::dependency_order_with(dir, search, &provided)?;
     let built =
-        tilolang::source::compile_dirs(&dirs, &natives, &mut tilolang::OsEntropy::default())
+        tilolang::source::compile_dirs(&dirs, &provided_metas, &mut tilolang::OsEntropy::default())
             .map_err(|e| e.to_string())?;
-    Ok((built, natives))
+    Ok((built, provided_metas))
 }
 
 /// Check one app: every scenario at every layout, then each view no scenario showed, opened on
@@ -356,12 +359,12 @@ fn check_app(
 ) -> Result<(Vec<Finding>, usize, Vec<String>), String> {
     let mut search = search.to_vec();
     search.extend(dir.parent().map(Path::to_path_buf));
-    let (built, natives) = build(dir, &search)?;
+    let (built, platform) = build(dir, &search)?;
     let sources = source::SourceMap::new(&built);
     let meta = built.last().ok_or("no package")?.compiled.meta.clone();
     let packages = Rc::new(stage::Packages(
         Rc::new(built.into_iter().map(|b| b.compiled).collect()),
-        natives,
+        platform,
     ));
     let mut check = AppCheck {
         dir,
@@ -901,11 +904,11 @@ mod traditional_desktop {
     fn packages() -> (String, Rc<stage::Packages>) {
         let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
         let search = vec![shell.parent().expect("apps/tl").to_path_buf()];
-        let (built, natives) = super::build(&shell, &search).expect("the shell compiles");
+        let (built, platform) = super::build(&shell, &search).expect("the shell compiles");
         let app = built.last().expect("the shell").compiled.meta.app.clone();
         let packages = Rc::new(stage::Packages(
             Rc::new(built.into_iter().map(|b| b.compiled).collect()),
-            natives,
+            platform,
         ));
         (app, packages)
     }

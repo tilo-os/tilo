@@ -1,8 +1,10 @@
 /// What the shell's surfaces ask of the session are the session's own actions, published on its
-/// door and read as the package `so.tilo.session` (`apps/tl/session/surface.toml`): a view
-/// presses one directly (`session.show_surface(surface: "launcher")`), as the agent and the REPL
-/// call it, attributed, permission checked and undoable as any action is. The shell declares no
-/// action of its own around one.
+/// door and read as packages: the desktop's windows, workspaces, arrangement and agent runs as
+/// `so.tilo.session` (`apps/tl/session/surface.toml`), the device's resources and the desk as
+/// `so.tilo.device`. A view presses one directly (`session.focus(window(w))`,
+/// `device.show_surface(device.desk, surface: "launcher")`), as the agent and the REPL call it,
+/// attributed, permission checked and undoable as any action is. The shell declares no action
+/// of its own around one.
 ///
 /// The window `w` as the session publishes it: its tab's resource, whose own actions focus and
 /// close it.

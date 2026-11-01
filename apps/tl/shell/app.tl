@@ -335,6 +335,9 @@ view bar_part(d: Desk, part: BarPart) {
                 ui.Button(item.title, role: .bar)
             }
             bell(d)
+            ui.Button("Quick settings", icon: .settings, icon_only: true, role: .bar, toggled: .some(d.here == "quick-settings")) {
+                on press: device.show_surface(device.desk, "quick-settings")
+            }
         }
     }
 }
@@ -345,7 +348,7 @@ view workspace_menu(d: Desk) {
     ui.MenuButton(d.workspace, role: .bar) {
         for w in d.workspaces {
             ui.MenuItem(w.name, checked: .some(w.current)) {
-                on choose: session.switch_workspace(workspace: w.key)
+                on choose: device.switch_workspace(device.desk, workspace: w.key)
             }
         }
         ui.MenuItem("New workspace", icon: .plus) {

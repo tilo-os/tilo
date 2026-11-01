@@ -47,7 +47,7 @@ view composer(d: Desk) {
                     on press: session.ask(id: .none, title: words, body: .none, agent: agent_key(agents), quick: .none)
                 }
                 ui.Button("What I am on", icon: .paperclip, role: .plain, size: .small) {
-                    on press: session.show_surface(surface: "overview")
+                    on press: device.show_surface(device.desk, surface: "overview")
                 }
                 spacer
                 ui.InputHint(["Enter"])

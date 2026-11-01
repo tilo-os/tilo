@@ -45,7 +45,7 @@ view rooms_here(d: Desk) {
         row(gap: .related, align: .center, wrap: true) {
             for r in d.rooms.sort_by(r -> r.name) {
                 ui.Chip(r.name, icon: if r.current { .layers } else { .folder }, selected: .some(r.current)) {
-                    on press: session.switch_workspace(workspace: r.key)
+                    on press: device.switch_workspace(device.desk, workspace: r.key)
                 }
             }
             if not d.people.is_empty() {

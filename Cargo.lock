@@ -18327,6 +18327,7 @@ dependencies = [
  "os-actions",
  "serde",
  "settings-store",
+ "tilo-resource",
  "tilo-ui",
  "tilo-vello",
  "workspace-hack",
