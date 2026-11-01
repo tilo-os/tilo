@@ -1,7 +1,7 @@
 //! Waves on the room's live presence, as this session sends them: over a
 //! workspace host's live plane, or the room's own topic where none reaches.
 
-use super::{NeighbourMsg, NetCmd, RoomId, ShellNetwork, room_topic_id};
+use super::{NeighbourMsg, NetCmd, RoomId, ShellNetwork, workspace_topic_id};
 
 impl ShellNetwork {
     /// Wave at `target` (a roster id) in `cluster_id`'s room on its live
@@ -27,7 +27,7 @@ impl ShellNetwork {
             .iter()
             .map(|d| *d.as_bytes())
             .collect();
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let hosted = self.has_live_plane(cluster_id);
         let Some(device) = self
             .live_waves
@@ -95,7 +95,7 @@ impl ShellNetwork {
                 .device_of(target, &others)
                 .map(hex::encode)
         });
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let desktop = tilo_relay_protocol::live::LiveRecord {
             app: tilo_desktop_model::ownership::DESKTOP_APP.into(),
             record: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),

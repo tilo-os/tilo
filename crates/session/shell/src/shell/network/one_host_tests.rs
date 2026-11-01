@@ -1702,7 +1702,7 @@ fn until_or_say<T>(
             Instant::now() < bound,
             "timed out waiting for {what}{}\n  what became of requests to rooms' hosts:{}",
             standing(),
-            tilo_network_actor::room_governance::trace::said()
+            tilo_network_actor::workspace_governance::trace::said()
         );
         let next = devices
             .iter()

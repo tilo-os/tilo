@@ -1,6 +1,6 @@
 use super::{
     InboundChannelGovernance, NeighbourMsg, NetCmd, NetEvent, RoomId, ShellNetwork, SystemTime,
-    room_topic_id,
+    workspace_topic_id,
 };
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
 use tilo_network_actor::native_ingress;
@@ -81,7 +81,7 @@ impl ShellNetwork {
         owner: NativeWorkspaceOwner,
         room: RoomId,
     ) -> Result<(), String> {
-        if !self.join_topic(room_topic_id(room)) {
+        if !self.join_topic(workspace_topic_id(room)) {
             return Err("native topic queue unavailable".into());
         }
         let connect = native_ingress::Connect::new(owner, room)?;
@@ -131,7 +131,7 @@ impl ShellNetwork {
         tree.desktop
             .workspaces
             .iter()
-            .any(|slot| room_topic_id(slot.room()) == ws)
+            .any(|slot| workspace_topic_id(slot.room()) == ws)
     }
     /// Take what the room's governor never admits into its replica: channel
     /// governance, and in a room whose records are sealed channels, a
@@ -391,7 +391,10 @@ impl ShellNetwork {
     pub(crate) fn await_sealed_replay(&self, room: RoomId) -> tokio::sync::oneshot::Receiver<()> {
         let (told, landed) = tokio::sync::oneshot::channel();
         if let Ok(mut waiting) = self.sealed_replays.lock() {
-            waiting.entry(room_topic_id(room)).or_default().push(told);
+            waiting
+                .entry(workspace_topic_id(room))
+                .or_default()
+                .push(told);
         }
         self.request_native_replay(room);
         landed
@@ -464,7 +467,7 @@ impl ShellNetwork {
     /// channel's latest membership change.
     pub(crate) fn request_native_replay(&self, room: RoomId) {
         let _ = self.cmd_tx.try_send(NetCmd::NativeReplay {
-            ws: room_topic_id(room),
+            ws: workspace_topic_id(room),
         });
     }
 
@@ -484,7 +487,7 @@ impl ShellNetwork {
         // An unchanged replay must not enqueue another expensive recovery pass.
         if changed && let Some(room) = room {
             let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
-                ws: room_topic_id(room),
+                ws: workspace_topic_id(room),
             });
         }
     }

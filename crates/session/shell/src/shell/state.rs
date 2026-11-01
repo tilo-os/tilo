@@ -282,8 +282,9 @@ mod identity_fs_tests {
         let bob_id = hex::encode(bob.as_bytes());
         let mut room_a = Workspace::new(WorkspaceId(1), "A");
         let mut room_b = Workspace::new(WorkspaceId(2), "B");
-        let primary_relay_scope = tilo_network_actor::room_topic_id(room_a.room()).to_string();
-        let secondary_relay_scope = tilo_network_actor::room_topic_id(room_b.room()).to_string();
+        let primary_relay_scope = tilo_network_actor::workspace_topic_id(room_a.room()).to_string();
+        let secondary_relay_scope =
+            tilo_network_actor::workspace_topic_id(room_b.room()).to_string();
         let reader = |id: &str, person: &str, room: &str| {
             Grant::new(
                 id,
@@ -2190,7 +2191,7 @@ impl WorkspaceTree {
             // Signed room membership is a separate projection from Files
             // access: who the room's policy lets read it, per relay shard.
             room_members.insert(
-                tilo_network_actor::room_topic_id(workspace.room).to_string(),
+                tilo_network_actor::workspace_topic_id(workspace.room).to_string(),
                 workspace
                     .members
                     .iter()

@@ -136,7 +136,7 @@ use tilo_network_actor::{PersonalFabricPayload, WorkspaceControlRoute};
 use crate::shell::collab_broker::CrdtRoute;
 pub use tilo_network_actor::PeerDepartureCause;
 
-use tilo_network_actor::{DEFAULT_WS_TOPIC, room_topic_id};
+use tilo_network_actor::{DEFAULT_WS_TOPIC, workspace_topic_id};
 
 /// The wake a channel queue rouses its drain with: a poke of `park`.
 fn poke(park: &Arc<crate::idle_wake::DrainPark>) -> tilo_network_actor::Wake {
@@ -2252,7 +2252,7 @@ impl ShellNetwork {
     pub fn room_devices(&self, room: crate::shell::state::RoomId) -> Vec<iroh::EndpointId> {
         // An enrolled room's devices are the members its governance admits;
         // its document names none.
-        if self.native_topic_required(room_topic_id(room))
+        if self.native_topic_required(workspace_topic_id(room))
             && let Some(devices) = self.governed_member_devices(room)
         {
             return devices;
@@ -2271,7 +2271,7 @@ impl ShellNetwork {
     /// own included when the room is hosted on someone's device; else the
     /// devices its document names.
     pub fn room_people_devices(&self, room: crate::shell::state::RoomId) -> Vec<iroh::EndpointId> {
-        if self.native_topic_required(room_topic_id(room))
+        if self.native_topic_required(workspace_topic_id(room))
             && let Some(devices) = self.governed_devices(room)
         {
             return devices;
@@ -2432,7 +2432,7 @@ impl ShellNetwork {
             .desktop
             .active_workspace()
             .map_or(DEFAULT_WS_TOPIC, |workspace| {
-                room_topic_id(workspace.room())
+                workspace_topic_id(workspace.room())
             })
     }
 
@@ -2462,7 +2462,7 @@ impl ShellNetwork {
         };
         room.and_then(RoomId::parse)
             .filter(|room| !room.is_nil())
-            .map(room_topic_id)
+            .map(workspace_topic_id)
     }
 
     fn topic_for_message(&self, msg: &NeighbourMsg) -> u64 {
@@ -2875,11 +2875,11 @@ impl ShellNetwork {
             return;
         }
         if let Some(room) = RoomId::parse(&cluster_id)
-            && self.native_topic_required(room_topic_id(room))
+            && self.native_topic_required(workspace_topic_id(room))
             && !(envelope.encryption.is_some() && self.native_room_seals_records(room))
         {
             let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
-                ws: room_topic_id(room),
+                ws: workspace_topic_id(room),
             });
             return;
         }
@@ -2899,7 +2899,7 @@ impl ShellNetwork {
     /// commit acknowledgement; heartbeat/reconnect retries a full queue.
     pub(crate) fn schedule_native_owner_publication(&self, room: RoomId) {
         let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
-            ws: room_topic_id(room),
+            ws: workspace_topic_id(room),
         });
     }
 
@@ -3265,7 +3265,7 @@ impl ShellNetwork {
         }) else {
             return;
         };
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let focus = tilo_relay_protocol::live::LiveRecord {
             app: app_id.to_owned(),
             record: crate::network::wire_record::wire_record_id(cluster_id, app_id, record_id),
@@ -3354,7 +3354,7 @@ impl ShellNetwork {
     fn has_live_plane(&self, cluster_id: &str) -> bool {
         RoomId::parse(cluster_id)
             .filter(|room| !room.is_nil())
-            .is_some_and(|room| !self.workspace_hosts(room_topic_id(room)).is_empty())
+            .is_some_and(|room| !self.workspace_hosts(workspace_topic_id(room)).is_empty())
     }
 
     /// Say `payload` of this person, as the desktop, to the people in
@@ -3414,7 +3414,7 @@ impl ShellNetwork {
         }) else {
             return false;
         };
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let focus = tilo_relay_protocol::live::LiveRecord {
             app: app_id.to_owned(),
             record: crate::network::wire_record::wire_record_id(cluster_id, app_id, record_id),
@@ -3500,7 +3500,7 @@ impl ShellNetwork {
                 .read()
                 .rooms()
                 .into_iter()
-                .find(|room| room_topic_id(*room) == ws)
+                .find(|room| workspace_topic_id(*room) == ws)
         }
     }
 
@@ -3648,7 +3648,7 @@ impl ShellNetwork {
         }
         if let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil()) {
             let _ = self.cmd_tx.try_send(NetCmd::Replay {
-                ws: room_topic_id(room),
+                ws: workspace_topic_id(room),
             });
         }
     }
@@ -3816,7 +3816,7 @@ impl ShellNetwork {
         let endpoint = iroh::EndpointId::from_bytes(&device)
             .map_err(|_| "device is not an enrolled device id".to_string())?;
         let shared = self.online_enrolled_room(endpoint, named)?;
-        let topic = room_topic_id(shared);
+        let topic = workspace_topic_id(shared);
         if !self.join_topic(topic) {
             return Err("the shared workspace is not joined".into());
         }
@@ -3828,7 +3828,7 @@ impl ShellNetwork {
             .read()
             .rooms()
             .into_iter()
-            .find(|room| room_topic_id(*room) == topic)
+            .find(|room| workspace_topic_id(*room) == topic)
     }
 
     fn enrolled_room_candidates(&self) -> Vec<RoomId> {
@@ -3862,7 +3862,7 @@ impl ShellNetwork {
             .live_room_peers
             .lock()
             .map_err(|_| "workspace state is unavailable".to_string())?;
-        let online = |room: RoomId| live.contains(&(room_topic_id(room), endpoint));
+        let online = |room: RoomId| live.contains(&(workspace_topic_id(room), endpoint));
         let room = match named {
             Some(room) if candidates.contains(&room) => room,
             Some(_) => return Err("the enrolled device does not share that workspace".into()),
@@ -4056,7 +4056,7 @@ impl ShellNetwork {
             max,
             requester: self.local_peer_id_hash(),
         };
-        let ws = room_topic_id(room);
+        let ws = workspace_topic_id(room);
         let _ = self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok();
     }
 
@@ -4092,7 +4092,7 @@ impl ShellNetwork {
     pub fn scrollback_answer_allowed(&self, cluster_id: &str, workspace_topic: u64) -> bool {
         RoomId::parse(cluster_id)
             .filter(|room| !room.is_nil() && self.person_root_of_room(*room).is_none())
-            .is_some_and(|room| room_topic_id(room) == workspace_topic)
+            .is_some_and(|room| workspace_topic_id(room) == workspace_topic)
     }
 
     /// Queue a received `ScrollbackRequest` for the broker's drainer.
@@ -4143,7 +4143,7 @@ impl ShellNetwork {
             topics.extend(
                 topic_rooms(&self.tree.read())
                     .into_iter()
-                    .map(room_topic_id),
+                    .map(workspace_topic_id),
             );
         }
         topics.extend(
@@ -4307,7 +4307,7 @@ impl ShellNetwork {
             return false;
         };
         let mut queued = false;
-        for topic in rooms.into_iter().map(room_topic_id) {
+        for topic in rooms.into_iter().map(workspace_topic_id) {
             let new = self
                 .joined_topics
                 .lock()
@@ -4665,7 +4665,11 @@ impl ShellNetwork {
     fn person_in_room(&self, room: RoomId) -> crate::shell::state::UserId {
         self.host_identity
             .as_ref()
-            .and_then(|identity| identity.current_native_material(room_topic_id(room)).ok())
+            .and_then(|identity| {
+                identity
+                    .current_native_material(workspace_topic_id(room))
+                    .ok()
+            })
             .and_then(|(certificate, _)| {
                 crate::shell::state::person_id_of(certificate.user_public_key)
             })
@@ -6276,7 +6280,7 @@ impl ShellNetwork {
                         .workspaces
                         .iter()
                         .map(crate::shell::state::Workspace::room)
-                        .find(|room| room_topic_id(*room) == ws)
+                        .find(|room| workspace_topic_id(*room) == ws)
                 };
                 if let Some(room) = room {
                     self.room_not_admitted(room);
@@ -6714,7 +6718,7 @@ impl ShellNetwork {
                 .read()
                 .rooms()
                 .into_iter()
-                .find(|room| room_topic_id(*room) == ws)
+                .find(|room| workspace_topic_id(*room) == ws)
         }
         .map_or_else(
             || CrdtRoute::cluster(""),
@@ -7103,7 +7107,7 @@ impl ShellNetwork {
         let mut matching = tree
             .rooms()
             .into_iter()
-            .filter(|room| room_topic_id(*room) == workspace_topic);
+            .filter(|room| workspace_topic_id(*room) == workspace_topic);
         let Some(room) = matching.next() else {
             drop(matching);
             drop(tree);
@@ -7329,12 +7333,12 @@ pub(crate) fn host_identity_for_key(
                 // person room for its devices, presents the same cert.
                 let continuity = personal_continuity_topic_id(&cert.user_public_key);
                 workspace_device_certs.insert(continuity, cert.clone());
-                workspace_device_certs.insert(room_topic_id(room_id), cert);
+                workspace_device_certs.insert(workspace_topic_id(room_id), cert);
                 if let Ok(fleet) = crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| store.load(identity_id))
                 {
                     workspace_revocations.insert(continuity, fleet.revocations.clone());
-                    workspace_revocations.insert(room_topic_id(room_id), fleet.revocations);
+                    workspace_revocations.insert(workspace_topic_id(room_id), fleet.revocations);
                 }
             }
         }
@@ -7398,7 +7402,7 @@ pub(crate) fn shell_network_for_test(
     let keypair = iroh::SecretKey::generate();
     let local_peer_id = keypair.public();
     let mut joined_topics = std::collections::HashSet::from([DEFAULT_WS_TOPIC]);
-    joined_topics.extend(tree.read().rooms().into_iter().map(room_topic_id));
+    joined_topics.extend(tree.read().rooms().into_iter().map(workspace_topic_id));
     // As the desktop tells it on start for every workspace it is in: what
     // the person chose there, here "Where I am". A room added later takes
     // its default once its host answers whether it is public.
@@ -8199,7 +8203,7 @@ mod tests {
         tree.desktop.workspaces.push(workspace);
         let (mut net, _commands) = shell_network_for_test(tree.shared(), 1);
         net.require_peer_identity = true;
-        let topic = room_topic_id(enrolled);
+        let topic = workspace_topic_id(enrolled);
         identified_peer_on_topic(&net, &root, &device, topic);
         let frame = tilo_actions::remote::RemoteActionFrame::new(
             tilo_actions::remote::RemoteActionMessage::Invoke(
@@ -10275,7 +10279,7 @@ mod tests {
                     "relay_service_node_id": hex::encode(service.as_bytes()),
                     "label": "Home server",
                     "user_public_key": hex::encode(own_user),
-                    "relay_workspace_ids": [room_topic_id(room)],
+                    "relay_workspace_ids": [workspace_topic_id(room)],
                 }]))
                 .expect("registry"),
             )
@@ -10352,7 +10356,7 @@ mod tests {
 
             net.event_tx
                 .try_send(NetEvent::PeerLeft {
-                    ws: room_topic_id(room),
+                    ws: workspace_topic_id(room),
                     peer,
                     cause: PeerDepartureCause::HostSessionClosed,
                     membership_epoch: None,
@@ -10428,7 +10432,7 @@ mod tests {
         NetEvent::Msg {
             ws: RoomId::parse(cluster_id)
                 .filter(|room| !room.is_nil())
-                .map_or(DEFAULT_WS_TOPIC, room_topic_id),
+                .map_or(DEFAULT_WS_TOPIC, workspace_topic_id),
             peer,
             membership_epoch: None,
             replayed: false,
@@ -10621,7 +10625,7 @@ mod tests {
                 payload: collab_types::PeerPresencePayload::Arrived,
             },
         );
-        net.publish_scrollback_response(room_topic_id(person_room), artifact, Vec::new());
+        net.publish_scrollback_response(workspace_topic_id(person_room), artifact, Vec::new());
         net.publish_scrollback_request(&person_room.to_string(), artifact, u64::MAX, 8);
         net.request_room_replay(&person_room.to_string());
         let leaked: Vec<_> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
@@ -10676,7 +10680,13 @@ mod tests {
         let own_device = ed25519_dalek::SigningKey::from_bytes(&[0xE9; 32]);
         let artifact = person_room_stays_with_the_person(&net, &mut sent, user, &own_device);
 
-        net.dispatch_scrollback_request(room_topic_id(person_room), 0xBEEF, artifact, u64::MAX, 8);
+        net.dispatch_scrollback_request(
+            workspace_topic_id(person_room),
+            0xBEEF,
+            artifact,
+            u64::MAX,
+            8,
+        );
         assert!(
             net.inbound_scrollback_request.lock().unwrap().is_empty(),
             "a peer asking for a person-room record's history gets no page"
@@ -10760,7 +10770,7 @@ mod tests {
 
         let stranger = ed25519_dalek::SigningKey::from_bytes(&[0xEE; 32]);
         authenticated_personal_peer(&net, &stranger, &iroh::SecretKey::from_bytes(&[0xEF; 32]));
-        identified_peer_on_topic(&net, &root, &phone, room_topic_id(RoomId::new()));
+        identified_peer_on_topic(&net, &root, &phone, workspace_topic_id(RoomId::new()));
         assert_eq!(
             net.take_person_snapshot_request(),
             None,
@@ -10830,7 +10840,7 @@ mod tests {
         );
         let (author, msg) = kept(&laptop, &laptop_signing);
         phone.dispatch_neighbour_msg(
-            room_topic_id(RoomId::new()),
+            workspace_topic_id(RoomId::new()),
             author,
             None,
             true,
@@ -11166,7 +11176,7 @@ mod tests {
                 &net,
                 &channels,
                 &InboundScrollbackRequest {
-                    workspace_topic: room_topic_id(room),
+                    workspace_topic: workspace_topic_id(room),
                     requester: 0xBEEF,
                     artifact,
                     before_seq: u64::MAX,
@@ -11238,7 +11248,7 @@ mod tests {
         else {
             panic!("governance must be published");
         };
-        assert_eq!(ws, room_topic_id(room));
+        assert_eq!(ws, workspace_topic_id(room));
         assert!(matches!(msg, NeighbourMsg::MlsAccessRequest { .. }));
         assert!(!net.publish_channel_governance(NeighbourMsg::Heartbeat { peer: 1, ts: 1 }));
     }
@@ -11337,7 +11347,7 @@ mod tests {
             };
             net.event_tx
                 .try_send(NetEvent::Msg {
-                    ws: room_topic_id(room),
+                    ws: workspace_topic_id(room),
                     peer: iroh::SecretKey::from_bytes(&[72; 32]).public(),
                     membership_epoch: None,
                     replayed: true,
@@ -11349,7 +11359,7 @@ mod tests {
 
             net.event_tx
                 .try_send(NetEvent::OwnReplay {
-                    ws: room_topic_id(room),
+                    ws: workspace_topic_id(room),
                     msg,
                 })
                 .expect("queue the replay");
@@ -11518,7 +11528,7 @@ mod tests {
                 .room();
             let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
             let expected_topic = net.active_ws_for_publish();
-            assert_eq!(expected_topic, room_topic_id(room));
+            assert_eq!(expected_topic, workspace_topic_id(room));
             net.publish_document(
                 "notes".to_string(),
                 room.to_string(),
@@ -11564,7 +11574,8 @@ mod tests {
 
         fn active_ws_for_publish_returns_the_active_rooms_stable_topic() {
             let tree = WorkspaceTree::bootstrap_demo().shared();
-            let expected = room_topic_id(tree.read().desktop.active_workspace().unwrap().room());
+            let expected =
+                workspace_topic_id(tree.read().desktop.active_workspace().unwrap().room());
             let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
             assert_eq!(net.active_ws_for_publish(), expected);
         }
@@ -11574,7 +11585,7 @@ mod tests {
             let tree = WorkspaceTree::bootstrap_demo().shared();
             let room = tree.read().rooms()[0];
             let (net, mut cmd_rx) = shell_network_for_test(tree, 0xDEAD_u64);
-            let expected_topic = room_topic_id(room);
+            let expected_topic = workspace_topic_id(room);
             let artifact = ArtifactId::new();
             net.publish_scrollback_request(&room.to_string(), artifact, 100, 25);
             let cmd = cmd_rx

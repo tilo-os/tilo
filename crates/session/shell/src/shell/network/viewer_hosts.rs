@@ -1,5 +1,5 @@
 //! Who a headless session's viewers watch a room through.
-use super::{ShellNetwork, room_topic_id};
+use super::{ShellNetwork, workspace_topic_id};
 use crate::shell::state::RoomId;
 
 impl ShellNetwork {
@@ -9,7 +9,7 @@ impl ShellNetwork {
     /// window of the room's workspace while the session is watched. Called
     /// every tick, so it reads the governor only from an owner already open.
     pub fn viewer_hosts(&self, room: RoomId) -> std::collections::HashSet<u64> {
-        let mut hosts = self.workspace_hosts(room_topic_id(room));
+        let mut hosts = self.workspace_hosts(workspace_topic_id(room));
         if let Some(owner) = self.opened_native_owner()
             && let Ok(governor) = owner.with_current(room, |view| {
                 Ok((

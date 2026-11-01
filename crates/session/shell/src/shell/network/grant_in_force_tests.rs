@@ -400,7 +400,7 @@ fn a_wait_on_the_rooms_host_ends_when_its_session_does() {
     member
         .cmd_tx
         .try_send(NetCmd::WatchHostSessions {
-            ws: super::room_topic_id(room),
+            ws: super::workspace_topic_id(room),
             ended: watch,
         })
         .unwrap();

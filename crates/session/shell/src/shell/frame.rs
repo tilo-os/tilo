@@ -4395,7 +4395,7 @@ impl FrameBuilder {
             .map(|room| self.chrome.borrow().local_user_for_room(&room))?;
         self.with_app_workspace(app_id, |workspace| {
             tilo_network_actor::workspace_sync::told(
-                tilo_network_actor::room_topic_id(workspace.room()),
+                tilo_network_actor::workspace_topic_id(workspace.room()),
                 &workspace.name,
                 app_writes(workspace, &person, app_id, tilo_clock::unix_now()),
             )

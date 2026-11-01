@@ -1,5 +1,5 @@
 use super::hosted_sites::{JoinProgress, SiteJoinState};
-use super::{Arc, Mutex, NetCmd, RoomId, ShellNetwork, SystemTime, room_topic_id};
+use super::{Arc, Mutex, NetCmd, RoomId, ShellNetwork, SystemTime, workspace_topic_id};
 use crate::{
     network::invite::enrollment_driver,
     shell::{
@@ -424,7 +424,7 @@ impl ShellNetwork {
             Enrollment::Done(response) => return Ok(response),
             Enrollment::Due { owner, room } => (owner, room),
         };
-        let topic = room_topic_id(room);
+        let topic = workspace_topic_id(room);
         let mut attempts = self
             .native_enrollment
             .attempts
@@ -469,7 +469,7 @@ impl ShellNetwork {
             Enrollment::Done(response) => return Ok(response),
             Enrollment::Due { owner, room } => (owner, room),
         };
-        let topic = room_topic_id(room);
+        let topic = workspace_topic_id(room);
         let identity = self
             .host_identity
             .clone()
@@ -516,7 +516,7 @@ impl ShellNetwork {
             .host_identity
             .as_ref()
             .ok_or("native device custody unavailable")?
-            .current_native_material(room_topic_id(room))?
+            .current_native_material(workspace_topic_id(room))?
             .0;
         // A lost UI reply after the local barrier is reconciled from the actual
         // committed enrollment, never by another remote redemption.
@@ -574,13 +574,16 @@ impl ShellNetwork {
                 .map_err(|e| e.to_string())?;
         }
         if identity.identity_paths.is_some()
-            && identity.current_native_material(room_topic_id(room))?.0 != certificate
+            && identity
+                .current_native_material(workspace_topic_id(room))?
+                .0
+                != certificate
         {
             return Err("native room custody did not retain selected certificate".into());
         }
         owner.install(enrollment, SystemTime::now())?;
         self.check_native_custody(owner, room)?;
-        if !self.join_topic(room_topic_id(room)) {
+        if !self.join_topic(workspace_topic_id(room)) {
             return Err("native room committed; transport queue unavailable".into());
         }
         self.connect_native_room(owner.clone(), room)?;

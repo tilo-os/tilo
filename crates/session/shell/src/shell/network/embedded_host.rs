@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use tilo_network_actor::local_host::room_host::{self, HostConfig, HostMode, RoomHost};
 use tilo_relay_session::rooms::{ATTACH_HOST, DETACH_HOST};
 
-use super::{NetCmd, RoomId, ShellNetwork, relay_rooms, room_topic_id};
+use super::{NetCmd, RoomId, ShellNetwork, relay_rooms, workspace_topic_id};
 use crate::shell::state::WorkspaceId;
 use tilo_network_actor::local_host::LocalHost;
 
@@ -562,7 +562,7 @@ impl ShellNetwork {
             .host_identity
             .as_ref()
             .ok_or("native identity unavailable")?;
-        let (certificate, _) = identity.current_native_material(room_topic_id(room))?;
+        let (certificate, _) = identity.current_native_material(workspace_topic_id(room))?;
         let caller = self.own_host_caller()?;
         let name = relay_rooms::room_name(name);
         let own =

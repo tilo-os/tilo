@@ -1254,7 +1254,7 @@ impl NativeShortcutLibrary {
         change: tilo_action_broker::automation::ShortcutChange,
     ) -> Result<(), String> {
         use tilo_action_broker::automation::ShortcutChange;
-        use tilo_network_actor::room_governance::trace;
+        use tilo_network_actor::workspace_governance::trace;
         trace::note(|| format!("shortcut commit in {room} by {actor}"));
         let unavailable = tree.read().documents_unavailable(room);
         if let Some(reason) = unavailable {
@@ -1327,7 +1327,7 @@ impl ShortcutLibraryServices for NativeShortcutLibrary {
                 request.change,
             )
             .await;
-            tilo_network_actor::room_governance::trace::note(|| {
+            tilo_network_actor::workspace_governance::trace::note(|| {
                 format!(
                     "shortcut store {:?} in {room}: {committed:?}",
                     request.invocation
@@ -2319,7 +2319,7 @@ impl WorkspaceControlServices for NativeWorkspaceControl {
             .map_err(|_| "invalid target device identity".to_owned())?;
         let session = self
             .0
-            .open_workspace_control(tilo_network_actor::room_topic_id(room), target)?;
+            .open_workspace_control(tilo_network_actor::workspace_topic_id(room), target)?;
         let initial_route = match session.route() {
             tilo_network_actor::WorkspaceControlRoute::Direct { .. } => {
                 runtime_collab::WorkspaceControlRoute::Direct

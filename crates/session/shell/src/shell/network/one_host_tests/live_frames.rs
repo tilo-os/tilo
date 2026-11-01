@@ -69,7 +69,7 @@ fn live_frames_cross(devices: &[&Device], from: &Device, to: &Device, room: Room
 fn live_through(device: &Device, room: RoomId, through: iroh::EndpointId, other: &Device) -> bool {
     let other = iroh::EndpointId::from_bytes(&other.cert().device_public_key).unwrap();
     device.net().host_room_members.lock().unwrap().contains(&(
-        tilo_network_actor::room_topic_id(room),
+        tilo_network_actor::workspace_topic_id(room),
         through,
         other,
     ))
@@ -119,7 +119,7 @@ fn live_frames_cross_between_two_shells_through_a_device_hosted_room() {
 /// live plane.
 fn on_live_plane(device: &Device, room: RoomId, other: &Device) -> bool {
     let other = iroh::EndpointId::from_bytes(&other.cert().device_public_key).unwrap();
-    let ws = crate::shell::network::room_topic_id(room);
+    let ws = crate::shell::network::workspace_topic_id(room);
     device
         .net()
         .host_room_members

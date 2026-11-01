@@ -26,7 +26,7 @@ use neighbour_wire::{
 };
 use tilo_lock::MutexRecover as _;
 
-use super::{NetCmd, ShellNetwork, room_topic_id};
+use super::{NetCmd, ShellNetwork, workspace_topic_id};
 use crate::network::protocol::NeighbourMsg;
 use crate::shell::state::RoomId;
 use tilo_network_actor::WorkspaceControlRoute;
@@ -199,7 +199,7 @@ impl ShellNetwork {
         views: Vec<SurfaceView>,
         decode: &[SurfaceDecodeLimit],
     ) {
-        let Some(room) = RoomId::parse(room).filter(|room| room_topic_id(*room) == ws) else {
+        let Some(room) = RoomId::parse(room).filter(|room| workspace_topic_id(*room) == ws) else {
             tracing::warn!(ws, peer, "window views for another room than their topic's");
             return;
         };
@@ -260,7 +260,7 @@ impl ShellNetwork {
         let direct = |target: iroh::EndpointId, room: RoomId| {
             self.workspace_control_direct
                 .lock()
-                .is_ok_and(|peers| peers.contains(&(room_topic_id(room), target)))
+                .is_ok_and(|peers| peers.contains(&(workspace_topic_id(room), target)))
         };
         let carried = by_host
             .iter()
@@ -279,7 +279,7 @@ impl ShellNetwork {
         }
         let decode = local_decode();
         for ((target, room), views) in due {
-            let ws = room_topic_id(room);
+            let ws = workspace_topic_id(room);
             if !direct(target, room) {
                 tracing::debug!(%room, host = %target, "no direct route to the window's host");
                 continue;

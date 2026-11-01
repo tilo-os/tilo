@@ -76,7 +76,7 @@ async fn spawn_device() -> (
 /// Admit `devices` to the workspace on the device `cmd` drives, as its
 /// governor's roster does: they alone send and receive its window streams.
 async fn admit(cmd: &mpsc::Sender<NetCmd>, devices: &[iroh::EndpointId]) {
-    cmd.send(NetCmd::SetRoomRoster {
+    cmd.send(NetCmd::SetWorkspaceRoster {
         ws: WS,
         devices: devices.iter().map(|device| (*device, None)).collect(),
     })

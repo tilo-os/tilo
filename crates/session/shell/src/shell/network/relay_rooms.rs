@@ -26,7 +26,7 @@
 //!   an app this device opens there first, on the room's session.
 use super::{
     NetCmd, PendingInvitation, RegisteredHomePeer, ShellNetwork, persist_pending_invitations,
-    registered_home_peer_addrs, room_topic_id,
+    registered_home_peer_addrs, workspace_topic_id,
 };
 use crate::network::invite::InviteRole;
 use crate::network::invite::enrollment_driver;
@@ -43,7 +43,7 @@ use tilo_actions::remote::{
     room_governance_resource,
 };
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
-use tilo_network_actor::room_governance::Request;
+use tilo_network_actor::workspace_governance::Request;
 use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
     ENTER_ROOM, EnteredRoom, IssuedInvitation, LIST_ROOMS, RoomListing,
@@ -337,7 +337,7 @@ impl ShellNetwork {
     ) -> Result<std::sync::mpsc::Receiver<Result<ReceiptStatus, String>>, String> {
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
         self.cmd_tx
-            .try_send(NetCmd::RoomGovernance(Box::new(Request {
+            .try_send(NetCmd::WorkspaceGovernance(Box::new(Request {
                 ws,
                 to,
                 invoke,
@@ -378,7 +378,7 @@ impl ShellNetwork {
             arguments,
         );
         self.invoke_relay(
-            room_topic_id(target.room),
+            workspace_topic_id(target.room),
             target.host,
             invoke,
             ADMIN_TIMEOUT,
@@ -941,7 +941,7 @@ impl ShellNetwork {
                 arguments,
             );
             return self
-                .invoke_relay(room_topic_id(room), host, invoke, ADMIN_TIMEOUT)
+                .invoke_relay(workspace_topic_id(room), host, invoke, ADMIN_TIMEOUT)
                 .map(drop);
         }
         let owner = self.native_owner()?;
