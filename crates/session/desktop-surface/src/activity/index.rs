@@ -277,14 +277,14 @@ impl Default for WorkspaceHistoryQuery {
 }
 
 impl WorkspaceHistoryQuery {
-    pub fn for_room(workspace: RoomId) -> Self {
+    pub fn for_workspace(workspace: RoomId) -> Self {
         Self {
             workspace: Some(workspace),
             ..Self::default()
         }
     }
 
-    pub fn for_rooms(workspaces: impl IntoIterator<Item = RoomId>) -> Self {
+    pub fn for_workspaces(workspaces: impl IntoIterator<Item = RoomId>) -> Self {
         let mut workspaces: Vec<_> = workspaces.into_iter().collect();
         workspaces.compact_sort();
         workspaces.dedup();

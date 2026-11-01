@@ -176,10 +176,10 @@ impl TestTree {
         let ws_id = WorkspaceId(next_id());
         let strip_id = StripId(next_id());
         let workspace = empty_workspace(ws_id, name, vec![Strip::new(strip_id, "Main")]);
-        let room = workspace.room();
+        let workspace_id = workspace.room();
         self.desktop.active_strip.insert(ws_id, strip_id);
         self.desktop.workspaces.push(workspace);
-        tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, ws_id, name, room);
+        tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, ws_id, name, workspace_id);
         ws_id
     }
 

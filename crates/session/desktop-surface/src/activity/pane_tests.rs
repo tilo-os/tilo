@@ -923,8 +923,8 @@ mod tests {
     fn catch_up_persists_only_what_the_app_showed() {
         let (mut tree, workspace, _) = peers_busy_workspace();
         let records = RecordStore::in_memory();
-        let room_id = tree.active_workspace().expect("workspace").room();
-        let workspace_id = room_id.to_string();
+        let workspace_ref = tree.active_workspace().expect("workspace").room();
+        let workspace_id = workspace_ref.to_string();
         for n in 0..12 {
             let id = RecordId::for_file(format!("result-{n}.note"));
             let kind = ui::RecordKind::new("note");
@@ -946,7 +946,7 @@ mod tests {
             });
             tree.desktop
                 .workspace_records_held
-                .entry(room_id)
+                .entry(workspace_ref)
                 .or_default()
                 .insert(id.to_string(), kind.to_string());
         }
@@ -3368,17 +3368,20 @@ mod reader_tests {
     }
 }
 
-/// A workspace of `workspace` under `workspace`'s id, with its windows and its
-/// grants rehomed: what a device holds when one id has named two workspaces (a
-/// workspace never changes its workspace).
+/// A workspace with `workspace`'s id in another workspace, with its windows and
+/// its grants rehomed: what a device holds when one id has named two workspaces
+/// (a workspace id never changes its workspace).
 fn same_id_in(
     workspace: &tilo_desktop_model::Workspace,
-    room: tilo_desktop_model::RoomId,
+    other_workspace: tilo_desktop_model::RoomId,
 ) -> tilo_desktop_model::Workspace {
-    let mut other =
-        tilo_desktop_model::Workspace::in_workspace(workspace.id, room, workspace.name.clone());
+    let mut other = tilo_desktop_model::Workspace::in_workspace(
+        workspace.id,
+        other_workspace,
+        workspace.name.clone(),
+    );
     other.strips.clone_from(&workspace.strips);
     other.policy = workspace.policy.clone();
-    other.policy.rehome(room.to_string());
+    other.policy.rehome(other_workspace.to_string());
     other
 }
