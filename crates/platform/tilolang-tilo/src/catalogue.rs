@@ -402,6 +402,8 @@ impl Reader<'_> {
             present: None,
             toggles: None,
             key: None,
+            group: None,
+            frequent: false,
         });
     }
 

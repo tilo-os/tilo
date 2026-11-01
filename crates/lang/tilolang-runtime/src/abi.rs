@@ -93,6 +93,7 @@ imports! {
     (RefEq, "ref_eq", "ii", "i"),
     (RefIs, "ref_is", "ii", "i"),
     (RefId, "ref_id", "i", "i"),
+    (ResourceRef, "resource_ref", "i", "i"),
 
     (Invoker, "invoker", "", "i"),
     (PrincipalEq, "principal_eq", "ii", "i"),

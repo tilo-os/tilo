@@ -98,6 +98,9 @@ enum Preset {
     /// Places at points, each drawn as its own view: resources standing as content on one
     /// surface, grouped by where they are rather than by a frame around them.
     spaces
+    /// The traditional desktop: frames on a floating desk, the focused window's commands in a
+    /// top bar, and the dock at the foot (`traditional.tl`).
+    desktop
 }
 
 /// The width a strip's per-mille stands for, as the nearest of the three.
@@ -146,13 +149,14 @@ fn showing_text(v: Viewing) -> Text {
         .strips => "strips",
         .frames => "frames",
         .spaces => "spaces",
+        .desktop => "desktop",
     }
 }
 
 /// The preset `text` names, or the strips for one this build does not know: a record from a
 /// newer shell still opens.
 fn preset_named(text: Text) -> Preset {
-    if text == "frames" { .frames } else if text == "spaces" { .spaces } else { .strips }
+    if text == "frames" { .frames } else if text == "spaces" { .spaces } else if text == "desktop" { .desktop } else { .strips }
 }
 
 /// Shows the desk through `shown` (§6): the scrolling strips, the framed canvas or the spaces
