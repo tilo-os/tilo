@@ -3940,6 +3940,13 @@
           "type": "bool"
         }
       ],
+      "events": [
+        {
+          "name": "change",
+          "doc": "The person moved it: carries the value it is at now. What a slider over a value the view does not hold runs (a device's volume, changed by its own action), as its value is given rather than bound.",
+          "value": "float"
+        }
+      ],
       "bindings": [
         {
           "name": "value",

@@ -322,6 +322,28 @@ pub fn check(options: &Options) -> Result<Report, String> {
 /// The identity of a finding while it is gathered: kind, app, view, node, widget.
 type Identity = (Kind, String, String, Option<String>, String);
 
+/// The app in `dir` and the packages it uses, found in `search`, built in dependency order; and
+/// the platform's packages (the device's, Settings'), which an app such as the shell uses as
+/// metadata rather than as a package directory.
+fn build(
+    dir: &Path,
+    search: &[PathBuf],
+) -> Result<
+    (
+        Vec<tilolang::source::BuiltPackage>,
+        Vec<tilolang_tilo::tilolang::PackageMeta>,
+    ),
+    String,
+> {
+    let platform = tilolang_tilo::platform_apps::platform_packages()?;
+    let provided: Vec<String> = platform.iter().map(|meta| meta.app.clone()).collect();
+    let dirs = tilolang::source::dependency_order_with(dir, search, &provided)?;
+    let built =
+        tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
+            .map_err(|e| e.to_string())?;
+    Ok((built, platform))
+}
+
 /// Check one app: every scenario at every layout, then each view no scenario showed, opened on
 /// a resource of its type the window names. Its findings, the layouts run and the views
 /// shown nowhere.
@@ -335,14 +357,13 @@ fn check_app(
 ) -> Result<(Vec<Finding>, usize, Vec<String>), String> {
     let mut search = search.to_vec();
     search.extend(dir.parent().map(Path::to_path_buf));
-    let dirs = tilolang::source::dependency_order(dir, &search)?;
-    let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-        .map_err(|e| e.to_string())?;
+    let (built, platform) = build(dir, &search)?;
     let sources = source::SourceMap::new(&built);
     let meta = built.last().ok_or("no package")?.compiled.meta.clone();
-    let packages = Rc::new(stage::Packages(Rc::new(
-        built.into_iter().map(|b| b.compiled).collect(),
-    )));
+    let packages = Rc::new(stage::Packages(
+        Rc::new(built.into_iter().map(|b| b.compiled).collect()),
+        platform,
+    ));
     let mut check = AppCheck {
         dir,
         short: meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned(),
@@ -881,13 +902,12 @@ mod traditional_desktop {
     fn packages() -> (String, Rc<stage::Packages>) {
         let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
         let search = vec![shell.parent().expect("apps/tl").to_path_buf()];
-        let dirs = tilolang::source::dependency_order(&shell, &search).expect("the shell resolves");
-        let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-            .expect("the shell compiles");
+        let (built, platform) = super::build(&shell, &search).expect("the shell compiles");
         let app = built.last().expect("the shell").compiled.meta.app.clone();
-        let packages = Rc::new(stage::Packages(Rc::new(
-            built.into_iter().map(|b| b.compiled).collect(),
-        )));
+        let packages = Rc::new(stage::Packages(
+            Rc::new(built.into_iter().map(|b| b.compiled).collect()),
+            platform,
+        ));
         (app, packages)
     }
 

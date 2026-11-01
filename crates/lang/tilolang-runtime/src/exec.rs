@@ -894,11 +894,19 @@ impl Core {
             app: pkg.meta.app.clone(),
             action: aref.action.clone(),
             name: meta.name.clone(),
+            // A flag travels as the integer the guest boxed it as; the invocation carries it
+            // as the flag its parameter declares, so the app it goes to reads a flag.
             args: meta
                 .params
                 .iter()
-                .map(|p| p.name.clone())
-                .zip(aref.args.iter().cloned())
+                .zip(aref.args.iter())
+                .map(|(p, arg)| {
+                    let arg = match (p.ty.as_str(), arg) {
+                        ("Bool", Value::Int(flag)) => Value::Bool(*flag != 0),
+                        _ => arg.clone(),
+                    };
+                    (p.name.clone(), arg)
+                })
                 .collect(),
             class: meta.class,
             destructive: meta.role.as_deref() == Some("destructive"),
