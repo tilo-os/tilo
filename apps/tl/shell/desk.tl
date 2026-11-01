@@ -30,7 +30,7 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
                 if let a = front {
                     stack(gap: .tight, fill) {
                         at_rest(d)
-                        shown_preset(a, fill)
+                        shown_preset(a, bar_lists_actions(s, d, space.width_class == .expanded or space.width_class == .wide), fill)
                     }
                 } else {
                     at_rest(d)
@@ -94,11 +94,11 @@ view screen(a: Arrangement) {
 /// What stands between the bar and the dock when the desk shows the arrangement: the places as
 /// the preset the person picked lays them out, under the switch between the presets, as
 /// `desk_view` shows them. The traditional desktop shows the window in front alone here, as a
-/// compact display does.
-view shown_preset(a: Arrangement) {
+/// compact display does, its header's actions giving way when the bar lists them (`lists`).
+view shown_preset(a: Arrangement, lists: Bool) {
     let v = viewing
     if v.showing == .desktop {
-        front_window(a, fill)
+        front_window(a, lists, fill)
     } else {
         stack(gap: .tight, fill) {
             preset_switch(v)
@@ -151,7 +151,7 @@ view bar_on_edge(s: Shell, d: Desk) {
 /// own bar instead (`traditional.tl`), where the focused window's commands stand beside the
 /// parts the person chose, so a person picks between the two by picking the preset.
 view top_bar(d: Desk) {
-    if shell.based_on == .windows_desktop and shell.preset == .windows_desktop {
+    if bar_is_traditional(shell) {
         traditional_bar(d)
     } else {
         bar(d)

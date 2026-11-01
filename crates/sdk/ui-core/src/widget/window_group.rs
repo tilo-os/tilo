@@ -1041,6 +1041,8 @@ impl WindowGroup {
                 controls_width: merged_controls_width(theme),
                 revealed: self.top_edge.shown(),
                 top_inset: self.top_overlay_inset,
+                // A maximized window's group lists none of its app's actions.
+                lists_actions: false,
             });
         if let Some(previous) = self.bar_offered_to
             && (want.is_none() || previous != active_id)
