@@ -213,6 +213,12 @@ pub struct DragRun {
     reporter: Option<Box<dyn FnMut(&DragDrop)>>,
     /// Called with the key of an item pressed and let go without moving.
     activated: Option<Box<dyn FnMut(&str)>>,
+    /// What inputs the host has, as the window told the run before its items existed: the
+    /// items are built at the first layout, and a `Widget::set_interaction_environment` on the
+    /// run reaches no child until then. Kept and given to the items as they are built, so a
+    /// bar's or a dock's controls are a finger's target under a coarse pointer, as any
+    /// button's are.
+    interaction: crate::interaction::InteractionEnvironment,
     dirty: bool,
 }
 
@@ -239,6 +245,7 @@ impl DragRun {
             drops: Vec::new(),
             reporter: None,
             activated: None,
+            interaction: crate::interaction::InteractionEnvironment::default(),
             dirty: false,
         }
     }
@@ -909,6 +916,11 @@ impl Widget for DragRun {
             self.items = Some(items);
             self.groups = groups;
             self.nested = nested;
+            // The items are built now, after any input the window gave the run: a coarse
+            // pointer makes their controls a finger's target.
+            if let Some(items) = self.items.as_mut() {
+                Widget::set_interaction_environment(&mut **items, self.interaction);
+            }
         }
         let Some(items) = self.items.as_mut() else {
             return taffy.widget_leaf(Style::default(), node_map, self);
@@ -1074,6 +1086,19 @@ impl Widget for DragRun {
             .iter_mut()
             .map(|items| items.as_mut() as &mut (dyn Widget + '_))
             .collect()
+    }
+
+    /// The items are no children until the first layout builds them, so the input the window
+    /// gives the run is kept here and handed to them as they are built (see
+    /// [`Self::interaction`]).
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        if let Some(items) = self.items.as_mut() {
+            Widget::set_interaction_environment(&mut **items, environment);
+        }
     }
 }
 

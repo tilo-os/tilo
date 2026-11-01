@@ -299,17 +299,7 @@ impl View<'_> {
         schema: &TypeSchema,
     ) -> Result<Option<(FieldValue, String)>, IndexError> {
         let schema = self.schema_of(path, &schema.id).unwrap_or(schema);
-        let mut fields: Vec<&FieldSchema> = schema.fields.iter().collect();
-        fields.sort_by_key(|field| {
-            (
-                match field.role {
-                    crate::schema::FieldRole::Title => 0_u8,
-                    crate::schema::FieldRole::Body => 1,
-                    crate::schema::FieldRole::Plain => 2,
-                },
-                field.id.as_str(),
-            )
-        });
+        let fields = schema.in_naming_order();
         // Its own texts name it before its items' do: a channel called "design" whose messages
         // hold text is "design", not the first of its messages.
         for field in &fields {
