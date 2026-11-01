@@ -89,25 +89,67 @@ fn node(app: &mut TestApp<CalculatorShell>, target: &str) -> ui::a11y::AccessNod
     find(&calculator(app).1, target).unwrap_or_else(|| panic!("no semantic node {target}"))
 }
 
-/// Press `id` in the window's bar, as the desktop hands the press to
-/// the app.
-fn press_bar(app: &mut TestApp<CalculatorShell>, id: &str) {
+/// Press the window bar's view `mode`, as a press on it does.
+fn press_mode(app: &mut TestApp<CalculatorShell>, mode: Mode) {
     let declared = ui::window_toolbar::declared().expect("the window declares its slots");
-    let offered = declared
-        .actions
+    let views = declared.views.expect("the window declares its views");
+    let view = views
+        .choices
         .iter()
-        .map(|action| action.id.as_str())
-        .chain(
-            declared
-                .views
-                .iter()
-                .flat_map(|views| views.choices.iter().map(|view| view.id.as_str())),
-        )
-        .any(|offered| offered == id);
-    assert!(offered, "{id} is in the window's bar: {declared:?}");
+        .find(|view| view.label == mode.label())
+        .expect("the bar offers the mode");
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: view.id.clone(),
+        });
     app.settle();
+}
+
+/// The view the window's bar shows as chosen, by its name.
+fn chosen_view() -> Option<String> {
+    let views = ui::window_toolbar::declared()?.views?;
+    views
+        .choices
+        .iter()
+        .find(|view| view.id == views.chosen)
+        .map(|view| view.label.clone())
+}
+
+/// The bar a bare window (no host) declares: its slots are the app's own, and
+/// a press on one goes to a dispatcher that never lands.
+fn attach_bar(app: &mut CalculatorApp) {
+    app.dispatch = Some(ui::framework::Dispatcher::detached(
+        "so.tilo.calculator",
+        "test-author",
+    ));
+    app.bar = app.window_bar();
+    if let Some(bar) = &app.bar {
+        bar.declare();
+    }
+}
+
+/// Press the window bar's slot named `name`, as a press on it does.
+fn press_slot(app: &mut TestApp<CalculatorShell>, name: &str) {
+    let id = ui::window_toolbar::declared()
+        .into_iter()
+        .flat_map(|bar| bar.actions)
+        .find(|action| action.name == name)
+        .unwrap_or_else(|| panic!("the bar has {name}"))
+        .id;
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id });
+    app.settle();
+}
+
+/// The outcome the window's display reads for what is typed.
+fn outcome(app: &mut TestApp<CalculatorShell>) -> String {
+    fn walk(node: &ui::a11y::AccessNode) -> Option<String> {
+        if node.name.as_deref() == Some("Expression") {
+            return node.children.first().and_then(|child| child.name.clone());
+        }
+        node.children.iter().find_map(walk)
+    }
+    walk(&calculator(app).1).expect("the display shows an outcome")
 }
 
 /// Click the painted control `target`, as a pointer does.
@@ -128,10 +170,7 @@ fn click(app: &mut TestApp<CalculatorShell>, target: &str) {
 fn captures_stage_mode_drawers_and_collaborators() {
     let _calc = TestApp::<CalculatorShell>::capture(Some("calculator")).unwrap();
     let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
-    assert_eq!(
-        toolbar.views.as_ref().map(|views| views.chosen.as_str()),
-        Some("calculator.mode:0")
-    );
+    assert_eq!(chosen_view().as_deref(), Some("Calculator"));
     assert_eq!(
         toolbar
             .location
@@ -415,10 +454,8 @@ fn history_recall_by_published_action_uses_stable_identity() {
         "the recalled calculation is the expression"
     );
     assert_eq!(
-        ui::window_toolbar::declared()
-            .and_then(|toolbar| toolbar.views)
-            .map(|views| views.chosen),
-        Some("calculator.mode:0".to_owned()),
+        chosen_view().as_deref(),
+        Some("Calculator"),
         "recall shows the calculator"
     );
 
@@ -446,11 +483,11 @@ fn launch_state_and_mode_switch_seeding() {
 
     let mut app = hosted();
     assert_eq!(app.state(), Calculator::default());
-    press_bar(&mut app, "calculator.mode:1");
+    press_mode(&mut app, Mode::Graph2d);
     let state = app.state();
     assert_eq!(state.funcs.len(), 1, "Graph 2D adds one empty row");
     assert!(state.funcs.values().next().unwrap().expr.is_empty());
-    press_bar(&mut app, "calculator.mode:2");
+    press_mode(&mut app, Mode::Graph3d);
     let state = app.state();
     assert_eq!(state.surfaces.len(), 1, "Graph 3D adds one starter surface");
     assert_eq!(
@@ -458,7 +495,7 @@ fn launch_state_and_mode_switch_seeding() {
         model::DEFAULT_SURFACE
     );
     // A second visit adds nothing.
-    press_bar(&mut app, "calculator.mode:1");
+    press_mode(&mut app, Mode::Graph2d);
     assert_eq!(app.state().funcs.len(), 1);
     assert!(app.undo(), "the starter is an undo step");
     assert_eq!(app.state().surfaces.len(), 0);
@@ -617,7 +654,7 @@ fn the_modes_units_and_panel_button_are_the_window_bars_and_no_row_is_drawn() {
         "the plot starts at the top: {:?}",
         app.g2.canvas
     );
-    app.declare_window_toolbar();
+    attach_bar(&mut app);
     let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
     let views = toolbar.views.as_ref().expect("the modes switch in the bar");
     assert_eq!(
@@ -625,7 +662,7 @@ fn the_modes_units_and_panel_button_are_the_window_bars_and_no_row_is_drawn() {
         Mode::all().len(),
         "every page the app has"
     );
-    assert_eq!(views.chosen, "calculator.mode:1");
+    assert_eq!(chosen_view().as_deref(), Some("Graph 2D"));
     assert_eq!(toolbar.sidebar, Some(true), "the formulas are the sidebar");
     let menu: Vec<&str> = toolbar
         .actions
@@ -637,7 +674,7 @@ fn the_modes_units_and_panel_button_are_the_window_bars_and_no_row_is_drawn() {
 
     app.set_mode(Mode::Calc);
     app.relayout();
-    app.declare_window_toolbar();
+    attach_bar(&mut app);
     let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
     assert_eq!(toolbar.sidebar, None);
     assert!(
@@ -878,7 +915,7 @@ fn keyboard_path_switches_mode_and_edits_graph_rows() {
 fn formula_keystrokes_are_one_undo_step_and_peer_edits_are_presented() {
     let mut app = hosted();
     app.invoke(Calculator::ADD_FUNCTION.with("")).unwrap();
-    press_bar(&mut app, "calculator.mode:1");
+    press_mode(&mut app, Mode::Graph2d);
     click(&mut app, "calculator.graph.field:2d:0");
     // Keyboard input goes to the focused calculator: Tab to it.
     for _ in 0..32 {
@@ -1037,45 +1074,26 @@ fn calc_pointer_clicks_drive_keypad_history_and_memory() {
 /// evaluates in the unit chosen.
 #[test]
 fn the_bars_angle_unit_changes_trig_output() {
-    {
-        // The bar's Degrees and Radians → model.deg, and the change must
-        // flow through model.ctx() so trig actually evaluates
-        // differently.
-        use crate::engine;
-        let mut app = CalculatorApp::new();
-        let mut st = ui::State::new();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        assert!(!app.model.deg, "default is radians");
-        let rad_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
-        assert!(
-            (rad_val - 1.0).abs() > 0.01,
-            "RAD sin(90) must not be 1 (got {rad_val})"
-        );
-        let mut press = |app: &mut CalculatorApp, name: &str| {
-            app.declare_window_toolbar();
-            let id = ui::window_toolbar::declared()
-                .into_iter()
-                .flat_map(|bar| bar.actions)
-                .find(|action| action.name == name)
-                .unwrap_or_else(|| panic!("the bar has {name}"))
-                .id;
-            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id });
-            ui::widget::Widget::settle(app, &mut ui::widget::Edits::lend(&mut st.doc), &st.root);
-        };
-        press(&mut app, "Degrees");
-        assert!(app.model.deg, "choosing Degrees must switch to degrees");
-        let deg_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
-        assert!(
-            (deg_val - 1.0).abs() < 1e-9,
-            "DEG sin(90) must be 1 (got {deg_val})"
-        );
-        press(&mut app, "Radians");
-        assert!(
-            !app.model.deg,
-            "choosing Radians must switch back to radians"
-        );
-    }
+    let mut app = hosted();
+    app.harness().send(&WindowEvent::Focused(true));
+    app.harness().type_text("sin(90)");
+    app.settle();
+    let radians = outcome(&mut app);
+    assert_ne!(radians, "Result 1", "radians: sin(90) is not 1");
+
+    press_slot(&mut app, "Degrees");
+    assert_eq!(
+        outcome(&mut app),
+        "Result 1",
+        "choosing Degrees must switch to degrees"
+    );
+
+    press_slot(&mut app, "Radians");
+    assert_eq!(
+        outcome(&mut app),
+        radians,
+        "choosing Radians must switch back to radians"
+    );
 }
 
 /// Graph-mode pointer path: drag pans / orbits and the wheel zooms the 2D and
@@ -1160,19 +1178,17 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
 
     // phase narrow_graph2d_bar_toggle_opens_the_drawer
     {
-        let mut app = CalculatorApp::new();
-        app.set_mode(Mode::Graph2d);
-        app.area = Rect::new(0.0, 0.0, 560.0, 720.0);
-        app.relayout();
-        assert!(
-            !app.g2.panel.side().is_open(),
-            "narrow default must start collapsed"
-        );
-        let mut st = ui::State::new();
-        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
-        ui::widget::Widget::settle(&mut app, &mut Edits::lend(&mut st.doc), &st.root);
-        assert!(
-            app.g2.panel.side().is_open(),
+        let mut app = hosted();
+        app.harness().resize((560, 720)).unwrap();
+        press_mode(&mut app, Mode::Graph2d);
+        let sidebar = || ui::window_toolbar::declared().and_then(|bar| bar.sidebar);
+        assert_eq!(sidebar(), Some(false), "narrow default starts collapsed");
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        app.settle();
+        assert_eq!(
+            sidebar(),
+            Some(true),
             "the bar's toggle must open the Functions drawer"
         );
     }
@@ -1301,7 +1317,7 @@ fn orbiting_round_and_round_keeps_the_yaw_within_one_turn() {
 #[test]
 fn the_conversion_page_answers_in_units_and_says_why_money_cannot() {
     let mut app = hosted();
-    press_bar(&mut app, "calculator.mode:3");
+    press_mode(&mut app, Mode::Convert);
     assert_eq!(
         app.with_widget(|app: &mut CalculatorApp| app.mode_for_test()),
         Some(Mode::Convert)
@@ -1330,7 +1346,7 @@ fn the_conversion_page_answers_in_units_and_says_why_money_cannot() {
         Some(Some("104 °F".to_owned())),
         "the answer the audit asked for"
     );
-    press_bar(&mut app, "calculator.mode:0");
+    press_mode(&mut app, Mode::Calc);
     assert_eq!(
         app.with_widget(|app: &mut CalculatorApp| app.mode_for_test()),
         Some(Mode::Calc)

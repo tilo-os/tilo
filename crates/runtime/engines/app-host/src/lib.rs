@@ -2,10 +2,10 @@
 //! runtime (`libtilo_app_host_engine.so`).
 //!
 //! Store installs, updates and removes apps through the app host, a
-//! privileged daemon it reaches over Cap'n Proto RPC (`app-host`'s client),
+//! privileged daemon it reaches over its socket (`app-host`'s client),
 //! and browses the catalogue the desktop's search shares (`app-catalogue`).
 //! No other app talks to the app host, so neither belongs in the runtime
-//! every app maps; linked into the tapp, the client with its RPC and the
+//! every app maps; linked into the tapp, the client and the
 //! catalogue were about a fifth of Store's code. Here they are a library of
 //! their own in the runtime bundle that only Store names `DT_NEEDED`, and the
 //! tapp carries Store's own code.

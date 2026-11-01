@@ -1,0 +1,719 @@
+//! A room's governor and its certified host, as a test's issuing side.
+//!
+//! It governs one room with a Chat document, lets its host (another device
+//! of the owner) issue invitations, and answers the join exchange the way a certified
+//! host does: the challenge binds the authenticated endpoint, completion
+//! admits the member and returns the room's full checkpoint. Its outgoing
+//! publications are that checkpoint, re-signed on every mutation and refresh.
+use crate::{
+    GovernedAccess, SeedDocument, SeedState, StatePeer, TransportOrigin,
+    join::{
+        self, JoinBootstrap, JoinChallenge, JoinChallengeResponse, JoinInspection,
+        JoinTransportRequest, JoinTransportResponse, MemberRole, TransportHint,
+    },
+    seed_room,
+};
+use ed25519_dalek::SigningKey;
+use neighbour_wire::{NeighbourMsg, Retention};
+use std::{collections::BTreeMap, time::SystemTime};
+use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_user_identity::DeviceCert;
+
+use super::{APP, certificate};
+
+/// Longest a join challenge stays open.
+const CHALLENGE_NS: u64 = 60_000_000_000;
+
+pub struct TestGovernor {
+    peer: StatePeer,
+    cert: DeviceCert,
+    governor_key: SigningKey,
+    host: DeviceCert,
+    host_key: SigningKey,
+    /// The host is a dedicated certified host, not the governor itself.
+    certified_host: bool,
+    workspace_id: u64,
+    generation: u64,
+    outgoing: Vec<Vec<u8>>,
+    /// What the last commit published: the whole checkpoint after
+    /// [`Self::refresh_checkpoint`], only what changed after
+    /// [`Self::commit_changes`].
+    changes: Vec<(Vec<u8>, Retention)>,
+    /// The peer as last published, the baseline of the next commit.
+    published: Option<StatePeer>,
+    invitations: Vec<Vec<u8>>,
+    challenges: Vec<(JoinChallenge, DeviceCert)>,
+    completions: BTreeMap<[u8; 32], JoinBootstrap>,
+    /// The instant the governor treats as now, once a test pins it;
+    /// otherwise it follows the wall clock.
+    clock: Option<SystemTime>,
+}
+
+fn random<const N: usize>() -> [u8; N] {
+    let mut bytes = [0; N];
+    getrandom::fill(&mut bytes).unwrap();
+    bytes
+}
+
+fn ns(now: SystemTime) -> u64 {
+    crate::owner::enrollment::ns(now).unwrap()
+}
+
+impl Default for TestGovernor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TestGovernor {
+    /// A fresh room, governor and host, each under new keys.
+    #[must_use]
+    pub fn new() -> Self {
+        let now = SystemTime::now();
+        let person = SigningKey::from_bytes(&random());
+        let governor_key = SigningKey::from_bytes(&random());
+        let governor = certificate(&person, &governor_key, "Governor");
+        let host_key = SigningKey::from_bytes(&random());
+        let mut host = certificate(&person, &host_key, "Certified host");
+        host.capabilities.can_act_as_host = true;
+        tilo_user_identity::sign_device_cert(&mut host, &person).unwrap();
+        let room = uuid::Builder::from_random_bytes(random())
+            .into_uuid()
+            .to_string();
+        let workspace_id = tilo_relay_protocol::room_workspace_id(&room).unwrap();
+        let mut peer = StatePeer::new(
+            &room,
+            governor.clone(),
+            vec![governor.clone()],
+            tilo_user_identity::RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        let mut chat = automerge::AutoCommit::new();
+        automerge::transaction::Transactable::put_object(
+            &mut chat,
+            automerge::ROOT,
+            "channels",
+            automerge::ObjType::Map,
+        )
+        .unwrap();
+        collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
+        peer.install_seed(
+            SeedState {
+                room_changes: seed_room(&room, &governor, std::slice::from_ref(&governor)).unwrap(),
+                documents: vec![SeedDocument {
+                    app_id: APP.into(),
+                    record_id: String::new(),
+                    kind: "chat".into(),
+                    bytes: chat.save(),
+                }],
+            },
+            &governor_key,
+            now,
+        )
+        .unwrap();
+        peer.select_admission_v5().unwrap();
+        peer.admit_certificate(host.clone(), &governor_key, now)
+            .unwrap();
+        let mut governor = Self {
+            peer,
+            cert: governor,
+            governor_key,
+            host,
+            host_key,
+            certified_host: true,
+            workspace_id,
+            generation: 0,
+            outgoing: Vec::new(),
+            changes: Vec::new(),
+            published: None,
+            invitations: Vec::new(),
+            challenges: Vec::new(),
+            completions: BTreeMap::new(),
+            clock: None,
+        };
+        governor.refresh_checkpoint().unwrap();
+        governor
+    }
+
+    /// Empty interactive room governed by the fixture session's actual
+    /// root-certified device custody. Unlike `new`, this installs no app
+    /// records, messages, agents or separately pinned delivery host.
+    ///
+    /// # Errors
+    /// The certificate does not verify, the key does not match, or the
+    /// canonical room seed/checkpoint cannot be admitted.
+    pub fn empty_interactive(
+        governor: DeviceCert,
+        governor_key: SigningKey,
+        room: &str,
+    ) -> Result<Self, String> {
+        tilo_user_identity::verify_device_cert(&governor).map_err(|error| error.to_string())?;
+        if governor.device_public_key != governor_key.verifying_key().to_bytes()
+            || !governor.capabilities.can_own_workspaces
+        {
+            return Err("interactive fixture custody cannot govern this room".into());
+        }
+        let now = SystemTime::now();
+        let workspace_id =
+            tilo_relay_protocol::room_workspace_id(room).map_err(|error| error.to_string())?;
+        let mut peer = StatePeer::new(
+            room,
+            governor.clone(),
+            vec![governor.clone()],
+            tilo_user_identity::RevocationList::new(),
+            now,
+        )?;
+        peer.install_seed(
+            SeedState {
+                room_changes: seed_room(room, &governor, std::slice::from_ref(&governor))?,
+                documents: Vec::new(),
+            },
+            &governor_key,
+            now,
+        )?;
+        peer.select_admission_v5()
+            .map_err(|error| error.to_string())?;
+        let mut fixture = Self {
+            peer,
+            cert: governor.clone(),
+            host: governor,
+            host_key: governor_key.clone(),
+            governor_key,
+            certified_host: false,
+            workspace_id,
+            generation: 0,
+            outgoing: Vec::new(),
+            changes: Vec::new(),
+            published: None,
+            invitations: Vec::new(),
+            challenges: Vec::new(),
+            completions: BTreeMap::new(),
+            clock: None,
+        };
+        fixture.refresh_checkpoint()?;
+        Ok(fixture)
+    }
+
+    #[must_use]
+    pub fn peer(&self) -> &StatePeer {
+        &self.peer
+    }
+    #[must_use]
+    pub fn room(&self) -> &str {
+        self.peer.room()
+    }
+    #[must_use]
+    pub fn workspace_id(&self) -> u64 {
+        self.workspace_id
+    }
+    #[must_use]
+    pub fn room_host(&self) -> &DeviceCert {
+        &self.cert
+    }
+    #[must_use]
+    pub fn governor_key(&self) -> &SigningKey {
+        &self.governor_key
+    }
+    #[must_use]
+    pub fn host(&self) -> &DeviceCert {
+        &self.host
+    }
+    #[must_use]
+    pub fn host_key(&self) -> &SigningKey {
+        &self.host_key
+    }
+
+    /// Answer every later exchange as of `now` instead of the wall clock, so
+    /// a test whose other side runs on a fixed instant agrees with the
+    /// governor on what has expired however long the test machine takes.
+    pub fn pin_clock(&mut self, now: SystemTime) {
+        self.clock = Some(now);
+    }
+
+    fn now(&self) -> SystemTime {
+        self.clock.unwrap_or_else(SystemTime::now)
+    }
+
+    /// The host's signed hint that it serves the room at `endpoint_addr`.
+    #[must_use]
+    pub fn hint(&self, endpoint_addr: iroh_base::EndpointAddr) -> TransportHint {
+        IrohWorkspaceHostHintV1 {
+            version: 1,
+            mode: if self.certified_host {
+                WorkspaceHostMode::CertifiedHost
+            } else {
+                WorkspaceHostMode::NativeInteractiveWorkspaceOwner
+            },
+            room: self.room().into(),
+            workspace_id: self.workspace_id,
+            endpoint_addr,
+            host_user_public_key: self.host.user_public_key,
+            host_device_certificate: self.host.clone(),
+            packet_relay_url: "https://relay.invalid".into(),
+        }
+        .transport_hint(&self.host_key)
+        .unwrap()
+    }
+
+    /// The host's signed invitation for `role`, redeemable until
+    /// `expires_at_ns` through `transport`.
+    pub fn issue(
+        &mut self,
+        transport: Vec<TransportHint>,
+        role: MemberRole,
+        recipient_user_public_key: Option<[u8; 32]>,
+        invitee_name: Option<String>,
+        expires_at_ns: u64,
+    ) -> Vec<u8> {
+        let signed = join::issue_invitation(
+            join::InviteGrant {
+                workspace_id: self.workspace_id,
+                room: self.room().into(),
+                issuer: self.host.clone(),
+                role,
+                nonce: random(),
+                recipient_user_public_key,
+                invitee_name,
+                expires_at_ns,
+                transport,
+            },
+            &self.host_key,
+        )
+        .unwrap();
+        self.invitations.push(signed.clone());
+        signed
+    }
+
+    /// The room's current publications, oldest first; every one a checkpoint.
+    pub fn outgoing(&self) -> impl Iterator<Item = (&[u8], Retention)> {
+        self.outgoing
+            .iter()
+            .map(|bytes| (bytes.as_slice(), Retention::Checkpoint))
+    }
+
+    pub fn governed_access(&self, now: SystemTime) -> Result<GovernedAccess, String> {
+        self.peer.governance().governed_access(now)
+    }
+
+    /// The ids of the grants naming the agent `agent` in this governor's
+    /// admitted room policy.
+    ///
+    /// # Errors
+    /// The governor has no admitted room policy.
+    pub fn agent_grants(&self, agent: &str) -> Result<Vec<String>, String> {
+        let room = self
+            .peer
+            .admitted_room()
+            .ok_or("governor room policy is absent")?;
+        let (_, policy) = crate::room::extract_governed_fields(room);
+        let agent = tilo_action_policy::Subject::agent(agent);
+        Ok(policy
+            .grants
+            .into_iter()
+            .filter(|grant| grant.subject == agent)
+            .map(|grant| grant.id.as_str().to_owned())
+            .collect())
+    }
+
+    /// Let `person` exercise the governance `action` of this room, as an
+    /// administrator may: a participant a test needs to govern something
+    /// without giving it the room's owner role.
+    ///
+    /// # Errors
+    /// The grant is not the governor's to record.
+    pub fn allow_governance(&mut self, person: &str, action: &str) -> Result<(), String> {
+        let now = self.now();
+        let grant = tilo_action_policy::Grant::new(
+            format!("fixture-administrator:{action}"),
+            tilo_action_policy::Subject::person(person.to_owned()),
+            tilo_action_policy::roles::governance_action(self.room(), action),
+            tilo_action_policy::KindSet::OUTSIDE,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Subject::person(hex::encode(self.peer.owner())),
+        );
+        let mut candidate = self.peer.clone();
+        candidate.governance_mut().put_governed_grants(
+            std::slice::from_ref(&grant),
+            &self.host_key,
+            now,
+        )?;
+        self.peer = candidate;
+        self.refresh_checkpoint()
+    }
+
+    /// What the last commit published, oldest first, each with its
+    /// retention: the whole checkpoint after [`Self::refresh_checkpoint`],
+    /// what changed after [`Self::commit_changes`].
+    pub fn changes(&self) -> impl Iterator<Item = (&[u8], Retention)> {
+        self.changes
+            .iter()
+            .map(|(bytes, retention)| (bytes.as_slice(), *retention))
+    }
+
+    /// The candidate peer of the next commit and its generation.
+    fn next_commit(&self, now: SystemTime) -> Result<(StatePeer, u64), String> {
+        let mut candidate = self.peer.clone();
+        candidate
+            .media_mut()
+            .reconcile_media_governance(&self.governor_key, now)?;
+        let admitted_generation = candidate
+            .admitted_room()
+            .map(crate::durability::entries)
+            .transpose()?
+            .unwrap_or_default()
+            .values()
+            .map(|receipt| receipt.generation)
+            .max()
+            .unwrap_or(0);
+        let generation = self
+            .generation
+            .max(admitted_generation)
+            .checked_add(1)
+            .ok_or("fixture checkpoint generation exhausted")?;
+        Ok((candidate, generation))
+    }
+
+    /// Re-sign the room's full checkpoint at the next generation.
+    ///
+    /// # Errors
+    /// The checkpoint cannot be signed.
+    pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
+        let now = self.now();
+        let (mut candidate, generation) = self.next_commit(now)?;
+        let messages = candidate.publication_mut().durable_bootstrap_messages(
+            &self.governor_key,
+            now,
+            generation,
+        )?;
+        self.outgoing = messages
+            .iter()
+            .map(|message| postcard::to_stdvec(message).map_err(|error| error.to_string()))
+            .collect::<Result<_, _>>()?;
+        self.changes = self
+            .outgoing
+            .iter()
+            .map(|bytes| (bytes.clone(), Retention::Checkpoint))
+            .collect();
+        self.published = Some(candidate.clone());
+        self.peer = candidate;
+        self.generation = generation;
+        Ok(())
+    }
+
+    /// Commit what the governor admitted since its last publication as a
+    /// room host does between checkpoints: the governance changes and every
+    /// changed record, retained after the last publication, instead of the
+    /// room's whole checkpoint re-signed. Each checkpoint replaces its
+    /// lineage on the relay, a few fsyncs; a governor that re-signed one per
+    /// admitted edit queued more of them than a loaded runner's disk keeps
+    /// up with. The first commit is a whole checkpoint.
+    ///
+    /// # Errors
+    /// The commit cannot be signed.
+    pub fn commit_changes(&mut self) -> Result<(), String> {
+        let Some(before) = self.published.clone() else {
+            return self.refresh_checkpoint();
+        };
+        let now = self.now();
+        let (mut candidate, generation) = self.next_commit(now)?;
+        let messages = candidate.publication_mut().durable_mutation_messages(
+            &before,
+            &self.governor_key,
+            now,
+            generation,
+        )?;
+        self.changes = messages
+            .iter()
+            .map(|message| {
+                let (_, retention) = neighbour_wire::retention(message, false)
+                    .ok_or("a committed change has no retention channel")?;
+                let bytes = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
+                Ok::<_, String>((bytes, retention))
+            })
+            .collect::<Result<_, _>>()?;
+        self.published = Some(candidate.clone());
+        self.peer = candidate;
+        self.generation = generation;
+        Ok(())
+    }
+
+    /// Admit `message` from `origin` into the governor's peer.
+    ///
+    /// # Errors
+    /// The peer rejects it.
+    pub fn receive(
+        &mut self,
+        origin: TransportOrigin,
+        message: NeighbourMsg,
+    ) -> Result<(), String> {
+        let id = tracing::enabled!(tracing::Level::DEBUG)
+            .then(|| postcard::to_stdvec(&message).ok())
+            .flatten()
+            .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
+        let now = self.now();
+        let outcome = self.peer.receive_from(origin, message, now)?;
+        tracing::debug!(?id, ?outcome, "native fixture governor admission");
+        Ok(())
+    }
+
+    /// Answer one join request from the authenticated endpoint `remote`.
+    pub fn handle(
+        &mut self,
+        remote: [u8; 32],
+        request: JoinTransportRequest,
+    ) -> JoinTransportResponse {
+        let result = match request {
+            JoinTransportRequest::Inspect { signed_invitation } => {
+                self.inspect(&signed_invitation).map(|join| {
+                    JoinTransportResponse::Inspection(JoinInspection {
+                        invite_id: join.invite_id(),
+                        grant: join.grant().clone(),
+                    })
+                })
+            }
+            JoinTransportRequest::Challenge(request) => self
+                .challenge(remote, request)
+                .map(JoinTransportResponse::Challenge),
+            JoinTransportRequest::Complete(request) => self
+                .complete(remote, &request)
+                .map(JoinTransportResponse::Complete),
+            _ => Err("unexpected membership operation".into()),
+        };
+        result.unwrap_or_else(|message| JoinTransportResponse::Error { code: 403, message })
+    }
+
+    fn revocations(&self) -> tilo_user_identity::RevocationList {
+        let mut list = tilo_user_identity::RevocationList::new();
+        for entry in self.peer.revocations() {
+            list.insert(entry).unwrap();
+        }
+        list
+    }
+
+    fn inspect(&self, signed_invitation: &[u8]) -> Result<join::VerifiedJoin, String> {
+        if !self
+            .invitations
+            .iter()
+            .any(|issued| issued == signed_invitation)
+        {
+            return Err("invitation was not issued by this host".into());
+        }
+        join::decode_and_verify_invitation(
+            signed_invitation,
+            None,
+            &self.revocations(),
+            ns(self.now()),
+        )
+    }
+
+    fn challenge(
+        &mut self,
+        remote: [u8; 32],
+        request: join::JoinChallengeRequest,
+    ) -> Result<JoinChallengeResponse, String> {
+        if remote != request.device_cert.device_public_key {
+            return Err("join certificate does not match authenticated transport endpoint".into());
+        }
+        let now = ns(self.now());
+        if let Some((challenge, _)) = self.challenges.iter().find(|(challenge, cert)| {
+            challenge.request_id == request.request_id && *cert == request.device_cert
+        }) {
+            return Ok(JoinChallengeResponse {
+                challenge: challenge.clone(),
+            });
+        }
+        let verified = self.inspect(&request.signed_invitation)?;
+        if verified
+            .grant()
+            .recipient_user_public_key
+            .is_some_and(|recipient| recipient != request.device_cert.user_public_key)
+        {
+            return Err("invitation recipient does not match joining identity".into());
+        }
+        let expires_at_ns = verified
+            .grant()
+            .expires_at_ns
+            .min(now.saturating_add(CHALLENGE_NS));
+        let challenge = JoinChallenge::new(
+            &verified,
+            &request.device_cert,
+            request.request_id,
+            random(),
+            expires_at_ns,
+            now,
+        )?;
+        self.challenges
+            .push((challenge.clone(), request.device_cert));
+        Ok(JoinChallengeResponse { challenge })
+    }
+
+    fn complete(
+        &mut self,
+        remote: [u8; 32],
+        request: &join::JoinCompleteRequest,
+    ) -> Result<JoinBootstrap, String> {
+        let request_id = request.proof.challenge.request_id;
+        if let Some(bootstrap) = self.completions.get(&request_id) {
+            return Ok(bootstrap.clone());
+        }
+        let (challenge, cert) = self
+            .challenges
+            .iter()
+            .find(|(challenge, _)| *challenge == request.proof.challenge)
+            .cloned()
+            .ok_or("join challenge was not issued by this host")?;
+        if cert.device_public_key != remote {
+            return Err("join proof does not match authenticated transport endpoint".into());
+        }
+        let now = self.now();
+        let redemption = join::verify_join_proof(
+            &request.proof,
+            &challenge,
+            &cert,
+            &self.revocations(),
+            ns(now),
+        )?;
+        let mut candidate = self.peer.clone();
+        candidate
+            .governance_mut()
+            .admit_invited_member(&redemption, &self.host_key, now)?;
+        let previous = std::mem::replace(&mut self.peer, candidate);
+        if let Err(error) = self.refresh_checkpoint() {
+            self.peer = previous;
+            return Err(error);
+        }
+        let bootstrap = JoinBootstrap {
+            version: 1,
+            invite_id: redemption.join().invite_id(),
+            device_cert: cert,
+            role: redemption.join().grant().role,
+            room: self.room().into(),
+            workspace_id: self.workspace_id,
+            host: self.host.clone(),
+            certified_roster: self.peer.certificates(),
+            revocations: self.peer.revocations(),
+            records: self.peer.rows(),
+            governance_messages: self.outgoing.clone(),
+            generation: self.generation,
+        };
+        self.completions.insert(request_id, bootstrap.clone());
+        Ok(bootstrap)
+    }
+}
+
+#[cfg(test)]
+mod empty_interactive_tests {
+    use super::{TestGovernor, certificate};
+    use ed25519_dalek::SigningKey;
+    use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+
+    #[test]
+    fn checkpoint_refresh_follows_admitted_native_receipts() {
+        let mut governor = TestGovernor::new();
+        let key = governor.governor_key().clone();
+        let publisher = governor.room_host().device_public_key;
+        let messages = governor
+            .peer()
+            .clone()
+            .publication_mut()
+            .durable_bootstrap_messages(&key, std::time::SystemTime::now(), 20)
+            .unwrap();
+        for message in messages {
+            governor
+                .receive(
+                    crate::TransportOrigin::RetainedNativePublication { publisher },
+                    message,
+                )
+                .unwrap();
+        }
+        governor.refresh_checkpoint().unwrap();
+        let receipts =
+            crate::durability::entries(governor.peer().admitted_room().unwrap()).unwrap();
+        assert!(
+            !receipts.is_empty(),
+            "the signed cut must carry actual document receipts"
+        );
+        assert!(receipts.values().all(|receipt| receipt.generation > 20));
+    }
+
+    #[test]
+    fn empty_interactive_preserves_certified_custody_without_seeding_apps_or_host_bits() {
+        let signing_identity = SigningKey::from_bytes(&[91; 32]);
+        let key = SigningKey::from_bytes(&[92; 32]);
+        let cert = certificate(&signing_identity, &key, "Fixture session");
+        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string();
+        let governor = TestGovernor::empty_interactive(cert.clone(), key, &room).unwrap();
+        assert_eq!(governor.room_host(), &cert);
+        assert!(!governor.room_host().capabilities.can_act_as_host);
+        assert!(governor.peer().rows().is_empty());
+        let endpoint = iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(
+                &SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
+            )
+            .unwrap(),
+        );
+        let hint = governor.hint(endpoint);
+        let (payload, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).unwrap();
+        assert_eq!(
+            payload.mode,
+            WorkspaceHostMode::NativeInteractiveWorkspaceOwner
+        );
+        assert_eq!(payload.host_device_certificate, cert);
+        assert!(
+            TestGovernor::empty_interactive(cert, SigningKey::from_bytes(&[94; 32]), &room)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn empty_interactive_governor_redeems_its_actual_session_custody_without_app_seed() {
+        use crate::join::{
+            self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
+            JoinTransportResponse, MemberRole,
+        };
+        let key = SigningKey::from_bytes(&[92; 32]);
+        let cert = certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Fixture session");
+        let mut governor =
+            TestGovernor::empty_interactive(cert.clone(), key.clone(), super::super::ROOM).unwrap();
+        let endpoint = iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(
+                &SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
+            )
+            .unwrap(),
+        );
+        let expiry = super::ns(std::time::SystemTime::now())
+            .checked_add(60_000_000_000)
+            .unwrap();
+        let invitation = governor.issue(
+            vec![governor.hint(endpoint)],
+            MemberRole::Editor,
+            Some(cert.user_public_key),
+            Some("Fixture session".into()),
+            expiry,
+        );
+        let response = governor.handle(
+            cert.device_public_key,
+            JoinTransportRequest::Challenge(JoinChallengeRequest {
+                signed_invitation: invitation,
+                device_cert: cert.clone(),
+                request_id: [95; 32],
+            }),
+        );
+        let JoinTransportResponse::Challenge(response) = response else {
+            panic!("actual session challenge refused: {response:?}");
+        };
+        let proof = join::sign_join_proof(response.challenge, &key).unwrap();
+        let response = governor.handle(
+            cert.device_public_key,
+            JoinTransportRequest::Complete(JoinCompleteRequest { proof }),
+        );
+        let JoinTransportResponse::Complete(bootstrap) = response else {
+            panic!("actual session completion refused: {response:?}");
+        };
+        assert_eq!(bootstrap.host, cert);
+        assert_eq!(bootstrap.device_cert, cert);
+        assert!(bootstrap.records.is_empty());
+        assert!(!bootstrap.host.capabilities.can_act_as_host);
+    }
+}

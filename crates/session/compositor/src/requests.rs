@@ -24,6 +24,7 @@ use smithay::input::pointer::{
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial};
 
+use crate::output::monitor_of;
 use crate::policy::{ResizeEdges, WindowRequest};
 use crate::state::State;
 
@@ -71,39 +72,33 @@ enum Cover {
 /// Where a window was before it was maximized or made fullscreen.
 struct Restore(std::cell::Cell<Option<Rectangle<i32, Logical>>>);
 
-/// Whether the client of `window` keeps it fullscreen: the state it acknowledged after asking
-/// to cover a display.
-pub(crate) fn fullscreen(window: &Window) -> bool {
-    window.toplevel().is_some_and(|toplevel| {
-        toplevel
-            .current_state()
-            .states
-            .contains(xdg_toplevel::State::Fullscreen)
-    }) || window
-        .x11_surface()
-        .is_some_and(smithay::xwayland::X11Surface::is_fullscreen)
-}
+/// The compositor gave the window its display to fill.
+///
+/// The policy answers a fullscreen ask by filling the display's strip, so
+/// the window never covers the output's whole rectangle and the state the
+/// client acknowledges cannot tell whether the compositor granted it. What
+/// the compositor itself answered is what its layout, its refresh rate and
+/// the bars read.
+#[derive(Default)]
+struct Fullscreen(std::cell::Cell<bool>);
 
-/// Whether `window` is fullscreen or was just told to be: the compositor keeps it over its
-/// display from the configure that grants it, before the client acknowledges it, until it
-/// leaves. A policy's arrangement does not move it meanwhile, so a granted fullscreen holds.
-pub(crate) fn held_fullscreen(window: &Window) -> bool {
-    window.toplevel().is_some_and(|toplevel| {
-        toplevel
-            .with_pending_state(|pending| pending.states.contains(xdg_toplevel::State::Fullscreen))
-    }) || window
-        .x11_surface()
-        .is_some_and(smithay::xwayland::X11Surface::is_fullscreen)
+/// Whether the compositor gave `window` its display to fill.
+fn fullscreen_granted(window: &Window) -> bool {
+    window
+        .user_data()
+        .get::<Fullscreen>()
+        .is_some_and(|fullscreen| fullscreen.0.get())
 }
 
 impl State {
-    /// Whether a fullscreen window covers `output`.
+    /// Whether a fullscreen window covers `output`: its content fills the
+    /// display, which may then run at a variable refresh rate.
     pub(crate) fn fullscreen_on(&self, output: &smithay::output::Output) -> bool {
         let Some(area) = self.space.output_geometry(output) else {
             return false;
         };
         self.space.elements().any(|window| {
-            fullscreen(window)
+            fullscreen_granted(window)
                 && self
                     .space
                     .element_geometry(window)
@@ -111,12 +106,52 @@ impl State {
         })
     }
 
-    /// The outputs a fullscreen window covers, by connector name: the chrome there steps aside
-    /// and leaves the display to the window, as the desktop's own bar does.
+    /// The displays a fullscreen window owns: the display holding its
+    /// middle, or its corner for a window taken off them. Each once.
+    fn fullscreen_owned(&self) -> Vec<&smithay::output::Output> {
+        let mut owned: Vec<&smithay::output::Output> = Vec::new();
+        for window in self.space.elements() {
+            if !fullscreen_granted(window) {
+                continue;
+            }
+            let Some(geometry) = self.space.element_geometry(window) else {
+                continue;
+            };
+            let middle = geometry.loc + Point::from((geometry.size.w / 2, geometry.size.h / 2));
+            let owner = |point: Point<i32, Logical>| {
+                self.space.outputs().find(|output| {
+                    self.space
+                        .output_geometry(output)
+                        .is_some_and(|area| area.contains(point))
+                })
+            };
+            if let Some(output) = owner(middle).or_else(|| owner(geometry.loc))
+                && !owned.contains(&output)
+            {
+                owned.push(output);
+            }
+        }
+        owned
+    }
+
+    /// The monitors of the displays a fullscreen window owns
+    /// ([`Self::fullscreen_owned`]).
+    pub(crate) fn fullscreen_monitors(&self) -> Vec<String> {
+        let mut monitors: Vec<String> = Vec::new();
+        for (monitor, _) in self.fullscreen_owned().into_iter().map(monitor_of) {
+            if !monitors.contains(&monitor) {
+                monitors.push(monitor);
+            }
+        }
+        monitors
+    }
+
+    /// The outputs a fullscreen window owns ([`Self::fullscreen_owned`]), by
+    /// connector name: the shell's bar there steps aside, as the desktop's
+    /// own bar does on the same displays.
     pub(crate) fn fullscreen_outputs(&self) -> Vec<String> {
-        self.space
-            .outputs()
-            .filter(|output| self.fullscreen_on(output))
+        self.fullscreen_owned()
+            .into_iter()
             .map(smithay::output::Output::name)
             .collect()
     }
@@ -129,14 +164,45 @@ impl State {
         request: &WindowRequest,
         serial: Option<Serial>,
     ) {
-        let Some(info) = crate::state::describe(&self.display, window) else {
+        if let WindowRequest::Fullscreen { on, .. } = request {
+            window.user_data().insert_if_missing(Fullscreen::default);
+            if let Some(fullscreen) = window.user_data().get::<Fullscreen>() {
+                fullscreen.0.set(*on);
+            }
+        }
+        let Some(info) = crate::state::describe(&self.display, &self.icons, window) else {
             return;
         };
         if !self.policy.request(&info, request) {
-            // The policy answers it itself; a toplevel still needs its
-            // configure.
+            // The policy answers it itself, arranging the window where it
+            // belongs: a maximize or a fullscreen it takes is still said
+            // back to the client, so its own toolkit stops asking and draws
+            // no floating frame of its own.
+            let stated = match request {
+                WindowRequest::Maximize(on) => Some((xdg_toplevel::State::Maximized, *on)),
+                WindowRequest::Fullscreen { on, .. } => {
+                    Some((xdg_toplevel::State::Fullscreen, *on))
+                }
+                WindowRequest::Move | WindowRequest::Resize(_) | WindowRequest::Minimize => None,
+            };
             if let Some(toplevel) = window.toplevel() {
+                if let Some((state, on)) = stated {
+                    toplevel.with_pending_state(|pending| {
+                        if on {
+                            pending.states.set(state);
+                        } else {
+                            pending.states.unset(state);
+                        }
+                    });
+                }
                 toplevel.send_pending_configure();
+            }
+            if let Some(x11) = window.x11_surface() {
+                let _ = match stated {
+                    Some((xdg_toplevel::State::Fullscreen, on)) => x11.set_fullscreen(on),
+                    Some((_, on)) => x11.set_maximized(on),
+                    None => Ok(()),
+                };
             }
             self.rearrange();
             return;

@@ -9,11 +9,12 @@
 
 use ui::framework::{Command, ResourceApp, RunMode, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::{self, ActionCx, Id, Invoke, Refusal, SearchEntry, resource};
+use ui::tilo_resource::{self, ActionCx, Derived, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::widget::Element;
 
+use crate::actions::{MusicEffect, Place};
 use crate::app::Music;
-use crate::model::{CatalogueTrack, Library, Playlist};
+use crate::model::{Album, CatalogueTrack, Library, Playlist};
 
 ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
@@ -23,7 +24,9 @@ ui::embedded_catalog!(static CATALOG, ["en-US"]);
     params = library,
     version = 2,
     migrate = crate::library_migration::migrate,
-    search = Library::search_entries
+    search = Library::search_entries,
+    children = Library::places,
+    child = Library::place
 )]
 impl Library {
     /// Create a new playlist.
@@ -176,6 +179,59 @@ impl Library {
             .tracks
             .move_to(&Id::from_raw(track), to)
     }
+
+    /// What the library alone describes as rows: the destinations the window
+    /// opens and the albums it holds, each opened by one action. Songs carry
+    /// this device's offline copies and artists the provider's follow state,
+    /// and a playlist shows the songs it holds, which the window publishes
+    /// beside the library.
+    fn places(&self) -> Vec<Derived<Self>> {
+        let limit = crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT;
+        crate::actions::NAVIGATION_VIEWS
+            .iter()
+            .map(|&(id, label)| view_place(id, label))
+            .chain(self.albums.values().take(limit).map(album_place))
+            .collect()
+    }
+
+    /// The row `id` names, when the published page leaves it out: a
+    /// destination, or any album the library holds.
+    fn place(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        if let Some(view) = crate::actions::parse_view_resource_id(id) {
+            return crate::actions::known_view_label(view)
+                .map(|label| view_place(view, label).publish());
+        }
+        let album = id
+            .strip_prefix("music.album:")
+            .filter(|id| !id.is_empty())?;
+        self.album(album).map(|album| album_place(album).publish())
+    }
+}
+
+/// The row opening the destination `id`, labelled `label`.
+fn view_place(id: &str, label: &str) -> Derived<Library> {
+    Derived::new(label)
+        .of_kind("music.view")
+        .addressed(crate::actions::view_resource_id(id))
+        .with_operation(crate::actions::bound(
+            &MusicEffect::Open {
+                place: Place::View(id.to_owned()),
+            },
+            &format!("Open {label}"),
+        ))
+}
+
+/// An album of the library as a row: opening its page is all it offers.
+fn album_place(album: &Album) -> Derived<Library> {
+    Derived::new(album.title.clone())
+        .of_kind("music.album")
+        .addressed(crate::actions::album_resource_id(&album.id))
+        .with_operation(crate::actions::bound(
+            &MusicEffect::Open {
+                place: Place::Album(album.id.clone()),
+            },
+            "Open album",
+        ))
 }
 
 /// The screenshot scenarios: the sample library (`empty` has none) with the

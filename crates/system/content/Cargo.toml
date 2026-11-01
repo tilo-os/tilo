@@ -21,6 +21,8 @@ dir = ["dep:tilo-advisory-lock", "dep:tilo-clock", "dep:tilo-files", "dep:tilo-p
 tilo-content-types = { version = "0.1.0", path = "../content-types" }
 tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock", optional = true }
 blake3.workspace = true
+# `ContentState` travels on the collaboration wire.
+serde.workspace = true
 thiserror.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", optional = true }
 tracing.workspace = true

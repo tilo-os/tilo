@@ -158,7 +158,7 @@ mod view_key_tests {
         }
         // phase: every_spelling_of_the_desktop_reads_as_the_desktop
         // The two older spellings of the desktop still mean it: a session's
-        // room-scoped republish, and the tag the keyless capnp cursor path was
+        // room-scoped republish, and the tag the old keyless cursor path was
         // re-keyed to.
         {
             assert!(PresenceKey::desktop_pointer("r").scopes_a_desktop_pointer());

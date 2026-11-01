@@ -1,11 +1,10 @@
 //! A device has one leaf in the group of each channel it takes part in.
 //!
 //! A room placed on this device is governed by the device's own room host,
-//! which signs with the device's key and takes part in the room's channels;
-//! the device's broker takes its keys from the host rather than joining as a
-//! second member under the same key. Two groups signed under one key would
-//! fork the channel: the member admitted by one could not read what the
-//! other's group sealed.
+//! which holds no channel keys of its own: it takes part as the device's
+//! channel service's one peer, asking it for each channel's keys. A second
+//! peer of the same device key would fork the channel: the member admitted
+//! by one group could not read what the other's sealed.
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
@@ -19,8 +18,8 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::{HostIdentity, Reach, ShellNetwork};
 use crate::shell::channel_encryption::{
-    ChannelAccess, ChannelEncryption, ChannelEncryptionConfig, GovernanceTransport,
-    InboundChannelGovernance,
+    ChannelAccess, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
+    GovernanceTransport, InboundChannelGovernance,
 };
 use crate::shell::channel_policy::WorkspaceChannelDirectory;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
@@ -95,8 +94,8 @@ fn channels(
     tree: &WorkspaceTreeHandle,
     dir: &std::path::Path,
     key: &SigningKey,
-) -> ChannelEncryption {
-    ChannelEncryption::open(
+) -> ChannelKeyAccess {
+    let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: dir.join("channels"),
             vault: channel_crypto::VaultKey::new([9; 32]),
@@ -104,14 +103,16 @@ fn channels(
         },
         Box::new(
             WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
-                .with_governors(crate::shell::network::ShellNetwork::room_governors(net))
-                .with_hosted_channel_keys(crate::shell::collab_broker::hosted_channel_keys_of(
-                    Arc::clone(net),
-                )),
+                .with_governors(crate::shell::network::ShellNetwork::room_governors(net)),
         ),
         Arc::new(Mutex::new(BrokerChannels::default())),
     )
-    .unwrap()
+    .unwrap();
+    let access = ChannelKeyAccess::new(service);
+    // This device's own room host takes part in a room's channels as this
+    // service's one peer.
+    net.install_channel_keys(Some(access.clone()));
+    access
 }
 
 /// The room transport of a device, keeping every governance frame that
@@ -253,8 +254,8 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
 
     let route = collab_types::ChannelRoute::new(NOTES, "plan");
     let channel = route.channel(&room.to_string());
-    let mut owner_channels = channels(&owner, &owner_tree, &dir.path().join("owner"), &owner_key);
-    let mut member_channels = channels(
+    let owner_channels = channels(&owner, &owner_tree, &dir.path().join("owner"), &owner_key);
+    let member_channels = channels(
         &member,
         &member_tree,
         &dir.path().join("member"),
@@ -262,14 +263,10 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
     );
     let owner_transport = Recording::new(&owner);
     let member_transport = Recording::new(&member);
-    let pump = |channels: &mut ChannelEncryption, transport: &Recording<'_>| {
+    let pump = |channels: &ChannelKeyAccess, transport: &Recording<'_>| {
         transport.net.tick();
-        channels.pump(
-            transport,
-            Instant::now(),
-            tilo_clock::try_unix_now().unwrap(),
-        );
-        channels.access_record(room, &route, Instant::now()).1
+        channels.pump(transport);
+        channels.access_record(room, &route).0
     };
     let ready = |access: ChannelAccess, who: &str| match access {
         ChannelAccess::Ready(keys) => Some(keys),
@@ -295,11 +292,11 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
     let deadline = tilo_test_env::hang_deadline();
     let (owner_keys, member_keys) = loop {
         let owner_keys = ready(
-            pump(&mut owner_channels, &owner_transport),
+            pump(&owner_channels, &owner_transport),
             "the owner's device",
         );
         let member_keys = ready(
-            pump(&mut member_channels, &member_transport),
+            pump(&member_channels, &member_transport),
             "the collaborator",
         );
         if let Some(keys) = owner_keys.zip(member_keys) {
@@ -310,13 +307,11 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
             "timed out waiting for both devices to open the channel; owner ready {}, \
              collaborator ready {}, (broker signed, the host signed) {:?}",
             matches!(
-                owner_channels.access_record(room, &route, Instant::now()).1,
+                owner_channels.access_record(room, &route).0,
                 ChannelAccess::Ready(_)
             ),
             matches!(
-                member_channels
-                    .access_record(room, &route, Instant::now())
-                    .1,
+                member_channels.access_record(room, &route).0,
                 ChannelAccess::Ready(_)
             ),
             signers()
@@ -331,7 +326,7 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
     let opened = member_keys.open_content(artifact, &metadata, &sealed);
     let (broker, other) = signers();
     eprintln!(
-        "channel signers: the owner's broker signed {broker}, the host signed {other}; \
+        "channel signers: the owner's device signed {broker}, a second group signed {other}; \
          keys at epoch {} on the owner's device and {} on the collaborator's",
         owner_keys.epoch(),
         member_keys.epoch()
@@ -360,22 +355,23 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
     );
     drop((owner_transport, member_transport));
     assert!(
-        !broker,
-        "the owner's broker took part in a channel its device's host takes part in"
+        broker,
+        "the owner's device signed the channel's frames, its host having no leaf of its own"
     );
-    assert!(other, "the room's host takes part in the channel");
-    // The owner's device takes its keys from its own host; the
-    // collaborator, whose room is hosted elsewhere, takes part itself.
     assert!(
-        owner
-            .hosted_channel_keys(room, channel, None, false)
+        !other,
+        "no second group signed frames under the device's key"
+    );
+    // The owner's device reads the channel through the one service its host
+    // asks; the collaborator, whose room is hosted elsewhere, reads it
+    // through its own service while its host holds no channel.
+    assert!(
+        owner_channels
+            .record_keys(room, &route)
             .is_some_and(|keys| keys.is_ok())
     );
-    assert!(
-        member
-            .hosted_channel_keys(room, channel, None, false)
-            .is_none()
-    );
+    assert!(owner.hosted_here(room), "the room is hosted here");
+    assert!(!member.hosted_here(room), "the room is hosted elsewhere");
     drop((owner, member));
 }
 
@@ -404,12 +400,7 @@ fn a_connection_asking_for_keys_of_a_room_placed_here_after_it_started_survives(
         DeviceCapabilities::primary(),
     );
     assert!(net.join_default_workspace());
-    let access = crate::shell::channel_encryption::ChannelKeyAccess::new(channels(
-        &net,
-        &tree,
-        &dir.path().join("owner"),
-        &key,
-    ));
+    let access = channels(&net, &tree, &dir.path().join("owner"), &key);
     // The broker's runtime: its connections are tasks on one thread.
     let broker = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -433,10 +424,6 @@ fn a_connection_asking_for_keys_of_a_room_placed_here_after_it_started_survives(
         matches!(answer, ChannelAccess::Ready(_)),
         "the host hands this device the channel's keys: {answer:?}"
     );
-    assert!(
-        net.hosted_channel_keys(room, channel, None, false)
-            .is_some_and(|keys| keys.is_ok()),
-        "the room is hosted here"
-    );
+    assert!(net.hosted_here(room), "the room is hosted here");
     drop(net);
 }

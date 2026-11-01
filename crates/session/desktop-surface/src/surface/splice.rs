@@ -106,8 +106,21 @@ fn update_group(
                 group.reorder_tab(from, index);
                 group.update_tab_descriptor(descriptor(tab));
             }
-            // A tab still fading out after its close keeps its host.
-            None if group.host_for_tab_mut(tab.id).is_some() => {}
+            // Mid close-fade: the window is the tree's again, so the fade
+            // is undone with it — pill and host both — and the pill takes
+            // the place the tree gives it.
+            None if group.cancel_tab_close(tab.id) => {
+                if let Some(from) = group.tabs().iter().position(|t| t.id == tab.id) {
+                    group.reorder_tab(from, index);
+                }
+                group.update_tab_descriptor(descriptor(tab));
+            }
+            // A host outliving its pill: both leave and the window comes in
+            // again, so the bar and its hosts stay one list each.
+            None if group.host_for_tab_mut(tab.id).is_some() => {
+                group.detach_tab(tab.id);
+                group.insert_detached_tab(index, descriptor(tab), host_for(tab));
+            }
             None => group.insert_detached_tab(index, descriptor(tab), host_for(tab)),
         }
     }

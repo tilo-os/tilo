@@ -342,7 +342,15 @@ mod tests {
         service.settle();
         let resources = service.resources();
         let player = &resources[0].children[0];
-        assert_eq!(player.label, "Blue in Green · Miles Davis");
+        assert_eq!(player.label, "Blue in Green");
+        assert_eq!(
+            player
+                .presentation
+                .as_ref()
+                .and_then(|shown| shown.detail.as_deref()),
+            Some("Miles Davis"),
+            "who made it is the row's second line, not part of its label"
+        );
         assert!(
             !player.id.as_str().contains("music"),
             "the bus name stays out of what is published"

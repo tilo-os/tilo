@@ -130,7 +130,9 @@ fn fixture() -> (NativeMorningSources, Arc<Host>, MorningSource) {
         commands: Mutex::default(),
     });
     let native = {
-        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let broker =
+            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
+            );
         NativeMorningSources {
             sessions: ActionSessionSource::with_mock(broker.clone(), host.clone()),
             broker,

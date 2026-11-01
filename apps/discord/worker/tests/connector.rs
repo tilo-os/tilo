@@ -126,7 +126,7 @@ async fn the_worker_binary_bridges_through_the_connector_host() {
     // The webhook token goes into the host's store, not the result.
     let created = process
         .perform(
-            json!({"op": {"op": "create-webhook", "channel": CHANNEL_GENERAL, "tilo": "room"}}),
+            json!({"op": {"op": "create-webhook", "channel": CHANNEL_GENERAL, "tilo": "workspace"}}),
         )
         .await
         .unwrap();

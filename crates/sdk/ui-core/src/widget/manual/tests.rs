@@ -28,7 +28,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
             crate::State::new(),
             Box::new(fixed(Box::new(
                 Button::new("action", "A very long action title")
-                    .on_click(crate::testing::record_click("clicked")),
+                    .on_effect(crate::testing::record_click("clicked")),
             ))),
             (400, 300),
         );

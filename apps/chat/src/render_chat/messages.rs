@@ -153,7 +153,7 @@ impl ChatApp {
             "chat-empty-title-read-only"
         });
         // An empty channel says what it is for, or invites the first word:
-        // a visitor arriving in a quiet room should know they may start it.
+        // a visitor arriving in a quiet workspace should know they may start it.
         let channel_message = self.empty_channel_message();
         let content = EmptyStateContent {
             icon: Some(Icon::Send),
@@ -186,14 +186,16 @@ impl ChatApp {
         })
     }
 
-    /// How wide a message's text runs in the timeline `area`: the room the
+    /// How wide a message's text runs in the timeline `area`: the workspace the
     /// column leaves, but no wider than the readable measure, so a line on a
     /// wide screen stays one the eye can follow back to its start.
     pub(crate) fn message_text_width(&self, area: Rect, theme: &Theme) -> f32 {
         let text_x = area.x0 + self.chrome.text_inset();
-        let room = area.x1 - text_x - self.chrome.gutter;
+        let workspace = area.x1 - text_x - self.chrome.gutter;
         let readable = f64::from(theme.tokens.metrics.readable_width);
-        room.min(readable).max(f64::from(theme.tokens.spacing.s16)) as f32
+        workspace
+            .min(readable)
+            .max(f64::from(theme.tokens.spacing.s16)) as f32
     }
 
     pub(crate) fn draw_messages(
@@ -456,7 +458,7 @@ impl ChatApp {
 
     /// The place of the earlier messages, above the oldest held, in `band`:
     /// its ground until a part is asked for, then the part arriving, or,
-    /// when the room's hosts have none of it, that they are not available.
+    /// when the workspace's hosts have none of it, that they are not available.
     fn draw_earlier(&self, mut paint: PaintCtx<'_>, band: Rect, column: MessageColumn) {
         let Some(pager) = self.scrollback.pager.as_ref() else {
             return;

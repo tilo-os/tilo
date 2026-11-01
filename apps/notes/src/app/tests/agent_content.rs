@@ -1,5 +1,5 @@
 //! What an agent makes in Notes without a file chooser: Markdown appended
-//! to a note it names by title, and exports kept as the room's content.
+//! to a note it names by title, and exports kept as the workspace's content.
 
 use super::*;
 
@@ -67,7 +67,7 @@ fn append_to_note_refuses_a_title_no_note_carries() {
     );
 }
 
-/// An agent of the room, as the host admits one.
+/// An agent of the workspace, as the host admits one.
 fn agent(name: &str) -> ui::tilo_actions::ActionInvoker {
     ui::tilo_actions::ActionInvoker::actor(name).with_kind(ui::tilo_actions::ActorKind::Agent)
 }

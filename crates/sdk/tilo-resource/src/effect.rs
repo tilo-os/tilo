@@ -128,6 +128,24 @@ use tilo_actions::{
     EncodedAction, ExecutionMode, OperationKind, ResultSpec, RetryPolicy, RiskLevel, Target,
 };
 
+/// Why a caller's invocation does not name an effect of a vocabulary.
+#[derive(Debug, thiserror::Error)]
+pub enum EffectDecodeError {
+    /// The vocabulary offers no effect of that id.
+    #[error("there is no effect `{0}`")]
+    Unknown(String),
+    /// The payload the invocation travels in does not decode.
+    #[error("the effect's payload does not decode")]
+    Payload(#[source] serde_json::Error),
+    /// One argument does not have its field's type.
+    #[error("the effect's `{name}` argument does not decode")]
+    Argument {
+        name: String,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
 /// A typed vocabulary of effects. Derive it (`#[derive(Effect)]`); see the
 /// [module docs](self).
 pub trait Effect: Sized + 'static {
@@ -192,7 +210,7 @@ pub trait Effect: Sized + 'static {
     fn decode(
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Self, String>;
+    ) -> Result<Self, EffectDecodeError>;
 
     /// The published action of every effect offered on the resource: all
     /// but the `row` ones, which are offered only [bound](Self::bound).
@@ -275,7 +293,7 @@ pub trait Effect: Sized + 'static {
     ///
     /// # Errors
     /// Returns why the payload is not an effect of this vocabulary.
-    fn from_payload(payload: &[u8]) -> Result<Self, String> {
+    fn from_payload(payload: &[u8]) -> Result<Self, EffectDecodeError> {
         let Payload { effect, args } = decode_payload(payload)?;
         Self::decode(&effect, &args)
     }
@@ -302,8 +320,8 @@ struct Payload {
 /// The [`Payload`] in `payload`. Not generic over the effect, so its decoder
 /// is compiled once rather than in every app's `from_payload`.
 #[inline(never)]
-fn decode_payload(payload: &[u8]) -> Result<Payload, String> {
-    tilo_actions::decode_json(payload).map_err(|error| error.to_string())
+fn decode_payload(payload: &[u8]) -> Result<Payload, EffectDecodeError> {
+    tilo_actions::decode_json(payload).map_err(EffectDecodeError::Payload)
 }
 
 /// How an encoded invocation's arguments are made of the caller's and the
@@ -917,8 +935,11 @@ impl Effect for NoEffect {
         serde_json::Map::new()
     }
 
-    fn decode(id: &str, _: &serde_json::Map<String, serde_json::Value>) -> Result<Self, String> {
-        Err(format!("there is no effect `{id}`"))
+    fn decode(
+        id: &str,
+        _: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Self, EffectDecodeError> {
+        Err(EffectDecodeError::Unknown(id.to_owned()))
     }
 }
 
@@ -931,10 +952,13 @@ impl Effect for NoEffect {
 pub fn argument<T: serde::de::DeserializeOwned>(
     arguments: &serde_json::Map<String, serde_json::Value>,
     name: &str,
-) -> Result<T, String> {
+) -> Result<T, EffectDecodeError> {
     // Only the decode is per type: the lookup and the message are compiled
     // once for every argument of every effect.
-    T::deserialize(argument_value(arguments, name)).map_err(|error| argument_error(name, &error))
+    T::deserialize(argument_value(arguments, name)).map_err(|error| EffectDecodeError::Argument {
+        name: name.to_owned(),
+        source: error,
+    })
 }
 
 /// The argument `name`, or `null` when it is absent.
@@ -947,12 +971,6 @@ fn argument_value(
         .get(name)
         .cloned()
         .unwrap_or(serde_json::Value::Null)
-}
-
-/// Why argument `name` did not decode.
-#[inline(never)]
-fn argument_error(name: &str, error: &serde_json::Error) -> String {
-    format!("`{name}`: {error}")
 }
 
 /// Put one argument of an effect being encoded; an absent optional one
@@ -1305,7 +1323,11 @@ mod tests {
         };
         let error = Files::decode("save-copy", &arguments("copy.txt", None)).unwrap_err();
         assert!(
-            error.contains("`path`") && error.contains("absolute"),
+            matches!(
+                &error,
+                EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
             "{error}"
         );
         assert!(Files::decode("save-copy", &arguments("/a/copy.txt", Some("b"))).is_err());

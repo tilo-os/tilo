@@ -58,7 +58,7 @@ impl Described for DropZone {
             });
         }
         if !drop.is_none() {
-            zone = zone.on_files(move |files: Vec<PathBuf>| {
+            zone = zone.on_files_view(move |files: Vec<PathBuf>| {
                 let paths: Vec<Value> = files
                     .into_iter()
                     .map(|path| Value::Text(path.display().to_string()))

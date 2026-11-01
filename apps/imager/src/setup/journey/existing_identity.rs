@@ -266,7 +266,7 @@ impl ExistingIdentity {
                     .with_label(FieldRole::Secret, t("installer-existing-password-label"))
                     .with_secret_buffer(Arc::clone(&self.password))
                     .with_error(failed)
-                    .on_submit(move || submit()),
+                    .on_enter_default(move || submit()),
             ));
         } else {
             body = body.push(Box::new(Text::new(&t("installer-existing-file-body"))));

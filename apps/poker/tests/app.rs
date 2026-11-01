@@ -13,15 +13,15 @@ use poker::{App, Table};
 use ui::prelude::{Invoke, Replica, TestApp};
 
 /// Everyone at the table, each with their own replica of it: an action is
-/// applied by its player's replica and synced to the others, as the room
+/// applied by its player's replica and synced to the others, as the workspace
 /// delivers it.
-struct Room {
+struct Workspace {
     replicas: Vec<Replica<Table>>,
     names: Vec<&'static str>,
     now: i64,
 }
 
-impl Room {
+impl Workspace {
     fn new(names: &[&'static str]) -> Self {
         let mut first = Replica::<Table>::new();
         let replicas = names
@@ -111,14 +111,16 @@ impl Room {
 
 #[test]
 fn people_joining_get_different_seats() {
-    let mut room = Room::new(&["ada", "grace", "alan"]);
+    let mut workspace = Workspace::new(&["ada", "grace", "alan"]);
     // All three ask for seat 1 before hearing of each other.
     for at in 0..3 {
-        room.replicas[at].set_now_ms(100 + i64::try_from(at).unwrap());
-        room.replicas[at].apply(Table::SIT.with(1)).expect("sit");
+        workspace.replicas[at].set_now_ms(100 + i64::try_from(at).unwrap());
+        workspace.replicas[at]
+            .apply(Table::SIT.with(1))
+            .expect("sit");
     }
-    room.sync();
-    let seating = room.table().seating();
+    workspace.sync();
+    let seating = workspace.table().seating();
     let seated: Vec<&str> = seating.iter().flatten().map(String::as_str).collect();
     assert_eq!(
         seated,
@@ -129,16 +131,16 @@ fn people_joining_get_different_seats() {
 
 #[test]
 fn a_hand_plays_to_the_showdown_and_keeps_every_chip() {
-    let mut room = Room::new(&["ada", "grace", "alan"]);
-    room.seat_all();
-    assert_eq!(room.table().dealer(), Some("ada"));
+    let mut workspace = Workspace::new(&["ada", "grace", "alan"]);
+    workspace.seat_all();
+    assert_eq!(workspace.table().dealer(), Some("ada"));
     assert!(
-        room.act("grace", Table::DEAL.invoke()).is_err(),
+        workspace.act("grace", Table::DEAL.invoke()).is_err(),
         "only the dealer deals"
     );
-    room.act("ada", Table::DEAL.invoke()).expect("deal");
+    workspace.act("ada", Table::DEAL.invoke()).expect("deal");
 
-    let table = room.table();
+    let table = workspace.table();
     assert_eq!(table.hand.street, Street::Preflop);
     let dealt: Vec<u8> = table
         .hand
@@ -152,10 +154,10 @@ fn a_hand_plays_to_the_showdown_and_keeps_every_chip() {
         52,
         "one deck, no card twice"
     );
-    assert_eq!(room.total_chips(), 3 * BUY_IN);
+    assert_eq!(workspace.total_chips(), 3 * BUY_IN);
 
-    room.call_down();
-    let table = room.table();
+    workspace.call_down();
+    let table = workspace.table();
     assert_eq!(table.hand.street, Street::Done);
     assert_eq!(table.hand.board.len(), 5);
     assert!(!table.hand.awards.is_empty(), "someone won the pot");
@@ -163,38 +165,55 @@ fn a_hand_plays_to_the_showdown_and_keeps_every_chip() {
         table.hand.players.iter().all(|p| p.shown),
         "a showdown shows every live hand"
     );
-    assert_eq!(room.total_chips(), 3 * BUY_IN, "no chip made or lost");
+    assert_eq!(workspace.total_chips(), 3 * BUY_IN, "no chip made or lost");
 }
 
 #[test]
 fn only_the_player_to_act_may_act() {
-    let mut room = Room::new(&["ada", "grace", "alan"]);
-    room.seat_all();
-    room.act("ada", Table::DEAL.invoke()).expect("deal");
-    let actor = room
+    let mut workspace = Workspace::new(&["ada", "grace", "alan"]);
+    workspace.seat_all();
+    workspace.act("ada", Table::DEAL.invoke()).expect("deal");
+    let actor = workspace
         .table()
         .hand
         .actor()
         .expect("someone acts")
         .player
         .clone();
-    let other = room.names.iter().copied().find(|n| *n != actor).unwrap();
-    assert!(room.act(other, Table::FOLD.invoke()).is_err());
-    assert!(room.act(other, Table::CALL.invoke()).is_err());
+    let other = workspace
+        .names
+        .iter()
+        .copied()
+        .find(|n| *n != actor)
+        .unwrap();
+    assert!(workspace.act(other, Table::FOLD.invoke()).is_err());
+    assert!(workspace.act(other, Table::CALL.invoke()).is_err());
 }
 
 #[test]
 fn folding_to_a_raise_gives_the_raiser_the_pot() {
-    let mut room = Room::new(&["ada", "grace"]);
-    room.seat_all();
-    room.act("ada", Table::DEAL.invoke()).expect("deal");
-    let first = room.table().hand.actor().unwrap().player.clone();
-    let first = room.names.iter().copied().find(|n| *n == first).unwrap();
-    room.act(first, Table::RAISE.with(100.0)).expect("raise");
-    let second = room.table().hand.actor().unwrap().player.clone();
-    let second = room.names.iter().copied().find(|n| *n == second).unwrap();
-    room.act(second, Table::FOLD.invoke()).expect("fold");
-    let table = room.table();
+    let mut workspace = Workspace::new(&["ada", "grace"]);
+    workspace.seat_all();
+    workspace.act("ada", Table::DEAL.invoke()).expect("deal");
+    let first = workspace.table().hand.actor().unwrap().player.clone();
+    let first = workspace
+        .names
+        .iter()
+        .copied()
+        .find(|n| *n == first)
+        .unwrap();
+    workspace
+        .act(first, Table::RAISE.with(100.0))
+        .expect("raise");
+    let second = workspace.table().hand.actor().unwrap().player.clone();
+    let second = workspace
+        .names
+        .iter()
+        .copied()
+        .find(|n| *n == second)
+        .unwrap();
+    workspace.act(second, Table::FOLD.invoke()).expect("fold");
+    let table = workspace.table();
     assert_eq!(table.hand.street, Street::Done);
     assert_eq!(table.hand.awards.len(), 1);
     assert_eq!(table.hand.awards[0].player, first);
@@ -205,16 +224,28 @@ fn folding_to_a_raise_gives_the_raiser_the_pot() {
 
 #[test]
 fn all_in_runs_the_board_out() {
-    let mut room = Room::new(&["ada", "grace"]);
-    room.seat_all();
-    room.act("ada", Table::DEAL.invoke()).expect("deal");
-    let first = room.table().hand.actor().unwrap().player.clone();
-    let first = room.names.iter().copied().find(|n| *n == first).unwrap();
-    room.act(first, Table::ALL_IN.invoke()).expect("all in");
-    let second = room.table().hand.actor().unwrap().player.clone();
-    let second = room.names.iter().copied().find(|n| *n == second).unwrap();
-    room.act(second, Table::CALL.invoke()).expect("call");
-    let table = room.table();
+    let mut workspace = Workspace::new(&["ada", "grace"]);
+    workspace.seat_all();
+    workspace.act("ada", Table::DEAL.invoke()).expect("deal");
+    let first = workspace.table().hand.actor().unwrap().player.clone();
+    let first = workspace
+        .names
+        .iter()
+        .copied()
+        .find(|n| *n == first)
+        .unwrap();
+    workspace
+        .act(first, Table::ALL_IN.invoke())
+        .expect("all in");
+    let second = workspace.table().hand.actor().unwrap().player.clone();
+    let second = workspace
+        .names
+        .iter()
+        .copied()
+        .find(|n| *n == second)
+        .unwrap();
+    workspace.act(second, Table::CALL.invoke()).expect("call");
+    let table = workspace.table();
     assert_eq!(table.hand.street, Street::Done);
     assert_eq!(table.hand.board.len(), 5);
     assert_eq!(table.chips("ada") + table.chips("grace"), 2 * BUY_IN);
@@ -222,11 +253,11 @@ fn all_in_runs_the_board_out() {
 
 #[test]
 fn leaving_folds_your_hand() {
-    let mut room = Room::new(&["ada", "grace", "alan"]);
-    room.seat_all();
-    room.act("ada", Table::DEAL.invoke()).expect("deal");
-    room.act("alan", Table::LEAVE.invoke()).expect("leave");
-    let table = room.table();
+    let mut workspace = Workspace::new(&["ada", "grace", "alan"]);
+    workspace.seat_all();
+    workspace.act("ada", Table::DEAL.invoke()).expect("deal");
+    workspace.act("alan", Table::LEAVE.invoke()).expect("leave");
+    let table = workspace.table();
     assert!(!table.players.contains_key("alan"));
     let alan = table
         .hand
@@ -261,7 +292,7 @@ fn opening_the_table_seats_nobody_until_they_take_a_seat() {
     );
 }
 
-/// A seat is chosen from the table everyone sees: until the room's table
+/// A seat is chosen from the table everyone sees: until the workspace's table
 /// has arrived, the window shows it arriving and offers no seat.
 #[test]
 fn taking_a_seat_waits_for_the_table_to_arrive() {
@@ -299,7 +330,7 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
                 harness.a11y_node_named("Take a seat").is_some()
                     && !harness.frame_output().needs_animation_frame
             }),
-        "the table arrives once the room synced"
+        "the table arrives once the workspace synced"
     );
     assert!(take_a_seat_enabled(&mut app), "the table has arrived");
     take_a_seat(&mut app);

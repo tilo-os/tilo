@@ -147,10 +147,10 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
     );
 }
 
-/// A launch opens the room's notebook, the one record every Notes window in
-/// the room opens (not one per window), so they edit one notebook.
+/// A launch opens the workspace's notebook, the one record every Notes window in
+/// the workspace opens (not one per window), so they edit one notebook.
 #[test]
-fn a_launch_opens_the_rooms_notebook() {
+fn a_launch_opens_the_workspaces_notebook() {
     let temp = tempfile::tempdir().unwrap();
     let data = temp.path().join("notebook");
     run(
@@ -159,11 +159,11 @@ fn a_launch_opens_the_rooms_notebook() {
         None,
         &temp.path().join("dump.json"),
     );
-    let room = data.join("so.tilo.notes").join("rooms").join("personal");
-    assert!(room.join("state.automerge").is_file(), "{room:?}");
+    let workspace = data.join("so.tilo.notes").join("rooms").join("personal");
+    assert!(workspace.join("state.automerge").is_file(), "{workspace:?}");
     assert!(
-        !room.join("records").exists(),
-        "no per-window record beside the room's notebook"
+        !workspace.join("records").exists(),
+        "no per-window record beside the workspace's notebook"
     );
 }
 

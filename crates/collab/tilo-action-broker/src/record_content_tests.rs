@@ -4,8 +4,8 @@
 /// heard it being fetched.
 #[tokio::test(flavor = "current_thread")]
 async fn a_picture_one_app_offers_reaches_an_app_on_another_host() {
-    use runtime_collab::BlobState;
     use signed_worker::OriginalRoom;
+    use tilo_content::ContentState;
     tokio::task::LocalSet::new()
         .run_until(async {
             let (content_a, content_b, _) = crate::record_content::tests::pair(true);
@@ -37,14 +37,14 @@ async fn a_picture_one_app_offers_reaches_an_app_on_another_host() {
             let fetching = next().await;
             assert_eq!(
                 (fetching.hash.as_str(), fetching.state),
-                (hash.as_str(), BlobState::Fetching),
+                (hash.as_str(), ContentState::Pending),
                 "the app hears its want is fetched from the host that holds it"
             );
             assert!(fetching.bytes.is_empty());
             let arrived = next().await;
             assert_eq!(
                 (arrived.hash.as_str(), arrived.state),
-                (hash.as_str(), BlobState::Arrived)
+                (hash.as_str(), ContentState::Resolved)
             );
             assert_eq!(arrived.bytes, picture);
         })
@@ -72,8 +72,8 @@ async fn a_host_without_record_content_says_so() {
 #[tokio::test(flavor = "current_thread")]
 async fn an_app_hears_its_want_wait_for_an_offline_holder_and_the_picture_arrive_when_it_connects()
 {
-    use runtime_collab::BlobState;
     use signed_worker::OriginalRoom;
+    use tilo_content::ContentState;
     tokio::task::LocalSet::new()
         .run_until(async {
             let pair = crate::record_content::tests::hosts(false, true);
@@ -98,18 +98,18 @@ async fn an_app_hears_its_want_wait_for_an_offline_holder_and_the_picture_arrive
             let waiting = next().await;
             assert_eq!(
                 (waiting.hash.as_str(), waiting.state),
-                (hash.as_str(), BlobState::Waiting)
+                (hash.as_str(), ContentState::Waiting)
             );
             assert!(waiting.bytes.is_empty());
 
             pair.connect(true);
             assert_eq!(
                 next().await.state,
-                BlobState::Fetching,
+                ContentState::Pending,
                 "asked of the holder"
             );
             let arrived = next().await;
-            assert_eq!(arrived.state, BlobState::Arrived);
+            assert_eq!(arrived.state, ContentState::Resolved);
             assert_eq!(arrived.bytes, picture);
         })
         .await;

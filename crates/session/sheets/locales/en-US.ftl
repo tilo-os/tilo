@@ -15,15 +15,61 @@ power-restart = Restart
 power-restart-detail = Open apps close
 power-shut-down = Shut down
 power-shut-down-detail = Open apps close
+power-shut-down-session-detail = The window closes; the computer stays on
+power-not-offered-switch-user = Switching user is not possible in this window
+power-not-offered-power = This window cannot change the computer's power
 
 ## Display change
 
 display-confirm-keep = Keep
 display-confirm-revert = Revert
+display-confirm-countdown = Reverting in { $seconds } s
+display-confirm-applying = Applying…
+display-confirm-answer-pending = Saving the display answer…
 display-confirm-tool-title = Keep the display change from { $tool }?
 display-confirm-tool-unknown-title = Keep this display change?
 display-confirm-always = Keep, and don't ask again for { $tool }
 display-confirm-a11y-description = A display tool changed a screen you're using, or picked a mode it hasn't shown before, which can leave it blank. Enter keeps the change; Escape, or waiting, restores the previous layout.
+
+## Dictation
+
+dictation-title = Dictation
+dictation-ask-title = Dictate into this field?
+dictation-ask-body = Tilo will listen through the microphone once, only until you stop, and keep the audio on this device. Nothing is recorded before you allow it.
+dictation-ask-caption = Your words go into the field you were in.
+dictation-allow = Allow
+dictation-deny = Not now
+dictation-preparing = Checking the focused editable field…
+dictation-loading = Loading local recognition. The microphone is off.
+dictation-listening = Microphone on. Speak, then finish to insert.
+dictation-live-preview = Preview: { $text }
+dictation-stopping-microphone = Stopping microphone…
+dictation-finishing = Microphone off. Finishing your text…
+dictation-stopping = Stopping dictation…
+dictation-finish = Insert
+dictation-cancel = Cancel
+dictation-recovery-title = The field took no words
+dictation-recovery-too-long = Microphone off · The text is too long to insert in one step. It is kept privately for 10 minutes. Copy exports all of it to your clipboard; discard removes it.
+dictation-recovery-vocabulary = Microphone off · Your personal dictionary changed. Start a new session to use the updated words. What was heard is kept privately for 10 minutes; copy exports it, discard removes it.
+dictation-recovery-kept = Kept privately for 10 minutes.
+dictation-copied = Copied. Paste it into the field you choose; the private draft stays until you discard it or 10 minutes pass.
+dictation-copy-failed = The clipboard is unavailable. Your transcript is still kept privately; try copying again or discard it.
+dictation-copy = Copy
+dictation-discard = Discard
+dictation-unavailable-title = Dictation isn't available
+dictation-unavailable = Local dictation is unavailable. No text was inserted.
+dictation-editable-required = Focus an editable field. Passwords cannot receive dictation.
+dictation-unsupported-field = Dictation is not supported in terminal fields yet. Focus another editable field.
+dictation-busy = The previous dictation is still stopping. Try again shortly.
+dictation-target-changed = The field changed. Dictation was canceled without inserting text.
+dictation-timeout = Dictation timed out. No text was inserted.
+dictation-model-required = Install an approved local speech model before using dictation.
+dictation-language-unavailable = This speech model does not support the requested language.
+dictation-microphone-unavailable = Microphone access is unavailable. Check your input device.
+dictation-vocabulary-unavailable = Your personal dictionary changed or became unavailable. Dictation stopped; start a new session.
+dictation-audio-interrupted = Microphone audio was interrupted. No text was inserted.
+dictation-close = Close
+dictation-open-settings = Set up
 
 ## Shortcut guide
 
@@ -32,6 +78,17 @@ guide-reopen-hint = Select a navigation shortcut to change it
 guide-done = Done
 guide-press-new-shortcut = Press a new shortcut for “{ $action }”
 guide-listening-cancel = Cancel
+guide-message-esc-cancels = { $message }; Esc cancels
+guide-rebind-needs-modifier = Add Super, Ctrl, Alt or Shift to printable keys.
+guide-rebind-in-use = Already used for “{ $action }”. Press another shortcut.
+guide-rebind-reserved = F1 and Print Screen are reserved by the desktop.
+guide-rebind-unsupported = That shortcut is not supported. Press another shortcut.
+guide-rebind-taken-by-action = Already used to run an action. Press another shortcut.
+guide-rebind-save-failed = Could not save that shortcut. Press another shortcut.
+guide-reset-in-use = A default is already used for “{ $action }”. Change that shortcut first.
+guide-reset-taken-by-action = A default now runs an action. Change that shortcut first.
+guide-reset-invalid = Could not restore the default shortcuts.
+guide-reset-save-failed = Could not restore the defaults.
 guide-navigation-heading = Edit navigation shortcuts
 guide-essentials-heading = Desktop essentials
 guide-group-windows = Windows and workspaces
@@ -63,6 +120,56 @@ guide-touch-open-overview = Open overview
 guide-touch-close-overview = Close overview
 guide-reset = Reset to default
 
+## What the keyboard's navigation rows move, and what else to know: windows,
+## tabs, strips and workspaces read as the controller rows above name them
+guide-row-move-tab = Move tab
+guide-row-maximize = Maximize or restore
+guide-row-move-group = Move group
+guide-row-resize = Resize
+guide-row-move-group-strip = Move group to strip
+guide-unassigned = Unassigned
+guide-unassigned-inline = unassigned
+guide-strip-jump = Go straight to a strip with { $first } … { $last }; strip 1 is the top one
+guide-app-tab-chords = { $next }, { $previous } and { $reopen } go to the app first; the desktop’s tab shortcuts here always work
+guide-your-shortcuts = Your shortcuts: { $shortcuts }
+
+## The catalogue's shortcut names, which the guide lists
+shortcut-name-focus-previous-window = Focus previous window
+shortcut-name-focus-next-window = Focus next window
+shortcut-name-previous-tab = Previous tab
+shortcut-name-next-tab = Next tab
+shortcut-name-attach-tab-left = Move tab into group on left
+shortcut-name-attach-tab-right = Move tab into group on right
+shortcut-name-maximize-window = Maximize window
+shortcut-name-restore-window = Restore window
+shortcut-name-previous-strip = Strip above
+shortcut-name-next-strip = Strip below
+shortcut-name-previous-workspace = Previous workspace
+shortcut-name-next-workspace = Next workspace
+shortcut-name-move-group-left = Move group left
+shortcut-name-move-group-right = Move group right
+shortcut-name-resize-narrower = Make window narrower
+shortcut-name-resize-wider = Make window wider
+shortcut-name-move-group-to-previous-strip = Move group to strip above
+shortcut-name-move-group-to-next-strip = Move group to strip below
+shortcut-name-reopen-closed-tab = Reopen closed tab
+shortcut-name-search = Search everywhere
+shortcut-name-emoji-picker = Emoji
+shortcut-name-workspace-overview = Overview
+shortcut-name-quick-settings = Quick Settings
+shortcut-name-lock = Lock screen
+shortcut-switch-windows = Switch windows
+shortcut-close-tab = Close tab
+shortcut-new-window = New window
+shortcut-duplicate-tab = New tab of this app
+shortcut-strip-switcher = Strip switcher
+shortcut-screenshot = Screenshot
+shortcut-display-layout = Display layout
+shortcut-capture-screenshot = Capture screenshot
+shortcut-open-terminal = Open terminal
+shortcut-picture-in-picture = Picture in picture
+shortcut-save-recent-replay = Save recent replay
+
 ## Public workspaces
 
 directory-title = Join a workspace
@@ -78,6 +185,25 @@ directory-joining = Joining…
 directory-join-named = Join { $name }
 directory-open-named = Open { $name }
 directory-try-again = Try again
+directory-community-tag = { $host }'s own
+directory-already-joining = You're already joining { $name }. It opens as soon as it's ready.
+directory-join-failed = Couldn't join { $name }: { $error }
+directory-code-failed = Couldn't join with that link or code: { $error }
+directory-joined-name = Joined workspace
+directory-join-failed-line = Didn't join: { $error }
+directory-here-now = { $count } here now
+directory-active-today = Active today
+directory-active-week = Active this week
+directory-quiet = Quiet lately
+directory-members = { $count ->
+    [one] 1 member
+   *[other] { $count } members
+}
+directory-joins-as = You join as { $role }
+directory-role-viewer = a viewer
+directory-role-commenter = a commenter
+directory-role-editor = an editor
+directory-role-moderator = a moderator
 
 ## Display sheet
 display-sheet-title = Display
@@ -136,6 +262,7 @@ portal-usb-row-read-write = Read and write
 portal-usb-row-read-only = Read only
 portal-a11y-name = Name
 portal-no-such-field = The question has no such field to type into.
+portal-request-gone = That question is no longer showing.
 portal-secret-incomplete = Fill in what the question asks first.
 portal-a11y-answer = Answer
 portal-allow = Allow
@@ -191,13 +318,6 @@ portal-print-print = Print
 portal-screenshot-title = Let { $app } take a screenshot?
 portal-screenshot-detail = It gets one picture of the screen as it is now.
 portal-screenshot-take = Take screenshot
-portal-pick-color-title = Pick a colour
-portal-pick-color-detail = Red, green and blue, each from 0 to 1.
-portal-pick-color-red = Red
-portal-pick-color-green = Green
-portal-pick-color-blue = Blue
-portal-pick-color-use = Use colour
-portal-pick-color-incomplete = Each part is a number from 0 to 1.
 portal-usb-title = Give { $app } USB devices?
 portal-usb-detail = { $app } gets the ticked devices until it stops asking or one is unplugged.
 portal-usb-allow = Give selected
@@ -237,6 +357,7 @@ portal-auth-rejected = That password was not accepted.
 
 file-chooser-nothing-asked = The file chooser is not asking anything.
 file-chooser-answered = The file chooser has already answered.
+file-chooser-request-gone = That file chooser is no longer showing.
 file-chooser-not-listed = That is not in the file chooser's list.
 file-chooser-not-a-folder = That is a file, not a folder.
 file-chooser-outside = That is outside the folders the file chooser may open.
@@ -245,8 +366,136 @@ file-chooser-unavailable = The file chooser can't do that now.
 
 ## The lock screen.
 lock-title = Locked
+lock-description = Type your password and press Enter to unlock.
 lock-unlock = Unlock
+lock-password = Password
+lock-welcome = Welcome back
+lock-enter-hint = Press Enter to unlock
+lock-caps-lock = Caps Lock is on
 lock-checking = Checking…
 lock-no-password = Type your password to unlock.
 lock-wrong-password = That password did not unlock. Try again.
 lock-unavailable = The password could not be checked. The screen stays locked.
+lock-switch-layout = Switch to { $layout }
+lock-on-screen-keyboard = On-screen keyboard
+lock-play = Play
+lock-pause = Pause
+lock-next = Next song
+lock-previous = Previous song
+lock-battery = Battery
+lock-suspend = Suspend
+lock-restart = Restart
+lock-shut-down = Shut down
+
+## The questions the session shows on the portal sheet: apps' access, the
+## administrator's, a network's secrets and a device pairing.
+portal-connect = Connect
+portal-remember-device = Remember on this device
+portal-secret-required = Fill in every required field.
+portal-secret-wifi-length = A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.
+portal-sim-unlock = Unlock
+portal-sim-unlocking = Unlocking the SIM…
+portal-sim-unlock-failed = The SIM could not be unlocked. Try again.
+portal-sim-pin-wrong = That PIN is wrong.
+portal-sim-puk-title = SIM locked
+portal-sim-puk-lead = Too many wrong PINs locked the SIM for “{ $network }”. Enter the PUK from the SIM’s card holder and choose a new PIN.
+portal-sim-puk-wrong = That PUK is wrong.
+portal-network-heading = Network
+portal-network-this-network = this network
+portal-network-password = Password
+portal-network-key = Key
+portal-network-user-name = User name
+portal-network-private-key-password = Private key password
+portal-network-anonymous-identity = Anonymous identity (optional)
+portal-network-wifi-title = Wi-Fi password required
+portal-network-enter-password = Enter the password for “{ $network }”.
+portal-network-wired-sign-in-title = Wired network sign-in
+portal-network-sign-in-title = Network sign-in
+portal-network-sign-in-lead = “{ $network }” needs your user name and password.
+portal-network-vpn-title = VPN sign-in
+portal-network-vpn-lead = Enter the secrets for “{ $network }”.
+portal-network-sim-pin-title = SIM PIN required
+portal-network-sim-pin-lead = Enter the PIN to unlock the SIM for “{ $network }”.
+portal-network-sim-pin = SIM PIN
+portal-network-mobile-title = Mobile broadband password required
+portal-network-dsl-title = DSL password required
+portal-network-retry = The last attempt did not work. Check it and try again.
+portal-network-wps = You can also press the WPS button on the router.
+portal-network-cert-pinned = The network's certificate is checked against this connection's certificate authority.
+portal-network-cert-pinned-domain = The network's certificate is checked against this connection's certificate authority. It must belong to { $domain }.
+portal-network-cert-system = The network's certificate is checked against the system's trusted authorities.
+portal-network-cert-system-domain = The network's certificate is checked against the system's trusted authorities. It must belong to { $domain }.
+portal-network-cert-unchecked = The network's certificate is not checked. Only continue on a network you trust.
+network-cannot-join-title = Couldn't join { $network }
+network-cannot-join-body = Enter the password to connect.
+network-cannot-join-action = Enter password
+bluetooth-prompt-title-confirm-passkey = Does { $device } show this code?
+bluetooth-prompt-title-display = Type this on { $device }
+bluetooth-prompt-title-request-passkey = Enter the code shown on { $device }
+bluetooth-prompt-title-request-pin = Enter the PIN for { $device }
+bluetooth-prompt-title-confirm-pairing = Pair with { $device }?
+bluetooth-prompt-title-authorize-service = Let { $device } connect?
+bluetooth-prompt-explain-confirm-passkey = Compare it with the code on the other device. If they differ, something else is trying to pair, so say no.
+bluetooth-prompt-explain-display = Enter this code on the other device to finish pairing.
+bluetooth-prompt-explain-request = The code is shown on the device you are pairing. Many keyboards ask you to type it and press Enter.
+bluetooth-prompt-explain-confirm-pairing = This device cannot show a code to compare, so there is nothing to check against. Only continue if you started this pairing yourself.
+bluetooth-prompt-explain-authorize-service = A device you have already paired is asking to use a new service. Paired devices can send input and audio to this machine.
+bluetooth-prompt-digits-entered = { $entered } of 6 digits entered
+bluetooth-prompt-service = For { $service }
+bluetooth-service-audio = audio
+bluetooth-service-calls = calls
+bluetooth-service-remote-control = media controls
+bluetooth-service-input = input
+bluetooth-service-contacts = contacts
+bluetooth-service-messages = messages
+bluetooth-service-files = file transfer
+bluetooth-service-network = network sharing
+bluetooth-prompt-pin-placeholder = PIN
+bluetooth-prompt-code-placeholder = 6-digit code
+bluetooth-prompt-reject = Don't pair
+bluetooth-prompt-cancel = Cancel
+bluetooth-prompt-accept-match = They match
+bluetooth-prompt-accept-allow = Allow
+bluetooth-prompt-accept-pair = Pair
+bluetooth-prompt-code-label = Code shown on the device
+bluetooth-prompt-pin-label = PIN for the device
+bluetooth-prompt-a11y-code = Code { $code }
+
+portal-allowed-title = Allowed for good
+portal-allowed-detail = { $app } may now use { $what } without asking. Revoke it to make Tilo ask again next time.
+portal-revoke = Revoke
+portal-keep = Keep
+
+## Adding a program the person downloaded to their apps, and uninstalling an app
+add-app-title = Add { $name } to apps?
+add-app-add = Add to apps
+add-app-decline = Don't add
+add-app-move = Move to Applications
+add-app-move-detail = Keeps it in the Applications folder in your files
+uninstall-title = Uninstall { $name }?
+uninstall-action = Uninstall
+uninstall-cancel = Cancel
+uninstall-remove-data = Remove its data
+uninstall-remove-data-detail = Your settings and saved files go to the Trash, where you can restore them.
+uninstall-device-body = It's removed for everyone on this computer.
+uninstall-files = { $count ->
+    [one] Its file goes to the Trash, where you can restore it.
+   *[other] All { $count } copies go to the Trash, where you can restore them.
+}
+uninstall-home-folder = Home
+uninstall-documents-body = Your documents stay in your workspaces.
+uninstall-from-apps-title = Remove { $name } from apps?
+uninstall-from-apps-action = Remove from apps
+uninstall-entry-body = It's part of the system, so it stays on this computer and no longer shows in your apps.
+
+## The agent door: a program of this login (an AI agent in a terminal) asks to
+## work in a workspace as an agent member.
+agent-door-client = { $client } ({ $program })
+agent-door-client-in-app = { $who }, in { $app }
+agent-door-admission = Work in “{ $workspace }” as the agent { $agent }
+agent-door-admission-detail = It joins this workspace as an observer: it reads what the workspace holds and does the actions it is granted, and you can remove it in the workspace’s settings at any time.
+agent-door-no-workspace = There is no workspace here to work in.
+agent-door-workspace-gone = The workspace this program asked to work in is gone.
+agent-door-not-administrator = You do not administer this workspace, so { $agent } was not added.
+agent-door-withdrawn = The request was withdrawn before anyone answered it.
+agent-door-declined = You didn’t let this program work here as an agent.

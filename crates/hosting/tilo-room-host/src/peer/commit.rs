@@ -140,19 +140,19 @@ async fn admit_commit(
     if !subscribed.contains(&workspace_id) {
         return refused("commit sent before subscribing to workspace");
     }
-    // The relay's own device takes part in its rooms' channels like any
-    // other member: its self-connection commits as that device.
-    let device =
-        peer.role == crate::auth::PeerRole::Device || &peer.cert == session.own_device_cert;
-    if !device || author_device_public_key != peer.device_public_key {
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return refused("workspace not bound on this relay");
+    };
+    // A commit carries its session's own device's change: a host this
+    // workspace is attached to carries its members' instead.
+    if author_device_public_key != peer.device_public_key
+        && !ws.lock().await.attached(&peer.device_public_key)
+    {
         return refused("author does not match authenticated device");
     }
     if let Some(limited) = over_change_limit(peer, session) {
         return refused(&limited.to_string());
     }
-    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return refused("workspace not bound on this relay");
-    };
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
         let reason = unpublished(&*ws.lock().await, peer);
         return refused(reason);
@@ -188,19 +188,20 @@ async fn admit_commit(
     if let Some(reason) = commit_refusal(&ws, author_device_public_key, &delta).await {
         return refused(&reason);
     }
-    if peer.role == crate::auth::PeerRole::Device {
-        // The caret and typing this device sends next wait for this change,
-        // as for one it sent alone (`super::handle_delta`).
-        ws.lock()
-            .await
-            .note_delta(peer.device_public_key, tokio::time::Instant::now());
+    // The caret and typing this device sends next wait for this change, as
+    // for one it sent alone (`super::handle_delta`). A host carrying its
+    // members' changes forgoes it: the caret is a device's own.
+    {
+        let mut runtime = ws.lock().await;
+        if !runtime.attached(&peer.device_public_key) {
+            runtime.note_delta(peer.device_public_key, tokio::time::Instant::now());
+        }
     }
     let authored = delta.clone();
     let admitted = Box::pin(enqueue_state_inner(
         &ws,
         delta,
         Some(source),
-        peer.role,
         session.metrics.clone(),
         false,
         false,

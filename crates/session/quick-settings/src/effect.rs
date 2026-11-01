@@ -217,6 +217,80 @@ pub enum QsEffect {
         #[param("The output's audio node")]
         node: u32,
     },
+    /// Set the microphone's level.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Microphone level",
+        icon = "mic",
+        keywords = "microphone level, mic gain, eingangspegel"
+    )]
+    SetInputVolume {
+        #[param("Level from 0 to 1")]
+        level: f64,
+    },
+    /// Mute or unmute the microphone.
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "mic-off",
+        keywords = "microphone, mic mute"
+    )]
+    SetInputMuted {
+        #[param("Whether the microphone is muted")]
+        muted: bool,
+    },
+    /// Unmute the microphone when it is muted, and mute it when it is not.
+    #[effect(
+        own_device,
+        label = "Mute or unmute the microphone",
+        icon = "mic-off",
+        keywords = "microphone, mic mute, mikrofon"
+    )]
+    ToggleInputMuted,
+    /// Play (or record) one application's stream through an output (or
+    /// input), or release it to follow the default.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Route an application",
+        icon = "speaker",
+        keywords = "per-app volume, application routing, app stream"
+    )]
+    RouteStream {
+        #[param("The stream's audio node")]
+        stream: u32,
+        #[param("The output's (or input's) audio node; none follows the default")]
+        device: Option<u32>,
+    },
+    /// Set one application's volume.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Application volume",
+        icon = "volume-2",
+        keywords = "per-app volume, application level, app stream"
+    )]
+    SetStreamVolume {
+        #[param("The stream's audio node")]
+        stream: u32,
+        #[param("Level from 0 to 1")]
+        level: f64,
+    },
+    /// Mute or unmute one application.
+    #[effect(
+        own_device,
+        idempotent,
+        label = "Mute an application",
+        icon = "volume-x",
+        keywords = "per-app mute, application mute, app stream"
+    )]
+    SetStreamMuted {
+        #[param("The stream's audio node")]
+        stream: u32,
+        #[param("Whether the stream is muted")]
+        muted: bool,
+    },
     /// Join a Wi-Fi network that needs no password typed.
     #[effect(own_device)]
     JoinWifi {
@@ -240,6 +314,43 @@ pub enum QsEffect {
     /// Stop asking for a Wi-Fi password.
     #[effect(own_device, audience = "people")]
     CancelWifiPassword,
+    /// Ask for the name and password of a network that broadcasts no name.
+    #[effect(own_device, audience = "people", icon = "wifi")]
+    AskHiddenNetwork,
+    /// Stop asking for a hidden network's name and password.
+    #[effect(own_device, audience = "people")]
+    CancelHiddenNetwork,
+    /// Join a network that broadcasts no name, by the name and password
+    /// typed for it.
+    #[effect(own_device)]
+    ConnectHiddenWifi {
+        #[param("The network's name")]
+        network: String,
+        #[param(secret, "The network's password")]
+        password: String,
+    },
+    /// Join a saved network by itself whenever it is in reach, or wait to be
+    /// asked.
+    #[effect(own_device, idempotent, icon = "wifi", keywords = "saved network")]
+    SetNetworkAutoconnect {
+        #[param("The saved network")]
+        profile: String,
+        #[param("Whether it joins by itself")]
+        on: bool,
+    },
+    /// Forget a saved network, so this machine joins it only when asked and
+    /// its password must be typed again: the profile and the password it
+    /// keeps go.
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash-2",
+        keywords = "saved network, forget, remove"
+    )]
+    ForgetNetwork {
+        #[param("The saved network")]
+        profile: String,
+    },
     /// Connect a paired Bluetooth accessory.
     #[effect(own_device)]
     ConnectBluetooth {
@@ -250,6 +361,32 @@ pub enum QsEffect {
     #[effect(own_device)]
     DisconnectBluetooth {
         #[param("The accessory's address")]
+        address: String,
+    },
+    /// Look for Bluetooth devices in reach, or stop looking.
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "search",
+        keywords = "discover, find device, pair, new accessory"
+    )]
+    ScanBluetooth {
+        #[param("Whether to look for devices")]
+        on: bool,
+    },
+    /// Pair the Bluetooth device at this address: `BlueZ` bonds with it,
+    /// trusting it and connecting it. What it asks to compare is a question
+    /// its pairing agent asks the person.
+    #[effect(own_device, icon = "bluetooth", keywords = "pair, bond, new accessory")]
+    PairBluetooth {
+        #[param("The device's address")]
+        address: String,
+    },
+    /// Forget a Bluetooth device, so that it must be paired again from
+    /// scratch: its bond, its keys and its trust go.
+    #[effect(own_device, destructive, icon = "trash-2", keywords = "unpair, remove")]
+    ForgetBluetooth {
+        #[param("The device's address")]
         address: String,
     },
     /// Move a Bluetooth accessory to another of your devices.
@@ -396,6 +533,13 @@ pub enum QsEffect {
         #[param("The destination, as the now-playing card lists it")]
         output: String,
     },
+    /// Continue here what another of the person's devices handed over, at
+    /// the point it stopped.
+    #[effect(own_device, keywords = "handoff, continue, resume, another device")]
+    ResumePlayback {
+        #[param("The handoff, as the card lists it")]
+        request: String,
+    },
 }
 
 /// What callers are told when the device lacks the control an effect
@@ -416,7 +560,9 @@ pub(crate) fn statuses(state: &crate::QuickSettingsState) -> Vec<EffectStatus> {
     let radios = &state.radios;
     let can = crate::actions::QsActionAvailability {
         brightness: state.can_set_brightness(),
-        volume: probed.volume || state.volume_available,
+        // The audio service is what carries a volume change out, so its
+        // reading of an output is what makes the volume available.
+        volume: state.volume_available,
         wifi: probed.wifi || radios.wifi_available,
         power_profile: probed.power_profile || !state.power_profiles.is_empty(),
         vpn: probed.vpn || !state.vpns.is_empty(),
@@ -476,6 +622,11 @@ fn radio_statuses(can: crate::actions::QsActionAvailability, pending: bool) -> V
         shown(QsEffect::JOIN_WIFI, None, lacks(can.wifi)),
         shown(QsEffect::ASK_WIFI_PASSWORD, None, lacks(can.wifi)),
         shown(QsEffect::CONNECT_WIFI, None, lacks(can.wifi)),
+        shown(QsEffect::ASK_HIDDEN_NETWORK, None, lacks(can.wifi)),
+        shown(QsEffect::CANCEL_HIDDEN_NETWORK, None, lacks(can.wifi)),
+        shown(QsEffect::CONNECT_HIDDEN_WIFI, None, lacks(can.wifi)),
+        shown(QsEffect::SET_NETWORK_AUTOCONNECT, None, lacks(can.wifi)),
+        shown(QsEffect::FORGET_NETWORK, None, lacks(can.wifi)),
         shown(
             QsEffect::SET_AIRPLANE_MODE,
             Some(t("qs-action-set-airplane-mode")),
@@ -498,6 +649,9 @@ fn radio_statuses(can: crate::actions::QsActionAvailability, pending: bool) -> V
         ),
         shown(QsEffect::CONNECT_BLUETOOTH, None, lacks(can.bluetooth)),
         shown(QsEffect::DISCONNECT_BLUETOOTH, None, lacks(can.bluetooth)),
+        shown(QsEffect::SCAN_BLUETOOTH, None, lacks(can.bluetooth)),
+        shown(QsEffect::PAIR_BLUETOOTH, None, lacks(can.bluetooth)),
+        shown(QsEffect::FORGET_BLUETOOTH, None, lacks(can.bluetooth)),
         shown(QsEffect::HAND_OFF_BLUETOOTH, None, lacks(can.bluetooth)),
     ]
     .into_iter()

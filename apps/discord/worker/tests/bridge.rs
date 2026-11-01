@@ -1,4 +1,4 @@
-//! The bridge bot end to end: its program installed in a room on a relay,
+//! The bridge bot end to end: its program installed in a workspace on a relay,
 //! the `discord-worker` binary under the connector host, and fake-discord
 //! as the server. A message crosses in both directions, each side showing
 //! who wrote it, and edits, replies, reactions and deletes follow.
@@ -77,15 +77,15 @@ fn governor() -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-/// The room's records, read as the governor's copy holds them.
-struct Room {
+/// The workspace's records, read as the governor's copy holds them.
+struct Workspace {
     rooms: Rooms,
     id: String,
     cert: DeviceCert,
     catalogue: AppCatalogue,
 }
 
-impl Room {
+impl Workspace {
     async fn doc(&self, app: &str) -> AutoCommit {
         AutoCommit::load(
             &self
@@ -107,7 +107,7 @@ impl Room {
         chat::messages::read_part(&self.part().await)
     }
 
-    /// The chat's first part of messages, as the room holds it.
+    /// The chat's first part of messages, as the workspace holds it.
     async fn part(&self) -> AutoCommit {
         self.rooms
             .record_document(&self.id, CHAT, chat::parts::part(0).as_str())
@@ -119,9 +119,9 @@ impl Room {
     }
 
     /// Do `invoke` to the chat's messages as `author`, as their page does: a
-    /// view of the chat record and the parts of its messages the room
+    /// view of the chat record and the parts of its messages the workspace
     /// holds, the verb going through the chain to the part it changes
-    /// (starting the first), each changed part carried to the room on its
+    /// (starting the first), each changed part carried to the workspace on its
     /// own route. The ids of the messages it added.
     async fn part_as(&self, author: &str, invoke: Invoke<chat::parts::ChatPart>) -> Vec<String> {
         use tilo_agent_participant::{Replica, ReplicaActor, Seed};
@@ -322,7 +322,7 @@ where
 #[derive(Clone, Copy, Default)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each flag is one independent way a test's server and room start"
+    reason = "each flag is one independent way a test's server and workspace start"
 )]
 struct Setup {
     /// Bridge only this Discord channel.
@@ -332,10 +332,10 @@ struct Setup {
     /// Keep Tilo's roles as roles the bridge owns in Discord.
     roles: bool,
     /// A server that already had channels of its own when its bridge first ran,
-    /// and the room's Chat holding channels of its own already.
+    /// and the workspace's Chat holding channels of its own already.
     existing: bool,
-    /// The room's Chat as a public room's opens: "Channels" with #general.
-    room_seeded: bool,
+    /// The workspace's Chat as a public workspace's opens: "Channels" with #general.
+    workspace_seeded: bool,
     /// Messages Bo wrote before the bridge first ran: channel, text, when
     /// (Unix ms).
     history: &'static [(&'static str, &'static str, u64)],
@@ -370,11 +370,11 @@ fn existing_layout() -> Vec<Value> {
     ]
 }
 
-/// A room whose Chat has Ada in it, bridged to a fresh fake server the
+/// A workspace whose Chat has Ada in it, bridged to a fresh fake server the
 /// bridge has adopted.
 struct Bridge {
     fake: FakeDiscord,
-    room: Room,
+    workspace: Workspace,
     blobs: Arc<Blobs>,
     /// The Chat channel Discord's #general is bridged to.
     general: String,
@@ -409,7 +409,7 @@ impl Bridge {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
         // The host decides what members and the bot change against the
-        // surfaces of the apps it runs, as a room host does.
+        // surfaces of the apps it runs, as a workspace host does.
         let _ = AppCatalogue::native();
         tilo_relay::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
         let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
@@ -428,7 +428,7 @@ impl Bridge {
         .await
         .unwrap();
         let rooms = relay.rooms().unwrap().clone();
-        let room = Room {
+        let workspace = Workspace {
             id: rooms.create("Bridged").await.unwrap().room,
             rooms,
             cert: cert.clone(),
@@ -437,45 +437,51 @@ impl Bridge {
         let owner = hex::encode(cert.user_public_key);
         let ada = hex::encode(ADA);
 
-        room.rooms
-            .prepare_application(&room.id, &cert, &room.catalogue, CHAT, "")
+        workspace
+            .rooms
+            .prepare_application(&workspace.id, &cert, &workspace.catalogue, CHAT, "")
             .await
             .unwrap();
-        room.chat_as({
-            let (owner, ada) = (owner.clone(), ada.clone());
-            move |doc| {
-                lay_out_with_general_and_lounge(doc, &owner)?;
-                chat::demo::introduce(doc, &ada, "Ada", "AD").map_err(|error| error.to_string())?;
-                if setup.existing {
-                    seed_channels(doc, &owner)?;
+        workspace
+            .chat_as({
+                let (owner, ada) = (owner.clone(), ada.clone());
+                move |doc| {
+                    lay_out_with_general_and_lounge(doc, &owner)?;
+                    chat::demo::introduce(doc, &ada, "Ada", "AD")
+                        .map_err(|error| error.to_string())?;
+                    if setup.existing {
+                        seed_channels(doc, &owner)?;
+                    }
+                    if setup.workspace_seeded {
+                        seed_as_a_workspace(doc, &owner)?;
+                    }
+                    Ok(())
                 }
-                if setup.room_seeded {
-                    seed_as_a_room(doc, &owner)?;
-                }
-                Ok(())
-            }
-        })
-        .await;
+            })
+            .await;
         if setup.existing {
             // Someone wrote in #help before the bridge came.
-            let help = room
+            let help = workspace
                 .chat()
                 .await
                 .channels
                 .iter()
                 .find(|(_, c)| c.name == "help")
                 .map(|(id, _)| id.as_str().to_owned())
-                .expect("the room's #help");
-            room.part_as(&ada, chat::demo::post(&help, "where do I start?", None))
+                .expect("the workspace's #help");
+            workspace
+                .part_as(&ada, chat::demo::post(&help, "where do I start?", None))
                 .await;
         }
 
-        room.rooms
-            .prepare_application(&room.id, &cert, &room.catalogue, APP, "")
+        workspace
+            .rooms
+            .prepare_application(&workspace.id, &cert, &workspace.catalogue, APP, "")
             .await
             .unwrap();
-        room.rooms
-            .author_application(&room.id, &cert, &room.catalogue, APP, "", {
+        workspace
+            .rooms
+            .author_application(&workspace.id, &cert, &workspace.catalogue, APP, "", {
                 let owner = owner.clone();
                 move |doc| {
                     let mut replica = Replica::<Guild>::from_doc(std::mem::take(doc))
@@ -531,12 +537,12 @@ impl Bridge {
             .await
             .unwrap();
         let certifier = HostRootCertifier::new(SigningKey::from_bytes(&[1; 32]));
-        keep_member(&room.rooms, &room.id, &cert, &certifier, &bot)
+        keep_member(&workspace.rooms, &workspace.id, &cert, &certifier, &bot)
             .await
             .unwrap();
         let mut runner = BotRunner::new(
-            room.rooms.clone(),
-            room.id.clone(),
+            workspace.rooms.clone(),
+            workspace.id.clone(),
             cert.clone(),
             certifier.device_key(&bot.installation),
             bot,
@@ -548,7 +554,7 @@ impl Bridge {
         // The server is adopted into Chat, and the bridge makes a webhook
         // for each text channel.
         settle(&mut runner, "adopt", || async {
-            let guild = room.guild().await;
+            let guild = workspace.guild().await;
             (guild.ownership == Ownership::Adopted
                 && fake
                     .webhooks()
@@ -558,7 +564,8 @@ impl Bridge {
         })
         .await;
         let general = settle(&mut runner, "general mapped", || async {
-            room.guild()
+            workspace
+                .guild()
                 .await
                 .by_discord(MappedKind::Channel, CHANNEL_GENERAL)
                 .map(|mapping| mapping.tilo.clone())
@@ -566,7 +573,7 @@ impl Bridge {
         .await;
         let bridge = Self {
             fake,
-            room,
+            workspace,
             blobs,
             general,
             ada,
@@ -579,7 +586,7 @@ impl Bridge {
     /// Ada does `invoke` in Chat from her own device.
     async fn as_ada(&self, invoke: Invoke<chat::Chat>) {
         let ada = self.ada.clone();
-        self.room
+        self.workspace
             .chat_as(move |doc| {
                 chat::demo::apply_as(doc, &ada, invoke).map_err(|error| error.to_string())
             })
@@ -588,7 +595,7 @@ impl Bridge {
 
     /// Ada does `invoke` to Chat's messages from her own device.
     async fn as_ada_on_messages(&self, invoke: impl Into<Invoke<chat::parts::ChatPart>>) {
-        self.room.part_as(&self.ada, invoke.into()).await;
+        self.workspace.part_as(&self.ada, invoke.into()).await;
     }
 
     /// Ada reacts to `message` with `emoji` (`added`), or takes it back: the
@@ -609,7 +616,7 @@ impl Bridge {
 
     /// The reactions on Chat message `id`: emoji, persona and name.
     async fn reactions_on(&self, id: &str) -> Vec<(String, Option<String>, Option<String>)> {
-        chat::messages::read_part(&self.room.part().await)
+        chat::messages::read_part(&self.workspace.part().await)
             .messages
             .iter()
             .find(|(message, _)| message.as_str() == id)
@@ -631,7 +638,7 @@ impl Bridge {
 
     /// Ada posts `text` in #general; the new message's id.
     async fn ada_says(&self, text: &str) -> String {
-        self.room
+        self.workspace
             .part_as(&self.ada, chat::demo::post(&self.general, text, None))
             .await
             .pop()
@@ -639,7 +646,7 @@ impl Bridge {
     }
 
     async fn chat_message(&self, text: &str) -> Option<(String, chat::record::Message)> {
-        chat::messages::read_part(&self.room.part().await)
+        chat::messages::read_part(&self.workspace.part().await)
             .messages
             .iter()
             .find(|(_, message)| message.text == text)
@@ -648,7 +655,7 @@ impl Bridge {
 
     /// The Discord message the bridge mapped Chat message `tilo` to.
     async fn discord_of(&self, kind: MappedKind, tilo: &str) -> Option<String> {
-        self.room
+        self.workspace
             .guild()
             .await
             .mapping(kind, tilo)
@@ -692,14 +699,14 @@ async fn a_message_crosses_the_bridge_both_ways_under_its_authors_name() {
         bridge.chat_message("hello from Discord").await.map(drop)
     })
     .await;
-    let bridged = bridge.room.bridged().await;
+    let bridged = bridge.workspace.bridged().await;
     assert_eq!(
         bridged,
         [("hello from Discord".to_owned(), "Bo".to_owned())],
         "only Bo's message is bridged, under his name"
     );
     let texts: Vec<String> = bridge
-        .room
+        .workspace
         .part_messages()
         .await
         .messages
@@ -716,7 +723,7 @@ async fn a_message_crosses_the_bridge_both_ways_under_its_authors_name() {
     );
 }
 
-/// Ada links her Discord account: the room's host fetches its avatar small,
+/// Ada links her Discord account: the workspace's host fetches its avatar small,
 /// for her Tilo profile to wear, and what she writes in Tilo shows in
 /// Discord as her name with her handle, under the same picture.
 #[tokio::test(flavor = "multi_thread")]
@@ -729,16 +736,16 @@ async fn a_linked_account_lends_its_picture_and_handle() {
         .put_cdn("avatars/4001/f00d.png", "image/png", &png);
     // The bridge offers the account, as `/link` has it, and Ada takes it.
     bridge
-        .room
+        .workspace
         .rooms
         .author_application(
-            &bridge.room.id,
-            &bridge.room.cert,
-            &bridge.room.catalogue,
+            &bridge.workspace.id,
+            &bridge.workspace.cert,
+            &bridge.workspace.catalogue,
             APP,
             "",
             {
-                let owner = hex::encode(bridge.room.cert.user_public_key);
+                let owner = hex::encode(bridge.workspace.cert.user_public_key);
                 move |doc| {
                     let mut replica = Replica::<Guild>::from_doc(std::mem::take(doc))
                         .as_bot_for("bridge-test", &owner)
@@ -761,12 +768,12 @@ async fn a_linked_account_lends_its_picture_and_handle() {
         .await
         .unwrap();
     bridge
-        .room
+        .workspace
         .rooms
         .author_application(
-            &bridge.room.id,
-            &bridge.room.cert,
-            &bridge.room.catalogue,
+            &bridge.workspace.id,
+            &bridge.workspace.cert,
+            &bridge.workspace.catalogue,
             APP,
             "",
             {
@@ -788,7 +795,7 @@ async fn a_linked_account_lends_its_picture_and_handle() {
         .await
         .unwrap();
     let photo = settle(&mut runner, "the link's picture", || async {
-        let guild = bridge.room.guild().await;
+        let guild = bridge.workspace.guild().await;
         let link = guild.links.find(&Id::from_raw("4001"))?;
         link.photo.clone().zip(link.photo_avatar.clone())
     })
@@ -809,7 +816,7 @@ async fn a_linked_account_lends_its_picture_and_handle() {
         .requests()
         .into_iter()
         .find(|request| request.path.contains("/avatars/4001/"))
-        .expect("the room's host fetched the avatar");
+        .expect("the workspace's host fetched the avatar");
     assert!(
         fetched
             .query
@@ -986,7 +993,7 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
     let new = sent["webhook_id"].as_str().unwrap().to_owned();
     assert_ne!(new, old, "a new webhook: {sent:#}");
     settle(&mut runner, "the new webhook mapped", || async {
-        let guild = bridge.room.guild().await;
+        let guild = bridge.workspace.guild().await;
         let mapped = guild.mapping(MappedKind::Webhook, &bridge.general)?;
         (mapped.discord == new).then_some(())
     })
@@ -1023,7 +1030,7 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
         "one webhook made in the old one's place"
     );
     let texts: Vec<String> = bridge
-        .room
+        .workspace
         .part_messages()
         .await
         .messages
@@ -1119,7 +1126,7 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
     bridge.fake.delete(&posted, None);
     settle(&mut runner, "delete", || async {
         (!bridge
-            .room
+            .workspace
             .part_messages()
             .await
             .messages
@@ -1139,7 +1146,7 @@ async fn reactions_cross_both_ways_and_custom_emoji_by_name() {
     // The server has an emoji `tilo_hello`; the bridge learns it.
     bridge.fake.set_emojis(&[("tilo_hello", "55", false)]);
     settle(&mut runner, "emoji observed", || async {
-        (bridge.room.guild().await.emoji("tilo_hello") == Some("55")).then_some(())
+        (bridge.workspace.guild().await.emoji("tilo_hello") == Some("55")).then_some(())
     })
     .await;
     let first = bridge.ada_says("react to me").await;
@@ -1281,10 +1288,10 @@ async fn adopting_a_server_changes_nothing_in_it_but_webhooks() {
     assert!(idle.is_empty(), "{idle:#?}");
 }
 
-/// A server laid out before its bridge, as the bridge first met it, and a room whose Chat
+/// A server laid out before its bridge, as the bridge first met it, and a workspace whose Chat
 /// already had "Channels" with #general, #help and #show-and-tell: the
 /// bridge once renamed #general to general-2, made a second "Channels",
-/// copied the room's channels in and narrowed `@everyone`. Adopted now,
+/// copied the workspace's channels in and narrowed `@everyone`. Adopted now,
 /// the server is left as it was but for the webhooks.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_existing_server_is_adopted_as_it_is() {
@@ -1326,10 +1333,10 @@ async fn an_existing_server_is_adopted_as_it_is() {
     assert_eq!(after.1, before.1, "the roles are as they were");
 
     // Chat has Discord's layout joined with its own, nothing doubled. Its
-    // own #help, written in, stays in Tilo; #show-and-tell and the room's
+    // own #help, written in, stays in Tilo; #show-and-tell and the workspace's
     // own "Voice" with its Lounge voice channel, none of which the server
     // has and nobody wrote in, go.
-    let chat = bridge.room.chat().await;
+    let chat = bridge.workspace.chat().await;
     let mut names: Vec<&str> = chat.channels.values().map(|c| c.name.as_str()).collect();
     names.sort_unstable();
     assert_eq!(
@@ -1339,7 +1346,7 @@ async fn an_existing_server_is_adopted_as_it_is() {
     let mut categories: Vec<&str> = chat.categories.values().map(|c| c.name.as_str()).collect();
     categories.sort_unstable();
     assert_eq!(categories, ["Channels", "chat"]);
-    let guild = bridge.room.guild().await;
+    let guild = bridge.workspace.guild().await;
     assert_eq!(guild.tilo_only.len(), 1, "{:?}", guild.tilo_only);
 
     // And messages cross.
@@ -1353,15 +1360,15 @@ async fn an_existing_server_is_adopted_as_it_is() {
 /// When Bo wrote the server's first messages, long before the bridge ran.
 const WRITTEN_MS: u64 = 1_751_317_200_000;
 
-/// A public room's Chat opens with "Channels" › #general; the server has
+/// A public workspace's Chat opens with "Channels" › #general; the server has
 /// #goal at the top and #general and a voice channel under "chat", and
-/// messages written before the bridge first ran. Adopted, the room lists
+/// messages written before the bridge first ran. Adopted, the workspace lists
 /// exactly the server's channels under the same categories, and holds its
 /// messages under their author's name, at the time they were written.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_new_room_takes_on_its_servers_layout_and_history() {
+async fn a_new_workspace_takes_on_its_servers_layout_and_history() {
     let (bridge, mut runner) = Bridge::start_with(Setup {
-        room_seeded: true,
+        workspace_seeded: true,
         history: &[
             (
                 fake_discord::CHANNEL_GOAL,
@@ -1391,7 +1398,7 @@ async fn a_new_room_takes_on_its_servers_layout_and_history() {
 
     // Exactly the server's layout: "Channels" is gone, #general is under
     // "chat", and nothing is Tilo's alone.
-    let chat = bridge.room.chat().await;
+    let chat = bridge.workspace.chat().await;
     let category = |id: &Option<Id>| {
         id.as_ref()
             .and_then(|id| chat.categories.get(id))
@@ -1413,16 +1420,16 @@ async fn a_new_room_takes_on_its_servers_layout_and_history() {
     );
     let categories: Vec<&str> = chat.categories.values().map(|c| c.name.as_str()).collect();
     assert_eq!(categories, ["chat"]);
-    assert!(bridge.room.guild().await.tilo_only.is_empty());
+    assert!(bridge.workspace.guild().await.tilo_only.is_empty());
 }
 
-/// A room meeting a server that a bridge of the same bot posted in before
+/// A workspace meeting a server that a bridge of the same bot posted in before
 /// reads its history before it adopts that bridge's webhook: what the
 /// bridge posted there is never taken in as written in Discord.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_new_room_leaves_out_what_its_bot_posted_before() {
+async fn a_new_workspace_leaves_out_what_its_bot_posted_before() {
     let (bridge, mut runner) = Bridge::start_with(Setup {
-        room_seeded: true,
+        workspace_seeded: true,
         bridged_before: &[(CHANNEL_GENERAL, "Ada", "from the Lounge", WRITTEN_MS)],
         history: &[(CHANNEL_GENERAL, "Hi?", WRITTEN_MS + 60_000)],
         ..Setup::default()
@@ -1472,7 +1479,7 @@ async fn opted_in_the_bridge_adds_its_own_roles_and_new_channels_only() {
     }
 
     let channels = bridge
-        .room
+        .workspace
         .chat()
         .await
         .categories
@@ -1520,7 +1527,7 @@ async fn a_bridge_of_one_channel_touches_nothing_else_in_the_server() {
 
     // Only #general came into Chat, and the one change in the server is
     // its webhook: no roles, permissions, layout or slash commands.
-    let guild = bridge.room.guild().await;
+    let guild = bridge.workspace.guild().await;
     let mapped: Vec<_> = guild
         .map
         .iter()
@@ -1577,8 +1584,8 @@ fn discord_list(fake: &FakeDiscord, parent: Option<&str>, kind: u64) -> Vec<Stri
 
 /// Names of what Chat lists: its categories, or the channels under
 /// `category` (by name; none for the top).
-async fn chat_list(room: &Room, category: Option<&str>) -> Vec<String> {
-    let chat = room.chat().await;
+async fn chat_list(workspace: &Workspace, category: Option<&str>) -> Vec<String> {
+    let chat = workspace.chat().await;
     let id_of = |name: &str| {
         chat.categories
             .iter()
@@ -1593,8 +1600,9 @@ async fn chat_list(room: &Room, category: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-async fn chat_categories(room: &Room) -> Vec<String> {
-    room.chat()
+async fn chat_categories(workspace: &Workspace) -> Vec<String> {
+    workspace
+        .chat()
         .await
         .categories
         .values()
@@ -1622,10 +1630,13 @@ async fn moving_channels_in_discord_rearranges_chat() {
     .await;
     quiet(&mut runner, &bridge, "adopted").await;
     assert_eq!(
-        chat_list(&bridge.room, None).await,
+        chat_list(&bridge.workspace, None).await,
         ["goal", "roadmap", "progress"]
     );
-    assert_eq!(chat_categories(&bridge.room).await, ["Channels", "chat"]);
+    assert_eq!(
+        chat_categories(&bridge.workspace).await,
+        ["Channels", "chat"]
+    );
 
     // #progress dragged to the top, as Discord's client renumbers the list.
     let fake = &bridge.fake;
@@ -1637,9 +1648,9 @@ async fn moving_channels_in_discord_rearranges_chat() {
     fake.place_channel(CATEGORY_CHANNELS, None, 1);
     fake.place_channel(CHANNEL_ROADMAP, Some(CATEGORY_CHANNELS), 1);
     settle(&mut runner, "Chat in Discord's order", || async {
-        (chat_list(&bridge.room, None).await == ["progress", "goal"]
-            && chat_categories(&bridge.room).await == ["chat", "Channels"]
-            && chat_list(&bridge.room, Some("Channels"))
+        (chat_list(&bridge.workspace, None).await == ["progress", "goal"]
+            && chat_categories(&bridge.workspace).await == ["chat", "Channels"]
+            && chat_list(&bridge.workspace, Some("Channels"))
                 .await
                 .ends_with(&["roadmap".to_owned(), "voice".to_owned()]))
         .then_some(())
@@ -1665,7 +1676,7 @@ async fn moving_channels_in_chat_rearranges_discord() {
     })
     .await;
     quiet(&mut runner, &bridge, "adopted").await;
-    let chat = bridge.room.chat().await;
+    let chat = bridge.workspace.chat().await;
     let named = |name: &str| {
         chat.channels
             .iter()
@@ -1718,7 +1729,7 @@ async fn moving_channels_in_chat_rearranges_discord() {
         .await;
     let ideas = settle(&mut runner, "#ideas in Chat", || async {
         bridge
-            .room
+            .workspace
             .chat()
             .await
             .channels
@@ -1737,7 +1748,7 @@ async fn moving_channels_in_chat_rearranges_discord() {
             )
             .await;
     }
-    let in_chat = chat_list(&bridge.room, Some("Channels")).await;
+    let in_chat = chat_list(&bridge.workspace, Some("Channels")).await;
     assert_eq!(in_chat.first().map(String::as_str), Some("ideas"));
     settle(&mut runner, "#ideas first in Discord", || async {
         (discord_list(fake, Some(CATEGORY_CHANNELS), 0)
@@ -1751,11 +1762,17 @@ async fn moving_channels_in_chat_rearranges_discord() {
     // Discord's echo moved nothing back: Chat is as Ada left it.
     quiet(&mut runner, &bridge, "echoed").await;
     assert_eq!(
-        chat_list(&bridge.room, None).await,
+        chat_list(&bridge.workspace, None).await,
         ["roadmap", "goal", "progress"]
     );
-    assert_eq!(chat_categories(&bridge.room).await, ["chat", "Channels"]);
-    assert_eq!(chat_list(&bridge.room, Some("Channels")).await, in_chat);
+    assert_eq!(
+        chat_categories(&bridge.workspace).await,
+        ["chat", "Channels"]
+    );
+    assert_eq!(
+        chat_list(&bridge.workspace, Some("Channels")).await,
+        in_chat
+    );
     let sent = arrangements(fake);
     let idle = quiet(&mut runner, &bridge, "idle").await;
     assert!(
@@ -1765,9 +1782,9 @@ async fn moving_channels_in_chat_rearranges_discord() {
     assert_eq!(arrangements(fake), sent);
 }
 
-/// Lay the room's Chat out as its owner did before any bridge ran:
+/// Lay the workspace's Chat out as its owner did before any bridge ran:
 /// "Channels" with #general, and "Voice" with the Lounge, in place of the
-/// `#chat` and `#voice` a room opens with.
+/// `#chat` and `#voice` a workspace opens with.
 fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
     let chat = chat::Chat::read(doc).map_err(|error| error.to_string())?;
     for channel in chat.channels.ids().cloned() {
@@ -1819,9 +1836,9 @@ fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<
     Ok(())
 }
 
-/// Leave the room's Chat as a public room's opened: "Channels" with
+/// Leave the workspace's Chat as a public workspace's opened: "Channels" with
 /// #general, and nothing else.
-fn seed_as_a_room(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
+fn seed_as_a_workspace(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
     let chat = chat::Chat::read(doc).map_err(|error| error.to_string())?;
     let channels: Vec<Id> = chat
         .channels
@@ -1854,10 +1871,10 @@ fn seed_as_a_room(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The room's own "Channels" with #general, #help and #show-and-tell, made
+/// The workspace's own "Channels" with #general, #help and #show-and-tell, made
 /// by its owner before any bridge ran.
 fn seed_channels(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
-    // The room already has "Channels" with #general in it.
+    // The workspace already has "Channels" with #general in it.
     let category = chat::Chat::read(doc)
         .map_err(|error| error.to_string())?
         .categories
@@ -1889,25 +1906,25 @@ fn picture(fill: u8) -> Vec<u8> {
 
 impl Bridge {
     /// Ada changes the workspace's emoji (Chat's workspace record, which
-    /// every app of the room opens) from her own device: `change` makes the
-    /// invocation, applied to the record as the room holds it now.
+    /// every app of the workspace opens) from her own device: `change` makes the
+    /// invocation, applied to the record as the workspace holds it now.
     async fn ada_emoji(
         &self,
         change: impl FnOnce() -> Invoke<ui::tilo_workspace_emoji::WorkspaceEmoji>,
     ) {
         let record = collab_types::workspace_record_id(ui::tilo_workspace_emoji::KIND);
         let saved = self
-            .room
+            .workspace
             .rooms
-            .record_document(&self.room.id, CHAT, &record)
+            .record_document(&self.workspace.id, CHAT, &record)
             .await
             .unwrap();
         let bytes = self.emoji_changed(&record, saved, change());
-        self.room
+        self.workspace
             .rooms
             .author_room_record(
-                &self.room.id,
-                &self.room.cert,
+                &self.workspace.id,
+                &self.workspace.cert,
                 (CHAT, record.as_str()),
                 move |doc| {
                     tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
@@ -1935,7 +1952,7 @@ impl Bridge {
             &ui::record::RecordId::parse(record).unwrap(),
             &ui::record::RecordKind::new(KIND),
             CHAT,
-            Some(&self.room.id),
+            Some(&self.workspace.id),
         );
         let mut replica = Replica::<WorkspaceEmoji>::from_doc(doc)
             .as_invoker(&self.ada)
@@ -1986,7 +2003,7 @@ async fn workspace_emoji_are_uploaded_renamed_and_deleted_in_the_server() {
     // The server has an emoji of its own named like a workspace emoji.
     bridge.fake.set_emojis(&[("party", "55", false)]);
     settle(&mut runner, "server emoji observed", || async {
-        (bridge.room.guild().await.emoji("party") == Some("55")).then_some(())
+        (bridge.workspace.guild().await.emoji("party") == Some("55")).then_some(())
     })
     .await;
 
@@ -2072,7 +2089,7 @@ async fn workspace_emoji_are_uploaded_renamed_and_deleted_in_the_server() {
     bridge.fake.set_expressions(false, false, 50);
     bridge.ada_adds_emoji("cat", 3).await;
     settle(&mut runner, "permission problem", || async {
-        (bridge.room.guild().await.emoji_problem.as_deref()
+        (bridge.workspace.guild().await.emoji_problem.as_deref()
             == Some(discord_worker::perform::EMOJI_PERMISSION_PROBLEM))
         .then_some(())
     })
@@ -2082,7 +2099,7 @@ async fn workspace_emoji_are_uploaded_renamed_and_deleted_in_the_server() {
     // and the line is cleared.
     bridge.fake.set_expressions(true, false, 50);
     settle(&mut runner, "uploaded once allowed", || async {
-        (bridge.uploaded("cat").is_some() && bridge.room.guild().await.emoji_problem.is_none())
+        (bridge.uploaded("cat").is_some() && bridge.workspace.guild().await.emoji_problem.is_none())
             .then_some(())
     })
     .await;
@@ -2091,7 +2108,7 @@ async fn workspace_emoji_are_uploaded_renamed_and_deleted_in_the_server() {
     bridge.fake.set_expressions(true, false, 2);
     bridge.ada_adds_emoji("dog", 4).await;
     settle(&mut runner, "full", || async {
-        (bridge.room.guild().await.emoji_problem.as_deref()
+        (bridge.workspace.guild().await.emoji_problem.as_deref()
             == Some(discord_worker::perform::EMOJI_FULL_PROBLEM))
         .then_some(())
     })

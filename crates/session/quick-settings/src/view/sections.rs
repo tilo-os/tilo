@@ -5,20 +5,20 @@
 
 use ui::LocalState;
 use ui::TextRole;
-use ui::framework::ViewCx;
+use ui::framework::{ActionControl as _, Actions, ViewCx};
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
     Button, ButtonRole, Column, Container, DisclosureBand, Element, ListRow, ProgressBar, Row,
-    Scrollable, Section, Segment, SignalLevel, Text, TextInput, Toggle, ToggleGroup,
+    Scrollable, Section, Segment, SignalLevel, Slider, Text, TextInput, Toggle, ToggleGroup,
 };
 
 use super::Parts;
 use crate::QsSection;
 use crate::effect::QsEffect;
-use crate::faces::{Item, NetworkFace};
+use crate::faces::{Item, NetworkFace, StreamFace};
 use crate::hosted::{HostedActions, HostedRow};
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::resource::QuickSettings;
 
 /// `section` open in place under the control that opens it: it opens and
@@ -77,15 +77,23 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                 .with_role(TextRole::Caption)
                 .with_id(format!("qs-{}-message", section_id(section))),
         )],
-        Item::TurnOn { label, effect } => {
-            vec![Box::new(Container::new().with_no_padding().with_child(
-                Box::new(actions.bind_effect_invocation(
-                    Button::new(&format!("qs-{}-turn-on", section_id(section)), label),
-                    effect,
-                )),
-            ))]
-        }
         Item::Network(network) => network_rows(cx, network),
+        Item::Wired { connected, detail } => {
+            let switch = actions.bind_effect(
+                Toggle::from_state(&LocalState::new(*connected))
+                    .with_id("qs-wired-switch")
+                    .with_accessible_name(&t("qs-wired-network")),
+                QsEffect::SET_WIRED,
+            );
+            let mut row = ListRow::new("qs-wired", t("qs-wired-network"))
+                .icon(Icon::EthernetPort)
+                .selected(*connected)
+                .trailing(Box::new(switch));
+            if let Some(detail) = detail {
+                row = row.secondary(detail);
+            }
+            vec![Box::new(row)]
+        }
         Item::Accessory(device) => {
             let mut row = ListRow::new(format!("qs-accessory-{}", device.address), &device.name)
                 .icon(Icon::Bluetooth)
@@ -108,6 +116,23 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                     binding,
                 );
             }
+            if let Some(forget) = actions.effect(&QsEffect::ForgetBluetooth {
+                address: device.address.clone(),
+            }) {
+                row = row.trailing(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_rhythm(Rhythm::Related)
+                        .push(Box::new(
+                            Button::icon_only(
+                                &format!("qs-bluetooth-forget-{}", device.address),
+                                Icon::Trash2,
+                                &t("qs-bluetooth-forget"),
+                            )
+                            .bind_action(forget),
+                        ) as Element),
+                ));
+            }
             let press = if device.connected {
                 QsEffect::DisconnectBluetooth {
                     address: device.address.clone(),
@@ -119,6 +144,62 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
             };
             vec![Box::new(actions.bind_effect_invocation(row, &press))]
         }
+        Item::LookForDevices { looking } => {
+            let row = ListRow::new(
+                "qs-bluetooth-look",
+                t(if *looking {
+                    "qs-bluetooth-looking"
+                } else {
+                    "qs-bluetooth-look"
+                }),
+            )
+            .icon(Icon::Search);
+            vec![Box::new(actions.bind_effect_invocation(
+                row,
+                &QsEffect::ScanBluetooth { on: !looking },
+            ))]
+        }
+        Item::Nearby(device) => {
+            let mut row = ListRow::new(format!("qs-nearby-{}", device.address), &device.name)
+                .icon(Icon::Bluetooth)
+                .secondary(t("qs-bluetooth-in-reach"));
+            if let Some(signal) = device.signal {
+                row = row.value(format!("{signal} dBm"));
+            }
+            vec![Box::new(actions.bind_effect_invocation(
+                row,
+                &QsEffect::PairBluetooth {
+                    address: device.address.clone(),
+                },
+            ))]
+        }
+        Item::Saved(saved) => {
+            let auto = actions.bind_effect(
+                Toggle::from_state(&LocalState::new(saved.autoconnect))
+                    .with_id(&format!("qs-autoconnect-{}", saved.profile))
+                    .with_accessible_name(&t("qs-wifi-autoconnect")),
+                QsEffect::SET_NETWORK_AUTOCONNECT.map({
+                    let profile = saved.profile.clone();
+                    move |on: bool| (profile.clone(), on)
+                }),
+            );
+            let mut trailing = Row::new().no_wrap().with_rhythm(Rhythm::Related);
+            trailing = trailing.push(Box::new(auto) as Element);
+            trailing = trailing.push(Box::new(forget_network(&actions, &saved.profile)) as Element);
+            vec![Box::new(
+                ListRow::new(format!("qs-saved-network-{}", saved.profile), &saved.name)
+                    .icon(Icon::Wifi)
+                    .secondary(t("qs-wifi-saved"))
+                    .trailing(Box::new(trailing)),
+            )]
+        }
+        Item::Hidden { prompt } => match prompt {
+            Some(prompt) => vec![hidden_prompt(cx, prompt)],
+            None => vec![Box::new(actions.bind_effect_invocation(
+                ListRow::new("qs-wifi-hidden", t("qs-wifi-hidden")).icon(Icon::Wifi),
+                &QsEffect::AskHiddenNetwork,
+            ))],
+        },
         Item::Profile { name, active } => {
             let switch = actions.bind_effect(
                 Toggle::from_state(&LocalState::new(*active)).with_accessible_name(name),
@@ -224,6 +305,8 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                 actions.bind_effect_invocation(row, &QsEffect::RouteSound { node: output.node })
             })]
         }
+        Item::Microphone(microphone) => microphone_rows(cx, microphone),
+        Item::Stream(stream) => stream_rows(cx, stream),
         Item::Device(row) => vec![device_row(cx, row)],
         Item::Copies(_) => Vec::new(),
         Item::Settings { label, link } => vec![Box::new(
@@ -239,6 +322,131 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
     }
 }
 
+/// The microphone that records: its name and the button that mutes it, and
+/// its level under them.
+fn microphone_rows(cx: &ViewCx<QuickSettings>, microphone: &crate::SoundInput) -> Vec<Element> {
+    let actions = cx.actions();
+    let mute = Button::icon_only(
+        "qs-input-mute",
+        if microphone.muted {
+            Icon::MicOff
+        } else {
+            Icon::Mic
+        },
+        &t("qs-microphone-mute"),
+    )
+    .role(ButtonRole::Plain)
+    .toggled(microphone.muted);
+    let row = ListRow::new(format!("qs-input-{}", microphone.node), &microphone.name)
+        .icon(Icon::Mic)
+        .trailing(Box::new(
+            actions.bind_effect_invocation(mute, &QsEffect::ToggleInputMuted),
+        ));
+    vec![
+        Box::new(row),
+        Box::new(actions.bind_effect(
+            level_slider(
+                "qs-input-level",
+                &t("qs-microphone-level"),
+                microphone.muted,
+                f64::from(microphone.level),
+            ),
+            QsEffect::SET_INPUT_VOLUME,
+        )),
+    ]
+}
+
+/// One application's stream: what it plays and where, the button that mutes
+/// it, its gain under them, and the outputs it can move to.
+fn stream_rows(cx: &ViewCx<QuickSettings>, face: &StreamFace) -> Vec<Element> {
+    let actions = cx.actions();
+    let stream = &face.stream;
+    let app = stream.label.as_str();
+    let shown = if stream.muted {
+        Icon::VolumeX
+    } else if stream.playback {
+        Icon::Speaker
+    } else {
+        Icon::Mic
+    };
+    let mute = Button::icon_only(
+        &format!("qs-stream-{}-mute", stream.node),
+        shown,
+        &t_args("qs-stream-mute", &[("app", app.into())]),
+    )
+    .role(ButtonRole::Plain)
+    .toggled(stream.muted);
+    let row = ListRow::new(format!("qs-stream-{}", stream.node), &stream.label)
+        .icon(shown)
+        .secondary(&face.goes)
+        .trailing(Box::new(actions.bind_effect_invocation(
+            mute,
+            &QsEffect::SetStreamMuted {
+                stream: stream.node,
+                muted: !stream.muted,
+            },
+        )));
+    let mut rows: Vec<Element> = vec![
+        Box::new(row),
+        Box::new(actions.bind_effect(
+            level_slider(
+                &format!("qs-stream-{}-gain", stream.node),
+                &t_args("qs-stream-level", &[("app", app.into())]),
+                stream.muted,
+                f64::from(stream.level),
+            ),
+            QsEffect::SET_STREAM_VOLUME.map({
+                let node = stream.node;
+                move |level: f64| (node, level)
+            }),
+        )),
+    ];
+    // Where it can go, once there is more than one place: the output it
+    // plays on is marked, a press on another moves it there.
+    if face.outputs.len() > 1 {
+        let mut choices = Row::new().with_rhythm(Rhythm::Related);
+        for output in &face.outputs {
+            let name = t_args(
+                "qs-stream-output",
+                &[("app", app.into()), ("output", output.name.as_str().into())],
+            );
+            let button = Button::new(
+                &format!("qs-stream-{}-output-{}", stream.node, output.node),
+                &output.name,
+            )
+            .control_size(ui::widget::ControlSize::Small)
+            .role(ButtonRole::Plain)
+            .toggled(output.current)
+            .with_accessible_name(&name);
+            choices = choices.push(Box::new(if output.current {
+                button
+            } else {
+                actions.bind_effect_invocation(
+                    button,
+                    &QsEffect::RouteStream {
+                        stream: stream.node,
+                        device: Some(output.node),
+                    },
+                )
+            }));
+        }
+        rows.push(Box::new(choices));
+    }
+    rows
+}
+
+/// A level from 0 to 1 in steps of a twentieth: the slider of a control
+/// that has a level, empty while it is muted as the volume's is.
+fn level_slider(id: &str, name: &str, muted: bool, level: f64) -> Slider {
+    let level = LocalState::new(if muted { 0.0 } else { level });
+    Slider::from_state(&level)
+        .with_id(id)
+        .with_accessible_name(name)
+        .range(0.0, 1.0)
+        .step(0.05)
+        .commits_on_release()
+}
+
 /// A network, and the password prompt under it while it asks for one.
 fn network_rows(cx: &ViewCx<QuickSettings>, network: &NetworkFace) -> Vec<Element> {
     let actions = cx.actions();
@@ -251,6 +459,9 @@ fn network_rows(cx: &ViewCx<QuickSettings>, network: &NetworkFace) -> Vec<Elemen
     if let Some(value) = &network.value {
         row = row.value(value);
     }
+    if let Some(profile) = &network.profile {
+        row = row.trailing(Box::new(forget_network(&actions, profile)));
+    }
     let row: Element = Box::new(match &network.press {
         Some(press) => actions.bind_effect_invocation(row, press),
         None => row,
@@ -260,6 +471,23 @@ fn network_rows(cx: &ViewCx<QuickSettings>, network: &NetworkFace) -> Vec<Elemen
         rows.push(password_prompt(cx, &network.ssid, prompt));
     }
     rows
+}
+
+/// The button that forgets the saved profile `profile`, after the person
+/// confirms it.
+fn forget_network(actions: &Actions<QuickSettings>, profile: &str) -> Row {
+    let effect = QsEffect::ForgetNetwork {
+        profile: profile.to_owned(),
+    };
+    let button = Button::icon_only(
+        &format!("qs-forget-network-{profile}"),
+        Icon::Trash2,
+        &t("qs-wifi-forget"),
+    );
+    match actions.effect(&effect) {
+        Some(binding) => Row::new().push(Box::new(button.bind_action(binding)) as Element),
+        None => Row::new().push(Box::new(button) as Element),
+    }
 }
 
 /// The prompt for a protected network's password: the field (whose text
@@ -316,6 +544,71 @@ fn password_prompt(
             .role(ButtonRole::Primary)
             .with_enabled(!prompt.connecting),
         QsEffect::CONNECT_WIFI.map(move |(): ()| (network.clone(), submitted.with(Clone::clone))),
+    );
+    column
+        .push(Box::new(
+            Row::new()
+                .no_wrap()
+                .with_justify(ui::taffy::JustifyContent::FlexEnd)
+                .with_rhythm(Rhythm::Related)
+                .push(Box::new(cancel))
+                .push(Box::new(join)),
+        ))
+        .into_widget()
+}
+
+/// The form for joining a network that broadcasts no name: its name and
+/// password (which never leave the fields but to join it), what went wrong
+/// last time, Cancel and Connect.
+fn hidden_prompt(cx: &ViewCx<QuickSettings>, prompt: &crate::HiddenNetworkPrompt) -> Element {
+    let actions = cx.actions();
+    let name = LocalState::new(String::new());
+    let password = LocalState::new(String::new());
+    let mut column = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_rhythm(Rhythm::Related)
+        .with_id("qs-wifi-hidden-form")
+        .push(Box::new(
+            Text::new(&t("qs-wifi-hidden-caption")).with_role(TextRole::Caption),
+        ))
+        .push(Box::new(
+            TextInput::from_state(&name)
+                .with_id(&format!("qs-hidden-network-name-{}", prompt.id))
+                .with_placeholder(t("qs-wifi-hidden-name"))
+                .disabled(prompt.connecting),
+        ))
+        .push(Box::new(
+            TextInput::from_state(&password)
+                .with_id(&format!("qs-hidden-network-password-{}", prompt.id))
+                .with_secret(true)
+                .with_placeholder(t("qs-wifi-password"))
+                .disabled(prompt.connecting),
+        ));
+    if let Some(error) = &prompt.error {
+        column = column.push(Box::new(
+            Text::new(error)
+                .with_role(TextRole::Caption)
+                .with_id("qs-hidden-network-error")
+                .with_live(ui::a11y::Politeness::Polite),
+        ));
+    } else if prompt.connecting {
+        column = column.push(Box::new(
+            Text::new(&t("qs-connecting"))
+                .with_role(TextRole::Caption)
+                .with_live(ui::a11y::Politeness::Polite),
+        ));
+    }
+    let cancel = actions.bind_effect_invocation(
+        Button::new("qs-hidden-network-cancel", &t("qs-wifi-password-cancel")),
+        &QsEffect::CancelHiddenNetwork,
+    );
+    let join = actions.bind_effect(
+        Button::new("qs-hidden-network-connect", &t("qs-wifi-password-connect"))
+            .role(ButtonRole::Primary)
+            .with_enabled(!prompt.connecting),
+        QsEffect::CONNECT_HIDDEN_WIFI
+            .map(move |(): ()| (name.with(Clone::clone), password.with(Clone::clone))),
     );
     column
         .push(Box::new(

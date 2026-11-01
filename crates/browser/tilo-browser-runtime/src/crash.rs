@@ -53,10 +53,14 @@ pub(crate) fn quarantined(
     // The panic's own words are for whoever debugs it, not for the person
     // whose window it took: they read what happened and what to do.
     web_sys::console::warn_1(&format!("{title} was closed after it panicked: {message}").into());
-    let notice = tilo_desktop_surface::crashed_app::CrashedApp::new(title, move || {
-        forget(tab);
-        reopen();
-    });
+    let notice = tilo_desktop_surface::crashed_app::CrashedApp::new(
+        title,
+        tilo_desktop_surface::crashed_app::Closed::Crashed,
+        move || {
+            forget(tab);
+            reopen();
+        },
+    );
     Some(ui::widget::TileContent::App(Box::new(notice)))
 }
 

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Store's side of the app host (app-host's client, with its Cap'n Proto RPC) and the catalogue it browses (app-catalogue) as an engine library beside the shared runtime: libtilo_app_host_engine.so, shipped in the runtime bundle and loaded only by Store."
+description = "Store's side of the app host (app-host's client) and the catalogue it browses (app-catalogue) as an engine library beside the shared runtime: libtilo_app_host_engine.so, shipped in the runtime bundle and loaded only by Store."
 
 # A runtime engine: code few apps need that no other app should map. It is a
 # Rust dylib chained on libruntime_dylib.so, built in the same Cargo graph as

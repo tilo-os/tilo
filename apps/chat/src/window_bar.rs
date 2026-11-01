@@ -42,8 +42,8 @@ impl ChatApp {
             );
         }
         // The call in progress, its microphone and leaving it, whatever the
-        // window shows and whoever else is in the room: someone alone in a
-        // call, or in a room where nobody else has written yet, still mutes
+        // window shows and whoever else is in the workspace: someone alone in a
+        // call, or in a workspace where nobody else has written yet, still mutes
         // and leaves it.
         if self.call.active {
             let name = self.channel(&self.call.channel).map_or_else(

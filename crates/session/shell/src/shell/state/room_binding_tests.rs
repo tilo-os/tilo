@@ -97,6 +97,26 @@ fn archived(tree: &WorkspaceTree) -> Vec<RoomId> {
 #[test]
 fn the_fixture_is_the_laptop_as_it_was() {
     let tree = laptop();
+    // The owner record is the file a build before rooms named a room host
+    // wrote: its rooms call the host their governor, and read all the same.
+    let owner: serde_json::Value = serde_json::from_str(LAPTOP_OWNER).unwrap();
+    assert!(
+        owner["rooms"][previous_lounge().to_string()]["governor"].is_object(),
+        "the file names the room's host by its old field"
+    );
+    // The hint beside it was signed by the same build: it also names the
+    // room's governor, and authenticates for the dial to its host.
+    let hint: tilo_peer_state::join::TransportHint = serde_json::from_value(
+        owner["rooms"][previous_lounge().to_string()]["transport_hint"].clone(),
+    )
+    .expect("the room's hint reads");
+    assert!(
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+            &hint
+        )
+        .is_ok(),
+        "a hint signed by a build that named the room's governor still reads"
+    );
     assert_eq!(tree.room_of(LOUNGE), Some(placeholder()));
     assert_eq!(tabs_of(&tree, LOUNGE), LOUNGE_TABS);
     assert!(tree.native_authority.holds(previous_lounge()));

@@ -70,8 +70,8 @@ pub fn register_named(app_id: &str, bytes: &[u8], hash: &str) -> Result<(), Stri
 /// unless a package already named one.
 pub fn register_built_in(app_id: &str, bytes: &'static [u8]) {
     let hash = *blake3::hash(bytes).as_bytes();
-    if let Ok(mut registry) = registry().lock()
-        && let std::collections::btree_map::Entry::Vacant(entry) = registry.entry(app_id.to_owned())
+    if let std::collections::btree_map::Entry::Vacant(entry) =
+        registry().lock_recover().entry(app_id.to_owned())
     {
         entry.insert(Named { hash, bytes });
         NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -82,9 +82,7 @@ pub fn register_built_in(app_id: &str, bytes: &'static [u8]) {
 /// it runs with, replacing any its host held before (an update of the app).
 pub fn register_package(app_id: &str, bytes: &[u8]) {
     let hash = *blake3::hash(bytes).as_bytes();
-    let Ok(mut registry) = registry().lock() else {
-        return;
-    };
+    let mut registry = registry().lock_recover();
     if registry.get(app_id).is_some_and(|named| named.hash == hash) {
         return;
     }
@@ -115,9 +113,9 @@ fn kinds() -> &'static Mutex<BTreeMap<String, String>> {
 
 /// Records of kind `kind` belong to the app `app_id`.
 pub fn register_kind(kind: &str, app_id: &str) {
-    if let Ok(mut kinds) = kinds().lock() {
-        kinds.insert(kind.to_owned(), app_id.to_owned());
-    }
+    kinds()
+        .lock_recover()
+        .insert(kind.to_owned(), app_id.to_owned());
 }
 
 /// The app that keeps records of kind `kind`, when this process knows it: a
@@ -125,27 +123,33 @@ pub fn register_kind(kind: &str, app_id: &str) {
 /// app itself.
 #[must_use]
 pub fn app_of_kind(kind: &str) -> Option<String> {
-    kinds().lock().ok()?.get(kind).cloned()
+    kinds().lock_recover().get(kind).cloned()
 }
 
 /// The hash of the surface the changes to a record of kind `kind` are
 /// decided against: its app's.
 #[must_use]
 pub fn hash_of_kind(kind: &str) -> Option<[u8; 32]> {
-    let app = kinds().lock().ok()?.get(kind)?.clone();
+    let app = kinds().lock_recover().get(kind)?.clone();
     hash_of(&app)
 }
 
 /// The hash of the surface `app_id`'s changes are decided against.
 #[must_use]
 pub fn hash_of(app_id: &str) -> Option<[u8; 32]> {
-    registry().lock().ok()?.get(app_id).map(|named| named.hash)
+    registry()
+        .lock_recover()
+        .get(app_id)
+        .map(|named| named.hash)
 }
 
 /// The surface bytes of `app_id`, when this process carries them.
 #[must_use]
 pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
-    registry().lock().ok()?.get(app_id).map(|named| named.bytes)
+    registry()
+        .lock_recover()
+        .get(app_id)
+        .map(|named| named.bytes)
 }
 
 /// The person-record kinds `app_id`'s surface declares (its
@@ -232,8 +236,8 @@ pub fn with_footprints(
 ///
 /// A change names what it is in its message. One store wrote a record's
 /// first change with none: its schema stamp, a root change with no deps that
-/// only sets [`app_state::SCHEMA_VERSION_KEY`]. That change is the record's
-/// creation by what it is, so it is claimed as one
+/// only sets the old schema version key (`tilo:schema_version`). That change
+/// is the record's creation by what it is, so it is claimed as one
 /// ([`collab_types::FrameworkChange::Genesis`]), as a store now names it when
 /// it writes it: a record whose first change is such a stamp is handed to a
 /// sealed room whole, with no change rewritten and no id changed.
@@ -271,8 +275,9 @@ pub fn claims_of(
 }
 
 /// Whether `change` is a store's schema stamp as it was written before a
-/// record's first change named itself: no deps, and every op a put of
-/// [`app_state::SCHEMA_VERSION_KEY`] on the document's root.
+/// record's first change named itself: no deps, and every op a put of an
+/// old schema version key (`tilo_resource::evolution::LEGACY_VERSION_KEYS`)
+/// on the document's root.
 fn is_schema_stamp(change: &automerge::Change) -> bool {
     use automerge::legacy::{Key, ObjectId};
     if !change.deps().is_empty() {
@@ -283,7 +288,8 @@ fn is_schema_stamp(change: &automerge::Change) -> bool {
         && expanded.operations.iter().all(|op| {
             op.obj == ObjectId::Root
                 && !op.insert
-                && matches!(&op.key, Key::Map(key) if key.as_str() == app_state::SCHEMA_VERSION_KEY)
+                && matches!(&op.key, Key::Map(key)
+                    if tilo_resource::evolution::LEGACY_VERSION_KEYS.contains(&key.as_str()))
                 && matches!(op.action, automerge::legacy::OpType::Put(_))
         })
 }
@@ -345,9 +351,10 @@ mod tests {
                 &collab_types::DocumentMutation::Incremental(doc.save_after(after)),
             )
         };
+        // The key a store wrote its first change with before records named theirs.
+        let legacy_key = tilo_resource::evolution::LEGACY_VERSION_KEYS[0];
         let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, app_state::SCHEMA_VERSION_KEY, 1_u64)
-            .unwrap();
+        doc.put(automerge::ROOT, legacy_key, 1_u64).unwrap();
         let stamp = doc.commit().unwrap();
         let claims = claimed(&mut doc, &[]).unwrap();
         assert_eq!(claims.len(), 1);
@@ -357,15 +364,12 @@ mod tests {
             collab_types::ClaimedAction::Framework(collab_types::FrameworkChange::Genesis)
         );
         // The same write on top of the record is no creation of it.
-        doc.put(automerge::ROOT, app_state::SCHEMA_VERSION_KEY, 2_u64)
-            .unwrap();
+        doc.put(automerge::ROOT, legacy_key, 2_u64).unwrap();
         doc.commit();
         assert!(claimed(&mut doc, &[stamp]).is_err());
         // Nor is a first change that writes anything else.
         let mut other = automerge::AutoCommit::new();
-        other
-            .put(automerge::ROOT, app_state::SCHEMA_VERSION_KEY, 1_u64)
-            .unwrap();
+        other.put(automerge::ROOT, legacy_key, 1_u64).unwrap();
         other.put(automerge::ROOT, "title", "x").unwrap();
         other.commit();
         assert!(claimed(&mut other, &[]).is_err());

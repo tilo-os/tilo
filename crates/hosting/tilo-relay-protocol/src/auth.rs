@@ -171,38 +171,6 @@ pub struct HelloAck2 {
     pub sig_over_server_nonce: [u8; 64],
 }
 
-/// What kind of peer sits on the other end of an authenticated
-/// stream. Set at handshake time from the device cert's capabilities
-/// and threaded through the peer session so fan-out can distinguish
-/// "another user device" from "another relay in a federated mesh".
-///
-/// The important consequence: a peer relay's messages must NOT be
-/// re-forwarded to other peer relays (both live and store-and-
-/// forward), because the shared automerge doc would echo forever
-/// otherwise. See the daemon's `WorkspaceRuntime::fanout_delta`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PeerRole {
-    /// A user device (laptop / phone / desktop) — subscribes to
-    /// receive workspace ops.
-    Device,
-    /// Another relay hosting one or more of the same workspaces —
-    /// federated peer.
-    PeerRelay,
-}
-
-impl PeerRole {
-    /// Derive the role from a device cert's capabilities. A cert
-    /// with `can_act_as_host = true` is treated as a peer relay when
-    /// it dials another host; every other cert is a plain device.
-    pub fn from_cert(cert: &DeviceCert) -> Self {
-        if cert.capabilities.can_act_as_host {
-            Self::PeerRelay
-        } else {
-            Self::Device
-        }
-    }
-}
-
 /// Authenticated peer state that survives past the handshake — used
 /// by the daemon to route subsequent messages.
 #[derive(Clone, Debug)]
@@ -214,10 +182,6 @@ pub struct AuthenticatedPeer {
     pub user_public_key: [u8; 32],
     /// The peer's device pubkey. Copied out for the same reason.
     pub device_public_key: [u8; 32],
-    /// Which side of the federation this peer represents. Derived
-    /// from `cert.capabilities.can_act_as_host` — a device with the
-    /// host capability that dials in is federating, not subscribing.
-    pub role: PeerRole,
 }
 
 /// Failure modes for the handshake.
@@ -377,7 +341,6 @@ fn admit_cert(
         return Err(AuthError::PolicyReject);
     }
     Ok(AuthenticatedPeer {
-        role: PeerRole::from_cert(cert),
         cert: cert.clone(),
         user_public_key: cert.user_public_key,
         device_public_key: cert.device_public_key,
@@ -518,7 +481,6 @@ fn verify_hello_ack_inner(
         return Err(AuthError::PolicyReject);
     }
     Ok(AuthenticatedPeer {
-        role: PeerRole::from_cert(&ack.cert),
         cert: ack.cert.clone(),
         user_public_key: ack.cert.user_public_key,
         device_public_key: ack.cert.device_public_key,
@@ -546,7 +508,6 @@ pub fn verify_interactive_owner_ack(
         return Err(AuthError::PolicyReject);
     }
     Ok(AuthenticatedPeer {
-        role: PeerRole::from_cert(&ack.cert),
         cert: ack.cert.clone(),
         user_public_key: ack.cert.user_public_key,
         device_public_key: ack.cert.device_public_key,
@@ -578,7 +539,6 @@ pub fn verify_own_device_ack(
         return Err(AuthError::PolicyReject);
     }
     Ok(AuthenticatedPeer {
-        role: PeerRole::from_cert(&ack.cert),
         cert: ack.cert.clone(),
         user_public_key: ack.cert.user_public_key,
         device_public_key: ack.cert.device_public_key,
@@ -959,7 +919,6 @@ mod tests {
         assert_eq!(peer.cert, expected.cert);
         assert_eq!(peer.user_public_key, expected.user_public_key);
         assert_eq!(peer.device_public_key, expected.device_public_key);
-        assert_eq!(peer.role, expected.role);
     }
 
     #[test]
@@ -1175,7 +1134,6 @@ mod tests {
         // role cap reads.
         let peer = relay_accepts(&frame(PEER_PROTOCOL_VERSION), &user.public_key).unwrap();
         assert!(peer.cert.capabilities.foreign);
-        assert_eq!(peer.role, PeerRole::Device);
 
         // Another version, older or newer: refused as such, whatever follows.
         for theirs in [PEER_PROTOCOL_VERSION - 1, PEER_PROTOCOL_VERSION + 1] {

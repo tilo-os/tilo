@@ -986,19 +986,17 @@ fn initialize_record(
         .map_err(LaunchError::Record)
 }
 
-/// Bring an older record up to the resource's storage version; what it
-/// answers when it cannot. Only an older document is written to: opening
-/// another view of a current record must not commit what one already open
-/// has pending.
+/// Bring an older record up to the resource's storage version and this
+/// build's version key; what it answers when it cannot. Only a document that
+/// needs it is written to: opening another view of a current record must not
+/// commit what one already open has pending.
 fn migrate_older(
     context: &HostContext,
-    version: u32,
+    needs: fn(&tilo_resource::Doc) -> bool,
     migrate: &mut dyn FnMut(&mut tilo_resource::Doc) -> Result<bool, String>,
 ) -> Result<Result<(), String>, LaunchError> {
-    let stored = context
-        .read_record(tilo_resource::evolution::stored_version)
-        .map_err(LaunchError::Record)?;
-    Ok(if stored < version {
+    let older = context.read_record(needs).map_err(LaunchError::Record)?;
+    Ok(if older {
         context.migrate_record(|doc| migrate(doc)).map(drop)
     } else {
         Ok(())
@@ -1024,9 +1022,13 @@ fn open_root<A: ResourceApp>(
     if let Err(reason) = A::import_record(context) {
         return Ok(Err(reason));
     }
-    let migrated = migrate_older(context, <A::Resource as Resource>::VERSION, &mut |doc| {
-        tilo_resource::evolution::migrate::<A::Resource>(doc).map_err(|error| error.to_string())
-    })?;
+    let migrated = migrate_older(
+        context,
+        tilo_resource::evolution::needs_migrate::<A::Resource>,
+        &mut |doc| {
+            tilo_resource::evolution::migrate::<A::Resource>(doc).map_err(|error| error.to_string())
+        },
+    )?;
     let read = context
         .read_record(|doc| {
             Reader::<A::Resource>::read(doc)

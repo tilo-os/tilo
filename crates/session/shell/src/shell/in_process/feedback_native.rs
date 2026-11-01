@@ -66,7 +66,8 @@ impl Connection {
                     .permissions(
                         self.reporter.device_public_key,
                         std::time::SystemTime::now(),
-                    )?
+                    )
+                    .map_err(|error| error.to_string())?
                     .standing();
                 // Both halves of the admission must still hold: the reporter's
                 // standing (what they may write) and the room's sandbox (what

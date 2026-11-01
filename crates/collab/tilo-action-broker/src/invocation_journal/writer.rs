@@ -180,12 +180,6 @@ impl Durable {
     pub(super) const fn ticket(&self) -> Option<&Arc<Ticket>> {
         self.0.as_ref()
     }
-    /// Whether the write is still being made.
-    pub(crate) fn pending(&self) -> bool {
-        self.0
-            .as_ref()
-            .is_some_and(|ticket| ticket.outcome().is_none())
-    }
     /// Wait for the write without holding the thread: the broker's loop
     /// goes on answering meanwhile.
     pub(crate) async fn wait(self) -> Result<(), String> {

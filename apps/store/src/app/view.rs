@@ -1861,10 +1861,9 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(String, String)> {
 /// A fact row whose value is a web address, with the action that opens it
 /// in the browser.
 fn link_row(label: String, url: String, open: String) -> Property {
-    let target = url.clone();
-    Property::new(label, url)
-        .with_kind(TextKind::Identifier)
-        .action(Icon::ExternalLink, open, move || {
-            ui::widget::open_external_url(&target);
-        })
+    let mut row = Property::new(label, url.clone()).with_kind(TextKind::Identifier);
+    if let Some(binding) = crate::bindings::effect(&StoreEffect::OpenLink { url }) {
+        row = row.action_binding(Icon::ExternalLink, open, binding);
+    }
+    row
 }

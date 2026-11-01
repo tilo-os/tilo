@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::document::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 /// How long a refused or failed record waits before it is asked for again.
 pub(crate) const RETRY_MS: u64 = 30_000;

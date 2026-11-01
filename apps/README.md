@@ -115,7 +115,7 @@ tilo-app certify . --workspace
 
 `check` includes structural validation, app-local formatting and Clippy, tests,
 runtime certification and audited scenarios. `certify` runs the focused
-production-root native audit. Direct `ui-core` dependencies, legacy callbacks,
+production-root native audit. Direct `ui-core` dependencies, unbound controls,
 stale bindings, missing semantics, and invalid or unhandled operations are
 certification failures. The SDK exposes direct CRDT field controls as searchable
 actions and records their mutations in shared history.

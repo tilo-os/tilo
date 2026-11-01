@@ -236,3 +236,39 @@ fn the_next_grant_expiry_is_the_earliest_one_still_ahead() {
     assert_eq!(tree.next_grant_expiry_after(SOON), Some(LATER));
     assert_eq!(tree.next_grant_expiry_after(LATER), None);
 }
+
+/// Desktop control is read and taken back by the app that holds it, and an
+/// app's other grants are none of its business.
+#[test]
+fn a_windows_desktop_control_ends_when_it_is_taken_back() {
+    const TERMINAL: &str = "org.example.terminal";
+    let mut ws = Workspace::new(WorkspaceId::from(1), "Desk");
+    assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
+    assert!(!ws.stop_desktop_control(TERMINAL), "nothing to take back");
+    ws.grant_app(
+        TERMINAL,
+        &Capability::DesktopControl {
+            scope: GRANT_ALWAYS,
+        },
+    );
+    ws.grant_app(
+        TERMINAL,
+        &Capability::Network {
+            hosts: None,
+            scope: GRANT_ALWAYS,
+        },
+    );
+    assert!(ws.holds_desktop_control_at(TERMINAL, NOW));
+    assert!(
+        !ws.holds_desktop_control_at("org.example.other", NOW),
+        "one app's grant is not another's"
+    );
+    assert!(ws.stop_desktop_control(TERMINAL));
+    assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
+    assert_eq!(
+        ws.app_capabilities_at(TERMINAL, NOW).len(),
+        1,
+        "its network grant stays"
+    );
+    assert!(!ws.stop_desktop_control(TERMINAL), "taken back once");
+}

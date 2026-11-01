@@ -682,7 +682,7 @@ fn a_run_never_exceeds_a_starter_who_may_not_change_the_note() {
 /// which keeps asking unless answered alone.
 #[test]
 fn allowing_one_page_read_for_the_issue_answers_the_runs_other_page_reads() {
-    use crate::collab_broker_capnp::run_question::issue_answer_scope;
+    use crate::collab_app_broker::run_question::issue_answer_scope;
     let room = "ffffffff-ffff-4fff-8fff-ffffffffffff";
     let (mut peer, starter, key, now) = admitted_fixture(
         room,

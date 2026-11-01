@@ -7,92 +7,48 @@
 //! changing different keys of one object both keep their change, and
 //! history sees the key that changed, never a rewritten string.
 //!
+//! The mapping is [`tilo_automerge::json`]'s, which stores a settings section,
+//! a page's JSON and a bot's view of an item the same way.
+//!
 //! [`value_model!`](crate::value_model) stores a serde type the same way, as
 //! its JSON form: for a type `#[derive(Model)]` cannot describe, because it
 //! is defined below this crate or holds itself (a condition of conditions).
 
-use automerge::transaction::Transactable;
-use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{ObjId, Prop, ReadDoc, Value};
 
-use crate::model::{Doc, LocatedAt as _, Model, ModelError, Slot};
+use crate::model::{Doc, Model, ModelError, Slot};
 use crate::path::Settable;
 
-/// What a JSON scalar is stored as: a number as an integer when it is one.
-fn scalar_of(value: &serde_json::Value) -> Result<ScalarValue, ModelError> {
-    Ok(match value {
-        serde_json::Value::Null => ScalarValue::Null,
-        serde_json::Value::Bool(flag) => ScalarValue::Boolean(*flag),
-        serde_json::Value::String(text) => ScalarValue::Str(text.as_str().into()),
-        serde_json::Value::Number(number) => {
-            if let Some(int) = number.as_i64() {
-                ScalarValue::Int(int)
-            } else if let Some(uint) = number.as_u64() {
-                ScalarValue::Uint(uint)
-            } else {
-                ScalarValue::F64(
-                    number
-                        .as_f64()
-                        .ok_or_else(|| ModelError::shape("a number"))?,
-                )
+/// The document's own error, or the shape a JSON value could not hold,
+/// as [`ModelError`] reports it.
+impl From<tilo_automerge::json::JsonError> for ModelError {
+    fn from(error: tilo_automerge::json::JsonError) -> Self {
+        match error {
+            tilo_automerge::json::JsonError::Shape { path, expected } => {
+                Self::Shape { path, expected }
             }
-        }
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-            return Err(ModelError::shape("a scalar"));
-        }
-    })
-}
-
-/// The JSON value of a stored scalar.
-fn json_of_scalar(scalar: &ScalarValue) -> Result<serde_json::Value, ModelError> {
-    Ok(match scalar {
-        ScalarValue::Null => serde_json::Value::Null,
-        ScalarValue::Boolean(flag) => serde_json::Value::Bool(*flag),
-        ScalarValue::Str(text) => serde_json::Value::String(text.to_string()),
-        ScalarValue::Int(int) | ScalarValue::Timestamp(int) => (*int).into(),
-        ScalarValue::Uint(uint) => (*uint).into(),
-        ScalarValue::Counter(counter) => i64::from(counter).into(),
-        ScalarValue::F64(float) => serde_json::Number::from_f64(*float)
-            .map(serde_json::Value::Number)
-            .ok_or_else(|| ModelError::shape("a finite number"))?,
-        ScalarValue::Bytes(_) | ScalarValue::Unknown { .. } => {
-            return Err(ModelError::shape("a JSON value"));
-        }
-    })
-}
-
-/// The JSON value the document holds at `value` (the object `id`).
-fn read_value(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<serde_json::Value, ModelError> {
-    match value {
-        Value::Scalar(scalar) => json_of_scalar(scalar),
-        Value::Object(ObjType::Text) => Ok(serde_json::Value::String(doc.text(id)?)),
-        Value::Object(ObjType::Map | ObjType::Table) => {
-            let mut fields = serde_json::Map::new();
-            for key in doc.keys(id).collect::<Vec<_>>() {
-                if let Some((value, inner)) = doc.get(id, key.as_str())? {
-                    let read = read_value(doc, &value, &inner).located(&key)?;
-                    fields.insert(key, read);
-                }
-            }
-            Ok(serde_json::Value::Object(fields))
-        }
-        Value::Object(ObjType::List) => {
-            let mut items = Vec::with_capacity(doc.length(id));
-            for index in 0..doc.length(id) {
-                let read = match doc.get(id, index)? {
-                    Some((value, inner)) => {
-                        read_value(doc, &value, &inner).located(&index.to_string())?
-                    }
-                    None => serde_json::Value::Null,
-                };
-                items.push(read);
-            }
-            Ok(serde_json::Value::Array(items))
+            tilo_automerge::json::JsonError::Automerge(error) => Self::Automerge(error),
         }
     }
 }
 
+/// The slot as the document names it: a key, or an index a list inserts at
+/// when it is the list's end.
+fn prop(slot: Slot<'_>) -> (&ObjId, Prop) {
+    match slot {
+        Slot::Key(obj, key) => (obj, Prop::Map(key.to_owned())),
+        Slot::Index(obj, index) | Slot::Insert(obj, index) => (obj, Prop::Seq(index)),
+    }
+}
+
+/// Write a JSON value into `slot`, changing only what differs.
+fn store_json(doc: &mut Doc, slot: Slot<'_>, value: &serde_json::Value) -> Result<(), ModelError> {
+    let (obj, prop) = prop(slot);
+    Ok(tilo_automerge::json::write(doc, obj, prop, value)?)
+}
+
 /// The JSON value the document held at `value` (the object `id`) as of
-/// `heads`: [`read_value`] of a past version, read in place rather than on a
+/// `heads`: [`load_json`] of a past version, read in place rather than on a
 /// fork of the document.
 pub(crate) fn read_value_at(
     doc: &impl ReadDoc,
@@ -100,73 +56,15 @@ pub(crate) fn read_value_at(
     id: &ObjId,
     heads: &[automerge::ChangeHash],
 ) -> Result<serde_json::Value, ModelError> {
-    match value {
-        Value::Scalar(scalar) => json_of_scalar(scalar),
-        Value::Object(ObjType::Text) => Ok(serde_json::Value::String(doc.text_at(id, heads)?)),
-        Value::Object(ObjType::Map | ObjType::Table) => {
-            let mut fields = serde_json::Map::new();
-            for key in doc.keys_at(id, heads).collect::<Vec<_>>() {
-                if let Some((value, inner)) = doc.get_at(id, key.as_str(), heads)? {
-                    let read = read_value_at(doc, &value, &inner, heads).located(&key)?;
-                    fields.insert(key, read);
-                }
-            }
-            Ok(serde_json::Value::Object(fields))
-        }
-        Value::Object(ObjType::List) => {
-            let length = doc.length_at(id, heads);
-            let mut items = Vec::with_capacity(length);
-            for index in 0..length {
-                let read = match doc.get_at(id, index, heads)? {
-                    Some((value, inner)) => {
-                        read_value_at(doc, &value, &inner, heads).located(&index.to_string())?
-                    }
-                    None => serde_json::Value::Null,
-                };
-                items.push(read);
-            }
-            Ok(serde_json::Value::Array(items))
-        }
-    }
+    Ok(match value {
+        Value::Scalar(scalar) => tilo_automerge::json::scalar_json(scalar)?,
+        Value::Object(_) => tilo_automerge::json::read_at(doc, id, heads, None)?,
+    })
 }
 
-/// Write `value` into `slot`, changing only what differs: a key of an
-/// object or an element of an array that holds the same value is left as
-/// it is.
-fn write_value(doc: &mut Doc, slot: Slot<'_>, value: &serde_json::Value) -> Result<(), ModelError> {
-    match value {
-        serde_json::Value::Object(fields) => {
-            let map = slot.object(doc, ObjType::Map)?;
-            for (key, inner) in fields {
-                write_value(doc, Slot::Key(&map, key), inner).located(key)?;
-            }
-            let stale: Vec<String> = doc
-                .keys(&map)
-                .filter(|key| !fields.contains_key(key))
-                .collect();
-            for key in stale {
-                doc.delete(&map, key.as_str())?;
-            }
-            Ok(())
-        }
-        serde_json::Value::Array(items) => {
-            let list = slot.object(doc, ObjType::List)?;
-            let existing = doc.length(&list);
-            for (index, item) in items.iter().enumerate() {
-                let slot = if index < existing {
-                    Slot::Index(&list, index)
-                } else {
-                    Slot::Insert(&list, index)
-                };
-                write_value(doc, slot, item).located(&index.to_string())?;
-            }
-            for index in (items.len()..existing).rev() {
-                doc.delete(&list, index)?;
-            }
-            Ok(())
-        }
-        scalar => slot.put_scalar(doc, scalar_of(scalar)?),
-    }
+/// The JSON value the document holds at `value` (the object `id`).
+fn load_json(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<serde_json::Value, ModelError> {
+    Ok(tilo_automerge::json::read_value(doc, value, id)?)
 }
 
 /// Any JSON value, stored as the document's maps, lists and scalars; see
@@ -186,14 +84,14 @@ impl Model for serde_json::Value {
     }
     #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
-        read_value(doc, value, id)
+        load_json(doc, value, id)
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::Null)
     }
     #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        write_value(doc, slot, self)
+        store_json(doc, slot, self)
     }
     #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
@@ -223,25 +121,15 @@ impl Model for serde_json::Map<String, serde_json::Value> {
     }
     #[inline(never)]
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
-        Self::from_json(&read_value(doc, value, id)?)
+        Self::from_json(&load_json(doc, value, id)?)
     }
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::new())
     }
     #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        let map = slot.object(doc, ObjType::Map)?;
-        for (key, inner) in self {
-            write_value(doc, Slot::Key(&map, key), inner).located(key)?;
-        }
-        let stale: Vec<String> = doc
-            .keys(&map)
-            .filter(|key| !self.contains_key(key))
-            .collect();
-        for key in stale {
-            doc.delete(&map, key.as_str())?;
-        }
-        Ok(())
+        let (obj, prop) = prop(slot);
+        Ok(tilo_automerge::json::write_object(doc, obj, prop, self)?)
     }
     #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {
@@ -299,7 +187,8 @@ value_model!(tilo_actions::ActionKey, tilo_actions::ActionParam);
 mod tests {
     use super::*;
     use crate::model::{read_key, write_key};
-    use automerge::ROOT;
+    use automerge::transaction::Transactable;
+    use automerge::{ObjType, ROOT, ReadDoc};
     use serde_json::json;
     use tilo_automerge::ApplyIncoming;
 

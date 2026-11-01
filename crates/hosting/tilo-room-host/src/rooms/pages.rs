@@ -14,11 +14,11 @@
 //! ([`RoomsRequest::WaitList`]).
 
 use tilo_action_policy::roles::governance;
-use tilo_governor::Governor;
 use tilo_peer_state::join::{
     JoinChallenge, JoinChallengeRequest, JoinChallengeResponse, JoinProof, JoinTransportRequest,
     JoinTransportResponse, MemberRole, VerifiedRedemption,
 };
+use tilo_peer_state::join_answer::JoinAnswer;
 use tilo_relay_protocol::rooms::{
     Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_REQUESTS, PendingInvite, PreAdmission,
     Room, RoomMember, RoomNotice, RoomRole, RoomsReply, RoomsRequest, WaitListEntry,
@@ -112,7 +112,7 @@ const fn room_role(role: MemberRole) -> RoomRole {
 fn page_room(room: &GovernedRoom, spectator: Option<[u8; 32]>) -> Room {
     let summary = room.summary();
     let certificates = room.peer().certificates();
-    let owner = room.peer().authority().user_public_key;
+    let owner = room.peer().owner();
     let mut members: Vec<_> = summary
         .members
         .into_iter()
@@ -139,7 +139,7 @@ fn page_room(room: &GovernedRoom, spectator: Option<[u8; 32]>) -> Room {
             0,
             RoomMember {
                 user_public_key: owner,
-                name: Some(room.peer().authority().device_label.clone()),
+                name: Some(room.record.authority.device_label.clone()),
                 role: RoomRole::Editor,
                 owner: true,
                 removed: false,
@@ -369,10 +369,7 @@ impl Rooms {
             ));
         }
         let at = system_time(now);
-        let member = room
-            .peer()
-            .permissions(device.device_public_key, at)
-            .map_err(CollaborationError::new)?;
+        let member = room.peer().permissions(device.device_public_key, at)?;
         if member.foreign
             || member.delegate.is_some()
             || member.person != hex::encode(device.user_public_key)
@@ -419,10 +416,7 @@ impl Rooms {
         if self.watches_only(workspace_id, device).await {
             return Ok(false);
         }
-        let member = governed
-            .peer()
-            .permissions(device.device_public_key, now)
-            .map_err(CollaborationError::new)?;
+        let member = governed.peer().permissions(device.device_public_key, now)?;
         drop(governed);
         Ok(member.allows(&node, tilo_action_policy::ActionKind::Undoable, now))
     }
@@ -1113,7 +1107,9 @@ impl Rooms {
                 RoomOp::Govern(governance::INVITE),
                 now,
             )?;
-            room.peer().permissions(device, system_time(now))?;
+            room.peer()
+                .permissions(device, system_time(now))
+                .map_err(|error| error.to_string())?;
             return Ok(());
         }
         let (device, proof_digest, redemption, name) = {
@@ -1199,7 +1195,9 @@ impl Rooms {
                     request_id,
                 });
                 let JoinTransportResponse::Challenge(JoinChallengeResponse { challenge }) =
-                    Governor(self.clone()).decide(remote, request, now).await?
+                    JoinAnswer(self.clone())
+                        .decide(remote, request, now)
+                        .await?
                 else {
                     return Err(CollaborationError::new(
                         "the governor answered no challenge",

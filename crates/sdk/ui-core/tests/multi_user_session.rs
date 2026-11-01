@@ -160,13 +160,10 @@ fn control_reports_and_crdt_deltas_reach_the_right_plane() {
         let bob = relay.attach("bob");
 
         alice.send(CollabRequest::ReportContinuation {
-            app_id: "browser".into(),
             schema_version: 1,
             metadata: vec![1, 2, 3],
         });
-        alice.send(CollabRequest::ClearContinuation {
-            app_id: "browser".into(),
-        });
+        alice.send(CollabRequest::ClearContinuation);
         relay.drain_peer_outbox(&alice);
         pump(&mut relay);
 

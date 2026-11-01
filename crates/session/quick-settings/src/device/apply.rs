@@ -4,9 +4,9 @@
 
 use os_actions as qs;
 
-use super::reads::{FastReading, FieldReading, WifiJoinResult};
+use super::reads::{BluetoothReading, FastReading, FieldReading, WifiJoinResult};
 use crate::i18n::{t, t_args};
-use crate::{BtDevice, DisplayBrightness, PowerProfile, QuickSettingsState, WifiNetwork};
+use crate::{BtDevice, BtNearby, DisplayBrightness, PowerProfile, QuickSettingsState, WifiNetwork};
 
 /// The panel's three-way profile, from the daemon's.
 pub(crate) const fn ui_power_profile(profile: qs::PowerProfile) -> PowerProfile {
@@ -31,8 +31,6 @@ pub(crate) fn fast(qs: &mut QuickSettingsState, reading: FastReading) {
     let FastReading {
         brightness,
         displays,
-        volume_available,
-        volume,
         bluetooth,
         bluetooth_available,
         power,
@@ -51,12 +49,6 @@ pub(crate) fn fast(qs: &mut QuickSettingsState, reading: FastReading) {
         qs.power_profiles = profiles.into_iter().map(ui_power_profile).collect();
     }
     brightness_levels(qs, brightness, displays);
-    if let Some(available) = volume_available {
-        qs.volume_available = available;
-    }
-    if let Some(volume) = volume {
-        qs.status.volume = Some(volume);
-    }
     if let Some(radios) = radios {
         self::radios(qs, radios);
     }
@@ -92,14 +84,12 @@ pub(crate) fn field(qs: &mut QuickSettingsState, reading: FieldReading) {
         FieldReading::Brightness(brightness, displays) => {
             brightness_levels(qs, brightness, Some(displays));
         }
-        FieldReading::Volume(Some(volume)) => qs.status.volume = Some(volume),
         // Not read: leave the control as it is.
         FieldReading::Radios(None)
         | FieldReading::Bluetooth(None)
         | FieldReading::Wired(None)
         | FieldReading::Power(None)
-        | FieldReading::Vpns(None)
-        | FieldReading::Volume(None) => {}
+        | FieldReading::Vpns(None) => {}
     }
 }
 
@@ -155,16 +145,41 @@ pub(crate) fn wifi_networks(qs: &mut QuickSettingsState, networks: Vec<qs::WifiN
         .collect();
 }
 
-pub(crate) fn bt_devices(qs: &mut QuickSettingsState, devices: Vec<qs::bluez::DeviceInfo>) {
-    qs.bt_devices = devices
+pub(crate) fn saved_networks(qs: &mut QuickSettingsState, saved: Vec<qs::SavedNetworkProfile>) {
+    qs.saved_networks = saved
         .into_iter()
-        .map(|d| BtDevice {
-            name: d.name,
-            address: d.address,
-            battery: d.battery.unwrap_or(0),
-            connected: d.connected,
+        .map(|profile| crate::SavedNetwork {
+            name: profile.name,
+            profile: profile.uuid,
+            autoconnect: profile.autoconnect,
         })
         .collect();
+}
+
+pub(crate) fn bluetooth(qs: &mut QuickSettingsState, reading: BluetoothReading) {
+    if let Some(devices) = reading.paired {
+        qs.bt_devices = devices
+            .into_iter()
+            .map(|d| BtDevice {
+                name: d.name,
+                address: d.mac,
+                battery: d.battery,
+                connected: d.connected,
+            })
+            .collect();
+    }
+    qs.bt_nearby = reading
+        .nearby
+        .into_iter()
+        .map(|d| BtNearby {
+            name: d.name,
+            address: d.address,
+            signal: d.rssi,
+        })
+        .collect();
+    if let Some(scanning) = reading.scanning {
+        qs.bt_scanning = scanning;
+    }
 }
 
 /// Land a join: the network joined, or why not — in the password prompt
@@ -184,6 +199,7 @@ pub(crate) fn wifi_join(
     match result {
         Ok(()) => {
             qs.wifi_password = None;
+            qs.wifi_hidden = None;
             for network in &mut qs.wifi_networks {
                 network.connected = network.ssid == ssid;
             }
@@ -210,6 +226,13 @@ pub(crate) fn wifi_join(
             {
                 prompt.connecting = false;
                 // Said in the prompt, under its field.
+                prompt.error = Some(t("host-wifi-join-check-password"));
+                None
+            } else if let Some(prompt) =
+                qs.wifi_hidden.as_mut().filter(|prompt| prompt.ssid == ssid)
+            {
+                prompt.connecting = false;
+                // Said in the form, under its fields.
                 prompt.error = Some(t("host-wifi-join-check-password"));
                 None
             } else if qs

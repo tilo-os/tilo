@@ -653,6 +653,135 @@ fn primary_window_attributes(
     #[cfg(target_os = "linux")]
     let window_attributes = {
         use winit::platform::wayland::WindowAttributesExtWayland;
+        /// Where a session puts a surface app's window: on a layer of the output,
+        /// placed by the app's own anchors instead of by the desktop.
+        ///
+        /// The session owns placement — which output, which edge, how much room the
+        /// desktop leaves free — so it says so in the environment of the process it
+        /// starts, beside the socket it hands the app. An app launched without it is
+        /// an ordinary window.
+        fn layer_surface_from_env() -> Option<winit::platform::wayland::LayerSurfaceAttributes> {
+            use winit::platform::wayland::{
+                Anchor, KeyboardInteractivity, Layer, LayerSurfaceAttributes,
+            };
+
+            /// A value the session set, trimmed; empty counts as unset.
+            fn value(name: &str) -> Option<String> {
+                let value = std::env::var(name).ok()?;
+                let value = value.trim();
+                (!value.is_empty()).then(|| value.to_owned())
+            }
+
+            let layer = match value("TILO_SURFACE_LAYER")?.to_ascii_lowercase().as_str() {
+                "background" => Layer::Background,
+                "bottom" => Layer::Bottom,
+                "top" => Layer::Top,
+                "overlay" => Layer::Overlay,
+                other => {
+                    tracing::warn!(
+                        layer = other,
+                        "unknown surface layer; leaving the window a toplevel"
+                    );
+                    return None;
+                }
+            };
+
+            let mut anchor = Anchor::empty();
+            if let Some(edges) = value("TILO_SURFACE_ANCHOR") {
+                for edge in edges.split(',').map(str::trim) {
+                    anchor |= match edge {
+                        "top" => Anchor::TOP,
+                        "bottom" => Anchor::BOTTOM,
+                        "left" => Anchor::LEFT,
+                        "right" => Anchor::RIGHT,
+                        "" | "none" => Anchor::empty(),
+                        other => {
+                            tracing::warn!(edge = other, "unknown surface anchor; ignoring it");
+                            Anchor::empty()
+                        }
+                    };
+                }
+            }
+
+            let (mut width, mut height) = (0, 0);
+            if let Some(size) = value("TILO_SURFACE_SIZE") {
+                let (w, h) = size
+                    .split_once(['x', 'X', ','])
+                    .unwrap_or((size.as_str(), ""));
+                width = w.trim().parse().unwrap_or(0);
+                height = h.trim().parse().unwrap_or(0);
+            }
+
+            let margin = value("TILO_SURFACE_MARGIN").map_or((0, 0, 0, 0), |margin| {
+                let mut edges = margin
+                    .split(',')
+                    .map(|edge| edge.trim().parse().unwrap_or(0));
+                (
+                    edges.next().unwrap_or(0),
+                    edges.next().unwrap_or(0),
+                    edges.next().unwrap_or(0),
+                    edges.next().unwrap_or(0),
+                )
+            });
+
+            let keyboard_interactivity = match value("TILO_SURFACE_KEYBOARD")
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "" | "none" => KeyboardInteractivity::None,
+                "on-demand" | "ondemand" | "on_demand" => KeyboardInteractivity::OnDemand,
+                "exclusive" => KeyboardInteractivity::Exclusive,
+                other => {
+                    tracing::warn!(
+                        keyboard = other,
+                        "unknown surface keyboard mode; taking none"
+                    );
+                    KeyboardInteractivity::None
+                }
+            };
+
+            Some(LayerSurfaceAttributes {
+                layer,
+                namespace: value("TILO_SURFACE_NAMESPACE")
+                    .unwrap_or_else(|| String::from("tilo-surface")),
+                anchor,
+                size: winit::dpi::LogicalSize::new(width, height),
+                exclusive_zone: value("TILO_SURFACE_EXCLUSIVE")
+                    .and_then(|zone| zone.parse().ok())
+                    .unwrap_or(0),
+                margin,
+                keyboard_interactivity,
+            })
+        }
+
+        /// Whether the session starts this process as its lock screen: while it
+        /// runs, the window asks the compositor for the session's lock and draws on
+        /// it instead of being a window the desktop places.
+        fn session_lock_from_env() -> bool {
+            std::env::var("TILO_SURFACE_LOCK").is_ok_and(|value| {
+                let value = value.trim();
+                value == "1" || value.eq_ignore_ascii_case("true")
+            })
+        }
+
+        let window_attributes = if session_lock_from_env() {
+            // The lock screen is the compositor's to size and give every
+            // input to; it has no title bar of ours.
+            window_attributes
+                .with_decorations(false)
+                .with_session_lock()
+        } else {
+            match layer_surface_from_env() {
+                // A layer surface has no title bar of ours: it says where it
+                // goes by its anchors, and the compositor composites it like
+                // any other client's surface.
+                Some(placement) => window_attributes
+                    .with_decorations(false)
+                    .with_layer_surface(placement),
+                None => window_attributes,
+            }
+        };
         window_attributes.with_name(app_id, "")
     };
     // `resolve_app_id` falls back to a generic id rather than none; Linux
@@ -2567,8 +2696,8 @@ impl AppHandler {
             "overlay",
             app.debug_mode
                 || app.actions.action_palette.is_some()
-                || app.input.tooltip_host.needs_frame()
-                || app.input.tooltip_host.visible().is_some()
+                || app.input.tooltips.needs_frame()
+                || app.input.tooltips.visible().is_some()
                 || app
                     .profiler
                     .as_ref()
@@ -3081,6 +3210,9 @@ impl AppHandler {
         // The surface a handled input left for this frame, now that its sync
         // ran and the frame's availability refresh built the tree.
         app.publish_owed_action_surface();
+        // A surface app's frame also hands the session what the app offers,
+        // as a hosted app hands its host: its resources and their actions.
+        crate::surface_peer::publish(&app.collect_resources());
 
         if needs_followup_redraw {
             window.request_redraw();
@@ -4010,7 +4142,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
             tracing::debug!(target: "tilo.app.activation", "existing native window activation requested");
         }
-        app.publish_playback_handoff();
 
         // A "just typed" highlight fades in steps, each a wake deadline: a
         // step that came due paints once, and the loop sleeps between them
@@ -4157,7 +4288,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // A hover tooltip is not motion, so it reveals even under
         // reduce-motion. Its dwell is a wait: the loop sleeps until the
         // reveal is due (`scheduled_deadline`) and paints once then.
-        let tooltip_reveal = app.input.tooltip_host.reveal_at();
+        let tooltip_reveal = app.input.tooltips.reveal_at();
         let tooltip_pending = tooltip_reveal.is_some_and(|at| at <= crate::motion::frame_now());
         if tooltip_pending {
             request_primary_redraw();
@@ -4977,6 +5108,15 @@ impl App {
                 let _ = wake_proxy.send_event(UserEvent::Wake(event));
             })
             .expect("App wake scope must be open and unbound at native startup");
+        // A transport answered on a socket of its own (a surface's session)
+        // wakes the loop: what it carries is applied by a frame that would
+        // otherwise never run.
+        if let Some(scope) = self.wake_scope.as_ref() {
+            let wake = scope.handle();
+            self.collaboration
+                .manager
+                .set_transport_wake(Box::new(move || wake.wake()));
+        }
         // The AccessKit adapter routes events back through this as
         // `UserEvent::AccessKit`.
         let a11y_proxy = proxy.clone();

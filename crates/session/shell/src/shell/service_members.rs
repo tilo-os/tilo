@@ -275,14 +275,6 @@ mod tests {
                 service.pump(&service_end, *now, wall);
             }
         };
-        // No one has made the channel's group yet: the owner's device, its
-        // only participant so far, waits its own short while for a genesis
-        // and then creates the group itself.
-        assert!(matches!(
-            owner.access_record(room, &route, now).1,
-            ChannelAccess::Waiting
-        ));
-        run(&mut owner, &mut service, &mut now, 1_000, 5);
         let ChannelAccess::Ready(keys) = owner.access_record(room, &route, now).1 else {
             panic!("the owner's device opens its own channel");
         };

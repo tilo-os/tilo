@@ -8,10 +8,10 @@
 //!
 //! "Copy link" asks the resource's own app for its `share-link` through the
 //! action door: the app that publishes the resource knows its views and asks
-//! its room's host where it is served, so Chat never builds a link itself and
+//! its workspace's host where it is served, so Chat never builds a link itself and
 //! a person, an automation and an agent all get the same URL. A message's
 //! link is asked for once its controls are shown, ahead of a click: a browser
-//! copies only inside the click itself, and the room's host may answer well
+//! copies only inside the click itself, and the workspace's host may answer well
 //! after it. A click that comes before the answer claims the clipboard
 //! ([`ui::reserve_clipboard_copy`]) and fills it once the link is in.
 use tilo_actions::InvocationUpdate;
@@ -25,7 +25,7 @@ const CLIPBOARD_REFUSED: &str = "The system clipboard did not accept the link";
 /// How long a link request may run before the control gives up on it.
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Links asked for ahead of a click that are kept at once: the messages on
-/// screen, with room to scroll.
+/// screen, with workspace to scroll.
 const PREFETCHED: usize = 64;
 
 pub(crate) struct Navigation {
@@ -488,7 +488,7 @@ mod tests {
         }
     }
 
-    const URL: &str = "https://tilo.so/app/#/host.example/room/so.tilo.notes/r/page:1";
+    const URL: &str = "https://tilo.so/app/#/host.example/workspace/so.tilo.notes/r/page:1";
 
     type Answer = tilo_actions::remote::Completer<Result<InvocationReceipt, ActionHostError>>;
 
@@ -756,9 +756,9 @@ mod tests {
     fn the_reference_chip_opens_the_resource_in_its_own_app_or_says_why_not() {
         use crate::resource::ChatShell;
         use ui::framework::testing::TestApp;
-        const ROOM: &str = "0b7f3a52-4c1d-4e8f-9a6b-2d5e8c1f7a30";
+        const WORKSPACE_ID: &str = "0b7f3a52-4c1d-4e8f-9a6b-2d5e8c1f7a30";
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_WORKSPACE_ID", ROOM);
+        env.set("TILO_WORKSPACE_ID", WORKSPACE_ID);
         let door = Arc::new(door());
         let _served = RemoteActions::enter(door.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
@@ -782,7 +782,7 @@ mod tests {
         );
         assert_eq!(
             asked.target,
-            page.open_target(ROOM, "so.tilo.notes", Some("plan"))
+            page.open_target(WORKSPACE_ID, "so.tilo.notes", Some("plan"))
         );
         assert_eq!(asked.argument, InvokeArgument::None);
         let surface = app.chat();

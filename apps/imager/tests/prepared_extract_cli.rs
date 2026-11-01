@@ -1,4 +1,4 @@
-//! Native CLI is the subject. Python is used only as a transport oracle.
+//! The native CLI is the subject.
 #![cfg(target_os = "linux")]
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -14,23 +14,6 @@ fn native() -> std::path::PathBuf {
 }
 fn run(args: &[&str], input: &[u8]) -> TestResult<Output> {
     let mut child = Command::new(native())
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    child
-        .stdin
-        .take()
-        .ok_or("missing child stdin")?
-        .write_all(input)?;
-    Ok(child.wait_with_output()?)
-}
-fn oracle(args: &[&str], input: &[u8]) -> TestResult<Output> {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../os/tests/oracles/tilo-installer-prepared-setup-extract.py");
-    let mut child = Command::new("python3")
-        .arg(script)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -311,7 +294,7 @@ fn native_payload_preflight_capacity_and_retention_all_kinds() {
     }
 }
 #[test]
-fn closed_receipt_mutations_match_oracle_and_redact() {
+fn closed_receipt_mutations_are_refused_and_redacted() {
     let base = receipt(&sealed());
     let mut mutations = vec![Value::Null, json!(true), json!([])];
     for key in ["schema", "sealed_bytes", "ciphertext_sha256"] {
@@ -336,11 +319,8 @@ fn closed_receipt_mutations_match_oracle_and_redact() {
     for value in mutations {
         let temp = tempfile::tempdir().unwrap();
         let native = temp.path().join("native");
-        let python = temp.path().join("python");
         private(&native).unwrap();
-        private(&python).unwrap();
         write(&native.join("prepared-setup.sealed"), &sealed()).unwrap();
-        write(&python.join("prepared-setup.sealed"), &sealed()).unwrap();
         let text = serde_json::to_string(&value).unwrap();
         let n = run(
             &[
@@ -353,25 +333,13 @@ fn closed_receipt_mutations_match_oracle_and_redact() {
             &[],
         )
         .unwrap();
-        let p = oracle(
-            &[
-                "preflight",
-                "--source-dir",
-                python.to_str().unwrap(),
-                "--receipt",
-                &text,
-            ],
-            &[],
-        )
-        .unwrap();
         assert!(!n.status.success());
-        assert_eq!(n.status.success(), p.status.success());
         assert!(!String::from_utf8_lossy(&n.stderr).contains("example-private-credential"));
         assert!(!native.join("receipt.json").exists());
     }
 }
 #[test]
-fn malformed_payload_metadata_matches_oracle() {
+fn malformed_payload_metadata_is_refused() {
     for kind in ["home", "applications", "browser"] {
         let base = expectation(kind, &sealed());
         let mut mutations = vec![Value::Null, json!(true), json!([])];
@@ -390,10 +358,8 @@ fn malformed_payload_metadata_matches_oracle() {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("media");
             let native = temp.path().join("native");
-            let python = temp.path().join("python");
             private(&root).unwrap();
             private(&native).unwrap();
-            private(&python).unwrap();
             media(&root).unwrap();
             let mut selection = json!({"schema":1,"prepared_setup":receipt(&sealed())});
             selection[kind] = e;
@@ -403,18 +369,7 @@ fn malformed_payload_metadata_matches_oracle() {
             )
             .unwrap();
             let n = extract(&root, &native).unwrap();
-            let p = oracle(
-                &[
-                    "--source-root",
-                    root.to_str().unwrap(),
-                    "--out-dir",
-                    python.to_str().unwrap(),
-                ],
-                &[],
-            )
-            .unwrap();
             assert!(!n.status.success(), "{kind} {selection}");
-            assert_eq!(n.status.success(), p.status.success(), "{kind} {selection}");
         }
     }
 }
@@ -491,9 +446,7 @@ fn authenticated_closed_mutations_redact_and_echo_only_success() {
     for value in values {
         let input = serde_json::to_vec(&value).unwrap();
         let n = run(&["preflight-authenticated", "--source-dir", source], &input).unwrap();
-        let p = oracle(&["preflight-authenticated", "--source-dir", source], &input).unwrap();
         assert!(!n.status.success());
-        assert_eq!(n.status.success(), p.status.success());
         assert!(n.stdout.is_empty());
         assert!(!String::from_utf8_lossy(&n.stderr).contains("example-private-credential"));
     }
@@ -551,23 +504,10 @@ fn browser_padding_and_writable_profiles_are_closed() {
     let original = fs::read(&path).unwrap();
     for prefix in *b" \t\n" {
         let native = temp.path().join(format!("native-{prefix}"));
-        let python = temp.path().join(format!("python-{prefix}"));
         private(&native).unwrap();
-        private(&python).unwrap();
         write(&path, &[&[prefix], original.as_slice()].concat()).unwrap();
         let n = extract(&root, &native).unwrap();
-        let p = oracle(
-            &[
-                "--source-root",
-                root.to_str().unwrap(),
-                "--out-dir",
-                python.to_str().unwrap(),
-            ],
-            &[],
-        )
-        .unwrap();
         assert!(!n.status.success());
-        assert_eq!(n.status.success(), p.status.success());
     }
     write(&path, &original).unwrap();
     assert!(extract(&root, &out).unwrap().status.success());
@@ -586,7 +526,7 @@ fn browser_padding_and_writable_profiles_are_closed() {
 }
 
 #[test]
-fn authenticated_completed_selection_and_scope_mutations_match_oracle() {
+fn authenticated_completed_selection_and_scope_mutations_are_refused() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("media");
     let out = temp.path().join("out");
@@ -635,19 +575,8 @@ fn authenticated_completed_selection_and_scope_mutations_match_oracle() {
             &input,
         )
         .unwrap();
-        let p = oracle(
-            &[
-                "preflight-authenticated",
-                "--source-dir",
-                out.to_str().unwrap(),
-            ],
-            &input,
-        )
-        .unwrap();
-        assert_eq!(n.status.success(), p.status.success(), "{value}");
-        if !n.status.success() {
-            assert!(n.stdout.is_empty());
-        }
+        assert!(!n.status.success(), "{value}");
+        assert!(n.stdout.is_empty());
     }
 }
 

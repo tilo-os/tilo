@@ -148,12 +148,21 @@ impl Document {
     /// under `root`, the map of a field of a larger record.
     ///
     /// # Errors
-    /// Returns [`DocError`] if `root` does not hold a tilo-doc schema `open` recognises.
+    /// Returns [`DocError`] if `root` does not hold a tilo-doc schema `open` recognises, or
+    /// if the version key it replaced could not be dropped.
     pub fn from_automerge_under(
-        doc: AutoCommit,
+        mut doc: AutoCommit,
         root: &automerge::ObjId,
     ) -> Result<Self, DocError> {
         let c = crate::model::open(&doc, root)?;
+        // An older document kept its version under a key of its own; it is
+        // read once, here, and the document keeps it under the one key every
+        // Tilo document uses from then on.
+        if tilo_resource::evolution::adopt_at(&mut doc, root)
+            .map_err(|error| DocError::Invalid(error.to_string()))?
+        {
+            doc.commit();
+        }
         let mut ids = crate::model::try_seeded_id_gen(&doc, &c)?;
         ids.allow_commits();
         Ok(Self { doc, c, ids })
@@ -726,7 +735,7 @@ mod tests {
             let (v, _) = d.doc.get(&ROOT, KEY_SCHEMA).unwrap().unwrap();
             assert_eq!(v.as_str(), Some(SCHEMA_ID));
             let (vv, _) = d.doc.get(&ROOT, KEY_SCHEMA_VERSION).unwrap().unwrap();
-            assert_eq!(vv.as_i64(), Some(SCHEMA_VERSION));
+            assert_eq!(vv.as_u64(), Some(SCHEMA_VERSION));
             for k in [KEY_BLOCKS, KEY_STYLES, KEY_PRESERVED, KEY_META, KEY_BLOBS] {
                 let got = d.doc.get(&ROOT, k).unwrap();
                 assert!(

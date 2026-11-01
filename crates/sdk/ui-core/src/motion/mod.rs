@@ -71,6 +71,8 @@ pub use beckon::{Arrival, Beckon, Completion};
 pub(crate) use clock::forget_frames_for_tests;
 #[cfg(feature = "native")]
 pub(crate) use clock::laying_out_frame;
+#[cfg(feature = "native")]
+pub(crate) use clock::own;
 pub(crate) use clock::pin_frame;
 #[cfg(test)]
 pub(crate) use clock::pin_frame_at;

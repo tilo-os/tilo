@@ -25,7 +25,7 @@ fn a_window_showing_a_typed_secret_is_withheld_from_captures() {
         }
         let app = drawn(field);
         assert!(!app.capture_protected(), "the app asked for nothing");
-        assert!(app.wants_capture_protection(), "revealed: {revealed}");
+        assert!(app.withholds_captures(), "revealed: {revealed}");
     }
 
     // Case `an_empty_password_or_plain_text_withholds_nothing`.
@@ -33,13 +33,13 @@ fn a_window_showing_a_typed_secret_is_withheld_from_captures() {
         TextInput::local().with_secret(true),
         TextInput::local().with_initial_value("hunter2"),
     ] {
-        assert!(!drawn(field).wants_capture_protection());
+        assert!(!drawn(field).withholds_captures());
     }
 
     // Case `an_app_that_asked_stays_withheld`.
     let mut app = drawn(TextInput::local());
     app.set_capture_protected(true);
-    assert!(app.wants_capture_protection());
+    assert!(app.withholds_captures());
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn empty_revealed_secret_preedit_protects_the_production_frame() {
     );
     assert!(handled);
     assert_eq!(field.value(), "", "composition is not committed text");
-    assert!(drawn(field).wants_capture_protection());
+    assert!(drawn(field).withholds_captures());
 }
 
 #[cfg(unix)]
@@ -132,22 +132,22 @@ fn capture_submission_waits_for_the_matching_transport_ack_and_latches_until_tea
     app.capture_frame_submitted(1);
     app.set_secret_on_screen(false);
     assert!(
-        app.wants_capture_protection(),
+        app.withholds_captures(),
         "secret render work is still queued"
     );
     app.capture_frame_presented(1);
     assert!(
-        app.wants_capture_protection(),
+        app.withholds_captures(),
         "the displayed frame still has the secret"
     );
     app.capture_frame_submitted(2);
     assert!(
-        app.wants_capture_protection(),
+        app.withholds_captures(),
         "submitting a clear is not presenting it"
     );
     app.capture_frame_presented(2);
     assert!(
-        app.wants_capture_protection(),
+        app.withholds_captures(),
         "worker completion cannot prove a compositor buffer replacement"
     );
     let latched_generation = app.floating.capture_generation;
@@ -156,7 +156,7 @@ fn capture_submission_waits_for_the_matching_transport_ack_and_latches_until_tea
         app.capture_frame_presented(sequence);
         app.pump_floating_surface_service();
         assert!(
-            app.wants_capture_protection(),
+            app.withholds_captures(),
             "repeated benign frames retain the native lifetime latch"
         );
         assert_eq!(
@@ -171,22 +171,22 @@ fn capture_submission_waits_for_the_matching_transport_ack_and_latches_until_tea
 fn auxiliary_secret_frames_keep_the_conservative_native_lifetime_latch() {
     let mut app = drawn(TextInput::local());
     app.capture_auxiliary_drawn("detached", true);
-    assert!(app.wants_capture_protection());
+    assert!(app.withholds_captures());
     app.capture_auxiliary_submitted("detached");
     app.capture_auxiliary_drawn("detached", false);
-    assert!(app.wants_capture_protection());
+    assert!(app.withholds_captures());
     app.capture_auxiliary_completed("detached", true);
-    assert!(app.wants_capture_protection());
+    assert!(app.withholds_captures());
     app.capture_auxiliary_submitted("detached");
     app.capture_auxiliary_completed("detached", false);
     assert!(
-        app.wants_capture_protection(),
+        app.withholds_captures(),
         "a skipped replacement does not clear displayed pixels"
     );
     app.capture_auxiliary_submitted("detached");
     app.capture_auxiliary_completed("detached", true);
     assert!(
-        app.wants_capture_protection(),
+        app.withholds_captures(),
         "auxiliary destruction is not acknowledged by this protocol; retain app-wide protection until teardown"
     );
 }

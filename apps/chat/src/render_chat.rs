@@ -1,5 +1,5 @@
 //! Rendering for the persistent chat surface: the navigation drawer (the
-//! room's channel list), the conversation header, the grouped
+//! workspace's channel list), the conversation header, the grouped
 //! message timeline, the composer, and the detail drawer (people or a
 //! thread). All geometry is computed from `self.rect` and the drawers; every
 //! clickable area is recorded into `hits`.
@@ -437,7 +437,7 @@ impl ChatApp {
     ) -> Author<'a> {
         let color = self.identity_colour(&m.author);
         if m.author.starts_with("bot:") {
-            // The member a persona is linked to, by the name the room knows
+            // The member a persona is linked to, by the name the workspace knows
             // them by: a linked account speaks as that member.
             let linked = m
                 .appearance

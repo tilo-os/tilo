@@ -14,19 +14,18 @@ use crate::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_metrics::centered_text_top;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use crate::widget::control_size::ControlSize;
+use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget};
 
 pub const PROMPT_HEIGHT: f64 = 80.0;
 const PADDING_X: f64 = 16.0;
@@ -413,104 +412,6 @@ pub fn button_label(choice: PromptChoice) -> String {
     })
 }
 
-#[derive(Clone, Copy)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the four flags are independent paint inputs (interaction, availability, emphasis and focus), not one state machine"
-)]
-struct ButtonVisualState {
-    hover: bool,
-    disabled: bool,
-    primary: bool,
-    focused: bool,
-}
-
-// Standard immediate-mode paint-helper signature for this vello renderer
-// (scene + transform + text_renderer + theme, plus this draw's own
-// content); every parameter is independently load-bearing.
-fn draw_button(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    label: &str,
-    state: ButtonVisualState,
-) {
-    let radius = f64::from(theme.tokens.radii.control);
-    let shape = RoundedRect::from_rect(rect, radius);
-
-    let mut bg = if state.primary {
-        theme.tokens.colors.intent.accent
-    } else if state.hover {
-        theme
-            .tokens
-            .colors
-            .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
-    } else {
-        theme.tokens.colors.surfaces.raised
-    };
-    if state.disabled {
-        bg = bg.with_alpha_factor(0.4);
-    }
-    scene.fill(Fill::NonZero, transform, bg, None, &shape);
-
-    // Rest edge derived from the face itself (HIG §9.5), under the same
-    // alpha the disabled face carries; a declared `border_standard` sat
-    // within rounding distance of `raised` on the dark preset.
-    let border = if state.disabled {
-        crate::surface::edge_on(bg).with_alpha_factor(0.4)
-    } else {
-        crate::surface::edge_on(bg)
-    };
-    if state.focused {
-        scene.stroke(
-            &Stroke::new(2.0),
-            transform,
-            theme.border_focus,
-            None,
-            &shape,
-        );
-    } else {
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            border,
-            None,
-            &crate::surface::edge_outline(rect, radius),
-        );
-    }
-
-    let text_color = if state.disabled {
-        theme.tokens.colors.text_primary.with_alpha_factor(0.4)
-    } else if state.primary {
-        // White is the intent; steps off white only when the accent is too
-        // light to carry it, rather than shipping a ratio that makes a
-        // consent decision hard to read.
-        theme.tokens.colors.ink_on_any(
-            &[bg],
-            Color::WHITE,
-            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
-        )
-    } else {
-        theme.tokens.colors.text_primary
-    };
-
-    let text_style = theme.text(TextRole::Caption);
-    // Centre on the measured line in both axes, not on the font size.
-    let (text_w, text_h) = text_renderer.measure_style(label, None, &text_style);
-    let text_x = rect.center().x - (f64::from(text_w) / 2.0);
-    let text_y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
-    text_renderer.draw_style(
-        scene,
-        label,
-        text_color,
-        transform.pre_translate(Vec2::new(text_x, text_y)),
-        None,
-        &text_style,
-    );
-}
-
 impl Widget for PermissionPrompt {
     fn build_layout(
         &mut self,
@@ -550,26 +451,19 @@ impl Widget for PermissionPrompt {
         // A permission prompt is a security surface: the app id and the
         // capability are read letter by letter.
         text_renderer.security_surface(|text_renderer| {
-            // `surfaces.overlay` is a darker tint than `raised` so the prompt
-            // reads as a layer above the strip's content, not another tile.
+            // The prompt is a floating Panel: the panel ground is a darker
+            // tint than `raised`, so it reads as a layer above the strip's
+            // content, not another tile, and its edge is the panel's.
             let radius = f64::from(theme.tokens.radii.control);
-            let shape = RoundedRect::from_rect(self.rect, radius);
+            let body = RoundedRect::from_rect(self.rect, radius);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.surfaces.overlay,
+                crate::chrome::panel_ground(theme),
                 None,
-                &shape,
+                &body,
             );
-            // Panel role (HIG §9.1): the derived panel edge as a crisp 1 px
-            // inset stroke, never a declared `border_standard`.
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                crate::chrome::panel_border(theme),
-                None,
-                &crate::surface::edge_outline(self.rect, radius),
-            );
+            crate::chrome::shell::paint_panel_edge(scene, transform, self.rect, radius, theme);
 
             // Placeholder pulled from the accent ramp until the portal layer
             // surfaces real icons via the app's desktop-file metadata.
@@ -659,20 +553,18 @@ impl Widget for PermissionPrompt {
                 if !self.visible_choices().contains(choice) {
                     continue;
                 }
-                draw_button(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    *rect,
-                    &self.button_label(*choice),
-                    ButtonVisualState {
-                        hover: is_hover,
-                        disabled: is_disabled,
-                        primary: is_primary,
-                        focused: is_focused,
-                    },
-                );
+                let label = self.button_label(*choice);
+                let face = ButtonFace::new(*rect, &label)
+                    .role(if is_primary {
+                        ButtonRole::Primary
+                    } else {
+                        ButtonRole::Secondary
+                    })
+                    .control_size(ControlSize::Regular)
+                    .hovered(is_hover)
+                    .focused(is_focused)
+                    .disabled(is_disabled);
+                Button::paint(scene, transform, text_renderer, theme, &face);
             }
         });
     }

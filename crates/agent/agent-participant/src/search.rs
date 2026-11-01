@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use automerge::{ObjId, ObjType, ReadDoc, ScalarValueRef, ValueRef};
 use tilo_agent::surface;
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 /// The planning tool that searches the room's records.
 pub const SEARCH_ROOM: &str = "search_room";

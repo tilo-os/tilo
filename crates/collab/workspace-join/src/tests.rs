@@ -39,9 +39,7 @@ fn signed_invitation_and_join_proof_bind_the_exact_ticket_and_independent_identi
     let grant = InviteGrant {
         workspace_id: 42,
         room: room.into(),
-        authority: authority.clone(),
         issuer: authority.clone(),
-        delegation: None,
         role: MemberRole::Editor,
         nonce: [5; 16],
         recipient_user_public_key: Some(guest.user_public_key),
@@ -136,9 +134,7 @@ fn an_invitation_names_its_inviter_under_the_issuer_signature() {
     let grant = InviteGrant {
         workspace_id: 42,
         room: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
-        authority: authority.clone(),
         issuer: authority,
-        delegation: None,
         role: MemberRole::Editor,
         nonce: [5; 16],
         recipient_user_public_key: None,

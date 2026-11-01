@@ -26,7 +26,8 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::{DocumentMutation, document_channel_id};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_browser_peer::{ContentCipher, Host, PeerEvent, PeerHandle};
+use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
+use tilo_peer_state::document_frame::ContentCipher;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, route, start_host, start_peer, workspace};

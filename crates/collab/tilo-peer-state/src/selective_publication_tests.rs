@@ -103,7 +103,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     tail.extend(created);
     let mut fresh = StatePeer::new(
         governor.room(),
-        governor.authority().clone(),
+        governor.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
         now,
@@ -136,7 +136,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     let restored = StatePeer::restore(
         &fresh.durable().unwrap(),
         governor.room(),
-        governor.authority().clone(),
+        governor.owner_certificates()[0].clone(),
         governor.certificates(),
         RevocationList::new(),
         now,
@@ -189,7 +189,7 @@ fn selective_publication_compares_restored_checkpoints_by_exact_bytes() {
     let restored = StatePeer::restore(
         &governor.durable().unwrap(),
         governor.room(),
-        governor.authority().clone(),
+        governor.owner_certificates()[0].clone(),
         governor.certificates(),
         RevocationList::new(),
         now,
@@ -214,7 +214,7 @@ fn selective_publication_compares_restored_checkpoints_by_exact_bytes() {
 }
 
 #[test]
-fn selective_room_only_publication_rechecks_current_governor_authority() {
+fn selective_room_only_publication_refuses_a_revoked_owner_device() {
     let (mut governor, key, _, _, now) = seeded();
     governor
         .publication_mut()
@@ -231,18 +231,22 @@ fn selective_room_only_publication_rechecks_current_governor_authority() {
     tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
     let mut revocations = RevocationList::new();
     revocations.insert(revoked).unwrap();
+    let restored = StatePeer::restore(
+        &governor.durable().unwrap(),
+        governor.room(),
+        governor.owner_certificates()[0].clone(),
+        governor.certificates(),
+        revocations,
+        now,
+    )
+    .unwrap();
+    let mut candidate = restored.clone();
     assert!(
-        StatePeer::restore(
-            &governor.durable().unwrap(),
-            governor.room(),
-            governor.authority().clone(),
-            governor.certificates(),
-            revocations,
-            now,
-        )
-        .err()
-        .unwrap()
-        .contains("authority device is revoked")
+        candidate
+            .publication_mut()
+            .durable_mutation_messages(&restored, &key, now, 2)
+            .is_err(),
+        "a revoked owner device no longer writes the room's governance"
     );
 }
 
@@ -255,7 +259,7 @@ fn selective_publication_cannot_discard_prior_document_basis() {
         .unwrap();
     let mut candidate = StatePeer::new(
         governor.room(),
-        governor.authority().clone(),
+        governor.owner_certificates()[0].clone(),
         governor.certificates(),
         RevocationList::new(),
         now,

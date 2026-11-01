@@ -1,9 +1,9 @@
-//! The demo room a screenshot or a test shows: its people, channels and
+//! The demo workspace a screenshot or a test shows: its people, channels and
 //! conversation, read by `me`. Never a real record's content.
 //!
-//! The chat record ([`demo`]) holds the people and rooms; the conversation
+//! The chat record ([`demo`]) holds the people and channels; the conversation
 //! is the first part of the chat's messages ([`demo_part`]). A tool or a
-//! test without a window holds both as documents ([`Room`]).
+//! test without a window holds both as documents ([`Workspace`]).
 
 use automerge::AutoCommit;
 use ui::tilo_actions::DoorError;
@@ -335,7 +335,7 @@ impl Demo {
     }
 }
 
-/// The demo room, with `me` as the person reading it: its people and
+/// The demo workspace, with `me` as the person reading it: its people and
 /// channels. Its conversation is [`demo_part`].
 #[must_use]
 pub fn demo(me: &str) -> Chat {
@@ -458,7 +458,7 @@ pub fn demo_part(me: &str) -> ChatPart {
 // through the record's actions. The channels and messages refuse every
 // generic edit (`#[model(readonly)]`): only the record's actions make them,
 // so no edit names someone else as a message's author or rearranges a
-// room behind its moderators.
+// workspace behind its moderators.
 
 /// `item` added under `id` to `items`; refused when it holds `id` already,
 /// as an insert of an existing item is.
@@ -565,25 +565,25 @@ fn initialized(doc: &mut AutoCommit) -> Result<(), ModelError> {
     Ok(())
 }
 
-/// The demo room's chat record in `doc`, read by [`crate::model::ME`]: its
+/// The demo workspace's chat record in `doc`, read by [`crate::model::ME`]: its
 /// people and channels, without the conversation.
 pub fn seed(doc: &mut AutoCommit) -> Result<(), ModelError> {
     write(doc, &demo(crate::model::ME))
 }
 
-/// The demo room in `room`, read by [`crate::model::ME`]: its chat record,
+/// The demo workspace in `workspace`, read by [`crate::model::ME`]: its chat record,
 /// and its conversation as the first part of its messages.
-pub fn seed_room(room: &mut Room) -> Result<(), DoorError> {
-    seed(&mut room.chat).map_err(|error| DoorError::Failed(error.to_string()))?;
-    room.write_part(0, &demo_part(crate::model::ME))
+pub fn seed_workspace(workspace: &mut Workspace) -> Result<(), DoorError> {
+    seed(&mut workspace.chat).map_err(|error| DoorError::Failed(error.to_string()))?;
+    workspace.write_part(0, &demo_part(crate::model::ME))
 }
 
-/// A chat as a tool or a test holds it without a window: the room's chat
+/// A chat as a tool or a test holds it without a window: the workspace's chat
 /// record, as a document, and the parts of its messages, as the chain a
 /// window holds them in ([`ui::framework::Chain`]). It reads and changes
 /// like the chat record it dereferences to; a verb on the messages applies
-/// through the chain to the part it changes ([`Room::apply_part_as`]).
-pub struct Room {
+/// through the chain to the part it changes ([`Workspace::apply_part_as`]).
+pub struct Workspace {
     pub chat: AutoCommit,
     parts: Option<ui::framework::Chain<ChatPart>>,
     /// The chat record as the chain's actions read it: refreshed before
@@ -591,7 +591,7 @@ pub struct Room {
     base: std::rc::Rc<std::cell::RefCell<std::rc::Rc<Chat>>>,
 }
 
-impl Default for Room {
+impl Default for Workspace {
     fn default() -> Self {
         let base: std::rc::Rc<std::cell::RefCell<std::rc::Rc<Chat>>> = std::rc::Rc::default();
         let read = std::rc::Rc::clone(&base);
@@ -607,7 +607,7 @@ impl Default for Room {
     }
 }
 
-impl std::ops::Deref for Room {
+impl std::ops::Deref for Workspace {
     type Target = AutoCommit;
 
     fn deref(&self) -> &AutoCommit {
@@ -615,14 +615,14 @@ impl std::ops::Deref for Room {
     }
 }
 
-impl std::ops::DerefMut for Room {
+impl std::ops::DerefMut for Workspace {
     fn deref_mut(&mut self) -> &mut AutoCommit {
         &mut self.chat
     }
 }
 
-impl Room {
-    /// A room holding the chat record `chat` and no messages yet.
+impl Workspace {
+    /// A workspace holding the chat record `chat` and no messages yet.
     #[must_use]
     pub fn of(chat: AutoCommit) -> Self {
         Self {
@@ -631,24 +631,24 @@ impl Room {
         }
     }
 
-    /// The demo room, read by [`crate::model::ME`].
+    /// The demo workspace, read by [`crate::model::ME`].
     ///
     /// # Errors
-    /// Never for an empty room: the demo fits it.
+    /// Never for an empty workspace: the demo fits it.
     pub fn demo() -> Result<Self, DoorError> {
-        let mut room = Self::default();
-        seed_room(&mut room)?;
-        Ok(room)
+        let mut workspace = Self::default();
+        seed_workspace(&mut workspace)?;
+        Ok(workspace)
     }
 
-    /// The chain the messages are held in, for a window over this room.
+    /// The chain the messages are held in, for a window over this workspace.
     #[must_use]
     pub fn chain(&self) -> Option<ui::framework::Chain<ChatPart>> {
         self.parts.clone()
     }
 
     /// The chat record as the chain's actions read it: what a window over
-    /// this room refreshes when it reads the record.
+    /// this workspace refreshes when it reads the record.
     #[must_use]
     pub fn base(&self) -> std::rc::Rc<std::cell::RefCell<std::rc::Rc<Chat>>> {
         std::rc::Rc::clone(&self.base)
@@ -734,7 +734,7 @@ impl Room {
         let chain = self
             .parts
             .as_ref()
-            .ok_or_else(|| DoorError::Failed("the room holds no messages".into()))?;
+            .ok_or_else(|| DoorError::Failed("the workspace holds no messages".into()))?;
         if let Some(refusal) = invoke.refusal() {
             return Err(DoorError::InvalidArguments(refusal.to_owned()));
         }
@@ -750,7 +750,7 @@ impl Room {
     pub fn write_part(&mut self, index: u64, part: &ChatPart) -> Result<(), DoorError> {
         self.parts
             .as_ref()
-            .ok_or_else(|| DoorError::Failed("the room holds no messages".into()))?
+            .ok_or_else(|| DoorError::Failed("the workspace holds no messages".into()))?
             .write_start(index, part)
             .map_err(DoorError::Failed)
     }
@@ -807,7 +807,7 @@ pub fn apply_at(
     applied
 }
 
-/// Start the chat in `doc` as `me` would: the room's `#chat` and `#voice`
+/// Start the chat in `doc` as `me` would: the workspace's `#chat` and `#voice`
 /// when it has no channels yet, and `me` in it.
 ///
 /// # Errors
@@ -930,12 +930,17 @@ pub fn say_in_part(
         .unwrap_or_default())
 }
 
-/// Post `text` in `channel` of `room` as `author`; the new message's id.
+/// Post `text` in `channel` of `workspace` as `author`; the new message's id.
 ///
 /// # Errors
-/// As [`Room::apply_part_as`].
-pub fn say(room: &mut Room, author: &str, channel: &str, text: &str) -> Result<String, DoorError> {
-    room.say(author, channel, text)
+/// As [`Workspace::apply_part_as`].
+pub fn say(
+    workspace: &mut Workspace,
+    author: &str,
+    channel: &str,
+    text: &str,
+) -> Result<String, DoorError> {
+    workspace.say(author, channel, text)
 }
 
 /// Add the category `id` named `name` to `doc`, as a fixture writes it:

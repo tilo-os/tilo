@@ -91,7 +91,6 @@ pub enum ControlBindingKind {
     /// through the normal action door; useful for custom-painted controls and
     /// process-local editing state that does not belong in document history.
     SemanticAction(String),
-    LegacyCallback,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1298,14 +1297,17 @@ pub trait Widget {
         std::any::type_name::<Self>()
     }
 
-    /// Structural chrome can explicitly leave an inherited document callback.
+    /// Structural chrome can opt out of the component binding it would
+    /// otherwise inherit from its parent.
     #[doc(hidden)]
-    fn resets_callback_binding(&self) -> bool {
+    fn resets_binding_inheritance(&self) -> bool {
         false
     }
-    /// Drawn live content whose input is suspended by a framework surface.
+    /// Drawn live content whose input and bound dispatch a framework surface
+    /// suspends: it stays visible and keeps its state, but takes no events and
+    /// opens no records.
     #[doc(hidden)]
-    fn inactive_callback_boundary(&self) -> Option<NodeId> {
+    fn inactive_bound_dispatch_boundary(&self) -> Option<NodeId> {
         None
     }
 
@@ -2240,20 +2242,6 @@ pub trait Widget {
     /// Whether `sync` still needs to run on idle frames without input or
     /// collab events — e.g. waiting out a document-adoption grace window.
     fn needs_idle_sync(&self) -> bool {
-        false
-    }
-
-    /// Apply an action another app in this room published, if this app owns
-    /// the document — lets an app address a document it doesn't hold by
-    /// saying what should happen instead of writing bytes directly, keeping
-    /// each document to one writer. An unrecognised `type_id` is silently
-    /// declined, not an error.
-    fn apply_room_action(
-        &mut self,
-        _doc: &mut crate::widget::Edits<'_>,
-        _type_id: &str,
-        _payload: &[u8],
-    ) -> bool {
         false
     }
 
@@ -3227,7 +3215,6 @@ pub use app_widget::{
     AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, DocumentOpenCapability,
     DocumentOpenOutcome, DocumentOpenReply, HostShellAllow, IconDescriptor, WindowPublication,
 };
-pub mod command_palette;
 pub mod input_hint;
 pub mod shortcut_recorder;
 pub use input_hint::{InputDeviceGlyph, InputHint, InputHintProps, LegendConventions};
@@ -3390,13 +3377,15 @@ pub use chart::{
 };
 pub(crate) mod chart_data;
 pub(crate) mod chart_labels;
-pub use chart_data::{ChartItem, ChartLink, ChartNode};
+pub use chart_data::{ChartItem, ChartLink, ChartNode, GraphSelection};
 pub mod chart_legend;
 pub mod chart_navigation;
 pub use chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action,
     moved_index as move_chart_index, moved_item as move_chart_item,
 };
+pub mod plot;
+pub use plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 pub mod cartesian_plot;
 pub use cartesian_plot::{
     AxisLabelFormat, AxisRange, AxisScale, AxisTick, CartesianAnimationStyle, CartesianAnnotation,
@@ -3471,8 +3460,11 @@ pub use virtual_list::{
     RowSelection, VecListModel, VirtualList, VirtualListProps,
 };
 mod activation;
+pub(crate) mod control_verb;
 mod dismissal;
 pub(crate) mod view_choice;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use activation::NATIVE_INVOKE;
 pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;

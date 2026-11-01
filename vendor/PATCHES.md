@@ -833,3 +833,23 @@ hosted surface, a bridged X11 window) can complete instead of cancelling the
 source (`ClientDndGrabHandler::drop_target_action`). Five imports and a cast
 are fixed so it builds without warnings. See `vendor/smithay/TILO-PATCH.md`
 for the details and when to drop each change.
+
+## `vendor/winit`: a window on a layer of an output
+
+`WindowAttributesExtWayland::with_layer_surface` makes a window a surface on a
+`zwlr_layer_shell_v1` layer of an output instead of a toplevel: which layer,
+which edges it is anchored to, the size it asks for, the zone it reserves for
+the desktop to keep windows out of, its margins and how it takes the keyboard.
+A session's own surfaces (its bar, desk, panels, sheets) say where they go
+themselves, and the compositor composites them like any other client's
+surface.
+
+The surface role is a `Surface` enum in `window/surface.rs`, held by both the
+window and its state, so one event loop, one registry of windows, one input
+translation, one text-input and drag stack stay in place; the requests a layer
+surface has no notion of (a title, app id, client side decorations, minimize,
+maximize, fullscreen, move, resize, a window menu) are ignored for one. Its
+first configure arrives through the layer shell's handler and takes the size
+the compositor gives it, then a redraw is asked for as for a toplevel. A
+compositor without the layer shell reports the window as uncreatable instead
+of opening a toplevel somewhere else.

@@ -1,0 +1,52 @@
+[package]
+name = "tilo-store-link"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+description = "A member device's side of a workspace store: keeps what it publishes at the store and replays from it what it lacks, admitting replayed frames as their authors' retained history."
+
+# The engine and its transport live in `tilo-peer-state`; the store's
+# protocol and retained frames in `tilo-store-node`. This crate only joins
+# the two, so a member keeps and catches up its whole history without a
+# long-lived room host.
+
+[dependencies]
+tilo-peer-state = { path = "../tilo-peer-state" }
+tilo-store-node = { path = "../../hosting/tilo-store-node" }
+# A room is named by its workspace id.
+tilo-desktop-model = { path = "../../session/desktop-model" }
+# The relay workspace a room's store holds.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# A frame's routing key names the channel its cursor follows.
+collab-types = { path = "../collab-types" }
+neighbour-wire = { path = "../neighbour-wire" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+iroh.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+thiserror.workspace = true
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-action-policy = { path = "../action-policy" }
+automerge = { workspace = true }
+channel-crypto = { path = "../channel-crypto" }
+collab-types = { path = "../collab-types" }
+ed25519-dalek.workspace = true
+hex.workspace = true
+iroh.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+tempfile.workspace = true
+tilo-automerge.workspace = true
+tilo-automerge-isolate.workspace = true
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-peer-state = { path = "../tilo-peer-state" }
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid.workspace = true
+web-time = "1"
+
+[lints]
+workspace = true

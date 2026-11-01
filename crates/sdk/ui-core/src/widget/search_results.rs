@@ -287,22 +287,6 @@ impl SearchResultsView {
         self.bands = RowBands::resolve(theme);
     }
 
-    /// The headers in order: label, count, level and where each is painted.
-    #[cfg(test)]
-    pub(crate) fn header_list(&self) -> Vec<(String, Option<usize>, HeaderLevel, Rect)> {
-        self.plan()
-            .headers
-            .into_iter()
-            .map(|h| (h.label, h.count, h.level, h.rect))
-            .collect()
-    }
-
-    /// A header's band.
-    #[cfg(test)]
-    pub(crate) fn header_band(&self) -> f64 {
-        self.bands.header
-    }
-
     /// A one- or two-line row's band.
     pub(crate) fn row_band(&self, two_line: bool) -> f64 {
         if two_line {
@@ -344,6 +328,16 @@ impl SearchResultsView {
 
     pub fn set_empty_text(&mut self, text: impl Into<String>) {
         self.empty_text = text.into();
+    }
+
+    /// The line shown while there are no results.
+    pub(crate) fn empty_text(&self) -> &str {
+        &self.empty_text
+    }
+
+    /// What to try instead, under that line.
+    pub(crate) fn empty_hint(&self) -> Option<&str> {
+        self.empty_hint.as_deref()
     }
 
     /// Give the overlay a stable test id so scenarios can resolve it.

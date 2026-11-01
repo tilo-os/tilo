@@ -11,7 +11,13 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("user");
+        // The fixture stands under a sticky world-writable directory, as a
+        // test environment's temporary root does: nobody else can move or
+        // replace the home held below it.
+        let shared = root.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        let home = shared.join("user");
         let projection = home
             .join(".local/state/tilo/browser-continuity")
             .join("00000000-0000-0000-0000-000000000001")
@@ -55,6 +61,27 @@ fn manifest(id: &str) -> ManifestView {
         "[package]\nkind = \"app\"\nid = \"{id}\"\nversion = \"1\"\n[entrypoint]\nbin = \"browser\"\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n[sandbox.net]\nmode = \"off\"\n"
     ))
     .unwrap()
+}
+
+#[test]
+fn ancestor_ownership_and_writability_decide_the_walk() {
+    let own = uid();
+    assert!(ancestor_holds(own, 0o700, false));
+    assert!(ancestor_holds(0, 0o755, false), "root's own");
+    assert!(
+        ancestor_holds(own, 0o1777, false),
+        "a sticky temporary root: another account can neither move nor replace what it holds"
+    );
+    assert!(
+        !ancestor_holds(own, 0o1777, true),
+        "no grant subtree or home ancestor may be writable by others"
+    );
+    assert!(!ancestor_holds(own, 0o777, false), "writable by others");
+    assert!(!ancestor_holds(own, 0o770, false), "group-writable");
+    assert!(
+        !ancestor_holds(own.wrapping_add(1), 0o755, false),
+        "another account's"
+    );
 }
 
 #[test]

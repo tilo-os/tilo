@@ -243,7 +243,7 @@ fn durable_bootstrap_batches_exact_snapshots_coverage_receipts_and_replay() {
     assert_eq!(batched.rows(), serial.rows());
     assert_eq!(batched.replay_floors(), serial.replay_floors());
 
-    let authority = batched.authority().clone();
+    let authority = batched.owner_certificates()[0].clone();
     let mut fresh = StatePeer::new(
         ROOM,
         authority.clone(),

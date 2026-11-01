@@ -198,6 +198,8 @@ impl Settings {
 
     fn hit(&self, row: &Row, score: i32) -> Hit {
         Hit {
+            faces: Vec::new(),
+            outcome: None,
             kind: settings_kind(),
             provider: self.id().into(),
             id: row.id.clone(),
@@ -226,6 +228,10 @@ impl Settings {
 impl Source for Settings {
     fn id(&self) -> &'static str {
         "settings-pages"
+    }
+
+    fn name(&self) -> String {
+        crate::i18n::t("search-kind-settings")
     }
 
     /// The pages and settings `needle` finds. A setting is offered only

@@ -18,7 +18,7 @@ fn current_certificate(room: &str, person: &str) -> Result<DeviceCert, String> {
     // admission").
     let (_, certificate) = tilo_identity_host::broker::trusted_current_device(room)
         .map_err(|error| error.to_string())?;
-    if tilo_action_broker::collab_broker_capnp::principal_id_for_root(certificate.user_public_key)
+    if tilo_action_broker::collab_app_broker::principal_id_for_root(certificate.user_public_key)
         != person
     {
         return Err("native caller does not match the device person".into());
@@ -50,7 +50,8 @@ impl LocalPersonServices for NativeLocalPerson {
             .ok_or("native caller owner unavailable")?;
         owner.with_current(room, |view| {
             view.peer()
-                .permissions(certificate.device_public_key, std::time::SystemTime::now())?;
+                .permissions(certificate.device_public_key, std::time::SystemTime::now())
+                .map_err(|error| error.to_string())?;
             Ok(certificate)
         })
     }
@@ -67,13 +68,13 @@ mod tests {
         super::super::remote_actions::BrokerActionHost,
         impl Fn(),
         tokio::sync::mpsc::UnboundedReceiver<
-            tilo_action_broker::collab_broker_capnp::InvocationEnvelope,
+            tilo_action_broker::collab_app_broker::InvocationEnvelope,
         >,
     ) {
         // Signed admission is queued to the broker's turn, as on the live
         // broker; the returned turn services it.
         let (broker, turn) =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority_and_invoke_turn(
+            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_authority_and_invoke_turn(
                 std::sync::Arc::new(super::super::broker_services::NativeWorkspaceAuthority(
                     tree.clone(),
                 )),
@@ -88,7 +89,7 @@ mod tests {
                 },
             );
         broker.replace_published_surfaces_for_test(vec![
-            crate::shell::collab_broker_capnp::PublishedSurface {
+            crate::shell::collab_app_broker::PublishedSurface {
                 peer_id: 7,
                 app_id: "so.tilo.settings".into(),
                 route: crate::shell::collab_broker::CrdtRoute::app(
@@ -102,7 +103,7 @@ mod tests {
                 ]
                 .into_iter()
                 .map(
-                    |(id, kind)| crate::shell::collab_broker_capnp::PublishedAction {
+                    |(id, kind)| crate::shell::collab_app_broker::PublishedAction {
                         state: tilo_actions::ActionState::default(),
                         resource: "settings.display".into(),
                         semantic_identity: None,
@@ -119,7 +120,7 @@ mod tests {
                             kind,
                             ..tilo_actions::ActionContract::view()
                         },
-                        input: crate::shell::collab_broker_capnp::PublishedInput::None,
+                        input: crate::shell::collab_app_broker::PublishedInput::None,
                         view: None,
                     },
                 )
@@ -203,14 +204,14 @@ mod tests {
             &paths.device_cert_for_user(&system.user_public_key),
         )
         .unwrap();
-        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        let person = tilo_action_broker::collab_app_broker::principal_id_for_root(
             certificate.user_public_key,
         );
         // The workspace is a room this device's host holds and its native
         // owner entered, governed by the person this device's protected
         // identity names.
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+        let room = RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
         let active = tree.desktop.active;
         assert!(tree.stand_in_room(active, room));
         tree.desktop.workspaces[0].set_owner(&person);
@@ -219,7 +220,8 @@ mod tests {
         let owner = super::super::native_workspace_owner::open(tree.clone()).unwrap();
         let (key, _) =
             tilo_identity_host::broker::trusted_current_device(&room.to_string()).unwrap();
-        tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
+        tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
+            .unwrap();
         assert!(tree.read().holds_room(room));
         super::super::action_authority::Export::of(&tree.read()).publish();
         let service = NativeLocalPerson {

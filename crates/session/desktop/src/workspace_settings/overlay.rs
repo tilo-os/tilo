@@ -2622,7 +2622,7 @@ mod tests {
 
 mod general;
 mod page;
-mod people;
+pub mod people;
 
 #[cfg(test)]
 mod general_scroll_tests;

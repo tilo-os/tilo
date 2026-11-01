@@ -227,8 +227,8 @@ impl EmbeddedApp {
             self.painted_damage.rects,
             self.painted_damage.copies,
             self.damage.repainted(),
-            self.app.input.tooltip_host.visible(),
-            self.app.input.tooltip_host.needs_frame(),
+            self.app.input.tooltips.visible(),
+            self.app.input.tooltips.needs_frame(),
         )
     }
 
@@ -1420,7 +1420,7 @@ mod theme_repaint_tests {
         tile.wants_frame.set(true);
         let hovered = paint_tracked(&mut tile, &theme);
         assert!(
-            tile.app.input.tooltip_host.needs_frame(),
+            tile.app.input.tooltips.needs_frame(),
             "the button's tooltip is pending over {button:?}"
         );
         // It rests: the tooltip shows, and only it changes.
@@ -1431,7 +1431,7 @@ mod theme_repaint_tests {
         let shown =
             crate::time::testing::with_monotonic_time(rested, || paint_tracked(&mut tile, &theme));
         assert!(
-            tile.app.input.tooltip_host.visible().is_some(),
+            tile.app.input.tooltips.visible().is_some(),
             "the tooltip shows"
         );
         let damage = crate::scene_parts::damage(&hovered.0, &hovered.1, &shown.0, &shown.1)
@@ -1475,13 +1475,13 @@ mod theme_repaint_tests {
             crate::time::testing::with_monotonic_time(rested, || {
                 let _ = paint_tracked(&mut tile, &theme);
                 assert!(
-                    tile.app.input.tooltip_host.visible().is_some(),
+                    tile.app.input.tooltips.visible().is_some(),
                     "the tooltip shows"
                 );
                 tile.app.surface_input(&tile.region, ending.clone(), false);
             });
             assert!(
-                tile.app.input.tooltip_host.visible().is_none(),
+                tile.app.input.tooltips.visible().is_none(),
                 "{ending:?} takes the tooltip away"
             );
         }
@@ -1911,7 +1911,7 @@ mod semantic_target_tests {
             .push(Box::new(crate::widget::Button::new("first", "First")))
             .push(Box::new(
                 crate::widget::Button::new("probe", "Probe")
-                    .on_click(move || counter.set(counter.get() + 1)),
+                    .on_effect(move || counter.set(counter.get() + 1)),
             ));
         let app = App::new_with_controlled_inputs(crate::state::State::new(), Box::new(column));
         let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();

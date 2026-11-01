@@ -21,12 +21,17 @@ pub(super) async fn handle_compaction(
     else {
         return;
     };
-    if !subscribed.contains(&workspace_id) || peer.role != crate::auth::PeerRole::Device {
+    if !subscribed.contains(&workspace_id) {
         return;
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return;
     };
+    // Compaction is a device's own act: a host carrying its members' changes
+    // does not compact on their behalf.
+    if ws.lock().await.attached(&peer.device_public_key) {
+        return;
+    }
     // Compacting rewrites what the room keeps: a spectator never does.
     if room_access::watches_only(&*ws.lock().await, peer) {
         return;

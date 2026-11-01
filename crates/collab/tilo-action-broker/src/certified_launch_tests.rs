@@ -67,7 +67,7 @@ async fn certified_launch_target(
 ) -> String {
     rig.worker
         .handle
-        .publish_actions(&env.route.app_id, &[certified_launch_action()])
+        .publish_actions(&[certified_launch_action()])
         .await
         .unwrap();
     let surface = rig
@@ -90,11 +90,7 @@ async fn certified_launch_target(
     if waiting {
         // Withdraw the live offer over the real worker RPC. Restore only its
         // earlier actual published launch metadata, as retained startup state.
-        rig.worker
-            .handle
-            .publish_actions(&env.route.app_id, &[])
-            .await
-            .unwrap();
+        rig.worker.handle.publish_actions(&[]).await.unwrap();
         rig.state.launchable.retain(&surface);
     }
     provider
@@ -169,7 +165,7 @@ async fn certified_launch_aliases_preserve_actual_worker_origin_and_original_req
                         certified_launch_wait(&started).await;
                         rig.worker
                             .handle
-                            .publish_actions(&env.route.app_id, &[certified_launch_action()])
+                            .publish_actions(&[certified_launch_action()])
                             .await
                             .unwrap();
                         release.send(()).unwrap();
@@ -206,7 +202,7 @@ async fn certified_launch_aliases_preserve_actual_worker_origin_and_original_req
                             .await
                             .is_err()
                     );
-                    no_delivery(&rig);
+                    no_delivery(&rig).await;
                     assert!(events.try_recv().is_err());
                     assert_eq!(
                         launches.load(std::sync::atomic::Ordering::SeqCst),
@@ -246,7 +242,7 @@ async fn certified_launch_wait_refuses_retirement_certificate_expiry_and_origin_
                     // blocked; the next delivery attempt must recheck original custody.
                     rig.worker
                         .handle
-                        .publish_actions(&env.route.app_id, &[certified_launch_action()])
+                        .publish_actions(&[certified_launch_action()])
                         .await
                         .unwrap();
                     match refusal {
@@ -265,7 +261,7 @@ async fn certified_launch_wait_refuses_retirement_certificate_expiry_and_origin_
                     }
                     release.send(()).unwrap();
                     assert!(local_host_answer(pending).await.is_err());
-                    no_delivery(&rig);
+                    no_delivery(&rig).await;
                     assert!(
                         events.try_recv().is_err(),
                         "a refused launch wait never accepted an invocation"

@@ -3,6 +3,11 @@
 //! decides a host operation, and asked with the certificate the transport
 //! verified.
 
+#![expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
+)]
+
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::ActionAddress;

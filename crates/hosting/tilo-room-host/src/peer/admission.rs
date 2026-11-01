@@ -1,5 +1,5 @@
-//! State admission: [`enqueue_state`] and its host and federated variants
-//! hand a delta to the workspace's ordered persistence owner, which
+//! State admission: [`enqueue_state`] and its host and attached-host
+//! variants hand a delta to the workspace's ordered persistence owner, which
 //! retains it and fans it out once durable.
 
 use std::ops::ControlFlow;
@@ -16,11 +16,10 @@ pub(super) async fn enqueue_state(
     workspace: &SharedWorkspace,
     envelope: Envelope,
     source: Option<StateSource>,
-    role: crate::auth::PeerRole,
     metrics: Arc<crate::metrics::Metrics>,
 ) -> Result<(), PeerError> {
     Box::pin(enqueue_state_inner(
-        workspace, envelope, source, role, metrics, false, false,
+        workspace, envelope, source, metrics, false, false,
     ))
     .await
     .map(drop)
@@ -266,19 +265,18 @@ pub(crate) async fn enqueue_host_state(
     metrics: Arc<crate::metrics::Metrics>,
 ) -> Result<HostAdmission, String> {
     Box::pin(enqueue_state_inner(
-        workspace,
-        envelope,
-        None,
-        crate::auth::PeerRole::Device,
-        metrics,
-        false,
-        true,
+        workspace, envelope, None, metrics, false, true,
     ))
     .await
     .map(HostAdmission)
     .map_err(|error| error.to_string())
 }
-pub async fn enqueue_federated(
+
+/// Admit `envelope`, sent by a host attached to `workspace`, through the
+/// workspace's ordered persistence owner, as a device's change is admitted.
+/// `sync` marks an anti-entropy answer, which is taken in but not fanned out
+/// again.
+pub async fn enqueue_from_host(
     workspace: &SharedWorkspace,
     envelope: Envelope,
     source: StateSource,
@@ -289,7 +287,6 @@ pub async fn enqueue_federated(
         workspace,
         envelope,
         Some(source),
-        crate::auth::PeerRole::PeerRelay,
         metrics,
         sync,
         false,
@@ -367,7 +364,6 @@ pub(super) async fn enqueue_state_inner(
     workspace: &SharedWorkspace,
     envelope: Envelope,
     source: Option<StateSource>,
-    role: crate::auth::PeerRole,
     metrics: Arc<crate::metrics::Metrics>,
     sync: bool,
     host: bool,
@@ -394,7 +390,7 @@ pub(super) async fn enqueue_state_inner(
     let admission_trace = StateAdmissionTrace::new(&envelope);
     let mut wait_trace = AdmissionWaitTrace(admission_trace.clone());
     let durable = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let preparation = prepare_admission(workspace.clone(), source.clone(), author, role, delta_len);
+    let preparation = prepare_admission(workspace.clone(), source.clone(), author, delta_len);
     let mut turn = StateTurn {
         envelope: Some(envelope),
         sync,
@@ -515,10 +511,13 @@ async fn prepare_admission(
     workspace: SharedWorkspace,
     source: Option<StateSource>,
     author: [u8; 32],
-    role: crate::auth::PeerRole,
     delta_len: usize,
 ) -> Result<AdmissionRecipients, crate::store::StoreError> {
     let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+    // What an attached host sent is not carried to another attached host.
+    let from_attached = source
+        .as_ref()
+        .is_some_and(|source| runtime.attached(&source.peer.device_public_key));
     if source
         .as_ref()
         .is_some_and(|source| !source.authorized(&runtime))
@@ -534,10 +533,10 @@ async fn prepare_admission(
         .copied()
         .filter(|key| key != &author)
         .collect::<std::collections::HashSet<_>>();
-    if role == crate::auth::PeerRole::Device {
+    if !from_attached {
         recipients.extend(
             runtime
-                .known_peer_relays
+                .attached_hosts
                 .iter()
                 .copied()
                 .filter(|key| key != &author),
@@ -554,9 +553,8 @@ async fn prepare_admission(
     let sessions = runtime
         .subscribers
         .iter()
-        .filter(|(key, sub)| {
-            (**key != author || host_commit)
-                && !(role == crate::auth::PeerRole::PeerRelay && runtime.federated(key, sub))
+        .filter(|(key, _)| {
+            (**key != author || host_commit) && !(from_attached && runtime.attached(key))
         })
         .map(|(key, sub)| (*key, sub.tx.clone()))
         .collect::<Vec<_>>();
@@ -588,8 +586,8 @@ async fn prepare_admission(
         })
         .collect::<Vec<_>>();
     recipients.extend(sessions.iter().map(|(key, _)| *key));
-    if role == crate::auth::PeerRole::PeerRelay {
-        recipients.retain(|key| !runtime.known_peer_relays.contains(key));
+    if from_attached {
+        recipients.retain(|key| !runtime.attached_hosts.contains(key));
         tell_withheld(&runtime, source.as_ref());
     }
     let logical_offline_bytes = (delta_len as u64).saturating_mul(
@@ -611,16 +609,16 @@ async fn prepare_admission(
     })
 }
 
-/// Tell every other federated host subscribed to `runtime`'s workspace that
-/// it is behind: a change one federated host sent is not forwarded to
+/// Tell every other attached host subscribed to `runtime`'s workspace that
+/// it is behind: a change one attached host sent is not forwarded to
 /// another (that would loop a mesh), so each asks for what it lacks
 /// instead. From a host, a `SyncRequest` says exactly that
-/// ([`crate::federation`]); its heads are not this host's to send.
+/// ([`crate::attach`]); its heads are not this host's to send.
 fn tell_withheld(runtime: &crate::workspace::WorkspaceRuntime, source: Option<&StateSource>) {
     let origin = source.map(|source| source.peer.device_public_key);
     let workspace_id = runtime.store.workspace_id();
     for (key, subscriber) in &runtime.subscribers {
-        if runtime.federated(key, subscriber) && Some(*key) != origin {
+        if runtime.attached(key) && Some(*key) != origin {
             // A host too far behind to take the word reconnects, and asks
             // for everything it lacks then.
             if subscriber

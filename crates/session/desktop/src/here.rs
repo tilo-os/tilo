@@ -81,6 +81,15 @@ pub struct LiveMember {
     /// Whose view the member follows: that member's publisher.
     #[serde(default)]
     pub following: Option<String>,
+    /// How available they said they were, in the presence wire's own word
+    /// ([`ui::Availability::id`]). `None` when they said nothing of it,
+    /// which pages reporting members leave out.
+    #[serde(default)]
+    pub availability: Option<String>,
+    /// The voice channel they are in, as their presence carries it
+    /// ([`ui::CallPresence::encode`]). `None` when they are in none.
+    #[serde(default)]
+    pub call: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -149,6 +158,11 @@ pub struct Person {
     /// Where their windows are on their screen, as their live presence
     /// says: a person's only, from the first of their devices that says.
     pub screen: Option<Screen>,
+    /// How available they said they were, from their presence: the face
+    /// dims while they are away or idle.
+    pub availability: ui::Availability,
+    /// The voice channel they are in, as their presence says.
+    pub call: Option<ui::CallPresence>,
 }
 
 /// What the page told the desktop about the room.
@@ -206,6 +220,16 @@ fn host_line(text: &str, generated: bool) -> Option<Line> {
         text,
         crate::collaborators::LineSource::generated_if(generated),
     )
+}
+
+/// How available a member said they were: their presence's word, and the
+/// default — available — when they said nothing of it.
+fn availability_of(member: &LiveMember) -> ui::Availability {
+    member
+        .availability
+        .as_deref()
+        .and_then(ui::Availability::from_id)
+        .unwrap_or(ui::Availability::Available)
 }
 
 /// What someone says they are doing in their own words, as their live
@@ -682,6 +706,8 @@ impl HereState {
                 status,
                 recent: line_of.and_then(|l| host_line(&l.recent, l.generated)),
                 screen: if agent { None } else { self.screen_of(person) },
+                availability: availability_of(member),
+                call: member.call.as_deref().and_then(ui::CallPresence::decode),
             });
         }
         // Without the live layer the host's lines are all there is; a line
@@ -712,6 +738,10 @@ impl HereState {
                 status,
                 recent: host_line(&l.recent, l.generated),
                 screen: None,
+                // The host's lines say what a person does, never whether
+                // they are at their machine.
+                availability: ui::Availability::Available,
+                call: None,
             });
         }
         people.compact_sort_by_key(|person| person.agent);
@@ -947,7 +977,16 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
         return;
     };
     for person in people {
-        if workspace.collaborators.iter().any(|c| c.id == person.id) {
+        // Who a known member is belongs to the room; where they are and how
+        // available they are is presence's, and is said again every frame.
+        if let Some(known) = workspace
+            .collaborators
+            .iter_mut()
+            .find(|c| c.id == person.id)
+        {
+            known.active_tab = person.tab;
+            known.availability = Some(person.availability.id().to_owned());
+            known.call = person.call.as_ref().map(ui::CallPresence::encode);
             continue;
         }
         let (r, g, b) = person.rgb;
@@ -957,6 +996,8 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person]) {
             active_tab: person.tab,
             cursor_color: Some(format!("#{r:02x}{g:02x}{b:02x}")),
             role_id: person.agent.then(|| "agent".to_owned()),
+            availability: Some(person.availability.id().to_owned()),
+            call: person.call.as_ref().map(ui::CallPresence::encode),
             ..Collaborator::default()
         });
     }
@@ -978,6 +1019,8 @@ mod tests {
             wave: None,
             layout: None,
             following: None,
+            availability: None,
+            call: None,
         }
     }
 
@@ -1774,6 +1817,8 @@ mod tests {
             status: None,
             recent: None,
             screen: None,
+            availability: ui::Availability::Available,
+            call: None,
         }];
         overlay_collaborators(&mut tree, &people);
         let workspace = tree.active_workspace().expect("a workspace");

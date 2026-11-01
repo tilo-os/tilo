@@ -392,6 +392,40 @@ impl Finish {
             shader: self.shader.clone(),
         }
     }
+
+    /// This finish at `strength` of its translucency: `0` turns its blur off
+    /// and its tint opaque (and a glass body's light with it), `1` leaves it
+    /// as it is. An opaque finish stays as it is.
+    #[must_use]
+    pub fn with_translucency(&self, strength: f32) -> Self {
+        let strength = strength.clamp(0.0, 1.0);
+        if self.params.is_empty() {
+            return self.clone();
+        }
+        let params = self
+            .params
+            .iter()
+            .map(|param| {
+                let value = match param.name.as_str() {
+                    // The ground's opacity over the backdrop: `0` shows it all, `1` hides it
+                    // completely, so a weaker translucency raises the tint toward opaque.
+                    "tint" => param.value + (1.0 - strength) * (1.0 - param.value),
+                    // What the tint lets through, and how the glass bends and lights: each
+                    // falls away with the strength.
+                    "saturation" => 1.0 - strength * (1.0 - param.value),
+                    _ => param.value * strength,
+                };
+                Param {
+                    name: param.name.clone(),
+                    value,
+                }
+            })
+            .collect();
+        Self {
+            set: self.set.clone(),
+            params,
+        }
+    }
 }
 
 /// The surface roles a theme finishes. Each is a level of the design

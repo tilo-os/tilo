@@ -60,7 +60,9 @@ fn current_member_rechecks_removal() {
 }
 // Literal pre-extraction role body, with the historical projection oracle.
 fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
-    let cert = peer.certificate(source, now)?;
+    let cert = peer
+        .certificate(source, now)
+        .map_err(|error| error.to_string())?;
     let room = peer
         .core
         .room_doc
@@ -82,7 +84,9 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
             .get(&hex::encode(source))
             .ok_or("device is absent from governed roster")?,
     )
-    .map_err(err)?;
+    .map_err(|error| {
+        crate::state::MembershipError::MalformedIdentity(std::sync::Arc::new(error)).to_string()
+    })?;
     if identity.device_cert != *cert {
         return Err("governed certificate mismatch".into());
     }
@@ -109,7 +113,7 @@ fn compare_native(peer: &StatePeer, source: [u8; 32], now: SystemTime) {
 fn current_member_preserves_malformed_container_and_conflict_winner_semantics() {
     for kind in [ObjType::List, ObjType::Text, ObjType::Map] {
         let (mut peer, source, now) = fixture();
-        let owner = hex::encode(peer.core.authority.user_public_key);
+        let owner = hex::encode(peer.owner());
         let room = peer.core.room_doc.as_mut().unwrap();
         let object = room.put_object(ROOT, "members", kind).unwrap();
         if kind == ObjType::List {
@@ -152,7 +156,7 @@ fn current_member_preserves_malformed_container_and_conflict_winner_semantics() 
         valid
             .put(
                 &members,
-                hex::encode(peer.authority().user_public_key),
+                hex::encode(peer.owner()),
                 automerge::ScalarValue::Bytes(serde_json::to_vec(&Role::Commenter).unwrap()),
             )
             .unwrap();
@@ -254,7 +258,7 @@ fn shared_current_member_retains_original_certificate_json_and_revocation_error_
     cases.push(mismatch);
     let root = SigningKey::from_bytes(&[1; 32]);
     let mut revoked = tilo_user_identity::RevocationEntry {
-        user_public_key: base.authority().user_public_key,
+        user_public_key: base.owner(),
         revoked_device_public_key: source,
         revoked_at_ns: 1,
         reason: tilo_user_identity::RevocationReason::Compromised,
@@ -400,7 +404,7 @@ fn a_foreign_device_acts_with_at_most_the_workspace_bound() {
     );
 }
 #[test]
-fn a_foreign_device_is_not_bounded_in_the_room_it_governs() {
+fn a_foreign_device_is_not_bounded_in_the_room_made_on_it() {
     let (mut peer, source, now) = fixture();
     let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
     let room = peer.core.room_doc.as_mut().unwrap();
@@ -409,7 +413,7 @@ fn a_foreign_device_is_not_bounded_in_the_room_it_governs() {
     make_foreign(&mut peer, &source);
     assert!(peer.permissions(source, now).unwrap().foreign);
 
-    peer.core.authority = row(&peer, &source).device_cert;
+    peer.core.origin = source;
     let member = peer.permissions(source, now).unwrap();
     assert_eq!(member.role, Role::Owner);
     assert!(!member.foreign);

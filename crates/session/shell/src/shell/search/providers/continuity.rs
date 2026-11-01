@@ -1276,7 +1276,7 @@ impl SearchProvider for DeviceContinuityActionsProvider {
 }
 
 fn call_actions(
-    view: &crate::shell::collab_broker_capnp::RealtimeContinuityUiView,
+    view: &crate::shell::collab_app_broker::RealtimeContinuityUiView,
     devices: &DeviceFabricView,
 ) -> Vec<CallAction> {
     let mut actions = Vec::new();
@@ -1338,7 +1338,7 @@ fn call_projection(
     device_bridge: &DeviceFabricBridge,
     ranker: &ListIndex,
     ctx: SearchContext<'_>,
-    view: &crate::shell::collab_broker_capnp::RealtimeContinuityUiView,
+    view: &crate::shell::collab_app_broker::RealtimeContinuityUiView,
     devices: &DeviceFabricView,
 ) -> (String, Vec<SearchResult>) {
     let actions = call_actions(view, devices);

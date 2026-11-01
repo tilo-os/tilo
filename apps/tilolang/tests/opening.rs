@@ -1,5 +1,5 @@
-//! A window of a room this device keeps shows the room before its record is read: it opens over
-//! the room's index, takes the record in once it is decoded off the frame, and goes on as the
+//! A window of a workspace this device keeps shows the workspace before its record is read: it opens over
+//! the workspace's index, takes the record in once it is decoded off the frame, and goes on as the
 //! window of the record, with nothing the person sees built again.
 
 use serde_json::Map;
@@ -8,8 +8,8 @@ use ui::framework::testing::HostedApp;
 use ui::headless::InspectionNode;
 
 const NOTES: &str = "so.tilo.lang.notes";
-/// The room `--data-dir` opens.
-const ROOM: &str = "personal";
+/// The workspace `--data-dir` opens.
+const WORKSPACE: &str = "personal";
 
 /// A directory of its own, removed when the test ends.
 struct Scratch(std::path::PathBuf);
@@ -57,14 +57,14 @@ fn settle(app: &mut HostedApp) {
     }
 }
 
-/// A profile in `dir` whose room holds a notebook of `n` notes, as an earlier session left it.
+/// A profile in `dir` whose workspace holds a notebook of `n` notes, as an earlier session left it.
 fn kept_notebook(dir: &std::path::Path, n: usize) {
     let notes = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tl/notes");
     let packages = tilolang_tilo::bench::compile(&notes).unwrap();
     let mut doc = tilolang_tilo::bench::seeded_record(&packages, n).unwrap();
     let profile = ui::application::NativeProfile::open(dir, None).unwrap();
     let landing =
-        ui::record::transfer::install_room_document(profile.store(), NOTES, ROOM, &mut doc)
+        ui::record::transfer::install_room_document(profile.store(), NOTES, WORKSPACE, &mut doc)
             .unwrap();
     profile.store().flush(None).unwrap();
     assert!(matches!(
@@ -86,11 +86,11 @@ fn find<'a>(
 }
 
 #[test]
-fn a_kept_room_shows_before_its_record_and_goes_on_as_the_window_of_the_record() {
+fn a_kept_workspace_shows_before_its_record_and_goes_on_as_the_window_of_the_record() {
     let definition = crate::support::installed("notes");
-    let scratch = Scratch::new("kept-room");
+    let scratch = Scratch::new("kept-workspace");
     kept_notebook(&scratch.0, 200);
-    // The first window builds the room's index off the frame, and keeps it.
+    // The first window builds the workspace's index off the frame, and keeps it.
     {
         let mut app = HostedApp::open_data_dir(definition, "ada", &scratch.0).unwrap();
         settle(&mut app);

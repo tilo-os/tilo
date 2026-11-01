@@ -76,8 +76,12 @@ impl TopBarChrome {
         self.chrome.as_ref()?.snapshot().own
     }
 
-    /// Read how each face looks from `presence`: who is idle or away, in a
-    /// call (their ring breathing), or bouncing from a wave.
+    /// Read how each face looks: who is idle or away, in a call (their ring
+    /// breathing), or bouncing from a wave. What the roster the bar read
+    /// says of each face leads: on a session whose people come from the
+    /// collaboration plane, that is everyone here, and `presence` is empty.
+    /// A face the roster says nothing of falls back to `presence`, which is
+    /// where a wave's bounce always comes from.
     pub(super) fn read_face_looks(
         &mut self,
         presence: &PresenceCtx,
@@ -89,12 +93,19 @@ impl TopBarChrome {
         self.face_looks = self
             .collaborator_ids
             .iter()
-            .map(|id| {
+            .enumerate()
+            .map(|(index, id)| {
                 let user = ui::permissions::UserId(id.clone());
-                let in_call = presence.call_of(&user).is_some();
+                let said = self.collaborator_presence.get(index).copied().flatten();
+                let in_call =
+                    said.map_or_else(|| presence.call_of(&user).is_some(), |(_, call)| call);
                 anyone_in_call |= in_call;
+                let dimmed = said.map_or_else(
+                    || presence.availability_of(&user).dims(),
+                    |(availability, _)| availability.dims(),
+                );
                 FaceLook {
-                    dimmed: presence.availability_of(&user).dims(),
+                    dimmed,
                     call: in_call.then(|| {
                         ui::motion::Breathe::level(now.saturating_duration_since(since), motion)
                     }),

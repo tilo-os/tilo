@@ -27,7 +27,7 @@ struct Channel {
 }
 
 /// Someone who linked their Discord account here: the account, as Discord
-/// names it. The room's own id for the person stays in the record.
+/// names it. The workspace's own id for the person stays in the record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Linked {
     discord_user: String,
@@ -40,7 +40,7 @@ struct Linked {
 /// Where a bridged server stands, as the page tells it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Stage {
-    /// No server is bridged to this room yet.
+    /// No server is bridged to this workspace yet.
     #[default]
     NotConnected,
     /// The bridge is bringing the server's channels in.
@@ -50,11 +50,11 @@ enum Stage {
 }
 
 /// How the person reading can link their own account here: one door, chosen
-/// by what the room's host and the bridge actually offer, so the page never
+/// by what the workspace's host and the bridge actually offer, so the page never
 /// draws a control that cannot work.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Linking {
-    /// The room's host offers signing in with Discord.
+    /// The workspace's host offers signing in with Discord.
     SignIn,
     /// Only from the server's side: `/link`.
     InServer,
@@ -295,7 +295,7 @@ fn channels(shown: &Shown) -> Element {
 }
 
 /// Everyone who linked an account, the reader first: their own row says
-/// whether they linked one and carries the way in or out of it. A room that
+/// whether they linked one and carries the way in or out of it. A workspace that
 /// links accounts only from the server's side says so, once, rather than
 /// offering a control it cannot honour.
 fn accounts(cx: &ViewCx<Guild>, shown: &Shown) -> Element {
@@ -344,8 +344,8 @@ fn accounts(cx: &ViewCx<Guild>, shown: &Shown) -> Element {
             .subtitle(format!("@{}", link.user_name)),
         ));
     }
-    // A room with no button to offer says where the door is instead: the
-    // server's own `/link`, or that this room has none yet.
+    // A workspace with no button to offer says where the door is instead: the
+    // server's own `/link`, or that this workspace has none yet.
     if shown.mine.is_none() {
         match shown.linking {
             Linking::InServer => {
@@ -391,7 +391,7 @@ impl ResourceApp for Discord {
     type Resource = Guild;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = "Discord";
-    // A room bridges one server, so its guild record is the room's own.
+    // A workspace bridges one server, so its guild record is the workspace's own.
     const ROOM_RECORD: bool = true;
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {

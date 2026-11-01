@@ -22,7 +22,7 @@ fn fixture() -> Fixture {
     governor.select_admission_v5().unwrap();
     let mut member = StatePeer::new(
         governor.room(),
-        governor.authority().clone(),
+        governor.owner_certificates()[0].clone(),
         vec![cert.clone()],
         RevocationList::new(),
         now,
@@ -124,7 +124,7 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
         .unwrap();
     assert!(matches!(report.primary(), InputDisposition::Accepted(_)));
     let governor = &mut fixture.governor;
-    let authority = governor.authority().device_public_key;
+    let authority = governor.owner_certificates()[0].device_public_key;
     let document = &governor.core.documents[&Route {
         app: APP.into(),
         record: RECORD.into(),
@@ -362,7 +362,7 @@ fn a_revoked_author_renews_nothing() {
             TransportOrigin::UntrustedPresence(fixture.governor_key.verifying_key().to_bytes()),
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(fixture.governor.authority().clone()),
+                cert: Box::new(fixture.governor.owner_certificates()[0].clone()),
                 revocations: vec![revocation],
             },
             later,
@@ -402,7 +402,7 @@ fn a_renewal_survives_restart_as_exact_custody() {
     let mut restored = StatePeer::restore(
         &fixture.member.durable().unwrap(),
         fixture.member.room(),
-        fixture.member.authority().clone(),
+        fixture.member.owner_certificates()[0].clone(),
         vec![fixture.cert.clone()],
         RevocationList::new(),
         later,

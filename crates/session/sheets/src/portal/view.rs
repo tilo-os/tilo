@@ -29,8 +29,89 @@ pub(super) struct Parts {
 }
 
 impl Parts {
-    pub(super) fn send(&self, effect: &PortalEffect) {
+    /// The request the sheet answers now: every effect names it, so an
+    /// answer pressed for an earlier question cannot answer this one.
+    fn request(&self) -> String {
+        self.shown
+            .get()
+            .dialog
+            .map(|dialog| dialog.handle)
+            .unwrap_or_default()
+    }
+
+    fn send(&self, effect: &PortalEffect) {
         self.dispatch.effect(effect);
+    }
+
+    pub(super) fn select(&self, at: usize) {
+        self.send(&PortalEffect::Select {
+            handle: self.request(),
+            index: index(at),
+        });
+    }
+
+    pub(super) fn toggle(&self, at: usize) {
+        self.send(&PortalEffect::Toggle {
+            handle: self.request(),
+            index: index(at),
+        });
+    }
+
+    pub(super) fn remember(&self) {
+        self.send(&PortalEffect::Remember {
+            handle: self.request(),
+        });
+    }
+
+    pub(super) fn icon(&self, at: usize) {
+        self.send(&PortalEffect::Icon {
+            handle: self.request(),
+            index: index(at),
+        });
+    }
+
+    pub(super) fn bind(&self, keys: String) {
+        self.send(&PortalEffect::Bind {
+            handle: self.request(),
+            keys,
+        });
+    }
+
+    pub(super) fn unbind(&self) {
+        self.send(&PortalEffect::Unbind {
+            handle: self.request(),
+        });
+    }
+
+    pub(super) fn next_page(&self) {
+        self.send(&PortalEffect::Next {
+            handle: self.request(),
+        });
+    }
+
+    pub(super) fn back(&self) {
+        self.send(&PortalEffect::Back {
+            handle: self.request(),
+        });
+    }
+
+    pub(super) fn answer(&self, at: usize) {
+        self.send(&PortalEffect::Answer {
+            handle: self.request(),
+            index: index(at),
+        });
+    }
+
+    pub(super) fn submit(&self) {
+        self.send(&PortalEffect::Submit {
+            handle: self.request(),
+        });
+    }
+
+    pub(super) fn cancel(&self) {
+        self.send(&PortalEffect::Cancel {
+            handle: self.request(),
+        });
     }
 
     pub(super) fn focus(&self, focus: Focus) {
@@ -46,11 +127,13 @@ impl Parts {
             .dialog
             .as_ref()
             .is_some_and(Dialog::reviewing_more);
-        self.send(if more {
-            &PortalEffect::Next
+        if more {
+            self.next_page();
         } else {
-            &PortalEffect::Confirm
-        });
+            self.send(&PortalEffect::Confirm {
+                handle: self.request(),
+            });
+        }
     }
 }
 
@@ -78,6 +161,13 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
             Text::new(&dialog.detail).with_role(TextRole::Body),
         ));
     }
+    if let Some(code) = &dialog.code {
+        body = body.push(Box::new(
+            Text::new(code)
+                .with_role(TextRole::Title)
+                .with_id("portal-code"),
+        ));
+    }
     body = body.push(rows(dialog, shown.focus, parts));
     if let Some(error) = &dialog.error {
         body = body.push(Box::new(
@@ -92,13 +182,11 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
         .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
         .open(true);
     let cancel = parts.clone();
-    sheet = sheet.secondary_action(dialog.cancel_label.clone(), move || {
-        cancel.send(&PortalEffect::Cancel);
-    });
+    sheet = sheet.secondary_action(dialog.cancel_label.clone(), move || cancel.cancel());
     if let Some((page, _)) = dialog.page.filter(|(page, _)| *page > 0) {
         let back = parts.clone();
         let _ = page;
-        sheet = sheet.tertiary_action(t("portal-back"), move || back.send(&PortalEffect::Back));
+        sheet = sheet.tertiary_action(t("portal-back"), move || back.back());
     }
     // A sheet whose choices are its answers has no button of its own.
     if !matches!(dialog.body, Body::Answers { .. }) {
@@ -130,7 +218,7 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                 let press = parts.clone();
                 column = column.push(Box::new(
                     ListRow::new("portal-remember", remember.label.clone())
-                        .checkbox(remember.on, move |_| press.send(&PortalEffect::Remember)),
+                        .checkbox_view(remember.on, move |_| press.remember()),
                 ));
             }
             for (at, choice) in choices.iter().enumerate() {
@@ -141,7 +229,7 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                     } else {
                         ButtonRole::Secondary
                     })
-                    .on_click(move || press.send(&PortalEffect::Answer { index: index(at) }));
+                    .on_own_device_effect(move || press.answer(at));
                 button.set_focus(at == dialog.selected);
                 column = column.push(Box::new(button));
             }
@@ -174,9 +262,9 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                         .checked(dialog.selected == at)
                         .selected(focus == Focus::Icons && dialog.selected == at)
                         .with_enabled(*icon_editable)
-                        .on_activate(move || {
+                        .on_effect(move || {
                             press.focus(Focus::Icons);
-                            press.send(&PortalEffect::Icon { index: index(at) });
+                            press.icon(at);
                         }),
                 ));
             }
@@ -221,9 +309,9 @@ fn choices_rows(
             ListRow::new(format!("portal-choice-{at}"), choice.clone())
                 .checked(chosen)
                 .selected(chosen && focus == Focus::Choices)
-                .on_activate(move || {
+                .on_view(move || {
                     press.focus(Focus::Choices);
-                    press.send(&PortalEffect::Select { index: index(at) });
+                    press.select(at);
                 }),
         ));
     }
@@ -240,9 +328,9 @@ fn device_row(at: usize, device: &Device, focused: bool, parts: &Parts) -> Eleme
                 "portal-usb-row-read-only"
             }))
             .selected(focused)
-            .checkbox(device.selected, move |_| {
-                press.send(&PortalEffect::Select { index: index(at) });
-                press.send(&PortalEffect::Toggle { index: index(at) });
+            .checkbox_view(device.selected, move |_| {
+                press.select(at);
+                press.toggle(at);
             }),
     )
 }
@@ -256,7 +344,7 @@ fn shortcut_row(at: usize, row: &Shortcut, focused: bool, parts: &Parts) -> Elem
                 .unwrap_or_else(|| t("portal-shortcut-not-set")),
         )
         .selected(focused)
-        .on_activate(move || press.send(&PortalEffect::Select { index: index(at) }));
+        .on_view(move || press.select(at));
     if let Some(status) = &row.status {
         list_row = list_row.subtitle(status.clone()).warning();
     }
@@ -272,9 +360,9 @@ fn draft_row(row: &DraftRow, focus: Focus, invalid: bool, parts: &Parts) -> Elem
                 ListRow::new(format!("portal-draft-{at}"), row.label.clone())
                     .selected(focus == Focus::Flag(at))
                     .with_enabled(row.editable)
-                    .checkbox(*on, move |_| {
+                    .checkbox_view(*on, move |_| {
                         press.focus(Focus::Flag(at));
-                        press.send(&PortalEffect::Toggle { index: index(at) });
+                        press.toggle(at);
                     }),
             )
         }
@@ -332,7 +420,7 @@ fn text_field(field: Field, initial: &str, parts: &Parts) -> TextInput {
     let mut input = TextInput::local()
         .with_id(&field_id(field))
         .with_initial_value(&text)
-        .on_change(move |text| {
+        .on_change_view(move |text| {
             typed
                 .texts
                 .borrow_mut()

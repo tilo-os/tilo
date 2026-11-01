@@ -1258,7 +1258,7 @@ mod tests {
             let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = clicks.clone();
             let root = crate::widget::Button::new("activate", "Activate")
-                .on_click(move || observed.set(observed.get() + 1));
+                .on_effect(move || observed.set(observed.get() + 1));
             let mut driver =
                 crate::headless::FrameHarness::new(crate::State::new(), Box::new(root), (400, 300));
             let scenario = PerfScenario {

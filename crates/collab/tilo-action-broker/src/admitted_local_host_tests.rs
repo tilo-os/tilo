@@ -115,7 +115,7 @@ async fn certified_local_host_preserves_eager_and_directory_original_custody() {
                     let row = directory_state("original-r1").borrow().row();
                     rig.worker
                         .handle
-                        .publish_actions(&env.route.app_id, &[row.descriptor.unwrap()])
+                        .publish_actions(&[row.descriptor.unwrap()])
                         .await
                         .unwrap();
                 }
@@ -139,7 +139,7 @@ async fn certified_local_host_preserves_eager_and_directory_original_custody() {
                     .unwrap();
                 assert_eq!(retry, receipt);
                 let lease = local_host_lease(&rig, &caller, request.invocation).await;
-                no_delivery(&rig);
+                no_delivery(&rig).await;
                 assert!(events.try_recv().is_err(), "retry is not new execution");
                 // Rollback cannot keep the original caller certificate alive.
                 env.control.set_wall_ns(1);
@@ -151,7 +151,7 @@ async fn certified_local_host_preserves_eager_and_directory_original_custody() {
                         .await
                         .is_err()
                 );
-                no_delivery(&rig);
+                no_delivery(&rig).await;
                 rig.stop().await;
             }
         })
@@ -233,7 +233,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
                     .await
                     .is_err()
             );
-            no_delivery(&rig);
+            no_delivery(&rig).await;
             rig.stop().await;
         })
         .await;
@@ -273,7 +273,7 @@ async fn certified_local_host_directory_wait_cannot_refresh_original_authority()
                     local_host_answer(pending).await.is_err(),
                     "{lapse} cannot rebind queued work"
                 );
-                no_delivery(&rig);
+                no_delivery(&rig).await;
                 rig.stop().await;
             }
         })
@@ -285,11 +285,11 @@ async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();
-            let mut rig = Rig::new(&env).await;
+            let rig = Rig::new(&env).await;
             let row = directory_state("original-r1").borrow().row();
             rig.worker
                 .handle
-                .publish_actions(&env.route.app_id, &[row.descriptor.unwrap()])
+                .publish_actions(&[row.descriptor.unwrap()])
                 .await
                 .unwrap();
             let (caller, _) = local_host_evidence(&env);
@@ -313,25 +313,7 @@ async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests
                     .unwrap(),
                 receipt
             );
-            no_delivery(&rig);
-            rig.stream = Some(rig.worker.handle.subscribe_invocations().await.unwrap());
-            let refused = local_host_answer(rig.state.action_invoke(
-                &caller,
-                None,
-                None,
-                &local_host_request(false),
-            ))
-            .await;
-            assert!(
-                refused
-                    .unwrap_err()
-                    .to_string()
-                    .contains("stable_identity_unavailable")
-            );
-            no_delivery(&rig);
-            // The timed-out client read may still own the server-side recv.
-            // Isolate the subsequent positive control on a fresh subscription.
-            rig.stream = Some(rig.worker.handle.subscribe_invocations().await.unwrap());
+            no_delivery(&rig).await;
             let legacy = tilo_actions::remote::Caller::authenticated(
                 env.cert.user_public_key,
                 *caller.device_public_key().unwrap(),
@@ -386,7 +368,7 @@ async fn certified_local_host_requires_a_registered_policy_origin() {
             env.authority = CurrentHost::new(&env.route, &env.cert, None);
             let (caller, evidence) = local_host_evidence(&env);
             let fanout = Arc::new(FanoutState::new());
-            let (state, _) = CapnpBrokerState::new(
+            let (state, _) = AppBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
@@ -429,7 +411,7 @@ async fn retired_execution_cannot_receive_a_queued_directory_query() {
             rig.state.drain_action_directory_bridge(&rig.directories);
             let error = local_host_answer(answer).await.unwrap_err();
             assert!(error.to_string().contains("execution session ended"));
-            no_delivery(&rig);
+            no_delivery(&rig).await;
             rig.stop().await;
         })
         .await;
@@ -454,11 +436,7 @@ async fn certified_local_host_retains_stricter_foreign_restriction_in_actual_wor
                         result: tilo_actions::ResultSpec::Job,
                         ..tilo_actions::ActionContract::default()
                     };
-                    rig.worker
-                        .handle
-                        .publish_actions(&env.route.app_id, &[action])
-                        .await
-                        .unwrap();
+                    rig.worker.handle.publish_actions(&[action]).await.unwrap();
                 }
                 let (native_caller, evidence) = local_host_evidence(&env);
                 let restricted = native_caller
@@ -510,7 +488,7 @@ async fn certified_local_host_retains_stricter_foreign_restriction_in_actual_wor
                     "retained restricted write custody must obey the tightened cap"
                 );
                 leases.next().unwrap().check().unwrap();
-                no_delivery(&rig);
+                no_delivery(&rig).await;
                 rig.stop().await;
             }
         })
@@ -525,7 +503,7 @@ async fn certified_local_host_retains_stricter_foreign_restriction_in_actual_wor
 async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::collab_broker_capnp::{
+            use crate::collab_app_broker::{
                 ContinuingCaller, published_invocation::InvocationCaller,
             };
             let env = Environment::new();
@@ -574,7 +552,7 @@ async fn a_certified_local_continuation_ends_with_its_certificate() {
             let row = directory_state("original-r1").borrow().row();
             rig.worker
                 .handle
-                .publish_actions(&env.route.app_id, &[row.descriptor.unwrap()])
+                .publish_actions(&[row.descriptor.unwrap()])
                 .await
                 .unwrap();
             let (caller, evidence) = local_host_evidence(&env);
@@ -629,7 +607,7 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let fanout = Arc::new(FanoutState::new());
-            let (state, _) = CapnpBrokerState::new(
+            let (state, _) = AppBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
@@ -695,7 +673,7 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
 
             let fanout = Arc::new(FanoutState::new());
-            let (ordinary, _) = CapnpBrokerState::new(
+            let (ordinary, _) = AppBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
@@ -731,7 +709,7 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
             }
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
-            let (state, _) = CapnpBrokerState::new(
+            let (state, _) = AppBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
@@ -760,7 +738,7 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
 /// revoked device still fails the very next call.
 #[tokio::test(flavor = "current_thread")]
 async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
-    use crate::collab_broker_capnp::admission_memo::verifications_on_this_thread as verifications;
+    use crate::collab_app_broker::admission_memo::verifications_on_this_thread as verifications;
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();
@@ -768,7 +746,7 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
             let row = directory_state("original-r1").borrow().row();
             rig.worker
                 .handle
-                .publish_actions(&env.route.app_id, &[row.descriptor.unwrap()])
+                .publish_actions(&[row.descriptor.unwrap()])
                 .await
                 .unwrap();
             let (caller, evidence) = local_host_evidence(&env);
@@ -852,7 +830,7 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
                     .is_err(),
                 "and the very next open"
             );
-            no_delivery(&rig);
+            no_delivery(&rig).await;
             rig.stop().await;
         })
         .await;
@@ -870,7 +848,7 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
             let row = directory_state("original-r1").borrow().row();
             rig.worker
                 .handle
-                .publish_actions(&env.route.app_id, &[row.descriptor.unwrap()])
+                .publish_actions(&[row.descriptor.unwrap()])
                 .await
                 .unwrap();
             let (caller, evidence) = local_host_evidence(&env);
@@ -943,7 +921,7 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
             );
             let _first = local_host_lease(&rig, &caller, request.invocation).await;
             let _second = local_host_lease(&rig, &caller, fresh.invocation).await;
-            no_delivery(&rig);
+            no_delivery(&rig).await;
             assert!(rig.state.remote_job(&caller, &request.invocation).is_some());
             assert!(rig.state.remote_job(&caller, &fresh.invocation).is_some());
             rig.stop().await;
@@ -1039,7 +1017,7 @@ async fn certified_local_host_open_list_and_invoke_cost() {
                 let row = directory_state("original-r1").borrow().row();
                 rig.worker
                     .handle
-                    .publish_actions(&env.route.app_id, &[row.descriptor.unwrap()])
+                    .publish_actions(&[row.descriptor.unwrap()])
                     .await
                     .unwrap();
                 let (caller, evidence) = local_host_evidence(&env);

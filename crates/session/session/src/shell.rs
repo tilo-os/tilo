@@ -7,11 +7,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::{Map, Value};
+use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
 use tilo_surface_host::shell_part::{ArrangementReading, Ask};
 use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 
-use crate::desk::Desk;
+use crate::desk_resource::Desk;
 use crate::panels::Held;
 
 /// The shell package and the packages it uses, compiled, the shell last: what the shell's
@@ -47,9 +48,11 @@ struct EdgeSettings {
 /// The shell's bar on the session, and what feeds it.
 pub(crate) struct Shell {
     desk: Desk,
+    /// The due timer ids announced already, so an unchanged one is announced once.
+    announced: std::cell::RefCell<std::collections::BTreeSet<String>>,
     link: Rc<SessionLink>,
     /// What the desk's reading was last made from.
-    seen: Option<crate::desk::DeskKey>,
+    seen: Option<crate::desk_resource::DeskKey>,
     /// The shell's record, shared by every part: the bar draws it and every other display's
     /// bar draws the same.
     record: Rc<RefCell<tilo_resource::Doc>>,
@@ -82,6 +85,7 @@ impl Shell {
         let link = Rc::new(SessionLink::default());
         let mut shell = Self {
             desk,
+            announced: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             link,
             seen: None,
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
@@ -96,6 +100,14 @@ impl Shell {
         shell.follow_outputs(compositor, doors);
         shell.publish();
         Ok(shell)
+    }
+
+    /// A timer Clocks says came due that the bar has not announced: its id, and what to say
+    /// in the app's own words. Each id is announced once.
+    pub(crate) fn new_due_timer(&self) -> Option<(String, String, String)> {
+        let (id, title, body) = self.desk.due_timer()?;
+        let mut announced = self.announced.borrow_mut();
+        announced.insert(id.clone()).then_some((id, title, body))
     }
 
     /// Make a part for each output `compositor` shows that has none, stand each part on its
@@ -484,5 +496,116 @@ mod tests {
             tilo_surface_host::shell_part::shell_ids(),
             "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
         );
+    }
+}
+
+impl crate::Session {
+    /// Hand the shell's bar the desk when it changed, and run what the bar
+    /// asked through the door, as any caller of the action protocol does.
+    pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
+        let Some(shell) = self.shell.as_ref() else {
+            return Ok(());
+        };
+        // The shell's views draw the centre over the desk, so while it is up the person is
+        // looking at what the notices say: they are read, as they are while the panel's own
+        // centre shows them. The bell's count, the centre's header and its rows read the one
+        // set, so they never disagree. It is the same surface the views read (`d.here`).
+        if shell.surface() == crate::overlays::Overlay::Centre.name() {
+            self.shared.notices.mark_read();
+        }
+        let Some(shell) = self.shell.as_mut() else {
+            return Ok(());
+        };
+        if let Some((_, title, body)) = shell.new_due_timer() {
+            self.shared
+                .notices
+                .post(tilo_desktop_surface::notifications::Notification::new(
+                    title, body,
+                ));
+        }
+        shell.publish();
+        shell.publish_arrangement(self.shared.arrangement.borrow().reading());
+        // What the screen says of its edges is what a bar or dock that shows only sometimes
+        // follows; it moves without the desk, so it goes every turn. The part covers the bands
+        // the record says the chrome stands in.
+        let edges = shell.edges();
+        shell.publish_edges(&self.compositor);
+        shell.set_edges(edges);
+        // One bar per display: a display plugged in, taken away or taken by a fullscreen window
+        // moves its part.
+        shell.follow_displays(&mut self.compositor, &mut self.shared.doors);
+        if !shell.has_asks() {
+            return Ok(());
+        }
+        let doors = &self.shared.doors;
+        let resources = doors.resources();
+        shell.serve(
+            |resource, action, name| {
+                tilo_actions::door::resolve(&resources, &ActionAddress::new(resource, action))
+                    .and_then(|spec| spec.params().iter().find(|param| param.name == name))
+                    .map(|param| param.ty)
+            },
+            |resource, action, arguments| {
+                doors
+                    .invoke(&ActionAddress::new(resource, action), arguments)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            },
+        );
+        // What ran may have asked the session in turn (a menu, a sheet).
+        self.settle()?;
+        if let Some(shell) = self.shell.as_mut() {
+            shell.publish();
+        }
+        Ok(())
+    }
+
+    /// What the shell's bar reads the desk through: a test stages a reading on it, as a
+    /// collaborating session's presence would arrive.
+    #[must_use]
+    pub fn shell_link(&self) -> Option<Rc<tilo_surface_host::SessionLink>> {
+        self.shell.as_ref().map(Shell::link)
+    }
+
+    /// The collaboration plane this session takes part in, when it does: what a test hands it
+    /// is who is here.
+    #[must_use]
+    pub fn sync(&self) -> Option<&Rc<crate::sync::Client>> {
+        self.shared.sync.as_ref()
+    }
+
+    /// The notifications the desk keeps: what apps sent, and what the centre shows. A test
+    /// posts into it as an app's arrival would land.
+    #[must_use]
+    pub fn notices(&self) -> &tilo_desktop_surface::DesktopNotifications {
+        &self.shared.notices
+    }
+
+    /// How much work the shell's bar did since the session started:
+    /// `None` when its package did not start.
+    #[must_use]
+    pub fn shell_work(&self) -> Option<tilo_surface_host::ShellWork> {
+        self.shell.as_ref().map(Shell::work)
+    }
+
+    /// What the shell's bar refused since the session started, in its own
+    /// words: a press whose action could not run.
+    #[must_use]
+    pub fn shell_refusals(&self) -> Vec<String> {
+        self.shell.as_ref().map(Shell::refusals).unwrap_or_default()
+    }
+
+    /// Where the shell bar's control named `name` (as assistive technology
+    /// hears it) stands, logical `(x, y, w, h)`: what a test presses it by.
+    #[must_use]
+    pub fn shell_control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
+        self.shell.as_ref()?.control(name)
+    }
+
+    /// The shell's bars, one per display, as each stands now: the output it is on, where it
+    /// stands, and whether it stepped aside for a fullscreen window there.
+    #[must_use]
+    pub fn shell_bars(&self) -> Vec<BarPlace> {
+        self.shell.as_ref().map(Shell::parts).unwrap_or_default()
     }
 }

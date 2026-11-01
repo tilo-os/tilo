@@ -1,4 +1,4 @@
-//! Adoption of a private editor, never a message send or a public room mutation.
+//! Adoption of a private editor, never a message send or a public workspace mutation.
 use crate::app::ChatApp;
 use ui::framework::{EffectAnswer, Effected};
 
@@ -10,17 +10,17 @@ impl ChatApp {
     ) -> EffectAnswer {
         let token = uuid::Uuid::parse_str(token).map_err(|_| "invalid private draft token")?;
         let draft = ui::private_draft::fetch(token, invocation)?;
-        // A draft is taken only by the Chat of the room it was written in.
-        let room = ui::collaboration::local_cluster_id();
-        if room.is_nil()
-            || uuid::Uuid::parse_str(&draft.workspace).ok() != Some(room)
+        // A draft is taken only by the Chat of the workspace it was written in.
+        let workspace = ui::collaboration::local_cluster_id();
+        if workspace.is_nil()
+            || uuid::Uuid::parse_str(&draft.workspace).ok() != Some(workspace)
             || self.rect.area() <= 0.0
         {
-            return Err("private draft room or Chat view unavailable".into());
+            return Err("private draft workspace or Chat view unavailable".into());
         }
         let ui::private_draft::Target::Person { public_key } = &draft.target;
         self.open_person_conversation(public_key)?;
-        // The native host opens at once; a draft never waits for a page's room.
+        // The native host opens at once; a draft never waits for a page's workspace.
         if self.direct_person.as_deref() != Some(public_key.as_str()) {
             return Err("private conversation is not open yet".into());
         }

@@ -78,6 +78,8 @@ mod tests {
             wave: None,
             layout: None,
             following: following.map(str::to_owned),
+            availability: None,
+            call: None,
         }
     }
 
@@ -93,6 +95,8 @@ mod tests {
             status: None,
             recent: None,
             screen: None,
+            availability: ui::Availability::Available,
+            call: None,
         }
     }
 

@@ -1,7 +1,8 @@
 //! The protocols beyond the core shell that ordinary clients expect:
 //! buffers (dma-buf, viewports), scaling, presentation timing, decorations,
 //! activation, the primary selection, pointer shape, constraints and
-//! gestures, tablets, and the inhibitors (idle, shortcuts).
+//! gestures, tablets, colour management, and the inhibitors (idle,
+//! shortcuts).
 
 use std::collections::HashSet;
 
@@ -10,7 +11,11 @@ use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::desktop::Window;
 use smithay::input::pointer::PointerHandle;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::Mode as KdeMode;
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration;
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDefaultMode;
 use smithay::reexports::wayland_server::DisplayHandle;
+use smithay::reexports::wayland_server::WEnum;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point};
 use smithay::wayland::compositor::with_states;
@@ -31,6 +36,7 @@ use smithay::wayland::presentation::PresentationState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::primary_selection::{PrimarySelectionHandler, PrimarySelectionState};
 use smithay::wayland::shell::xdg::ToplevelSurface;
+use smithay::wayland::shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState};
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::dialog::{XdgDialogHandler, XdgDialogState};
 use smithay::wayland::tablet_manager::{TabletManagerState, TabletSeatHandler};
@@ -38,6 +44,7 @@ use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
+use tilo_wayland_ext::color_management::ColorManagerState;
 
 use crate::state::State;
 
@@ -58,6 +65,9 @@ pub(crate) struct Protocols {
     _fractional_scale: FractionalScaleManagerState,
     _presentation: PresentationState,
     _decoration: XdgDecorationState,
+    /// `org_kde_kwin_server_decoration_manager`: the older spelling of the
+    /// same question for toolkits that only speak it.
+    kde_decoration: KdeDecorationState,
     _cursor_shape: CursorShapeManagerState,
     _relative_pointer: RelativePointerManagerState,
     _pointer_constraints: PointerConstraintsState,
@@ -66,6 +76,9 @@ pub(crate) struct Protocols {
     _idle_inhibit: IdleInhibitManagerState,
     _content_type: ContentTypeState,
     _dialog: XdgDialogState,
+    /// `wp_color_manager_v1`: what the outputs display and what a client's
+    /// content is in (see [`crate::color_management`]).
+    pub(crate) color_manager: ColorManagerState,
 }
 
 impl Protocols {
@@ -82,6 +95,9 @@ impl Protocols {
             // CLOCK_MONOTONIC: frame times are compared with input times.
             _presentation: PresentationState::new::<State>(display, 1),
             _decoration: XdgDecorationState::new::<State>(display),
+            // A client that never states a preference is decorated by the
+            // desktop, like every other.
+            kde_decoration: KdeDecorationState::new::<State>(display, KdeDefaultMode::Server),
             _cursor_shape: CursorShapeManagerState::new::<State>(display),
             _relative_pointer: RelativePointerManagerState::new::<State>(display),
             _pointer_constraints: PointerConstraintsState::new::<State>(display),
@@ -90,6 +106,7 @@ impl Protocols {
             _idle_inhibit: IdleInhibitManagerState::new::<State>(display),
             _content_type: ContentTypeState::new::<State>(display),
             _dialog: XdgDialogState::new::<State>(display),
+            color_manager: ColorManagerState::new::<State>(display),
         }
     }
 }
@@ -199,7 +216,37 @@ impl XdgDecorationHandler for State {
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        self.request_mode(toplevel, DecorationMode::ServerSide);
+        XdgDecorationHandler::request_mode(self, toplevel, DecorationMode::ServerSide);
+    }
+}
+
+/// `org_kde_kwin_server_decoration`: the same answer as
+/// [`XdgDecorationHandler`] for clients that only speak the KDE spelling.
+/// The window's frame is the tab the desktop draws, so the mode is `Server`
+/// whatever the client asks for.
+impl KdeDecorationHandler for State {
+    fn kde_decoration_state(&self) -> &KdeDecorationState {
+        &self.protocols.kde_decoration
+    }
+
+    /// A new decoration is told the mode once, here: the protocol sends
+    /// `mode` for a change, and the mode never changes.
+    fn new_decoration(&mut self, _surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration) {
+        decoration.mode(KdeMode::Server);
+    }
+
+    /// Left unanswered on purpose. A client acknowledges a `mode` with a
+    /// `request_mode`, and GTK 3 acknowledges with the mode it wants, so
+    /// repeating `Server` for each request gave a window that draws its own
+    /// frame (Firefox) an exchange that ended only with the window.
+    fn request_mode(
+        &mut self,
+        _surface: &WlSurface,
+        _decoration: &OrgKdeKwinServerDecoration,
+        _mode: WEnum<KdeMode>,
+    ) {
+        // The request is the client's preference, not a fact about the
+        // window: the frame stays the desktop's.
     }
 }
 
@@ -245,7 +292,10 @@ impl PrimarySelectionHandler for State {
 }
 
 impl PointerConstraintsHandler for State {
-    fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {}
+    fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {
+        // Granted (or not) by the next turn's `sync_pointer_constraint`,
+        // which knows what is focused and under the pointer.
+    }
 
     fn cursor_position_hint(
         &mut self,
@@ -271,9 +321,14 @@ impl KeyboardShortcutsInhibitHandler for State {
         &mut self.protocols.shortcuts_inhibit
     }
 
-    fn new_inhibitor(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
-        // Remote desktops and VMs take every key while focused.
-        inhibitor.activate();
+    fn new_inhibitor(&mut self, _inhibitor: KeyboardShortcutsInhibitor) {
+        // Granted (or not) by the next turn's `sync_shortcut_inhibit`, which
+        // knows what holds focus.
+    }
+
+    fn inhibitor_destroyed(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
+        // Freed before the surface's commit could grant it again.
+        self.inhibitor_gone(inhibitor.wl_surface());
     }
 }
 
@@ -284,6 +339,7 @@ smithay::delegate_viewporter!(State);
 smithay::delegate_fractional_scale!(State);
 smithay::delegate_presentation!(State);
 smithay::delegate_xdg_decoration!(State);
+smithay::delegate_kde_decoration!(State);
 
 /// A dialog a client marks modal keeps the keyboard from the window it
 /// belongs to: focusing that window focuses the dialog instead.

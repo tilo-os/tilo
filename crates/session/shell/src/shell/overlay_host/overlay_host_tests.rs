@@ -2564,7 +2564,7 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
     assert!(!host.onboarding_active(), "setup released the desktop");
 
     // What the collaboration broker admits an app's join by.
-    let principal = tilo_action_broker::collab_broker_capnp::principal_id_for_root(root_key);
+    let principal = tilo_action_broker::collab_app_broker::principal_id_for_root(root_key);
     let state = chrome.borrow();
     let tree = state.tree();
     let home = tree

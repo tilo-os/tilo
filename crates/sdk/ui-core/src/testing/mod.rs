@@ -14,7 +14,7 @@ mod owned_text;
 mod widgets;
 #[cfg(test)]
 pub(crate) use clicks::{clicks, record_click};
-pub use dispatch::{Dispatch, Dispatched, dispatch};
+pub use dispatch::{Dispatch, Dispatched, answer_controls, dispatch};
 #[cfg(all(test, unix))]
 pub use executable::write_executable;
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! Quick Settings' state: what the panel shows, local to this device.
 
-use crate::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
+use crate::{BtDevice, BtNearby, PowerProfile, QsLevel, WifiNetwork};
 
 /// Where clipboard history was summoned to paste: the focused field's caret
 /// and the focused window, in desktop coordinates, either unknown.
@@ -93,6 +93,11 @@ pub struct QuickSettingsState {
     /// Quick Settings. Cleared whenever Quick Settings opens another way.
     pub paste_origin: Option<PasteOrigin>,
     pub wifi_networks: Vec<WifiNetwork>,
+    /// The profiles `NetworkManager` keeps, in reach or not.
+    pub saved_networks: Vec<crate::SavedNetwork>,
+    /// The form for joining a network that broadcasts no name; `None`
+    /// except while it is up.
+    pub wifi_hidden: Option<crate::HiddenNetworkPrompt>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
     /// A typed radio mutation is admitted but has not completed.
@@ -109,6 +114,11 @@ pub struct QuickSettingsState {
     /// an irrelevant secret field.
     pub wifi_joining: Option<String>,
     pub bt_devices: Vec<BtDevice>,
+    /// The Bluetooth devices in reach that are not paired, strongest signal
+    /// first.
+    pub bt_nearby: Vec<BtNearby>,
+    /// `BlueZ` is looking for devices now.
+    pub bt_scanning: bool,
     /// The passphrase prompt for a protected network; `None` except
     /// while the user is typing into it.
     pub wifi_password: Option<crate::WifiPasswordPrompt>,
@@ -135,8 +145,14 @@ pub struct QuickSettingsState {
     pub clipboard: crate::ClipboardView,
     /// Notifications in the history, read when the popover opens.
     pub notification_count: usize,
-    /// This machine's sound outputs, read when the popover opens.
+    /// This machine's sound outputs, as the audio service lists them.
     pub sound_outputs: Vec<crate::SoundOutput>,
+    /// The microphone sound records from, as the audio service reads it:
+    /// the row it gets shows its level and answers its mute with this.
+    pub microphone: Option<crate::SoundInput>,
+    /// Every application's stream, as the audio service reads it: each
+    /// row shows where it goes, its level and its mute.
+    pub sound_streams: Vec<crate::SoundStream>,
     /// The Devices section's rows, in order. The overlay host reads the
     /// device fabric for them; the root page lays them out and paints them.
     pub device_rows: Vec<crate::hosted::HostedRow>,
@@ -180,6 +196,8 @@ impl Default for QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            saved_networks: Vec::new(),
+            wifi_hidden: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -187,6 +205,8 @@ impl Default for QuickSettingsState {
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
+            bt_nearby: Vec::new(),
+            bt_scanning: false,
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
             power_profiles: Vec::new(),
@@ -196,6 +216,8 @@ impl Default for QuickSettingsState {
             clipboard: crate::ClipboardView::default(),
             notification_count: 0,
             sound_outputs: Vec::new(),
+            microphone: None,
+            sound_streams: Vec::new(),
             device_rows: Vec::new(),
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             notifications: crate::NotificationsView::default(),
@@ -248,6 +270,8 @@ impl QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            saved_networks: Vec::new(),
+            wifi_hidden: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -255,6 +279,8 @@ impl QuickSettingsState {
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
+            bt_nearby: Vec::new(),
+            bt_scanning: false,
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
             power_profiles: Vec::new(),
@@ -264,6 +290,8 @@ impl QuickSettingsState {
             clipboard: crate::ClipboardView::default(),
             notification_count: 0,
             sound_outputs: Vec::new(),
+            microphone: None,
+            sound_streams: Vec::new(),
             device_rows: Vec::new(),
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             notifications: crate::NotificationsView::default(),

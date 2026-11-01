@@ -38,7 +38,7 @@ commit_checkout() {
   git reset -q "$T_COMMIT"
 }
 
-# The browser desktop bundle the room service and web entry serve, which the run's
+# The browser desktop bundle the web entry serves, which the run's
 # web-desktop-bundle check built for this commit (the bundle records it): the same release
 # build, made once for every consumer instead of again for each measurement.
 desktop_bundle() {
@@ -210,47 +210,6 @@ case $group in
       --out "$out/run" | tee "$out/hosting-load.log"
     python3 tools/perf/adapters.py hosting-load --env-json "$out/env.json" "$out/run/hosting-load.json" \
       > "$out/hosting.jsonl"
-    ;;
-  hosting-room)
-    cargo build --locked --release -p tilo-room-load --features tilo-relay/agents
-    env_json release none kvm > "$out/env.json"
-    # t sizes TOKIO_WORKER_THREADS by the cores a job is given, which may be more than it asks
-    # for; the series was measured with a runtime worker per core of a 40-CPU quota.
-    # The host's state lives on memory. On the node's shared overlay disk a durable commit
-    # waits for every other job's writes: with the node's load average past 1000, single
-    # commits took up to 15 s and a quarter of the guests had no Ready within 60 s, while
-    # the same build on memory, in the same job, joined all 100 with p99 1.8 s. The disk measured other
-    # jobs; eu1 keeps its state on local NVMe.
-    for run in 1 2 3; do
-      state=$(mktemp -d /dev/shm/room-load.XXXXXX)
-      TMPDIR=$state TOKIO_WORKER_THREADS=40 "$target/release/tilo-room-load" bench --guests 100 --malloc-arenas 2 --hold 60 \
-        > "$out/room-load-$run.json" 2> "$out/room-load-$run.log" || { rm -rf "$state"; exit 1; }
-      rm -rf "$state"
-    done
-    python3 tools/perf/adapters.py room-load --env-json "$out/env.json" "$out"/room-load-*.json \
-      > "$out/hosting-room.jsonl"
-    # The same host at its declared capacity under a host nobody shares, and
-    # past the room's cap: three runs
-    # through tools/ci/perf-room-degraded.sh, which steals CPU from the host's
-    # own process tree and slows the loopback the guests dial, so nothing else
-    # on the node is shaped. room_capacity.py judges them against the service
-    # level; adapters.py records each run as its own series. Root is needed for
-    # the cgroup and the qdisc, and the probe refuses rather than measure an
-    # undegraded host, so a node without them fails here instead of passing.
-    state=$(mktemp -d /dev/shm/room-degraded.XXXXXX)
-    status=0
-    TMPDIR=$state TOKIO_WORKER_THREADS=40 \
-      python3 tools/perf/room_capacity.py degraded --bin "$target/release/tilo-room-load" \
-      --out "$out/probe" 2>&1 | tee "$out/probe.txt" || status=$?
-    rm -rf "$state"
-    python3 tools/perf/room_capacity.py summarize "$out/probe" --degraded \
-      --json "$out/probe.json" > "$out/probe-summary.txt" || status=$?
-    cat "$out/probe-summary.txt"
-    if compgen -G "$out/probe/*.json" > /dev/null; then
-      python3 tools/perf/adapters.py room-degraded --env-json "$out/env.json" "$out"/probe/*.json \
-        >> "$out/hosting-room.jsonl"
-    fi
-    exit "$status"
     ;;
   browser)
     commit_checkout

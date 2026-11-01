@@ -30,8 +30,10 @@ use smithay::reexports::drm::control::{Device as _, connector, property};
 use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Size, Transform};
 
 use super::Renderer;
+use crate::color_filter::ColorFilter;
 use crate::config::Hdr;
 use crate::render::OutputRenderElement;
+use settings_store::hardware::HdrUnavailable;
 
 /// Grid points a side of the calibration lookup table.
 pub(crate) const GRID: u32 = 33;
@@ -118,6 +120,134 @@ pub(crate) fn hdr_output_metadata(hdr: &Hdr) -> [u8; HDR_OUTPUT_METADATA_BYTES] 
     blob
 }
 
+/// Whether HDR can be signalled on `connector` at all: the driver offers the
+/// metadata property, a BT.2020 colourspace and ten bits a channel. What
+/// [`signal_hdr`] needs, asked without switching anything.
+pub(crate) fn hdr_supported(
+    device: &DrmDevice,
+    connector: connector::Handle,
+) -> Result<(), HdrUnavailable> {
+    let properties = device
+        .get_properties(connector)
+        .map_err(|_| HdrUnavailable::DriverUnsupported)?;
+    let find = |name: &[u8]| -> Option<(property::Handle, property::Info, u64)> {
+        properties.iter().find_map(|(handle, value)| {
+            let info = device.get_property(*handle).ok()?;
+            (info.name().to_bytes() == name).then_some((*handle, info, *value))
+        })
+    };
+    if find(b"HDR_OUTPUT_METADATA").is_none() {
+        return Err(HdrUnavailable::DriverUnsupported);
+    }
+    let bt2020 = find(b"Colorspace").is_some_and(|(_, info, _)| {
+        let property::ValueType::Enum(values) = info.value_type() else {
+            return false;
+        };
+        let (_, entries) = values.values();
+        colorspace_values(
+            entries
+                .iter()
+                .map(|entry| (entry.value(), entry.name().to_bytes())),
+        )
+        .is_some()
+    });
+    if !bt2020 {
+        return Err(HdrUnavailable::DriverUnsupported);
+    }
+    let deep_enough = find(b"max bpc").is_none_or(|(_, info, current)| {
+        let property::ValueType::UnsignedRange(_, max) = info.value_type() else {
+            return true;
+        };
+        hdr_max_bpc(current, max).is_some()
+    });
+    if deep_enough {
+        Ok(())
+    } else {
+        Err(HdrUnavailable::DriverUnsupported)
+    }
+}
+
+/// The ICC profiles a person may choose, path → the name they read: every
+/// profile in the system's and the person's ICC directories that qcms can
+/// build a transform from, so the list never offers a profile that cannot be
+/// applied. Read once; the directories do not change under a session.
+pub(crate) fn color_profiles() -> std::collections::BTreeMap<String, String> {
+    static PROFILES: std::sync::OnceLock<std::collections::BTreeMap<String, String>> =
+        std::sync::OnceLock::new();
+    PROFILES
+        .get_or_init(|| {
+            let mut roots = vec![
+                PathBuf::from("/usr/share/color/icc"),
+                PathBuf::from("/usr/local/share/color/icc"),
+                PathBuf::from("/var/lib/colord/icc"),
+            ];
+            if let Some(data) = std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+                })
+            {
+                roots.push(data.join("icc"));
+                roots.push(data.join("color/icc"));
+            }
+            let mut profiles = std::collections::BTreeMap::new();
+            'roots: for root in roots {
+                let Ok(root) = root.canonicalize() else {
+                    continue;
+                };
+                let Ok(entries) = std::fs::read_dir(&root) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    if profiles.len() >= MAX_PROFILES {
+                        break 'roots;
+                    }
+                    let path = entry.path();
+                    let extension = path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .unwrap_or_default();
+                    if !extension.eq_ignore_ascii_case("icc")
+                        && !extension.eq_ignore_ascii_case("icm")
+                    {
+                        continue;
+                    }
+                    let Ok(path) = path.canonicalize() else {
+                        continue;
+                    };
+                    if !path.starts_with(&root)
+                        || !path.is_file()
+                        || path
+                            .metadata()
+                            .is_ok_and(|metadata| metadata.len() > MAX_PROFILE_BYTES)
+                    {
+                        continue;
+                    }
+                    if icc_atlas(&path).is_none() {
+                        continue;
+                    }
+                    let Some(key) = path.to_str() else {
+                        continue;
+                    };
+                    let label = path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or(key)
+                        .to_owned();
+                    profiles.insert(key.to_owned(), label);
+                }
+            }
+            profiles
+        })
+        .clone()
+}
+
+/// The most profiles offered, so a machine with a profile library cannot
+/// make the list endless.
+const MAX_PROFILES: usize = 128;
+/// The largest file read as an ICC profile.
+const MAX_PROFILE_BYTES: u64 = 16 * 1024 * 1024;
+
 /// The `Colorspace` enum values for SDR (`Default`) and HDR (`BT2020_RGB`).
 pub(crate) fn colorspace_values<'a>(
     values: impl IntoIterator<Item = (u64, &'a [u8])>,
@@ -194,6 +324,11 @@ uniform sampler2D lut;
 uniform float use_lut;
 uniform float pq;
 uniform float sdr_white;
+uniform vec3 filter_row_r;
+uniform vec3 filter_row_g;
+uniform vec3 filter_row_b;
+uniform vec3 filter_offset;
+uniform float use_filter;
 const float N = 33.0;
 
 vec3 calibrate(vec3 c) {
@@ -226,10 +361,21 @@ vec3 encode_pq(vec3 c) {
     return vec3(pq_inverse_eotf(nits.r), pq_inverse_eotf(nits.g), pq_inverse_eotf(nits.b));
 }
 
+// The whole-desktop colour filter: a matrix and an offset, so turning
+// colour off and inverting it are the same one operation.
+vec3 colour_filter(vec3 c) {
+    return clamp(vec3(dot(filter_row_r, c),
+                      dot(filter_row_g, c),
+                      dot(filter_row_b, c)) + filter_offset, 0.0, 1.0);
+}
+
 void main() {
     vec3 rgb = texture2D(tex, v_coords).rgb;
     if (use_lut > 0.5) {
         rgb = calibrate(rgb);
+    }
+    if (use_filter > 0.5) {
+        rgb = colour_filter(rgb);
     }
     if (pq > 0.5) {
         rgb = encode_pq(rgb);
@@ -247,11 +393,14 @@ void main() {
 pub(crate) struct Wanted {
     pub profile: Option<PathBuf>,
     pub hdr: Option<Hdr>,
+    /// The whole-desktop colour filter.
+    pub filter: ColorFilter,
 }
 
 impl Wanted {
+    /// Whether the output shows the scene as it is, needing no pass.
     pub(crate) fn plain(&self) -> bool {
-        self.profile.is_none() && self.hdr.is_none()
+        self.profile.is_none() && self.hdr.is_none() && self.filter.is_off()
     }
 }
 
@@ -290,6 +439,11 @@ impl ColorPass {
                     UniformName::new("use_lut", UniformType::_1f),
                     UniformName::new("pq", UniformType::_1f),
                     UniformName::new("sdr_white", UniformType::_1f),
+                    UniformName::new("filter_row_r", UniformType::_3f),
+                    UniformName::new("filter_row_g", UniformType::_3f),
+                    UniformName::new("filter_row_b", UniformType::_3f),
+                    UniformName::new("filter_offset", UniformType::_3f),
+                    UniformName::new("use_filter", UniformType::_1f),
                 ],
             )
             .map_err(|error| format!("colour shader: {error:?}"))?;
@@ -388,6 +542,7 @@ impl ColorPass {
             })?;
         }
         let flag = |on: bool| if on { 1.0_f32 } else { 0.0 };
+        let filter = self.wanted.filter.matrix();
         let drawn = frame.render_texture_from_to(
             &self.texture,
             src,
@@ -408,6 +563,11 @@ impl ColorPass {
                         .as_ref()
                         .map_or(0.0, |hdr| hdr.sdr_white_nits),
                 ),
+                Uniform::new("filter_row_r", filter.rows[0]),
+                Uniform::new("filter_row_g", filter.rows[1]),
+                Uniform::new("filter_row_b", filter.rows[2]),
+                Uniform::new("filter_offset", filter.offset),
+                Uniform::new("use_filter", flag(!self.wanted.filter.is_off())),
             ],
         );
         if lut.is_some() {
@@ -568,6 +728,25 @@ mod tests {
         assert_eq!(pixel(0, 0, 0), [0, 0, 0, 255]);
         assert_eq!(pixel(side - 1, side - 1, side - 1), [255, 255, 255, 255]);
         assert_eq!(pixel(16, 0, 32), [127, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_colour_filter_asks_for_the_final_pass() {
+        assert!(
+            Wanted::default().plain(),
+            "an untouched output needs no pass"
+        );
+        for filter in [
+            ColorFilter::Grayscale,
+            ColorFilter::Inverted,
+            ColorFilter::GrayscaleInverted,
+        ] {
+            let wanted = Wanted {
+                filter,
+                ..Wanted::default()
+            };
+            assert!(!wanted.plain(), "{filter:?} is drawn by the pass");
+        }
     }
 
     #[test]

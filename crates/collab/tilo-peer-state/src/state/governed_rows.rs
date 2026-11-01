@@ -14,8 +14,6 @@ pub(crate) struct GovernedIdentity {
     pub(crate) admission: Option<RedemptionReceipt>,
     #[serde(default)]
     pub(crate) admissions: Vec<RedemptionReceipt>,
-    #[serde(default)]
-    pub(crate) workspace_delegations: Vec<crate::join::WorkspaceDelegation>,
     /// Present when the device is a delegate of its person: an agent, or an
     /// installed bot ([`super::delegates`]). Absent from every other identity's
     /// bytes.
