@@ -30,8 +30,9 @@ use neighbour_wire::NeighbourMsg;
 use serde_json::Value;
 use tilo_action_policy::{Role, share::is_of_share};
 use tilo_actions::ResourceSpec;
+use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
-use tilo_desktop::desktop_actions::WINDOW_KIND;
+use tilo_desktop::desktop_actions::{DESK_RESOURCE, WINDOW_KIND, tab_resource_id};
 use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
     DesktopTree, GroupId, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
@@ -60,6 +61,7 @@ type Arguments = serde_json::Map<String, Value>;
 
 const ROOM: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 const APP: &str = "so.tilo.notes";
+const PHOTOS: &str = "so.tilo.photos";
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 fn device(seed: u8) -> EndpointId {
@@ -124,6 +126,33 @@ fn showing(host: EndpointId, app_id: &str, tab: u64) -> DesktopTree {
     )
 }
 
+/// A desk showing another device's windows of `apps`, one per group, in
+/// `tabs`: what a member viewing two shared windows holds.
+fn showing_both(host: EndpointId, first: (&str, u64), second: (&str, u64)) -> DesktopTree {
+    let mut tree = showing(host, first.0, first.1);
+    let strip = &mut tree.workspaces[0].strips[0];
+    let tab = TabId::from(second.1);
+    strip.window_groups.push(WindowGroup {
+        id: GroupId::from(2_u64),
+        tabs: vec![Tab {
+            id: tab,
+            title: "Notes".to_owned(),
+            tile: TileContent::HostedWindow {
+                app_id: second.0.to_owned(),
+                label: "Notes".to_owned(),
+                host: hex::encode(host.as_bytes()),
+                host_label: "Framework".to_owned(),
+            },
+            app_title: None,
+        }],
+        active_tab: tab,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    tree
+}
+
 /// `desk` under the governance the room's devices agree on: `owner` owns its
 /// workspace, and each of `members` holds their role there — the policy
 /// every member's messages are admitted by.
@@ -165,6 +194,23 @@ fn member_minting_under(seed: u8, desk: DesktopTree, salt: u16) -> Member {
 /// One device of the room, taking part as `person` (their root key, hex)
 /// when it says one: what a session with a device identity is on this plane.
 fn member_as(seed: u8, desk: DesktopTree, salt: u16, person: Option<String>) -> Member {
+    member_on(
+        seed,
+        desk,
+        salt,
+        person,
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+}
+
+/// One device of the room whose desk spreads over `outputs`.
+fn member_on(
+    seed: u8,
+    desk: DesktopTree,
+    salt: u16,
+    person: Option<String>,
+    outputs: &[OutputConfig],
+) -> Member {
     let (sync, said) = Client::planeless(
         device(seed),
         OwnPresence {
@@ -185,7 +231,7 @@ fn member_as(seed: u8, desk: DesktopTree, salt: u16, person: Option<String>) -> 
             sync: Some(Rc::clone(&sync)),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        outputs,
     )
     .expect("session");
     session.handle().replace_tree(desk);
@@ -909,6 +955,124 @@ fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
             .as_ref()
             .is_some_and(|window| window.seen.pointer_inside),
         "the person's pointer reached the window"
+    );
+}
+
+/// A shared window's pictures are prepared for the colour of the display
+/// its tile stands on, and follow the window when it moves to another.
+#[test]
+fn a_shared_window_is_prepared_for_the_display_it_stands_on() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let mut host = member(0x71, own_desk());
+    let mut window = Some(mapped(&mut host.session, APP));
+    let first = tab_of(&host.session, APP);
+    let _other = mapped(&mut host.session, PHOTOS);
+    let second = tab_of(&host.session, PHOTOS);
+    share(&mut host, APP, first);
+    share(&mut host, PHOTOS, second);
+
+    // The viewer's left display shows SDR and its right one HDR, as a panel
+    // that takes PQ and is driven with it says.
+    let outputs = [
+        OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT).at(0, 0),
+        OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT)
+            .at(WIDTH, 0)
+            .showing(DisplayCapabilities::hdr10_baseline()),
+    ];
+    let mut viewer = member_on(
+        0x72,
+        showing_both(host.sync.publisher(), (APP, first), (PHOTOS, second)),
+        Options::default().salt,
+        None,
+        &outputs,
+    );
+    watch(&mut viewer, first);
+    watch(&mut viewer, second);
+    let both = |viewer: &Member| {
+        viewer.session.handle().peer_surface_read(first).is_some()
+            && viewer.session.handle().peer_surface_read(second).is_some()
+    };
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        both(viewer)
+    });
+
+    let colour = |viewer: &Member, tab: u64| {
+        viewer
+            .session
+            .handle()
+            .peer_surface_read(tab)
+            .expect("the shared window has a tile")
+            .display
+    };
+    assert_eq!(
+        colour(&viewer, first),
+        DisplayCapabilities::sdr_default(),
+        "a window on the display that shows SDR is prepared for SDR"
+    );
+    assert_eq!(
+        viewer.session.handle().displays(),
+        vec![0, 1],
+        "the viewer spreads over both displays, left to right"
+    );
+    assert_eq!(
+        viewer
+            .session
+            .handle()
+            .peer_surface_display(first)
+            .as_deref(),
+        Some("HEADLESS-1"),
+        "the first window stands on the display on the left"
+    );
+    assert_eq!(
+        colour(&viewer, second),
+        DisplayCapabilities::sdr_default(),
+        "both windows open on the display with focus, which shows SDR"
+    );
+
+    // The person brings the second window forward, then moves the window
+    // they work in to the display on the right.
+    viewer
+        .session
+        .invoke(
+            &tab_resource_id(second),
+            "focus",
+            &arguments(serde_json::json!({})),
+        )
+        .expect("the window takes focus");
+    settle(&mut host, &mut window, &mut viewer);
+    viewer
+        .session
+        .invoke(
+            DESK_RESOURCE,
+            "move-to-display",
+            &arguments(serde_json::json!({ "steps": 1 })),
+        )
+        .expect("the window moves to the next display");
+    settle(&mut host, &mut window, &mut viewer);
+    assert_eq!(
+        viewer
+            .session
+            .handle()
+            .peer_surface_display(second)
+            .as_deref(),
+        Some("HEADLESS-2"),
+        "the window moved to the display on the right"
+    );
+    assert_eq!(
+        colour(&viewer, second),
+        DisplayCapabilities::hdr10_baseline(),
+        "the window on the display that shows HDR is prepared for HDR"
+    );
+    assert_eq!(
+        colour(&viewer, first),
+        DisplayCapabilities::sdr_default(),
+        "the window left behind stays prepared for the display it stands on"
+    );
+    let reading = viewer.session.read("session:displays").expect("published");
+    assert_eq!(
+        reading["displays"][1]["colour"]["supports_pq_output"],
+        serde_json::json!(true),
+        "the published display on the right says it shows HDR: {reading}"
     );
 }
 

@@ -1216,6 +1216,13 @@ impl WindowShares {
     /// Say again which windows of which hosts this device shows, so their
     /// hosts keep streaming to it.
     fn ask_again(&mut self, compositor: &Compositor, sync: &Client, now: Instant) {
+        /// What one host is asked for: the views of one room.
+        struct Ask {
+            host: EndpointId,
+            room: String,
+            views: Vec<TabId>,
+            due: bool,
+        }
         if self.watching.is_empty() {
             return;
         }
@@ -1244,29 +1251,57 @@ impl WindowShares {
         }
         let (width, height) = view_size(compositor);
         let decode = local_decode();
-        let due: Vec<(String, TabId)> = self
-            .watching
-            .iter()
-            .filter(|(_, watched)| now.duration_since(watched.asked_at) >= VIEW_AGAIN)
-            .map(|(key, _)| key.clone())
-            .collect();
-        for key in due {
-            let Some(watched) = self.watching.get_mut(&key) else {
+        // Every window of one host in one room goes in a single ask: an ask
+        // says what this device wants of that host, so one naming a single
+        // window would take back the others.
+        let mut asks: Vec<Ask> = Vec::new();
+        for ((room, tab), watched) in &self.watching {
+            let due = now.duration_since(watched.asked_at) >= VIEW_AGAIN;
+            match asks
+                .iter_mut()
+                .find(|ask| ask.host == watched.host && &ask.room == room)
+            {
+                Some(ask) => {
+                    ask.views.push(*tab);
+                    ask.due |= due;
+                }
+                None => asks.push(Ask {
+                    host: watched.host,
+                    room: room.clone(),
+                    views: vec![*tab],
+                    due,
+                }),
+            }
+        }
+        for Ask {
+            host,
+            room,
+            views,
+            due,
+        } in asks
+        {
+            let Some(ws) = sync.workspace_topic(&room).filter(|_| due) else {
                 continue;
             };
-            let (room, tab) = key;
-            let Some(ws) = sync.workspace_topic(&room) else {
-                continue;
-            };
-            let host = watched.host;
             let ask = NeighbourMsg::SurfaceViewRequest {
                 peer: sync.peer(),
                 room: room.clone(),
-                views: vec![SurfaceView { tab, width, height }],
+                views: views
+                    .iter()
+                    .map(|tab| SurfaceView {
+                        tab: *tab,
+                        width,
+                        height,
+                    })
+                    .collect(),
                 decode: decode.clone(),
             };
             sync.publish_control(ws, ask, host);
-            watched.asked_at = now;
+            for tab in views {
+                if let Some(watched) = self.watching.get_mut(&(room.clone(), tab)) {
+                    watched.asked_at = now;
+                }
+            }
         }
     }
 
