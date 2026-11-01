@@ -457,7 +457,7 @@ impl ShellOverlayHost {
             palette_was_visible: false,
             launcher: None,
             launcher_unavailable: false,
-            shell_actions: None,
+            shell_actions: crate::shell::actions::host::ShellActionsHosts::default(),
             palette_transition: ui::motion::Presence::closed(),
             faces: ui::widget::FaceMotions::default(),
             group_row_ptrs: HashMap::new(),
