@@ -428,6 +428,17 @@ pub(super) fn start_task(room: RoomId, task: &str) -> std::io::Result<OwnedFd> {
             tracing::warn!(package_id = %app.package_id, "a task's host leaves out an app it could not verify");
             continue;
         };
+        // The host's runtimes are the ones installed here: an app built for runtimes a newer
+        // build replaced names a host that cannot start, and is no candidate for one.
+        if !verified.runs_here() {
+            tracing::warn!(
+                package_id = %app.package_id,
+                tilo_runtime = %verified.app_runtime,
+                tilolang_runtime = %verified.runtime,
+                "a task's host leaves out an app whose runtimes are not installed"
+            );
+            continue;
+        }
         let pair = (verified.runtime.clone(), verified.app_runtime.clone());
         match &runtimes {
             Some(known) if *known != pair => {

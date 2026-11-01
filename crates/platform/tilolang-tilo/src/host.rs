@@ -87,6 +87,14 @@ impl Package {
             .cloned()
     }
 
+    /// Whether the package declares a root of the type `ty` (a type id): a named root
+    /// (`root shell: Shell`) or an unnamed one (`root Desk`).
+    #[must_use]
+    pub fn declares_root(&self, ty: &str) -> bool {
+        self.meta.roots.iter().any(|root| root == ty)
+            || self.meta.named_roots.iter().any(|root| root.ty == ty)
+    }
+
     /// The id of the view `name` names: its declared name, or its id. `None` when the package
     /// declares no such view.
     #[must_use]
