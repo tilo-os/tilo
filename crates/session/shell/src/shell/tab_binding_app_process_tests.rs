@@ -62,9 +62,8 @@ fn saved_app_tabs_reopen_as_their_apps_windows() {
         .into_iter()
         .filter_map(|tab| match &tab.tile {
             TileContent::LocalApp { app_id, note, .. } if note.is_empty() => {
-                assert_eq!(
-                    crate::shell::state::peer_salt_of(tab.id),
-                    tree.local_salt(),
+                assert!(
+                    in_own_namespace(tab.id, tree.local_salt()),
                     "only this device's own tabs reopen as saved windows",
                 );
                 Some(app_id.as_str())
@@ -90,4 +89,40 @@ fn saved_app_tabs_reopen_as_their_apps_windows() {
         !reopen_app_tabs_as_processes(&mut tree),
         "nothing left to turn"
     );
+}
+
+/// A device that mints under its own salt reopens the tabs of a tree saved
+/// before trees had one (salt `0`) as its own saved windows: no other device
+/// holds them, so none would ever hand over a record for them to wait on.
+#[test]
+fn unsalted_saved_app_tabs_reopen_as_this_devices_windows() {
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    let unsalted: Vec<TabId> = tabs(&tree)
+        .into_iter()
+        .filter(|tab| {
+            matches!(&tab.tile, TileContent::AppPlaceholder { kind, .. }
+                if own_process_package(kind).is_some())
+        })
+        .map(|tab| tab.id)
+        .collect();
+    assert!(!unsalted.is_empty());
+    assert!(
+        unsalted
+            .iter()
+            .all(|id| crate::shell::state::peer_salt_of(*id) == 0),
+        "the demo tree mints in no namespace"
+    );
+    tree.set_peer_salt(0x1234);
+    assert!(reopen_app_tabs_as_processes(&mut tree));
+    for tab in tabs(&tree)
+        .into_iter()
+        .filter(|tab| unsalted.contains(&tab.id))
+    {
+        assert!(
+            matches!(&tab.tile, TileContent::LocalApp { note, .. } if note.is_empty()),
+            "{} reopens as {:?}, not this device's own window",
+            tab.title,
+            tab.tile
+        );
+    }
 }
