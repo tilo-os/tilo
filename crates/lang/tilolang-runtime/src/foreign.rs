@@ -12,11 +12,13 @@
 //! is the session's resource it stands for (`sound`, `desktop:overlays`).
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use serde_json::Value as Json;
 
 use crate::ids::ModuleHash;
 use crate::meta::{Ty, TypeKey};
+use crate::registry::Registry;
 use crate::value::{EnumValue, RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
 
@@ -34,11 +36,21 @@ pub struct Shown {
     pub title: Option<String>,
 }
 
-/// The newest reading of a foreign resource, and the generation it was set with.
+/// What a foreign resource reads its fields from.
 #[derive(Debug)]
-struct Reading {
-    json: Json,
-    generation: u64,
+enum Reading {
+    /// The newest reading of it, and the generation it was set with.
+    Set { json: Json, generation: u64 },
+    /// Where a record inside another app's reading stands (a menu's row): the reading it stands
+    /// in, and the fields and items down to it. It reads as that reading says now.
+    Inside(Inside),
+}
+
+/// The way down to a record inside a reading: a field's name, or an item's index.
+#[derive(Debug)]
+struct Inside {
+    parent: String,
+    steps: Vec<String>,
 }
 
 /// Results a value carries that `show` prints for the resources of apps the runtime does not
@@ -68,56 +80,121 @@ impl Foreign {
 
     /// The generation of `target`'s reading: 0 until one was set, larger after each change.
     pub fn generation(&self, target: &ResourceRef) -> u64 {
-        self.readings
-            .get(&Self::key(target))
-            .map_or(0, |held| held.generation)
+        self.source(&Self::key(target))
+            .map_or(0, |(_, moved)| moved)
     }
 
     /// Take `json` as `target`'s reading. Whether it is not the one held.
     pub(crate) fn set_reading(&mut self, target: &ResourceRef, json: Json) -> bool {
         let key = Self::key(target);
-        if self
-            .readings
-            .get(&key)
-            .is_some_and(|held| held.json == json)
-        {
+        if matches!(
+            self.readings.get(&key),
+            Some(Reading::Set { json: held, .. }) if *held == json
+        ) {
             return false;
         }
         self.clock = self.clock.saturating_add(1);
         let generation = self.clock;
-        self.readings.insert(key, Reading { json, generation });
+        self.readings.insert(key, Reading::Set { json, generation });
+        // The records that stood in the reading it replaces and stand in it no longer are of
+        // the old one.
+        let gone: Vec<String> = self
+            .readings
+            .iter()
+            .filter(|(at, held)| matches!(held, Reading::Inside(_)) && self.source(at).is_none())
+            .map(|(at, _)| at.clone())
+            .collect();
+        for at in gone {
+            self.readings.remove(&at);
+        }
         true
     }
 
+    /// Say where a record inside `parent`'s reading stands, `target` naming it: what a view
+    /// reads its fields from.
+    fn place(&mut self, target: &ResourceRef, steps: Vec<String>, parent: String) {
+        let at = Self::key(target);
+        let stood = match self.readings.get(&at) {
+            Some(Reading::Inside(held)) => held.parent == parent && held.steps == steps,
+            _ => false,
+        };
+        if !stood {
+            self.readings
+                .insert(at, Reading::Inside(Inside { parent, steps }));
+        }
+    }
+
+    /// The reading the fields of `at` are read from, and the generation it moved with: the one
+    /// the host set, or the record where it stands in that one.
+    fn source(&self, at: &str) -> Option<(&Json, u64)> {
+        let held = self.readings.get(at)?;
+        let inside = match held {
+            Reading::Set { json, generation } => return Some((json, *generation)),
+            Reading::Inside(inside) => inside,
+        };
+        let (mut json, generation) = self.source(&inside.parent)?;
+        for step in &inside.steps {
+            json = match json {
+                Json::Object(fields) => fields.get(step)?,
+                Json::Array(items) => items.get(step.parse::<usize>().ok()?)?,
+                _ => return None,
+            };
+        }
+        Some((json, generation))
+    }
+
     /// The field `field` of `target` (its name, then its id) as its declared type, from the
-    /// reading now.
+    /// reading now. A record inside the reading (a row of a menu) is a resource of the app too:
+    /// its own fields read the same way, from where the reading holds it.
     ///
     /// # Errors
     ///
     /// A message when no reading of it arrived yet, or the reading holds no value of the
     /// field's type: what a service publishes and what its surface declares differ.
     pub(crate) fn field(
-        &self,
+        &mut self,
         target: &ResourceRef,
         field: &crate::registry::FieldInfo,
         author: Option<&ModuleHash>,
+        registry: &Registry,
     ) -> Result<Value, String> {
-        let reading = self.readings.get(&Self::key(target)).ok_or_else(|| {
-            format!(
-                "no reading of `{}` arrived yet: its app publishes it through the session",
-                target.id_string()
-            )
-        })?;
-        let held = reading
-            .json
-            .get(&field.name)
-            .or_else(|| reading.json.get(&field.id));
-        let Some(json) = held else {
-            return crate::host_res::declared_default(&field.ty, field.default.as_ref())
-                .map_err(|why| format!("`{}` has no `{}`: {why}", target.id_string(), field.name));
+        let at = Self::key(target);
+        // The reading a record stands in, and where it stands: a field of it stands one step
+        // further down.
+        let (parent, base) = match self.readings.get(&at) {
+            Some(Reading::Inside(inside)) => (inside.parent.clone(), inside.steps.clone()),
+            _ => (at.clone(), Vec::new()),
         };
-        decode(json, &field.ty, author)
-            .map_err(|why| format!("`{}` of `{}`: {why}", field.name, target.id_string()))
+        let (value, records) = {
+            let Some((json, _)) = self.source(&at) else {
+                return Err(format!(
+                    "no reading of `{}` arrived yet: its app publishes it through the session",
+                    target.id_string()
+                ));
+            };
+            let held = json.get(&field.name).or_else(|| json.get(&field.id));
+            let Some(json) = held else {
+                return crate::host_res::declared_default(&field.ty, field.default.as_ref())
+                    .map_err(|why| {
+                        format!("`{}` has no `{}`: {why}", target.id_string(), field.name)
+                    });
+            };
+            let mut decoder = Decoder {
+                author,
+                registry,
+                base: target.id_string(),
+                steps: base,
+                records: Vec::new(),
+            };
+            let value = decoder.down(&field.name, json, &field.ty);
+            (value, decoder.records)
+        };
+        let value =
+            value.map_err(|why| format!("`{}` of `{}`: {why}", field.name, target.id_string()))?;
+        for (record, steps) in records {
+            self.place(&record, steps, parent.clone());
+        }
+        Ok(value)
     }
 }
 
@@ -152,51 +229,153 @@ pub fn reading_key(target: &ResourceRef) -> StateKey {
 ///
 /// A reading is plain JSON — what its service serialised (a number for an `Int`, a string for
 /// a `Text`, an object for a record's fields) — and a value the runtime itself wrote is the
-/// [`crate::value::to_json`] encoding of it, which is read too. A record field reads as a
-/// reference to it, given either as an id string or as that encoding.
-fn decode(json: &Json, ty: &Ty, author: Option<&ModuleHash>) -> Result<Value, String> {
-    match ty {
-        Ty::Unit
-        | Ty::Int
-        | Ty::Float
-        | Ty::Bool
-        | Ty::Text
-        | Ty::Date
-        | Ty::Time
-        | Ty::Identifier
-        | Ty::Principal
-        | Ty::Length(_) => plain(json, ty),
-        Ty::Option(inner) => match json {
-            Json::Null => Ok(Value::none()),
-            value => Ok(Value::some(decode(value, inner, author)?)),
-        },
-        Ty::List(inner) | Ty::Collection(inner) | Ty::Set(inner) => {
-            let Some(items) = json.as_array() else {
-                return Err(format!("{json} is not a list"));
-            };
-            Ok(Value::List(
-                items
-                    .iter()
-                    .map(|item| decode(item, inner, author))
-                    .collect::<Result<_, _>>()?,
-            ))
+/// [`crate::value::to_json`] encoding of it, which is read too.
+///
+/// A record is a resource of the app that published the reading, as every record is in
+/// tilolang: it reads as a reference, and its fields are the record's own, checked against the
+/// types the app declares. A record the reading spells out as an object names itself by its
+/// `id` when it has one (a menu's rows), and by where it stands in the reading when it does not
+/// (a menu's corner); a reading that gives it as an id string or as that encoding is the same
+/// reference.
+struct Decoder<'a> {
+    author: Option<&'a ModuleHash>,
+    registry: &'a Registry,
+    /// The id of the record the field read belongs to: what a record without an id of its own
+    /// is named after.
+    base: String,
+    /// Where the value being read stands in the reading: the fields and items down to it.
+    steps: Vec<String>,
+    /// The records the reading spells out, and where each stands: what a view reads the fields
+    /// of later, as the reading says then.
+    records: Vec<(Rc<ResourceRef>, Vec<String>)>,
+}
+
+impl Decoder<'_> {
+    /// The name of a record that gives no id of its own: the id of the record whose field it
+    /// is, and where it stands in the reading.
+    fn at(&self) -> String {
+        let mut at = self.base.clone();
+        for step in &self.steps {
+            at.push('.');
+            at.push_str(step);
         }
-        Ty::Tuple(items) => tuple(json, items, author),
-        Ty::Record(key) => reference(json, key, author),
-        Ty::Union(keys) => one_of(json, keys, author),
-        Ty::Enum(key) => match json {
-            Json::String(variant) => Ok(Value::Enum(EnumValue {
-                ty: format!("{}#{}", key.app, key.name),
-                variant: variant.clone(),
-                fields: BTreeMap::new(),
-            })),
-            encoded => crate::value::from_json(encoded),
-        },
-        Ty::Result(..) | Ty::RichText | Ty::Map(_) => crate::value::from_json(json),
-        Ty::Action | Ty::View | Ty::Choice(_) | Ty::Error => Err(format!(
-            "a value of type `{}` is not read from another app's reading",
-            ty.meta_text("")
-        )),
+        at
+    }
+
+    /// `json` as `ty`, standing where [`Decoder::steps`] says.
+    fn read(&mut self, json: &Json, ty: &Ty) -> Result<Value, String> {
+        match ty {
+            Ty::Unit
+            | Ty::Int
+            | Ty::Float
+            | Ty::Bool
+            | Ty::Text
+            | Ty::Date
+            | Ty::Time
+            | Ty::Identifier
+            | Ty::Principal
+            | Ty::Length(_) => plain(json, ty),
+            Ty::Option(inner) => match json {
+                Json::Null => Ok(Value::none()),
+                value => Ok(Value::some(self.down("", value, inner)?)),
+            },
+            Ty::List(inner) | Ty::Collection(inner) | Ty::Set(inner) => {
+                let Some(items) = json.as_array() else {
+                    return Err(format!("{json} is not a list"));
+                };
+                let mut values = Vec::with_capacity(items.len());
+                for (index, item) in items.iter().enumerate() {
+                    values.push(self.down(&index.to_string(), item, inner)?);
+                }
+                Ok(Value::List(values))
+            }
+            Ty::Tuple(items) => {
+                let Some(given) = json.as_array() else {
+                    return Err(format!("{json} is not a tuple"));
+                };
+                if given.len() != items.len() {
+                    return Err(format!("{json} is not a tuple of {} values", items.len()));
+                }
+                let mut values = Vec::with_capacity(items.len());
+                for (index, (ty, item)) in items.iter().zip(given).enumerate() {
+                    values.push(self.down(&index.to_string(), item, ty)?);
+                }
+                Ok(Value::Tuple(values))
+            }
+            Ty::Record(key) => self.record(json, key),
+            Ty::Union(keys) => one_of(json, keys, self.author),
+            Ty::Enum(key) => match json {
+                Json::String(variant) => Ok(Value::Enum(EnumValue {
+                    ty: format!("{}#{}", key.app, key.name),
+                    variant: variant.clone(),
+                    fields: BTreeMap::new(),
+                })),
+                encoded => crate::value::from_json(encoded),
+            },
+            Ty::Result(..) | Ty::RichText | Ty::Map(_) => crate::value::from_json(json),
+            Ty::Action | Ty::View | Ty::Choice(_) | Ty::Error => Err(format!(
+                "a value of type `{}` is not read from another app's reading",
+                ty.meta_text("")
+            )),
+        }
+    }
+
+    /// `json` as `ty`, one step further down the reading with `step` (none for a value that
+    /// stands where its container does, as an option's).
+    fn down(&mut self, step: &str, json: &Json, ty: &Ty) -> Result<Value, String> {
+        if step.is_empty() {
+            return self.read(json, ty);
+        }
+        self.steps.push(step.to_owned());
+        let value = self.read(json, ty);
+        self.steps.pop();
+        value
+    }
+
+    /// A record of `key`'s type: the reference to it, once every field it declares is a value
+    /// of its declared type. The fields are read again from where the reading holds it, one at
+    /// a time, as a view asks for them.
+    fn record(&mut self, json: &Json, key: &TypeKey) -> Result<Value, String> {
+        if !json.is_object() || json.get("ref").is_some() {
+            return reference(json, key, self.author);
+        }
+        let (_, info) = self
+            .registry
+            .type_for(key)
+            .and_then(|id| self.registry.type_info(&id))
+            .ok_or_else(|| {
+                format!(
+                    "`{}#{}` is not declared by any loaded package",
+                    key.app, key.name
+                )
+            })?;
+        for field in &info.fields {
+            let Some(value) = json.get(&field.name).or_else(|| json.get(&field.id)) else {
+                // A field the reading leaves out is none, or the value the type declares for
+                // it; one that has neither is missing, not empty.
+                if matches!(field.ty, Ty::Option(_)) || field.default.is_some() {
+                    continue;
+                }
+                return Err(format!(
+                    "`{}` of `{}` is missing from the reading",
+                    field.name, info.name
+                ));
+            };
+            self.down(&field.name, value, &field.ty)
+                .map_err(|why| format!("`{}` of `{}`: {why}", field.name, info.name))?;
+        }
+        // A record names itself with its `id` when the reading gives one (a menu's row), and
+        // by where it stands in the reading when it does not (a menu's corner).
+        let id = json
+            .get("id")
+            .and_then(Json::as_str)
+            .map_or_else(|| self.at(), ToOwned::to_owned);
+        let value = referred(&id, key, self.author)?;
+        if let Value::Ref(target) = &value {
+            let stands = (Rc::clone(&target.target), self.steps.clone());
+            self.records.push(stands);
+        }
+        Ok(value)
     }
 }
 
@@ -221,23 +400,6 @@ fn plain(json: &Json, ty: &Ty) -> Result<Value, String> {
     value.ok_or_else(|| format!("{json} is not a {}", ty.meta_text("")))
 }
 
-/// The values of the tuple's types, in order.
-fn tuple(json: &Json, items: &[Ty], author: Option<&ModuleHash>) -> Result<Value, String> {
-    let Some(given) = json.as_array() else {
-        return Err(format!("{json} is not a tuple"));
-    };
-    if given.len() != items.len() {
-        return Err(format!("{json} is not a tuple of {} values", items.len()));
-    }
-    Ok(Value::Tuple(
-        items
-            .iter()
-            .zip(given)
-            .map(|(ty, item)| decode(item, ty, author))
-            .collect::<Result<_, _>>()?,
-    ))
-}
-
 /// A reference to a resource of one of the union's types: the type the reading names, since an
 /// id on its own does not say which of them it is.
 fn one_of(json: &Json, keys: &[TypeKey], author: Option<&ModuleHash>) -> Result<Value, String> {
@@ -260,21 +422,30 @@ fn encoded_ref_ty(json: &Json) -> Option<(String, String)> {
     Some((app.to_owned(), name.to_owned()))
 }
 
-/// `json` as a reference to a resource of `key`'s type: an id string, or an encoded reference.
+/// `json` as a reference to a resource of `key`'s type: an id string, an encoded reference, or
+/// a record spelled out with the `id` it names.
 fn reference(json: &Json, key: &TypeKey, author: Option<&ModuleHash>) -> Result<Value, String> {
-    let ty = format!("{}#{}", key.app, key.name);
     let id = match json {
         Json::String(id) => id.clone(),
-        Json::Object(fields) => match fields.get("ref").and_then(Json::as_str) {
+        Json::Object(fields) => match ["ref", "id"]
+            .iter()
+            .find_map(|name| fields.get(*name).and_then(Json::as_str))
+        {
             Some(id) => id.to_owned(),
             None => return Err(format!("{json} is not a reference")),
         },
         other => return Err(format!("{other} is not a reference")),
     };
+    referred(&id, key, author)
+}
+
+/// A reference to the resource `id` names, of `key`'s type.
+fn referred(id: &str, key: &TypeKey, author: Option<&ModuleHash>) -> Result<Value, String> {
+    let ty = format!("{}#{}", key.app, key.name);
     let target =
-        ResourceRef::parse_id(&id, ty).ok_or_else(|| format!("`{id}` is not a resource id"))?;
+        ResourceRef::parse_id(id, ty).ok_or_else(|| format!("`{id}` is not a resource id"))?;
     Ok(Value::Ref(RefValue {
-        target: std::rc::Rc::new(target),
+        target: Rc::new(target),
         author: author.cloned(),
     }))
 }
