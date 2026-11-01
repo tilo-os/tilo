@@ -23,8 +23,8 @@ initial joins to become ready. Store must publish `inspect-catalogue` through th
 same authorized context. No application action is invoked.
 
 This qualifies matching-room publication. It does not qualify an application
-spanning a foreground workspace and a separate person room: a certification for
-one room cannot authorize the other. The broker's cross-workspace rejection stays
+spanning a foreground workspace and the person's own store: a certification for
+the workspace cannot authorize their store. The broker's cross-workspace rejection stays
 covered independently. Installed control-socket timeouts require separate runtime
 evidence; an empty query alone does not establish absent publication.
 

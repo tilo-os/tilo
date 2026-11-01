@@ -167,7 +167,9 @@ impl NativePersonalSession {
                 .host
                 .current_native_material(self.workspace)
                 .map_err(io::Error::other)?;
-            if binding.room != collab_types::person_room(&certificate.user_public_key).to_string() {
+            if binding.room
+                != collab_types::personal_cluster(&certificate.user_public_key).to_string()
+            {
                 return Err(refused());
             }
             let claims = RetainedPersonClaims {
@@ -176,7 +178,6 @@ impl NativePersonalSession {
                 certificate: serde_json::to_vec(&certificate).map_err(io::Error::other)?,
                 revocations,
                 execution_id: self.caller.execution_id().ok_or_else(refused)?.to_string(),
-                person_room: collab_types::person_room(&certificate.user_public_key).to_string(),
             };
             let signature = self
                 .host

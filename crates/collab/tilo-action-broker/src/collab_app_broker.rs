@@ -209,11 +209,12 @@ impl VerifiedJoinIdentity {
         }
     }
 
-    /// Whether `cluster_id` is this identity's own person room: the workspace
+    /// Whether `cluster_id` is this identity's own personal cluster: the workspace
     /// every device its root certified owns, and no other device enters.
-    fn owns_person_room(&self, cluster_id: &str) -> bool {
-        uuid::Uuid::parse_str(cluster_id)
-            .is_ok_and(|workspace| collab_types::is_person_room(&self.user_public_key, &workspace))
+    fn owns_personal_cluster(&self, cluster_id: &str) -> bool {
+        uuid::Uuid::parse_str(cluster_id).is_ok_and(|workspace| {
+            collab_types::is_personal_cluster(&self.user_public_key, &workspace)
+        })
     }
 }
 
@@ -840,9 +841,9 @@ impl AdmittedJoinIdentity {
     ) -> Result<T, String> {
         let bound = roles::foreign_device_bound();
         if (self.agent_id.is_none() || self.session_delegated)
-            && self.verified.owns_person_room(workspace_id)
+            && self.verified.owns_personal_cluster(workspace_id)
         {
-            // The person room's devices are its owner's; a foreign one is
+            // The personal cluster's devices are its owner's; a foreign one is
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
             let policy = WorkspacePolicy::new(workspace_id, self.principal_id.clone());
@@ -919,11 +920,11 @@ fn admit_verified_join_at(
     now: u64,
 ) -> Result<AdmittedJoinIdentity, String> {
     let principal_id = principal_id_for_root(verified.user_public_key);
-    // The person room has no roster to consult: its members are, by the
+    // The personal cluster has no roster to consult: its members are, by the
     // workspace id's derivation, exactly the devices this root certified, each
     // acting as the workspace's owner — a foreign device with the foreign-device
     // cap's role, there as in any workspace. Any other workspace id is a workspace.
-    if verified.owns_person_room(&route.cluster_id) {
+    if verified.owns_personal_cluster(&route.cluster_id) {
         let role = CapRole::Owner;
         return Ok(AdmittedJoinIdentity {
             host_scope: None,
@@ -12377,7 +12378,7 @@ pub mod tests {
                 HostServices { wifi_continuity: Some(service.clone()), ..Default::default() },
                 Some(71), None,
             );
-            fixture.route = CrdtRoute::app(WIFI_CONTINUITY_APP_ID, collab_types::person_room(&[0; 32]).to_string());
+            fixture.route = CrdtRoute::app(WIFI_CONTINUITY_APP_ID, collab_types::personal_cluster(&[0; 32]).to_string());
             let client = fixture.invocation_channel();
             let command = runtime_collab::WifiContinuityCommand::NetworkWake {
                 profile_uuid: "11111111-1111-4111-8111-111111111111".into(), enabled: Some(true),
@@ -14351,16 +14352,16 @@ pub mod tests {
         );
     }
 
-    /// The person room is admitted from the joiner's own root alone, with no
+    /// The personal cluster is admitted from the joiner's own root alone, with no
     /// workspace in the tree, and its documents reach the other local
     /// connections on the record and the peer publisher. Nobody else's root
     /// enters it, and nobody enters another person's workspace.
     #[test]
-    fn person_room_admits_only_its_own_roots_devices_as_owner() {
+    fn personal_cluster_admits_only_its_own_roots_devices_as_owner() {
         let root = SigningKey::from_bytes(&[26; 32]);
         let device = SigningKey::from_bytes(&[27; 32]);
         let stranger = SigningKey::from_bytes(&[28; 32]);
-        let own_workspace = collab_types::person_room(&root.verifying_key().to_bytes());
+        let own_workspace = collab_types::personal_cluster(&root.verifying_key().to_bytes());
         let route = CrdtRoute::record("so.tilo.tube", own_workspace.to_string(), "watch-history");
         let membership = WorkspaceTree::default().shared();
         let own_device = VerifiedJoinIdentity {
@@ -14370,7 +14371,7 @@ pub mod tests {
         };
 
         let admitted = admit_verified_join(&membership.read(), &route, own_device.clone())
-            .expect("the root's own device joins its person room");
+            .expect("the root's own device joins its personal cluster");
         assert_eq!(admitted.role, CapRole::Owner);
         assert_eq!(
             admitted.principal_id,
@@ -14388,7 +14389,7 @@ pub mod tests {
                 ..own_device
             },
         )
-        .expect("the root's foreign device joins its person room");
+        .expect("the root's foreign device joins its personal cluster");
         let governs = foreign
             .with_authority(None, &route.cluster_id, |authority| {
                 authority
@@ -14403,11 +14404,11 @@ pub mod tests {
         assert_eq!(
             governs,
             Answer::Deny,
-            "a foreign device keeps the foreign-device bound in the person room too"
+            "a foreign device keeps the foreign-device bound in the personal cluster too"
         );
         let strangers_workspace = CrdtRoute::record(
             "so.tilo.tube",
-            collab_types::person_room(&stranger.verifying_key().to_bytes()).to_string(),
+            collab_types::personal_cluster(&stranger.verifying_key().to_bytes()).to_string(),
             "watch-history",
         );
         assert!(
@@ -14432,7 +14433,7 @@ pub mod tests {
         let mut other_window = state.subscribe_ops(&route.channel_key(), 2);
         let current = state
             .revalidate_admission(&route, &admitted)
-            .expect("the person room stays admitted without a workspace");
+            .expect("the personal cluster stays admitted without a workspace");
         assert_eq!(current.role, CapRole::Owner);
 
         let mut op = SignedOp::new_unsigned(
@@ -14465,7 +14466,7 @@ pub mod tests {
     }
 
     /// A device that came back is caught up by the local apps holding the
-    /// person room's records: each record channel of that workspace, and only of
+    /// personal cluster's records: each record channel of that workspace, and only of
     /// that workspace, is asked for its snapshot.
     #[test]
     fn workspace_snapshot_requests_reach_only_that_workspaces_record_channels() {
@@ -14478,10 +14479,10 @@ pub mod tests {
             None,
         );
         fanout.attach_app_broker(Arc::clone(&state));
-        let person_room = collab_types::person_room(&[29; 32]).to_string();
-        let history = CrdtRoute::record("so.tilo.tube", person_room.as_str(), "watch-history");
-        let words = CrdtRoute::record("so.tilo.dict", person_room.as_str(), "learned");
-        let unscoped = CrdtRoute::cluster(person_room.as_str());
+        let personal_cluster = collab_types::personal_cluster(&[29; 32]).to_string();
+        let history = CrdtRoute::record("so.tilo.tube", personal_cluster.as_str(), "watch-history");
+        let words = CrdtRoute::record("so.tilo.dict", personal_cluster.as_str(), "learned");
+        let unscoped = CrdtRoute::cluster(personal_cluster.as_str());
         let shared = CrdtRoute::record("so.tilo.tube", "workspace-1", "watch-history");
         let mut receivers: Vec<_> = [&history, &words, &unscoped, &shared]
             .into_iter()
@@ -14492,7 +14493,7 @@ pub mod tests {
             })
             .collect();
 
-        assert_eq!(fanout.request_workspace_snapshots(&person_room), 2);
+        assert_eq!(fanout.request_workspace_snapshots(&personal_cluster), 2);
         let asked: Vec<bool> = receivers
             .iter_mut()
             .map(|rx| matches!(rx.try_recv(), Ok(ContextUpdate::SnapshotRequested)))

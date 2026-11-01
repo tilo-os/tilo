@@ -598,7 +598,7 @@ fn a_running_host_holds_the_persons_own_documents_store() {
     // of theirs need agree on.
     assert_eq!(
         personal.store_key(),
-        collab_types::person_room(&identity.user_public_key).to_string()
+        collab_types::personal_cluster(&identity.user_public_key).to_string()
     );
     assert!(personal.rows().is_empty(), "nothing is written yet");
 }

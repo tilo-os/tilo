@@ -21,3 +21,13 @@ test('a changed or removed account cannot substitute another profile while conne
     await assert.rejects(currentBrowserAccount(selected, async () => fresh), /changed or was removed/);
   }
 });
+
+test('a record kept in the retired person scope is offered once and only until its successor exists', () => {
+  const named = {project_browser_accounts: (_root, _origin, bytes) =>
+    JSON.stringify([{id: 'work', displayName: new TextDecoder().decode(bytes), userPublicKey: root}])};
+  const kept = {...row, bytes: new TextEncoder().encode('kept-before'), current: false};
+  const now = {...row, bytes: new TextEncoder().encode('kept-now'), current: true};
+  assert.deepEqual(projectBrowserAccounts([kept], named, origin).map(account => account.displayName), ['kept-before']);
+  assert.deepEqual(projectBrowserAccounts([kept, now], named, origin).map(account => account.displayName), ['kept-now']);
+  assert.deepEqual(projectBrowserAccounts([now, kept], named, origin).map(account => account.displayName), ['kept-now']);
+});

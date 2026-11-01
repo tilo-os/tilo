@@ -20,6 +20,7 @@ export async function openProfileStorage(profile, device) {
 export async function loadRuntime() {
   return {
     browser_accounts_key: root => 'accounts:' + root,
+    browser_accounts_former_key: root => 'accounts-former:' + root,
     project_browser_accounts: (root, origin, bytes) => new TextDecoder().decode(bytes),
     set_profile_value() {},
   };

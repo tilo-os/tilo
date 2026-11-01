@@ -965,7 +965,7 @@ mod tests {
             NativePersonalSource::admit_for_socket(&socket, fixture.context.principal()).unwrap();
         let mut key = [0; 32];
         hex::decode_to_slice(fixture.context.principal(), &mut key).unwrap();
-        let room = RoomId::parse(&collab_types::person_room(&key).to_string()).unwrap();
+        let room = RoomId::parse(&collab_types::personal_cluster(&key).to_string()).unwrap();
         session.retained_launch_certificate(room).unwrap();
         assert!(
             session
@@ -1010,7 +1010,7 @@ mod tests {
             NativePersonalSource::admit_for_socket(&socket, fixture.context.principal()).unwrap();
         let mut key = [0; 32];
         hex::decode_to_slice(fixture.context.principal(), &mut key).unwrap();
-        let room = RoomId::parse(&collab_types::person_room(&key).to_string()).unwrap();
+        let room = RoomId::parse(&collab_types::personal_cluster(&key).to_string()).unwrap();
         let (_owner_directory, owner, other_room, _, _) = test_enrolled_owner();
         let operation = uuid::Uuid::new_v4().to_string();
         let app = InstalledApp {

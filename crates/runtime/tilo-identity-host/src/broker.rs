@@ -59,8 +59,8 @@ pub trait ChannelKeySource: Send + Sync + 'static {
 }
 
 /// The records of the person's own an app keeps in, or reads from, their
-/// room: the person-record kinds its surface declares. Nothing broader is
-/// signed for an app in the person's room.
+/// store: the person-record kinds its surface declares. Nothing broader is
+/// signed for an app in the person's store.
 pub trait PersonRecordKinds: Send + Sync + 'static {
     /// The person-record kinds `app_id` declares; empty for none.
     fn person_record_kinds(&self, app_id: &str) -> Vec<String>;
@@ -79,7 +79,7 @@ pub trait PersonRecordKinds: Send + Sync + 'static {
 }
 
 /// A host that knows no app's person records: nothing is signed in the
-/// person's room.
+/// person's store.
 impl PersonRecordKinds for () {
     fn person_record_kinds(&self, _app_id: &str) -> Vec<String> {
         Vec::new()
@@ -401,12 +401,12 @@ impl Bound<'_> {
 
     /// Whether `workspace_id` is the own room of the person the bound room's
     /// identity is, and the app keeps records of theirs there.
-    fn in_person_room(
+    fn in_personal_cluster(
         &self,
         profile: &crate::registry::IdentityProfile,
         workspace_id: &str,
     ) -> bool {
-        collab_types::person_room(&profile.user_public_key).to_string() == workspace_id
+        collab_types::personal_cluster(&profile.user_public_key).to_string() == workspace_id
             && !self.person.person_record_kinds(self.app_id).is_empty()
     }
 
@@ -425,7 +425,7 @@ fn sign_collaboration_join(bound: &Bound<'_>, workspace_id: &str) -> Response {
     // The launch room, or the person's own room for the records of theirs
     // the app declares; the broker admits each of those records alone.
     let foreign = |profile: &crate::registry::IdentityProfile| {
-        workspace_id != bound.room.to_string() && !bound.in_person_room(profile, workspace_id)
+        workspace_id != bound.room.to_string() && !bound.in_personal_cluster(profile, workspace_id)
     };
     if workspace_id != bound.room.to_string()
         && bound.person.person_record_kinds(bound.app_id).is_empty()
@@ -503,7 +503,7 @@ fn sign_collaboration_op(
         Ok(None) => return Response::Denied(runtime_identity::wire::NO_IDENTITY_SELECTED.into()),
         Err(error) => return Response::Error(error.to_string()),
     };
-    if !launch_room && !bound.in_person_room(&profile, workspace_id) {
+    if !launch_room && !bound.in_personal_cluster(&profile, workspace_id) {
         return Response::Denied(
             "collaboration operation requested for a different launch route".into(),
         );
@@ -609,7 +609,7 @@ fn channel_keys(
     let bound = &route.bound;
     let launch_room = route.workspace_id == bound.room.to_string();
     // A route of the launch, a record every app of the launch room opens,
-    // or a record of the person's the app declares in their own room (its
+    // or a record of the person's the app declares in their own store (its
     // own, or another app's it reads).
     if (launch_room
         && !bound.keeps_records_of(route.app_id)
@@ -624,7 +624,7 @@ fn channel_keys(
         Ok(None) => return Response::Denied(runtime_identity::wire::NO_IDENTITY_SELECTED.into()),
         Err(error) => return Response::Error(error.to_string()),
     };
-    if !launch_room && !bound.in_person_room(&profile, route.workspace_id) {
+    if !launch_room && !bound.in_personal_cluster(&profile, route.workspace_id) {
         return Response::Denied("channel keys requested for a different launch route".into());
     }
     // The same trust check as signing, served from memory while none of the
@@ -645,11 +645,11 @@ fn channel_keys(
         Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
             .id()
             .to_string();
-    // The person reads their own room, the launch room of an app opened
+    // The person reads their own cluster, the launch room of an app opened
     // there included; a workspace, as its policy says.
-    let own_room =
-        collab_types::person_room(&profile.user_public_key).to_string() == route.workspace_id;
-    let reads = own_room
+    let own_cluster =
+        collab_types::personal_cluster(&profile.user_public_key).to_string() == route.workspace_id;
+    let reads = own_cluster
         || read_workspace(tree, bound.room, |workspace| {
             let node = collab_types::validator::document_node(
                 &workspace.policy.workspace,
@@ -1605,25 +1605,25 @@ params = []
         collab_types::verify_op(&op).expect("identity service signature verifies");
         assert!(identity.sign_for("document.delete", b"no").is_err());
 
-        let own_room = collab_types::person_room(&identity.group_public_key()).to_string();
+        let own_cluster = collab_types::personal_cluster(&identity.group_public_key()).to_string();
         let own_proof = identity
-            .sign_collaboration_join(&own_room)
-            .expect("an app keeping a record of the person's joins their room");
+            .sign_collaboration_join(&own_cluster)
+            .expect("an app keeping a record of the person's joins their store");
         VerifyingKey::from_bytes(&identity.signing_public_key())
             .expect("device key")
             .verify(
-                &runtime_identity::collaboration_join_signing_bytes(&own_room),
+                &runtime_identity::collaboration_join_signing_bytes(&own_cluster),
                 &Signature::from_bytes(&own_proof),
             )
-            .expect("a proof for the person's room");
+            .expect("a proof for the person's store");
         let person_op = |record: &str| {
             SignedOp::new_unsigned(
                 DocumentMutation::Incremental(b"automerge changes".to_vec())
                     .encode()
                     .expect("typed mutation"),
-                document_artifact_id("so.tilo.notes", &own_room, record),
+                document_artifact_id("so.tilo.notes", &own_cluster, record),
                 Ed25519PublicKey::from_bytes(identity.signing_public_key()),
-                document_attestation_id("so.tilo.notes", &own_room, record),
+                document_attestation_id("so.tilo.notes", &own_cluster, record),
                 collab_types::OpKind::Change,
                 now,
                 1,
@@ -1634,19 +1634,19 @@ params = []
         kept.signature = collab_types::Signature::from_bytes(
             identity
                 .sign_collaboration_op(
-                    &own_room,
+                    &own_cluster,
                     "so.tilo.notes",
                     &watched,
                     &postcard::to_stdvec(&kept).expect("unsigned envelope"),
                 )
                 .expect("its own record of the person's is signed"),
         );
-        collab_types::verify_op(&kept).expect("the person-room change verifies");
+        collab_types::verify_op(&kept).expect("the personal-cluster change verifies");
         let undeclared = collab_types::person_record_id("notes.bookmarks");
         assert!(
             identity
                 .sign_collaboration_op(
-                    &own_room,
+                    &own_cluster,
                     "so.tilo.notes",
                     &undeclared,
                     &postcard::to_stdvec(&person_op(&undeclared)).expect("envelope"),
@@ -1657,23 +1657,23 @@ params = []
         assert!(
             identity
                 .sign_collaboration_op(
-                    &own_room,
+                    &own_cluster,
                     "so.tilo.notes",
                     "record-1",
                     &postcard::to_stdvec(&person_op("record-1")).expect("envelope"),
                 )
                 .is_err(),
-            "nothing but the person's records is signed in their room"
+            "nothing but the person's records is signed in their store"
         );
         assert!(
             identity
-                .channel_keys(&own_room, "so.tilo.notes", &watched, 0)
+                .channel_keys(&own_cluster, "so.tilo.notes", &watched, 0)
                 .is_ok(),
             "the keys of a record of the person's the app declares are asked for"
         );
         assert!(
             identity
-                .channel_keys(&own_room, "so.tilo.notes", &undeclared, 0)
+                .channel_keys(&own_cluster, "so.tilo.notes", &undeclared, 0)
                 .is_err(),
             "not those of a kind it does not declare"
         );
@@ -1742,16 +1742,16 @@ params = []
         }
     }
 
-    /// An app opened in the person's own room (Settings) is answered the
-    /// keys of the person's records it declares there: that room is no
+    /// An app opened in the person's own store (Settings) is answered the
+    /// keys of the person's records it declares there: that store is no
     /// workspace with a policy, and the person reads it.
     #[test]
-    fn an_app_opened_in_the_persons_own_room_gets_the_keys_of_their_records() {
+    fn an_app_opened_in_the_persons_own_cluster_gets_the_keys_of_their_records() {
         let fixture = crate::join_proof::tests::Fixture::new();
-        let own_room =
-            RoomId::parse(&collab_types::person_room(&fixture.user_public_key).to_string())
-                .expect("the person's room");
-        let own = own_room.to_string();
+        let own_cluster =
+            RoomId::parse(&collab_types::personal_cluster(&fixture.user_public_key).to_string())
+                .expect("the person's store");
+        let own = own_cluster.to_string();
         let app_id = "so.tilo.notes";
         let watched = collab_types::person_record_id("notes.watched");
         let answer = channel_keys(
@@ -1759,7 +1759,7 @@ params = []
             &ReadyChannels,
             &ChannelKeyRoute {
                 bound: Bound {
-                    room: &own_room,
+                    room: &own_cluster,
                     app_id,
                     person: &NotesKeepsWatched,
                 },

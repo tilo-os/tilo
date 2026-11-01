@@ -602,7 +602,8 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut env = Environment::new();
-            env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
+            env.route.cluster_id =
+                collab_types::personal_cluster(&env.cert.user_public_key).to_string();
             {
                 let workspace_id =
                     tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
@@ -707,7 +708,8 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
                     .certified_person_context(&caller, &evidence)
                     .is_err()
             );
-            env.route.cluster_id = collab_types::person_room(&env.cert.user_public_key).to_string();
+            env.route.cluster_id =
+                collab_types::personal_cluster(&env.cert.user_public_key).to_string();
             {
                 let workspace_id =
                     tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();

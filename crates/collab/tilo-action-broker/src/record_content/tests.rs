@@ -270,7 +270,7 @@ fn pieces_nobody_asked_for_are_dropped() {
 #[test]
 fn a_person_record_s_content_lives_in_the_person_s_workspace() {
     let (a, b, _) = pair(true);
-    let person = CrdtRoute::record("so.tilo.tube", "person-room", "history");
+    let person = CrdtRoute::record("so.tilo.tube", "personal-cluster", "history");
     let window = CrdtRoute::record("so.tilo.tube", "workspace-1", "");
     let poster = picture(PIECE_BYTES + 3);
     let hash = hash_bytes(&poster);
