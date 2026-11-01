@@ -267,7 +267,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
         .resource_view_policy(created.workspace_id, &caller, "so.tilo.chat", "")
         .await
         .unwrap();
-    assert_eq!(policy.room, created.room);
+    assert_eq!(policy.workspace, created.room);
     assert_eq!(
         policy.standing.policy.role_of(&policy.standing.person),
         Some(collab_types::Role::Owner)
