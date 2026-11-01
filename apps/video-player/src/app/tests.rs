@@ -1121,7 +1121,7 @@ fn a_video_watched_long_ago_starts_on_its_own() {
 
 #[test]
 fn a_playback_put_back_after_the_end_does_not_swallow_a_replay() {
-    // This player played the clip to its end and said so. The room then
+    // This player played the clip to its end and said so. The workspace then
     // put back the older "playing from the start" (it undid the change),
     // which has long run past the end. Seeking back and replaying must
     // stay with the person, not snap to the end again.

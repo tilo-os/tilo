@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import io
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import textwrap
@@ -58,6 +59,8 @@ class RunTests(unittest.TestCase):
                 ["x/session.sh"])
             self.assertEqual(code, 0, output)
         with self.subTest(phase='JavaScript suites run under node --test'):
+            if shutil.which("node") is None:
+                self.skipTest("a .test.mjs suite runs under Node.js, which is not installed here")
             code, output = self.run_suites(
                 {"x/ok.test.mjs": "import test from 'node:test';\ntest('passes', () => {});\n",
                  "x/bad.test.mjs": "import test from 'node:test';\n"

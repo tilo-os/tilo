@@ -61,11 +61,13 @@ pub enum OsdKind {
     NextTrack,
     PreviousTrack,
     Stop,
+    /// A brightness key on a machine with no display that can be dimmed.
+    NoBacklight,
 }
 
 impl OsdKind {
     /// Every kind, as its published name spells it.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Volume,
         Self::Brightness,
         Self::KeyboardBacklight,
@@ -77,6 +79,7 @@ impl OsdKind {
         Self::NextTrack,
         Self::PreviousTrack,
         Self::Stop,
+        Self::NoBacklight,
     ];
 
     /// Whether a level bar shows beside the caption.
@@ -124,6 +127,7 @@ impl Osd {
             OsdKind::Volume if !self.on => t("osd-muted"),
             OsdKind::Volume => t_args("osd-volume", &level()),
             OsdKind::Brightness => t_args("osd-brightness", &level()),
+            OsdKind::NoBacklight => t("osd-no-backlight"),
             OsdKind::KeyboardBacklight if self.level <= 0.0 => t("osd-keyboard-backlight-off"),
             OsdKind::KeyboardBacklight => t_args("osd-keyboard-backlight", &level()),
             OsdKind::Microphone if self.on => t("osd-microphone-on"),

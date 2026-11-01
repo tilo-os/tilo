@@ -1,9 +1,9 @@
-//! Mail the room holds whole, for whoever works without a mail server.
+//! Mail the workspace holds whole, for whoever works without a mail server.
 //!
 //! A server's mail stays outside the mailbox (see [`crate::resource`]); the
 //! mailbox holds only what the reader did with it. An agent's confined
 //! worker, a seeded scenario or an injected event has no account and no
-//! network, so mail delivered to the room itself is kept in the record
+//! network, so mail delivered to the workspace itself is kept in the record
 //! ([`HeldMessage`], under [`Mail::held`]): it replicates, replays and
 //! undoes like every other mailbox edit, and every participant — a person's
 //! window, an agent's headless replica — reads the same messages. Each one's
@@ -140,7 +140,7 @@ impl HeldMessage {
     }
 }
 
-/// A message delivered to the room: the parameters of
+/// A message delivered to the workspace: the parameters of
 /// [`Mail::deliver_message`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Delivery {

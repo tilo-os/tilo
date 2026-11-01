@@ -16,7 +16,6 @@ pub mod amstore;
 pub mod authority;
 pub mod catalogue;
 mod colls;
-mod compose;
 mod core;
 pub mod delegate;
 mod embed;

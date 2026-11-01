@@ -264,10 +264,22 @@ impl Fit {
             Axis::Inline => (self.width, self.height),
             Axis::Block => (self.height, self.width),
         };
-        if let Some(weight) = along.fill {
-            style.flex_grow = weight.max(0.0);
+        if let Some(weight) = along.fill
+            && weight > 0.0
+        {
+            // A weight above zero takes a share of the leftover room from a zero basis; zero
+            // takes no share at all, and the child is as big as its content (a dock's body that
+            // must hug its items is written `fill: 0`, not squeezed to nothing).
+            style.flex_grow = weight;
             style.flex_shrink = 1.0;
             style.flex_basis = length(0.0_f32);
+            // Its share is all it takes: content longer than the share scrolls or overflows
+            // inside it (a scrolling middle between a bar and a dock), and never pushes the
+            // container past the room it was given. A `min` written on it still holds.
+            match main {
+                Axis::Inline => style.min_size.width = length(0.0_f32),
+                Axis::Block => style.min_size.height = length(0.0_f32),
+            }
         }
         let bounds = |sizing: Sizing| {
             (

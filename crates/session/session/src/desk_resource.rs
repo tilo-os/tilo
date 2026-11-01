@@ -62,6 +62,13 @@ pub(crate) enum DeskEffect {
         #[param("The notice, by its id")]
         notice: String,
     },
+    /// Run one of the choices the notice `notice` offers, by the key its sender gave it.
+    ActOnNotice {
+        #[param("The notice, by its id")]
+        notice: String,
+        #[param("The choice, by its key")]
+        action: String,
+    },
     /// Open the window switcher, or walk it `steps` windows on: Alt+Tab's press.
     WalkSwitcher {
         #[param("How far to walk; 1 the next window, -1 the one before")]
@@ -267,7 +274,6 @@ impl Desk {
             // The native session runs no agent tasks of its own yet: none is published until a
             // task host reports to it.
             tasks: Vec::new(),
-            title: title_of(tree),
             here: self.overlays.here(),
             spotlight: self.overlays.spotlight(),
             banner: String::new(),
@@ -349,22 +355,6 @@ impl Desk {
     }
 }
 
-/// What the bar names the desk: the workspace in front, and the strip after it.
-fn title_of(tree: &DesktopTree) -> String {
-    let workspace = tree
-        .active_workspace()
-        .map(|workspace| workspace.name.clone())
-        .unwrap_or_default();
-    let strip = strip_in_front(tree);
-    if strip.is_empty() {
-        workspace
-    } else if workspace.is_empty() {
-        strip
-    } else {
-        format!("{workspace} — {strip}")
-    }
-}
-
 /// The notices the centre keeps, newest first, as the desk's reading names them: the banners
 /// still up and the ones retired into the centre.
 fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell_part::NoticeReading> {
@@ -385,7 +375,9 @@ fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell_pa
                 tilo_desktop_surface::notifications::NotificationSeverity::Error => "error",
             }
             .to_owned(),
-            read: false,
+            // Seen or not is the desk's own count, the same set the bell counts: the centre's
+            // rows and its header never disagree about what is new.
+            read: !notices.is_unread(notification.id),
             group: notification
                 .app_name
                 .clone()
@@ -589,6 +581,13 @@ impl Service for Desk {
         }
         if matches!(effect, DeskEffect::CommitSwitcher) {
             self.commit_switcher();
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if let DeskEffect::ActOnNotice { notice, action } = &effect {
+            let id = notice.parse::<u64>().map_err(|_| {
+                DoorError::InvalidArguments(format!("`{notice}` is no notice's id"))
+            })?;
+            self.notices.invoke_action(id, action);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::DismissNotice { notice } = &effect {

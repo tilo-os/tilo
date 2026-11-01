@@ -42,7 +42,7 @@ impl Routes {
     }
     pub(super) fn remove(&mut self, ws: u64) {
         if self.entries.remove(&ws).is_some() {
-            crate::room_sync::forget(ws);
+            crate::workspace_sync::forget(ws);
         }
     }
     /// Whether a route goes to a host on another machine: routes to this
@@ -63,6 +63,19 @@ impl Routes {
         if let Some(route) = self.entries.get(&ws) {
             route.link.retry();
         }
+    }
+    /// Whether the room on topic `ws` is hosted on this device.
+    pub(super) fn is_local(&self, ws: u64) -> bool {
+        self.entries.get(&ws).is_some_and(|route| route.local)
+    }
+    /// Every room this device hosts itself, as its routes now stand: their
+    /// sessions join in process, and a join that has not happened yet is
+    /// work this device's loop keeps, not nothing.
+    pub(super) fn local(&self) -> impl Iterator<Item = u64> + '_ {
+        self.entries
+            .iter()
+            .filter(|(_, route)| route.local)
+            .map(|(&ws, _)| ws)
     }
 }
 
@@ -295,7 +308,7 @@ impl ActorState {
     }
 
     /// Tell the room on topic `ws`'s apps how many of this device's writes
-    /// to it are not yet synced ([`crate::room_sync::unsynced`]):
+    /// to it are not yet synced ([`crate::workspace_sync::unsynced`]):
     /// the committed writes in its owner's outgoing custody and the sealed
     /// writes held for its hosts, all of them while no session of the room
     /// carries them, else the sealed writes its host did not keep. A write
@@ -318,7 +331,7 @@ impl ActorState {
                 .unadmitted_writes(route.connect.room())
                 .unwrap_or(0)
         };
-        if crate::room_sync::unsynced(ws, sealed.saturating_add(committed))
+        if crate::workspace_sync::unsynced(ws, sealed.saturating_add(committed))
             && let Some(wake) = &self.wake
         {
             wake();
@@ -350,11 +363,11 @@ impl ActorState {
                 .is_some_and(|identity| connect.hosted_here(identity))
         {
             self.native_routes.remove(ws);
-            crate::room_sync::forget(ws);
+            crate::workspace_sync::forget(ws);
             return;
         }
         // Apps in the room say they are connecting until its first sync.
-        crate::room_sync::connecting(ws);
+        crate::workspace_sync::connecting(ws);
         // The sealed writes the room's log held when this device started:
         // its next session sends them.
         match self
@@ -419,7 +432,7 @@ impl ActorState {
             // It became pinned to this device, which runs no host, since it
             // was connected (the identity arrived after it): nothing to dial.
             self.native_routes.remove(ws);
-            crate::room_sync::forget(ws);
+            crate::workspace_sync::forget(ws);
         }
         for (&ws, route) in &mut self.native_routes.entries {
             let material = route.connect.material(identity);
@@ -609,7 +622,7 @@ fn dial_refused(
                 "the room's host speaks another peer protocol version"
             );
             crate::services::peer_version(host.to_string(), String::new(), theirs);
-            crate::room_sync::other_version(ws, theirs);
+            crate::workspace_sync::other_version(ws, theirs);
         }
         // The room removed this device's person: dialing again changes
         // nothing until they join again, which the shell does through the
@@ -625,7 +638,7 @@ fn dial_refused(
         // this device has. The route dials again on the next heartbeat.
         error => {
             tracing::debug!(%error, ws, "native host dial failed; retrying");
-            crate::room_sync::unreachable(ws);
+            crate::workspace_sync::unreachable(ws);
         }
     }
 }

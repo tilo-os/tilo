@@ -104,7 +104,7 @@ fn call(app: &mut TestApp<VideoEditor>, verb: &str, args: Value) -> Result<Value
 }
 
 #[test]
-fn room_content_lands_in_the_bin_once_with_the_length_its_container_says() {
+fn workspace_content_lands_in_the_bin_once_with_the_length_its_container_says() {
     let mut app = editor(&Project::new("cut"));
     let first = import(&mut app, &wav(4), "voice.wav").unwrap();
     assert_eq!(first["source"]["kind"], "audio");

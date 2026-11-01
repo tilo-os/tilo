@@ -1132,7 +1132,7 @@ fn present_desktop(
         config.author(),
         Rc::clone(&dyn_history_store),
         shared.clone(),
-        Rc::clone(&persistence.history),
+        Rc::clone(&persistence.document),
         crate::history::person_of(&here, &people, config.author()),
     )));
     let (session, openings) =

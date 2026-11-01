@@ -203,27 +203,33 @@ seams:
   records stay its app's, read from the readings the session publishes (`Runtime::set_reading`,
   `tilolang_runtime::foreign`), and its actions are child invocations at its door. A view that
   `use`s the app calls its views by name (`mail.inbox(m)`, a `view:` node). The canvas, which
-  can't `use` every app, names the view as the arrangement keeps it:
+  can't `use` every app, finds the resource by the id the arrangement keeps and names the view
+  as text:
 
   ```
   view place_view(p: ArrangementPlace) {
-      compose(p.shows, record: p.record, view: p.shown_as) {
-          ui.WindowWell(place: p.key, min: 12rem)   // when nothing of the app runs here
+      if let r = placed_resource(p.record) {        // `resource(id)`: its type from where it is held
+          if p.shown_as != "" or meta(r).opens {
+              show(r, view: p.shown_as)               // that view, or its type's default
+          } else {
+              ui.WindowWell(place: p.key, min: 12rem)
+          }
+      } else {
+          ui.WindowWell(place: p.key, min: 12rem)   // a window: nothing here to draw
       }
   }
   ```
 
-  `compose` finds the app's package among those whose code the runtime holds, the view among
-  its offered views (by id or name) and the resource's type from the view's first parameter;
-  its block stands there when no package of the app runs here, or no view or record is named.
-  A named view that doesn't fit is an error the place shows. An entry made from a resource
-  fills `record` and `shown_as`. `ui.WindowWell` stays only for surfaces that can't be composed
-  (Xwayland, legacy native apps). `OpenEffect::Open` on every resource goes away once nothing
-  needs it.
+  `resource(id)` finds the resource's type where it is held: this runtime's store, or the
+  reading another app published of it (until that reading arrives it finds nothing, and the
+  view runs again when it does). `show(r, view:)` draws it through the offered view of its
+  package the place names (by id or name, taking the resource alone), or its type's default
+  view. An entry made from a resource fills `record` and `shown_as`. `ui.WindowWell` stays only
+  for surfaces that can't be composed (Xwayland, legacy native apps). `OpenEffect::Open` on
+  every resource goes away once nothing needs it.
 
   Still to build: the surface host loading each installed tilolang package this way and
-  following the readings of the resources its places name; an empty `shown_as` taking the
-  resource's primary view.
+  following the readings of the resources its places name.
 - **Finding what to place.** Text typed on the canvas ("my mails", "videos of the Rust
   conference") is a `find` over the system index and the apps' search providers, the same
   one the palette and the `tilo` tool use. The top result's primary view is placed at the
@@ -259,9 +265,9 @@ a panel beside the strips or the whole screen of the conversation shell.
 Each step deletes the Rust part it replaces once the tilolang one passes that part's tests,
 screenshots and frame budgets.
 
-1. *(landed; off by default)* The tilolang surface host and system resources, with the top
-   bar as a tilolang view. Before `shell_bar` is on by default, it still needs a bar per
-   display and to step aside for a fullscreen window.
+1. *(landed; `shell_bar` on by default)* The tilolang surface host and system resources, with
+   the top bar as a tilolang view: one bar per display, following hotplug, each stepping aside
+   on a display a fullscreen window owns (`Compositor::fullscreen_outputs`).
 2. The canvas composes views (§8, first point above): a package's views run inline in the
    shell's runtime, arrangement entries name a resource and a view, and the canvas places them
    from `find`.

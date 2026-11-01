@@ -1,12 +1,15 @@
-//! Transfer: the explicit verb that takes a record across a room boundary.
+//! Transfer: the explicit verb that takes a record across a workspace boundary.
 //!
-//! A record id names a document only inside the room that hydrates it
-//! ([`super::room_scope`]), so nothing crosses rooms by reference. Transfer
-//! is the counterpart of [`super::room::duplicate`] for a document that
-//! already has content: the destination room receives the record's whole
-//! change graph under a fresh id of its own, re-scoped to that room, with
-//! the source id kept in its `formerly` list as provenance. Nothing ever
-//! looks a record up through that list.
+//! A record id names a document only inside the workspace whose replica
+//! hydrates it ([`super::workspace_scope`]), so nothing crosses workspaces by
+//! reference. Transfer is the counterpart of [`super::index::duplicate`] for a
+//! document that already has content: the destination workspace receives the
+//! record's whole change graph under a fresh id of its own, scoped to that
+//! workspace, with the source id kept in its `formerly` list as provenance.
+//! Nothing ever looks a record up through that list.
+//!
+//! The scope a document is stored under is still spelled `room`; it is stored
+//! data and a record keeps reading it.
 //!
 //! Moving is transfer followed by [`retire`]: the source record gets one
 //! last change saying it left, which stays in its history the way a
@@ -14,11 +17,11 @@
 //! ([`super::RecordOpenError::Retired`]). Copying is transfer alone: the
 //! source keeps going and the two histories diverge from here.
 //!
-//! An app that keeps one document for itself in a room (its room index)
-//! transfers the same way ([`Origin::AppDocument`]): its document arrives
-//! as a record, and a moved one is retired where it was.
+//! An app that keeps one document for itself in a workspace (its record
+//! index) transfers the same way ([`Origin::AppDocument`]): its document
+//! arrives as a record, and a moved one is retired where it was.
 //!
-//! Every function works on the durable store a room's app profile keeps,
+//! Every function works on the durable store a workspace's app profile keeps,
 //! through the same keys, leases and validation the record owners use. A
 //! write needs the key's exclusive lease, so it fails with
 //! [`TransferError::Busy`] while an app process still has the record open;
@@ -44,7 +47,7 @@ use super::{
 };
 
 /// The kind an app's own document ([`Origin::AppDocument`]) takes when it
-/// arrives in another room as a record.
+/// arrives in another workspace as a record.
 pub const APP_DOCUMENT_KIND: &str = "tilo.app-document";
 
 pub(super) use ::collaboration::record::retirement::RETIRED;
@@ -119,12 +122,13 @@ pub fn stamp_retired(doc: &mut AutoCommit, why: &Retirement) -> Result<(), Trans
     Ok(())
 }
 
-/// What a transfer takes out of the source room.
+/// What a transfer takes out of the source workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {
     Record(RecordCheckout),
-    /// The document an app keeps for itself in a room, its room index. It has no record identity of its own there, and
-    /// arrives in the destination as a record of this kind.
+    /// The document an app keeps for itself in a workspace, its record index.
+    /// It has no record identity of its own there, and arrives in the
+    /// destination as a record of this kind.
     AppDocument(RecordKind),
 }
 
@@ -163,7 +167,7 @@ impl Origin {
 fn key(package: &str, room: &str, id: &RecordId) -> Result<StorageKey, TransferError> {
     if id.is_package_primary() {
         return Err(TransferError::NotTransferable(
-            "a room's own package document never leaves its room",
+            "a workspace's own package document never leaves its workspace",
         ));
     }
     let record = id.storage_key();
@@ -293,7 +297,7 @@ pub fn validate_import(
         .filter(|found| &found.id == id)
         .ok_or(RecordOpenError::IdentityMismatch)?;
     validate_identity(&doc, &checkout, room)?;
-    if super::room_scope(&doc).as_deref() != Some(room) {
+    if super::workspace_scope(&doc).as_deref() != Some(room) {
         return Err(RecordOpenError::IdentityMismatch.into());
     }
     if doc
@@ -370,7 +374,7 @@ pub fn rehome(
         || matches!(origin, Origin::Record(checkout) if checkout.id.is_package_primary())
     {
         return Err(TransferError::NotTransferable(
-            "a room's own package document never leaves its room",
+            "a workspace's own package document never leaves its workspace",
         ));
     }
     if RecordId::parse(target.as_str()).as_ref() != Some(target)
@@ -669,7 +673,7 @@ pub fn provenance(doc: &AutoCommit) -> Vec<RecordId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::{RecordOwners, RecordStore, room_scope};
+    use crate::record::{RecordOwners, RecordStore, workspace_scope};
     use automerge::ROOT;
 
     const PACKAGE: &str = "so.tilo.transfer-test";
@@ -789,7 +793,7 @@ mod tests {
             body(&destination).as_deref(),
             Some("first draft, last words")
         );
-        assert_eq!(room_scope(&destination).as_deref(), Some(TO));
+        assert_eq!(workspace_scope(&destination).as_deref(), Some(TO));
         assert!(matches!(
             read(&store, PACKAGE, FROM, &origin),
             Err(TransferError::Open(RecordOpenError::Retired))

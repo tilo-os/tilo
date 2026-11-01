@@ -1,5 +1,5 @@
 {
-  "format": 3,
+  "format": 4,
   "toolkit": "0.1.0",
   "components": [
     {
@@ -608,6 +608,76 @@
       "semantics": {
         "role": "Button",
         "label": "run"
+      }
+    },
+    {
+      "name": "Sparkline",
+      "doc": "A tiny trend line, with no axis, grid, title or legend: a recent history inside a table cell or a stat card. Fewer than two samples draw nothing.",
+      "props": [
+        {
+          "name": "samples",
+          "doc": "The samples, oldest first.",
+          "type": {
+            "list": "float"
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "What the trend is of, as assistive technology announces it: \"Requests per second\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "max",
+          "doc": "The vertical maximum, which may be more than the samples reach; without one it is the highest sample.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "filled",
+          "doc": "The area under the line filled in the same colour, which a sparkline draws unless it is told not to: `true` unless said.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "smooth",
+          "doc": "The line's shape between samples: the smooth curve rather than straight segments.",
+          "type": "bool"
+        },
+        {
+          "name": "leading_dot",
+          "doc": "A dot of this radius on the newest sample: the live edge of a streaming series.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "What its line means, when it means something: a status, a person. Without one it is the theme's accent.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "label"
       }
     },
     {
@@ -2187,6 +2257,11 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "ground",
+          "doc": "Whether it is a desktop: the windows it holds stand on the desktop's ground ([`SurfaceLevel::Ground`](crate::widget::primitives::SurfaceLevel)), not on the content colour of the window the map is in.",
+          "type": "bool"
         }
       ],
       "slots": [
@@ -4744,6 +4819,41 @@
       }
     },
     {
+      "name": "WindowFrame",
+      "doc": "A window standing on a desktop: the window surface with its edge and shadow, holding the window's content and its controls, clipped to its radius.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "The window's name: what assistive technology reads, and the title of the frame's own bar when the content has no header row to hold the controls.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "focused",
+          "doc": "Whether it is the window in front, the one the keyboard goes to.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "controls",
+          "doc": "The frame's controls (close, and what else the shell offers on the window), at the trailing end of the window's bar.",
+          "accepts": "view"
+        },
+        {
+          "name": "body",
+          "doc": "The window's content, filling the window.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "WindowWell",
       "doc": "A place's window, at the rectangle the well stands at: the app's own window shows there, so the well draws nothing and takes no input.",
       "props": [
@@ -4757,7 +4867,8 @@
       ],
       "semantics": {
         "role": "Group",
-        "label": "place"
+        "label": "place",
+        "not_in_gallery": "a well draws nothing: the place's own window is composited there, so a gallery window has no well to show"
       }
     },
     {
@@ -5564,6 +5675,13 @@
         {
           "name": "width",
           "doc": "How wide it stands, in canvas pixels.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "height",
+          "doc": "How tall it stands, in canvas pixels; without it, as tall as its view asks.",
           "type": {
             "option": "int"
           }

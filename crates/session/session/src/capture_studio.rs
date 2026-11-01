@@ -136,6 +136,7 @@ pub(crate) fn mount(
                 sends: Sends::new(
                     fabric.clone(),
                     capture_send::spool_root(),
+                    tilo_paths::workspace_root(),
                     options.wake.handle(),
                 ),
                 fabric,
@@ -281,6 +282,7 @@ impl CaptureStudio {
                 }
             }
             Ask::SendLastTo(id) => self.send_last_to(&id),
+            Ask::SendLastToWorkspace => self.send_last_to_workspace(),
         }
     }
 
@@ -295,6 +297,19 @@ impl CaptureStudio {
             return;
         };
         self.sent = self.sends.send(id, kept.path.clone());
+    }
+
+    /// Copy the last screenshot into this workspace's files, under
+    /// `Screenshots`, where the person's collaborators see it: the screenshot
+    /// the studio wrote, never what a private window showed.
+    fn send_last_to_workspace(&mut self) {
+        // A new send: what was said of the last one is not about this one.
+        self.sent = None;
+        let Some(kept) = &self.last else {
+            self.sent = Some(Sent::not_saved(Refusal::NotKept));
+            return;
+        };
+        self.sent = self.sends.send_to_workspace(kept.path.clone());
     }
 
     fn start(&mut self, take: Take, compositor: &mut Compositor) {

@@ -44,7 +44,7 @@ impl WorkspaceId {
 }
 
 /// Durable, globally-unique identity of a workspace as a collaboration
-/// room. Unlike [`WorkspaceId`] (a local counter) it is minted once as a
+/// workspace. Unlike [`WorkspaceId`] (a local counter) it is minted once as a
 /// random v4 uuid and carried rather than recomputed, so machines that
 /// have never met still agree on it. [`Self::nil`] is the unminted
 /// sentinel.
@@ -55,7 +55,7 @@ impl WorkspaceId {
 pub struct RoomId(uuid::Uuid);
 
 impl RoomId {
-    /// Mint a fresh room identity, once per workspace at creation.
+    /// Mint a fresh workspace identity, once per workspace at creation.
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4())
     }
@@ -76,7 +76,7 @@ impl RoomId {
         self.0
     }
 
-    /// Parse a room id off the wire (invite token, automerge doc,
+    /// Parse a workspace id off the wire (invite token, automerge doc,
     /// `TILO_WORKSPACE_ID`). `None` on anything that isn't a valid uuid.
     pub fn parse(s: &str) -> Option<Self> {
         uuid::Uuid::parse_str(s).ok().map(Self)
@@ -162,7 +162,7 @@ pub const fn peer_salt_of(id: u64) -> u16 {
 }
 
 /// The namespace no device mints in. It once held the ids every member of
-/// a room derived for a shared strip; documents and state files may still
+/// a workspace derived for a shared strip; documents and state files may still
 /// carry such ids, so no device's own ids may ever fall among them. A device
 /// whose key would hash to this salt (or to `0`, which has no id space)
 /// takes another; see [`device_salt`].
@@ -297,7 +297,7 @@ impl MintIds for IdMinter {
 }
 
 /// [`IdMinter::mint_in_namespace`] for an owner that keeps its counter as a
-/// plain value (read from and written back to its room document): mints
+/// plain value (read from and written back to its workspace document): mints
 /// under `salt` from `*counter` and advances it.
 ///
 /// # Errors
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn a_rooms_workspace_id_is_its_transport_shard() {
         // The same literal `tilo_workspace_join::room_workspace_id` is pinned
-        // to: every device and the relay name the room's workspace alike.
+        // to: every device and the relay derive the same workspace from a room.
         let room = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap();
         assert_eq!(WorkspaceId::of_room(room).raw(), 3_029_697_355_180_468_570);
         let other = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a12").unwrap();

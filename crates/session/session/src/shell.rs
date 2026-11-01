@@ -53,7 +53,17 @@ pub(crate) struct Shell {
     link: Rc<SessionLink>,
     /// What the desk's reading was last made from.
     seen: Option<crate::desk_resource::DeskKey>,
-    part: Rc<RefCell<ShellPart>>,
+    /// The shell's record, shared by every part: the bar draws it and every other display's
+    /// bar draws the same.
+    record: Rc<RefCell<tilo_resource::Doc>>,
+    /// One part per output, in the order the outputs are known: each stands on its own
+    /// display, and a display added (or taken away) has its part made (or dropped) to follow.
+    parts: Vec<(String, Rc<RefCell<ShellPart>>)>,
+    /// The packages the shell's parts are made from, kept to make each new display's part.
+    packages: Vec<tilolang_tilo::tilolang::Compiled>,
+    app: String,
+    person: String,
+    scale: f64,
     /// The band the chrome leaves the bar, logical pixels: a window reaching into it covers a
     /// bar there.
     band: u32,
@@ -73,29 +83,21 @@ impl Shell {
             .map(|compiled| compiled.meta.app.clone())
             .ok_or("the shell package did not compile")?;
         let link = Rc::new(SessionLink::default());
-        let wake = compositor.waker();
-        let part = ShellPart::new(
-            &app,
-            packages,
-            &desk.person,
-            Rc::clone(&link),
-            // The bar's band, at rest: what the chrome leaves it.
-            band(),
-            scale,
-            std::sync::Arc::new(move || wake.wake_by_ref()),
-            None,
-        );
-        let part = Rc::new(RefCell::new(part));
-        compositor.add_host(Box::new(Held(Rc::clone(&part))));
-        doors.add(Rc::clone(&part) as tilo_surface_host::Shared);
         let mut shell = Self {
             desk,
             announced: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             link,
             seen: None,
-            part,
+            record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
+            parts: Vec::new(),
+            packages,
+            app,
+            person: String::new(),
+            scale,
             band: band(),
         };
+        shell.person = shell.desk.person.clone();
+        shell.follow_outputs(compositor, doors);
         shell.publish();
         Ok(shell)
     }
@@ -106,6 +108,69 @@ impl Shell {
         let (id, title, body) = self.desk.due_timer()?;
         let mut announced = self.announced.borrow_mut();
         announced.insert(id.clone()).then_some((id, title, body))
+    }
+
+    /// Make a part for each output `compositor` shows that has none, stand each part on its
+    /// output's rectangle, and stand the parts of outputs it no longer shows nowhere: one bar
+    /// per display, following a display plugged in, moved or taken away. A part whose display
+    /// went keeps its place with the compositor and the door, drawing and offering nothing, and
+    /// stands again when that display comes back, so unplugging and replugging makes no new
+    /// part. Cheap when nothing changed, which is what every frame runs.
+    fn follow_outputs(&mut self, compositor: &mut Compositor, doors: &mut Doors) {
+        let outputs = outputs_of(compositor);
+        for (name, part) in &self.parts {
+            if !outputs.iter().any(|(shown, _)| shown == name) {
+                part.borrow_mut().set_display(None);
+            }
+        }
+        let fullscreen = compositor.fullscreen_outputs();
+        for (name, rect) in &outputs {
+            if let Some((_, part)) = self.parts.iter().find(|(shown, _)| shown == name) {
+                part.borrow_mut().set_display(Some((name.clone(), *rect)));
+                part.borrow_mut().set_fullscreen(fullscreen.clone());
+                continue;
+            }
+            self.mount_part(compositor, doors, name, *rect, &fullscreen);
+        }
+    }
+
+    /// Make the shell's part on `output` (its connector name and logical rectangle), sharing
+    /// the shell's record with every other part, and hand it to `compositor` and its doors.
+    fn mount_part(
+        &mut self,
+        compositor: &mut Compositor,
+        doors: &mut Doors,
+        output: &str,
+        rect: (i32, i32, u32, u32),
+        fullscreen: &[String],
+    ) {
+        let wake = compositor.waker();
+        let mut part = ShellPart::new(
+            tilo_surface_host::shell_part::ShellIdentity {
+                app: &self.app,
+                packages: self.packages.clone(),
+                person: &self.person,
+                link: Rc::clone(&self.link),
+                record: Rc::clone(&self.record),
+                // The first part of the shell makes the shell's record and seeds it; every
+                // other display's part draws the one the shell already has.
+                seed: self.parts.is_empty(),
+            },
+            // The bar's band, at rest: what the chrome leaves it.
+            self.band,
+            self.scale,
+            std::sync::Arc::new(move || wake.wake_by_ref()),
+            None,
+        );
+        part.set_display(Some((output.to_owned(), rect)));
+        part.set_fullscreen(fullscreen.to_vec());
+        part.set_edges(self.edges());
+        let part = Rc::new(RefCell::new(part));
+        compositor.add_host(Box::new(Held(Rc::clone(&part))));
+        // Each display's bar is its own surface on the door: what the person, a script or an
+        // agent drives the shell through, and what reads its labels.
+        doors.add(Rc::clone(&part) as tilo_surface_host::Shared);
+        self.parts.push((output.to_owned(), part));
     }
 
     /// Hand the shell the desk when what it is made from changed, and what the screen says of
@@ -154,8 +219,15 @@ impl Shell {
         self.link.publish_edges(edges);
     }
 
-    /// The outputs' bounding box `(x, y, w, h)`, as the part spans them: every output that is
-    /// on.
+    /// Follow the displays as they come and go, and a window taking one for itself: a part is
+    /// made or dropped per output, and a part on a display a fullscreen window owns steps
+    /// aside. Cheap when nothing changed, which is what every frame runs.
+    pub(crate) fn follow_displays(&mut self, compositor: &mut Compositor, doors: &mut Doors) {
+        self.follow_outputs(compositor, doors);
+    }
+
+    /// The outputs' bounding box `(x, y, w, h)`, as a screen-edge reading names them: every
+    /// output that is on.
     fn outputs(compositor: &Compositor) -> Option<(i32, i32, u32, u32)> {
         let (x0, y0, x1, y1) = compositor
             .outputs()
@@ -177,6 +249,12 @@ impl Shell {
     /// stages a reading on.
     pub(crate) fn link(&self) -> Rc<SessionLink> {
         Rc::clone(&self.link)
+    }
+
+    /// The surface the desk shows over its windows, by the name the views read (`d.here`):
+    /// `none` at rest.
+    pub(crate) fn surface(&self) -> String {
+        self.link.surface()
     }
 
     /// Whether the shell asked something of the door the session has not run yet.
@@ -209,7 +287,7 @@ impl Shell {
     /// The shell record's edge settings as it holds them: each an enum's case id, which the
     /// package names in `chrome.tl`. `None` until the record exists (the bar alone).
     fn shell_edges(&self) -> Option<EdgeSettings> {
-        let part = self.part.borrow();
+        let part = self.parts.first()?.1.borrow();
         let record = part.shell_record()?;
         let package = part.package()?;
         let meta = &package.meta;
@@ -252,11 +330,13 @@ impl Shell {
         })
     }
 
-    /// Move the part to the bands the shell's chrome stands in: a bar at the top or bottom, a
-    /// dock at the bottom or top. A change of the person's settings moves it on the next
+    /// Move every part to the bands the shell's chrome stands in: a bar at the top or bottom, a
+    /// dock at the bottom or top. A change of the person's settings moves them on the next
     /// frame.
     pub(crate) fn set_edges(&self, edges: tilo_surface_host::shell_part::HostEdges) {
-        self.part.borrow_mut().set_edges(edges);
+        for (_, part) in &self.parts {
+            part.borrow_mut().set_edges(edges);
+        }
     }
 
     /// Run what the shell asked through `invoke` (the session's door).
@@ -284,20 +364,93 @@ impl Shell {
         });
     }
 
-    /// How much work the bar did since the session started.
+    /// How much work the bar did since the session started, over every display: its view turns
+    /// and frames summed, since a bar on each display does the same work on each.
     pub(crate) fn work(&self) -> ShellWork {
-        self.part.borrow().work()
+        let mut work = ShellWork::default();
+        let mut seen_event = false;
+        for (_, part) in &self.parts {
+            let part = part.borrow().work();
+            work.turns = work.turns.saturating_add(part.turns);
+            work.drawn = work.drawn.saturating_add(part.drawn);
+            work.turning = work.turning.saturating_add(part.turning);
+            work.drawing = work.drawing.saturating_add(part.drawing);
+            work.updating = work.updating.saturating_add(part.updating);
+            work.committing = work.committing.saturating_add(part.committing);
+            work.receiving = work.receiving.saturating_add(part.receiving);
+            work.laying_out = work.laying_out.saturating_add(part.laying_out);
+            work.syncing = work.syncing.saturating_add(part.syncing);
+            // The effects handed and served are the link's, shared by every part: the last
+            // part's reading holds the whole count, so it is not summed.
+            if !seen_event {
+                work.handed = part.handed;
+                work.served = part.served;
+                seen_event = true;
+            }
+        }
+        work
     }
 
-    /// What the bar refused since the session started, in its words.
+    /// What the bar refused since the session started, in its words: every display's.
     pub(crate) fn refusals(&self) -> Vec<String> {
-        self.part.borrow().refusals().to_vec()
+        self.parts
+            .iter()
+            .flat_map(|(_, part)| part.borrow().refusals().to_vec())
+            .collect()
     }
 
-    /// Where the bar's control named `name` stands, logical `(x, y, w, h)`.
+    /// Where the bar's control named `name` stands, logical `(x, y, w, h)`: the first part
+    /// that shows it, since a name is the bar's one control and every bar carries the same.
     pub(crate) fn control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
-        self.part.borrow_mut().control_bounds(name)
+        self.parts
+            .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
+            .find_map(|(_, part)| part.borrow_mut().control_bounds(name))
     }
+
+    /// Where each display's bar stands now, by connector name: what a test reads to prove a
+    /// bar on every display, and none on one a fullscreen window owns.
+    pub(crate) fn parts(&self) -> Vec<BarPlace> {
+        self.parts
+            .iter()
+            .filter_map(|(name, part)| {
+                let part = part.borrow();
+                let (_, rect) = part.placement()?;
+                Some(BarPlace {
+                    output: name.clone(),
+                    rect,
+                    aside: part.aside(),
+                })
+            })
+            .collect()
+    }
+}
+
+/// A display's bar, as it stands now: the output it is on, where it stands in the logical
+/// layout, and whether it stepped aside for a fullscreen window there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BarPlace {
+    /// The output's connector name (`HEADLESS-1`).
+    pub output: String,
+    /// Where the bar stands, logical `(x, y, w, h)`.
+    pub rect: (i32, i32, u32, u32),
+    /// A fullscreen window owns the output, so the bar draws nothing there.
+    pub aside: bool,
+}
+
+/// Every output `compositor` shows, by connector name and logical rectangle `(x, y, w, h)`:
+/// one bar stands on each, and none spans them all.
+fn outputs_of(compositor: &Compositor) -> Vec<(String, (i32, i32, u32, u32))> {
+    compositor
+        .outputs()
+        .into_iter()
+        .filter_map(|output| {
+            output.rect.map(|(x, y, w, h)| {
+                let side = |side: i32| u32::try_from(side.max(1)).unwrap_or(1);
+                (output.name.clone(), (x, y, side(w), side(h)))
+            })
+        })
+        .collect()
 }
 
 /// `value` (the text the shell's effect wrote) as the door's arguments take it, in the type
@@ -331,25 +484,20 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn the_shell_package_compiles_and_its_ids_lock_holds_every_declaration() {
-        let packages = super::compile().unwrap_or_else(|why| panic!("{why}"));
-        let compiled = packages.last().expect("the shell package compiles last");
-        let lock = compiled.ids.to_text();
-        assert_eq!(
-            lock,
-            tilo_surface_host::shell_part::shell_ids(),
-            "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
-        );
-    }
-}
-
 impl crate::Session {
     /// Hand the shell's bar the desk when it changed, and run what the bar
     /// asked through the door, as any caller of the action protocol does.
     pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
+        let Some(shell) = self.shell.as_ref() else {
+            return Ok(());
+        };
+        // The shell's views draw the centre over the desk, so while it is up the person is
+        // looking at what the notices say: they are read, as they are while the panel's own
+        // centre shows them. The bell's count, the centre's header and its rows read the one
+        // set, so they never disagree. It is the same surface the views read (`d.here`).
+        if shell.surface() == crate::overlays::Overlay::Centre.name() {
+            self.shared.notices.mark_read();
+        }
         let Some(shell) = self.shell.as_mut() else {
             return Ok(());
         };
@@ -368,6 +516,9 @@ impl crate::Session {
         let edges = shell.edges();
         shell.publish_edges(&self.compositor);
         shell.set_edges(edges);
+        // One bar per display: a display plugged in, taken away or taken by a fullscreen window
+        // moves its part.
+        shell.follow_displays(&mut self.compositor, &mut self.shared.doors);
         if !shell.has_asks() {
             return Ok(());
         }
@@ -434,5 +585,27 @@ impl crate::Session {
     #[must_use]
     pub fn shell_control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.control(name)
+    }
+
+    /// The shell's bars, one per display, as each stands now: the output it is on, where it
+    /// stands, and whether it stepped aside for a fullscreen window there.
+    #[must_use]
+    pub fn shell_bars(&self) -> Vec<BarPlace> {
+        self.shell.as_ref().map(Shell::parts).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_shell_package_compiles_and_its_ids_lock_holds_every_declaration() {
+        let packages = super::compile().unwrap_or_else(|why| panic!("{why}"));
+        let compiled = packages.last().expect("the shell package compiles last");
+        let lock = compiled.ids.to_text();
+        assert_eq!(
+            lock,
+            tilo_surface_host::shell_part::shell_ids(),
+            "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
+        );
     }
 }

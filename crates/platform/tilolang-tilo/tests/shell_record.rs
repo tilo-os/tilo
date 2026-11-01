@@ -16,7 +16,7 @@ use tilolang_tilo::record::DynValue;
 
 use crate::fixtures::Replica;
 
-const FILES: [&str; 21] = [
+const FILES: [&str; 22] = [
     include_str!("../../../../apps/tl/shell/app.tl"),
     include_str!("../../../../apps/tl/shell/arrangement.tl"),
     include_str!("../../../../apps/tl/shell/arranging.tl"),
@@ -38,6 +38,7 @@ const FILES: [&str; 21] = [
     include_str!("../../../../apps/tl/shell/strips.tl"),
     include_str!("../../../../apps/tl/shell/switcher.tl"),
     include_str!("../../../../apps/tl/shell/system.tl"),
+    include_str!("../../../../apps/tl/shell/traditional.tl"),
 ];
 const IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
 const APP: &str = "so.tilo.shell";

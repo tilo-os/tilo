@@ -638,6 +638,53 @@ fn the_notification_centre_lists_a_notice_and_it_dismisses() {
     until(&mut session, |session| desk(session).notices.is_empty());
 }
 
+/// The centre's own Dismiss, pressed in the shell's view: the action the view runs is the
+/// desk's `dismiss-notice` on the notice the row is for, so the shell's surfaces and an agent
+/// dismiss the same way.
+#[test]
+fn a_press_on_the_centres_dismiss_takes_the_notice_off_the_desk() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    session.notices().post(
+        tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
+            .with_app_name("Settings"),
+    );
+    until(&mut session, |session| !desk(session).notices.is_empty());
+    // A notice that arrives is unread: the desk's own count says so, the same number the bar's
+    // bell shows.
+    until(&mut session, |session| desk(session).unread == 1);
+    assert!(!desk(&session).notices[0].read, "a fresh notice is unread");
+    session
+        .invoke(
+            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "show-surface",
+            &serde_json::Map::from_iter([(
+                "surface".to_owned(),
+                serde_json::Value::String("centre".to_owned()),
+            )]),
+        )
+        .unwrap();
+    until(&mut session, |session| says(session, "Backup finished"));
+    // The centre opened, so the person saw them: every notice is read, and the desk's count
+    // the bell shows is none.
+    until(&mut session, |session| {
+        desk(session).unread == 0 && desk(session).notices.iter().all(|notice| notice.read)
+    });
+    // The view draws each notice with its Dismiss; pressing it runs the desk's
+    // `dismiss-notice` on that notice, as any action on the desk runs.
+    press(&mut session, "Dismiss");
+    until(&mut session, |session| desk(session).notices.is_empty());
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the centre's Dismiss reached the desk: {:?}",
+        session.shell_refusals()
+    );
+    until(&mut session, |session| {
+        says(session, "Nothing to catch up on")
+    });
+}
+
 #[test]
 fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     let _settled = ui::motion::testing::settled();

@@ -85,7 +85,7 @@ fn text_node(key: String, value: &str) -> UiNode {
     node(TEXT, key, &[("value", Value::text(value))], Vec::new())
 }
 
-pub(crate) fn error_node(key: &str, lines: &[String]) -> UiNode {
+fn error_node(key: &str, lines: &[String]) -> UiNode {
     let children = lines
         .iter()
         .enumerate()

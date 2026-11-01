@@ -257,6 +257,28 @@ impl TileSource for Windows {
             None
         }
     }
+
+    /// The window was closed for good and the person asked for it back: the
+    /// tab keeps its place for the next window of the app it holds, and the
+    /// app is asked for by the name its windows announce — the session's
+    /// launch record knows which of this machine's apps that is.
+    fn reopened(&mut self, _: &Workspace, tab: &Tab) {
+        let TileContent::LocalApp { app_id, note, .. } = &tab.tile else {
+            return;
+        };
+        if app_id.trim().is_empty() || !note.is_empty() {
+            return;
+        }
+        self.held
+            .borrow_mut()
+            .entry(app_id.clone())
+            .or_default()
+            .push(HeldTab {
+                tab: Some(tab.id),
+                background: false,
+            });
+        self.launches.borrow_mut().push(app_id.clone());
+    }
 }
 
 /// The desktop's answer to where windows go and which has focus.
@@ -847,6 +869,24 @@ impl DesktopPolicy {
         // The person's own name for the tab stands in front of the window's,
         // which is kept beside it.
         if tab.set_window_title(title) {
+            self.handle.replace_tree(tree);
+        }
+    }
+
+    /// The app `window` says it belongs to changed: its X11 class was renamed,
+    /// or its client set an id after the window opened. Its tab is that app's
+    /// from here on, so the desk names the window by the program its client
+    /// claims. An id the client clears says nothing and leaves the tab as it
+    /// is.
+    pub fn set_app_id(&mut self, window: u64, app_id: &str) {
+        if app_id.trim().is_empty() {
+            return;
+        }
+        let mut tree = self.handle.read(Clone::clone);
+        let Some(tab) = tab_mut(&mut tree, window) else {
+            return;
+        };
+        if tab.set_window_app_id(app_id) {
             self.handle.replace_tree(tree);
         }
     }

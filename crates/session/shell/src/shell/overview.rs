@@ -2,7 +2,7 @@
 //! ([`tilo_desktop::overview`]): who sits at this device, the icon theme's
 //! artwork, and how workspace settings name what a share covers.
 
-use tilo_desktop::overview::{OverviewHost, RoomCard};
+use tilo_desktop::overview::{OverviewHost, WorkspaceCard};
 use tilo_desktop::window_switcher::WindowSource;
 
 use crate::shell::state::{Scope, TileContent, WorkspaceTree};
@@ -44,8 +44,8 @@ impl OverviewHost for ShellOverview<'_> {
 }
 
 /// Every room as the overview shows it to `local_user`, now.
-pub fn room_cards(tree: &WorkspaceTree, local_user: &str) -> Vec<RoomCard> {
-    tilo_desktop::overview::room_cards(
+pub fn workspace_cards(tree: &WorkspaceTree, local_user: &str) -> Vec<WorkspaceCard> {
+    tilo_desktop::overview::workspace_cards(
         &tree.desktop,
         &ShellOverview::for_user(local_user),
         tilo_clock::unix_now(),

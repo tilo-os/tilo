@@ -254,8 +254,8 @@ fn canonical_keeps_only_what_the_record_keeps() {
     assert!(!group.maximized);
 }
 
-/// A page's fresh desktop for a room it has not received yet: one workspace
-/// named after the room and one empty "Main" strip, under the page's own ids.
+/// A page's fresh desktop for a workspace it has not received yet: one workspace
+/// named after the workspace and one empty "Main" strip, under the page's own ids.
 fn fresh(workspace: u64, strip: u64, name: &str) -> SharedDesktop {
     let mut fresh = Workspace::new(WorkspaceId(workspace), name);
     fresh.strips.push(Strip::new(StripId(strip), "Main"));
@@ -282,7 +282,7 @@ fn group_of(id: u64, tab_id: u64) -> WindowGroup {
 
 #[test]
 fn desktops_written_before_the_room_was_received_fold_into_its_workspace() {
-    // The room's desktop: a window, and a second strip.
+    // The workspace's desktop: a window, and a second strip.
     let mut room = AutoCommit::new();
     let mut first = fresh(1, 10, "Lounge");
     first.tree.workspaces[0].strips[0]
@@ -293,9 +293,9 @@ fn desktops_written_before_the_room_was_received_fold_into_its_workspace() {
         .push(Strip::new(StripId(11), "Design"));
     write(&mut room, &first).unwrap();
     room.commit();
-    // Pages that published a fresh desktop of their own before the room's
+    // Pages that published a fresh desktop of their own before the workspace's
     // reached them, each from a document of its own: every one adds its
-    // own `workspaces` map, concurrent with the room's. One of them also
+    // own `workspaces` map, concurrent with the workspace's. One of them also
     // opened a window and made a workspace of another name.
     for page in 2..12_u8 {
         let mut blind = AutoCommit::new().with_actor(automerge::ActorId::from(vec![page; 16]));

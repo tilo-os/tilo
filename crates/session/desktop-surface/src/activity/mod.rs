@@ -19,8 +19,8 @@ mod testing;
 pub use index::*;
 pub use pane::{
     ACTIVITY_ACKNOWLEDGE, ActivityView, HISTORY_COMPARE, HISTORY_RESTORE, HISTORY_UNDO, Period,
-    RoomActivityOutcome, RoomActivityPane, RoomScope, ServedTree, TASKS_APP, is_document_write,
-    is_personal, is_read, refused_to_agent,
+    ServedTree, TASKS_APP, WorkspaceActivityOutcome, WorkspaceActivityPane, WorkspaceScope,
+    is_document_write, is_personal, is_read, refused_to_agent,
 };
 
 /// A causal document paired with its admitted desktop projection. Implementors
@@ -33,7 +33,7 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
     fn replay_presentation_note(&self) -> Option<String> {
         None
     }
-    /// The delegated agents on the rooms' rosters whose person's root signed
+    /// The delegated agents on the workspaces' rosters whose person's root signed
     /// the delegation for exactly that device, as the host verified them:
     /// the changes their own keys signed read as theirs, on behalf of their
     /// person. A host that verifies none leaves those changes unknown.
@@ -46,21 +46,23 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
 /// What takes the desk a committing snapshot wrote back to where it is kept.
 type Commit = std::rc::Rc<dyn Fn(&DesktopTree)>;
 
-/// Read-only admitted single-room history. Construct from the actual admitted
+/// Read-only admitted history of the desk. Construct from the actual admitted
 /// owner document, never from a re-encoded desktop cache. The supplied document
 /// is owned so `HistorySource`'s `AutoCommit` cursor cannot touch the live owner.
 #[derive(Clone)]
 pub struct ActivitySnapshot {
     pub desktop: DesktopTree,
     pub doc: AutoCommit,
-    room: tilo_desktop_model::RoomId,
+    /// The workspace whose document this is, or `None` when it is the device's own
+    /// document of the whole desk.
+    room: Option<tilo_desktop_model::RoomId>,
     /// What takes a change the model wrote back to the desk it came from: a
     /// host that keeps the workspace's own layout applies it here, and a
     /// host whose history is read only keeps none.
     commit: Option<Commit>,
 }
 impl ActivitySnapshot {
-    /// Snapshot the active room of `desktop` from its admitted owner document.
+    /// Snapshot the active workspace of `desktop` from its admitted owner document.
     pub fn new(desktop: DesktopTree, doc: AutoCommit) -> Result<Self, String> {
         let room = desktop
             .active_workspace()
@@ -69,7 +71,7 @@ impl ActivitySnapshot {
         let mut snapshot = Self {
             desktop,
             doc,
-            room,
+            room: Some(room),
             commit: None,
         };
         tilo_desktop_model::projection::apply_admitted_room(
@@ -78,6 +80,21 @@ impl ActivitySnapshot {
             &snapshot.doc,
         )?;
         Ok(snapshot)
+    }
+
+    /// Snapshot the whole desk of `desktop` from the device's own document of
+    /// it: every workspace, in the one document this device keeps, whose
+    /// changes are what the desk did and who did it.
+    #[must_use]
+    pub fn of_desktop(desktop: DesktopTree, doc: AutoCommit) -> Self {
+        let mut snapshot = Self {
+            desktop,
+            doc,
+            room: None,
+            commit: None,
+        };
+        let _ = snapshot.resync_activity_cache();
+        snapshot
     }
 
     /// Hand every change the model writes to `commit`, with the workspace as
@@ -108,17 +125,29 @@ impl ActivityTree for ActivitySnapshot {
         &mut self.doc
     }
     fn replay_presentation_note(&self) -> Option<String> {
-        Some(crate::i18n::t("activity-replay-layout-not-recorded"))
+        // A workspace document records which windows the workspace holds and how
+        // they are arranged, never how wide they are or which is in front:
+        // those are the device's. The device's own document of the desk
+        // records the view it was left in too, so there is nothing to note.
+        self.room
+            .map(|_| crate::i18n::t("activity-replay-layout-not-recorded"))
     }
     fn resync_activity_cache(&mut self) -> Result<(), String> {
+        let Some(room) = self.room else {
+            // The whole desk, out of the device's document: its topology,
+            // and the view it was left in.
+            tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
+            tilo_desktop_model::desktop_doc::rebuild_view(&self.doc, &mut self.desktop);
+            return Ok(());
+        };
         // A historical projection must not retain tabs that only exist in the
-        // current cache. Room documents do not record local width or active-tab
+        // current cache. Workspace documents do not record local width or active-tab
         // selection, so reconstructed groups use neutral presentation defaults.
-        self.desktop.workspaces.retain(|w| w.room() == self.room);
+        self.desktop.workspaces.retain(|w| w.room() == room);
         for workspace in &mut self.desktop.workspaces {
             workspace.strips.clear();
         }
-        tilo_desktop_model::projection::apply_admitted_room(&mut self.desktop, self.room, &self.doc)
+        tilo_desktop_model::projection::apply_admitted_room(&mut self.desktop, room, &self.doc)
             .map(|_| ())
     }
     fn commit_activity_change(&mut self) {
@@ -311,7 +340,7 @@ mod admitted_history_tests {
         )
         .unwrap();
         let heads = snapshot.doc.get_heads();
-        let mut pane = RoomActivityPane::new();
+        let mut pane = WorkspaceActivityPane::new();
         pane.begin_view(9);
         pane.refresh(&mut snapshot);
         // The window opened and the title change are listed; setup and

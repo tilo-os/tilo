@@ -22,7 +22,8 @@ impl std::fmt::Display for ContentUnavailable {
 /// The content a view shows, each address a read
 /// ([`crate::arriving::Arriving`]): ready once its bytes are on this device
 /// (read them from the store), pending while it is on its way from the
-/// room ([`crate::room_sync::source`]), failed when no device has it.
+/// workspace's host ([`crate::workspace_sync::source`]), failed when no
+/// device has it.
 /// Content this device has is ready on the first read, so a view of it
 /// opens complete.
 #[derive(Clone)]
@@ -82,7 +83,7 @@ fn content_standing(state: ContentState) -> crate::arriving::Arrival<(), Content
     match state {
         ContentState::Resolved => Arrival::Ready(()),
         ContentState::Pending | ContentState::Waiting => Arrival::Pending {
-            from: crate::room_sync::source(),
+            from: crate::workspace_sync::source(),
         },
         ContentState::Unavailable => Arrival::Failed(ContentUnavailable),
     }

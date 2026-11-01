@@ -103,7 +103,7 @@ impl Default for ClockSnapshot {
         }
     }
 }
-/// The small piece of the room's history passive chrome shows. The history
+/// The small piece of the workspace's history passive chrome shows. The history
 /// document stays authoritative.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivityGlance {
@@ -183,7 +183,7 @@ pub struct DesktopChromeSnapshot {
     pub status: SystemStatus,
     pub clock: ClockSnapshot,
     pub overlays: ChromeOverlays,
-    /// A window on this device covers its display: the bar and its room
+    /// A window on this device covers its display: the bar and its strips
     /// step aside until it gives the display back.
     pub fullscreen: bool,
     pub notification_badge: u32,
@@ -198,7 +198,7 @@ pub struct DesktopChromeSnapshot {
     pub viewport_size: Option<(f64, f64)>,
     pub clock_activity: Option<ClockActivity>,
     pub active_exposures: Vec<ActiveExposure>,
-    /// People following the room without taking part (spectators). The bar
+    /// People following the workspace without taking part (spectators). The bar
     /// counts them beside the avatars so an audience is never invisible.
     pub watching: u32,
     /// Docked, or hidden and shown over the windows.

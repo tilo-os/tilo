@@ -8,7 +8,7 @@
 //! record's id and kind, and what it runs adds this workspace's reference
 //! to that record in the workspace's record index — no bytes move and no id
 //! is minted. Copying a record is a different, deliberate verb
-//! (`ui::record::room::duplicate`).
+//! (`ui::record::index::duplicate`).
 //!
 //! The rows come from the workspaces' record indexes: the source only ranks
 //! the list a host collected, so it never reads a workspace's state itself.

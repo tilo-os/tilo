@@ -297,7 +297,7 @@ fn opening_the_table_seats_nobody_until_they_take_a_seat() {
 #[test]
 fn taking_a_seat_waits_for_the_table_to_arrive() {
     let told = |state| {
-        Some(ui::room_sync::RoomSync {
+        Some(ui::workspace_sync::WorkspaceSync {
             state,
             workspace: "Lounge".into(),
             writable: None,
@@ -305,7 +305,7 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
             cannot_keep_writes: false,
         })
     };
-    ui::room_sync::set(told(ui::room_sync::RoomSyncState::Connecting));
+    ui::workspace_sync::set(told(ui::workspace_sync::WorkspaceSyncState::Connecting));
     let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
     let harness = app.harness();
     assert!(
@@ -318,7 +318,7 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
     );
 
     assert!(
-        ui::room_sync::set(told(ui::room_sync::RoomSyncState::Synced)),
+        ui::workspace_sync::set(told(ui::workspace_sync::WorkspaceSyncState::Synced)),
         "the first sync changes what the window shows"
     );
     // A wait that outlasted its grace showed a skeleton, which stays its
@@ -335,7 +335,7 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
     assert!(take_a_seat_enabled(&mut app), "the table has arrived");
     take_a_seat(&mut app);
     assert_eq!(app.state().seat_of("ada"), Some(0));
-    ui::room_sync::set(None);
+    ui::workspace_sync::set(None);
 }
 
 fn take_a_seat_enabled(app: &mut TestApp<App>) -> bool {

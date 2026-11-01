@@ -5804,7 +5804,7 @@ impl Requester {
     /// Who is behind the current invocation. Only the person at this screen
     /// acts without a delivered invocation; anyone reaching the terminal
     /// through the action broker — an agent, another app, or a collaborator
-    /// in a shared room — is not that person, and is treated as an agent.
+    /// in a shared workspace — is not that person, and is treated as an agent.
     pub fn current() -> Self {
         if ui::invocation_scope::current_invoker().is_some() {
             Self::Agent

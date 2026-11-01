@@ -13,7 +13,7 @@ pub enum ThemesEffect {
     /// Apply as system theme.
     ///
     /// The person's own appearance on their own device: nothing shared, so
-    /// a guest applies one as the room's owner does.
+    /// a guest applies one as the workspace's owner does.
     #[effect(job, cancellable, own_device)]
     ApplyTheme {
         #[param("Id of the preset or written theme")]

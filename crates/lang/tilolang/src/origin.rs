@@ -101,9 +101,8 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ),
     (
         "session.notify",
-        "The same as `session.run`, for the notification centre's actions: `notifications.banners`' \
-         `open`, `dismiss`, `act` and `reply`, and the desk's `clear-notices` and \
-         `dismiss-notice`.",
+        "The same as `session.run`, for the notification centre's actions on the desk: \
+         `clear-notices`, `dismiss-notice` and `act-on-notice`.",
     ),
     (
         "session.launch",
@@ -225,11 +224,6 @@ pub const KINDS: &[OriginKind] = &[
                 "people",
                 "Collection<session.person>",
                 "The others here in the workspace in front.",
-            ),
-            field(
-                "title",
-                "Text",
-                "What the bar names the desk: the workspace in front, and the strip after it.",
             ),
             field(
                 "here",

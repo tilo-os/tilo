@@ -6,7 +6,7 @@
 //! allow, the receivers the projector service found, the stream's options,
 //! and how a receiver's session stands), and carries out what the person
 //! chose. A layout choice is a published action like every other
-//! ([`crate::controls::DISPLAYS_RESOURCE`]), so the person at the sheet passes
+//! ([`crate::displays::RESOURCE`]), so the person at the sheet passes
 //! the same authority check as an agent or a script; a wireless display goes
 //! to the projector service through [`crate::projection`], and a PIN typed in
 //! the sheet comes to it through the seat, never through an action.
@@ -23,7 +23,6 @@ use tilo_sheets::displays::{
     Band, Discovery, DisplaysEffect, DisplaysSeat, Layout, LayoutRow, Link, Receiver, Sheet, Stream,
 };
 
-use crate::controls::DISPLAYS_RESOURCE;
 use crate::displays::{self, DisplayMode};
 use crate::keys::Invocations;
 use crate::projection::{ProjectionController, ProjectionStatus, SystemProjectionBackend};
@@ -234,7 +233,7 @@ impl DisplaySheet {
             self.restart_live_stream();
         }
         invocations.borrow_mut().push(
-            crate::keys::Invocation::new(DISPLAYS_RESOURCE, "set-mode")
+            crate::keys::Invocation::new(displays::RESOURCE, "set-mode")
                 .with("mode", layout_name(layout)),
         );
     }

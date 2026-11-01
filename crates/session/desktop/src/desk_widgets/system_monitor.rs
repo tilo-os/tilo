@@ -11,11 +11,11 @@
 //! out, never shown as a stand-in.
 
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
 
 use tilo_system_stats::Grants;
 use tilo_system_stats::hub::{Hub, Spec, Subscription};
 use tilo_system_stats::protocol::SystemStats;
+use ui::time::Duration;
 
 /// How often a showing widget is sent a reading: often enough to follow a
 /// build or a stuck process, rarely enough to cost nothing.

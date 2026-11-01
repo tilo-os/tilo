@@ -252,10 +252,10 @@ fn refresh_heads_foreign_registration_and_stale_record_identity_remain_refused()
     let live = RecordCheckout::new(crate::RecordId::for_tab(941), RecordKind::new("note"));
     store.open_record(&live);
     let lifetime = RecordOwnerLifetime::new();
-    let live_owner = HistoryOwner::record(store.clone(), live.clone(), &lifetime);
+    let live_owner = HistoryOwner::record(store.clone(), live.clone(), &lifetime, true);
     let resource = live_owner.resource(APP).unwrap();
     let stale = RecordCheckout::new(live.id.clone(), RecordKind::new("foreign-kind"));
-    let owner = HistoryOwner::record(store, stale, &lifetime);
+    let owner = HistoryOwner::record(store, stale, &lifetime, true);
     assert!(matches!(
         HistorySourceRegistration::owned("document", APP, owner.clone()),
         Err(HistoryRegistrationError::UnsupportedOwner)
@@ -366,7 +366,7 @@ fn refresh_heads_allocation_growth_independent_of_real_graph_size_in_all_documen
                     HistorySourceRegistration::owned(
                         "document",
                         APP,
-                        HistoryOwner::record(store.clone(), checkout.clone(), &lifetime),
+                        HistoryOwner::record(store.clone(), checkout.clone(), &lifetime, true),
                     )
                     .unwrap()
                 }

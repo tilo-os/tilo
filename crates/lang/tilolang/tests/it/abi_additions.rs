@@ -1,6 +1,6 @@
 //! The ABI additions for sorting, reading maps, boxed set elements and `try`.
 
-use crate::common::{codes, compile_body as compile, validate};
+use crate::common::{codes, compile_body, compile_body as compile, validate};
 
 #[test]
 fn sort_by_compiles_to_a_parallel_key_list() {
@@ -39,6 +39,59 @@ fn sets_and_maps_of_scalars_are_written_with_boxed_values() {
     assert!(
         has("some_i") && has("some_f"),
         "scalars are boxed for set and map writes"
+    );
+}
+
+#[test]
+fn an_action_declares_its_run_and_its_frequency_into_its_metadata() {
+    let c = compile_body(
+        "type Note {\n    title: Text\n}\n\
+action reply(n: Note) (icon: .reply, group: \"Reply\", frequent: true) {\n    n.title = n.title\n}\n\
+action archive(n: Note) (icon: .archive, group: \"Reply\") {\n    n.title = n.title\n}\n\
+action rename(n: Note) (icon: .pen_tool) {\n    n.title = n.title\n}\n\
+view v(n: Note) {\n    text(n.title)\n}",
+    );
+    let action = |name: &str| {
+        c.meta
+            .actions
+            .iter()
+            .find(|a| a.name == name)
+            .unwrap_or_else(|| panic!("{name} is declared"))
+    };
+    assert_eq!(action("reply").group.as_deref(), Some("Reply"));
+    assert!(action("reply").frequent);
+    assert_eq!(action("archive").group.as_deref(), Some("Reply"));
+    assert!(!action("archive").frequent);
+    assert_eq!(action("rename").group, None);
+    // A surface reads the run by the name the app gave it: a group is text in quotes, and a
+    // bare one is refused, so a run is never silently another's.
+    assert_eq!(
+        codes("type N {\n    t: Text\n}\naction a(n: N) (group: Reply) {\n    n.t = n.t\n}"),
+        vec!["E090"]
+    );
+    assert_eq!(
+        codes("type N {\n    t: Text\n}\naction a(n: N) (frequent: \"yes\") {\n    n.t = n.t\n}"),
+        vec!["E090"]
+    );
+}
+
+#[test]
+fn resource_reads_a_record_by_its_id_as_whatever_type_it_is() {
+    let c = compile_body(
+        "type Note {\n    title: Text\n}\n\
+type Notebook {\n    notes: Collection<Note>\n}\n\
+fn first(record: Text) -> Option<host.Resource> {\n    if record == \"\" { .none } else { resource(record) }\n}\n\
+view v(nb: Notebook) {\n    if let shown = first(nb.id()) {\n        text(meta(shown).title)\n        for a in actions(shown) {\n            text(a.group ?? \"\")\n        }\n    }\n}",
+    );
+    validate(&c.wasm);
+    let has = |name: &str| c.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(has("resource_ref"), "the view reads a record by its id");
+    // A host.Resource has no fields of its own: what it is decides them.
+    assert_eq!(
+        codes(
+            "type N {\n    t: Text\n}\nview v(r: Option<host.Resource>) {\n    if let x = r {\n        text(x.title)\n    }\n}"
+        ),
+        vec!["E021"]
     );
 }
 

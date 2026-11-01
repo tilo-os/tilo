@@ -88,6 +88,9 @@ enum Layout {
     gnome (icon: .menu)
     /// No chrome at rest; the edges reveal what the person needs.
     minimal (icon: .minus)
+    /// The traditional desktop: frames on a floating desk, the focused window's own commands
+    /// in the top bar, and a floating dock at the foot — the shape macOS and GNOME people know.
+    windows_desktop (icon: .app_window)
 }
 
 /// The person's own shell record, reached as `shell` (`root shell: Shell`).
@@ -180,11 +183,11 @@ migration action seed(s: Shell) {
 
 /// Uses the preset `to`: every setting it names at once. The result is exactly that preset,
 /// so the picker shows it chosen and "custom" is off.
-primary action apply(s: Shell, to: Layout) (icon: .layout_grid, label: "Use this layout") {
+primary action apply(s: Shell, to: Layout) (icon: .layout_grid, label: "Use this layout", group: "Layout", frequent: true) {
     s.preset = to
     s.based_on = to
     s.tuned = false
-    if to == .tilo or to == .gnome or to == .minimal {
+    if to != .macos and to != .windows_desktop {
         s.bar_parts.remove_where(p -> p.slot == Slot.app_menu)
     }
     if to == .tilo {
@@ -230,6 +233,22 @@ primary action apply(s: Shell, to: Layout) (icon: .layout_grid, label: "Use this
         s.dock_running = true
         s.dock_launcher = true
         s.dock_zoom = false
+    } else if to == .windows_desktop {
+        s.bar_shown = true
+        s.bar_edge = .top
+        s.bar_fit = .full
+        s.bar_finish = .translucent
+        s.bar_showing = .always
+        s.bar_size = .small
+        s.dock_shown = true
+        s.dock_edge = .bottom
+        s.dock_fit = .floating
+        s.dock_finish = .translucent
+        s.dock_showing = .always
+        s.dock_size = .regular
+        s.dock_running = true
+        s.dock_launcher = true
+        s.dock_zoom = true
     } else if to == .gnome {
         s.bar_shown = true
         s.bar_edge = .top
@@ -253,17 +272,15 @@ primary action apply(s: Shell, to: Layout) (icon: .layout_grid, label: "Use this
         s.dock_running = true
         s.dock_launcher = true
     }
-    if to == .macos and not s.bar_parts.any(p -> p.slot == Slot.app_menu) {
+    if (to == .macos or to == .windows_desktop) and not s.bar_parts.any(p -> p.slot == Slot.app_menu) {
         s.bar_parts.insert(BarPart(slot: .app_menu, title: "App menus"))
-        if let first = s.bar_parts.first() {
-            if let brand = s.bar_parts.find(p -> p.slot == Slot.app_menu), after = s.bar_parts.find(p -> p.slot == Slot.menu) { s.bar_parts.move(brand, after: after) }
-        }
+        if let brand = s.bar_parts.find(p -> p.slot == Slot.app_menu), after = s.bar_parts.find(p -> p.slot == Slot.menu) { s.bar_parts.move(brand, after: after) }
     }
 }
 
 /// Puts the focused app's menus on the bar, after the system's: what the app in front can do
 /// now, on its resource.
-action show_app_menus(s: Shell) (icon: .menu, label: "Show the app's menus") {
+action show_app_menus(s: Shell) (icon: .menu, label: "Show the app's menus", group: "Top bar") {
     require not s.bar_parts.any(p -> p.slot == Slot.app_menu) "The app's menus are on the bar already"
     s.bar_parts.insert(BarPart(slot: .app_menu, title: "App menus"))
     if let menus = s.bar_parts.find(p -> p.slot == Slot.app_menu), brand = s.bar_parts.find(p -> p.slot == Slot.menu) { s.bar_parts.move(menus, after: brand) }
@@ -271,89 +288,89 @@ action show_app_menus(s: Shell) (icon: .menu, label: "Show the app's menus") {
 }
 
 /// Takes the focused app's menus off the bar.
-action hide_app_menus(s: Shell) (icon: .menu, label: "Hide the app's menus") {
+action hide_app_menus(s: Shell) (icon: .menu, label: "Hide the app's menus", group: "Top bar") {
     s.bar_parts.remove_where(p -> p.slot == Slot.app_menu)
     s.tuned = true
 }
 
 /// Returns the shell to the preset it was based on, dropping the person's tuning.
-action reset(s: Shell) (icon: .rotate_ccw, label: "Back to the preset") {
+action reset(s: Shell) (icon: .rotate_ccw, label: "Back to the preset", group: "Layout") {
     require s.tuned "Nothing was changed from the preset"
     apply(s, s.based_on)
 }
 
 /// Puts the bar on `edge`.
-action bar_on(s: Shell, edge: Edge) (icon: .panel_right, label: "Move the bar to the {edge}") {
+action bar_on(s: Shell, edge: Edge) (icon: .panel_right, label: "Move the bar to the {edge}", group: "Top bar") {
     s.bar_edge = edge
     s.tuned = true
 }
 
-action set_bar_fit(s: Shell, to: Fit) (label: "Bar: {to}") {
+action set_bar_fit(s: Shell, to: Fit) (label: "Bar: {to}", group: "Top bar") {
     s.bar_fit = to
     s.tuned = true
 }
 
-action set_bar_finish(s: Shell, to: Finish) (label: "Bar: {to}") {
+action set_bar_finish(s: Shell, to: Finish) (label: "Bar: {to}", group: "Top bar") {
     s.bar_finish = to
     s.tuned = true
 }
 
-action set_bar_showing(s: Shell, to: Showing) (label: "Bar: {to}") {
+action set_bar_showing(s: Shell, to: Showing) (label: "Bar: {to}", group: "Top bar") {
     s.bar_showing = to
     s.tuned = true
 }
 
-action set_bar_size(s: Shell, to: Size) (label: "Bar size: {to}") {
+action set_bar_size(s: Shell, to: Size) (label: "Bar size: {to}", group: "Top bar") {
     s.bar_size = to
     s.tuned = true
 }
 
 /// Shows or hides the top bar.
-action show_bar(s: Shell, on: Bool) (icon: .eye, label: "Show the top bar") {
+action show_bar(s: Shell, on: Bool) (icon: .eye, label: "Show the top bar", group: "Top bar", frequent: true) {
     s.bar_shown = on
     s.tuned = true
 }
 
 /// Moves the dock to `edge`, keeping how it is built.
-action dock_on(s: Shell, edge: Edge) (icon: .panel_right, label: "Move the dock to the {edge}") {
+action dock_on(s: Shell, edge: Edge) (icon: .panel_right, label: "Move the dock to the {edge}", group: "Dock") {
     s.dock_edge = edge
     s.tuned = true
 }
 
-action set_dock_fit(s: Shell, to: Fit) (label: "Dock: {to}") {
+action set_dock_fit(s: Shell, to: Fit) (label: "Dock: {to}", group: "Dock") {
     s.dock_fit = to
     s.tuned = true
 }
 
-action set_dock_finish(s: Shell, to: Finish) (label: "Dock: {to}") {
+action set_dock_finish(s: Shell, to: Finish) (label: "Dock: {to}", group: "Dock") {
     s.dock_finish = to
     s.tuned = true
 }
 
-action set_dock_showing(s: Shell, to: Showing) (label: "Dock: {to}") {
+action set_dock_showing(s: Shell, to: Showing) (label: "Dock: {to}", group: "Dock") {
     s.dock_showing = to
     s.tuned = true
 }
 
-action set_dock_size(s: Shell, to: Size) (label: "Dock size: {to}") {
+action set_dock_size(s: Shell, to: Size) (label: "Dock size: {to}", group: "Dock") {
     s.dock_size = to
     s.tuned = true
 }
 
 /// Shows or hides the dock.
-action show_dock(s: Shell, on: Bool) (icon: .eye, label: "Show the dock") {
+action show_dock(s: Shell, on: Bool) (icon: .eye, label: "Show the dock", group: "Dock", frequent: true) {
     s.dock_shown = on
     s.tuned = true
 }
 
 /// Whether the dock shows the apps running that nobody pinned.
-action set_dock_running(s: Shell, on: Bool) (label: "Running apps") {
+action set_dock_running(s: Shell, on: Bool) (label: "Running apps", group: "Dock") {
     s.dock_running = on
     s.tuned = true
 }
 
 /// Whether the dock has a launcher entry.
-action set_dock_launcher(s: Shell, on: Bool) (label: "Launcher entry") {
+action set_dock_launcher(s: Shell, on: Bool) (label: "Launcher entry", group: "Dock") {
     s.dock_launcher = on
     if on and not s.dock_items.any(i -> i.key == "launcher") {
         s.dock_items.insert(DockItem(key: "launcher", title: "Launcher", icon: "layout-grid"))
@@ -365,7 +382,7 @@ action set_dock_launcher(s: Shell, on: Bool) (label: "Launcher entry") {
 }
 
 /// Whether the dock magnifies the item under the pointer.
-action set_dock_zoom(s: Shell, on: Bool) (label: "Magnify the dock") {
+action set_dock_zoom(s: Shell, on: Bool) (label: "Magnify the dock", group: "Dock") {
     s.dock_zoom = on
     s.tuned = true
 }

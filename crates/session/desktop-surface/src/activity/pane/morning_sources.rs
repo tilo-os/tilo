@@ -1,6 +1,6 @@
 //! Private source choices and provenance in the existing workspace catch-up.
 use super::{
-    HistorySelectionDetail, MorningSource, RoomActivityPane, RoomScope, SystemTime,
+    HistorySelectionDetail, MorningSource, SystemTime, WorkspaceActivityPane, WorkspaceScope,
     format_relative_time, t, t_args,
 };
 
@@ -15,7 +15,7 @@ fn morning_source_name(target: &ui::HistoryResourceTarget) -> String {
         .map_or_else(|| t("activity-morning-source-unnamed"), str::to_owned)
 }
 
-impl RoomActivityPane {
+impl WorkspaceActivityPane {
     /// Explicit device-private choices; never inferred from history or app installation.
     pub fn chosen_morning_sources(&self) -> &[MorningSource] {
         self.morning_sources
@@ -24,7 +24,7 @@ impl RoomActivityPane {
     }
 
     pub(super) fn selected_morning_source(&self) -> Option<MorningSource> {
-        if !self.host.morning_sources_available() || self.scope != RoomScope::ThisRoom {
+        if !self.host.morning_sources_available() || self.scope != WorkspaceScope::ThisWorkspace {
             return None;
         }
         let (start, end) = self.timeline.selection()?;
@@ -48,7 +48,7 @@ impl RoomActivityPane {
     }
 
     pub(super) fn toggle_morning_selection(&mut self) {
-        if self.scope != RoomScope::ThisRoom {
+        if self.scope != WorkspaceScope::ThisWorkspace {
             return;
         }
         let Some(source) = self.selected_morning_source() else {
@@ -83,13 +83,13 @@ impl RoomActivityPane {
         }
     }
 
-    /// Resolves only this room's presently visible, unredacted history. An old
+    /// Resolves only this workspace's presently visible, unredacted history. An old
     /// saved name is never displayed after its evidence disappears or is revoked.
     pub(super) fn morning_evidence(
         &self,
         key: &str,
     ) -> Option<(ui::HistoryResourceTarget, SystemTime)> {
-        if self.scope != RoomScope::ThisRoom {
+        if self.scope != WorkspaceScope::ThisWorkspace {
             return None;
         }
         let source = self
@@ -171,7 +171,7 @@ impl RoomActivityPane {
 
     pub(super) fn submit_morning_command(&mut self, key: &str, command: super::MorningCommand) {
         if command == super::MorningCommand::NextSource {
-            if self.scope == RoomScope::ThisRoom {
+            if self.scope == WorkspaceScope::ThisWorkspace {
                 let choices = self.chosen_morning_sources();
                 if let Some(index) = choices.iter().position(|source| source.key() == key) {
                     let offset = index
@@ -193,7 +193,7 @@ impl RoomActivityPane {
         else {
             return;
         };
-        if self.scope != RoomScope::ThisRoom || self.morning_evidence(key).is_none() {
+        if self.scope != WorkspaceScope::ThisWorkspace || self.morning_evidence(key).is_none() {
             return;
         }
         self.morning_command_message = self
@@ -206,7 +206,7 @@ impl RoomActivityPane {
         key: &str,
         evidence: Option<&(ui::HistoryResourceTarget, SystemTime)>,
     ) -> String {
-        if self.scope != RoomScope::ThisRoom || evidence.is_none() {
+        if self.scope != WorkspaceScope::ThisWorkspace || evidence.is_none() {
             return self.morning_source_label(evidence);
         }
         let payload = self
@@ -234,7 +234,7 @@ impl RoomActivityPane {
         else {
             return String::new();
         };
-        if self.scope != RoomScope::ThisRoom || self.morning_evidence(key).is_none() {
+        if self.scope != WorkspaceScope::ThisWorkspace || self.morning_evidence(key).is_none() {
             return t("activity-morning-payload-unavailable");
         }
         let mut text = self.host.morning_payload(&self.room, source).map_or_else(

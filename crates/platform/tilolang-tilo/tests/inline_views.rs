@@ -25,6 +25,15 @@ action done(x: Item) {
   x.done = true
 }
 
+default view b_card for Item
+
+view b_card(x: Item) {
+  column {
+    text("Item")
+    text(x.title)
+  }
+}
+
 view b_row(x: Item) {
   row(gap: .related) {
     text(x.title)
@@ -48,17 +57,16 @@ view a_main(x: b.Item) {
 
 view a_canvas() {
   column {
-    compose("test.b", record: "item-1", view: "b_row") {
-      text("well of b")
+    if let r = resource("item-1") {
+      show(r, view: "b_row")
+      show(r)
+    } else {
+      text("no item yet")
     }
-    compose("test.c", record: "c-1", view: "c_row") {
-      text("well of c")
-    }
-    compose("test.b", record: "item-1", view: "") {
-      text("well of an unnamed view")
-    }
-    compose("test.b", record: "item-1", view: "nope") {
-      text("well of a missing view")
+    if let r = resource("c-1") {
+      show(r)
+    } else {
+      text("a well")
     }
   }
 }
@@ -270,36 +278,21 @@ fn a_press_in_the_composed_view_invokes_the_callees_action_as_the_callee() {
 }
 
 #[test]
-fn compose_draws_a_view_named_by_text_and_its_block_where_none_runs_here() {
+fn show_draws_another_apps_resource_found_by_id_through_a_named_or_its_default_view() {
     let room = room("Milk");
     let view = room.canvas();
     let shown = texts(view.tree());
+    // The item through `b_row` (named), then through `b_card` (its type's default); the id no
+    // reading named stands as nothing found.
     assert_eq!(
-        shown[..3],
-        [
-            "Milk".to_owned(),
-            "well of c".to_owned(),
-            "well of an unnamed view".to_owned()
-        ],
+        shown,
+        vec!["Milk", "Item", "Milk", "a well"],
         "{:#?}",
         view.tree()
     );
     assert!(
-        !shown.iter().any(|t| t == "well of b"),
-        "a composed view replaces its block: {shown:?}"
-    );
-    assert!(
         view.find(&room.finish()).is_some(),
-        "the composed view's button stands in the tree"
-    );
-    let error = shown
-        .iter()
-        .find(|t| t.contains("nope"))
-        .unwrap_or_else(|| panic!("a missing view is an error the tree shows: {shown:?}"));
-    assert!(error.contains("has no view"), "{error}");
-    assert!(
-        !kinds(view.tree()).iter().any(|kind| kind == "compose"),
-        "every compose node resolves"
+        "the drawn view's button stands in the tree"
     );
 }
 
@@ -331,7 +324,7 @@ fn a_new_reading_runs_a_composed_place_again() {
         )
         .unwrap();
     assert!(!view.poll_patches().unwrap().is_empty());
-    assert_eq!(texts(view.tree())[0], "Eggs");
+    assert_eq!(texts(view.tree()), vec!["Eggs", "Item", "Eggs", "a well"]);
 }
 
 #[test]
@@ -340,9 +333,9 @@ fn a_composed_place_waits_for_its_first_reading_and_draws_it_when_it_arrives() {
     let mut view = room.canvas();
     let shown = texts(view.tree());
     assert_eq!(
-        shown.first().map(String::as_str),
-        Some("well of c"),
-        "before its reading the place is empty, not its block nor an error: {shown:?}"
+        shown,
+        vec!["no item yet", "a well"],
+        "before its reading the resource is not known here: {shown:?}"
     );
     room.host
         .runtime()
@@ -351,6 +344,9 @@ fn a_composed_place_waits_for_its_first_reading_and_draws_it_when_it_arrives() {
             &json!({ "title": "Milk", "done": false }).to_string(),
         )
         .unwrap();
-    assert!(!view.poll_patches().unwrap().is_empty());
-    assert_eq!(texts(view.tree())[0], "Milk");
+    assert!(
+        !view.poll_patches().unwrap().is_empty(),
+        "its first reading runs the view that looked it up"
+    );
+    assert_eq!(texts(view.tree()), vec!["Milk", "Item", "Milk", "a well"]);
 }

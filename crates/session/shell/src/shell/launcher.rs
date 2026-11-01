@@ -13,16 +13,14 @@
 //! through [`drain_events`], drained once per frame.
 
 mod app_cache;
+pub(crate) use crate::shell::installed_registry::installed_earlier_ids;
 pub use app_cache::invalidate_app_cache;
 #[cfg(test)]
 use app_cache::{
     APP_CACHE, APP_CACHE_EPOCH, APP_CACHE_WATCH, expire_watched_app_cache, forget_app_cache,
     record_app_read, registry_changed,
 };
-use app_cache::{
-    APP_CACHE_REVISION, RegistryStamp, ensure_app_cache_watch, installed_apps_snapshot,
-    registry_stamps,
-};
+use app_cache::{APP_CACHE_REVISION, ensure_app_cache_watch, installed_apps_snapshot};
 pub(crate) use app_cache::{
     installed_apps_epoch, installed_apps_without_waiting, load_installed_apps,
 };
@@ -2156,29 +2154,6 @@ pub(crate) fn installed_app(
     });
     ensure_app_cache_watch();
     app
-}
-
-/// The ids installed apps were published under before, as the catalogue believes them
-/// ([`tilo_installed_apps::earlier_ids`]): the one lookup a window, a launch or an open written
-/// under an earlier id goes through. Read again only when a registry changed; empty for an
-/// unreadable catalogue.
-pub(crate) fn installed_earlier_ids() -> tilo_action_policy::EarlierIds {
-    static EARLIER: Mutex<Option<(Vec<Option<RegistryStamp>>, tilo_action_policy::EarlierIds)>> =
-        Mutex::new(None);
-    let stamps = registry_stamps();
-    if let Some((at, ids)) = lock(&EARLIER).as_ref()
-        && *at == stamps
-    {
-        return ids.clone();
-    }
-    let ids = package_store::Catalog::from_env()
-        .ok()
-        .and_then(|catalog| tilo_installed_apps::earlier_ids(&catalog).ok())
-        .unwrap_or_default();
-    // Every decision this process makes without a table of its own reads these too.
-    tilo_action_policy::earlier::register_all(&ids);
-    *lock(&EARLIER) = Some((stamps, ids.clone()));
-    ids
 }
 
 /// The installed app `package_id` names: its own, or the app that took the place of the id it

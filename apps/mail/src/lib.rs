@@ -61,6 +61,7 @@ pub mod bindings;
 pub mod compose;
 pub(crate) mod connect;
 pub mod copies;
+pub(crate) mod custody;
 pub mod engine;
 #[cfg(all(feature = "live", any(test, feature = "fake-servers")))]
 #[allow(

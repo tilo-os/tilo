@@ -78,11 +78,12 @@ pub const PRIMS: &[Prim] = &[
     // A block's source rendered inline (`tilolang_runtime::embed`). `source` is `Text`, `author` a
     // `Principal`, and `invocation` the `host.Invocation` recorded for an action block.
     prim_of("embed", &["source"], &["author", "invocation"]),
-    // Another package's view of one of its resources, drawn inline as that package's code
-    // (`tilolang_runtime::compose`): `app`, `record` (the resource's id) and `view` (its id or
-    // name) are `Text`, as an arrangement keeps them. The block stands there instead when the
-    // view can't be composed here (nothing of the app runs here, or no view or record named).
-    prim_of("compose", &["app"], &["record", "view"]),
+    // A resource drawn through its type's default view, as its own package draws it, whatever
+    // its type: what a shell composes a place from when it knows the resource by id alone
+    // (`show(r)`, shell.md §8). `of` is a resource; its type must have a default view
+    // (`meta(r).opens`). `view` (`Text`, a view's id or name, as an arrangement keeps it) draws
+    // it through another of its package's views that takes it alone; empty for the default.
+    prim_of("show", &["of"], &["view"]),
 ];
 
 /// How many rows a `list` inside a `card` shows: a card is a summary of its resource, which it
@@ -214,6 +215,7 @@ pub const BUILTINS: &[&str] = &[
     "dated",
     "open",
     "set",
+    "resource",
 ];
 
 /// The fields of `workspace`.

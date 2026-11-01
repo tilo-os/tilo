@@ -17,6 +17,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
+use std::rc::Rc;
 
 use collab_types::presence::UserId;
 use serde_json::Value as Json;
@@ -25,11 +26,19 @@ use tilo_actions::{
     OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
 use tilo_desktop_model::own_arrangement::{self, Place, SHELL, Strips};
-use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, WindowWidth};
+use tilo_desktop_model::{
+    CanvasPlace, DesktopTree, GroupId, StripId, TabId, WindowWidth, WorkspaceId,
+};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::Published;
 use ui::automerge::{AutoCommit, ChangeHash};
 use ui::state::UndoLog;
+
+/// The size a place made from a resource takes on the canvas when the
+/// caller names none: the framed canvas's window, in canvas pixels.
+const DEFAULT_WIDTH: i64 = 720;
+/// See [`DEFAULT_WIDTH`].
+const DEFAULT_HEIGHT: i64 = 520;
 
 /// The operation type every arranging action carries.
 pub const OPERATION: &str = "tilo.shell.arranging";
@@ -85,6 +94,146 @@ pub enum ArrangementAction {
     /// Pin the place `place` (`pinned`), so an agent's arrangement leaves it
     /// alone (shell.md §5), or unpin it.
     Pin { place: u64, pinned: bool },
+    /// Stand the resource `resource` on the canvas as its view `view`
+    /// (empty for its primary published view), at `(x, y)` canvas pixels.
+    /// The place is the new entry `place`, alone in its own strip `strip`,
+    /// in the row `row`; `shows` is the resource's app, resolved here and
+    /// never passed in (shell.md §8: showing something is an action on the
+    /// arrangement, not on the resource).
+    Place {
+        workspace: u64,
+        row: u64,
+        strip: u64,
+        place: u64,
+        resource: String,
+        #[serde(default)]
+        view: String,
+        x: i64,
+        y: i64,
+        width: i64,
+        height: i64,
+    },
+    /// Text typed on the canvas: the top result of the system's `find` stands
+    /// there as its primary view (or `view`). The session resolves it into a
+    /// [`Place`] when the action is invoked, so the record only ever holds
+    /// what was placed, never the words it was found by.
+    PlaceFound {
+        text: String,
+        #[serde(default)]
+        view: String,
+        x: i64,
+        y: i64,
+    },
+}
+
+/// Where a place made on the desk now goes: the workspace in front, its
+/// row, and the ids the place's own strip and the place take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Surface {
+    pub workspace: u64,
+    pub row: u64,
+    pub strip: u64,
+    pub place: u64,
+}
+
+/// The system's search, as the arrangement reaches it: the same `find` the
+/// palette and an agent's `tilo` tool run. The session sets it, so text typed
+/// on the canvas finds a resource through the one index and the one ranking,
+/// never a search of its own (shell.md §8, "Finding what to place").
+pub type Find = Rc<dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>>;
+
+/// The first resource `text` finds, as the arrangement places it: the top
+/// result that names a resource (an app's own search hit), else the resource
+/// an action hit acts on, else `None` for a query no result answers.
+#[must_use]
+pub fn found(text: &str, find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>) -> Option<String> {
+    let hits = find(text);
+    // What a hit opens is the resource it names: an annotated entry's own
+    // anchor, or the one an action hit acts on. The best such hit wins, in
+    // the search's order.
+    hits.iter().find_map(|hit| match &hit.target {
+        tilo_desktop_search::Target::Invoke(invoke)
+            if invoke.address.action == tilo_desktop_search::OPEN_ACTION =>
+        {
+            Some(invoke.address.resource.as_str().to_owned())
+        }
+        tilo_desktop_search::Target::Action(action) => Some(action.resource.as_str().to_owned()),
+        _ => None,
+    })
+}
+
+/// A resource as the arrangement makes a place of it: the app publishing
+/// it, its views (the primary first when it declares one), and what it is
+/// called. What `place` resolves a resource id against, from what the
+/// session publishes now.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Target {
+    /// The app that publishes the resource, by its canonical id.
+    pub app: String,
+    /// The resource's published views (`ResourceSpec::views`), primary
+    /// first.
+    pub views: Vec<String>,
+    /// The resource's label, as the place is shown under.
+    pub title: String,
+}
+
+impl Target {
+    /// The view a place shows the resource through: `view` when the
+    /// resource publishes it, else its primary view, else its first, else
+    /// empty for the app's own default.
+    #[must_use]
+    pub fn chosen_view(&self, view: &str) -> String {
+        let view = view.trim();
+        if !view.is_empty() && self.views.iter().any(|held| held == view) {
+            return view.to_owned();
+        }
+        self.views.first().cloned().unwrap_or_default()
+    }
+}
+
+/// The resources the session publishes now, by id: what a place made from a
+/// resource takes its app and view from. The session hands it the door's
+/// tree each time it changes, and never reads it inside an invocation.
+#[derive(Default)]
+pub struct Catalog {
+    by_id: BTreeMap<String, Target>,
+}
+
+impl Catalog {
+    /// Take in `resources` (a door's whole tree), recursing into children.
+    pub fn take(&mut self, resources: &[ResourceSpec]) {
+        let mut by_id = BTreeMap::new();
+        for resource in resources {
+            collect_targets(resource, &mut by_id);
+        }
+        self.by_id = by_id;
+    }
+
+    /// The resource `id` as it is published, if it is.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<&Target> {
+        self.by_id.get(id)
+    }
+}
+
+/// Every resource of `resource` and its children, by id, with the views it
+/// publishes primary first.
+fn collect_targets(resource: &ResourceSpec, out: &mut BTreeMap<String, Target>) {
+    let mut views: Vec<&tilo_actions::ResourceViewSpec> = resource.views.iter().collect();
+    views.sort_by_key(|view| std::cmp::Reverse(view.primary));
+    if let Some(app) = resource.app() {
+        out.insert(
+            resource.id.as_str().to_owned(),
+            Target {
+                app: app.to_owned(),
+                views: views.into_iter().map(|view| view.id.clone()).collect(),
+                title: resource.label.clone(),
+            },
+        );
+    }
+    for child in &resource.children {
+        collect_targets(child, out);
+    }
 }
 
 impl ArrangementAction {
@@ -113,6 +262,9 @@ pub struct Arrangement {
     undo: UndoLog,
     /// The desk whose windows the arrangement places.
     handle: DesktopHandle,
+    /// The resources the session publishes now, by id: what a place made
+    /// from a resource reads its app and views from ([`Catalog`]).
+    catalog: Rc<RefCell<Catalog>>,
     /// Actions that arrived under a gesture or while the person typed: they
     /// run in order once it ends.
     waiting: RefCell<VecDeque<(String, ArrangementAction)>>,
@@ -168,10 +320,98 @@ impl Arrangement {
             doc,
             undo,
             handle,
+            catalog: Rc::new(RefCell::new(Catalog::default())),
             waiting: RefCell::new(VecDeque::new()),
             seen: RefCell::new(None),
             seen_at: Cell::new(0),
         }
+    }
+
+    /// The resources the session publishes now, by id: what a place made
+    /// from a resource reads its app and views from. The session keeps it in
+    /// step with the door's tree.
+    #[must_use]
+    pub fn targets(&self) -> Rc<RefCell<Catalog>> {
+        Rc::clone(&self.catalog)
+    }
+
+    /// The surface the desk shows at `(x, y)` as a place made there stands:
+    /// the workspace in front, its row, the id its own strip takes and the
+    /// id its place takes. Every id is this device's: a place made here is
+    /// this person's, synced by the record like any other.
+    ///
+    /// # Errors
+    /// The desk has no workspace in front to put anything on.
+    pub fn surface_at(&self) -> Result<Surface, String> {
+        let tree = self.handle.read(Clone::clone);
+        let workspace = tree
+            .active_workspace()
+            .ok_or("the desk has no workspace in front")?;
+        let row = tree
+            .active_strip
+            .get(&workspace.id)
+            .copied()
+            .or_else(|| workspace.strips.first().map(|row| row.id))
+            .ok_or("the workspace in front has no row")?;
+        let strip = self.handle.mint_id();
+        let place = self.handle.mint_id();
+        Ok(Surface {
+            workspace: workspace.id.0,
+            row: row.0,
+            strip,
+            place,
+        })
+    }
+
+    /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s:
+    /// the top result of the system's `find` (`find`), resolved against what the
+    /// session publishes now ([`Catalog`]), standing at `at` through the
+    /// arranging action [`ArrangementAction::Place`] — one attributed, undoable
+    /// change of the person's record (shell.md §8). `view` empty shows the
+    /// resource's primary view.
+    ///
+    /// Returns the place's id, or `None` when nothing the text finds is a
+    /// resource the arrangement can place.
+    ///
+    /// # Errors
+    /// Why the place could not be made, and what the text found that it could
+    /// not place.
+    pub fn place_found(
+        &mut self,
+        asked: &str,
+        text: &str,
+        view: &str,
+        at: (i64, i64),
+        find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
+        busy: Busy,
+    ) -> Result<Option<u64>, String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err("nothing is typed to place".into());
+        }
+        let Some(resource) = found(text, find) else {
+            return Err(format!("nothing matches {text:?}"));
+        };
+        if self.catalog.borrow().get(&resource).is_none() {
+            return Err(format!(
+                "`{resource}` publishes nothing an arrangement shows"
+            ));
+        }
+        let surface = self.surface_at()?;
+        let action = ArrangementAction::Place {
+            workspace: surface.workspace,
+            row: surface.row,
+            strip: surface.strip,
+            place: surface.place,
+            resource,
+            view: view.to_owned(),
+            x: at.0,
+            y: at.1,
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
+        };
+        self.ask(asked, action, busy)?;
+        Ok(Some(surface.place))
     }
 
     /// The arrangement as this shell reads it.
@@ -413,7 +653,8 @@ impl Arrangement {
         // where they pinned something: a pinned place is theirs to move
         // (shell.md §5's default, "not what they pinned").
         let by_the_person = asked == self.person;
-        if !change(&mut strips, action, by_the_person)? {
+        let catalog = self.catalog.clone();
+        if !change(&mut strips, action, by_the_person, &catalog)? {
             return Ok(());
         }
         own_arrangement::write(&mut self.doc, &strips).map_err(|error| error.to_string())?;
@@ -486,7 +727,8 @@ impl Arrangement {
         let mut strips = own_arrangement::read(&self.doc);
         let mut changed = adopt_structure(&mut strips, &became);
         for action in actions_between(&was, &became) {
-            match change(&mut strips, &action, true) {
+            let catalog = self.catalog.clone();
+            match change(&mut strips, &action, true, &catalog) {
                 Ok(made) => changed |= made,
                 Err(why) => tracing::warn!(why, "the desk's own change could not be kept"),
             }
@@ -525,11 +767,11 @@ impl Arrangement {
     /// the desk's own, and so is which of them is in front on this device;
     /// the rows, strips and places are the record's.
     fn place(&self) {
-        let (names, shown) = self.handle.read(|tree| {
-            let names: BTreeMap<u64, String> = tree
+        let (held, shown) = self.handle.read(|tree| {
+            let held: BTreeMap<u64, tilo_desktop_model::Workspace> = tree
                 .workspaces
                 .iter()
-                .map(|workspace| (workspace.id.0, workspace.name.clone()))
+                .map(|workspace| (workspace.id.0, workspace.clone()))
                 .collect();
             let shown = (
                 tree.active,
@@ -537,10 +779,21 @@ impl Arrangement {
                 tree.active_group.clone(),
                 tree.outputs.clone(),
             );
-            (names, shown)
+            (held, shown)
         });
         let strips = own_arrangement::read(&self.doc);
-        let mut tree = strips.to_tree(|id| names.get(&id.0).cloned());
+        let mut tree = strips.to_tree(|id| held.get(&id.0).map(|workspace| workspace.name.clone()));
+        // A workspace the desk holds stays the desk's: its room, who may do
+        // what in it, its shortcuts and the rest are never the arrangement's.
+        // Only its rows, strips and places are the record's.
+        for workspace in &mut tree.workspaces {
+            if let Some(kept) = held.get(&workspace.id.0) {
+                let mut kept = kept.clone();
+                kept.strips = std::mem::take(&mut workspace.strips);
+                kept.arrangement = std::mem::take(&mut workspace.arrangement);
+                *workspace = kept;
+            }
+        }
         // Which workspace and strip are in front is this device's, and
         // survives the record's change.
         let (active, active_strip, active_group, outputs) = shown;
@@ -575,6 +828,7 @@ fn change(
     strips: &mut Strips,
     action: &ArrangementAction,
     by_the_person: bool,
+    catalog: &Rc<RefCell<Catalog>>,
 ) -> Result<bool, String> {
     match action {
         ArrangementAction::OpenInto {
@@ -633,7 +887,116 @@ fn change(
             }
             Ok(strips.pin(*place, *pinned))
         }
+        // Resolved into a `Place` at invocation, where the system's search
+        // and what is published now are; the record never holds the words.
+        ArrangementAction::PlaceFound { .. } => {
+            Err("a place found by text is resolved before it reaches the record".into())
+        }
+        ArrangementAction::Place {
+            workspace,
+            row,
+            strip,
+            place,
+            resource,
+            view,
+            x,
+            y,
+            width,
+            height,
+        } => place_at(
+            strips,
+            catalog,
+            Placed {
+                workspace: *workspace,
+                row: *row,
+                strip: *strip,
+                place: *place,
+                resource,
+                view,
+                x: *x,
+                y: *y,
+                width: *width,
+                height: *height,
+            },
+        ),
     }
+}
+
+/// What [`change`] is asked to place: the resource `resource`, through
+/// `view`, as the place `place` in its own strip `strip` of the row `row`
+/// of `workspace`, at `(x, y)` canvas pixels, `width` by `height`.
+#[derive(Clone, Copy)]
+struct Placed<'a> {
+    workspace: u64,
+    row: u64,
+    strip: u64,
+    place: u64,
+    resource: &'a str,
+    view: &'a str,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+}
+
+/// Stand `asked` on the canvas as one of its published views: an entry
+/// naming the resource and the view, with `shows` from the resource's app
+/// (shell.md §8). Whether the record changed.
+fn place_at(
+    strips: &mut Strips,
+    catalog: &Rc<RefCell<Catalog>>,
+    asked: Placed<'_>,
+) -> Result<bool, String> {
+    let resource = asked.resource.trim();
+    if resource.is_empty() {
+        return Err("a place names the resource it shows".into());
+    }
+    let target = catalog
+        .borrow()
+        .get(resource)
+        .cloned()
+        .ok_or_else(|| format!("nothing published is `{resource}`"))?;
+    let id: TabId = asked.place;
+    if strips.place(id).is_some() {
+        return Err("that place is open already".into());
+    }
+    let placed = Place {
+        id,
+        shows: target.app.clone(),
+        view: target.chosen_view(asked.view),
+        record: resource.to_owned(),
+        state: Json::Null,
+        title: target.title,
+        pinned: false,
+        shell: SHELL.to_owned(),
+    };
+    let canvas = CanvasPlace {
+        x: clamp_coord(asked.x),
+        y: clamp_coord(asked.y),
+        width: clamp_side(asked.width),
+        height: clamp_side(asked.height),
+    };
+    if strips.place_at_canvas(
+        WorkspaceId(asked.workspace),
+        StripId(asked.row),
+        asked.strip,
+        placed,
+        canvas,
+    ) {
+        Ok(true)
+    } else {
+        Err("that workspace is not on this desk, or that place or strip is taken".into())
+    }
+}
+
+/// A canvas coordinate as a place keeps it.
+fn clamp_coord(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
+}
+
+/// A canvas side, at least one pixel.
+fn clamp_side(value: i64) -> u32 {
+    u32::try_from(value.max(1)).unwrap_or(u32::MAX)
 }
 
 /// Where the person's arrangement is kept on this device: beside the desk,
@@ -681,6 +1044,7 @@ fn verb(action: &ArrangementAction) -> &'static str {
         ArrangementAction::Resize { .. } => "resize",
         ArrangementAction::Close { .. } => "close",
         ArrangementAction::Pin { .. } => "pin",
+        ArrangementAction::Place { .. } | ArrangementAction::PlaceFound { .. } => "place",
     }
 }
 
@@ -694,88 +1058,166 @@ fn user(person: &str) -> UserId {
 /// them, and the catalogue lists them.
 #[must_use]
 pub fn resources() -> Vec<ResourceSpec> {
+    let arrangement = arranging_actions()
+        .into_iter()
+        .fold(
+            ResourceSpec::new(RESOURCE, "shell", "The person's arrangement"),
+            ResourceSpec::with_action,
+        )
+        .with_action(step_action("undo", "Undo the last arranging step"))
+        .with_action(step_action("redo", "Redo the last undone arranging step"));
     vec![
-        ResourceSpec::new(RESOURCE, "shell", "The person's arrangement")
-            .with_action(action(
-                "open-into",
-                "Open a place into a strip",
-                vec![
-                    required("strip", ParamType::Integer, "The strip to open into"),
-                    required("place", ParamType::Integer, "The id the new place takes"),
-                    required("shows", ParamType::Text, "The app it shows"),
-                    optional("after", ParamType::Integer, "The place it follows"),
-                    optional("view", ParamType::Text, "The view it shows through"),
-                    optional("record", ParamType::Text, "The record it shows"),
-                ],
-                |args| ArrangementAction::OpenInto {
-                    strip: count(args, "strip"),
-                    place: count(args, "place"),
-                    shows: text(args, "shows"),
-                    after: args
-                        .integer("after")
-                        .map(|after| after.max(0).cast_unsigned()),
-                    view: args.text("view").unwrap_or_default().to_owned(),
-                    record: args.text("record").unwrap_or_default().to_owned(),
-                    state: Json::Null,
-                },
-            ))
-            .with_action(action(
-                "move-place",
-                "Move a place into a row",
-                vec![
-                    required("place", ParamType::Integer, "The place to move"),
-                    required("row", ParamType::Integer, "The row it goes into"),
-                    optional("before", ParamType::Integer, "The place it goes before"),
-                ],
-                |args| ArrangementAction::Move {
-                    place: count(args, "place"),
-                    row: count(args, "row"),
-                    before: args
-                        .integer("before")
-                        .map(|before| before.max(0).cast_unsigned()),
-                },
-            ))
-            .with_action(action(
-                "resize-strip",
-                "Resize a strip",
-                vec![
-                    required("strip", ParamType::Integer, "The strip to resize"),
-                    required(
-                        "permille",
-                        ParamType::Integer,
-                        "Its width in per-mille of the row",
-                    ),
-                ],
-                |args| ArrangementAction::Resize {
-                    strip: count(args, "strip"),
-                    permille: u32::try_from(args.integer("permille").unwrap_or(1)).unwrap_or(1),
-                },
-            ))
-            .with_action(action(
-                "close-place",
-                "Close a place",
-                vec![required("place", ParamType::Integer, "The place to close")],
-                |args| ArrangementAction::Close {
-                    place: count(args, "place"),
-                },
-            ))
-            .with_action(action(
-                "pin-place",
-                "Pin a place, so an agent's arrangement leaves it alone",
-                vec![
-                    required("place", ParamType::Integer, "The place to pin"),
-                    optional("pinned", ParamType::Boolean, "Whether it is pinned"),
-                ],
-                |args| ArrangementAction::Pin {
-                    place: count(args, "place"),
-                    pinned: args.boolean("pinned").unwrap_or(true),
-                },
-            ))
-            .with_action(step_action("undo", "Undo the last arranging step"))
-            .with_action(step_action("redo", "Redo the last undone arranging step")),
+        arrangement,
         ResourceSpec::new(RECORD_RESOURCE, "shell", "The person's arrangement record")
             .with_action(step_action("undo", "Undo the last arranging step"))
             .with_action(step_action("redo", "Redo the last undone arranging step")),
+    ]
+}
+
+/// The actions that change an arrangement, one per change: what a drag's
+/// end, the palette, a script and an agent invoke.
+fn arranging_actions() -> Vec<ActionSpec> {
+    let mut all = structural_actions();
+    all.extend(placing_actions());
+    all
+}
+
+/// The actions that move, size and close what is already arranged.
+fn structural_actions() -> Vec<ActionSpec> {
+    vec![
+        action(
+            "open-into",
+            "Open a place into a strip",
+            vec![
+                required("strip", ParamType::Integer, "The strip to open into"),
+                required("place", ParamType::Integer, "The id the new place takes"),
+                required("shows", ParamType::Text, "The app it shows"),
+                optional("after", ParamType::Integer, "The place it follows"),
+                optional("view", ParamType::Text, "The view it shows through"),
+                optional("record", ParamType::Text, "The record it shows"),
+            ],
+            |args| ArrangementAction::OpenInto {
+                strip: count(args, "strip"),
+                place: count(args, "place"),
+                shows: text(args, "shows"),
+                after: args
+                    .integer("after")
+                    .map(|after| after.max(0).cast_unsigned()),
+                view: args.text("view").unwrap_or_default().to_owned(),
+                record: args.text("record").unwrap_or_default().to_owned(),
+                state: Json::Null,
+            },
+        ),
+        action(
+            "move-place",
+            "Move a place into a row",
+            vec![
+                required("place", ParamType::Integer, "The place to move"),
+                required("row", ParamType::Integer, "The row it goes into"),
+                optional("before", ParamType::Integer, "The place it goes before"),
+            ],
+            |args| ArrangementAction::Move {
+                place: count(args, "place"),
+                row: count(args, "row"),
+                before: args
+                    .integer("before")
+                    .map(|before| before.max(0).cast_unsigned()),
+            },
+        ),
+        action(
+            "resize-strip",
+            "Resize a strip",
+            vec![
+                required("strip", ParamType::Integer, "The strip to resize"),
+                required(
+                    "permille",
+                    ParamType::Integer,
+                    "Its width in per-mille of the row",
+                ),
+            ],
+            |args| ArrangementAction::Resize {
+                strip: count(args, "strip"),
+                permille: u32::try_from(args.integer("permille").unwrap_or(1)).unwrap_or(1),
+            },
+        ),
+        action(
+            "close-place",
+            "Close a place",
+            vec![required("place", ParamType::Integer, "The place to close")],
+            |args| ArrangementAction::Close {
+                place: count(args, "place"),
+            },
+        ),
+        action(
+            "pin-place",
+            "Pin a place, so an agent's arrangement leaves it alone",
+            vec![
+                required("place", ParamType::Integer, "The place to pin"),
+                optional("pinned", ParamType::Boolean, "Whether it is pinned"),
+            ],
+            |args| ArrangementAction::Pin {
+                place: count(args, "place"),
+                pinned: args.boolean("pinned").unwrap_or(true),
+            },
+        ),
+    ]
+}
+
+/// The actions that put a resource on the canvas: by naming it and one of
+/// its views, or by what a text finds (shell.md §8).
+fn placing_actions() -> Vec<ActionSpec> {
+    vec![
+        action(
+            "place",
+            "Put a resource on the canvas as one of its views",
+            vec![
+                // A workspace's id is its room's, across all of u64: text, as
+                // the arrangement record names it, where an integer stops at
+                // i64.
+                required(
+                    "workspace",
+                    ParamType::Text,
+                    "The workspace whose canvas it stands on, by its id",
+                ),
+                required("row", ParamType::Integer, "The row it stands in"),
+                required("strip", ParamType::Integer, "The strip it stands in"),
+                required("place", ParamType::Integer, "The id the new place takes"),
+                required("resource", ParamType::Resource, "The resource it shows"),
+                optional("view", ParamType::Text, "The view it shows it through"),
+                optional("x", ParamType::Integer, "Its canvas x"),
+                optional("y", ParamType::Integer, "Its canvas y"),
+                optional("width", ParamType::Integer, "Its width in canvas pixels"),
+                optional("height", ParamType::Integer, "Its height in canvas pixels"),
+            ],
+            |args| ArrangementAction::Place {
+                workspace: id_text(args, "workspace"),
+                row: count(args, "row"),
+                strip: count(args, "strip"),
+                place: count(args, "place"),
+                resource: text(args, "resource"),
+                view: args.text("view").unwrap_or_default().to_owned(),
+                x: args.integer("x").unwrap_or_default(),
+                y: args.integer("y").unwrap_or_default(),
+                width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
+                height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
+            },
+        ),
+        action(
+            "place-found",
+            "Put what a text finds on the canvas",
+            vec![
+                required("text", ParamType::Text, "What to find and place"),
+                optional("view", ParamType::Text, "The view it shows it through"),
+                optional("x", ParamType::Integer, "Its canvas x"),
+                optional("y", ParamType::Integer, "Its canvas y"),
+            ],
+            |args| ArrangementAction::PlaceFound {
+                text: text(args, "text"),
+                view: args.text("view").unwrap_or_default().to_owned(),
+                x: args.integer("x").unwrap_or_default(),
+                y: args.integer("y").unwrap_or_default(),
+            },
+        ),
     ]
 }
 
@@ -852,6 +1294,14 @@ fn count(args: &ActionArgs, name: &str) -> u64 {
         .cast_unsigned()
 }
 
+/// An id given as text: one no workspace has (`0`) when it is not a number,
+/// which the action then refuses as naming no workspace.
+fn id_text(args: &ActionArgs, name: &str) -> u64 {
+    args.text(name)
+        .and_then(|id| id.trim().parse().ok())
+        .unwrap_or_default()
+}
+
 fn text(args: &ActionArgs, name: &str) -> String {
     args.text(name).unwrap_or_default().to_owned()
 }
@@ -866,6 +1316,9 @@ pub struct ArrangementDoor {
     busy: std::rc::Rc<dyn Fn() -> Busy>,
     /// Who asks, for an action that names no one (see [`Self::named`]).
     actor: RefCell<String>,
+    /// The system's `find`, as the palette and an agent's `tilo` tool run it:
+    /// what text typed on the canvas places (shell.md §8).
+    find: Find,
 }
 
 impl ArrangementDoor {
@@ -875,11 +1328,13 @@ impl ArrangementDoor {
     pub fn new(
         arrangement: std::rc::Rc<RefCell<Arrangement>>,
         busy: std::rc::Rc<dyn Fn() -> Busy>,
+        find: Find,
     ) -> Self {
         Self {
             arrangement,
             busy,
             actor: RefCell::new(String::new()),
+            find,
         }
     }
 
@@ -925,14 +1380,36 @@ impl Published for ArrangementDoor {
             ArrangementAction::decode(&encoded.type_id, &encoded.payload).ok_or_else(|| {
                 tilo_actions::DoorError::UnregisteredType("tilo.shell.arranging".to_owned())
             })?;
-        let asked = self.actor.borrow().clone();
+        let mut asked = self.actor.borrow().clone();
+        // An action that names no one is the person's own input: theirs to
+        // take back, and never made to wait for themselves.
+        if asked.is_empty() {
+            asked = self.person();
+        }
         // The person's own change is what their gesture is making; only
         // anyone else's waits for them to finish.
-        let busy = if asked.is_empty() || asked == self.person() {
+        let busy = if asked == self.person() {
             Busy::default()
         } else {
             (self.busy)()
         };
+        // A place found by text is resolved here, where the search and what
+        // is published now are: the record only ever holds what was placed.
+        if let ArrangementAction::PlaceFound { text, view, x, y } = &action {
+            let spot = (*x, *y);
+            let find = Rc::clone(&self.find);
+            let placed = self
+                .arrangement
+                .borrow_mut()
+                .place_found(&asked, text, view, spot, &*find, busy);
+            placed.map_err(|why| tilo_actions::DoorError::Unavailable {
+                code: "nothing_to_place".to_owned(),
+                reason: why,
+            })?;
+            return Ok(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ));
+        }
         self.arrangement
             .borrow_mut()
             .ask(&asked, action, busy)
@@ -991,6 +1468,11 @@ impl ArrangementDoor {
 /// shows, ignoring the shell stamps and orders.
 fn same_places(one: &Strips, other: &Strips) -> bool {
     one.rows.len() == other.rows.len()
+        && one
+            .rows
+            .iter()
+            .zip(&other.rows)
+            .all(|(a, b)| a.id == b.id && a.name == b.name)
         && one.strips.len() == other.strips.len()
         && one.strips.iter().zip(&other.strips).all(|(a, b)| {
             a.id == b.id
@@ -999,7 +1481,7 @@ fn same_places(one: &Strips, other: &Strips) -> bool {
         })
 }
 
-/// Take in the rows and strips the desk made or removed, so the places the
+/// Take in the rows and strips the desk made, renamed or removed, so the places the
 /// same pass opened have a strip to be in. Whether anything changed.
 fn adopt_structure(strips: &mut Strips, became: &Strips) -> bool {
     let was = strips.clone();
@@ -1009,8 +1491,14 @@ fn adopt_structure(strips: &mut Strips, became: &Strips) -> bool {
         }
     }
     for row in &became.rows {
-        if strips.row(row.workspace, row.id).is_none() {
-            strips.rows.push(row.clone());
+        match strips
+            .rows
+            .iter_mut()
+            .find(|held| held.workspace == row.workspace && held.id == row.id)
+        {
+            // A row the person renamed on the desk is renamed in the record.
+            Some(held) => held.name.clone_from(&row.name),
+            None => strips.rows.push(row.clone()),
         }
     }
     // A row the desk no longer has goes, with its strips.

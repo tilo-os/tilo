@@ -350,7 +350,6 @@ impl QsRefresh {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::DisplayBrightness;
     use crate::actions::QsActionAvailability;
     use crate::device::reads::FieldReading;
     use os_actions as qs;
@@ -362,12 +361,6 @@ pub(crate) mod tests {
     pub(crate) struct NoReads;
 
     impl DeviceReads for NoReads {
-        fn brightness(&self) -> Option<f32> {
-            None
-        }
-        fn displays(&self) -> Vec<DisplayBrightness> {
-            Vec::new()
-        }
         fn bluetooth(&self) -> Option<bool> {
             None
         }
@@ -644,14 +637,6 @@ pub(crate) mod tests {
     }
 
     impl DeviceReads for Arc<Counting> {
-        fn brightness(&self) -> Option<f32> {
-            self.hit("brightness");
-            None
-        }
-        fn displays(&self) -> Vec<DisplayBrightness> {
-            self.hit("displays");
-            Vec::new()
-        }
         fn bluetooth(&self) -> Option<bool> {
             self.hit("bluetooth");
             Some(true)
@@ -744,7 +729,7 @@ pub(crate) mod tests {
             "Wi-Fi is taken from the radio snapshot, not a network list: {calls:?}"
         );
 
-        let expected: [(QsField, &[&str]); 8] = [
+        let expected: [(QsField, &[&str]); 7] = [
             (QsField::Wifi, &["radios"]),
             (QsField::Airplane, &["radios"]),
             (QsField::Mobile, &["radios"]),
@@ -752,7 +737,6 @@ pub(crate) mod tests {
             (QsField::Wired, &["wired"]),
             (QsField::Power, &["power"]),
             (QsField::Vpn, &["vpns"]),
-            (QsField::Brightness, &["brightness", "displays"]),
         ];
         for (field, reads) in expected {
             r.kick_field(field);

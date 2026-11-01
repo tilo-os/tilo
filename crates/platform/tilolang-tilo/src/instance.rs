@@ -298,6 +298,9 @@ pub struct Instance {
     history: Vec<HistoryAsk>,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
+    /// Why the scenario a capture staged did not run whole, until the capture takes it: a
+    /// capture of a half-run scenario is no picture of it.
+    stage_failed: Option<String>,
     started: bool,
     loading: bool,
     moved: bool,
@@ -377,6 +380,7 @@ impl Instance {
             pending: Pending::default(),
             history: Vec::new(),
             staged: None,
+            stage_failed: None,
             started: false,
             loading: false,
             moved: false,
@@ -615,6 +619,13 @@ impl Instance {
     /// Run the scenario `scenario` once the host runs, as a capture stages it.
     pub fn stage(&mut self, scenario: Option<&str>) {
         self.staged = scenario.map(str::to_owned);
+        self.stage_failed = None;
+    }
+
+    /// Why the scenario [`stage`](Self::stage) named failed, or a package it uses failed its
+    /// first scenario, once the host ran it: a capture refuses to picture a half-staged room.
+    pub fn take_stage_failure(&mut self) -> Option<String> {
+        self.stage_failed.take()
     }
 
     /// The room record moved: what the views read may have changed, and outside effects may
@@ -1285,17 +1296,29 @@ impl Instance {
                 .find(|scenario| scenario.name == name)
                 .cloned()
         }) else {
-            tracing::warn!(app = self.app, scenario = name, "no such scenario");
+            self.stage_failed = Some(format!("{} has no scenario \"{name}\"", self.app));
             return;
         };
         // The packages this one points into (a board's apps) are staged first, each with its
         // first scenario, so a scenario that attaches their roots shows them filled.
+        let mut failed = Vec::new();
         for used in used_packages(host, &self.app) {
-            if let Some(first) = used.meta.scenarios.first() {
-                let _ = self.run_scenario(host, &used.meta.app, &first.name, &first.action);
+            if let Some(first) = used.meta.scenarios.first()
+                && let Err(why) = self.run_scenario(host, &used.meta.app, &first.action)
+            {
+                failed.push(format!("{} \"{}\": {why}", used.meta.app, first.name));
             }
         }
-        let shown = self.run_scenario(host, &self.app.clone(), &name, &scenario.action);
+        let shown = match self.run_scenario(host, &self.app.clone(), &scenario.action) {
+            Ok(shown) => shown,
+            Err(why) => {
+                failed.push(format!("{} \"{name}\": {why}", self.app));
+                None
+            }
+        };
+        if !failed.is_empty() {
+            self.stage_failed = Some(failed.join("; "));
+        }
         self.commit_planned();
         // A scenario that returns a resource shows it, as a primary action shows what it made.
         // A script opened it, so a narrow window shows it in front at once.
@@ -1304,31 +1327,27 @@ impl Instance {
         }
     }
 
-    /// Run the scenario `name` (its hidden action `action`) of the package `app` over its root;
-    /// the resource it returned, when it returns one.
+    /// Run a scenario (its hidden action `action`) of the package `app` over its root: the
+    /// resource it returned, when it returns one, or why it did not run whole.
     fn run_scenario(
         &self,
         host: &Host,
         app: &str,
-        name: &str,
         action: &str,
-    ) -> Option<ResourceRef> {
-        if let Err(error) = host.root_of(app) {
-            tracing::warn!(app, %error, "the package has no root to stage");
-            return None;
-        }
+    ) -> Result<Option<ResourceRef>, String> {
+        host.root_of(app)
+            .map_err(|error| format!("the package has no root to stage: {error}"))?;
         match host
             .runtime()
             .invoke_action(&Principal::new(self.me.clone()), (action, Vec::new()))
         {
             Ok(InvokeOutcome::Done(Value::Ref(shown))) => {
-                return Some(Rc::unwrap_or_clone(shown.target));
+                Ok(Some(Rc::unwrap_or_clone(shown.target)))
             }
-            Ok(InvokeOutcome::Done(_)) => {}
-            Ok(other) => tracing::warn!(scenario = name, ?other, "the scenario did not run"),
-            Err(error) => tracing::warn!(scenario = name, %error, "the scenario failed"),
+            Ok(InvokeOutcome::Done(_)) => Ok(None),
+            Ok(other) => Err(format!("it did not run: {other:?}")),
+            Err(error) => Err(error.to_string()),
         }
-        None
     }
 
     // ----- the door ------------------------------------------------------------------------
@@ -1446,8 +1465,13 @@ impl Instance {
         };
         let first = host.next_ticket();
         match host.settle_outbox() {
-            Ok(0) => false,
-            Ok(_) => {
+            Ok(settled) => {
+                // What was marked as being handed over is handed over by the next settle,
+                // which nothing else would ask for.
+                self.settle_due |= settled.owes_settle;
+                if settled.written == 0 {
+                    return false;
+                }
                 queue_commits(&host, &self.outgoing, first, None);
                 true
             }

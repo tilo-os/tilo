@@ -1188,8 +1188,8 @@ mod tasks_screen {
         assert!(app.state().tasks.is_empty());
     }
 
-    /// A task the room refuses is withdrawn, and the status that said it
-    /// was added says the room did not keep it instead.
+    /// A task the workspace refuses is withdrawn, and the status that said it
+    /// was added says the workspace did not keep it instead.
     #[test]
     fn a_task_the_room_refuses_is_not_said_to_be_added() {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -1204,7 +1204,7 @@ mod tasks_screen {
         assert!(app.room_publishes().expect("published"));
         assert!(
             named(&mut app, "Added Buy milk").is_none(),
-            "nothing is said done before the room answers"
+            "nothing is said done before the workspace answers"
         );
         let changes: Vec<[u8; 32]> = app.read_document(|doc| {
             let mut doc = doc.clone();
@@ -1214,7 +1214,7 @@ mod tasks_screen {
                 .collect()
         });
         assert!(
-            app.refused_by_room(&changes, "This room doesn't allow that.")
+            app.refused_by_room(&changes, "This workspace doesn't allow that.")
                 .unwrap()
         );
         app.room_keeps();
@@ -1223,15 +1223,15 @@ mod tasks_screen {
         assert!(
             named(
                 &mut app,
-                "Calendar didn't keep that: This room doesn't allow that."
+                "Calendar didn't keep that: This workspace doesn't allow that."
             )
             .is_some(),
-            "the status says the room refused it"
+            "the status says the workspace refused it"
         );
     }
 
-    /// In a calendar a room decides, a new task is said added only once the
-    /// room kept it, not when this device applied it.
+    /// In a calendar a workspace decides, a new task is said added only once
+    /// the workspace kept it, not when this device applied it.
     #[test]
     fn a_task_is_said_added_once_the_room_keeps_it() {
         let mut app = TestApp::<CalendarShell>::new().expect("test app");
@@ -1247,7 +1247,7 @@ mod tasks_screen {
         app.room_keeps();
         assert!(
             named(&mut app, "Added Buy milk").is_some(),
-            "the room kept it: it is said done"
+            "the workspace kept it: it is said done"
         );
     }
 
@@ -1331,7 +1331,7 @@ fn set_start_moves_an_event_keeping_its_length() {
     assert_eq!(moved.end, at(day, 15, 30));
 }
 
-/// An agent keeps the calendar, or one event, as an `.ics` in the room's
+/// An agent keeps the calendar, or one event, as an `.ics` in the workspace's
 /// content, without the attended file chooser Export ICS opens.
 #[test]
 fn export_ics_content_keeps_the_calendar_or_one_event_as_content() {

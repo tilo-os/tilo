@@ -16,6 +16,7 @@ use tilo_desktop::chrome::{
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
 use tilo_desktop::launchpad::LaunchpadAction;
+use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
@@ -179,12 +180,32 @@ pub(crate) struct BarFeeds {
     /// The monitors of the displays a fullscreen window owns, as the loop
     /// found them this pass.
     pub(crate) fullscreen: Rc<RefCell<Vec<String>>>,
+    /// The windows this session shares with its rooms, which the bar says
+    /// are being shared while anyone views one.
+    pub(crate) shares: Rc<RefCell<crate::window_share::WindowShares>>,
+}
+
+/// What the chrome hands the session while it runs: the intents and asks its
+/// bar raises, over the feeds that keep the bar current.
+pub(crate) struct ChromeWiring {
+    pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
+    pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
+    pub(crate) feeds: BarFeeds,
 }
 
 /// What the snapshot revision was last bumped for: the tree's revision, the
 /// minute, the last wave heard, the ask on the person's avatar, the tray's
-/// revision and the displays a fullscreen window owns.
-type Seen = (u64, i64, Option<String>, u64, u64, Vec<String>);
+/// revision, the displays a fullscreen window owns, and who views the
+/// windows this session shares.
+type Seen = (
+    u64,
+    i64,
+    Option<String>,
+    u64,
+    u64,
+    Vec<String>,
+    Vec<(u64, u64, bool)>,
+);
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
 /// the person at this device.
@@ -218,6 +239,8 @@ pub(crate) struct SessionChrome {
     /// The monitors of the displays a fullscreen window owns, which the
     /// loop takes from the compositor each pass.
     fullscreen: Rc<RefCell<Vec<String>>>,
+    /// The windows this session shares, which the bar's sharing chip names.
+    shares: Rc<RefCell<crate::window_share::WindowShares>>,
     /// The [`Seen`] the snapshot revision was last bumped for.
     seen: RefCell<Seen>,
     revision: Cell<u64>,
@@ -239,6 +262,7 @@ impl SessionChrome {
             notices,
             tray,
             fullscreen,
+            shares,
         } = feeds;
         Self {
             handle,
@@ -253,7 +277,16 @@ impl SessionChrome {
             tray,
             notified: RefCell::new(None),
             fullscreen,
-            seen: RefCell::new((u64::MAX, 0, None, u64::MAX, u64::MAX, Vec::new())),
+            shares,
+            seen: RefCell::new((
+                u64::MAX,
+                0,
+                None,
+                u64::MAX,
+                u64::MAX,
+                Vec::new(),
+                Vec::new(),
+            )),
             revision: Cell::new(0),
         }
     }
@@ -316,6 +349,7 @@ impl DesktopChromeSource for SessionChrome {
         // The bar's pixels for an ask that comes, opens, folds, is answered
         // or is put off change with it, so the revision moves for those as
         // it does for the tree.
+        let exposures = self.shares.borrow().exposures();
         let seen = (
             self.handle.revision(),
             clock.unix_seconds.div_euclid(60),
@@ -323,6 +357,10 @@ impl DesktopChromeSource for SessionChrome {
             self.handle.personal_ask_revision(),
             self.app_tray_revision(),
             self.fullscreen.borrow().clone(),
+            exposures
+                .iter()
+                .map(|exposure| (exposure.surface, exposure.peer, exposure.can_control))
+                .collect(),
         );
         if *self.seen.borrow() != seen {
             self.seen.replace(seen);
@@ -342,13 +380,20 @@ impl DesktopChromeSource for SessionChrome {
             clock_activity,
             waved,
             own: Some(OwnChip {
-                name: self.person.clone(),
+                // The name they go by, and the root key the picture they
+                // chose hangs on: the id is never shown as their name.
+                name: crate::directory::own_person_name(
+                    ui::local_identity::load().map(|it| it.display_name),
+                ),
                 rgb: ui::presence::user_color(&self.person),
-                identity: String::new(),
+                identity: self.person.clone(),
             }),
             notification_badge: self.signals.unread(),
             notifications_quiet: self.signals.quiet(),
             notifications_only: self.notifications_only,
+            // Who views the windows this session shares: the bar says the
+            // share is live while anyone does.
+            active_exposures: exposures,
             ..DesktopChromeSnapshot::default()
         }
     }
@@ -496,19 +541,23 @@ impl DesktopRules for SessionRules {
 }
 
 impl crate::Session {
-    /// The rows of the window menu the chrome shows now, in order, as a
+    /// The rows of the window menu the session shows now, in order, as a
     /// harness reads them: empty while it is closed.
     #[must_use]
     pub fn window_menu_rows(&self) -> Vec<String> {
-        self.with_chrome(|chrome| {
-            chrome
-                .window_menu()
-                .labels()
-                .into_iter()
-                .flatten()
-                .collect()
-        })
-        .unwrap_or_default()
+        let Some(reading) = self.read(crate::mount::shell::WINDOW_MENU) else {
+            return Vec::new();
+        };
+        reading
+            .get("rows")
+            .and_then(serde_json::Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| row.get("label").and_then(serde_json::Value::as_str))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -517,13 +566,17 @@ impl crate::Session {
 pub(crate) fn host(
     handle: &DesktopHandle,
     options: &crate::Options,
-    intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    asks: Rc<RefCell<Vec<DesktopAsk>>>,
-    feeds: BarFeeds,
+    wiring: ChromeWiring,
     sync: Option<Rc<crate::sync::Client>>,
     overview: &crate::mount::overview::Overview,
     emoji: &tilo_desktop::emoji_picker::EmojiLink,
+    overlays: &Overlays,
 ) -> WidgetHost {
+    let ChromeWiring {
+        intents,
+        asks,
+        feeds,
+    } = wiring;
     let rules = Rc::new(SessionRules {
         handle: handle.clone(),
         person: options.person.clone(),
@@ -553,9 +606,14 @@ pub(crate) fn host(
     .with_intents(intents)
     .with_asks(asks)
     .with_overview(overview.flight(), overview.open_flag())
-    .with_emoji(emoji.clone());
+    .with_emoji(emoji.clone())
+    .with_overlays(overlays.clone());
     chrome.set_shortcuts(options.config.shortcuts.clone());
-    let keyboard = chrome.keyboard();
+    // Keys come to the chrome while one of the surfaces it draws holds the
+    // keyboard: the stack says which, and it says the window's again as soon
+    // as the top surface closes.
+    let holds = overlays.clone();
+    let keyboard = Rc::new(move || holds.target().slot().is_some_and(Slot::is_chrome));
     let placement = SurfacePlacement {
         origin: (0, 0),
         size: (1, 1),

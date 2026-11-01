@@ -13,12 +13,13 @@
 //! shows a password field or asks for protection itself, and every layer of
 //! a hosted surface that says it shows a secret now
 //! ([`crate::host::SurfaceHost::withholds_captures`]) — the session's own
-//! sheets, panels and lock screen declare that the same way an app's window
-//! is withheld, so a capture never shows what the person typed into them.
+//! sheets and panels declare that the same way an app's window is withheld,
+//! so a capture never shows what the person typed into them.
 //!
 //! A locked session's outputs show only the lock screen already, so nothing
-//! of the windows behind it is captured either; the lock screen itself shows
-//! a secret, so a capture of it is the placeholder.
+//! of the windows behind it is captured either; the lock screen itself asks
+//! for the password the whole time it is up, so a capture of it is the
+//! placeholder.
 
 use std::collections::BTreeSet;
 

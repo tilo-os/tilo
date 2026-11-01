@@ -4061,11 +4061,11 @@ impl ControlState for FrameBuilderControlState<'_> {
             .and_then(|broker| broker.upgrade().ok());
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
-        let room_sync = room_sync_json(&chrome.tree());
+        let workspace_sync = workspace_sync_json(&chrome.tree());
         let mut dump = serde_json::json!({
-            // Where each workspace's room stands with its host, what its
-            // apps are told (`ui::room_sync`), and which apps it lets write.
-            "room_sync": room_sync,
+            // Where each workspace stands with its host, what its apps are
+            // told (`ui::workspace_sync`), and which apps it lets write.
+            "workspace_sync": workspace_sync,
             "seat_focus": self.seat.map(State::seat_focus_json),
             "native_window_provenance": self.seat.map(|seat| seat.native_window_provenance_with_broker(native_broker.as_ref())),
             "overlays": {
@@ -4315,11 +4315,11 @@ impl ControlState for FrameBuilderControlState<'_> {
     }
 }
 
-/// Each workspace's room for `state_dump`: where it stands with its host
-/// ([`tilo_network_actor::room_sync`], `null` for a room with no host), the apps
-/// its grants make authors, and how many grants it holds, as this device
-/// last received them.
-fn room_sync_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Value {
+/// Each workspace for `state_dump`: where it stands with its host
+/// ([`tilo_network_actor::workspace_sync`], `null` for one with no host),
+/// the apps its grants make authors, and how many grants it holds, as this
+/// device last received them.
+fn workspace_sync_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Value {
     let now = tilo_clock::unix_now();
     tree.desktop
         .workspaces
@@ -4328,7 +4328,7 @@ fn room_sync_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Valu
             serde_json::json!({
                 "workspace": workspace.name,
                 "room": workspace.room().to_string(),
-                "state": tilo_network_actor::room_sync::state(
+                "state": tilo_network_actor::workspace_sync::state(
                     tilo_network_actor::room_topic_id(workspace.room()),
                 ),
                 "app_authors": workspace.launch_grants(now).authors,
@@ -9117,77 +9117,7 @@ mod idle_policy_tests {
 }
 
 #[cfg(test)]
-mod live_power_settings_tests {
-    use super::reapply_power_policy;
-    use crate::compositor::backend::drm::input_config::SettingsChange;
-    use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
-    use std::time::{Duration, Instant};
-
-    /// A write through the settings store reaches the running session: the
-    /// compositor learns of it from the live document, derives the idle
-    /// policy from that same document and the idle state machine stops
-    /// locking.
-    #[test]
-    #[serial_test::serial]
-    fn lock_after_never_stops_auto_lock_in_the_running_session() {
-        let _home = tilo_test_env::TestHome::new().unwrap();
-        let session_settings = settings_store::local().unwrap();
-        let settings = crate::shell::test_support::install_settings(session_settings);
-        let live = settings_store::live::LiveSettings::start(|| {});
-        let mut follower = settings_store::live::SectionFollower::new(&live);
-        let bridge = tilo_power_mgmt::PowerBridge::new();
-        let t0 = Instant::now();
-        let fresh = || {
-            SessionManager::new(
-                IdleConfig::from_env_values(Some("0"), Some("300"), Some("0")),
-                t0,
-            )
-        };
-
-        // Phase `the_default_locks_after_five_minutes`.
-        {
-            let mut session = fresh();
-            reapply_power_policy(&mut session, &bridge, false);
-            assert!(
-                session
-                    .tick(t0 + Duration::from_secs(6 * 60))
-                    .contains(&SessionTransition::Locked)
-            );
-        }
-
-        // Phase `setting_it_to_never_is_applied_live`.
-        {
-            let mut running = fresh();
-            let before = live.generation();
-            settings_store::SectionWrite::new()
-                .set(&settings_store::power::LOCK_MINUTES, &0)
-                .commit_by(&settings_store::ChangeOrigin::action("settings.power"))
-                .expect("the setting is stored");
-
-            let snapshot = live.wait_for_change(before, tilo_test_env::hang_bound());
-            assert_eq!(snapshot.section("power")["lock_minutes"], 0);
-            assert!(
-                SettingsChange::from(follower.changed_sections(&live)).power(),
-                "the write names the power section"
-            );
-            // What the compositor does on that edge.
-            reapply_power_policy(&mut running, &bridge, false);
-            assert!(
-                !running
-                    .tick(t0 + Duration::from_secs(24 * 60 * 60))
-                    .contains(&SessionTransition::Locked),
-                "never means the session does not lock on its own"
-            );
-            assert!(!running.is_locked());
-            assert_eq!(
-                running.request_lock(Instant::now()),
-                vec![SessionTransition::Locked],
-                "locking by hand still works"
-            );
-        }
-        drop(settings);
-    }
-}
+mod live_power_settings_tests;
 
 fn size_to_signed(size: (u32, u32)) -> (i32, i32) {
     (
@@ -10613,7 +10543,7 @@ pub fn run() {
         if let Some(service) = floating_surface_service.as_ref() {
             window_appearances.publish_with_rooms(
                 |app_id| frame_builder.window_appearance_for_app(app_id),
-                |app_id| frame_builder.room_sync_for_app(app_id),
+                |app_id| frame_builder.workspace_sync_for_app(app_id),
                 frame_builder.configured_app_theme(),
                 frame_builder
                     .host()

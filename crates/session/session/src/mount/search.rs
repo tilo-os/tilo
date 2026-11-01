@@ -55,8 +55,15 @@ impl Shared {
             .borrow()
             .read(tilo_app_launch::downloaded::RESOURCE)
             .and_then(|reading| serde_json::from_value(reading).ok());
-        self.search
-            .observe(&self.doors.resources(), open_tabs, downloaded);
+        let resources = self.doors.resources();
+        // What a place made from a resource reads its app and views from:
+        // the same tree search and the palette read.
+        self.arrangement
+            .borrow()
+            .targets()
+            .borrow_mut()
+            .take(&resources);
+        self.search.observe(&resources, open_tabs, downloaded);
         self.keep_history();
     }
 

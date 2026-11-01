@@ -349,3 +349,33 @@ fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
         assert!(!node.state.hidden);
     }
 }
+
+#[test]
+fn a_trapped_modal_keeps_the_keyboard_where_the_person_put_it_when_what_it_shows_changes() {
+    let (mut app, open) = host_app();
+    app.init_layout();
+    open.set(true);
+    app.refresh_focus_order();
+    assert!(app.accessibility.focus_trap_active);
+    let first = app.focusable_order[0];
+    let second = app.focusable_order[1];
+    let named = |app: &App, id| {
+        app.inspect_node(id, |widget| widget.test_id().map(str::to_owned))
+            .unwrap()
+    };
+    app.set_focused_node(Some(first));
+    assert!(app.focus_tab(false));
+    assert_eq!(app.focused_node, Some(second));
+    assert_eq!(named(&app, second).as_deref(), Some("cancel"));
+
+    // The dialog says a second less, or a line of what it is doing changes:
+    // its tree is built again under the person's hands. The answer they
+    // tabbed to is still the one under the keyboard.
+    app.rebuild_structure();
+    assert!(app.accessibility.focus_trap_active);
+    assert_eq!(
+        app.focused_node.and_then(|id| named(&app, id)),
+        Some("cancel".to_owned()),
+        "the keyboard stays on the answer the person tabbed to"
+    );
+}

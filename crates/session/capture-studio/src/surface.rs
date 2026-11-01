@@ -40,10 +40,10 @@ pub struct StudioSurface {
     /// The scene shown, and the generation it was published with.
     scene: Scene,
     shown: u64,
-    /// The device the person sent the last screenshot to, while the session
-    /// stages and offers it: the bar went down with the picker, and the studio
+    /// Whether the person sent the last screenshot somewhere the session is
+    /// still delivering it: the bar went down with the picker, and the studio
     /// stays up to say what became of it.
-    sending: Option<String>,
+    sending: bool,
     /// What the studio says of that send, and since when.
     saying: Option<(String, ui::time::Instant)>,
     /// Where that was drawn, for tests to find it.
@@ -66,7 +66,7 @@ impl StudioSurface {
             opening: None,
             scene: Scene::default(),
             shown: 0,
-            sending: None,
+            sending: false,
             saying: None,
             chip: Rect::ZERO,
             rect: Rect::ZERO,
@@ -86,7 +86,7 @@ impl StudioSurface {
     /// the pick, and the receipt stays up to say what became of it, until
     /// what it says has been up long enough to read.
     fn picked(&self) -> bool {
-        if self.sending.is_some() {
+        if self.sending {
             return true;
         }
         self.saying.as_ref().is_some_and(|(_, since)| {
@@ -148,7 +148,7 @@ impl StudioSurface {
                 self.opening = Some(presentation.openings());
                 // A new capture is a new conversation: what was said of the
                 // last send belongs to the receipt that is gone.
-                self.sending = None;
+                self.sending = false;
                 self.saying = None;
                 self.widget.open();
                 true
@@ -211,7 +211,7 @@ impl StudioSurface {
         {
             // The session took the send: say what became of it in place of
             // "sending", and stay up until it has been read.
-            self.sending = None;
+            self.sending = false;
             self.saying = Some((i18n::sent(sent), ui::time::now()));
         }
         self.scene = scene;
@@ -276,14 +276,19 @@ impl StudioSurface {
                         .map_or_else(|| id.clone(), |device| device.label.clone());
                     // Say where it is going until the session says what came
                     // of it: the bar is down from here on.
-                    self.sending = Some(id.clone());
+                    self.sending = true;
                     self.saying = Some((i18n::sending(&label), ui::time::now()));
                     self.dirty = true;
                     link.ask(Ask::SendLastTo(id));
                 }
-                // Sending into the person's workspace files is the workspace
-                // files stack's.
-                ScreenshotCommand::SendLast(ScreenshotSendTarget::Workspace) => {}
+                // Sending into the person's workspace files: the session
+                // copies it there, saying so until it says what came of it.
+                ScreenshotCommand::SendLast(ScreenshotSendTarget::Workspace) => {
+                    self.sending = true;
+                    self.saying = Some((i18n::saving(), ui::time::now()));
+                    self.dirty = true;
+                    link.ask(Ask::SendLastToWorkspace);
+                }
             }
             return;
         }
@@ -531,8 +536,8 @@ impl Widget for StudioSurface {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        let said = match (&self.sending, &self.saying) {
-            (None, Some((_, since))) => since.checked_add(SENT_SHOWN),
+        let said = match (self.sending, &self.saying) {
+            (false, Some((_, since))) => since.checked_add(SENT_SHOWN),
             _ => None,
         };
         match (self.widget.next_wake_deadline(), said) {

@@ -460,6 +460,14 @@ impl std::fmt::Display for AppAuthorshipError {
 }
 
 impl AppActionBroker {
+    /// The host this person's other devices reach this device's actions
+    /// through: every request admitted for the caller its own device's
+    /// signature named, and followed here like any other invocation.
+    #[must_use]
+    pub fn device_host(&self) -> Arc<dyn tilo_actions::remote::ActionHost + Send + Sync> {
+        crate::collab_app_broker::device_host(Arc::clone(&self.state))
+    }
+
     /// Exact current owner-backed agent identity while the session is live.
     pub fn certified_agent_identity(
         &self,

@@ -37,6 +37,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
+use ui::workspace_sync::WorkspaceSync;
 
 fn consume_record_requests(
     chrome: &Chrome,
@@ -2414,23 +2415,17 @@ impl FrameBuilder {
             .filter_map(|surface| {
                 let layers = below_layer(surface.layer)?;
                 let (rect, scale) = self.surface_to_scene(surface.bounds)?;
-                let below = if layers.is_empty() {
-                    surface.below
-                } else {
+                Some(surface.into_region(rect, scale, |own| {
+                    if layers.is_empty() {
+                        return self.below_to_scene(own);
+                    }
                     let mut below = Scene::new();
                     for layer in layers {
                         below.append(layer, None);
                     }
-                    below.append(&surface.below, None);
-                    below
-                };
-                Some(BackdropRegion {
-                    image: surface.image,
-                    rect,
-                    blur_px: surface.blur_px * scale,
-                    below: self.below_to_scene(below),
-                    ground: surface.ground,
-                })
+                    below.append(&own, None);
+                    self.below_to_scene(below)
+                }))
             })
             .collect();
         (!regions.is_empty()).then(|| Arc::new(BackdropFrame { regions }))
@@ -4386,16 +4381,14 @@ impl FrameBuilder {
         }
     }
 
-    /// Where the room of the workspace holding `app_id`'s window stands
-    /// with its host (`tilo_network_actor::room_sync`); `None` for a workspace
-    /// that syncs with no host.
+    /// Where `app_id`'s window's workspace stands with its host; `None` if none syncs.
     #[must_use]
-    pub fn room_sync_for_app(&self, app_id: &str) -> Option<ui::room_sync::RoomSync> {
+    pub fn workspace_sync_for_app(&self, app_id: &str) -> Option<WorkspaceSync> {
         let person = self
             .with_app_workspace(app_id, crate::shell::state::Workspace::room)
             .map(|room| self.chrome.borrow().local_user_for_room(&room))?;
         self.with_app_workspace(app_id, |workspace| {
-            tilo_network_actor::room_sync::told(
+            tilo_network_actor::workspace_sync::told(
                 tilo_network_actor::room_topic_id(workspace.room()),
                 &workspace.name,
                 app_writes(workspace, &person, app_id, tilo_clock::unix_now()),

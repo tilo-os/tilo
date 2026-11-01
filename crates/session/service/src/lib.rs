@@ -46,6 +46,13 @@ pub enum Started {
 
 /// One service the session runs.
 pub trait Service {
+    /// Who sits at this device, as the session knows them before it starts
+    /// the service: the person's id, which what they do here is theirs
+    /// under, and the ids they went by before this device had an identity.
+    /// A service that records who changed what authors its changes as this
+    /// person; one that records none ignores it.
+    fn seated(&mut self, _person: &str, _earlier: &[String]) {}
+
     /// What it publishes now: its resources, each with its actions.
     fn resources(&self) -> Vec<ResourceSpec>;
 

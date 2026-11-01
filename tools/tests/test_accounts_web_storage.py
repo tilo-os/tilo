@@ -1,6 +1,7 @@
 """Keep the real profile-vault browser regression required and fail closed."""
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,9 @@ DRIVER = ROOT / 'crates/system/accounts/web/run.mjs'
 
 
 class AccountsWebStorageTests(unittest.TestCase):
+    def setUp(self):
+        if shutil.which("node") is None:
+            self.skipTest("the profile-vault driver runs under Node.js, which is not installed here")
 
     def run_without_subject(self, missing):
         # Run the real driver without building: fake only tool provisioning.

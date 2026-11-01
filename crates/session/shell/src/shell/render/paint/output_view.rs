@@ -274,6 +274,8 @@ pub(super) fn backdrop_through(
                     image: region.image.clone(),
                     rect: transform.transform_rect_bbox(region.rect),
                     blur_px: region.blur_px,
+                    sampling: region.sampling,
+                    cell_px: region.cell_px,
                     below,
                     ground: region.ground,
                 }

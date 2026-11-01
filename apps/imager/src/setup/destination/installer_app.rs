@@ -2326,7 +2326,7 @@ impl InstallerApp {
                     .selected(selected)
                     .checked(selected)
                     .with_enabled(!self.network.is_busy())
-                    .on_activate(move || fire.fire());
+                    .on_effect(move || fire.fire());
                 children.push(Box::new(
                     Bound::new(Box::new(row), [(id, &control)]).activated_by_keys(&control),
                 ));
@@ -4035,6 +4035,14 @@ mod tests {
                 &automerge::ROOT
             ),
             "{id} refused {action:?}"
+        );
+        // The control published its press; the host that holds the tree answers it, as the
+        // window does after handling the event.
+        let composed = app.composed.element_mut().expect("composed step");
+        ui::widget::controls::start_pending_control_invocations(
+            composed,
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
         );
         app.sync(doc, &automerge::ROOT);
         assert_eq!(

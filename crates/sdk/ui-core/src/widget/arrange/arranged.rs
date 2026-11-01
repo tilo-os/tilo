@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::units::{At, Fit};
 use crate::presence::PresenceCtx;
@@ -329,6 +329,27 @@ impl<L: Layout> Arranged<L> {
         changed
     }
 
+    /// Lay the child at `index` out again `by` from where the arrangement placed it: a layer
+    /// that stands where something drawn inside a sibling says (a window's controls on the
+    /// trailing end of its app's header row, which only that row's layout knows).
+    pub(crate) fn offset_child(&mut self, tree: &TaffyTree<()>, index: usize, by: Vec2) {
+        let start = Point::new(self.rect.x0, self.rect.y0);
+        let Some(slot) = self.slots.get_mut(index) else {
+            return;
+        };
+        let Some(wrapper) = slot.wrapper else {
+            return;
+        };
+        let placed = tree.layout(wrapper).copied().unwrap_or_default();
+        if let Some(inner) = Self::inner_node(tree, wrapper) {
+            let at = Point::new(
+                start.x + f64::from(placed.location.x),
+                start.y + f64::from(placed.location.y),
+            ) + by;
+            slot.element.apply_layout(tree, inner, at);
+        }
+    }
+
     fn inner_node(tree: &TaffyTree<()>, wrapper: NodeId) -> Option<NodeId> {
         tree.children(wrapper)
             .ok()
@@ -367,6 +388,21 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
                 let mut grown = current.clone();
                 if grown.flex_grow == 0.0 {
                     grown.flex_grow = 1.0;
+                }
+                // A wrapper whose height is given (a filled layer, a filled share of a stack)
+                // holds the child to it: the child shrinks to that height, and what it holds
+                // scrolls or overflows inside it rather than pushing past the wrapper. A layer
+                // straddling an edge stands in a wrapper of no height and keeps its own.
+                let zero = taffy::style_helpers::length(0.0_f32);
+                let filled_layer = style.size.height == taffy::style_helpers::percent(1.0_f32);
+                let filled_share = style.flex_grow > 0.0
+                    && style.flex_basis == zero
+                    && style.min_size.height == zero
+                    && style.size.height != zero;
+                if (filled_layer || filled_share)
+                    && grown.min_size.height == taffy::Dimension::auto()
+                {
+                    grown.min_size.height = taffy::style_helpers::length(0.0_f32);
                 }
                 let _ = tree.set_style(inner, grown);
             }

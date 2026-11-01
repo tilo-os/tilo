@@ -9,7 +9,8 @@ use crate::{NeighbourMsg, document, room};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::caps::Principal;
 use collab_types::{
-    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, Role, SignedOp,
+    ArtifactKind, ChannelState, ContentRetention, DocumentMutation, Ed25519PublicKey, OpKind, Role,
+    SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -2289,8 +2290,16 @@ impl StatePeer {
                 // compaction is the whole record as its key holder folded it,
                 // so it founds the route for a replica that has none, as a
                 // device catching up from a store that holds only ciphertext
-                // does.
-                if !route_existed && envelope.kind != OpKind::Compaction {
+                // does. So does a sealed checkpoint, the whole record as its
+                // writer saved it: the one a host keeps at the head of a
+                // sealed channel replays to a device joining the room, and
+                // the route it names is what the writes after it change.
+                let whole_record = envelope.kind == OpKind::Compaction
+                    || envelope
+                        .encryption
+                        .and_then(|metadata| metadata.retention())
+                        == Some(ContentRetention::Checkpoint);
+                if !route_existed && !whole_record {
                     return self.defer(
                         source,
                         NeighbourMsg::AppDocument {

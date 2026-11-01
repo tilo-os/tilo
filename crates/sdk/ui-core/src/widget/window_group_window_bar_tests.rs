@@ -603,3 +603,72 @@ fn a_fullscreen_windows_bar_shown_by_a_key_lands_at_once() {
     assert!(!g.fullscreen_bar_fading());
     assert_eq!(bar_wishes(now), Vec::<String>::new());
 }
+
+/// A window's bar wears what the shell told the window of its room: two
+/// temperatures paint it differently, and the person's own colour is the
+/// ring on the tab that has the keyboard.
+#[test]
+fn a_window_bar_wears_its_room_s_temperature_and_the_person_s_colour() {
+    use crate::theme::WindowAppearance;
+    use crate::tokens::PresenceHue;
+
+    let _settled = crate::motion::testing::settled();
+    let colour = |c: vello::peniko::Color| c.premultiply().to_rgba8().to_u32();
+    // The bar alone, at rest but for the keyboard, as the window the shell
+    // dressed it shows it.
+    let paint = |appearance: &WindowAppearance| {
+        let theme = Theme::light().in_window(appearance);
+        let mut g = pages(2);
+        lay_out(&mut g, &theme);
+        Widget::set_focus(&mut g.bar, true);
+        let mut scene = Scene::new();
+        g.bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        (theme, scene.encoding().draw_data.clone())
+    };
+    let room = WindowAppearance {
+        workspace_hue: Some(40.0),
+        your_colour: Some(PresenceHue::Magenta),
+        corner_radius: Some(12.0),
+    };
+
+    // The room's temperature tints the bar's material: a warm room and a cool
+    // one are not painted the same.
+    let (_, warm) = paint(&room);
+    let (_, cool) = paint(&WindowAppearance {
+        workspace_hue: Some(220.0),
+        ..room
+    });
+    assert_ne!(
+        warm, cool,
+        "the bar takes the temperature of the workspace it stands in"
+    );
+
+    // The person's colour is the ring of the tab with the keyboard, and
+    // another colour rings it in another.
+    let (mine, mine_paint) = paint(&room);
+    let (theirs, theirs_paint) = paint(&WindowAppearance {
+        your_colour: Some(PresenceHue::Green),
+        ..room
+    });
+    let my_ring = colour(mine.tokens.colors.intent.accent_ink);
+    let their_ring = colour(theirs.tokens.colors.intent.accent_ink);
+    assert_ne!(my_ring, their_ring, "two colours are two inks");
+    assert!(
+        mine_paint.contains(&my_ring),
+        "the keyboard's tab is ringed in the person's own colour"
+    );
+    assert!(
+        !mine_paint.contains(&their_ring),
+        "and never in another person's"
+    );
+    assert!(
+        theirs_paint.contains(&their_ring),
+        "the colour chosen reaches the bar"
+    );
+}

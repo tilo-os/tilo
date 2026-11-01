@@ -458,7 +458,7 @@ pub struct DeleteEmojiOp {
     pub tilo: String,
 }
 
-/// Copy a file from Discord's CDN into the room's content store, or answer
+/// Copy a file from Discord's CDN into the workspace's content store, or answer
 /// a small picture inline.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]

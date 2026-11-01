@@ -99,6 +99,16 @@ impl Package {
     }
 }
 
+/// What one settle of the outbox did ([`Host::settle_outbox`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutboxSettled {
+    /// How many changes it wrote, each queued for the door.
+    pub written: usize,
+    /// It marked an effect as being handed over, which the next settle hands over: whoever
+    /// settles owes another settle, without waiting for anything else to happen.
+    pub owes_settle: bool,
+}
+
 /// The root of a package a view opens over, and the view itself, each chosen by name: a package
 /// with more than one root (the shell's `Desk` and its `Arrangement`) says which layer a view
 /// is, rather than taking the first root. `None`s take the package's first root and that
@@ -808,28 +818,29 @@ impl Host {
 
     /// Carry out the outside effects of this device that wait in the record
     /// ([`Runtime::settle`]): each is marked as being handed over, then goes to the sink, and
-    /// what became of it is queued for the door like any other change. Returns how many
-    /// changes that wrote. What `delivery(r)` reads follows the record either way.
+    /// what became of it is queued for the door like any other change. What `delivery(r)`
+    /// reads follows the record either way.
     ///
     /// # Errors
     /// No sink is set, or the store failed.
-    pub fn settle_outbox(&self) -> Result<usize, String> {
+    pub fn settle_outbox(&self) -> Result<OutboxSettled, String> {
         if self.inner.store.outbox_pending_count() == 0 {
             self.inner.runtime.refresh_deliveries();
-            return Ok(0);
+            return Ok(OutboxSettled::default());
         }
         self.inner
             .runtime
             .settle()
-            .map(|report| {
-                [
+            .map(|report| OutboxSettled {
+                written: [
                     report.failed.len(),
                     report.marked,
                     report.waiting,
                     report.unknown,
                 ]
                 .into_iter()
-                .fold(report.delivered, usize::saturating_add)
+                .fold(report.delivered, usize::saturating_add),
+                owes_settle: report.marked > 0,
             })
             .map_err(|error| error.to_string())
     }

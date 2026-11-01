@@ -89,7 +89,7 @@ pub(crate) fn document(blocks: usize) -> Vec<ClipBlock> {
                 format!(
                     "Paragraph {n}. {}",
                     "The rehearsal ran long and the doors opened late, so the first half \
-                     went out to a room still finding its seats. "
+                     went out to a workspace still finding its seats. "
                         .repeat(1 + n % 3)
                 ),
             ),

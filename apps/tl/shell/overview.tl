@@ -82,7 +82,6 @@ view window_place(d: Desk, w: Win) {
                 ui.Text(w.title, role: .label, lines: 1, truncate)
                 ui.Text(w.origin_app, role: .caption, secondary: true, lines: 1)
             }
-            spacer
             window_menu(d, w)
         }
         on activate: focus_window(w)

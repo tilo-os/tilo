@@ -54,12 +54,21 @@ pub struct ClientState {
     pid: AtomicU32,
     /// The processes whose clients disconnected, for the session to hear.
     exited: Arc<std::sync::Mutex<Vec<u32>>>,
+    /// The output the session connected the client for: its layer surfaces
+    /// stand there, whichever output they name themselves. The on-screen
+    /// keyboard belongs on the display the person types on.
+    output: Option<String>,
 }
 
 impl ClientState {
     /// Whether the client may use privileged protocols.
     pub(crate) const fn trusted(&self) -> bool {
         self.trusted
+    }
+
+    /// The output the session connected the client for, when it named one.
+    pub(crate) fn output(&self) -> Option<&str> {
+        self.output.as_deref()
     }
 }
 
@@ -173,6 +182,11 @@ pub struct State {
     pub(crate) closing: Vec<Closing>,
     /// The frames the windows last drew, by id.
     pub(crate) snapshots: crate::snapshot::Snapshots,
+    /// The HDR planes of the windows that carry one, by id.
+    pub(crate) hdr: crate::hdr::HdrSurfaces,
+    /// The streams sharing a window, by window id: each is told what the
+    /// window's content is in, on the commit that changes it.
+    pub(crate) share_streams: std::collections::HashMap<u64, Arc<dyn crate::ShareStream>>,
     pub(crate) capture: crate::capture::Capture,
     /// What input from another device crosses before it reaches the seat.
     pub(crate) remote_input: crate::remote_input::Firewall,
@@ -215,7 +229,19 @@ impl State {
     pub(crate) fn new(display: &DisplayHandle, policy: Box<dyn WindowPolicy>) -> Self {
         let compositor_state = CompositorState::new::<Self>(display);
         let xdg_shell_state = XdgShellState::new::<Self>(display);
-        let shm_state = ShmState::new::<Self>(display, Vec::new());
+        // Besides 8-bit RGB, the 10-bit and half-float buffers an HDR
+        // surface's signal is carried in.
+        let shm_state = ShmState::new::<Self>(
+            display,
+            vec![
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb2101010,
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xbgr2101010,
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Argb2101010,
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Abgr2101010,
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb16161616f,
+                smithay::reexports::wayland_server::protocol::wl_shm::Format::Abgr16161616f,
+            ],
+        );
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(display);
         let data_device_state = DataDeviceState::new::<Self>(display);
         let mut seat_state = SeatState::new();
@@ -274,6 +300,8 @@ impl State {
             frame_images: crate::window_frame::FrameImages::default(),
             closing: Vec::new(),
             snapshots: crate::snapshot::Snapshots::default(),
+            hdr: crate::hdr::HdrSurfaces::default(),
+            share_streams: std::collections::HashMap::new(),
             capture: crate::capture::Capture::new(display),
             remote_input: crate::remote_input::Firewall::default(),
             disabled_outputs: Vec::new(),
@@ -522,7 +550,7 @@ impl State {
         R::TextureId: Clone + 'static,
     {
         if let Some(id) = describe(&self.display, &self.icons, window).map(|info| info.id) {
-            self.snapshots.record(id, renderer, window);
+            self.snapshots.record_shown(id, &self.hdr, renderer, window);
         }
     }
 
@@ -543,6 +571,7 @@ impl State {
                 .unwrap_or(self.frame),
             images: &self.frame_images,
             snapshots: &self.snapshots,
+            hdr: &self.hdr,
         }
     }
 
@@ -579,11 +608,8 @@ impl State {
     /// windows where it drew, else, where no window is, one beneath them.
     pub(crate) fn host_under(&self, point: Point<f64, Logical>) -> Option<usize> {
         if self.locked() {
-            // Only the lock screen shows, so only it takes the pointer.
-            return self
-                .hosts
-                .iter()
-                .rposition(|host| host.lock_screen() && host.accepts_pointer(point.x, point.y));
+            // Only the lock client shows, and it is not a hosted surface.
+            return None;
         }
         // The last host draws on top, so it is asked first.
         let under = |below: bool| {
@@ -732,7 +758,11 @@ impl State {
                     // A key no surface took the press of, let go: a surface that takes it now
                     // (a shell's switcher, which opened after Alt went down) hears it, so a
                     // held modifier's release reaches what it opened. Otherwise it goes on to
-                    // the client as any release does.
+                    // the client as any release does. A client holding the desktop's
+                    // shortcuts had the press, so it has the release too.
+                    if state.shortcut_inhibit.is_active() {
+                        return FilterResult::Forward;
+                    }
                     let locked = state.locked();
                     for index in (0..state.hosts.len()).rev() {
                         let claim = state
@@ -766,12 +796,12 @@ impl State {
                     }
                 }
                 // The topmost hosted surface that wants the keyboard takes
-                // keys from every client.
-                // While locked, only the lock screen may.
+                // keys from every client. While locked, the lock client has
+                // it, and no hosted surface takes one.
                 let wanting = state
                     .hosts
                     .iter()
-                    .rposition(|host| host.wants_keyboard() && (!locked || host.lock_screen()));
+                    .rposition(|host| !locked && host.wants_keyboard());
                 let Some(index) = wanting else {
                     return FilterResult::Forward;
                 };
@@ -843,7 +873,7 @@ impl State {
             return;
         };
         self.pointer = Point::from((x, y));
-        let location = self.pointer;
+        let mut location = self.pointer;
         self.policy.pointer_moved(location.x, location.y);
         if self.drag_motion(location, serial, time) {
             return;
@@ -876,7 +906,14 @@ impl State {
                 // Clients lose the pointer while a hosted surface has it.
                 None
             }
-            PointerTarget::Clients if self.locked() => self.lock_surface_under(location),
+            PointerTarget::Clients if self.locked() => {
+                self.lock_surface_under(location).map(|under| {
+                    // The screen covers the display, stretched to it: it reads
+                    // the point where it drew what the person pointed at.
+                    location = under.at;
+                    (under.surface, under.origin)
+                })
+            }
             PointerTarget::Clients => self.pointer_surface_under(location),
         };
         let Some(pointer) = self.seat.get_pointer() else {
@@ -899,6 +936,11 @@ impl State {
             self.buttons_down.insert(button);
         } else {
             self.buttons_down.remove(&button);
+            // Every surface hears the press end, before any of them acts on the
+            // button: a press and what it is still doing are over together.
+            for host in &mut self.hosts {
+                host.press_ended(self.pointer.x, self.pointer.y);
+            }
         }
         if self.drag_button(button, pressed, serial, time) {
             return;
@@ -907,7 +949,7 @@ impl State {
             let target = self.pointer_target;
             for (index, host) in self.hosts.iter_mut().enumerate() {
                 if target != PointerTarget::Host(index) {
-                    host.pressed_elsewhere();
+                    host.pressed_elsewhere(self.pointer.x, self.pointer.y);
                 }
             }
         }
@@ -1035,6 +1077,7 @@ impl State {
         // It came back before the desktop was done with its close.
         self.closing.retain(|closing| closing.info.id != info.id);
         self.snapshots.forget(info.id);
+        self.hdr.forget(info.id);
         let outputs = self.output_geometries();
         let size = window.geometry().size;
         let location = self.policy.place(&info, (size.w, size.h), &outputs);
@@ -1357,6 +1400,11 @@ impl CompositorHandler for State {
             self.layer_committed(surface);
         }
         self.drag_icon_commit(surface);
+        // Colorimetry passthrough: a shared window's stream is told what its
+        // content is in on the commit that says so, so a receiver decodes in
+        // the right space, and that the configured treatment applies again
+        // once the client unsets it.
+        self.tell_share_color(surface);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
@@ -1530,6 +1578,11 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // A share is of a window: it ends with it, and its stream hears
+        // nothing more from here.
+        if let Some(window) = window_id_of(surface.wl_surface()) {
+            self.share_streams.remove(&window);
+        }
         let pending = self
             .unmapped
             .iter()
@@ -1590,14 +1643,17 @@ smithay::delegate_output!(State);
 smithay::delegate_xdg_toplevel_icon!(State);
 
 /// A fresh client's data, for [`DisplayHandle::insert_client`], whose
-/// disconnect is recorded in `exited`.
+/// disconnect is recorded in `exited`, and whose layer surfaces stand on
+/// `output` when the session connected it for one.
 pub(crate) fn client_data(
     trusted: bool,
     exited: Arc<std::sync::Mutex<Vec<u32>>>,
+    output: Option<String>,
 ) -> Arc<ClientState> {
     Arc::new(ClientState {
         trusted,
         exited,
+        output,
         ..ClientState::default()
     })
 }

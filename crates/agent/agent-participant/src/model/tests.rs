@@ -1140,7 +1140,7 @@ fn existing_documents_are_offered_by_their_titles() {
         summary.contains(
             "record.so.tilo.word-processor.uuid:launch#open — open the room's \
                  so.tilo.word-processor document \"Launch page\" (then export, read or edit it) \
-                 (opens this document of so.tilo.word-processor the room already has"
+                 (opens this document of so.tilo.word-processor the workspace already has"
         ),
         "{summary}"
     );

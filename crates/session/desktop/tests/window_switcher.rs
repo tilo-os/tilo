@@ -191,8 +191,9 @@ fn alt_tab_walks_the_workspaces_windows_and_alt_up_goes_there() {
     with_chrome(&mut frame, |chrome| {
         assert!(chrome.switcher_active(), "Alt+Tab opens the switcher");
         assert_eq!(chrome.switcher_selected(), Some(30), "on the other window");
-        assert!(
-            chrome.wants_keyboard(),
+        assert_eq!(
+            chrome.overlays().target().slot(),
+            Some(tilo_desktop::overlays::Slot::Switcher),
             "the keys are the switcher's while it is up"
         );
     });
@@ -222,10 +223,46 @@ fn alt_tab_walks_the_workspaces_windows_and_alt_up_goes_there() {
 
     with_chrome(&mut frame, |chrome| {
         assert!(!chrome.switcher_active(), "Alt up closes the switcher");
-        assert!(!chrome.wants_keyboard());
+        assert!(chrome.overlays().target().slot().is_none());
     });
     desk.relayout();
     assert_eq!(in_front(&handle), Some(30), "and goes to that window");
+}
+
+/// Enter takes the window the switcher shows without letting go of Alt: the
+/// keys are the switcher's, and going there is what it commits.
+#[test]
+fn alt_tab_then_enter_goes_to_the_window_it_shows() {
+    let tree = desk_tree(vec![
+        group(3, vec![window(20, "Notes", "so.tilo.notes")]),
+        group(4, vec![window(30, "Chat", "so.tilo.chat")]),
+        group(5, vec![window(40, "Files", "so.tilo.files")]),
+    ]);
+    let (mut desk, mut frame, handle) = desk_and_chrome(&tree);
+    assert_eq!(in_front(&handle), Some(20), "the first window is in front");
+
+    hold_alt(&mut frame, ModifiersState::ALT);
+    press(&mut frame, Key::Named(NamedKey::Tab));
+    press(&mut frame, Key::Named(NamedKey::Tab));
+    with_chrome(&mut frame, |chrome| {
+        assert!(chrome.switcher_active(), "Alt+Tab opens the switcher");
+        assert_eq!(chrome.switcher_selected(), Some(40), "on the third window");
+    });
+
+    press(&mut frame, Key::Named(NamedKey::Enter));
+    with_chrome(&mut frame, |chrome| {
+        assert!(
+            !chrome.switcher_active(),
+            "Enter closes the switcher where it stands"
+        );
+        assert!(chrome.overlays().target().slot().is_none());
+    });
+    desk.relayout();
+    assert_eq!(
+        in_front(&handle),
+        Some(40),
+        "and goes to the window it showed"
+    );
 }
 
 /// The next Alt+Tab starts from where the last one left off: it goes straight
@@ -300,6 +337,6 @@ fn a_lone_window_keeps_alt_tab() {
     press(&mut frame, Key::Named(NamedKey::Tab));
     with_chrome(&mut frame, |chrome| {
         assert!(!chrome.switcher_active(), "no switcher without two windows");
-        assert!(!chrome.wants_keyboard());
+        assert!(chrome.overlays().target().slot().is_none());
     });
 }

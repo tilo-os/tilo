@@ -336,11 +336,11 @@ impl DeskWidgets {
 
     /// Lift `id` under the hand, or set it down.
     fn set_lift(&mut self, id: WidgetId, up: bool) {
-        let timing = if self.motion.moves() {
-            ui::motion::Timing::Spring(ui::motion::SpringSpec::settling_within(self.motion.fast()))
-        } else {
-            ui::motion::Timing::Instant
-        };
+        let timing = ui::motion::ControlChange::MOVE.timing(
+            ui::motion::Direction::of(up),
+            self.motion,
+            MotionSource::Gesture,
+        );
         self.lifts
             .entry(id)
             .or_insert_with(|| ui::motion::MotionValue::new(0.0))
@@ -362,7 +362,7 @@ impl DeskWidgets {
     fn members(&self, presence: &PresenceCtx) -> Vec<TeamMember> {
         let user = self.user.as_str();
         self.handle
-            .read(|tree| team::members(tree, user, user, presence, std::time::SystemTime::now()))
+            .read(|tree| team::members(tree, user, user, presence, ui::time::wall()))
     }
 
     /// The displays the desk covers, each by its monitor's stable identity

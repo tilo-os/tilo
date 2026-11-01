@@ -933,9 +933,9 @@ pub enum CalendarEffect {
     /// Export ICS content
     ///
     /// Keeps every event and task, or one event, as an iCalendar file in
-    /// the room's content and answers its content address. No file is
+    /// the workspace's content and answers its content address. No file is
     /// chosen or written, so it needs no one attending: the file stays in
-    /// the room until someone hands it on.
+    /// the workspace until someone hands it on.
     #[effect(kind = "read", returns, idempotent, audience = "agents")]
     ExportIcsContent {
         #[param("The event's id; every event and task when omitted")]

@@ -133,6 +133,20 @@ impl ui::widget::Decorator for Bound {
 }
 
 impl ui::widget::controls::ActionControls for Bound {
+    /// The press the control queued: the control's own published action, which a decorator's
+    /// default walk skips (it forwards to the widget's children).
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        ui::widget::controls::take_control_invocation(&mut *self.inner)
+    }
+
+    /// The control's action is available where its own resource publishes it.
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
+    ) {
+        ui::widget::controls::refresh_control_action_availability(&mut *self.inner, allowed);
+    }
+
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         self.bindings.clone()
     }

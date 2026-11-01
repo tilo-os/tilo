@@ -305,15 +305,37 @@ fn placement(parent: &UiNode, child: &UiNode) -> Placement {
     let mut fit = fit_of(child);
     // Beside siblings in a row, a container takes the room they leave rather than hugging
     // its content, so what it holds lays out in the width the row offers. A row that wraps
-    // flows its items at their own width instead, as chips and tags do.
+    // flows its items at their own width instead, as chips and tags do; and a row with a
+    // spacer has said where its room goes, so its containers hold what they hold and the
+    // spacer takes the rest (a bar's leading and trailing parts, each a group of its own). A
+    // row whose group must give way when it is short of room (a card's title truncating
+    // beside its menu) leaves the spacer out: the group then takes the room itself.
     if parent.kind == "row"
         && !flag(parent, "wrap")
+        && !parent
+            .children
+            .iter()
+            .any(|sibling| sibling.kind == "spacer")
         && (is_container(&child.kind) || child.kind == "embed")
         && number(child, "fill").is_none()
     {
         fit = Fit::fill(1.0);
         fit.width.min = length(child, "min");
         fit.width.max = length(child, "max");
+    }
+    // A call of a view stands for what the view draws: `show(r, fill)` or a filled call of
+    // another package's view asks the view itself to fill, so the lone root it draws (a
+    // window's NavShell) takes the fragment's room instead of hugging its content.
+    if parent.kind == "fragment"
+        && parent.children.len() == 1
+        && number(child, "fill").is_none()
+        && let Some(weight) = number(parent, "fill")
+    {
+        let min = fit.width.min;
+        let max = fit.width.max;
+        fit = Fit::fill(weight);
+        fit.width.min = min;
+        fit.width.max = max;
     }
     if child.kind == "spacer" {
         fit = Fit::fill(1.0);
@@ -630,7 +652,8 @@ impl Reconciler {
             "page" => self.page(node),
             "layers" => self.layers(node),
             "scroll" => self.scroll(node),
-            "spacer" => Box::new(Spacer::fixed(0.0).with_id(node.key.clone())),
+            // A spacer takes the room its row or column leaves (`placement`).
+            "spacer" => Box::new(Spacer::new().with_id(node.key.clone())),
             "divider" => Box::new(Divider::horizontal()),
             "form" | "field" => self.holder(node),
             "toggle" => self.toggle(node),
@@ -1787,6 +1810,50 @@ mod tests {
         assert_eq!(
             display(&read_as(InlineView::Unreadable)),
             "Notes in Not shared with you"
+        );
+    }
+
+    /// The rect `built` lays out its keyed node `key` at in a window of `size`.
+    fn laid_out(view: &UiNode, size: (u32, u32), key: &str) -> ui::vello::kurbo::Rect {
+        let built = reconciler().build(view);
+        let harness = ui::headless::FrameHarness::new(ui::State::new(), built, size);
+        ui::widget::find_test_id(harness.root_widget(), key)
+            .unwrap_or_else(|| panic!("{key} is built"))
+            .get_rect()
+    }
+
+    /// A `spacer` in a row takes the room its neighbours leave, so what follows it stands at
+    /// the row's trailing edge (a bar's status), and a group beside it holds what it holds
+    /// rather than taking that room itself.
+    #[test]
+    fn a_spacer_sends_what_follows_it_to_the_rows_trailing_edge() {
+        let mut trailing = stack("end", vec![text("b", "trailing")]);
+        trailing.kind = "row".to_owned();
+        let row = UiNode {
+            children: vec![text("a", "leading"), node("spacer", "gap"), trailing],
+            ..node("row", "bar")
+        };
+        let end = laid_out(&row, (800, 200), "end");
+        assert!(
+            (end.x1 - 800.0).abs() < 1.0,
+            "the trailing group ends at the row's edge: {end:?}"
+        );
+        assert!(end.width() < 200.0, "it hugs its text: {end:?}");
+    }
+
+    /// A filled call of a view (`show(r, fill)`, a filled call of another package's view)
+    /// stands for the view: the root the view draws takes the call's whole room, as a window's
+    /// shell does, rather than hugging its content.
+    #[test]
+    fn a_filled_view_calls_root_takes_the_calls_room() {
+        let mut call = node("fragment", "call");
+        call.props.insert("fill".to_owned(), Value::Int(1));
+        call.children = vec![stack("root", vec![text("t", "one line")])];
+        let view = stack("window", vec![call]);
+        let root = laid_out(&view, (400, 600), "root");
+        assert!(
+            (root.height() - 600.0).abs() < 1.0,
+            "the view's root fills the call: {root:?}"
         );
     }
 

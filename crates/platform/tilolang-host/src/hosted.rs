@@ -432,6 +432,9 @@ impl Hosted {
             .receive_and(&mut self.instance, |event| events.push(event));
         self.instance.sync(Some(self.record.doc()));
         changed |= self.instance.update();
+        if let Some(why) = self.instance.take_stage_failure() {
+            tracing::error!(%why, "the staged scenario failed");
+        }
         changed |= self.commit();
         // After what the person did before asking is committed: an undo takes back their last
         // step, typing they did just before it included.
@@ -504,9 +507,7 @@ impl Hosted {
             };
             self.record
                 .manager_mut()
-                .send(collaboration::CollabRequest::PublishSearchIndex {
-                    delta_json: bytes,
-                });
+                .send(collaboration::CollabRequest::PublishSearchIndex { delta_json: bytes });
         }
         self.search_index_from = Some(generation);
     }

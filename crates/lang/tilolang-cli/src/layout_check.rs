@@ -357,11 +357,7 @@ fn check_app(
         shown: BTreeSet::new(),
     };
     let first = layouts().first().copied().ok_or("no layouts")?;
-    // The layer laid out, when the caller names one: a package with more than one root (the
-    // shell's `Desk` beside its `Arrangement`) is laid out one layer at a time, and a shot of
-    // the desk is `--root Desk`. Without one the package's first root is laid out, as the
-    // launcher opens an app.
-    let roots: Vec<Option<String>> = vec![root.map(str::to_owned)];
+    let roots = layers_of(&meta, root);
     for root in &roots {
         for scenario in &meta.scenarios {
             let mut staged = stage::Staged::over(
@@ -372,7 +368,11 @@ fn check_app(
                 ui::Theme::light(),
                 root.as_deref(),
             )?;
-            check.run(&mut staged, &scenario.name)?;
+            // A layer other than the window's own is named in what the check says and in its
+            // shots' names, so the shots of one scenario on two layers never overwrite each
+            // other.
+            let title = on_layer(&scenario.name, root.as_deref());
+            check.run(&mut staged, &title)?;
             // The views of types the scenario did not open, on a resource its window names.
             for default in &meta.default_views {
                 let Some(view) = meta.views.iter().find(|v| v.id == default.view) else {
@@ -382,13 +382,14 @@ fn check_app(
                 if check.shown.contains(&view.name) || meta.roots.contains(&default.ty) {
                     continue;
                 }
-                let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty) else {
+                let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty)
+                else {
                     continue;
                 };
                 staged.open(resource);
                 check.run(
                     &mut staged,
-                    &format!("{}, then a {} opened", scenario.name, view.name),
+                    &format!("{title}, then a {} opened", view.name),
                 )?;
             }
             // The views the system shows on surfaces of its own rather than in a window of the
@@ -409,12 +410,15 @@ fn check_app(
                     continue;
                 };
                 staged.open_with(&resource, &view.id);
-                check.run(
-                    &mut staged,
-                    &format!("{}, then {} shown", scenario.name, view.name),
-                )?;
+                check.run(&mut staged, &format!("{title}, then {} shown", view.name))?;
             }
-            press_stage(&mut check, &meta, &packages, &scenario.name, root.as_deref())?;
+            press_stage(
+                &mut check,
+                &meta,
+                &packages,
+                &scenario.name,
+                root.as_deref(),
+            )?;
         }
     }
     let unreached = meta
@@ -425,6 +429,52 @@ fn check_app(
         .map(|v| format!("{} › {}", check.short, v.name))
         .collect();
     Ok((check.gathered.into_values().collect(), check.ran, unreached))
+}
+
+/// The layers laid out. A package with more than one root declares layers the person sees
+/// apart from one another — the shell's `Desk`, its `Arrangement` of places and its `Viewing`
+/// of settings — and each has its own default view, so every one is laid out: the launcher
+/// opens an app's first root, yet a person meets the others through the desktop's surfaces,
+/// and a view only one of them reaches (a dock, a settings page) must still be held to the bar.
+/// `--root NAME` narrows the check to that layer alone, as a shot of the desk is.
+fn layers_of(meta: &tilolang::PackageMeta, root: Option<&str>) -> Vec<Option<String>> {
+    if let Some(name) = root {
+        return vec![Some(name.to_owned())];
+    }
+    let mut layers: Vec<Option<String>> = vec![None];
+    // Every other root the package declares, by the name `--root` takes: a named root's own,
+    // and the type's name for a root with none. The window's own root is laid out already,
+    // whichever name it goes by.
+    let others: BTreeSet<&str> = meta
+        .named_roots
+        .iter()
+        .filter(|r| meta.roots.first() != Some(&r.ty))
+        .map(|r| r.name.as_str())
+        .collect();
+    for ty in &meta.roots {
+        let Some(declared) = meta.types.iter().find(|t| &t.id == ty) else {
+            continue;
+        };
+        if meta.named_roots.iter().any(|r| &r.ty == ty) || meta.roots.first() == Some(ty) {
+            // Already laid out: the first root is the window's own, and a named root has its
+            // name below.
+            continue;
+        }
+        layers.push(Some(declared.name.clone()));
+    }
+    for name in &others {
+        layers.push(Some((*name).to_owned()));
+    }
+    layers
+}
+
+/// What the check calls `scenario` laid out on `root`: the scenario's name on the window's own
+/// layer, and the layer's name after it on any other.
+fn on_layer(scenario: &str, root: Option<&str>) -> String {
+    root.map_or_else(
+        || scenario.to_owned(),
+        |root| format!("{scenario} on {root}"),
+    )
 }
 
 /// What the window shows once a person pressed one of its primary actions (a new note opened
@@ -464,7 +514,7 @@ fn press_stage(
             check.audit(
                 &mut staged,
                 layout,
-                &format!("{scenario}, then {label} pressed"),
+                &format!("{}, then {label} pressed", on_layer(scenario, root)),
             )?;
         }
     }
@@ -808,4 +858,229 @@ pub fn render(report: &Report) -> String {
         report.elapsed_ms % 1000 / 100,
     );
     out
+}
+
+/// The shell's traditional desktop as a person sees it, staged from its own scenario through
+/// the UI host's path: windows standing with their apps' content, one bar per window, and the
+/// trailing parts of the top bar at its edge.
+#[cfg(test)]
+mod traditional_desktop {
+    use std::path::Path;
+    use std::rc::Rc;
+
+    use ui::kurbo::Rect;
+    use ui::widget::Widget;
+
+    use super::stage;
+
+    fn packages() -> (String, Rc<stage::Packages>) {
+        let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
+        let search = vec![shell.parent().expect("apps/tl").to_path_buf()];
+        let dirs = tilolang::source::dependency_order(&shell, &search).expect("the shell resolves");
+        let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
+            .expect("the shell compiles");
+        let app = built.last().expect("the shell").compiled.meta.app.clone();
+        let packages = Rc::new(stage::Packages(Rc::new(
+            built.into_iter().map(|b| b.compiled).collect(),
+        )));
+        (app, packages)
+    }
+
+    /// Every widget under `root` named `name`, with its rect, in drawing order.
+    fn all<'a>(root: &'a dyn Widget, name: &str, out: &mut Vec<&'a dyn Widget>) {
+        if root.name() == name {
+            out.push(root);
+        }
+        for child in root.children() {
+            all(child, name, out);
+        }
+    }
+
+    fn named<'a>(root: &'a dyn Widget, name: &str) -> Vec<&'a dyn Widget> {
+        let mut out = Vec::new();
+        all(root, name, &mut out);
+        out
+    }
+
+    #[test]
+    fn its_windows_show_their_apps_content_under_one_bar_each() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        let staged = stage::Staged::over(
+            &app,
+            &packages,
+            "the traditional desktop",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the scenario stages");
+        let root = staged.harness().root_widget();
+        let frames = named(root, "WindowFrame");
+        assert_eq!(frames.len(), 3, "two notes and a channel stand on the desk");
+        for frame in frames {
+            let window = frame.get_rect();
+            // What the window holds is cut at its edge, so a list scrolled past its top is
+            // never read over the window behind it.
+            assert_eq!(
+                frame.child_clip_rect(),
+                Some(window),
+                "the window clips what it holds"
+            );
+            // The window shows its resource through its type's own view, filling it.
+            let shells = named(frame, "NavShell");
+            let [shell] = shells[..] else {
+                panic!("one app window in each frame, not {}", shells.len());
+            };
+            let content = shell.get_rect();
+            assert!(
+                content.height() > window.height() * 0.8,
+                "the app's window fills the frame: {content:?} in {window:?}"
+            );
+            // The frame's controls stand in the app's own header row, at its trailing end,
+            // so the window has one bar: no bar of the frame's above the app's.
+            assert!(
+                (content.y0 - window.y0).abs() < 1.0,
+                "no bar of the frame's stands over the app's header: {content:?} in {window:?}"
+            );
+            let buttons = named(frame, "Button");
+            let close = buttons
+                .iter()
+                .map(|b| b.get_rect())
+                .max_by(|a, b| a.x1.total_cmp(&b.x1))
+                .expect("the frame's close");
+            assert!(
+                close.y1 < window.y0 + 64.0 && window.x1 - close.x1 < 24.0,
+                "the close stands at the end of the window's bar: {close:?} in {window:?}"
+            );
+            let overlapping: Vec<Rect> = buttons
+                .iter()
+                .map(|b| b.get_rect())
+                .filter(|b| *b != close && b.intersect(close).area() > 0.0)
+                .collect();
+            assert!(
+                overlapping.is_empty(),
+                "the app's header keeps room for the frame's controls: {overlapping:?}"
+            );
+        }
+    }
+
+    /// The controls under `root` outside any window, with their names: the shell's own.
+    fn shell_controls(root: &dyn Widget, out: &mut Vec<(String, Rect)>) {
+        if root.name() == "WindowFrame" {
+            return;
+        }
+        if matches!(root.name(), "Button" | "MenuButton" | "Badge" | "Avatar") {
+            out.push((root.name().to_owned(), root.get_rect()));
+        }
+        for child in root.children() {
+            shell_controls(child, out);
+        }
+    }
+
+    #[test]
+    fn its_top_bar_is_one_row_whose_parts_never_press_into_each_other() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        for (width, height, text) in [(1280, 800, 1.0), (768, 1024, 1.0), (320, 568, 1.5)] {
+            let staged = stage::Staged::over(
+                &app,
+                &packages,
+                "the traditional desktop",
+                (width, height),
+                ui::Theme::light().with_text_scale(text),
+                None,
+            )
+            .expect("the scenario stages");
+            let mut controls = Vec::new();
+            shell_controls(staged.harness().root_widget(), &mut controls);
+            let at = format!("{width}×{height} text {text}");
+            // The bar is the band the system menu stands in; the dock's are lower down.
+            let menu = controls
+                .iter()
+                .map(|(_, r)| *r)
+                .min_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)))
+                .expect("the system menu");
+            let bar: Vec<&(String, Rect)> = controls
+                .iter()
+                .filter(|(_, r)| r.y0 < menu.y1 && r.y1 > menu.y0)
+                .collect();
+            let badges: Vec<Rect> = bar
+                .iter()
+                .filter(|(n, _)| n == "Badge")
+                .map(|(_, r)| *r)
+                .collect();
+            let [badge] = badges[..] else {
+                panic!("the bell's one badge at {at}: {bar:?}");
+            };
+            let pressed: Vec<Rect> = bar
+                .iter()
+                .filter(|(n, _)| n != "Badge")
+                .map(|(_, r)| *r)
+                .collect();
+            for r in &pressed {
+                assert!(
+                    r.x0 >= 0.0 && r.x1 <= f64::from(width),
+                    "{r:?} stays on the output at {at}"
+                );
+                // One row: every part shares the system menu's band.
+                assert!(
+                    (r.center().y - menu.center().y).abs() < 2.0,
+                    "{r:?} stands in the one row at {at}"
+                );
+                for other in &pressed {
+                    assert!(
+                        r == other || r.intersect(*other).area() <= 0.0,
+                        "{r:?} presses into {other:?} at {at}"
+                    );
+                }
+            }
+            assert!(
+                badge.x1 <= f64::from(width),
+                "the badge {badge:?} stays on the output at {at}"
+            );
+            // The count stands on the bell's corner, over the bell and no other control.
+            let under: Vec<&Rect> = pressed
+                .iter()
+                .filter(|r| r.intersect(badge).area() > 0.0)
+                .collect();
+            assert_eq!(
+                under.len(),
+                1,
+                "the badge {badge:?} stands on the bell alone at {at}: {under:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scenario_on_two_layers_is_named_apart() {
+        // The shots of the window's own layer and of the shell's settings layer must not land
+        // in one file, or the desk's shot is the settings page.
+        assert_eq!(
+            super::on_layer("the traditional desktop", None),
+            "the traditional desktop"
+        );
+        assert_ne!(
+            super::on_layer("the traditional desktop", Some("Shell")),
+            super::on_layer("the traditional desktop", None)
+        );
+    }
+
+    #[test]
+    fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        let failed = stage::Staged::over(
+            &app,
+            &packages,
+            "no such scenario",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        );
+        let Err(why) = failed else {
+            panic!("a scenario that does not run is an error");
+        };
+        assert!(why.contains("no such scenario"), "{why}");
+    }
 }

@@ -13,6 +13,7 @@
 pub mod access_keys;
 mod color;
 pub mod devices;
+mod hdr_layers;
 pub mod input_config;
 mod input_source;
 mod libinput;
@@ -59,6 +60,7 @@ use smithay::reexports::input::Libinput as LibinputContext;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::{DeviceFd, Point, Transform};
 use settings_store::hardware::{AdaptiveSyncUnavailable, HdrUnavailable};
+use tilo_color_pipeline::hdr_surface::{HdrLayer, HdrLayerRecording};
 
 use super::{Backend, BackendError, failed};
 use crate::output::{
@@ -776,14 +778,16 @@ fn render_gpu(
         // format; only one the primary draws directly changes depth.
         let depth = (*render == primary).then(|| manager.allocator());
         lit.follow_color(wanted, &mut renderer, device, depth);
-        // The pointer in front, where DrmCompositor can give it the cursor
-        // plane.
-        let mut elements: Vec<OutputRenderElement<Renderer<'_>>> =
-            state.cursor_elements(&mut renderer, &lit.output);
-        elements.extend(output_elements(&mut renderer, state, &lit.output));
+        // What the scene draws while the HDR layers in it are recorded.
+        let hdr = lit
+            .color
+            .pass
+            .as_ref()
+            .is_some_and(|pass| pass.wanted().hdr.is_some());
+        let frame = frame_scene(&mut renderer, state, &lit.output, hdr);
         match lit.color.pass.take() {
             Some(mut pass) => {
-                match pass.render(&mut renderer, &elements) {
+                match pass.render(&mut renderer, frame.scene(), &frame.weights, &frame.layers) {
                     Ok(states) => {
                         submit(
                             lit,
@@ -797,12 +801,12 @@ fn render_gpu(
                     }
                     Err(error) => {
                         tracing::warn!(%error, output = name, "colour pass skipped");
-                        submit(lit, &mut renderer, &elements, None, state, device, now);
+                        submit(lit, &mut renderer, &frame.plain, None, state, device, now);
                     }
                 }
                 lit.color.pass = Some(pass);
             }
-            None => submit(lit, &mut renderer, &elements, None, state, device, now),
+            None => submit(lit, &mut renderer, &frame.plain, None, state, device, now),
         }
         if lit.queued {
             lit.pacing.queued(start, Instant::now(), lit.interval);
@@ -810,6 +814,82 @@ fn render_gpu(
             lit.next_frame = lit.pacing.idle(now, lit.interval, lit.vrr == Vrr::On);
         }
     }
+}
+
+/// Everything `output` shows: the pointer in front, and the desktop.
+fn scene_elements<'r>(
+    renderer: &mut Renderer<'r>,
+    state: &State,
+    output: &Output,
+) -> Vec<OutputRenderElement<Renderer<'r>>> {
+    let mut elements = state.cursor_elements(renderer, output);
+    elements.extend(output_elements(renderer, state, output));
+    elements
+}
+
+/// What an output shows this frame.
+struct Frame<'r> {
+    /// The scene with the layers' renditions in place, as an SDR output draws
+    /// it.
+    plain: Vec<OutputRenderElement<Renderer<'r>>>,
+    /// The same scene with the renditions replaced by black, so the layers'
+    /// own light can be added to what they leave; empty when the layers are
+    /// not composited.
+    black: Vec<OutputRenderElement<Renderer<'r>>>,
+    /// The same scene with each layer in its weight channel colour, which says
+    /// how much of it shows through every pixel; likewise empty.
+    weights: Vec<OutputRenderElement<Renderer<'r>>>,
+    /// The HDR layers the scene drew, bottom to top.
+    layers: Vec<HdrLayer>,
+}
+
+impl<'r> Frame<'r> {
+    /// The scene to draw.
+    fn scene(&self) -> &[OutputRenderElement<Renderer<'r>>] {
+        if self.black.is_empty() {
+            &self.plain
+        } else {
+            &self.black
+        }
+    }
+}
+
+/// The frame `output` draws, recording the HDR layers in it. An HDR output
+/// composites them at their own precision: the scene is drawn once with their
+/// renditions out of it and once with each in its weight channel colour, and
+/// what the shader reads both for.
+fn frame_scene<'r>(
+    renderer: &mut Renderer<'r>,
+    state: &State,
+    output: &Output,
+    hdr: bool,
+) -> Frame<'r> {
+    let recording = HdrLayerRecording::begin();
+    let plain = scene_elements(renderer, state, output);
+    let layers = recording.finish();
+    let mut frame = Frame {
+        plain,
+        black: Vec::new(),
+        weights: Vec::new(),
+        layers,
+    };
+    if !hdr || frame.layers.is_empty() {
+        return frame;
+    }
+    let channels: Vec<(u64, u8)> = frame
+        .layers
+        .iter()
+        .map(|layer| (layer.plane.id(), layer.channel))
+        .collect();
+    frame.black = {
+        let _black = crate::hdr::black();
+        scene_elements(renderer, state, output)
+    };
+    {
+        let _lit = crate::hdr::lit(&channels);
+        frame.weights = scene_elements(renderer, state, output);
+    }
+    frame
 }
 
 /// Compose `elements` onto `lit` and queue the frame. `states`: where the

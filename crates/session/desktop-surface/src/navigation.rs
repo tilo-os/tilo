@@ -378,8 +378,8 @@ pub enum Admitted {
     Launch(String),
     /// Show application `app`: the shown strip's window of it when there is
     /// one by the time the command applies, else a new one. Decided then,
-    /// not at dispatch, since a room's desktop can arrive in between: a
-    /// page opening its room's app must find the room's window, not add
+    /// not at dispatch, since a workspace's desktop can arrive in between: a
+    /// page opening its workspace's app must find the workspace's window, not add
     /// one of its own for everyone.
     Open(String),
     /// Open desktop search, with this query when one was given.

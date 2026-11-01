@@ -80,7 +80,7 @@ pub enum WordProcessorEffect {
     /// Import a document kept as content.
     ///
     /// Replaces this document's body with a Word file (or `OpenDocument`,
-    /// HTML, RTF, Markdown, by its contents) the room holds as content, while
+    /// HTML, RTF, Markdown, by its contents) the workspace holds as content, while
     /// the document is empty; a document someone wrote is never replaced.
     /// Undo takes it back.
     #[effect(returns, kind = "undoable", audience = "agents")]

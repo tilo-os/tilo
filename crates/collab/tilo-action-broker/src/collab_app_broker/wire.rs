@@ -852,16 +852,17 @@ impl JoinedChannel {
         })
     }
 
-    /// Answer a private service-session command from the Browser for the
-    /// page its person reads.
+    /// Answer a private service-session command from an app's own route:
+    /// the Browser's website sessions, or an account secret for the app the
+    /// custodian releases it to.
     pub(super) fn browser_service_session_dispatch(
         &self,
         bytes: &[u8],
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
         let refused = || BrokerError::failed("private service-session request refused".into());
-        if self.route().app_id != "so.tilo.browser"
-            || self.verified_identity.agent_id.is_some()
-            || self.verified_identity.host_scope.is_some()
+        // Only the person's own app connection: never an agent's or a
+        // host's. Which app may ask what is decided per request.
+        if self.verified_identity.agent_id.is_some() || self.verified_identity.host_scope.is_some()
         {
             return Err(refused());
         }

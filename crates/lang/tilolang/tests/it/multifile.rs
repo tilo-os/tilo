@@ -336,7 +336,7 @@ fn a_path_names_a_package_outside_the_siblings() {
             ("main.tl", "app t.main \"Main\"\n\nuse t.lib as lib\n"),
             (
                 "views.tl",
-                "view show(i: lib.Item) {\n    text(i.title)\n}\n",
+                "view item(i: lib.Item) {\n    text(i.title)\n}\n",
             ),
         ],
     );
@@ -344,7 +344,7 @@ fn a_path_names_a_package_outside_the_siblings() {
     let order = dependency_order(&dir, std::slice::from_ref(&lib)).unwrap();
     assert_eq!(order, vec![lib, dir]);
     let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(built[1].compiled.meta.views[0].name, "show");
+    assert_eq!(built[1].compiled.meta.views[0].name, "item");
 }
 
 #[test]
@@ -357,14 +357,14 @@ fn a_use_of_an_earlier_id_imports_the_renamed_package() {
             "app t.tasks \"Tasks\" (previously: t.todo)\n\ntype Item {\n    title: Text\n}\n",
         )],
     );
-    let source = "app t.main \"Main\"\n\nuse t.todo as todo\n\nview show(i: todo.Item) {\n    text(i.title)\n}\n";
+    let source = "app t.main \"Main\"\n\nuse t.todo as todo\n\nview item(i: todo.Item) {\n    text(i.title)\n}\n";
     let dir = scratch.package("main", &[("app.tl", source)]);
     let order = dependency_order(&dir, &[]).unwrap();
     assert_eq!(order, vec![tasks, dir.clone()]);
     let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
     let main = &built[1].compiled.meta;
     assert_eq!(main.uses, ["t.tasks"], "imported under the id it has now");
-    assert_eq!(main.views[0].name, "show");
+    assert_eq!(main.views[0].name, "item");
     // The importer's source stays as written.
     assert_eq!(std::fs::read_to_string(dir.join("app.tl")).unwrap(), source);
 }

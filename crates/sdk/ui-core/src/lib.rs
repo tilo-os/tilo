@@ -258,8 +258,8 @@ pub mod profiling;
 pub mod query_text;
 pub use tilo_ui_paint::raster;
 pub mod realtime_continuity;
-pub mod room_sync;
 pub mod storage;
+pub mod workspace_sync;
 /// The desktop's keyboard shortcut table (actions, their chords and the
 /// defaults) as the settings document keeps it: what every desktop host
 /// resolves a key press through, the native shell and a browser page alike.
@@ -338,6 +338,9 @@ pub mod snap;
 pub mod state;
 pub mod strip_layers;
 pub mod surface;
+/// The actions socket a session hands a surface app is a descriptor: only a
+/// Unix process receives one.
+#[cfg(unix)]
 pub mod surface_peer;
 pub mod surface_services;
 pub mod sysdirs;

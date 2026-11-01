@@ -1,4 +1,4 @@
-//! Opening a PDF the room keeps as content in this record: how an agent,
+//! Opening a PDF the workspace keeps as content in this record: how an agent,
 //! which has no files and no picker, gives a markup record its document.
 //!
 //! The record names its document the way a launch on a file does: by
@@ -15,7 +15,7 @@ use crate::markup::PdfMarkup;
 
 /// Why a record with no PDF reads nothing, and how an agent gives it one.
 pub(super) const NO_PDF: &str =
-    "this record holds no PDF to read yet: open one the room keeps with import-pdf-content";
+    "this record holds no PDF to read yet: open one the workspace keeps with import-pdf-content";
 
 /// The name a PDF opened from content without one is shown under.
 const UNNAMED: &str = "Document.pdf";
@@ -69,7 +69,7 @@ impl PdfApp {
         let bytes = self
             .content
             .read(&hash)
-            .ok_or_else(|| format!("content `{hash}` is not in this room's store"))?;
+            .ok_or_else(|| format!("content `{hash}` is not in this workspace's store"))?;
         // A Word file sent under a PDF's name: say what opens it, rather than
         // that this reader does not.
         if tilo_content::document_format(&bytes).is_none_or(|format| format.extension != "pdf")
@@ -123,7 +123,7 @@ mod tests {
         }
     }
 
-    /// An agent's record with no file opens a PDF from the room's content:
+    /// An agent's record with no file opens a PDF from the workspace's content:
     /// the record pins it with its page plan, and read-text reads it.
     #[serial(pdfium)]
     #[test]

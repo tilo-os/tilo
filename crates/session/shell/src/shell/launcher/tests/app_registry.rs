@@ -3,6 +3,7 @@
 //! and never older than an install that completed.
 
 use super::*;
+use crate::shell::installed_registry::registry_stamps;
 
 /// The compositor loop asks for installed apps while building tiles and
 /// naming apps in Activity. It is served the last enumeration, stale or

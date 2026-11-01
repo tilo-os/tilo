@@ -17,10 +17,10 @@ pub mod source {
     pub const LAYOUT_CHANGED: &str = "layout-changed";
     pub const MEMBER_CHANGED: &str = "member-changed";
     pub const COMMAND: &str = "command";
-    /// Someone signed in with Discord on the room's host (OAuth 2): the
+    /// Someone signed in with Discord on the workspace's host (OAuth 2): the
     /// host appends it, not the worker.
     pub const AUTHORIZED: &str = "authorized";
-    /// Whether, and where, the room's host offers signing in with Discord:
+    /// Whether, and where, the workspace's host offers signing in with Discord:
     /// the host appends it when it starts, not the worker.
     pub const SIGN_IN: &str = "sign-in";
     pub const ALL: [&str; 10] = [
@@ -78,7 +78,7 @@ pub mod event_id {
     }
 }
 
-/// Discord's consent page for signing in to this room's host (OAuth 2's
+/// Discord's consent page for signing in to this workspace's host (OAuth 2's
 /// authorization code flow, `identify` only), without the round trip's
 /// `state`, which each start appends: the application's `client_id`, and
 /// `redirect_uri`, the host's callback.
@@ -360,7 +360,7 @@ pub struct Command {
     pub avatar: Option<String>,
 }
 
-/// What the room's host offers for signing in with Discord: the consent
+/// What the workspace's host offers for signing in with Discord: the consent
 /// page ([`sign_in_page`]), or empty when it offers none.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
@@ -369,7 +369,7 @@ pub struct SignInOffered {
     pub page: String,
 }
 
-/// Someone signed in with Discord through the room's host (OAuth 2 with
+/// Someone signed in with Discord through the workspace's host (OAuth 2 with
 /// the `identify` scope): the account Discord vouched for, the round
 /// trip's state that names who started it, and the token the host handed
 /// back to the browser that came back.

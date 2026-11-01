@@ -107,7 +107,11 @@ pub fn appearance_values(
 ///
 /// The structural reason, or every failing pair.
 pub fn ensure_legible(document: &ThemeDocument) -> Result<(), String> {
-    document.validate().map_err(str::to_owned)?;
+    // The full reason, a surface shader's own compile error included, so
+    // the import notice names what to fix.
+    if let Some(reason) = ui::Theme::refusal(document) {
+        return Err(reason);
+    }
     let findings = document.findings();
     if findings.is_empty() {
         return Ok(());

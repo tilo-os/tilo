@@ -2704,6 +2704,27 @@ fn the_visual_alert_flashes_the_screen_and_fades() {
 }
 
 #[test]
+fn a_frame_after_the_alerts_run_puts_the_visual_alert_away() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    compositor.render().expect("render");
+    compositor.flash();
+    compositor.render().expect("render");
+    let lit = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    let lit = lit.pixel(10, 10).expect("pixel");
+    assert!(lit[0] > 200, "the alert is on screen: {lit:?}");
+    // No frame is drawn while the alert runs: the next one comes after it,
+    // as a busy machine's would.
+    std::thread::sleep(Duration::from_millis(500));
+    compositor.render().expect("render");
+    let frame = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    assert_eq!(
+        frame.pixel(10, 10),
+        Some(BACKGROUND),
+        "the alert is not left on screen"
+    );
+}
+
+#[test]
 fn the_lens_magnifies_the_scene_around_the_pointer() {
     const GREEN: [u8; 4] = [0, 255, 0, 255];
     let mut compositor = headless(Box::new(StackPolicy));

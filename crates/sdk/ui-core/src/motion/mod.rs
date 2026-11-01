@@ -60,6 +60,7 @@ mod scroll_to;
 mod source;
 mod spec;
 mod spring;
+mod transition;
 mod value;
 
 #[cfg(test)]
@@ -80,7 +81,7 @@ pub use clock::{
     frame_drawn, frame_laying_out, frame_now, frames_until, frames_wanted, frames_wanted_by,
     testing, want_frames_until,
 };
-pub use curve::{blend_across, painter_progress};
+pub use curve::blend_across;
 pub use disclosure::Disclosure;
 pub use kept::{HandOn, keep, take_kept, take_kept_at, take_kept_where, window_has_shown};
 pub(crate) use kept::{frame_ended, laying_out_window};
@@ -96,4 +97,5 @@ pub use scroll_to::{ScrollJump, ScrollTo};
 pub use source::{input_source, note_input, note_source, recent_input, source_of};
 pub use spec::{Direction, MotionSpec, Pace, Reduced, Shortcut};
 pub use spring::SpringSpec;
+pub(crate) use transition::progress as transition_progress;
 pub use value::{Animatable, Channels, MotionValue, Timing};

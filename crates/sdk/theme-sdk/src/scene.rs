@@ -41,12 +41,29 @@ impl PartImage {
     }
 }
 
-/// How the backdrop is bent where a part shows it.
+/// How a backdrop sample is filtered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sampling {
+    /// Smoothly, as a photograph: the stock.
+    #[default]
+    Smooth,
+    /// At one colour per cell of `cell` logical pixels: the backdrop shown
+    /// as pixels (the Pixelated set). Each cell shows the average of what
+    /// lies below it.
+    Blocky,
+}
+
+/// How the backdrop is bent and filtered where a part shows it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Lens {
     /// Displacement at the shape's rim, logical pixels, easing to none a
     /// rim's width in: a thick lens. `0` shows the backdrop straight.
     pub refraction: f32,
+    /// How the sample is filtered.
+    pub sampling: Sampling,
+    /// The cell's side in logical pixels, for [`Sampling::Blocky`]; ignored
+    /// otherwise.
+    pub cell: f32,
 }
 
 /// What a path is filled or stroked with.
@@ -88,6 +105,27 @@ pub enum Brush {
         fallback: Color,
         glaze: Vec<Op>,
     },
+    /// The part painted by `source`, a theme's own surface shader over the
+    /// fixed input set (`tilo_ui::tokens::shader`) whose `backdrop` input is
+    /// what lies below the part. Where nothing can evaluate a shader, or
+    /// where nothing may be translucent, the toolkit paints `fallback`
+    /// instead, so the part is never blank. The toolkit evaluates a settled
+    /// part once and replays the image; an idle surface draws nothing.
+    Shader {
+        source: ShaderSource,
+        fallback: Color,
+    },
+}
+
+/// A surface shader as it travels from a theme document to the renderer:
+/// WGSL and the static `time` it is given. It is checked when the theme is
+/// read, before it reaches here.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ShaderSource {
+    pub wgsl: String,
+    /// The `time` input, in hundredths of a second (exact, so it encodes
+    /// without rounding).
+    pub time_centis: u32,
 }
 
 /// One drawing operation, in part coordinates (origin at the part's top

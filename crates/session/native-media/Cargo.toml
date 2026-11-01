@@ -1,0 +1,28 @@
+[package]
+name = "tilo-native-media"
+description = "The session's voice calls: which channel an app's call is in, who is in each channel, and this device's own call as presence says it"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "tilo_native_media"
+
+[dependencies]
+# The closed local call controls: requests an app sends, the status it reads.
+runtime-collab = { path = "../../runtime/runtime-collab" }
+# The broker's trait a call service answers: the app's admitted connection,
+# and the fence that stops its call when that app goes away.
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+tilo-lock = { path = "../../platform/tilo-lock" }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

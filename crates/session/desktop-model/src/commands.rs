@@ -2,7 +2,7 @@
 //! reduction the owner applies once it has checked the caller.
 //!
 //! A [`DesktopCommand`] names strips, groups and tabs by id, never by
-//! on-screen index, and a [`BoundCommand`] pins it to the exact admitted room
+//! on-screen index, and a [`BoundCommand`] pins it to the exact admitted workspace
 //! revision the requester saw. Neither this payload nor any transport
 //! carrying it is a mutation receipt: the owner validates authority and
 //! freshness, reserves identities in its own namespace, and only then runs
@@ -177,7 +177,7 @@ pub enum DesktopCommand {
         id: String,
     },
     /// Register topology namespace `salt` to the calling device, so it can
-    /// publish its own windows (a session's legacy windows) into a room
+    /// publish its own windows (a session's legacy windows) into a workspace
     /// another device governs. Only the governor writes the registry; a
     /// namespace is never rebound. Placement-independent. Appended last:
     /// existing encodings are unchanged.
@@ -186,7 +186,7 @@ pub enum DesktopCommand {
     },
     /// Save a named grant set, replacing the one with the same name. The set
     /// travels as its JSON. Only a native owner applies it, with the caller's
-    /// authority over the room's settings.
+    /// authority over the workspace's settings.
     SavePreset {
         preset_json: String,
     },

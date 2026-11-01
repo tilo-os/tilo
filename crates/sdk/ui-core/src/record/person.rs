@@ -72,6 +72,9 @@ pub struct PersonRecords {
     /// These are the app's own records in a workspace, each the author's
     /// own there ([`RecordId::of_member`]).
     member: bool,
+    /// The app these are the person's records of: `open`'s package, carried
+    /// across [`Self::of_package`], which opens another app's.
+    own_package: String,
 }
 
 impl PersonRecords {
@@ -91,6 +94,7 @@ impl PersonRecords {
             author,
             others: None,
             member: false,
+            own_package: package_id.to_owned(),
         })
     }
 
@@ -115,6 +119,7 @@ impl PersonRecords {
             author,
             others: None,
             member: false,
+            own_package: package_id.to_owned(),
         })
     }
 
@@ -139,6 +144,7 @@ impl PersonRecords {
             author: self.author.clone(),
             others: None,
             member: false,
+            own_package: self.own_package.clone(),
         })
     }
 
@@ -172,6 +178,7 @@ impl PersonRecords {
                 author: self.author.clone(),
                 others: None,
                 member: false,
+                own_package: self.own_package.clone(),
             }
         };
         Ok(Self {
@@ -201,6 +208,14 @@ impl PersonRecords {
         self
     }
 
+    /// Whether a host keeps the person's shared records and lends them to
+    /// these ([`Self::sharing`]): those this app owns are then the host's
+    /// too, so the process has one writer of each.
+    #[must_use]
+    pub fn shared_by_host(&self) -> bool {
+        self.others.is_some()
+    }
+
     /// Write out what is not stored yet, as closing the window does.
     ///
     /// The records are the store's once written: a store whose host commits
@@ -216,6 +231,13 @@ impl PersonRecords {
     #[must_use]
     pub fn author(&self) -> &UserId {
         &self.author
+    }
+
+    /// Whether these are this app's own records: another app's, opened
+    /// beside them ([`Self::of_package`]), are a copy this app reads.
+    fn owns_records(&self) -> bool {
+        let (package, _) = self.store.package_and_home();
+        package == self.own_package
     }
 
     /// The person's room, when they have one: the records sync to their
@@ -246,6 +268,9 @@ impl PersonRecords {
                 let (package, home) = self.store.package_and_home();
                 let replica = Self {
                     member: self.member,
+                    // Whose records these are does not change with the
+                    // store they could not be opened in.
+                    own_package: self.own_package.clone(),
                     ..Self::replica_in(&package, &home, self.author.clone())?
                 };
                 open_in(&replica.store, &checkout, initialize)?;
@@ -253,6 +278,7 @@ impl PersonRecords {
                     replica.store,
                     checkout,
                     self.author.clone(),
+                    self.owns_records(),
                 ))
             }
             Err(error) => Err(error),
@@ -260,6 +286,7 @@ impl PersonRecords {
                 self.store.clone(),
                 checkout,
                 self.author.clone(),
+                self.owns_records(),
             )),
         }
     }
@@ -284,6 +311,7 @@ impl PersonRecords {
                 let (package, home) = self.store.package_and_home();
                 let replica = Self {
                     member: self.member,
+                    own_package: self.own_package.clone(),
                     ..Self::replica_in(&package, &home, self.author.clone())?
                 };
                 match replica.store.try_open_record(&checkout) {
@@ -298,6 +326,7 @@ impl PersonRecords {
             store,
             checkout,
             self.author.clone(),
+            self.owns_records(),
         )))
     }
 
@@ -318,6 +347,7 @@ impl PersonRecords {
             self.store.clone(),
             checkout,
             self.author.clone(),
+            self.owns_records(),
         ))
     }
 }
@@ -344,18 +374,42 @@ pub struct StoredRecord {
     store: RecordStore,
     checkout: RecordCheckout,
     author: UserId,
+    /// Whether this app publishes the record's changes on its route: the
+    /// records of its own package, and the room's shared ones. Another
+    /// app's records are joined and merged from their route, never
+    /// published there ([`Self::publishes`]).
+    publishes: bool,
     /// Keeps the record's route installed while the record is open.
     lifetime: Rc<RecordOwnerLifetime>,
 }
 
 impl StoredRecord {
-    pub(super) fn new(store: RecordStore, checkout: RecordCheckout, author: UserId) -> Self {
+    pub(super) fn new(
+        store: RecordStore,
+        checkout: RecordCheckout,
+        author: UserId,
+        publishes: bool,
+    ) -> Self {
         Self {
             store,
             checkout,
             author,
+            publishes,
             lifetime: RecordOwnerLifetime::new(),
         }
+    }
+
+    /// Whether this app publishes the record's changes on its route.
+    ///
+    /// The identity service signs a change only for the route's own app, and
+    /// for the room's shared records: never for another app's record, its
+    /// keeper's or its editors'. A window of an app that only reads another
+    /// app's record joins its route and merges what comes back; nothing
+    /// local is sent there, and a change that was would be refused a
+    /// signature — which stops the whole collaboration, not one record.
+    #[must_use]
+    pub fn publishes(&self) -> bool {
+        self.publishes
     }
 
     /// Wake the window `reader` belongs to whenever another replica's change
@@ -479,7 +533,12 @@ impl StoredRecord {
     /// it is open.
     #[must_use]
     pub fn history_owner(&self) -> HistoryOwner {
-        HistoryOwner::record(self.store.clone(), self.checkout.clone(), &self.lifetime)
+        HistoryOwner::record(
+            self.store.clone(),
+            self.checkout.clone(),
+            &self.lifetime,
+            self.publishes,
+        )
     }
 
     /// Merge a whole document of this record another device holds, as its

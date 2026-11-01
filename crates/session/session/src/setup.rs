@@ -5,7 +5,6 @@
 //! door; what setup needs of the session it reads through
 //! [`tilo_onboarding_host::host::SessionHost`].
 
-use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
@@ -93,7 +92,7 @@ impl Setup {
         };
         let widgets = WidgetHost::new(Box::new(view), placement, false)
             .covering_outputs()
-            .with_keyboard(Rc::new(Cell::new(true)));
+            .with_keyboard(Rc::new(|| true));
         Self {
             widgets,
             door,

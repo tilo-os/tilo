@@ -53,6 +53,9 @@ pub struct PinPlace {
     pub x: f64,
     pub y: f64,
     pub width: f64,
+    /// How tall it stands, when the arrangement says (a window on a desktop); `None` lets its
+    /// view say, as a note on a canvas is as tall as what it holds.
+    pub height: Option<f64>,
 }
 
 /// The camera: which canvas point stands at the viewport's top-leading corner, and how many
@@ -113,6 +116,10 @@ impl MapCamera {
 pub struct MapProps {
     /// What the map is, for assistive technology.
     pub name: Option<String>,
+    /// Whether it is a desktop: the windows it holds stand on the desktop's ground
+    /// ([`SurfaceLevel::Ground`](crate::widget::primitives::SurfaceLevel)), not on the content
+    /// colour of the window the map is in.
+    pub ground: bool,
     /// The pins, in the order the map draws them (the last on top).
     #[component(slot(default))]
     pub pins: Vec<MapPinProps>,
@@ -133,6 +140,8 @@ pub struct MapPinProps {
     pub y: Option<i64>,
     /// How wide it stands, in canvas pixels.
     pub width: Option<i64>,
+    /// How tall it stands, in canvas pixels; without it, as tall as its view asks.
+    pub height: Option<i64>,
     /// What it shows.
     #[component(slot(default))]
     pub body: Vec<Element>,
@@ -190,6 +199,8 @@ pub struct Map {
     /// Where the pointer last was, in this map's logical coordinates.
     cursor: Point,
     touch: TouchGestureArena,
+    /// It stands on the desktop's ground.
+    ground: bool,
     rect: Rect,
 }
 
@@ -211,6 +222,7 @@ impl Map {
             pan: None,
             cursor: Point::ORIGIN,
             touch: TouchGestureArena::new(),
+            ground: false,
             rect: Rect::ZERO,
         }
     }
@@ -256,7 +268,7 @@ impl Map {
     pub fn bounds(&self) -> Rect {
         let mut out: Option<Rect> = None;
         for (key, place, _) in &self.pins {
-            let height = 0.0;
+            let height = place.height.unwrap_or(0.0);
             let _ = key;
             let rect = Rect::from_origin_size(
                 Point::new(place.x, place.y),
@@ -317,14 +329,18 @@ impl Map {
                         index,
                         Size {
                             width: MeasureConstraint::Exact(f32_of(width)),
-                            height: MeasureConstraint::Intrinsic,
+                            height: place.height.map_or(MeasureConstraint::Intrinsic, |height| {
+                                MeasureConstraint::Exact(f32_of((height * camera.zoom).max(1.0)))
+                            }),
                         },
                     )?
                     .size;
                 let left = (place.x - camera.origin.x) * camera.zoom;
                 let top = (place.y - camera.origin.y) * camera.zoom;
-                let rect =
-                    Rect::from_origin_size((left, top), (f64::from(width), f64::from(size.height)));
+                let height = place.height.map_or(f64::from(size.height), |height| {
+                    (height * camera.zoom).max(1.0)
+                });
+                let rect = Rect::from_origin_size((left, top), (width, height));
                 cx.place(index, rect)?;
             }
             // The region is its viewport: a canvas does not grow with what it holds.
@@ -346,13 +362,19 @@ impl Described for Map {
     type Props = MapProps;
 
     fn from_props(_key: &str, props: MapProps) -> Self {
-        let MapProps { name: _, pins } = props;
+        let MapProps {
+            name: _,
+            ground,
+            pins,
+        } = props;
         let mut map = Self::new();
+        map.ground = ground;
         for pin in pins {
             let place = PinPlace {
                 x: pin.x.unwrap_or(0) as f64,
                 y: pin.y.unwrap_or(0) as f64,
                 width: (pin.width.unwrap_or(360) as f64).max(1.0),
+                height: pin.height.map(|height| (height as f64).max(1.0)),
             };
             let view: Element = match pin.body.into_iter().next() {
                 Some(body) => body,
@@ -402,6 +424,7 @@ impl SlotViews for Map {
                     x: 0.0,
                     y: 0.0,
                     width: 360.0,
+                    height: None,
                 },
                 Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)),
             ),
@@ -611,6 +634,15 @@ impl Widget for Map {
         // A canvas clips what it holds: a place outside the viewport is neither drawn nor hit.
         let viewport = self.rect;
         let clips = viewport.width() > 0.0 && viewport.height() > 0.0;
+        if self.ground && clips {
+            let _ = crate::widget::primitives::paint_surface(
+                scene,
+                transform,
+                viewport,
+                crate::widget::primitives::SurfaceLevel::Ground,
+                theme,
+            );
+        }
         if clips {
             scene.push_layer(
                 Fill::NonZero,

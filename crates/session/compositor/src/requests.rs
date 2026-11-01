@@ -106,10 +106,10 @@ impl State {
         })
     }
 
-    /// The monitors of the displays a fullscreen window owns: the display
-    /// holding its middle, or its corner for a window taken off them.
-    pub(crate) fn fullscreen_monitors(&self) -> Vec<String> {
-        let mut monitors: Vec<String> = Vec::new();
+    /// The displays a fullscreen window owns: the display holding its
+    /// middle, or its corner for a window taken off them. Each once.
+    fn fullscreen_owned(&self) -> Vec<&smithay::output::Output> {
+        let mut owned: Vec<&smithay::output::Output> = Vec::new();
         for window in self.space.elements() {
             if !fullscreen_granted(window) {
                 continue;
@@ -119,23 +119,41 @@ impl State {
             };
             let middle = geometry.loc + Point::from((geometry.size.w / 2, geometry.size.h / 2));
             let owner = |point: Point<i32, Logical>| {
-                self.space
-                    .outputs()
-                    .find(|output| {
-                        self.space
-                            .output_geometry(output)
-                            .is_some_and(|area| area.contains(point))
-                    })
-                    .map(monitor_of)
-                    .map(|(monitor, _)| monitor)
+                self.space.outputs().find(|output| {
+                    self.space
+                        .output_geometry(output)
+                        .is_some_and(|area| area.contains(point))
+                })
             };
-            if let Some(monitor) = owner(middle).or_else(|| owner(geometry.loc))
-                && !monitors.contains(&monitor)
+            if let Some(output) = owner(middle).or_else(|| owner(geometry.loc))
+                && !owned.contains(&output)
             {
+                owned.push(output);
+            }
+        }
+        owned
+    }
+
+    /// The monitors of the displays a fullscreen window owns
+    /// ([`Self::fullscreen_owned`]).
+    pub(crate) fn fullscreen_monitors(&self) -> Vec<String> {
+        let mut monitors: Vec<String> = Vec::new();
+        for (monitor, _) in self.fullscreen_owned().into_iter().map(monitor_of) {
+            if !monitors.contains(&monitor) {
                 monitors.push(monitor);
             }
         }
         monitors
+    }
+
+    /// The outputs a fullscreen window owns ([`Self::fullscreen_owned`]), by
+    /// connector name: the shell's bar there steps aside, as the desktop's
+    /// own bar does on the same displays.
+    pub(crate) fn fullscreen_outputs(&self) -> Vec<String> {
+        self.fullscreen_owned()
+            .into_iter()
+            .map(smithay::output::Output::name)
+            .collect()
     }
 
     /// A window asked for `request` (`serial`: the press it starts from,

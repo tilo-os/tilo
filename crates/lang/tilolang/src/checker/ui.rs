@@ -542,6 +542,13 @@ impl Checker<'_> {
         if p.name == "embed" {
             self.embed_complete(c, args);
         }
+        if p.name == "show" && args.is_empty() {
+            self.err(
+                "E022",
+                c.call.span,
+                "`show` takes the resource to draw: `show(r)`",
+            );
+        }
         if p.name == "rich_input" {
             self.drawer_props(n);
         }
@@ -771,9 +778,23 @@ impl Checker<'_> {
             let _ = self.expr(&a.value, None);
             return;
         }
-        if p.name == "compose" && matches!(name.as_str(), "app" | "record" | "view") {
+        if p.name == "show" && name == "view" {
             let v = self.expr_as(&a.value, &Ty::Text);
-            self.prop(Ex::local(n, Ty::View), &name, v, a.value.span);
+            self.prop(Ex::local(n, Ty::View), "view", v, a.value.span);
+            return;
+        }
+        if p.name == "show" && name == "of" {
+            let v = self.expr(&a.value, None);
+            if !matches!(v.ty, Ty::Record(_) | Ty::Error) {
+                let t = self.show(&v.ty);
+                self.err(
+                    "E020",
+                    a.value.span,
+                    format!("`show` draws a resource: `show(r)`; this is {t}"),
+                );
+                return;
+            }
+            self.prop(Ex::local(n, Ty::View), "of", v, a.value.span);
             return;
         }
         if p.name == "embed" && matches!(name.as_str(), "source" | "author" | "invocation") {

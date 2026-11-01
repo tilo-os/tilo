@@ -563,7 +563,7 @@ pub(crate) struct LibraryIndex {
     building: HashSet<String>,
     /// Books whose segment was built here and handed on to be kept: not
     /// built again while their row still names none, which is what a row
-    /// shows while the room has not taken the index, or after it refused it.
+    /// shows while the workspace has not taken the index, or after it refused it.
     built_here: HashSet<String>,
     built_send: Sender<(String, Vec<u8>)>,
     built: Receiver<(String, Vec<u8>)>,
@@ -1024,7 +1024,7 @@ mod tests {
         index.build_missing(&books, &entries);
         pumped.run_pending();
         assert_eq!(index.take_built().len(), 1, "built once");
-        // The row still names no index: the room refused it, or has not
+        // The row still names no index: the workspace refused it, or has not
         // taken it yet. Building it again would only send it again.
         index.build_missing(&books, &entries);
         pumped.run_pending();

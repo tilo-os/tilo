@@ -231,6 +231,35 @@ impl Checker<'_> {
         )
     }
 
+    /// `resource(id)`: the resource the store keeps under the id text, read as its own type
+    /// (`host.Resource`, any resource). A place names what it shows by the id alone, so its
+    /// shell reads that resource — its actions, its title — without knowing the type ahead.
+    /// `.none` for text that names no resource this store holds. A view that reads it runs
+    /// again when the resource changes.
+    pub(super) fn builtin_resource(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [a] = args else {
+            self.err(
+                "E022",
+                span,
+                "`resource` takes the id of one resource: `resource(p.record)`",
+            );
+            return Ex::error();
+        };
+        if a.name.is_some() {
+            self.err(
+                "E022",
+                a.value.span,
+                "`resource` takes the id by position: `resource(p.record)`",
+            );
+        }
+        let id = self.expr_as(&a.value, &Ty::Text);
+        Ex::host(
+            Imp::ResourceRef,
+            vec![id],
+            Ty::Option(Box::new(Ty::Record(super::resource_key()))),
+        )
+    }
+
     /// `delivery(r)`: how the outside effect `r`'s actions queued last stands (sending a mail),
     /// `.none` when they queued none: waiting to go online, sending, sent, rejected with the
     /// service's reason, or outcome unknown. A view that reads it runs again when it moves.

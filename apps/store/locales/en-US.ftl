@@ -113,7 +113,7 @@ store-bot-label = Bot
 store-bot-kind = Bot
 store-bot-what-it-does = What it does
 store-bot-appearance = May post under other names and avatars. Always tagged as a bot.
-store-bot-add-to-room = Add to this workspace…
+store-bot-add-to-workspace = Add to this workspace…
 store-bot-add-elsewhere = A workspace adds a bot with its Add a bot action
 store-bot-trigger-connector = When its connector reports an event
 store-bot-trigger-record-changed = When a record changes
@@ -312,7 +312,7 @@ store-unblock-not-blocked = This app is not blocked.
 ## Bots
 
 store-bot-access-title = What it can reach
-store-bot-access-none = Nothing beyond the room it runs in.
+store-bot-access-none = Nothing beyond the workspace it runs in.
 store-bot-uses-app = Uses its actions and watches its changes
 store-bot-needs-connector = Connector, version { $version } or newer
 

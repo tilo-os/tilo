@@ -220,7 +220,7 @@ mod tests {
             "the folder names its record"
         );
 
-        // A plain launch is the room's own project, not this folder's.
+        // A plain launch is the workspace's own project, not this folder's.
         let plain = TestApp::<CodeEditorShell>::new().unwrap();
         assert_ne!(plain.record(), sample.app.record());
 

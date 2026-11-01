@@ -8,4 +8,3 @@
 CartesianPlot — numeric axes and mixed series: its axes, series and marks are Rust data the language has no value for yet
 Chart — a titled trend chart with its axis labels: its series are Rust data the language has no value for yet
 GraphCanvas — a node-and-connection drawing: its nodes and connections are Rust data the language has no value for yet
-Sparkline — a tiny inline trend line: its samples are a list of floats it could take; not described yet

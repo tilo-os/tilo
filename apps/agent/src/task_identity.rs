@@ -52,10 +52,10 @@ pub fn load(
             path.display()
         )
     })?;
-    let room = workspace.to_string();
+    let expected = workspace.to_string();
     anyhow::ensure!(
-        credentials.workspace_id == room,
-        "the task agent's credentials are for workspace {}, not {room}",
+        credentials.workspace_id == expected,
+        "the task agent's credentials are for workspace {}, not {expected}",
         credentials.workspace_id
     );
     CertifiedEndpointIdentity::for_task_agent(&credentials)
@@ -68,7 +68,7 @@ mod tests {
 
     use super::*;
 
-    const ROOM: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+    const WORKSPACE: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
 
     fn leave(dir: &Path, agent_id: &str, workspace: &str) -> PathBuf {
         let credentials = TaskAgentCredentials {
@@ -85,15 +85,15 @@ mod tests {
     #[test]
     fn credentials_are_read_once_and_removed() {
         let dir = tempfile::tempdir().unwrap();
-        let path = leave(dir.path(), "task-0a0b0c0d0e0f", ROOM);
-        let identity = load(dir.path(), "task-0a0b0c0d0e0f", ROOM.parse().unwrap()).unwrap();
+        let path = leave(dir.path(), "task-0a0b0c0d0e0f", WORKSPACE);
+        let identity = load(dir.path(), "task-0a0b0c0d0e0f", WORKSPACE.parse().unwrap()).unwrap();
         assert!(format!("{identity:?}").contains("redacted"));
         assert!(
             !path.exists(),
             "the task key is removed from disk once read"
         );
         assert!(
-            load(dir.path(), "task-0a0b0c0d0e0f", ROOM.parse().unwrap()).is_err(),
+            load(dir.path(), "task-0a0b0c0d0e0f", WORKSPACE.parse().unwrap()).is_err(),
             "read once: a second reading finds nothing"
         );
     }
@@ -106,7 +106,7 @@ mod tests {
             "task-0a0b0c0d0e0f",
             "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         );
-        let error = load(dir.path(), "task-0a0b0c0d0e0f", ROOM.parse().unwrap()).unwrap_err();
+        let error = load(dir.path(), "task-0a0b0c0d0e0f", WORKSPACE.parse().unwrap()).unwrap_err();
         assert!(error.to_string().contains("not 6f1c2a3b"), "{error}");
     }
 }

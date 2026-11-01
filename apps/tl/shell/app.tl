@@ -51,7 +51,6 @@ type Desk (origin: session.desk) {
     /// The pointer at the bottom edge, and a window standing where the dock rides.
     dock_reached: Bool
     dock_covered: Bool
-    title: Text merge register
     agents: Collection<Agent>
     rooms: Collection<Room>
     notices: Collection<Notice>
@@ -238,36 +237,45 @@ action ask(d: Desk) (icon: .bot, label: "Ask an agent") {
 }
 
 /// The person's desk as a window shows it: the top bar over the preset they picked, and the
-/// preset switch beside the bar's actions. The bar reads `desk`, this package's other root, as
+/// preset switch beside the bar's actions — or, for the traditional desktop, the whole screen:
+/// its frames on the desk under the desk's own bar and dock, as the session shows them on an
+/// output. The bar reads `desk`, this package's other root, as
 /// any view reads a root of the package it uses. A change of the arrangement runs the preset
 /// body; a change of the desk reading runs the bar.
 view desk_view(a: Arrangement) {
     let v = viewing
-    ui.NavShell(content_kind: .page) {
-        actions: {
-            bar(root Desk)
-            preset_switch(v)
+    if v.showing == .desktop {
+        layers(fill) {
+            traditional_desktop(a, fill)
+            desk(root Desk, fill)
         }
-        content: {
-            if v.showing == .frames {
-                framed_canvas(a)
-            } else if v.showing == .spaces {
-                spaces_canvas(a)
-            } else {
-                strips_view(a, v)
+    } else {
+        ui.NavShell(content_kind: .page) {
+            actions: {
+                bar(root Desk)
+                preset_switch(v)
+            }
+            content: {
+                if v.showing == .frames {
+                    framed_canvas(a)
+                } else if v.showing == .spaces {
+                    spaces_canvas(a)
+                } else {
+                    strips_view(a, v)
+                }
             }
         }
     }
 }
 
 /// The time, to the minute, and the timer Clocks runs beside it: its label and what it has
-/// left (a stopwatch: what it has run), paused when the person paused it.
+/// left (a stopwatch: what it has run), paused when the person paused it. The name is a text of
+/// its own, so a reader hears it; the reading is the number beside it, and a paused timer says
+/// so.
 view clock(d: Desk) {
     row(gap: .tight, align: .center) {
         ui.Text(d.clock, role: .subheading, numeric: true)
         if d.timer != "" {
-            // The name is a text of its own, so a reader hears it; the reading is the number
-            // beside it, and a paused timer says so.
             ui.Text(d.timer, role: .caption)
             ui.Text(if d.timer_paused { "Paused · {d.timer_left}" } else { d.timer_left }, role: .caption, numeric: true)
         }
@@ -280,10 +288,11 @@ view clock(d: Desk) {
 /// it is dropped; letting go runs one action, `place_part`.
 view bar(d: Desk) {
     let s = shell
+    let roomy = space.width_class == .expanded or space.width_class == .wide
     ui.DragRun(axis: .horizontal, name: "Top bar") {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
-            if part.shown {
+            if part.shown and (space.wide or not part_gives_way(part, roomy)) {
                 ui.DragItem(part, title: part.title, group: if part.slot == .clock { .center } else if part.slot == .people or part.slot == .status or part.slot == .power { .trailing } else if part.slot == .space { .space } else { .leading }) {
                     bar_part(d, part)
                 }
@@ -292,9 +301,22 @@ view bar(d: Desk) {
     }
 }
 
-/// One part of the bar, drawn from what it is. A narrow output keeps the menu, the workspace
-/// and the status; the strip, the tasks and who is here give way, because the bar's parts must
-/// never press into each other (the overview shows them).
+/// Whether a part of the bar gives way on a bar narrower than a wide one: the strip and the
+/// focused window's menu below an expanded bar (a phone, a tablet, or large text), and the
+/// tasks and who is here, which run longest, below a wide one. The menu, the workspace, the
+/// clock and the status always keep their room. The bar decides by its width, so a part that
+/// gives way leaves no room behind; the bar's parts must never press into each other (the
+/// overview shows what gave way).
+fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
+    if part.slot == .tasks or part.slot == .people {
+        return true
+    }
+    return not roomy and (part.slot == .strip or part.slot == .app_menu)
+}
+
+/// One part of the bar, drawn from what it is. The person's own avatar carries the question put
+/// to them: their answer or their putting it off, never a banner over their windows. The status
+/// part leads with the running applications' tray items, each under the app's own words for it.
 view bar_part(d: Desk, part: BarPart) {
     if part.slot == .space {
         spacer
@@ -312,40 +334,36 @@ view bar_part(d: Desk, part: BarPart) {
             ui.MenuItem("Save", icon: .download)
         }
     } else if part.slot == .strip {
-        if d.strip != "" and not space.compact {
+        if d.strip != "" {
             ui.Button(d.strip, icon: .chevron_right, role: .bar) {
                 on press: strips(d)
             }
         }
     } else if part.slot == .tasks {
-        if not space.compact {
+        row(gap: .tight, align: .center) {
             for t in d.tasks {
                 ui.Button(t.title, icon: .bot, role: .bar)
             }
         }
     } else if part.slot == .people {
-        if not space.compact {
-            row(gap: .tight, align: .center) {
-                for p in d.people {
-                    person_chip(p)
+        row(gap: .tight, align: .center) {
+            for p in d.people {
+                person_chip(p)
+            }
+            if d.ask != "" {
+                ui.Button(d.ask, role: .bar) {
+                    on press: answer_ask(d)
                 }
-                // The person's own avatar carries the question put to them: their answer or
-                // their putting it off, never a banner over their windows.
-                if d.ask != "" {
-                    ui.Button(d.ask, role: .bar) {
+                if d.ask_answer != "" {
+                    ui.Button(d.ask_answer, role: .bar) {
                         on press: answer_ask(d)
                     }
-                    if d.ask_answer != "" {
-                        ui.Button(d.ask_answer, role: .bar) {
-                            on press: answer_ask(d)
-                        }
-                    }
-                    ui.Button("Ask me later", role: .bar) {
-                        on press: put_off_ask(d)
-                    }
-                } else if d.person != "" {
-                    ui.Avatar(name: .some(d.person))
                 }
+                ui.Button("Ask me later", role: .bar) {
+                    on press: put_off_ask(d)
+                }
+            } else if d.person != "" {
+                ui.Avatar(name: .some(d.person))
             }
         }
     } else if part.slot == .power {
@@ -356,7 +374,6 @@ view bar_part(d: Desk, part: BarPart) {
         }
     } else if part.slot == .status {
         row(gap: .tight, align: .center) {
-            // The running applications' tray items, each under the app's own words for it.
             for item in d.tray {
                 ui.Button(item.title, role: .bar) {
                     on press: open_tray_item(d, item)
@@ -395,15 +412,21 @@ view workspace_menu(d: Desk) {
 /// are unread, or that they are silenced — with the count above it as a badge, so the name
 /// assistive technology reads is the whole fact and the number is for the eye. Pressing it
 /// opens or closes the device's status: the quick settings, or the notifications.
+///
+/// The count stands over the control's top trailing corner, in the button's own box: a badge
+/// anchored to what it counts, never a sibling that takes room in the bar. Beside it in a row
+/// the count pushed the bar's run past a narrow window and covered the button's own edge.
 view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
     let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
-    row(gap: .tight, align: .center) {
+    layers {
         ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar) {
             on press: status(d)
         }
         if d.unread > 0 {
-            ui.Badge(count: d.unread)
+            row(at: .top_trailing) {
+                ui.Badge(count: d.unread)
+            }
         }
     }
 }

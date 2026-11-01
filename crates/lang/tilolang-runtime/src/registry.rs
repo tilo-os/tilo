@@ -370,8 +370,37 @@ impl Registry {
     /// The id of the view a window of type `ty` (an id) shows unless another is asked for: the
     /// default view the type's package declares.
     pub fn default_view(&self, ty: &str) -> Option<ViewId> {
-        let pkg = self.package(self.types.get(ty)?)?;
-        pkg.meta.default_view(ty).map(str::to_owned)
+        let ty = self.type_id(ty)?;
+        let pkg = self.package(self.types.get(&ty)?)?;
+        pkg.meta.default_view(&ty).map(str::to_owned)
+    }
+
+    /// The id of the type `ty` names: a type id, or another app's type as its resources name
+    /// it (`app#Type`, [`crate::foreign`]).
+    pub fn type_id(&self, ty: &str) -> Option<TypeId> {
+        match crate::foreign::foreign_type(ty) {
+            Some(key) => self.type_for(&key),
+            None => self.types.contains_key(ty).then(|| ty.to_owned()),
+        }
+    }
+
+    /// The offered view `view` (its id or name) of the package declaring `ty` that takes a
+    /// resource of `ty` and nothing else: what a place names as `shown_as`.
+    pub fn view_of_type(&self, ty: &str, view: &str) -> Option<ViewId> {
+        let ty = self.type_id(ty)?;
+        let pkg = self.package(self.types.get(&ty)?)?;
+        let name = &pkg.type_by_id(&ty)?.name;
+        pkg.meta
+            .offered_views()
+            .filter(|v| v.id == view || v.name == view)
+            .find(|v| match v.params.as_slice() {
+                [param] => matches!(
+                    crate::meta::parse_ty(&param.ty, &pkg.meta.app),
+                    Ok(Ty::Record(key)) if key.app == pkg.meta.app && &key.name == name
+                ),
+                _ => false,
+            })
+            .map(|v| v.id.clone())
     }
 
     /// What a new resource of this type starts out with.

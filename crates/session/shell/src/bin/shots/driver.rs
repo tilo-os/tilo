@@ -1172,7 +1172,7 @@ impl ShellDriver {
         let mut tree = st.tree_mut();
         if let Some(workspace) = tree.desktop.active_workspace_mut() {
             workspace.bots = vec![
-                tilo_desktop_model::RoomBot {
+                tilo_desktop_model::WorkspaceBot {
                     name: "Standup".into(),
                     installation: Some("1b7e3c2a-58d4-4f0e-9a61-2c8d0b5e7f13".into()),
                     device: Some(standup_device.clone()),
@@ -1182,7 +1182,7 @@ impl ShellDriver {
                     requested: true,
                     paused: false,
                 },
-                tilo_desktop_model::RoomBot {
+                tilo_desktop_model::WorkspaceBot {
                     name: "Discord bridge".into(),
                     installation: Some("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into()),
                     device: Some("6e".repeat(32)),

@@ -13,9 +13,9 @@ use ui_core::LocalState;
 use ui_core::arriving::Arriving;
 use ui_core::i18n::LabelKey;
 use ui_core::record::RecordSaveStatus;
-use ui_core::room_sync::RoomUnreachable;
 use ui_core::widget::{ArrivingView, SkeletonShape};
 use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
+use ui_core::workspace_sync::WorkspaceUnreachable;
 
 use super::controls::{ActionControl, Actions};
 use super::dispatch::{Dispatcher, Submit};
@@ -44,9 +44,12 @@ fn arrived_part(build: Box<ScopedPart>) -> Element {
     )
 }
 
-/// The window's view once the room's holdings arrived, the page they
+/// The window's view once the workspace's holdings arrived, the page they
 /// reserve until then.
-fn room_arrival(holdings: &Arriving<(), RoomUnreachable>, part: Rc<ScopedPart>) -> Element {
+fn workspace_arrival(
+    holdings: &Arriving<(), WorkspaceUnreachable>,
+    part: Rc<ScopedPart>,
+) -> Element {
     let view = ArrivingView::new(holdings, move |()| {
         let part = Rc::clone(&part);
         arrived_part(Box::new(move |alive: &Rc<()>| part(alive)))
@@ -290,8 +293,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.govern_state()
     }
 
-    /// Whether what the room holds has arrived, as state that follows the
-    /// room's sync: until it does, a record this window joined may still be
+    /// Whether what the workspace holds has arrived, as state that follows
+    /// its sync: until it does, a record this window joined may still be
     /// missing the content its creator wrote. Enable a choice made from that
     /// content (a free seat, the next number) with it, so nobody acts on a
     /// copy that is about to change under them. A view never writes on open
@@ -668,16 +671,17 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         })
     }
 
-    /// [`Self::arriving`] for the window's room: its whole view, a page,
-    /// once the room's holdings arrived. Only `part`'s scope depends on the
-    /// app; the arrival around it is built once, in the runtime.
-    pub(crate) fn arriving_room(
+    /// [`Self::arriving`] for the window's workspace: its whole view, a
+    /// page, once the workspace's holdings arrived. Only `part`'s scope
+    /// depends on the app; the arrival around it is built once, in the
+    /// runtime.
+    pub(crate) fn arriving_workspace(
         &self,
-        holdings: &Arriving<(), RoomUnreachable>,
+        holdings: &Arriving<(), WorkspaceUnreachable>,
         part: impl Fn(&mut ViewCx<R, T>) -> Element + 'static,
     ) -> Element {
         let scope = self.part_scope();
-        room_arrival(
+        workspace_arrival(
             holdings,
             Rc::new(move |alive: &Rc<()>| part(&mut scope(alive))),
         )

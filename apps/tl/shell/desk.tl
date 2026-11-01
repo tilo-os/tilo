@@ -12,11 +12,17 @@
 view desk(d: Desk) {
     let s = shell
     layers {
-        stack(gap: .tight) {
+        stack(gap: .tight, fill) {
             if bar_shows(s, d) {
                 bar_on_edge(s, d)
             }
-            surface_or_rest(d)
+            if d.here == "none" or d.here == "desk" {
+                at_rest(d)
+            } else {
+                scroll(fill) {
+                    surface(d)
+                }
+            }
         }
         if dock_shows(s, d) {
             if s.dock_edge == .bottom {
@@ -82,17 +88,14 @@ view bar_on_edge(s: Shell, d: Desk) {
 }
 
 /// The bar's parts in the person's order, as the run the person reorders by dragging a part:
-/// what the desk's bar and the desk window's bar both draw.
+/// what the desk's bar and the desk window's bar both draw. The traditional desktop shows its
+/// own bar instead (`traditional.tl`), where the focused window's commands stand beside the
+/// parts the person chose, so a person picks between the two by picking the preset.
 view top_bar(d: Desk) {
-    bar(d)
-}
-
-/// What stands under the bar: the desk at rest, or the surface the person is in.
-view surface_or_rest(d: Desk) {
-    if d.here == "none" or d.here == "desk" {
-        at_rest(d)
+    if shell.based_on == .windows_desktop and shell.preset == .windows_desktop {
+        traditional_bar(d)
     } else {
-        surface(d)
+        bar(d)
     }
 }
 

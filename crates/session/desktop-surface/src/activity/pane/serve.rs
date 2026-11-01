@@ -10,9 +10,9 @@ use tilo_actions::remote::workspace_activity as wire;
 use super::{
     ActivityDeepLink, ActivityTree, ActivityView, BoundaryDirection, DetailAction,
     GroupNameRequest, HistoryEntry, HistoryEntryId, LensSelection, Period, RecordId, RecordStore,
-    RoomActivityOutcome, RoomActivityPane, RoomScope, SystemTime, WorkSessionBoundary,
-    WorkspaceHistoryId, comparison_change_labels, comparison_field_changes, detail_provenance,
-    handled_outcome, humanize_app_id, local_resume_snapshot, t, t_args,
+    SystemTime, WorkSessionBoundary, WorkspaceActivityOutcome, WorkspaceActivityPane,
+    WorkspaceHistoryId, WorkspaceScope, comparison_change_labels, comparison_field_changes,
+    detail_provenance, handled_outcome, humanize_app_id, local_resume_snapshot, t, t_args,
 };
 
 fn millis(at: SystemTime) -> i64 {
@@ -74,17 +74,17 @@ fn history_target(target: &wire::Target) -> ui::HistoryResourceTarget {
     }
 }
 
-const fn scope(scope: wire::Scope) -> RoomScope {
+const fn scope(scope: wire::Scope) -> WorkspaceScope {
     match scope {
-        wire::Scope::ThisWorkspace => RoomScope::ThisRoom,
-        wire::Scope::AllWorkspaces => RoomScope::AllWorkspaces,
+        wire::Scope::ThisWorkspace => WorkspaceScope::ThisWorkspace,
+        wire::Scope::AllWorkspaces => WorkspaceScope::AllWorkspaces,
     }
 }
 
-const fn wire_scope(scope: RoomScope) -> wire::Scope {
+const fn wire_scope(scope: WorkspaceScope) -> wire::Scope {
     match scope {
-        RoomScope::ThisRoom => wire::Scope::ThisWorkspace,
-        RoomScope::AllWorkspaces => wire::Scope::AllWorkspaces,
+        WorkspaceScope::ThisWorkspace => wire::Scope::ThisWorkspace,
+        WorkspaceScope::AllWorkspaces => wire::Scope::AllWorkspaces,
     }
 }
 
@@ -232,7 +232,7 @@ pub fn refused_to_agent(
     (is_personal(action) || all_workspaces).then(|| t("activity-served-personal-only"))
 }
 
-impl RoomActivityPane {
+impl WorkspaceActivityPane {
     /// A fingerprint of everything the served reads show: it moves when
     /// one of them would read differently, and an app following them is
     /// read again only then.
@@ -273,7 +273,7 @@ impl RoomActivityPane {
         self.morning_command_message.hash(&mut hasher);
         self.chosen_morning_sources().hash(&mut hasher);
         self.feed_coverage.pending_tree.hash(&mut hasher);
-        self.room_name.hash(&mut hasher);
+        self.workspace_name.hash(&mut hasher);
         self.scope.hash(&mut hasher);
         self.focus
             .as_ref()
@@ -325,7 +325,7 @@ impl RoomActivityPane {
         let groups_by_entry = self.groups_by_entry();
         let entries = self.timeline.entries();
         wire::Feed {
-            workspace: self.room_name.clone(),
+            workspace: self.workspace_name.clone(),
             scope: wire_scope(self.scope),
             total: entries.len(),
             entries: entries
@@ -421,7 +421,7 @@ impl RoomActivityPane {
             })
             .collect();
         wire::Summary {
-            workspace: self.room_name.clone(),
+            workspace: self.workspace_name.clone(),
             briefs: self
                 .digest
                 .briefs
@@ -466,14 +466,14 @@ impl RoomActivityPane {
                 && self.away_digest.total_changes > 0
                 && self.digest == self.away_digest,
             sources_available: self.host.morning_sources_available()
-                && self.scope == RoomScope::ThisRoom,
+                && self.scope == WorkspaceScope::ThisWorkspace,
             sources,
             pending: self.feed_coverage.pending_tree,
         }
     }
 
-    /// The room's layout at each recent change, from the first the
-    /// workspace stood in: the changes that made the room before it show
+    /// The workspace's layout at each recent change, from the first the
+    /// workspace stood in: the changes that made the workspace before it show
     /// nothing to replay.
     pub fn serve_replay(&self) -> wire::Replay {
         wire::Replay {
@@ -718,7 +718,7 @@ impl RoomActivityPane {
     /// Count the changes `viewed` names as shown to the person in
     /// `workspace`; with `now`, as seen at once.
     pub fn mark_viewed(&mut self, workspace: u64, viewed: &wire::Viewed) {
-        if self.scope != RoomScope::ThisRoom || self.last_active != Some(workspace) {
+        if self.scope != WorkspaceScope::ThisWorkspace || self.last_active != Some(workspace) {
             return;
         }
         let shown = self.viewed_changes.entry(workspace).or_default();
@@ -833,7 +833,7 @@ impl RoomActivityPane {
         arguments: &serde_json::Map<String, serde_json::Value>,
         tree: &mut impl ActivityTree,
         records: Option<&RecordStore>,
-    ) -> Result<RoomActivityOutcome, String> {
+    ) -> Result<WorkspaceActivityOutcome, String> {
         let detail = |pane: &mut Self, range: &wire::Range, action, tree: &mut _| {
             if !pane.select_range(range) {
                 return Err(t("activity-history-gone"));
@@ -872,10 +872,10 @@ impl RoomActivityPane {
                         label: name.label,
                     },
                 );
-                Ok(RoomActivityOutcome {
+                Ok(WorkspaceActivityOutcome {
                     handled: true,
                     named,
-                    ..RoomActivityOutcome::default()
+                    ..WorkspaceActivityOutcome::default()
                 })
             }
             wire::SPLIT => detail(self, &read(arguments)?, DetailAction::Split, tree),
@@ -923,7 +923,7 @@ impl RoomActivityPane {
                 Ok(if self.undo_task_record(&task, &query.app_id, &query.id) {
                     handled_outcome()
                 } else {
-                    RoomActivityOutcome::default()
+                    WorkspaceActivityOutcome::default()
                 })
             }
             wire::CHOOSE_SOURCE => {
@@ -931,10 +931,10 @@ impl RoomActivityPane {
             }
             wire::OPEN => {
                 let open: wire::Target = read(arguments)?;
-                Ok(RoomActivityOutcome {
+                Ok(WorkspaceActivityOutcome {
                     handled: true,
                     open_target: Some(history_target(&open)),
-                    ..RoomActivityOutcome::default()
+                    ..WorkspaceActivityOutcome::default()
                 })
             }
             wire::MOVE_BOUNDARY => Ok(self.serve_boundary(&read(arguments)?, tree)?),
@@ -948,7 +948,7 @@ impl RoomActivityPane {
         &mut self,
         boundary: &wire::Boundary,
         tree: &mut impl ActivityTree,
-    ) -> Result<RoomActivityOutcome, String> {
+    ) -> Result<WorkspaceActivityOutcome, String> {
         let brief = |hex: &str| {
             let id = entry_id(hex)?;
             self.digest
@@ -970,15 +970,15 @@ impl RoomActivityPane {
                 },
             },
         );
-        Ok(RoomActivityOutcome {
+        Ok(WorkspaceActivityOutcome {
             handled: true,
             named,
-            ..RoomActivityOutcome::default()
+            ..WorkspaceActivityOutcome::default()
         })
     }
 
     /// Run `request` on a chosen morning source.
-    fn serve_source(&mut self, request: &wire::SourceRequest) -> RoomActivityOutcome {
+    fn serve_source(&mut self, request: &wire::SourceRequest) -> WorkspaceActivityOutcome {
         let mut outcome = handled_outcome();
         let command = match request.command {
             wire::SourceCommand::Open => {

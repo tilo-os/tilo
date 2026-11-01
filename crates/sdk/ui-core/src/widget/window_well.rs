@@ -146,7 +146,12 @@ fn forget(place: &str) {
 /// A place's window, at the rectangle the well stands at: the app's own window shows there, so
 /// the well draws nothing and takes no input.
 #[derive(Component, Default)]
-#[component(name = "WindowWell", role = "Group", label = "place")]
+#[component(
+    name = "WindowWell",
+    role = "Group",
+    label = "place",
+    not_in_gallery = "a well draws nothing: the place's own window is composited there, so a gallery window has no well to show"
+)]
 pub struct WindowWellProps {
     /// The place whose window shows here: the tab id the desktop model gives the window when
     /// it maps (shell.md §8).

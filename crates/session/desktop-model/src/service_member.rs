@@ -1,23 +1,23 @@
-//! Service members: cloud and relay identities admitted to a room's
+//! Service members: cloud and relay identities admitted to a workspace's
 //! end-to-end encrypted channels as explicit members.
 //!
 //! A cloud agent run, server-side search or a preview renderer never gets a
-//! plaintext side door. It reads a room's content only as a member of the
-//! room's channels, like a person's device:
+//! plaintext side door. It reads a workspace's content only as a member of the
+//! workspace's channels, like a person's device:
 //!
 //! - it has its own device key, and its MLS leaf is that key;
 //! - an administrator grants it membership with a purpose and the kinds of
 //!   action it may perform, optionally until a deadline;
-//! - it is listed with the room's agents, with its purpose, for as long as
+//! - it is listed with the workspace's agents, with its purpose, for as long as
 //!   it holds the grant;
 //! - when the grant expires or its job ends and the grant is revoked, the
-//!   next reconcile removes its device from every channel of the room. The
+//!   next reconcile removes its device from every channel of the workspace. The
 //!   removal is an MLS commit, so the content keys rotate: the service
 //!   keeps what it read before and cannot read anything written after.
 //!
-//! A grant is an ordinary grant on the room whose subject is the agent
+//! A grant is an ordinary grant on the workspace whose subject is the agent
 //! `service:<device key hex>` and whose id carries the purpose, so it
-//! replicates, persists and is revoked with the rest of the room's grants.
+//! replicates, persists and is revoked with the rest of the workspace's grants.
 
 use collab_types::Ed25519PublicKey;
 use tilo_action_policy::{Answer, Grant, GrantId, KindSet, Lifetime, Subject, TreePath};
@@ -30,14 +30,14 @@ const ID_PREFIX: &str = "service-member:";
 /// Longest purpose a grant records.
 pub const MAX_PURPOSE_CHARS: usize = 80;
 
-/// One live service member of a room.
+/// One live service member of a workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceMember {
     /// The service's device key: its MLS credential and op author.
     pub device: Ed25519PublicKey,
     /// Why it is a member, as the granting administrator put it.
     pub purpose: String,
-    /// The kinds of action it may perform in the room.
+    /// The kinds of action it may perform in the workspace.
     pub kinds: KindSet,
     /// Wall-clock deadline (Unix seconds), if the grant expires.
     pub expires_at: Option<u64>,
@@ -55,7 +55,7 @@ pub fn service_device(principal: &str) -> Option<Ed25519PublicKey> {
     Some(Ed25519PublicKey::from_bytes(bytes))
 }
 
-/// The room grant that makes `device` a service member, given by
+/// The workspace grant that makes `device` a service member, given by
 /// `granted_by`.
 pub fn service_membership(
     room: &str,

@@ -23,7 +23,7 @@ struct Sample {
     status: Status,
     /// `true` when it is the person's own.
     mine: bool,
-    /// The room's agent.
+    /// The workspace's agent.
     agent: bool,
     label: Option<&'static str>,
 }
@@ -141,7 +141,7 @@ pub(crate) fn tracker(person: &str) -> Tracker {
 /// it on the way, and the run waiting for the person's answer before it
 /// sends a message.
 const CHAT_ISSUE: &str = "chat-applications";
-/// The agent the chat is with, as the room names it.
+/// The agent the chat is with, as the workspace names it.
 const CHAT_AGENT: &str = "agent:Claude";
 
 /// One step the agent spent, on a hosted model.

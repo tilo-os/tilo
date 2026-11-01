@@ -14,18 +14,26 @@ pub(crate) fn sending(device: &str) -> String {
     t_args("screenshot-send-sending", &[("device", device.into())])
 }
 
-/// What became of the send: offered, or why it was not.
+/// What the studio says while a screenshot is copied into this workspace's
+/// files.
+pub(crate) fn saving() -> String {
+    t("screenshot-send-saving")
+}
+
+/// What became of the send: offered and saved where it went, or why it was
+/// not.
 pub(crate) fn sent(sent: &Sent) -> String {
-    match &sent.refused {
-        None => t_args(
+    match sent {
+        Sent::Offered { device } => t_args(
             "screenshot-send-offered",
-            &[("device", sent.device.as_str().into())],
+            &[("device", device.as_str().into())],
         ),
-        Some(why) => refusal(why),
+        Sent::Refused { why, .. } | Sent::NotSaved { why } => refusal(why),
+        Sent::Saved { name } => t_args("screenshot-send-saved", &[("name", name.as_str().into())]),
     }
 }
 
-/// Why a screenshot did not go to its device.
+/// Why a screenshot did not go where it was sent.
 fn refusal(refusal: &Refusal) -> String {
     match refusal {
         Refusal::SyncOff => t("screenshot-send-sync-off"),
@@ -39,6 +47,26 @@ fn refusal(refusal: &Refusal) -> String {
                 ("limit", ui::format::size(*limit).into()),
                 ("size", ui::format::size(*bytes).into()),
             ],
+        ),
+        Refusal::NoWorkspace => t("screenshot-send-no-workspace"),
+        Refusal::NoFileName { path } => t_args(
+            "screenshot-send-no-file-name",
+            &[("path", named(path).into())],
+        ),
+        Refusal::CreateFailed { folder, error } => t_args(
+            "screenshot-send-create-failed",
+            &[
+                ("path", named(folder).into()),
+                ("error", error.as_str().into()),
+            ],
+        ),
+        Refusal::NotSaved(error) => t_args(
+            "screenshot-send-save-failed",
+            &[("error", error.as_str().into())],
+        ),
+        Refusal::NoFreeName { folder } => t_args(
+            "screenshot-send-too-many",
+            &[("path", named(folder).into())],
         ),
         Refusal::Refused(reason) => t_args(
             "screenshot-send-refused",
@@ -101,5 +129,26 @@ mod tests {
             )),
             "The screenshot was not offered: no spool room"
         );
+        assert_eq!(
+            sent(&Sent::saved("Screenshot 1 (2).png".into())),
+            "Saved to this workspace's files as Screenshot 1 (2).png"
+        );
+        assert_eq!(
+            sent(&Sent::not_saved(Refusal::NoWorkspace)),
+            "This session has no workspace open"
+        );
+        assert_eq!(
+            sent(&Sent::not_saved(Refusal::NotSaved(
+                "no space left on device".into()
+            ))),
+            "Cannot save to this workspace's files: no space left on device"
+        );
+        assert_eq!(
+            sent(&Sent::not_saved(Refusal::NoFreeName {
+                folder: "/var/workspace/Screenshots".into()
+            })),
+            "Every name in /var/workspace/Screenshots is taken"
+        );
+        assert_eq!(saving(), "Saving to this workspace's files…");
     }
 }

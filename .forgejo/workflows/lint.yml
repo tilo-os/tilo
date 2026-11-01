@@ -10,11 +10,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Lint checks the whole tree, so only the newest commit on a ref has a result
-  # worth having: a newer push cancels the older run instead of queueing behind
-  # it. A dispatch is never cancelled.
+  # Lint checks the whole tree, so only the newest commit on a ref needs a
+  # result: a newer push replaces a waiting run, but never cancels the running
+  # one. Cancelling it meant that while pushes came faster than a lint run,
+  # main never got a verdict at all.
   group: lint-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  cancel-in-progress: false
 
 jobs:
   quality:

@@ -234,7 +234,7 @@ impl Runtime {
     }
 
     /// Load another app's package with its module: its views run here, inline in the views
-    /// that call them (`mail.inbox(m)`, or `compose(...)` by name), as that package's own code,
+    /// that call them (`mail.inbox(m)`, or `show(r)` by the resource's type), as that package's own code,
     /// so what they create and invoke carries its module as the author, never the caller's.
     /// Its records stay its app's: a view of it reads a resource from the reading its app
     /// publishes ([`Runtime::set_reading`]), named by app and type (`mail#Inbox`), and its
@@ -282,16 +282,24 @@ impl Runtime {
             )));
         }
         let mut foreign = self.core.foreign.borrow_mut();
+        let first = foreign.generation(target) == 0;
         if !foreign.set_reading(target, json) {
             return Ok(false);
         }
         let generation = foreign.generation(target);
+        let known = foreign.known();
         drop(foreign);
         let seen = i64::try_from(generation).unwrap_or(i64::MAX);
-        self.core
-            .view_states
-            .borrow_mut()
-            .set(crate::foreign::reading_key(target), Value::Int(seen));
+        let mut states = self.core.view_states.borrow_mut();
+        states.set(crate::foreign::reading_key(target), Value::Int(seen));
+        // A resource known here for the first time: views that looked it up by id
+        // (`resource(id)`) and found nothing run again.
+        if first {
+            states.set(
+                crate::foreign::known_key(),
+                Value::Int(i64::try_from(known).unwrap_or(i64::MAX)),
+            );
+        }
         Ok(true)
     }
 

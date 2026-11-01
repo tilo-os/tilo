@@ -1,6 +1,6 @@
 //! The platform-neutral desktop, as widgets over the shared desktop model.
 //!
-//! Every model type (workspaces, strips, groups, tabs, the room schema and
+//! Every model type (workspaces, strips, groups, tabs, the workspace schema and
 //! desktop commands) comes from [`tilo_desktop_model`]; this crate holds
 //! none. Hosts supply platform reads through snapshot fields and traits
 //! (chrome, activity, tile resolution) and apply the intents it emits.
@@ -33,6 +33,7 @@ pub mod here;
 pub mod intents;
 pub mod launchpad;
 pub mod osd;
+pub mod overlays;
 pub mod overview;
 pub mod overview_panel;
 pub mod overview_picture;
@@ -46,10 +47,10 @@ pub mod shortcuts;
 pub mod strip_indicators;
 pub mod strip_navigator;
 pub mod strip_switcher;
+pub mod switcher_windows;
 pub mod text_entry;
 pub mod topbar;
 pub mod window_flight;
-pub mod window_menu;
 pub mod window_switcher;
 pub mod workspace_menu;
 pub mod workspace_settings;

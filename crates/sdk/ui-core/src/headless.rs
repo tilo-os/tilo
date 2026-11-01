@@ -2278,6 +2278,22 @@ impl FrameHarness {
     /// found, so a missed change is never stale where it can be seen.
     #[cfg(debug_assertions)]
     fn verify_quiet_frame(&mut self, history_settled: bool) {
+        /// Run `verify` with the clocks standing still: a frame that redraws
+        /// the time it shows, because a minute turned between the two
+        /// inspections, changed what the wall clock says rather than skipped
+        /// publishing a change of its own.
+        fn standing_clock<T>(verify: impl FnOnce() -> T) -> T {
+            #[cfg(feature = "test-support")]
+            {
+                crate::time::testing::with_wall(crate::time::wall(), || {
+                    crate::time::testing::with_monotonic_time(crate::time::now(), verify)
+                })
+            }
+            #[cfg(not(feature = "test-support"))]
+            {
+                verify()
+            }
+        }
         let shown = |harness: &mut Self| {
             (
                 serde_json::to_string(&harness.inspection()).unwrap_or_default(),
@@ -2286,29 +2302,31 @@ impl FrameHarness {
             )
         };
         let (before, after, replaced, resting) = tilo_resource::profiling::unobserved(|| {
-            // The History walks it skipped hold only while every surface
-            // still rests once the frame is drawn.
-            let width = f64::from(self.viewport.0);
-            let resting = crate::history_mode::embedded::surfaces_at_rest(
-                self.root.as_ref(),
-                &self.state.doc,
-                width,
-                false,
-            )
-            .is_some()
-                // What a settled frame did not ask again still holds.
-                && (!history_settled
-                    || crate::history_mode::embedded::settled_checks_hold(
-                        self.root.as_ref(),
-                        &self.state.doc,
-                        width,
-                    ));
-            let before = shown(self);
-            self.host_tick();
-            self.sync_frame();
-            self.publish_undo_status();
-            let replaced = self.composition_changed();
-            (before, shown(self), replaced, resting)
+            standing_clock(|| {
+                // The History walks it skipped hold only while every surface
+                // still rests once the frame is drawn.
+                let width = f64::from(self.viewport.0);
+                let resting = crate::history_mode::embedded::surfaces_at_rest(
+                    self.root.as_ref(),
+                    &self.state.doc,
+                    width,
+                    false,
+                )
+                .is_some()
+                    // What a settled frame did not ask again still holds.
+                    && (!history_settled
+                        || crate::history_mode::embedded::settled_checks_hold(
+                            self.root.as_ref(),
+                            &self.state.doc,
+                            width,
+                        ));
+                let before = shown(self);
+                self.host_tick();
+                self.sync_frame();
+                self.publish_undo_status();
+                let replaced = self.composition_changed();
+                (before, shown(self), replaced, resting)
+            })
         });
         let consistent = before == after && !replaced && resting;
         if consistent {
@@ -3537,6 +3555,12 @@ impl FrameHarness {
                     self.root
                         .build_layout(&mut self.taffy, &self.theme, &mut self.node_map)
                 };
+                // A widget the build just made heard nothing yet: containers hand the
+                // environment down as they build, and a control that makes its own faces (a
+                // toolbar's, a row's) keeps it until this tells it. Tell the whole tree once
+                // it exists, so every target is sized for how the person reaches the window
+                // from the first frame, as the live app's rebuild does.
+                self.root.set_interaction_environment(self.interaction);
                 self.admit_layout_maps();
                 self.layout_nodes_built = self
                     .layout_nodes_built

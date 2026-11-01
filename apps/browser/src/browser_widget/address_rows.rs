@@ -237,18 +237,18 @@ impl BrowserWidget {
 }
 
 /// Every saved page this window suggests from, most personal first: the
-/// bookmarks of the person's own library, then the room's, which the Library
+/// bookmarks of the person's own library, then the workspace's, which the Library
 /// lists beneath them. One address is one row there, whichever library saved
 /// it.
 fn saved_pages<'a>(
     personal: &'a crate::continuity_library::Bookmarks,
-    room: &'a crate::library::Bookmarks,
+    workspace: &'a crate::library::Bookmarks,
 ) -> Vec<(&'a str, &'a str)> {
     let mut pages = Vec::new();
     for entry in personal.entries() {
         pages.push((entry.url.as_str(), entry.title.as_str()));
     }
-    for entry in room.entries() {
+    for entry in workspace.entries() {
         pages.push((entry.url.as_str(), entry.title.as_str()));
     }
     pages

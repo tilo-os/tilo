@@ -1,9 +1,9 @@
 //! Building and reading a cut by name, for a caller with no screen and no
-//! files: an agent in a room.
+//! files: an agent in a workspace.
 //!
 //! A person imports a file through a chooser, drags a source onto a lane and
 //! reads the timeline off the screen. An agent has none of those, so the
-//! project offers the same edits by what they name instead: room content
+//! project offers the same edits by what they name instead: workspace content
 //! brought into the bin ([`effect`] answering `import-content`), a bin
 //! source placed by its id or name (`add-clip`), a placed clip moved, set or
 //! removed, a title added and restyled, and the timeline read back as JSON
@@ -13,7 +13,7 @@
 //! the caller what each did.
 //!
 //! A source imported from content stores its content address
-//! (`tilo.content:<hash>`) as its path: what a render on the room's host
+//! (`tilo.content:<hash>`) as its path: what a render on the workspace's host
 //! reads its bytes by, where a file path would mean nothing.
 
 use std::io::Read as _;
@@ -45,7 +45,7 @@ const EPSILON: f64 = 1e-6;
 pub const MAX_READ_CLIPS: usize = 400;
 
 /// What a refusal naming an unknown source tells the caller to do.
-const IMPORT_HINT: &str = "bring room content into the bin with import-content, or make a title \
+const IMPORT_HINT: &str = "bring workspace content into the bin with import-content, or make a title \
                            with add-title";
 
 /// The verbs whose answers [`answer`] writes.
@@ -1306,7 +1306,7 @@ pub fn imported(
     let mut head = Vec::new();
     store
         .open(&hash)
-        .ok_or_else(|| format!("content `{hash}` is not held in this room"))?
+        .ok_or_else(|| format!("content `{hash}` is not held in this workspace"))?
         .take(PROBE_BYTES)
         .read_to_end(&mut head)
         .map_err(|error| format!("content `{hash}` could not be read: {error}"))?;

@@ -37,8 +37,8 @@ pub enum DesktopAction {
     SwitchWorkspace { delta: i64 },
     /// Go `steps` strips on in the active workspace.
     StepStrip { steps: i64 },
-    /// Add an empty workspace and go there; with `room`, a workspace whose
-    /// shared room is `room` (joining it when this computer has none), named
+    /// Add an empty workspace and go there; with `workspace`, a workspace whose
+    /// shared workspace is `workspace` (joining it when this computer has none), named
     /// `name` when given.
     NewWorkspace {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -46,7 +46,9 @@ pub enum DesktopAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
-    /// Move the tab `tab` to the workspace `to` (its id or its name).
+    /// Move the tab `tab` (a window of the desk, by the decimal id the desk
+    /// addresses its resource by) to the workspace `to` (its id or its
+    /// name).
     MoveTab { tab: u64, to: String },
     /// Move the tab `tab` onto the strip `strip` (its id or its name) of
     /// the workspace it is in.
@@ -119,15 +121,28 @@ impl DesktopAction {
 
 /// An immediate effect action `id` that runs `action` built from its
 /// arguments.
-#[expect(
-    clippy::expect_used,
-    reason = "a desktop action always serializes to JSON"
-)]
 fn action(
     id: &'static str,
     label: String,
     params: Vec<ActionParam>,
     build: impl Fn(&ActionArgs) -> DesktopAction + Send + Sync + 'static,
+) -> ActionSpec {
+    checked_action(id, label, params, move |args| Ok(build(args)))
+}
+
+/// An immediate effect action `id` that runs what `build` makes of its
+/// arguments, and is refused with `build`'s reason when it names something
+/// no action can carry out: a caller that names no window, or something
+/// that is not one, is answered, never quietly given another window.
+#[expect(
+    clippy::expect_used,
+    reason = "a desktop action always serializes to JSON"
+)]
+fn checked_action(
+    id: &'static str,
+    label: String,
+    params: Vec<ActionParam>,
+    build: impl Fn(&ActionArgs) -> Result<DesktopAction, String> + Send + Sync + 'static,
 ) -> ActionSpec {
     let mut spec = ActionSpec::typed_operation(
         id,
@@ -136,9 +151,13 @@ fn action(
         OperationKind::Effect,
         OPERATION,
         params,
-        move |args| {
-            EncodedAction::encode_operation(OPERATION, &build(args))
-                .expect("a desktop action always serializes")
+        move |args| match build(args) {
+            Ok(action) => EncodedAction::encode_operation(OPERATION, &action)
+                .expect("a desktop action always serializes"),
+            Err(reason) => EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
+                payload: reason.into_bytes(),
+            },
         },
     );
     spec.type_mut().contract = ActionContract {
@@ -151,6 +170,27 @@ fn action(
 
 fn count(args: &ActionArgs, name: &str) -> i64 {
     args.integer(name).unwrap_or(1)
+}
+
+/// The tab argument: the window a desk action is about, named by the decimal
+/// id the desk addresses its resource by. A tab's id carries the salt of the
+/// device that minted it, so it does not fit an action's integer and travels
+/// as text.
+fn tab_param() -> ActionParam {
+    ActionParam::required_owned("tab", ParamType::Text, t("desktop-action-param-tab"))
+}
+
+/// The tab an action names, by its decimal id. A call naming nothing, or
+/// something that is not a tab's id, is refused rather than taken for the
+/// desk's first window.
+fn tab_of(args: &ActionArgs) -> Result<u64, String> {
+    let named = args.text("tab").unwrap_or_default();
+    named.trim().parse().map_err(|_| {
+        crate::i18n::t_args(
+            "desktop-action-tab-not-a-tab",
+            &[("tab", named.trim().into())],
+        )
+    })
 }
 
 /// The chrome's resource and its actions.
@@ -251,7 +291,7 @@ pub fn chrome_resource() -> ResourceSpec {
     with_workspace_actions(with_strip_actions(resource))
 }
 
-/// Making a workspace: an empty one, or the one sharing the room a join was
+/// Making a workspace: an empty one, or the one sharing the workspace a join was
 /// granted, named as its directory lists it.
 fn new_workspace() -> ActionSpec {
     action(
@@ -276,44 +316,40 @@ fn new_workspace() -> ActionSpec {
 /// offers of a strip and its windows, reachable as actions.
 fn with_strip_actions(resource: ResourceSpec) -> ResourceSpec {
     resource
-        .with_action(action(
+        .with_action(checked_action(
             "move-tab",
             t("desktop-action-move-tab"),
             vec![
-                ActionParam::required_owned(
-                    "tab",
-                    ParamType::Integer,
-                    t("desktop-action-param-tab"),
-                ),
+                tab_param(),
                 ActionParam::required_owned(
                     "workspace",
                     ParamType::Text,
                     t("desktop-action-param-workspace"),
                 ),
             ],
-            |args| DesktopAction::MoveTab {
-                tab: count(args, "tab").try_into().unwrap_or(0),
-                to: text(args, "workspace"),
+            |args| {
+                Ok(DesktopAction::MoveTab {
+                    tab: tab_of(args)?,
+                    to: text(args, "workspace"),
+                })
             },
         ))
-        .with_action(action(
+        .with_action(checked_action(
             "move-tab-to-strip",
             t("desktop-action-move-tab-to-strip"),
             vec![
-                ActionParam::required_owned(
-                    "tab",
-                    ParamType::Integer,
-                    t("desktop-action-param-tab"),
-                ),
+                tab_param(),
                 ActionParam::required_owned(
                     "strip",
                     ParamType::Text,
                     t("desktop-action-param-strip"),
                 ),
             ],
-            |args| DesktopAction::MoveTabToStrip {
-                tab: count(args, "tab").try_into().unwrap_or(0),
-                strip: text(args, "strip"),
+            |args| {
+                Ok(DesktopAction::MoveTabToStrip {
+                    tab: tab_of(args)?,
+                    strip: text(args, "strip"),
+                })
             },
         ))
         .with_action(action(

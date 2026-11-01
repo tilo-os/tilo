@@ -150,9 +150,9 @@ view place_window(a: Arrangement, p: ArrangementPlace, in_front: Bool) {
     }
 }
 
-/// A place's content: the view of its resource it names, composed inline as its own app's code
-/// (shell.md §8, "The canvas composes views"), or the well the app's window shows in when that
-/// view doesn't run here (a terminal, a legacy window). The shell never draws a place's content
+/// A place's content: its resource drawn inline through the view it names, as its own app's code
+/// (shell.md §8, "The canvas composes views"), or the well the app's window shows in when there
+/// is no resource here to draw (a terminal, a legacy window). The shell never draws a place's content
 /// itself; the pin, close and move controls are the frame's chrome, outside it.
 view place_content(a: Arrangement, p: ArrangementPlace) {
     stack(gap: .related) {
@@ -161,9 +161,18 @@ view place_content(a: Arrangement, p: ArrangementPlace) {
     }
 }
 
-/// What stands where a place's content goes: its app's view of its record, or that app's window.
+/// What stands where a place's content goes: its record drawn through the view the place names
+/// (its type's default view when it names none), as its own app's code, or the well the app's
+/// window shows in when the place has no record this shell can draw (a terminal, a legacy
+/// window).
 view place_view(p: ArrangementPlace) {
-    compose(p.shows, record: p.record, view: p.shown_as) {
+    if let r = placed_resource(p.record) {
+        if p.shown_as != "" or meta(r).opens {
+            show(r, view: p.shown_as)
+        } else {
+            ui.WindowWell(place: p.key, min: 12rem)
+        }
+    } else {
         ui.WindowWell(place: p.key, min: 12rem)
     }
 }

@@ -168,20 +168,20 @@ fn embed_takes_text_source_a_principal_author_and_emits_one_node() {
 }
 
 #[test]
-fn compose_takes_an_app_a_record_and_a_view_as_text_and_its_block_as_what_stands_instead() {
-    let head = "type P {\n    shows: Text\n    record: Text\n    shown_as: Text\n    n: Int\n}\n";
+fn show_takes_a_resource_and_names_its_view_by_text() {
+    let head = "type P {\n    shown_as: Text\n    n: Int\n}\n";
     let c = compile_body(&format!(
-        "{head}view v(p: P) {{\n    compose(p.shows, record: p.record, view: p.shown_as) {{\n        text(\"a window\")\n    }}\n}}"
+        "{head}view v(p: P) {{\n    show(p, view: p.shown_as)\n}}"
     ));
     validate(&c.wasm);
-    for want in ["compose", "record", "view"] {
+    for want in ["show", "view"] {
         assert!(contains(&c.wasm, want), "{want} is not in the module");
     }
     assert_eq!(
         codes(&format!(
-            "{head}view v(p: P) {{\n    compose(p.n, record: p.record, view: p.shown_as)\n}}"
+            "{head}view v(p: P) {{\n    show(p, view: p.n)\n}}"
         )),
         vec!["E020"],
-        "an app is named by text"
+        "a view is named by text"
     );
 }

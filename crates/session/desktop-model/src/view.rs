@@ -1,5 +1,5 @@
 //! One device's view onto its desktop: which workspace and strip it is
-//! looking at, and what it has been told about each room's records. None
+//! looking at, and what it has been told about each workspace's records. None
 //! of this is shared — a colleague changing tabs never moves this view.
 
 use std::collections::{BTreeMap, HashSet};
@@ -26,7 +26,7 @@ impl DesktopTree {
             .collect()
     }
 
-    /// The durable room identity of `workspace_id` — what turns a local
+    /// The durable workspace identity of `workspace_id` — what turns a local
     /// handle into the value the wire speaks.
     pub fn room_of(&self, workspace_id: WorkspaceId) -> Option<RoomId> {
         self.workspaces

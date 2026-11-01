@@ -308,13 +308,13 @@ impl Core {
             Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole,
             Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit,
             ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
-            RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, SomeF, SomeH,
-            SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrEq,
-            StrFind, StrLen, StrLit, StrReplace, StrSlice, TimeShift, TryInvoke, TupleGetF,
-            TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor,
-            UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
-            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, Withdraw,
-            WorkspaceMembers,
+            ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove,
+            SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp,
+            StrConcat, StrEq, StrFind, StrLen, StrLit, StrReplace, StrSlice, TimeShift, TryInvoke,
+            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions,
+            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
+            UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer,
+            Withdraw, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp | StrFind
@@ -353,9 +353,8 @@ impl Core {
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
             | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong
             | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
-            | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId => {
-                self.resource_import(imp, a)
-            }
+            | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId
+            | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | IsError | Outside | OutsideAt | Withdraw | ModelCall
             | Invoker | PrincipalEq | PrincipalName | QueueBlock | Now | TimeShift
             | PrincipalNamed | InvokerPush | InvokerPop => self.effect_import(imp, a),

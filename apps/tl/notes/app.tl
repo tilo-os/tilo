@@ -33,17 +33,17 @@ default view note_editor for Note
 row view note_row for Note
 
 /// Starts a note. Its title starts empty: what is typed first names it.
-primary action new_note(notes: Notes) -> Note (icon: .plus) {
+primary action new_note(notes: Notes) -> Note (icon: .plus, group: "Note", frequent: true) {
     notes.insert(Note(title: ""))
 }
 
 /// Pins or unpins a note.
-action pin(n: Note, pinned: Bool = not n.pinned) (label: if pinned { "Pin" } else { "Unpin" }, icon: .pin, on: n.pinned) {
+action pin(n: Note, pinned: Bool = not n.pinned) (label: if pinned { "Pin" } else { "Unpin" }, icon: .pin, on: n.pinned, group: "Note", frequent: true) {
     n.pinned = pinned
 }
 
 /// Deletes a note.
-destructive action delete(notes: Notes, n: Note) (icon: .trash) {
+destructive action delete(notes: Notes, n: Note) (icon: .trash, group: "Note") {
     notes.remove(n)
 }
 
@@ -53,12 +53,12 @@ action retitle(n: Note, title: Text) {
 }
 
 /// Gives a note a tag.
-action tag(n: Note, t: Text) (icon: .tag) {
+action tag(n: Note, t: Text) (icon: .tag, group: "Tags", frequent: true) {
     n.tags.add(t)
 }
 
 /// Takes a tag off a note.
-action untag(n: Note, t: Text) {
+action untag(n: Note, t: Text) (label: "Untag", group: "Tags") {
     n.tags.remove(t)
 }
 
