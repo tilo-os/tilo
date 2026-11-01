@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 /// The `network` resource: the radios, the links and the networks in
 /// reach.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Network {
     pub wifi: Wifi,
@@ -29,7 +31,9 @@ pub struct Network {
 }
 
 /// Wi-Fi.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Wifi {
     /// The device has a Wi-Fi radio.
@@ -51,7 +55,9 @@ impl Wifi {
 }
 
 /// One Wi-Fi network in reach.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct WifiNetwork {
     pub name: String,
@@ -65,7 +71,9 @@ pub struct WifiNetwork {
 }
 
 /// The connection this machine's traffic leaves on.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Link {
     pub kind: LinkKind,
@@ -78,7 +86,9 @@ pub struct Link {
 }
 
 /// What kind of connection it is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum LinkKind {
     /// Nothing is connected.
@@ -103,7 +113,9 @@ impl From<&os_actions::LinkStatus> for Link {
 }
 
 /// The wired link.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Wired {
     pub connected: bool,
@@ -114,7 +126,9 @@ pub struct Wired {
 
 /// A network this device keeps: what it joins by itself and how it is set
 /// up. Its id is `NetworkManager`'s, which a rename keeps.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct SavedNetwork {
     pub name: String,
@@ -136,7 +150,9 @@ pub struct SavedNetwork {
 }
 
 /// What kind of connection a saved network is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum SavedKind {
     #[default]
@@ -160,7 +176,9 @@ impl From<&str> for SavedKind {
 }
 
 /// Whether a connection counts as metered for the things that pay for it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Metered {
     /// `NetworkManager` decides.
@@ -191,7 +209,9 @@ impl From<Metered> for os_actions::MeteredPolicy {
 }
 
 /// Mobile data.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Mobile {
     /// The device has a modem.
@@ -202,7 +222,9 @@ pub struct Mobile {
 }
 
 /// The mobile data profile: what the operator's network is reached with.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct MobileProfile {
     /// `NetworkManager`'s id of the profile.
@@ -219,7 +241,9 @@ pub struct MobileProfile {
 }
 
 /// What `NetworkManager` found when it checked the internet.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Connectivity {
     #[default]
@@ -232,7 +256,9 @@ pub enum Connectivity {
 }
 
 /// The `bluetooth` resource.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Bluetooth {
     /// The device has a Bluetooth adapter.
@@ -249,7 +275,9 @@ pub struct Bluetooth {
 }
 
 /// One paired Bluetooth accessory.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Accessory {
     pub name: String,
@@ -260,7 +288,9 @@ pub struct Accessory {
 }
 
 /// A Bluetooth device in reach that is not paired.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Nearby {
     pub name: String,
@@ -270,7 +300,9 @@ pub struct Nearby {
 }
 
 /// The `vpn` resource: the VPN profiles this device has.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Vpn {
     pub profiles: Vec<VpnProfile>,
@@ -279,7 +311,9 @@ pub struct Vpn {
 }
 
 /// One VPN profile.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct VpnProfile {
     pub name: String,
@@ -291,7 +325,9 @@ pub struct VpnProfile {
 }
 
 /// The `tethering` resource: sharing this device's connection.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Tethering {
     /// The device can offer a hotspot (it has Wi-Fi).
@@ -308,7 +344,9 @@ pub struct Tethering {
 }
 
 /// Which band the hotspot uses.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Band {
     #[default]
@@ -357,7 +395,9 @@ impl std::str::FromStr for Band {
 }
 
 /// A device sharing the hotspot.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Client {
     pub address: String,
