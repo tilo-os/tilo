@@ -8,7 +8,7 @@ projector_control="$root/crates/system/projector/src/control.rs"
 capture="$root/crates/session/shell/src/compositor/audio_capture.rs"
 catalogue="$root/crates/session/shell/src/shell/catalogue.rs"
 history="$root/crates/session/shell/src/shell/history_narrative.rs"
-firstboot="$root/crates/session/shell/src/firstboot.rs"
+firstboot="$root/crates/session/onboarding-host/src/firstboot.rs"
 
 # Each failure names its file and pattern. (A bare `! grep` would not stop the
 # script under set -e: errexit ignores negated commands.)
