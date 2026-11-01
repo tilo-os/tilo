@@ -14,9 +14,9 @@ use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::runtime::{NameHost, Principal};
 use tilolang_tilo::tilolang::Compiled;
 // `DynAction::apply` is the action protocol's.
-use ui::tilo_actions::Action as _;
 use ui::headless::FrameHarness;
 use ui::interaction::InteractionEnvironment;
+use ui::tilo_actions::Action as _;
 
 /// The compiled packages an instance loads: the app and what it uses, the app last.
 pub struct Packages(pub Rc<Vec<Compiled>>);

@@ -917,8 +917,9 @@ impl Published<'_> {
             relabels: std::collections::BTreeSet::new(),
             relabel: Relabel::Kept,
         };
-        // The field of the record the name is read through, when an item holds it: fields after
-        // it in id order cannot name the record while it does.
+        // The field of the record the name is read through, when an item holds it: a field
+        // after it in naming order cannot name the record while it does
+        // ([`TypeSchema::in_naming_order`]).
         let named_chain = named_by
             .filter(|at| *at != self.doc)
             .and_then(|at| self.chain(at));
@@ -927,6 +928,9 @@ impl Published<'_> {
             .and_then(|chain| chain.get(1))
             .and_then(|top| self.holder(top))
             .map(|(_, field)| field);
+        let naming_position = naming_field
+            .as_deref()
+            .and_then(|field| self.schema.naming_position(field));
         for key in fields {
             // A resource's first and last versions (`created(r)`, `updated(r)`), which every
             // change moves: nothing published reads them.
@@ -940,10 +944,14 @@ impl Published<'_> {
                         .collections
                         .insert((key.resource.clone(), key.field.clone()));
                 }
-                if naming_field
-                    .as_deref()
-                    .is_none_or(|f| key.field.as_str() <= f)
-                {
+                // Whether the field is read before (or as) the text that names the record.
+                // In naming order, not by id: a title is read first whatever id it drew, and
+                // its change always names the record again.
+                let or_before = match (naming_position, self.schema.naming_position(&key.field)) {
+                    (None, _) | (Some(_), None) => true,
+                    (Some(naming), Some(changed)) => changed <= naming,
+                };
+                if or_before {
                     rework.relabel = Relabel::Whole;
                 }
                 continue;

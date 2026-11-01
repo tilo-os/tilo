@@ -22,7 +22,10 @@ impl Layout for LayersLayout {
         Style {
             display: taffy::Display::Grid,
             grid_template_columns: vec![minmax(length(0.0_f32), fr(1.0_f32))],
-            grid_template_rows: vec![taffy::style_helpers::auto()],
+            // As tall as the tallest layer where the layers' height is open (a card's image
+            // under its badge), and no taller than a height they are given (a window's desk):
+            // a layer longer than that scrolls or overflows inside it, never the cell.
+            grid_template_rows: vec![minmax(length(0.0_f32), fr(1.0_f32))],
             min_size: Size {
                 width: length(0.0_f32),
                 height: taffy::Dimension::auto(),

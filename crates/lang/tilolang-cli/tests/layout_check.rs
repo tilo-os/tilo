@@ -92,6 +92,24 @@ fn a_view_whose_body_is_layers_lays_its_children_over_each_other() {
     );
 }
 
+/// A desk bounded by its window: a middle longer than the window scrolls between the bar and
+/// the dock (a filled share takes no more than its share, in a stack and in layers), and a dock
+/// holding more than the window is wide is as wide as the window, its items scrolling along it
+/// (a chrome body narrows to the room it has).
+#[test]
+fn a_desk_longer_and_wider_than_its_window_scrolls_inside_it() {
+    let report = layout_check::check(&Options {
+        dirs: vec![manifest().join("tests/layout_check/bounded")],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(
+        report.findings.is_empty(),
+        "the middle and the dock scroll inside the window:\n{}",
+        layout_check::render(&report)
+    );
+}
+
 #[test]
 fn edges_sized_in_fractions_of_a_rem_land_on_device_pixels_at_every_display_scale() {
     let scales = layout_check::layouts()
@@ -154,6 +172,11 @@ fn names_component(source: &str, name: &str) -> bool {
 /// so every public component compiles and renders from tilolang, and a component added to the
 /// toolkit fails here until the gallery shows it. (The check fails on a component that did
 /// not build; the apps' check above holds the gallery's layout to the others' bar.)
+///
+/// A component the gallery cannot meaningfully show — one that draws nothing where a view puts
+/// it, such as a place's window well — says so where it is declared
+/// (`#[component(not_in_gallery = "…")]`, carried into the catalogue as `not_in_gallery`), so
+/// the exemption is the toolkit's own declaration, never a name list kept here.
 #[test]
 fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
     let dir = manifest().join("../../../apps/tl/gallery");
@@ -164,15 +187,43 @@ fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
             source.push_str(&std::fs::read_to_string(&path).expect("the gallery reads"));
         }
     }
-    let missing: Vec<&str> = tilolang::toolkit::catalogue()
+    let catalogue = tilolang::toolkit::catalogue();
+    let missing: Vec<&str> = catalogue
         .names()
         .into_iter()
         .filter(|name| !names_component(&source, name))
+        .filter(|name| {
+            // Shown nowhere, and its declaration says why the gallery cannot show it: not a
+            // gap. A component marked so is exempt; one marked so *and* shown is not an error
+            // (a view may still place it), but a marker on a component the gallery does show
+            // would be a lie, so it is refused below.
+            catalogue
+                .get(name)
+                .is_none_or(|component| component.semantics.not_in_gallery.is_none())
+        })
         .collect();
     assert!(
         missing.is_empty(),
-        "the gallery (apps/tl/gallery) shows no `ui.{{Name}}` for: {}",
+        "the gallery (apps/tl/gallery) shows no `ui.{{Name}}` for: {}. Show it there, or say \
+         at its declaration why the gallery cannot (`#[component(not_in_gallery = \"…\")]` on \
+         its props).",
         missing.join(", ")
+    );
+    let shown_but_exempt: Vec<&str> = catalogue
+        .names()
+        .into_iter()
+        .filter(|name| names_component(&source, name))
+        .filter(|name| {
+            catalogue
+                .get(name)
+                .is_some_and(|component| component.semantics.not_in_gallery.is_some())
+        })
+        .collect();
+    assert!(
+        shown_but_exempt.is_empty(),
+        "these say the gallery cannot show them, and the gallery shows them: take \
+         `not_in_gallery` off their declaration, or stop showing them: {}",
+        shown_but_exempt.join(", ")
     );
     let report = layout_check::check(&Options {
         dirs: vec![dir],
