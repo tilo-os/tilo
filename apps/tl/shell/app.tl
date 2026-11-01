@@ -284,10 +284,11 @@ view clock(d: Desk) {
 /// it is dropped; letting go runs one action, `place_part`.
 view bar(d: Desk) {
     let s = shell
+    let roomy = space.width_class == .expanded or space.width_class == .wide
     ui.DragRun(axis: .horizontal, name: "Top bar") {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
-            if part.shown {
+            if part.shown and (space.wide or not part_gives_way(part, roomy)) {
                 ui.DragItem(part, title: part.title, group: if part.slot == .clock { .center } else if part.slot == .people or part.slot == .status or part.slot == .power { .trailing } else if part.slot == .space { .space } else { .leading }) {
                     bar_part(d, part)
                 }
@@ -296,9 +297,20 @@ view bar(d: Desk) {
     }
 }
 
-/// One part of the bar, drawn from what it is. A narrow output keeps the menu, the workspace
-/// and the status; the strip, the tasks and who is here give way, because the bar's parts must
-/// never press into each other (the overview shows them).
+/// Whether a part of the bar gives way on a bar narrower than a wide one: the strip and the
+/// focused window's menu below an expanded bar (a phone, a tablet, or large text), and the
+/// tasks and who is here, which run longest, below a wide one. The menu, the workspace, the
+/// clock and the status always keep their room. The bar decides by its width, so a part that
+/// gives way leaves no room behind; the bar's parts must never press into each other (the
+/// overview shows what gave way).
+fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
+    if part.slot == .tasks or part.slot == .people {
+        return true
+    }
+    return not roomy and (part.slot == .strip or part.slot == .app_menu)
+}
+
+/// One part of the bar, drawn from what it is.
 view bar_part(d: Desk, part: BarPart) {
     if part.slot == .space {
         spacer
@@ -316,40 +328,36 @@ view bar_part(d: Desk, part: BarPart) {
             ui.MenuItem("Save", icon: .download)
         }
     } else if part.slot == .strip {
-        if d.strip != "" and not space.compact {
+        if d.strip != "" {
             ui.Button(d.strip, icon: .chevron_right, role: .bar) {
                 on press: strips(d)
             }
         }
     } else if part.slot == .tasks {
-        if not space.compact {
-            for t in d.tasks {
-                ui.Button(t.title, icon: .bot, role: .bar)
-            }
+        for t in d.tasks {
+            ui.Button(t.title, icon: .bot, role: .bar)
         }
     } else if part.slot == .people {
-        if not space.compact {
-            row(gap: .tight, align: .center) {
-                for p in d.people {
-                    person_chip(p)
+        row(gap: .tight, align: .center) {
+            for p in d.people {
+                person_chip(p)
+            }
+            // The person's own avatar carries the question put to them: their answer or
+            // their putting it off, never a banner over their windows.
+            if d.ask != "" {
+                ui.Button(d.ask, role: .bar) {
+                    on press: answer_ask(d)
                 }
-                // The person's own avatar carries the question put to them: their answer or
-                // their putting it off, never a banner over their windows.
-                if d.ask != "" {
-                    ui.Button(d.ask, role: .bar) {
+                if d.ask_answer != "" {
+                    ui.Button(d.ask_answer, role: .bar) {
                         on press: answer_ask(d)
                     }
-                    if d.ask_answer != "" {
-                        ui.Button(d.ask_answer, role: .bar) {
-                            on press: answer_ask(d)
-                        }
-                    }
-                    ui.Button("Ask me later", role: .bar) {
-                        on press: put_off_ask(d)
-                    }
-                } else if d.person != "" {
-                    ui.Avatar(name: .some(d.person))
                 }
+                ui.Button("Ask me later", role: .bar) {
+                    on press: put_off_ask(d)
+                }
+            } else if d.person != "" {
+                ui.Avatar(name: .some(d.person))
             }
         }
     } else if part.slot == .power {

@@ -89,10 +89,12 @@ impl Described for ChromeBody {
         let container = match shape {
             ChromeShape::Square => Container::new()
                 .with_inset(Rhythm::Tight)
+                .narrows()
                 .with_id(key.to_owned()),
             ChromeShape::Rounded => Container::new()
                 .hug()
                 .with_inset(Rhythm::Related)
+                .narrows()
                 .with_id(key.to_owned()),
         };
         let mut built = Self {

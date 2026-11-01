@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 /// Every described component of one toolkit version.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -305,6 +305,13 @@ pub struct Semantics {
     /// belongs to that view; a list item holds those of its row.
     #[serde(default, skip_serializing_if = "is_false")]
     pub attaches: bool,
+    /// Why the gallery cannot show it, when it cannot (`#[component(not_in_gallery = "…")]` at
+    /// the component's declaration): a component that only means something in a live session —
+    /// a place's window well, which draws nothing and holds the app's own window — is left out
+    /// of the gallery by its own declaration, never by a name list in a check. `None` when the
+    /// gallery can show it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_in_gallery: Option<String>,
 }
 
 /// The type of a prop, an event's value, a binding or a piece of state: the language's types.

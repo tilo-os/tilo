@@ -2680,7 +2680,18 @@ impl TextInput {
             .single_layout
             .as_ref()
             .map_or(minimum, |layout| layout.height().max(minimum));
-        height + if self.compact_multiline { 0.0 } else { 16.0 }
+        let height = f64::from(height) + if self.compact_multiline { 0.0 } else { 16.0 };
+        // The field's least height, as [`Self::measure`] gives it: a wrapping chrome'd field
+        // is at least a band tall (a finger's target under a coarse pointer). A line measured
+        // through here is the leaf of a decorator (`RichInput`), the only measure it gets, so
+        // without the floor it would come out shorter than the same field laid out as a node.
+        let floor = self.multiline_floor(self.scale_for(theme.text_scale));
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "content height is a bounded on-screen size for taffy layout, never near f32's range"
+        )]
+        let height = height.max(floor) as f32;
+        height
     }
 
     /// Prepare the shared shaped hit-testing geometry for a projected cell

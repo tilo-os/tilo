@@ -281,6 +281,89 @@ fn readers_share_a_snapshot_until_the_mirror_changes() {
     );
 }
 
+/// A record is published under the name its declaration says it has, and a change to a field
+/// that names it (a `title`) relabels it, whatever the field's generated id sorts as: an order
+/// over ids would name the record by another text on a build whose ids differ, so naming is
+/// read in the order the source declares (the `title` first, a `body`'s first line next, the
+/// rest as declared), never in the order the ids happen to compare.
+#[test]
+fn a_title_names_a_record_whatever_its_field_ids_are() {
+    let (mut ada, meta, root) = room();
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let check = |ada: &Replica, published: &Publications, step: &str| {
+        assert_eq!(
+            shape(&published.trees()[&root]),
+            published_anew(ada, &meta, &root),
+            "after {step}"
+        );
+    };
+    let title = |published: &Publications| published.trees()[&root].label.clone();
+    check(&ada, &published, "publishing the record");
+
+    // The title is a text of the record's own, so it names the record even though the record
+    // also holds items with texts (its list's `milk`, `eggs`, `bread`).
+    let (title_field, list_field) = (
+        field_id(&meta, "TodoList", "title"),
+        field_id(&meta, "TodoList", "items"),
+    );
+    assert_ne!(
+        title_field, list_field,
+        "the title and the list are fields of their own"
+    );
+    // Retype the title: the record is named by it now.
+    ada.apply(&DynAction {
+        app: APP.to_owned(),
+        kind: "tl.so.tilo.todo.TodoList".to_owned(),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Edit {
+            id: root.clone(),
+            edit: Edit::new(
+                vec![Segment::Field(title_field.clone())],
+                EditOp::Replace {
+                    text: "Shopping".to_owned(),
+                },
+            ),
+        }],
+    });
+    published.update(&ada.host, &planner);
+    check(&ada, &published, "titling the list");
+    assert_eq!(
+        title(&published),
+        "Shopping",
+        "the title names the record, not its first item"
+    );
+
+    // Clear it: the record holds no title now, and its first item names it, as reading it
+    // anew finds — never the id order, which would pick another text.
+    ada.apply(&DynAction {
+        app: APP.to_owned(),
+        kind: "tl.so.tilo.todo.TodoList".to_owned(),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Edit {
+            id: root.clone(),
+            edit: Edit::new(
+                vec![Segment::Field(title_field.clone())],
+                EditOp::Replace {
+                    text: String::new(),
+                },
+            ),
+        }],
+    });
+    published.update(&ada.host, &planner);
+    check(&ada, &published, "clearing the title");
+    assert_eq!(
+        title(&published),
+        "milk",
+        "with no title, the first item names the list"
+    );
+}
+
 /// What names a record is a text of its own (a `title` field, or its `body`'s first line),
 /// and only a record that holds none is named by its items.
 /// A republish reads it again only where a change can move it, and gets it right each time.
