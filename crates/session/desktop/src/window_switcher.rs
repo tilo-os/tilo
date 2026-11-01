@@ -1173,7 +1173,10 @@ impl WindowSwitcher {
             .enumerate()
             .map(|(index, window)| {
                 serde_json::json!({
-                    "tab": window.address.tab,
+                    // A tab's id carries the salt of the device that minted
+                    // it, which a JSON integer does not always hold: it
+                    // travels as text, as every reading of a tab names it.
+                    "tab": window.address.tab.to_string(),
                     "title": window.title,
                     "selected": index == session.selected,
                     "preview": Self::preview_state(window, previews).as_str(),

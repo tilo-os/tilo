@@ -1302,6 +1302,7 @@ desktop-action-param-strip-name = The strip's new name
 desktop-action-param-room = The room a workspace shares; joining it when this computer has none
 desktop-action-param-workspace-name = What the new workspace is called
 desktop-action-param-before-strip = The strip to move it before; leave out for the bottom
+desktop-action-tab-not-a-tab = { $tab } is not a window's id
 session-host-new-workspace = Make a new workspace on this computer
 session-host-join-workspace = Join a workspace from its directory
 session-host-leave-workspace = Leave this workspace on this computer

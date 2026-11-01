@@ -2087,6 +2087,8 @@ mod lock;
 #[path = "session/lock_recovery.rs"]
 mod lock_recovery;
 mod questions;
+#[path = "session/window_ids.rs"]
+mod window_ids;
 #[path = "session/workspace_settings.rs"]
 mod workspace_settings;
 
@@ -2557,7 +2559,7 @@ fn the_desktop_sends_a_window_where_the_overview_offers_to() {
         &mut session,
         CHROME_RESOURCE,
         "move-tab-to-strip",
-        &serde_json::json!({"tab": tab, "strip": "Second"}),
+        &serde_json::json!({"tab": tab.to_string(), "strip": "Second"}),
     );
     let holding = strips_holding(&session, tab);
     assert_eq!(
@@ -2588,7 +2590,7 @@ fn the_desktop_sends_a_window_where_the_overview_offers_to() {
         &mut session,
         CHROME_RESOURCE,
         "move-tab",
-        &serde_json::json!({"tab": tab, "workspace": other.to_string()}),
+        &serde_json::json!({"tab": tab.to_string(), "workspace": other.to_string()}),
     );
     let landed = tabs_in(&session, other);
     assert_eq!(landed, [tab], "the same window is in the other workspace");

@@ -1317,6 +1317,7 @@ desktop-action-param-strip-name = Der neue Name der Leiste
 desktop-action-param-room = Der Raum, den ein Arbeitsbereich teilt; wird beigetreten, wenn dieser Rechner keinen hat
 desktop-action-param-workspace-name = Wie der neue Arbeitsbereich heißt
 desktop-action-param-before-strip = Die Leiste, vor die sie kommt; leer für ganz unten
+desktop-action-tab-not-a-tab = { $tab } ist keine Kennung eines Fensters
 session-host-new-workspace = Einen neuen Arbeitsbereich auf diesem Rechner anlegen
 session-host-join-workspace = Einem Arbeitsbereich aus dem Verzeichnis beitreten
 session-host-leave-workspace = Diesen Arbeitsbereich auf diesem Rechner verlassen
