@@ -973,6 +973,12 @@ mod traditional_desktop {
         if matches!(root.name(), "Button" | "MenuButton" | "Badge" | "Avatar") {
             out.push((root.name().to_owned(), root.get_rect()));
         }
+        // A count a control carries on its icon, and that icon.
+        for (part, rect) in root.test_rects() {
+            if part == "count" || part == "icon" {
+                out.push((format!("{} {part}", root.name()), rect));
+            }
+        }
         for child in root.children() {
             shell_controls(child, out);
         }
@@ -998,6 +1004,7 @@ mod traditional_desktop {
             // The bar is the band the system menu stands in; the dock's are lower down.
             let menu = controls
                 .iter()
+                .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
                 .map(|(_, r)| *r)
                 .min_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)))
                 .expect("the system menu");
@@ -1005,17 +1012,9 @@ mod traditional_desktop {
                 .iter()
                 .filter(|(_, r)| r.y0 < menu.y1 && r.y1 > menu.y0)
                 .collect();
-            let badges: Vec<Rect> = bar
-                .iter()
-                .filter(|(n, _)| n == "Badge")
-                .map(|(_, r)| *r)
-                .collect();
-            let [badge] = badges[..] else {
-                panic!("the bell's one badge at {at}: {bar:?}");
-            };
             let pressed: Vec<Rect> = bar
                 .iter()
-                .filter(|(n, _)| n != "Badge")
+                .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
                 .map(|(_, r)| *r)
                 .collect();
             for r in &pressed {
@@ -1026,7 +1025,7 @@ mod traditional_desktop {
                 // One row: every part shares the system menu's band.
                 assert!(
                     (r.center().y - menu.center().y).abs() < 2.0,
-                    "{r:?} stands in the one row at {at}"
+                    "{r:?} stands in the one row at {at}: {bar:?}"
                 );
                 for other in &pressed {
                     assert!(
@@ -1035,21 +1034,196 @@ mod traditional_desktop {
                     );
                 }
             }
-            assert!(
-                badge.x1 <= f64::from(width),
-                "the badge {badge:?} stays on the output at {at}"
-            );
-            // The count stands on the bell's corner, over the bell and no other control.
-            let under: Vec<&Rect> = pressed
-                .iter()
-                .filter(|r| r.intersect(badge).area() > 0.0)
-                .collect();
             assert_eq!(
-                under.len(),
+                bar.iter().filter(|(n, _)| n == "Button count").count(),
                 1,
-                "the badge {badge:?} stands on the bell alone at {at}: {under:?}"
+                "the bell's count, the bar's one, at {at}: {bar:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_count_stands_on_its_icons_corner_and_over_no_other_control() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        for (width, height, text) in [(1280, 800, 1.0), (768, 1024, 1.0), (320, 568, 1.5)] {
+            let staged = stage::Staged::over(
+                &app,
+                &packages,
+                "the traditional desktop",
+                (width, height),
+                ui::Theme::light().with_text_scale(text),
+                None,
+            )
+            .expect("the scenario stages");
+            let mut controls = Vec::new();
+            shell_controls(staged.harness().root_widget(), &mut controls);
+            let at = format!("{width}×{height} text {text}");
+            let pressed: Vec<Rect> = controls
+                .iter()
+                .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
+                .map(|(_, r)| *r)
+                .collect();
+            let counts: Vec<(Rect, Rect)> = controls
+                .windows(2)
+                .filter_map(|pair| match pair {
+                    [(count, c), (icon, i)]
+                        if count.ends_with(" count") && icon.ends_with(" icon") =>
+                    {
+                        Some((*c, *i))
+                    }
+                    _ => None,
+                })
+                .collect();
+            // The bell's and the mail's in the dock.
+            assert_eq!(
+                counts.len(),
+                2,
+                "the bell's count and the dock's at {at}: {controls:?}"
+            );
+            for (count, icon) in counts {
+                // Centred on the icon's top trailing corner, as an app icon's count stands.
+                let corner = ui::kurbo::Point::new(icon.x1, icon.y0);
+                assert!(
+                    (count.center() - corner).hypot() < 1.0,
+                    "the count {count:?} stands on the corner of its icon {icon:?} at {at}"
+                );
+                assert!(
+                    count.x0 >= 0.0 && count.x1 <= f64::from(width) && count.y0 >= 0.0,
+                    "the count {count:?} stays on the output at {at}"
+                );
+                // Over its own control alone: never the one beside it.
+                let own = pressed
+                    .iter()
+                    .find(|r| r.contains(icon.center()))
+                    .expect("the control the icon is on");
+                for other in pressed.iter().filter(|r| *r != own) {
+                    assert!(
+                        other.intersect(count).area() <= 0.0,
+                        "the count {count:?} stands over {other:?} at {at}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        let staged = stage::Staged::over(
+            &app,
+            &packages,
+            "the traditional desktop",
+            (320, 568),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the scenario stages");
+        let root = staged.harness().root_widget();
+        let frames = named(root, "WindowFrame");
+        let [frame] = frames[..] else {
+            panic!("the window in front alone, not {} windows", frames.len());
+        };
+        let said = {
+            let mut said = Vec::new();
+            read_out(&staged.harness().inspection().root, false, &mut said);
+            said
+        };
+        assert!(
+            said.iter()
+                .any(|(in_window, name)| *in_window && name == "Q3 plan"),
+            "the window is the one in front: {said:?}"
+        );
+        let chrome = named(root, "Chrome");
+        let bar = chrome
+            .iter()
+            .map(|c| c.get_rect())
+            .min_by(|a, b| a.y0.total_cmp(&b.y0))
+            .expect("the top bar");
+        let dock = chrome
+            .iter()
+            .map(|c| c.get_rect())
+            .max_by(|a, b| a.y1.total_cmp(&b.y1))
+            .expect("the dock");
+        let window = frame.get_rect();
+        assert!(
+            window.y0 >= bar.y1 && window.y1 <= dock.y0,
+            "the window {window:?} stands between the bar {bar:?} and the dock {dock:?}"
+        );
+        // It fills that room: no more than the gaps between them is left over.
+        let gap = 16.0;
+        assert!(
+            window.y0 - bar.y1 <= gap && dock.y0 - window.y1 <= gap,
+            "the window {window:?} fills the room between {bar:?} and {dock:?}"
+        );
+        assert!(
+            window.x0 >= 0.0 && window.x1 <= 320.0 && window.width() >= 320.0 - 2.0 * gap,
+            "the window {window:?} spans the output"
+        );
+    }
+
+    /// What assistive technology reads under `node` (names and values), each with whether it
+    /// stands in a window.
+    fn read_out(
+        node: &ui::headless::InspectionNode,
+        in_window: bool,
+        out: &mut Vec<(bool, String)>,
+    ) {
+        let in_window = in_window || node.widget == "WindowFrame";
+        if let Some(access) = &node.semantics {
+            for said in [&access.name, &access.value].into_iter().flatten() {
+                out.push((in_window, said.clone()));
+            }
+        }
+        for child in &node.children {
+            read_out(child, in_window, out);
+        }
+    }
+
+    fn desktop_read_out() -> Vec<(bool, String)> {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        let staged = stage::Staged::over(
+            &app,
+            &packages,
+            "the traditional desktop",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the scenario stages");
+        let mut said = Vec::new();
+        read_out(&staged.harness().inspection().root, false, &mut said);
+        said
+    }
+
+    #[test]
+    fn a_windows_header_holds_the_apps_own_actions_and_no_generated_menu() {
+        // An action the app gave no icon is in the top bar's window menu, under the name
+        // the app gave it, never in a "More actions" list made up for the window's header.
+        let said = desktop_read_out();
+        let generated: Vec<&String> = said
+            .iter()
+            .filter(|(in_window, name)| *in_window && name == "More actions")
+            .map(|(_, name)| name)
+            .collect();
+        assert!(generated.is_empty(), "a window offers {generated:?}");
+    }
+
+    #[test]
+    fn its_people_are_called_by_their_names_never_their_ids() {
+        let said = desktop_read_out();
+        let ids: Vec<&String> = said
+            .iter()
+            .map(|(_, name)| name)
+            .filter(|name| name.contains("scenario:"))
+            .collect();
+        assert!(ids.is_empty(), "people read as ids: {ids:?}");
+        assert!(
+            said.iter().any(|(_, name)| name.contains("Leo")),
+            "the channel names who spoke: {said:?}"
+        );
     }
 
     #[test]

@@ -360,16 +360,11 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
         "the taskbar carries the time and the device's status beside its items: {windows}"
     );
 
-    // The macOS-like one: a bar with the app's menus and a dock, both translucent.
+    // The macOS-like one: a bar with the app's menus and a dock, both translucent (the menus
+    // themselves: `the_macos_bar_carries_the_focused_windows_own_menus`).
     use_preset(&mut r, "macos");
     assert!(is(&r, "bar_finish", "Finish", "translucent"));
     assert!(is(&r, "dock_showing", "Showing", "no_overlap"));
-    let macos = desk_view(&r);
-    assert!(
-        says(&macos, "File"),
-        "the macOS bar carries the app's menus: {}",
-        card(&macos)
-    );
 
     // The minimal one: the bar hides until reached for, and the dock is off.
     use_preset(&mut r, "minimal");
@@ -391,6 +386,71 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
         "the bar is back at rest"
     );
     assert!(runs.len() >= 1, "the dock and the bar are runs");
+}
+
+/// The macOS bar's menus are the focused window's own: its resource's actions in the runs the
+/// app declared (the notes app's "Note" and "Tags"), each item running the app's action, never
+/// a menu the shell made up.
+#[test]
+fn the_macos_bar_carries_the_focused_windows_own_menus() {
+    fn under<'a>(node: &'a tilolang_runtime::UiNode, out: &mut Vec<&'a tilolang_runtime::UiNode>) {
+        for child in &node.children {
+            out.push(child);
+            under(child, out);
+        }
+    }
+    let mut r = room();
+    r.commit();
+    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.commit();
+    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    r.commit();
+    use_preset(&mut r, "macos");
+    // The arrangement is the session's: the scenario writes it in this host, and nothing of it
+    // goes to the room.
+    let arrangement = scenario(&r, APP, "a canvas of spaces");
+    let meta = r.host.package(APP).unwrap().meta;
+    let desk = meta
+        .views
+        .iter()
+        .find(|v| v.name == "desk_view")
+        .expect("the desk's view")
+        .id
+        .clone();
+    let mut macos = r
+        .host
+        .runtime()
+        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .unwrap();
+    // A desktop's output: 1280 by 800, where the bar has room for the window's menus.
+    macos.set_space("", tilolang_runtime::Space::from_rem(80.0, 50.0));
+    macos.poll_patches().unwrap();
+    let card = |view: &tilolang_runtime::ViewInstance| format!("{:?}", view.tree());
+    let menus = nodes(&macos, "ui.MenuButton");
+    let menu = |label: &str| {
+        menus
+            .iter()
+            .find(|m| m.props.get("label") == Some(&Value::Text(label.to_owned())))
+            .unwrap_or_else(|| panic!("the macOS bar has the {label} menu: {}", card(&macos)))
+    };
+    for (run, item) in [("Note", "Delete"), ("Tags", "Tag…")] {
+        let mut items = Vec::new();
+        under(menu(run), &mut items);
+        assert!(
+            items.iter().any(|i| {
+                i.kind == "ui.MenuItem"
+                    && i.props.get("label") == Some(&Value::Text(item.to_owned()))
+                    && i.events.contains_key("choose")
+            }),
+            "the {run} menu runs the app's {item}: {:#?}",
+            menu(run)
+        );
+    }
+    assert!(
+        !says(&macos, "\"File\""),
+        "no menu the shell made up: {}",
+        card(&macos)
+    );
 }
 
 #[test]
