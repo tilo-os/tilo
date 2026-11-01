@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tilo_actions::offload::{ActionOffload, OffloadRequest, Offloaded};
+use tilo_actions::remote::InvokeRequest;
 use tokio::sync::mpsc;
 
 use super::{AppBrokerState, InvocationEnvelope, invocation_journal};
@@ -25,6 +26,8 @@ pub(super) struct QueuedOffload {
     pub(super) id: u64,
     pub(super) peer_id: u64,
     pub(super) request: OffloadRequest,
+    /// The invocation it was admitted from, which another device runs.
+    pub(super) invocation: InvokeRequest,
     pub(super) route: Arc<dyn ActionOffload>,
     /// What the app is handed when it runs here.
     pub(super) envelope: InvocationEnvelope,
@@ -45,24 +48,27 @@ impl AppBrokerState {
     }
 
     /// The offload request for an admitted invocation of `action` in
-    /// `workspace` with wire `argument`, when it declares an offload and this
-    /// device routes offloads; `None` runs it here as any other.
+    /// `workspace`, `invocation` being that invocation as another device
+    /// would run it, when the action declares an offload and this device
+    /// routes offloads; `None` runs it here as any other.
     pub(super) fn offload_request(
         &self,
         (workspace, app_id): (&str, &str),
         action: &runtime_collab::ExportedAction,
-        argument: Option<&str>,
-    ) -> Option<(Arc<dyn ActionOffload>, OffloadRequest)> {
+        invocation: InvokeRequest,
+    ) -> Option<(Arc<dyn ActionOffload>, OffloadRequest, InvokeRequest)> {
         let offload = action.contract.offload.clone()?;
         let route = self.services.action_offload.clone()?;
-        let inputs = match tilo_actions::offload::argument_inputs(&action.params, argument) {
-            Ok(inputs) => inputs,
-            Err(reason) => {
-                // The app's handler refuses such arguments itself.
-                tracing::debug!(%reason, "offloadable invocation runs here");
-                return None;
-            }
-        };
+        let argument = invocation.argument.to_slot();
+        let inputs =
+            match tilo_actions::offload::argument_inputs(&action.params, argument.as_deref()) {
+                Ok(inputs) => inputs,
+                Err(reason) => {
+                    // The app's handler refuses such arguments itself.
+                    tracing::debug!(%reason, "offloadable invocation runs here");
+                    return None;
+                }
+            };
         Some((
             route,
             OffloadRequest {
@@ -72,6 +78,7 @@ impl AppBrokerState {
                 offload,
                 inputs,
             },
+            invocation,
         ))
     }
 
@@ -94,11 +101,12 @@ impl AppBrokerState {
             id,
             peer_id,
             request,
+            invocation,
             route,
             envelope,
             app,
         } = queued;
-        match route.offload(request.clone()).await {
+        match route.offload_invocation(request.clone(), invocation).await {
             Offloaded::Ran {
                 output,
                 device,

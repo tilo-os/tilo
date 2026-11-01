@@ -6123,11 +6123,31 @@ impl AppBrokerState {
             });
         let untrusted = offered.1.contract.carries_untrusted_content();
         // Admitted: an offloadable action may now run on a better-placed
-        // device, which the turn asks the route about.
+        // device, which the turn asks the route about. The device that runs it
+        // is sent this invocation, so it answers the invocation the person
+        // made rather than a second one of its own.
         let offload = self.offload_request(
             (&offered.0.route.cluster_id, &offered.0.app_id),
             &offered.1,
-            argument,
+            tilo_actions::remote::InvokeRequest {
+                invocation,
+                target: tilo_actions::remote::application_action_target(
+                    &offered.0.route.cluster_id,
+                    &offered.0.app_id,
+                    offered.1.resource.clone(),
+                    offered.1.action.clone(),
+                ),
+                argument: tilo_actions::remote::InvokeArgument::from_slot(argument),
+                context: context.clone(),
+                // A device that runs it answers for the confirmation the
+                // person gave here, so a confirmed action is not run there
+                // unconfirmed.
+                confirmation: original_request.and_then(|request| request.confirmation.clone()),
+                revision: revision.map(str::to_owned),
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            },
         );
         // What it was admitted to reach caps what its effect asks for: its
         // own reach, narrowed by what it continues unless the person

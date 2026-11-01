@@ -693,6 +693,23 @@ impl InvokeArgument {
             )),
         }
     }
+
+    /// What [`Self::to_slot`] carries, as the wire field it came from. A
+    /// slot no typed object is written behind is text, which is what an
+    /// action taking a prompt collects.
+    #[must_use]
+    pub fn from_slot(slot: Option<&str>) -> Self {
+        match slot {
+            None => Self::None,
+            Some(text) => match text
+                .strip_prefix(ARGUMENTS_JSON_PREFIX)
+                .and_then(|json| serde_json::from_str(json).ok())
+            {
+                Some(object) => Self::Json(object),
+                None => Self::Text(text.to_owned()),
+            },
+        }
+    }
 }
 
 /// A request to run one published action.
@@ -2572,9 +2589,21 @@ mod tests {
             Some("hi")
         );
         assert_eq!(
-            InvokeArgument::Json(object).to_slot(),
+            InvokeArgument::Json(object.clone()).to_slot(),
             Some(format!("{ARGUMENTS_JSON_PREFIX}{{\"n\":2}}"))
         );
+        // A slot read back names the argument it was written from, so a
+        // device that sends an invocation on runs what it admitted.
+        for argument in [
+            InvokeArgument::None,
+            InvokeArgument::Text("hi".into()),
+            InvokeArgument::Json(object),
+        ] {
+            assert_eq!(
+                InvokeArgument::from_slot(argument.to_slot().as_deref()),
+                argument
+            );
+        }
     }
 
     fn a_remote_device_is_the_person_its_root_names() {
