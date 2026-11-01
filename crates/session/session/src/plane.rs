@@ -856,6 +856,39 @@ mod tests {
         );
     }
 
+    /// An app's `offerBlob`, `wantBlob` and `subscribeBlobs`, and the content
+    /// put door, are served by the plane this session keeps: the same store
+    /// and the same asks of the workspace's other devices. A session that
+    /// keeps no content hands the broker none of it.
+    #[test]
+    fn an_app_keeps_and_asks_for_content_through_the_services_of_this_session() {
+        let kept = crate::content::Plane::open(None);
+        let wake: Wake = std::sync::Arc::new(|| ());
+        let with = host_services(
+            Link::new(wake),
+            std::sync::Arc::new(Launches::default()),
+            None,
+            Hosted {
+                record_content: Some(kept),
+                ..hosted(None)
+            },
+        );
+        assert!(
+            with.record_content.is_some(),
+            "the broker asks the workspace through this session's plane"
+        );
+        assert!(
+            with.content_store.is_some(),
+            "and uploads into the store this device keeps"
+        );
+
+        let without = services(None);
+        assert!(
+            without.record_content.is_none() && without.content_store.is_none(),
+            "a session that keeps content hands the broker no content plane"
+        );
+    }
+
     /// Settings reaches the speaker groups of the fabric this session runs
     /// on, and of nothing else: a session without one has no speaker route.
     #[test]
