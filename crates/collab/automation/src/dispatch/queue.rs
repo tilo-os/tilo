@@ -14,8 +14,9 @@ use crate::run::{RunOutcome, RunReport, StepFailure, StepStatus};
 pub const BACKOFF_FIRST: Duration = Duration::from_secs(1);
 pub const BACKOFF_MAX: Duration = Duration::from_secs(600);
 pub const MAX_ATTEMPTS: u32 = 8;
-/// Runs of a firing whose changes the room refused, the first included:
-/// each later one starts from the room's records as they now stand.
+/// Runs of a firing whose changes the workspace refused, the first
+/// included: each later one starts from the workspace's records as they now
+/// stand.
 pub const MAX_REFUSED_ATTEMPTS: u32 = 3;
 /// The reason a firing dropped for overflow is dead-lettered with.
 pub const FELL_BEHIND: &str = "fell behind";
@@ -179,13 +180,13 @@ impl FiringQueue {
             })
     }
 
-    /// Settle the head when the room refused what its run changed: the
+    /// Settle the head when the workspace refused what its run changed: the
     /// changes before the refused one stand and those after it were
     /// dropped, so the run is half done. It runs again with backoff, from
-    /// the room's records as they now stand, so a bot that plans from the
+    /// the workspace's records as they now stand, so a bot that plans from the
     /// state it reads (an import that resumes where it stopped) finishes
     /// the job; once [`MAX_REFUSED_ATTEMPTS`] are spent it is dead-lettered
-    /// with `reason`, so a change the room will never take holds up the
+    /// with `reason`, so a change the workspace will never take holds up the
     /// firings behind it only briefly.
     pub fn refused(&mut self, reason: &str, now_ms: i64) -> Finished {
         let Some(head) = self.queued.front_mut() else {

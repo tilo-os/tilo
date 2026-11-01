@@ -2,7 +2,7 @@
 //! what inputs, under which run id, in which order.
 //!
 //! Pure over what it is shown. The shell feeds it a person's record
-//! changes; the room's host feeds it record changes and connector events
+//! changes; a workspace's host feeds it record changes and connector events
 //! for bots. Both get the same answers, so a person's Shortcut and a bot
 //! fire on the same change in the same way.
 //!

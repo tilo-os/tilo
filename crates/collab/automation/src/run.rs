@@ -1855,7 +1855,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     /// What the shortcut's grant answers for the step: a refusal, or an
     /// answer the step may proceed under.
     /// A field edit is decided where its path (in `supplied`) acts, as
-    /// the room decides it.
+    /// the workspace decides it.
     fn granted(
         &self,
         app_id: &str,

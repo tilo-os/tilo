@@ -957,8 +957,8 @@ fn a_step_outside_the_grant_is_refused_even_when_the_caller_could_run_it() {
 
 // A shortcut's grant is checked against what each step needs, never against
 // what it does: a grant that allows only reading runs an undoable change of
-// the person's own record, which the room's grants do not reach, and still
-// refuses the same change of a shared note.
+// the person's own record, which the workspace's grants do not reach, and
+// still refuses the same change of a shared note.
 #[test]
 fn a_shortcut_grant_answers_what_a_step_needs_not_its_kind() {
     let mut host = FakeHost::new();

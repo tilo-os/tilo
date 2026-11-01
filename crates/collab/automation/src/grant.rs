@@ -18,18 +18,18 @@ use crate::{
     AGENT_TRANSFORM_KIND, ActionCatalog, Binding, ResourceTarget, Selector, Step, StepKind,
 };
 
-/// The node a step's action has in the tree: the room the run acts in (or
-/// any room, for a run confined to none), the app, the resource kind, the
-/// resource and the action.
+/// The node a step's action has in the tree: the workspace the run acts in
+/// (or any workspace, for a run confined to none), the app, the resource
+/// kind, the resource and the action.
 #[must_use]
 pub fn step_node(
-    room: Option<&str>,
+    workspace: Option<&str>,
     app_id: &str,
     resource_kind: &str,
     address: &ActionAddress,
 ) -> TreePath {
-    let base = match room {
-        Some(room) => TreePath::workspace(room),
+    let base = match workspace {
+        Some(workspace) => TreePath::workspace(workspace),
         None => TreePath::root().any(Level::Workspace),
     };
     base.app(app_id)
@@ -39,17 +39,17 @@ pub fn step_node(
 }
 
 /// [`step_node`] of a field edit acting at `at` below its resource (as
-/// [`edit_reach`] reads it): the node the room decides the edit at.
+/// [`edit_reach`] reads it): the node the workspace decides the edit at.
 #[must_use]
 pub fn step_node_at(
-    room: Option<&str>,
+    workspace: Option<&str>,
     app_id: &str,
     resource_kind: &str,
     address: &ActionAddress,
     at: &TreePath,
 ) -> TreePath {
-    let base = match room {
-        Some(room) => TreePath::workspace(room),
+    let base = match workspace {
+        Some(workspace) => TreePath::workspace(workspace),
         None => TreePath::root().any(Level::Workspace),
     };
     base.app(app_id)
@@ -120,10 +120,10 @@ fn edit_steps(edit: &Binding) -> Option<Vec<EditStep>> {
     }
 }
 
-/// Where below its resource a field edit bound as `edit` acts, as the room
-/// decides it (`[item ›] field… `, the collection holding an item not a
-/// node of its own); an item or map key the program leaves to the run is
-/// any item or key. `None` when a field it changes is not named in the
+/// Where below its resource a field edit bound as `edit` acts, as the
+/// workspace decides it (`[item ›] field… `, the collection holding an item
+/// not a node of its own); an item or map key the program leaves to the run
+/// is any item or key. `None` when a field it changes is not named in the
 /// program: then only a grant over every field edit of the resource
 /// covers it.
 #[must_use]
@@ -154,7 +154,7 @@ pub fn edit_reach(edit: &Binding) -> Option<TreePath> {
     Some(tree)
 }
 
-/// A rule naming one action on every room's matching resource, as a
+/// A rule naming one action on every workspace's matching resource, as a
 /// shortcut's grant usually does.
 #[must_use]
 pub fn action_rule(
@@ -259,7 +259,7 @@ pub struct Permission {
 }
 
 impl Permission {
-    /// The rule allowing it in any room: this action, on the one resource
+    /// The rule allowing it in any workspace: this action, on the one resource
     /// or on every resource of the kind, for its kind of action and the
     /// weaker ones. It reaches the action anywhere in the resource: a record
     /// holding the kind's resources as items (a chat's workspace) publishes
@@ -283,7 +283,7 @@ impl Permission {
         )
     }
 
-    /// The resources it reaches, in any room.
+    /// The resources it reaches, in any workspace.
     fn resources(&self) -> TreePath {
         let app = TreePath::root()
             .any(Level::Workspace)
@@ -294,7 +294,7 @@ impl Permission {
         }
     }
 
-    /// Anywhere in the resources it reaches, in any room.
+    /// Anywhere in the resources it reaches, in any workspace.
     fn reached(&self) -> TreePath {
         self.resources().rest()
     }
@@ -571,7 +571,7 @@ mod tests {
 
     fn answer(grant: &[Rule], resource: &str, kind: &str, action: &str) -> Answer {
         let node = step_node(
-            Some("room"),
+            Some("ws"),
             NOTES,
             kind,
             &ActionAddress::new(resource, action),
@@ -644,7 +644,7 @@ mod tests {
             Answer::Deny
         );
         let chat = step_node(
-            Some("room"),
+            Some("ws"),
             "so.tilo.chat",
             "notes.page",
             &ActionAddress::new("notes.page:1", "apply"),
@@ -785,8 +785,9 @@ mod tests {
             permission("map", ActionKind::Undoable),
         ]);
         assert_eq!(settles.len(), 1, "only what is queued outside is settled");
-        // It reaches an entry of a guild's outbox, as the room decides a
-        // settle (an item of the record), and none of the guild's own fields.
+        // It reaches an entry of a guild's outbox, as the workspace decides
+        // a settle (an item of the record), and none of the guild's own
+        // fields.
         let guild = TreePath::workspace("r")
             .app("so.tilo.discord")
             .kind("discord.guild")
@@ -865,8 +866,9 @@ mod tests {
             2,
             "one rule per kind changed, none for a read"
         );
-        // The guild's migration is decided at the record, the way the room
-        // claims it, and rewriting its outbox reaches outside as `send` does.
+        // The guild's migration is decided at the record, the way the
+        // workspace claims it, and rewriting its outbox reaches outside as
+        // `send` does.
         let guild = TreePath::workspace("r")
             .app("so.tilo.discord")
             .kind("discord.guild")
@@ -898,7 +900,7 @@ mod tests {
     }
 
     /// A field edit whose program names the field it changes is granted
-    /// that field of any item, and decided where the room decides it.
+    /// that field of any item, and decided where the workspace decides it.
     #[test]
     fn a_field_edit_is_granted_where_the_doors_decide_it() {
         use std::collections::BTreeMap;
@@ -940,12 +942,12 @@ mod tests {
             ["workspace:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"]
         );
 
-        // The room decides a run's edit at its concrete path.
+        // The workspace decides a run's edit at its concrete path.
         let decided = |path: serde_json::Value| {
             let at = edit_reach(&literal(serde_json::json!({"path": path, "op": "react"})))
                 .expect("a literal path names its fields");
             let node = step_node_at(
-                Some("room"),
+                Some("ws"),
                 NOTES,
                 "notes.chat",
                 &ActionAddress::new("chat", FIELD_EDIT),

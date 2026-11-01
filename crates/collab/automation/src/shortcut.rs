@@ -57,7 +57,7 @@ pub struct Shortcut {
     /// behalf only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved_by: Option<String>,
-    /// The saver's device signing this shortcut, as saved in one room
+    /// The saver's device signing this shortcut, as saved in one workspace
     /// ([`Self::saved_signing_digest`]). Who saved a shortcut is authority (its
     /// triggers fire on that person's behalf), so `saved_by` counts only with
     /// a proof that verifies under that person's root. A shortcut without one
@@ -66,7 +66,7 @@ pub struct Shortcut {
     pub saved_proof: Option<SavedProof>,
 }
 
-/// A device's signature over one saved shortcut in one room.
+/// A device's signature over one saved shortcut in one workspace.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedProof {
     /// The signing device's certificate, as its identity layer encodes it.
@@ -86,16 +86,17 @@ impl Shortcut {
         crate::shortcut_run_address(&self.id)
     }
 
-    /// What the saver's device signs: the room the shortcut is saved in and
-    /// the shortcut itself, `saved_by` included and the proof left out, so a
-    /// proof neither moves to another room nor covers a changed shortcut.
+    /// What the saver's device signs: the workspace the shortcut is saved in
+    /// and the shortcut itself, `saved_by` included and the proof left out,
+    /// so a proof neither moves to another workspace nor covers a changed
+    /// shortcut.
     #[must_use]
-    pub fn saved_signing_digest(&self, room: &str) -> [u8; 32] {
+    pub fn saved_signing_digest(&self, workspace: &str) -> [u8; 32] {
         let mut unsigned = self.clone();
         unsigned.saved_proof = None;
         let mut hasher = blake3::Hasher::new_derive_key(SAVED_SHORTCUT_DOMAIN);
-        hasher.update(&(room.len() as u64).to_le_bytes());
-        hasher.update(room.as_bytes());
+        hasher.update(&(workspace.len() as u64).to_le_bytes());
+        hasher.update(workspace.as_bytes());
         // Writing a shortcut to a Vec cannot fail.
         hasher.update(&serde_json::to_vec(&unsigned).unwrap_or_default());
         *hasher.finalize().as_bytes()
@@ -509,7 +510,8 @@ pub enum TriggerSpec {
     AppOpened {
         app_id: String,
     },
-    /// Joining a workspace; `None` for any.
+    /// Joining a workspace; `None` for any. The field keeps the key `room`
+    /// in a stored program.
     WorkspaceJoined {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         room: Option<String>,
@@ -539,7 +541,7 @@ pub enum TriggerSpec {
     DeviceConnected {
         device_class: String,
     },
-    /// A committed change to a record of `kind` in the room. Empty
+    /// A committed change to a record of `kind` in the workspace. Empty
     /// `actions` and `fields` match any change; otherwise a change matches
     /// when it ran one of the verbs (public ids) or edited a field whose
     /// path matches one of the patterns (`channels.*.name`).
@@ -552,8 +554,9 @@ pub enum TriggerSpec {
         #[serde(default, skip_serializing_if = "ActorFilter::is_anyone")]
         by: ActorFilter,
     },
-    /// An event from a connector's declared trigger source on the room's
-    /// host. Only a bot can carry one: a person's devices see no connector.
+    /// An event from a connector's declared trigger source on the
+    /// workspace's host. Only a bot can carry one: a person's devices see no
+    /// connector.
     Connector {
         app_id: String,
         source: String,
