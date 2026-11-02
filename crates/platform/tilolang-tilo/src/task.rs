@@ -409,7 +409,10 @@ impl Invoker for DoorInvoker {
                 if !steps.apps.iter().any(|known| known == app) {
                     steps.apps.push(app.to_owned());
                     let resource = if published {
-                        call["resource"].as_str().unwrap_or_default().to_owned()
+                        call.get("resource")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned()
                     } else {
                         package_resource_id(app)
                     };
