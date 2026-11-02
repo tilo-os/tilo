@@ -262,9 +262,10 @@ A register written from itself (`item.done = not item.done`, `c.n = c.n + 1`) is
 with a default, as above, or make the field a counter for a delta.
 
 **Views.** A view body is UI statements: primitive and view calls (with child blocks), `for`,
-`if`/`else if`/`else`, `match` (each arm one UI call or a block) and `let`. Options of UI
-primitives are the primitives' own enums, written as dot literals; lengths keep their units and
-flags stay bare words. An anchor follows the call as `as name`:
+`if`/`else if`/`else`, `match` (each arm one UI call or a block) and `let`, whose type is written
+where a branch leaves it open (`let heading: Option<Date> = if let g = group { g(x) } else { .none }`).
+Options of UI primitives are the primitives' own enums, written as dot literals; lengths keep
+their units and flags stay bare words. An anchor follows the call as `as name`:
 
 ```
 view notebook(nb: Notebook) {

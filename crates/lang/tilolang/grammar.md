@@ -86,7 +86,7 @@ pattern    = "." ident [ "(" ident { "," ident } ")" ]            (* `.some(x)`;
 
 ui_block   = "{" { ui_stmt NL } "}" ;
 ui_stmt    = ( "window" | "lens" ) ident ":" type [ "=" expr ]     (* view state, at the top *)
-           | "let" ident "=" expr
+           | "let" ident [ ":" type ] "=" expr               (* the type, when a branch leaves it open *)
            | "for" ident "in" expr ui_block
            | "if" ( expr | let_binds ) ui_block [ "else" ( ui_if | ui_block ) ]
            | "match" expr "{" { pattern "=>" ( ui_block | ui_stmt ) ( "," | NL ) } "}"

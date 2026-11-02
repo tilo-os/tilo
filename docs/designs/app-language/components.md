@@ -78,6 +78,22 @@ pages, forms. It relies on general language features any author can use:
 
 An app that needs something `std` doesn't do composes `ui.*` directly and loses nothing native.
 
+A list groups without a second widget: `std.rows` takes `group:`, naming each item's heading,
+and the list draws a section band for each run and holds it at the top while its items scroll
+past (dates arrive formatted: Today, Tomorrow, a weekday, a day). Only the rows in view are
+built and asked for their group, so a heading costs nothing on a long list. `closed:` names the
+items done with: they stand last under `closed_title`, folded away until the person presses the
+band. The heading is a date the platform writes, never a string an app formats:
+
+```
+std.rows(shown, "No tasks here", .none, .some("list-checks"),
+         group: .due, closed: .done) { t -> task_row(t) }
+```
+
+The same bands serve mail and chat grouped by day. `ui.VirtualList` and `ui.ListItem` carry it
+(`group:` and `tail:` on a row, `tail_title:` on the list), so a view composed from `ui.*`
+groups as `std.rows` does.
+
 ## 4. Custom widgets: a ladder
 
 Most needs stop at step 1 or 2. Every step stays native under any theme, and hot paths stay in

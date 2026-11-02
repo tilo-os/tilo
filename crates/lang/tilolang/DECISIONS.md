@@ -91,8 +91,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - A flow can only invoke actions. In a view or a block, applying a flow (or an action) yields an
   `Action` value (`act_ref`), so a flow can be exposed as an action. Flows cannot call flows.
 - `sort_by(x -> key)` compiles to a loop that collects the keys into a parallel list and one call of
-  `list_sort_by_key(items, keys) -> list`: ascending and stable, keys Int, Float, Text or Bool
-  (E020 otherwise). There is no descending order and no `list_set`.
+  `list_sort_by_key(items, keys) -> list`: stable, ascending or `desc` (the same list reversed),
+  keys Int, Float, Text or Bool (E020 otherwise), and a Date or Time, which sorts as its ISO text.
+  A key that may be absent sorts as no text at all, before every day, so a list grouped by a day
+  sorts by the same field. There is no `list_set`.
 - `try act(args)` (flows only, E044 elsewhere) invokes an action and gives a `Result<T, Text>`
   (`Result<(), Text>` for an action without a result): `.ok(result)`, or `.err(reason)` when the
   invocation was denied, declined or trapped. It compiles to one import, `try_invoke(act) -> h`,

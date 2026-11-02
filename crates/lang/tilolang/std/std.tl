@@ -81,8 +81,9 @@ view list<R, T, S>(
 
 /// The items of a list as the rows of a column, or what it says while it has none. Give
 /// `group` and the list stands under a heading for each run of items it names, the heading held
-/// at the top while the person scrolls it (a date, a day, a name); give `closed` and the items
-/// it is true of stand last, under `closed_title`, folded away until the person opens them.
+/// at the top while the person scrolls it (each item's day, written the platform's way); give
+/// `closed` and the items it is true of stand last, under `closed_title`, folded away until the
+/// person opens them.
 view rows<T>(
     items: List<T>,
     empty: Text,
@@ -102,10 +103,13 @@ view rows<T>(
             ui.EmptyState(empty, icon: icon)
         }
     } else {
+        // The items done with stand last, under the one heading their group folds: a sort is
+        // stable, so the order the caller gave holds among them and among the rest.
+        let shown = if let c = closed { items.sort_by(x -> c(x)) } else { items }
         ui.VirtualList(selection_follows_focus: true, in_column: true, tail_title: .some(closed_title)) {
             on select(x: T): open(x, front: false)
             on activate(x: T): open(x)
-            for x in items {
+            for x in shown {
                 let offered = actions(x)
                 let heading: Option<Date> = if let g = group { g(x) } else { .none }
                 let tail = if let c = closed { c(x) } else { false }

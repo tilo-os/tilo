@@ -151,6 +151,7 @@ mod tests {
             "tilolang-empty",
             "tilolang-none-selected",
             "tilolang-sort",
+            "tilolang-done",
         ] {
             let kind = [("kind".to_owned(), "notes".to_owned())];
             assert_ne!(english.say(id, &kind), id, "{id} has a phrase");

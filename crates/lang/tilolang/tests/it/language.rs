@@ -250,6 +250,27 @@ fn sort_by_takes_dates_and_times_and_a_descending_order() {
 }
 
 #[test]
+fn sort_by_takes_a_key_path_that_may_be_absent() {
+    // A list grouped by a day sorts by its date too, and the items without one come first.
+    ok("fn f(c: C) -> List<C> {\n    c.items.sort_by(.due)\n}");
+    ok("fn f(c: C) -> List<C> {\n    c.items.filter(.b).sort_by(.due, desc)\n}");
+    ok("fn f(c: C) -> List<C> {\n    c.items.sort_by(x -> x.at)\n}");
+}
+
+#[test]
+fn a_ui_let_writes_the_type_its_value_is_read_as() {
+    // What `std.rows` writes: a heading that is absent when the app names no group.
+    ok(
+        "view w(c: C) {\n    ui.VirtualList {\n        let heading: Option<Date> = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",
+    );
+    // Without it the `else` has nothing to say what it is.
+    expect(
+        "E020",
+        "view w(c: C) {\n    ui.VirtualList {\n        let heading = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",
+    );
+}
+
+#[test]
 fn an_action_label_reads_its_arguments_where_it_is_applied() {
     let src = format!(
         "app t.x \"X\"\n{C}action move_to(c: C, to: C) (label: \"Move to {{to.t}}\") {{\n    c.t = to.t\n}}\naction rename(c: C) (label: \"Rename {{c.t}}\") {{\n    c.t = \"x\"\n}}\nview w(c: C, d: C) {{\n    button(move_to(c, d))\n    button(rename(c))\n}}\n"
