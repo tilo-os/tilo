@@ -138,7 +138,8 @@ impl AgentParticipant {
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
-            | RemoteActionMessage::RetiredResourceReading { .. } => return,
+            | RemoteActionMessage::RetiredResourceReading { .. }
+            | RemoteActionMessage::CatalogueChanged { .. } => return,
         };
         match RemoteActionFrame::new(reply).encode() {
             Ok(bytes) => {

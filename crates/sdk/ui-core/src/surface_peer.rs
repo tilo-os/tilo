@@ -27,33 +27,57 @@ use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, mpsc};
 
-use tilo_actions::remote::{CataloguePage, CatalogueRow, RemoteActionFrame, RemoteActionMessage};
+use tilo_actions::remote::{
+    CataloguePage, CatalogueQuery, CatalogueRow, RemoteActionFrame, RemoteActionMessage,
+};
 use tilo_lock::MutexRecover as _;
 
 use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport};
 
-/// What this process's surface publishes, shared with the peer that answers
-/// the session: the app hands its resources over every frame it draws, as a
+/// What a surface's frame offers, shared with the peer that answers the
+/// session: the app hands over the resources it draws from every frame, as a
 /// hosted app hands them to its host.
-static PUBLISHED: std::sync::LazyLock<
-    std::sync::Mutex<Option<Arc<std::sync::Mutex<crate::collaboration::SurfaceTable>>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+static FRAME: std::sync::LazyLock<std::sync::Mutex<Option<Arc<std::sync::Mutex<Frame>>>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// What the surface offers, and whether the session has yet to hear of it:
+/// the last frame's resources and whatever the framework's route offered
+/// beside them. They are kept apart because each publishes a surface whole,
+/// and one must not withdraw what the other offers.
+#[derive(Default)]
+struct Frame {
+    /// What the last frame's resources offered.
+    table: crate::collaboration::SurfaceTable,
+    /// What the framework's route offered beside it.
+    route: crate::collaboration::SurfaceTable,
+    /// The actions the last frame offered, to tell a frame that changed
+    /// something from one that drew the same surface again.
+    offered: Option<Vec<tilo_actions::door::ActionDescriptor>>,
+    /// Whether the session has not read the offer since it changed.
+    owed: bool,
+}
 
 /// Publish what this surface offers now, as its frame ends: the resources
-/// the app was built from, with the actions they carry. Nothing happens in a
+/// the app draws from, with the actions they carry. Nothing happens in a
 /// process that is not a surface.
 pub fn publish(resources: &[tilo_actions::ResourceSpec]) {
-    let Some(table) = PUBLISHED.lock_recover().clone() else {
+    let Some(frame) = FRAME.lock_recover().clone() else {
         return;
     };
-    let descriptors = tilo_actions::door::survey(resources);
-    // What the surface offers is small and changed as a whole: each frame
-    // hands over the whole surface rather than tracking what moved.
-    let (delta, _) = crate::collaboration::SurfacePublication::next(None, &descriptors);
-    let mut table = table.lock_recover();
-    if let Err(error) = table.apply(&delta) {
-        tracing::warn!(%error, "a surface's actions did not apply");
+    let offered = tilo_actions::door::survey(resources);
+    let mut frame = frame.lock_recover();
+    if frame.offered.as_ref() == Some(&offered) {
+        return;
     }
+    // What the surface offers is small and changed as a whole: a frame hands
+    // over the whole tree rather than tracking what moved.
+    let (delta, _) = crate::collaboration::SurfacePublication::next(None, &offered);
+    if let Err(error) = frame.table.apply(&delta) {
+        tracing::warn!(%error, "a surface's actions did not apply");
+        return;
+    }
+    frame.offered = Some(offered);
+    frame.owed = true;
 }
 
 /// Both directions' framing: one length-prefixed frame per message, as the
@@ -68,10 +92,9 @@ pub struct SurfacePeer {
     /// The app the session placed, as it joined: what its catalogue rows are
     /// published under, and what the desktop calls it.
     app_id: String,
-    /// What this surface offers, as its publication moves it: the actions
-    /// the session is answered with when it asks. Shared with the app's
-    /// frames, which hand their resources over as they end.
-    published: Arc<std::sync::Mutex<crate::collaboration::SurfaceTable>>,
+    /// What this surface offers, as its frames hand it over: the actions the
+    /// session is answered with, and told of as they move.
+    frame: Arc<std::sync::Mutex<Frame>>,
     /// The route the session has acknowledged, if the app asked to join
     /// one: a surface's is its own window's, which the session places.
     acknowledged: Option<crate::collaboration::RouteSpec>,
@@ -119,12 +142,12 @@ impl SurfacePeer {
                 write_messages(stream, &writes);
             });
         }
-        let published: Arc<std::sync::Mutex<crate::collaboration::SurfaceTable>> = Arc::default();
-        *PUBLISHED.lock_recover() = Some(Arc::clone(&published));
+        let frame: Arc<std::sync::Mutex<Frame>> = Arc::default();
+        *FRAME.lock_recover() = Some(Arc::clone(&frame));
         Self {
             outgoing,
             app_id: String::new(),
-            published,
+            frame,
             acknowledged: None,
             asked: HashMap::new(),
             asking: 0,
@@ -135,36 +158,42 @@ impl SurfacePeer {
         }
     }
 
+    /// What this surface offers to `query`: its actions as its frame last
+    /// handed them over, and those the framework's route offers beside them.
+    fn catalogue(&self, query: &CatalogueQuery) -> CataloguePage {
+        let frame = self.frame.lock_recover();
+        let mut seen = std::collections::HashSet::new();
+        let rows: Vec<CatalogueRow> = frame
+            .table
+            .actions()
+            .into_iter()
+            .chain(frame.route.actions())
+            .filter(|action| seen.insert((action.resource.clone(), action.action.clone())))
+            .filter(|_| {
+                query
+                    .provider
+                    .as_ref()
+                    .is_none_or(|provider| *provider == self.app_id)
+            })
+            .map(|action| {
+                CatalogueRow::for_action(
+                    self.app_id.clone(),
+                    self.app_id.clone(),
+                    action.descriptor(tilo_actions::ExecutionLocus::ClientLocal),
+                )
+            })
+            .collect();
+        CataloguePage::from_rows(format!("v1:{}", self.app_id), rows, query)
+    }
+
     /// Answer the session's request from what this app offers.
     fn answer(&mut self, message: RemoteActionMessage) -> Option<RemoteActionMessage> {
         match message {
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
-                let rows: Vec<CatalogueRow> = self
-                    .published
-                    .lock_recover()
-                    .actions()
-                    .iter()
-                    .filter(|_| {
-                        query
-                            .provider
-                            .as_ref()
-                            .is_none_or(|provider| *provider == self.app_id)
-                    })
-                    .map(|action| {
-                        CatalogueRow::for_action(
-                            self.app_id.clone(),
-                            self.app_id.clone(),
-                            action.descriptor(tilo_actions::ExecutionLocus::ClientLocal),
-                        )
-                    })
-                    .collect();
+                let page = self.catalogue(&query);
                 Some(RemoteActionMessage::CatalogueResponse {
                     correlation,
-                    result: Ok(CataloguePage::from_rows(
-                        format!("v1:{}", self.app_id),
-                        rows,
-                        &query,
-                    )),
+                    result: Ok(page),
                 })
             }
             RemoteActionMessage::Invoke(request) => {
@@ -241,12 +270,16 @@ impl PeerTransport for SurfacePeer {
                     .map_err(|_| String::from("the session closed the actions socket"))
             }
             CollabRequest::PublishActionSurface { delta } => {
-                // The app this peer is was named when it joined: a surface
-                // publishes what it offers, and the session reads it as the
+                // What the framework's route offers the surface it wraps,
+                // beside what the frame hands over: a view that binds an
+                // action offers it here, and the session reads both as the
                 // app it placed.
-                if let Err(error) = self.published.lock_recover().apply(&delta) {
+                let mut frame = self.frame.lock_recover();
+                if let Err(error) = frame.route.apply(&delta) {
                     tracing::warn!(%error, "a surface's action surface did not apply");
+                    return Ok(());
                 }
+                frame.owed = true;
                 Ok(())
             }
             // There is no workspace to sync, no document to publish and no
@@ -273,6 +306,19 @@ impl PeerTransport for SurfacePeer {
             if let Some(reply) = self.answer(message) {
                 let _ = self.outgoing.send(reply);
             }
+        }
+        // A surface offers what its frame shows, and a panel's controls come
+        // and go with the device: the session hears of that as it moves
+        // rather than reading what the surface could do when it joined.
+        let owes = {
+            let mut frame = self.frame.lock_recover();
+            std::mem::replace(&mut frame.owed, false)
+        };
+        if owes {
+            let page = self.catalogue(&CatalogueQuery::default());
+            let _ = self
+                .outgoing
+                .send(RemoteActionMessage::CatalogueChanged { page });
         }
         self.received.drain(..).collect()
     }
@@ -322,7 +368,7 @@ mod tests {
     use super::*;
     use tilo_actions::ActionAddress;
     use tilo_actions::outcome::InvocationId;
-    use tilo_actions::remote::{CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget};
+    use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 
     #[test]
     fn a_surface_answers_the_sessions_actions() {
@@ -359,7 +405,7 @@ mod tests {
         let mut peer = SurfacePeer {
             outgoing,
             app_id: "so.tilo.topbar".into(),
-            published: Arc::default(),
+            frame: Arc::default(),
             acknowledged: None,
             asked: HashMap::new(),
             asking: 0,

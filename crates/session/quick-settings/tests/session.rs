@@ -92,16 +92,27 @@ fn the_session_asks_the_panel_to_show_the_notifications() {
     );
 
     // What the panel offers reaches the session as actions, like any app's.
+    // The offer is what the panel's last frame drew, so it fills in as the
+    // panel draws: wait for the page the session is about to run.
     let deadline = Instant::now() + OPENING;
-    while session.surfaces().published("quick-settings").is_empty() {
+    let published = loop {
+        let published = session.surfaces().published("quick-settings");
+        if published
+            .iter()
+            .any(|action| action.action == "show-notifications")
+        {
+            break published;
+        }
         assert!(
             Instant::now() < deadline,
-            "the panel published nothing: {:?}",
-            session.surfaces().names()
+            "the panel never offered its notifications page: {:?}",
+            published
+                .iter()
+                .map(|action| action.action.as_str())
+                .collect::<Vec<_>>()
         );
         pump(&mut session);
-    }
-    let published = session.surfaces().published("quick-settings");
+    };
     let notifications = published
         .iter()
         .find(|action| action.action == "show-notifications")

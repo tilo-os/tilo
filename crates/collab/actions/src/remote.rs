@@ -1221,6 +1221,10 @@ pub enum RemoteActionMessage {
         resource: String,
         reading: Option<String>,
     },
+    /// What the surface offers changed: the page it lists now, sent without
+    /// being asked, so the host that placed it reads what the surface can do
+    /// as it is rather than as it was when it first joined.
+    CatalogueChanged { page: CataloguePage },
 }
 
 /// Largest piece of a record one answer carries, before encoding.
@@ -1486,7 +1490,8 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::RetiredResourceWatch { .. }
-        | RemoteActionMessage::RetiredResourceReading { .. } => return None,
+        | RemoteActionMessage::RetiredResourceReading { .. }
+        | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
     let (completer, answered) = pending();
@@ -1544,7 +1549,8 @@ pub fn refuse(
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::RetiredResourceWatch { .. }
-        | RemoteActionMessage::RetiredResourceReading { .. } => return None,
+        | RemoteActionMessage::RetiredResourceReading { .. }
+        | RemoteActionMessage::CatalogueChanged { .. } => return None,
     })
 }
 

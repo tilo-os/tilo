@@ -429,11 +429,8 @@ impl WorkspaceActions {
                     result,
                 };
                 if query.view_resource.is_none() && !self.authorized(caller) {
-                    return Some(Pending::ready(respond(Ok(CataloguePage::from_rows(
-                        "0".into(),
-                        Vec::new(),
-                        &query,
-                    )))));
+                    let empty = CataloguePage::from_rows("0".into(), Vec::new(), &query);
+                    return Some(Pending::ready(respond(Ok(empty))));
                 }
                 let (done, answer) = pending();
                 let job = Job::Catalogue {
@@ -516,7 +513,8 @@ impl WorkspaceActions {
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
-            | RemoteActionMessage::RetiredResourceReading { .. } => return None,
+            | RemoteActionMessage::RetiredResourceReading { .. }
+            | RemoteActionMessage::CatalogueChanged { .. } => return None,
         })
     }
 
@@ -609,7 +607,8 @@ impl HostActions {
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
-            | RemoteActionMessage::RetiredResourceReading { .. } => return None,
+            | RemoteActionMessage::RetiredResourceReading { .. }
+            | RemoteActionMessage::CatalogueChanged { .. } => return None,
         };
         if supervisor {
             tilo_actions::remote::serve(&self.supervisor, caller, message)

@@ -703,9 +703,11 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationRequest { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
-        // Retired verbs: nothing sends them, and nothing answers.
+        // Retired verbs: nothing sends them, and nothing answers. An
+        // offer a surface makes is its host's to read, not this client's.
         | RemoteActionMessage::RetiredResourceWatch { .. }
-        | RemoteActionMessage::RetiredResourceReading { .. } => None,
+        | RemoteActionMessage::RetiredResourceReading { .. }
+        | RemoteActionMessage::CatalogueChanged { .. } => None,
     }
 }
 

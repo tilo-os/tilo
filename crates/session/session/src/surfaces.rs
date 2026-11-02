@@ -28,9 +28,9 @@ use std::time::Instant;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
-    ActionHostError, CataloguePage, CatalogueRow, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-    RemoteActionTarget,
+    ActionHostError, CataloguePage, CatalogueQuery, CatalogueRow, InvocationReceipt,
+    InvocationState, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
+    RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_compositor::Compositor;
 use ui::collaboration::ExportedAction;
@@ -479,6 +479,11 @@ struct Connection {
     listed_at: Option<Instant>,
     /// What the surface offers: the actions its catalogue lists.
     published: Vec<ExportedAction>,
+    /// The rows of the listing being read, page by page, before they are
+    /// what the session answers from. A listing is paged: a surface with
+    /// more rows than fit says so, and the pages are followed until the
+    /// last is in.
+    reading: Vec<CatalogueRow>,
     /// How the last invocations its app run ended, newest last, so one the
     /// session answered as accepted can be asked after.
     answered: VecDeque<(InvocationId, InvocationUpdate)>,
@@ -509,25 +514,79 @@ impl Connection {
             listing: 0,
             listed_at: None,
             published: Vec::new(),
+            reading: Vec::new(),
             answered: VecDeque::new(),
         }
     }
 
-    /// Ask the surface what it offers now.
+    /// What the surface offers now, as it last listed it: the rows it
+    /// offers, and the provider it offers them under.
+    ///
+    /// A page the surface has more after is followed by the next one; the
+    /// copy the session answers from moves once the last page is in.
+    fn listed(&mut self, page: CataloguePage) {
+        // A cursor from another revision is the surface saying to start
+        // over: these rows do not continue what was read before them.
+        if page.stale_cursor {
+            self.list();
+            return;
+        }
+        if let Some(row) = page.rows.first() {
+            self.provider.clone_from(&row.provider);
+        }
+        let more = !page.exhausted && !page.next_cursor.is_empty();
+        self.reading.extend(page.rows);
+        if more {
+            let correlation = self.next_listing();
+            self.send(RemoteActionMessage::CatalogueRequest {
+                correlation,
+                query: CatalogueQuery {
+                    revision: Some(page.revision),
+                    cursor: page.next_cursor,
+                    ..CatalogueQuery::default()
+                },
+            });
+            return;
+        }
+        self.published = std::mem::take(&mut self.reading)
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .map(ExportedAction::from)
+            .collect();
+    }
+
+    /// What the surface offers changed, so its listing is read from the
+    /// start again: whatever the session was part way through is superseded.
+    fn relisted(&mut self, page: CataloguePage) {
+        self.reading.clear();
+        self.listed(page);
+    }
+
+    /// Ask the surface what it offers now, from the start.
     fn list(&mut self) {
+        self.reading.clear();
+        let correlation = self.next_listing();
+        self.send(RemoteActionMessage::CatalogueRequest {
+            correlation,
+            query: CatalogueQuery::default(),
+        });
+    }
+
+    /// The correlation the next catalogue request is sent under, and when it
+    /// went out.
+    fn next_listing(&mut self) -> u64 {
         let correlation = self.listing;
         self.listing = self.listing.wrapping_add(1);
         self.listed_at = Some(Instant::now());
-        self.send(RemoteActionMessage::CatalogueRequest {
-            correlation,
-            query: tilo_actions::remote::CatalogueQuery::default(),
-        });
+        correlation
     }
 
     /// Ask again when the surface has listed nothing yet and the last ask is
     /// old enough: an app that mounts late is still heard.
     fn list_if_silent(&mut self) {
-        if !self.published.is_empty() {
+        // A listing part way through is not silent: its next page is on its
+        // way. One that stopped coming is asked for again from the start.
+        if !self.published.is_empty() && self.reading.is_empty() {
             return;
         }
         let due = self
@@ -825,21 +884,18 @@ impl Surfaces {
             app.actions.list_if_silent();
             while let Ok(message) = app.actions.incoming.try_recv() {
                 match message {
-                    // What the surface offers: the session asked for it, and
-                    // asks again whenever it changed.
+                    // What the surface offers: the session asked for it.
                     RemoteActionMessage::CatalogueResponse { result, .. } => {
                         let Ok(page) = result else {
                             continue;
                         };
-                        if let Some(row) = page.rows.first() {
-                            app.actions.provider.clone_from(&row.provider);
-                        }
-                        app.actions.published = page
-                            .rows
-                            .iter()
-                            .filter_map(|row| row.action.as_ref())
-                            .map(ExportedAction::from)
-                            .collect();
+                        app.actions.listed(page);
+                    }
+                    // What the surface offers changed, and it says so as it
+                    // does: a panel's controls are there while the device
+                    // can do them, which the session reads as it moves.
+                    RemoteActionMessage::CatalogueChanged { page } => {
+                        app.actions.relisted(page);
                     }
                     // How an invocation the session asked for stands.
                     RemoteActionMessage::Receipt(receipt) => {
@@ -1159,5 +1215,94 @@ mod tests {
         assert_eq!(Anchor::default().names(), "none");
         assert!(Anchor::default().is_empty());
         assert!(!(Anchor::TOP | Anchor::BOTTOM).is_empty());
+    }
+
+    /// One row of a surface's listing, offering `action`: enough for a page
+    /// without a surface app to answer.
+    fn row(action: &str) -> CatalogueRow {
+        let resource = tilo_actions::ResourceSpec::new(
+            "quick-settings.panel",
+            "quick-settings.panel",
+            "Quick Settings",
+        )
+        .with_action(tilo_actions::ActionSpec::immediate_encoded(
+            action,
+            action,
+            tilo_actions::ExecutionLocus::ClientLocal,
+            tilo_actions::EncodedAction {
+                type_id: "quick-settings.panel".into(),
+                payload: Vec::new(),
+            },
+        ));
+        let descriptor = tilo_actions::door::survey(&[resource])
+            .into_iter()
+            .next()
+            .expect("an action");
+        CatalogueRow::for_action(
+            "so.tilo.quick-settings",
+            "so.tilo.quick-settings",
+            descriptor,
+        )
+    }
+
+    /// The message the session sent the surface off `session`.
+    fn told(session: &mut UnixStream) -> RemoteActionMessage {
+        let body = FRAMING.read(session).expect("a read").expect("a message");
+        RemoteActionFrame::decode(&body).expect("a frame").message
+    }
+
+    #[test]
+    fn a_listing_is_read_to_its_last_page_before_it_is_the_offer() {
+        let (app, mut session) = UnixStream::pair().expect("a socket");
+        let mut connection = Connection::of(app);
+        connection.listed(CataloguePage {
+            revision: "v1:so.tilo.quick-settings".into(),
+            rows: vec![row("toggle-wifi"), row("set-volume")],
+            next_cursor: vec![2],
+            ..CataloguePage::default()
+        });
+        assert!(
+            connection.published.is_empty(),
+            "half a listing is not what the surface offers"
+        );
+        let RemoteActionMessage::CatalogueRequest { query, .. } = told(&mut session) else {
+            panic!("the next page is asked for");
+        };
+        assert_eq!(query.cursor, vec![2]);
+        assert_eq!(query.revision.as_deref(), Some("v1:so.tilo.quick-settings"));
+        connection.listed(CataloguePage {
+            revision: "v1:so.tilo.quick-settings".into(),
+            rows: vec![row("play-pause")],
+            exhausted: true,
+            ..CataloguePage::default()
+        });
+        assert_eq!(connection.published.len(), 3, "every page, once");
+        assert!(connection.reading.is_empty());
+    }
+
+    #[test]
+    fn a_page_from_another_revision_is_read_from_the_start_again() {
+        let (app, mut session) = UnixStream::pair().expect("a socket");
+        let mut connection = Connection::of(app);
+        connection.published = vec![ExportedAction::from(
+            &row("toggle-wifi").action.expect("an action"),
+        )];
+        connection.reading = vec![row("set-volume")];
+        connection.listed(CataloguePage {
+            revision: "v2:so.tilo.quick-settings".into(),
+            stale_cursor: true,
+            ..CataloguePage::default()
+        });
+        assert!(connection.reading.is_empty(), "the old pages are dropped");
+        assert_eq!(
+            connection.published.len(),
+            1,
+            "what it offered before stays until the new listing is whole"
+        );
+        let RemoteActionMessage::CatalogueRequest { query, .. } = told(&mut session) else {
+            panic!("the listing is asked for again");
+        };
+        assert!(query.cursor.is_empty());
+        assert!(query.revision.is_none());
     }
 }

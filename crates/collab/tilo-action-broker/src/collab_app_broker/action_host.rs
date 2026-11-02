@@ -723,7 +723,8 @@ impl AppBrokerState {
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
-            | RemoteActionMessage::RetiredResourceReading { .. } => Some(person.clone()),
+            | RemoteActionMessage::RetiredResourceReading { .. }
+            | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {
             Box::new(refuse(message, ActionHostError::NotPermitted).unwrap_or(
