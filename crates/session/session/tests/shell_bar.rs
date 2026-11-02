@@ -757,6 +757,8 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
             .iter()
             .any(|window| window.key == next && window.focused)
     });
+    // The panel comes up on the frame after the reading moves: its keys are drawn with it.
+    until(&mut session, |session| says(session, "Go there"));
     let held = keep(&mut session, "shell-switcher");
     // The switcher names every window it walks, each with the app it shows, and the keys stand
     // under them rather than over their titles.
@@ -815,6 +817,183 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
         "the window Alt+Tab walked to is in front: {:?}",
         session.shell_refusals()
     );
+}
+
+/// Alt+Tab's press on the desk's door: the walk `steps` windows on, in `scope`.
+fn walk(session: &mut Session, steps: i64, scope: &str) {
+    session
+        .invoke(
+            DESK_RESOURCE,
+            "walk-switcher",
+            &serde_json::Map::from_iter([
+                ("steps".to_owned(), serde_json::Value::from(steps)),
+                (
+                    "scope".to_owned(),
+                    serde_json::Value::String(scope.to_owned()),
+                ),
+            ]),
+        )
+        .unwrap_or_else(|why| panic!("the walk starts: {why:?}"));
+}
+
+/// The window the switcher lifts, as the desk reads it: the one the walk reached while the
+/// panel shows, and the window in front while the panel is down.
+fn reached(session: &Session) -> tilo_surface_host::shell_part::WindowReading {
+    desk(session)
+        .windows
+        .into_iter()
+        .find(|window| window.focused)
+        .expect("a window is in front")
+}
+
+/// [`reached`], by key.
+fn lifted(session: &Session) -> String {
+    reached(session).key
+}
+
+/// A flick past Alt+Tab switches windows and flashes nothing: the desk draws the same screen
+/// until the walk outlasts the reveal delay, and then the panel comes up on its own — the one
+/// deadline the session hands the shell — with the window the walk reached lifted in it.
+#[test]
+fn a_flick_shows_no_panel_and_holding_the_walk_outlasts_its_delay() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    open_window(&mut session, "so.tilo.notes");
+    open_window(&mut session, "so.tilo.mail");
+    until(&mut session, |session| desk(session).windows.len() == 2);
+    let before = desk(&session);
+    let front = before
+        .windows
+        .iter()
+        .position(|window| window.focused)
+        .expect("a window is in front");
+    let front_key = before.windows[front].key.clone();
+    let next = before.windows[(front + 1) % before.windows.len()]
+        .key
+        .clone();
+    let plain = keep(&mut session, "shell-flick");
+
+    walk(&mut session, 1, "workspace");
+    let flicked = desk(&session);
+    assert_eq!(flicked.here, "switcher");
+    assert!(
+        !flicked.switcher_revealed,
+        "a flick shorter than the reveal delay shows no panel"
+    );
+    assert_eq!(
+        lifted(&session),
+        front_key,
+        "with the panel down the walk lifts nothing, so the desk is as it was"
+    );
+    let down = keep(&mut session, "shell-flick-panel-down");
+    let drawn = changed(&plain, &down);
+    assert!(
+        drawn < plain.rgba.len() / 4 / 100,
+        "a flick draws nothing over the desk: {drawn} pixels differ"
+    );
+
+    // Held past the delay, the panel comes up with the window the walk reached lifted.
+    session.step(Duration::from_millis(300)).unwrap();
+    until(&mut session, |session| desk(session).switcher_revealed);
+    assert_eq!(
+        lifted(&session),
+        next.clone(),
+        "the panel lifts the window the walk reached"
+    );
+    let up = keep(&mut session, "shell-flick-held");
+    assert!(
+        changed(&plain, &up) > plain.rgba.len() / 4 / 100,
+        "the panel shows over the desk once the walk outlasts the delay"
+    );
+
+    // Letting go goes there, and the panel is down again.
+    session
+        .invoke(DESK_RESOURCE, "commit-switcher", &serde_json::Map::new())
+        .unwrap();
+    let rested = desk(&session);
+    assert_eq!(rested.here, "none");
+    assert!(!rested.switcher_revealed);
+    // The window comes to the front on the frames after letting go.
+    until(&mut session, |session| lifted(session) == next);
+    assert_eq!(
+        lifted(&session),
+        next,
+        "the flick went to the window before the one in front: {:?}",
+        session.shell_refusals()
+    );
+}
+
+/// The grave key under Alt walks only the windows of the app in front; the same walk in the
+/// workspace's scope crosses into another app's, and letting go goes to whichever it reached.
+#[test]
+fn alt_backtick_walks_only_the_front_apps_windows() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    for app in [
+        "so.tilo.notes",
+        "so.tilo.notes",
+        "so.tilo.mail",
+        "so.tilo.mail",
+    ] {
+        open_window(&mut session, app);
+    }
+    until(&mut session, |session| desk(session).windows.len() == 4);
+    let front = reached(&session);
+
+    // The walk over this app's windows never leaves it, however far it walks.
+    walk(&mut session, 1, "app");
+    session.step(Duration::from_millis(300)).unwrap();
+    until(&mut session, |session| desk(session).switcher_revealed);
+    assert_eq!(desk(&session).switcher_scope, "app");
+    let first = reached(&session);
+    assert_eq!(
+        first.app_key, front.app_key,
+        "Alt+` keeps to the app in front: it reached {:?}",
+        first.key
+    );
+    assert_ne!(
+        first.key, front.key,
+        "it walked on to the other window of the app"
+    );
+    walk(&mut session, 1, "app");
+    assert_eq!(
+        reached(&session).key,
+        front.key,
+        "an app of two windows cycles between them and reaches no other app's"
+    );
+    walk(&mut session, 1, "app");
+    assert_eq!(reached(&session).key, first.key);
+
+    // The workspace's walk crosses into the other app, within three presses: the app in front
+    // holds only two of the desk's four windows.
+    let mut crossed = None;
+    for press in 1..=3 {
+        walk(&mut session, 1, "workspace");
+        assert_eq!(desk(&session).switcher_scope, "workspace");
+        // The walk in the other scope starts again, so the panel comes up on holding it.
+        session.step(Duration::from_millis(300)).unwrap();
+        until(&mut session, |session| desk(session).switcher_revealed);
+        let window = reached(&session);
+        if window.app_key != front.app_key {
+            crossed = Some(window);
+            break;
+        }
+        assert!(
+            press < 3,
+            "the workspace's walk reaches another app's window"
+        );
+    }
+    let crossed = crossed.expect("the workspace's walk reaches another app's window");
+
+    // Letting go goes to the window the workspace's walk reached.
+    session
+        .invoke(DESK_RESOURCE, "commit-switcher", &serde_json::Map::new())
+        .unwrap();
+    assert_eq!(here(&session), "none");
+    until(&mut session, |session| lifted(session) == crossed.key);
+    assert_eq!(lifted(&session), crossed.key);
 }
 
 #[test]

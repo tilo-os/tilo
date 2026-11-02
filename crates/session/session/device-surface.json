@@ -1821,14 +1821,19 @@
         },
         {
           "id": "walk-switcher",
-          "label": "Open the window switcher, or walk it `steps` windows on: Alt+Tab's press",
-          "description": "Open the window switcher, or walk it `steps` windows on: Alt+Tab's press.",
+          "label": "Open the window switcher, or walk it `steps` windows on",
+          "description": "Open the window switcher, or walk it `steps` windows on. Alt+Tab walks the workspace's windows; Alt and the grave key the ones the app in front shows.",
           "kind": "outside",
           "params": [
             {
               "name": "steps",
               "required": false,
               "type": "int"
+            },
+            {
+              "name": "scope",
+              "required": false,
+              "type": "text"
             }
           ]
         },

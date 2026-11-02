@@ -14,6 +14,11 @@ type Desk (origin: session.desk) {
     person: Text merge register (title)
     /// The surface the person is in: `none` at rest, else one of `surface`'s names.
     here: Text merge register
+    /// Whether the switcher's panel shows: a quick Alt+Tab switches windows and draws nothing.
+    switcher_revealed: Bool
+    /// Which windows the switcher's walk crosses: `workspace` for every window, `app` for the
+    /// windows of the app in front (Alt+`).
+    switcher_scope: Text merge register
     /// What the person typed in the shell's search, which opens the launcher where they left off.
     spotlight: Text merge register
     /// The notice shown as a banner over the desk now, by its id.
@@ -137,6 +142,9 @@ type Win (origin: session.window) {
     key: Text merge register
     title: Text merge register (title)
     origin_app: Text merge register
+    /// The app it shows, shared by two windows of one app: the switcher's app scope crosses
+    /// the windows holding it.
+    app_key: Text merge register
     icon: Text merge register
     strip: Text merge register
     /// Its strip's id, as moving a window there names the strip.

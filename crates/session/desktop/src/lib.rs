@@ -48,7 +48,6 @@ pub mod shortcuts;
 pub mod strip_indicators;
 pub mod strip_navigator;
 pub mod strip_switcher;
-pub mod switcher_windows;
 pub mod text_entry;
 pub mod topbar;
 pub mod window_flight;

@@ -1,6 +1,6 @@
 //! What the chrome tells assistive technology: the overlays it paints —
-//! the emoji card, the strip labels, the window switcher — are in the tree
-//! its host publishes, and a reader lands on what the person sees.
+//! the emoji card and the strip labels — are in the tree its host
+//! publishes, and a reader lands on what the person sees.
 
 #![allow(
     clippy::unwrap_used,

@@ -344,14 +344,7 @@ fn a_surface_the_desktops_own_chrome_shows_is_not_the_sessions_to_open() {
     // with the widgets that draw them, which say so to the same stack: the
     // session's verb refuses them rather than putting up a second one.
     let mut session = session();
-    for slot in [
-        "switcher",
-        "emoji",
-        "workspace-menu",
-        "tilo-menu",
-        "overview",
-        "strips",
-    ] {
+    for slot in ["emoji", "workspace-menu", "tilo-menu", "overview", "strips"] {
         let opened = session.invoke(OVERLAYS, "open", &args(&json!({ "slot": slot })));
         assert!(opened.is_err(), "{slot} is the chrome's");
         let closed = session.invoke(OVERLAYS, "close", &args(&json!({ "slot": slot })));

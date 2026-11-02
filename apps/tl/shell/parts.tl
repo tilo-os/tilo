@@ -11,10 +11,11 @@ view key_hints_launcher() {
     }
 }
 
-/// The keys of the switcher: hold the modifier, Tab walks, letting go goes there.
-view key_hints_switcher() {
+/// The keys of the switcher: hold the modifier, Tab walks, letting go goes there. The walk that
+/// keeps to one app is the modifier and the grave key, so that is the one named while it does.
+view key_hints_switcher(this_app: Text) {
     ui.KeyHints {
-        ui.KeyHint(["Alt", "Tab"], "Walk")
+        ui.KeyHint(if this_app != "" { ["Alt", "`"] } else { ["Alt", "Tab"] }, "Walk")
         ui.KeyHint(["Enter"], "Go there")
         ui.KeyHint(["Esc"], "Stay")
     }

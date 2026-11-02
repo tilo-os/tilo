@@ -38,8 +38,6 @@ use crate::topbar::TOPBAR_HEIGHT_PX;
 /// reads them in it, and Escape closes the first open one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Slot {
-    /// The Alt+Tab switcher, while Alt is held and it is on screen.
-    Switcher,
     /// The emoji picker.
     Emoji,
     /// A window's menu: the rows the desk offers that window.
@@ -60,8 +58,7 @@ pub enum Slot {
 
 impl Slot {
     /// Every slot, topmost first.
-    pub const ALL: [Self; 8] = [
-        Self::Switcher,
+    pub const ALL: [Self; 7] = [
         Self::Emoji,
         Self::WindowMenu,
         Self::WorkspaceMenu,
@@ -75,7 +72,6 @@ impl Slot {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Switcher => "switcher",
             Self::Emoji => "emoji",
             Self::WindowMenu => "window-menu",
             Self::WorkspaceMenu => "workspace-menu",
@@ -96,7 +92,7 @@ impl Slot {
     #[must_use]
     pub const fn role(self) -> Role {
         match self {
-            Self::Switcher | Self::Emoji | Self::Overview | Self::Strips => Role::Overlay,
+            Self::Emoji | Self::Overview | Self::Strips => Role::Overlay,
             Self::WindowMenu | Self::WorkspaceMenu | Self::TiloMenu | Self::QuickSettings => {
                 Role::Popup
             }
@@ -121,7 +117,7 @@ impl Slot {
     #[must_use]
     pub const fn anchor(self) -> Anchor {
         match self {
-            Self::Switcher | Self::Overview | Self::Strips => Anchor::Fill,
+            Self::Overview | Self::Strips => Anchor::Fill,
             Self::Emoji => Anchor::Center,
             Self::WindowMenu => Anchor::At(Point::ZERO),
             Self::WorkspaceMenu | Self::TiloMenu => Anchor::TopLeading(0.0),
@@ -184,7 +180,7 @@ pub enum Role {
     /// A menu, flyout or context menu hanging beside the thing it acts on.
     Popup,
     /// A picker or mode the person is held in until they answer it: the emoji
-    /// picker, the Alt+Tab switcher, the overview.
+    /// picker, the overview.
     Overlay,
     /// A sheet a person asked for and works in.
     Dialog,

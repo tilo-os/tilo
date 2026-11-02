@@ -314,7 +314,8 @@ focus; one summoned by pointer or fingers opens on the display under them.
   to switch workspace or add one. Keyboard: ↑ / ↓, Enter, F2 renames, Esc
   closes.
 - **Window switcher** (Alt+Tab): most recently used first, every display,
-  shown once Alt is held 120 ms.
+  shown once Alt is held 120 ms; a flick shorter than that switches without
+  drawing it. Alt+` walks only the windows of the app in front.
 - **Strip ribbon**: the right edge of the content, one segment per strip
   (HIG §9.11).
 

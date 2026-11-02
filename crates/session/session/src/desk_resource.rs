@@ -20,24 +20,36 @@ use tilo_surface_host::{DeskReading, shell_part};
 
 use crate::notifications::NoticeSignals;
 
-/// What the desk's reading is made from ([`Desk::key`]).
-pub(crate) type DeskKey = (
-    u64,
-    i64,
-    u32,
-    bool,
-    u64,
-    u64,
-    u64,
-    u64,
-    u64,
-    u64,
-    String,
-    u64,
-);
+/// What the desk's reading is made from ([`Desk::key`]): equal when the shell's views need not
+/// run again.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct DeskKey {
+    /// The revisions, the minute, the signals and the names the reading is made of.
+    reading: (
+        u64,
+        i64,
+        u32,
+        bool,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        String,
+        u64,
+    ),
+    /// Whether the switcher's panel shows: it comes up on its own while Alt is held, with no
+    /// revision of its own to say so.
+    revealed: bool,
+}
 
 /// The kind of the desk's resource: the origin kind a shell's type holds.
 pub(crate) const DESK_KIND: &str = "session.desk";
+
+/// The scopes a walk of the switcher crosses, as the walk's action names them: the whole
+/// workspace (Alt+Tab), or the app the window in front shows (Alt and the grave key).
+pub const SWITCHER_SCOPES: [&str; 2] = ["workspace", "app"];
 
 /// The desk as a view of another language reaches it: its verbs ([`DeskEffect`]), which the
 /// shell's views run as typed calls (`device.show_surface(device.desk, "quick-settings")`),
@@ -118,10 +130,18 @@ pub(crate) enum DeskEffect {
         #[param("The choice, by its key")]
         action: String,
     },
-    /// Open the window switcher, or walk it `steps` windows on: Alt+Tab's press.
+    /// Open the window switcher, or walk it `steps` windows on.
+    ///
+    /// Alt+Tab walks the workspace's windows; Alt and the grave key the ones the app in
+    /// front shows.
     WalkSwitcher {
         #[param("How far to walk; 1 the next window, -1 the one before")]
         steps: Option<i64>,
+        #[param(
+            "Which windows the walk crosses: `workspace` for every window of the workspace, `app` for the ones the app in front shows",
+            choices = SWITCHER_SCOPES
+        )]
+        scope: Option<String>,
     },
     /// Go to the window the switcher's walk reached, and close the switcher.
     CommitSwitcher,
@@ -222,7 +242,8 @@ fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::Window
                     } else {
                         title.to_owned()
                     },
-                    origin_app: tab.app_title.clone().unwrap_or(app),
+                    origin_app: tab.app_title.clone().unwrap_or_else(|| app.clone()),
+                    app_key: app,
                     icon,
                     strip: strip.name.trim().to_owned(),
                     strip_key: strip.id.0.to_string(),
@@ -260,40 +281,81 @@ fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::Window
     readings
 }
 
+/// The windows the switcher's walk crosses, as their places in `windows`, with the place in
+/// them of the window in front: every window of the workspace, or the ones the app the front
+/// window shows has. The walk, the mark the reading carries and the commit all count from
+/// this one list.
+fn walked(
+    windows: &[shell_part::WindowReading],
+    scope: crate::overlays::SwitcherScope,
+) -> (Vec<usize>, Option<usize>) {
+    use crate::overlays::SwitcherScope;
+    let front = windows.iter().position(|window| window.focused);
+    let application =
+        front.and_then(|front| windows.get(front).map(|window| window.app_key.clone()));
+    let walked: Vec<usize> = match (scope, application) {
+        (SwitcherScope::App, Some(application)) => windows
+            .iter()
+            .enumerate()
+            .filter(|(_, window)| window.app_key == application)
+            .map(|(at, _)| at)
+            .collect(),
+        _ => (0..windows.len()).collect(),
+    };
+    let front = front.and_then(|front| walked.iter().position(|at| *at == front));
+    (walked, front)
+}
+
 impl Desk {
     /// What the reading is made from, without making it: the tree's revision, the minute,
     /// what the notifications say and who is here. The reading changes only when this does.
     pub(crate) fn key(&self) -> DeskKey {
-        (
-            self.handle.revision(),
-            ui::clock::local_now().timestamp().div_euclid(60),
-            self.signals.unread(),
-            self.signals.quiet(),
-            self.sync
-                .as_ref()
-                .map_or(0, |sync| sync.here().borrow().revision()),
-            self.clock.board().revision(),
-            self.handle.personal_ask_revision(),
-            self.tray.as_ref().map_or(0, |tray| tray.revision()),
-            self.notices.revision(),
-            self.overlays.revision(),
-            self.overlays.here(),
-            self.runs.revision(),
-        )
+        DeskKey {
+            reading: (
+                self.handle.revision(),
+                ui::clock::local_now().timestamp().div_euclid(60),
+                self.signals.unread(),
+                self.signals.quiet(),
+                self.sync
+                    .as_ref()
+                    .map_or(0, |sync| sync.here().borrow().revision()),
+                self.clock.board().revision(),
+                self.handle.personal_ask_revision(),
+                self.tray.as_ref().map_or(0, |tray| tray.revision()),
+                self.notices.revision(),
+                self.overlays.revision(),
+                self.overlays.here(),
+                self.runs.revision(),
+            ),
+            revealed: self.overlays.revealed(std::time::Instant::now()),
+        }
+    }
+
+    /// When the desk has something to draw that it has not drawn yet, without a frame in
+    /// between: the instant the switcher's panel comes up while Alt is held on it.
+    pub(crate) fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.overlays.deadline(std::time::Instant::now())
     }
 
     /// The desk's windows, with the one the switcher's walk has reached marked focused while
-    /// it is up: the tile its walk chose is the one lifted.
-    fn windows_reaching(&self, tree: &DesktopTree) -> Vec<shell_part::WindowReading> {
+    /// its panel shows: the tile its walk chose is the one lifted. A quick flick shows no
+    /// panel, so it lifts nothing either.
+    fn windows_reaching(
+        &self,
+        tree: &DesktopTree,
+        now: std::time::Instant,
+    ) -> Vec<shell_part::WindowReading> {
         let mut windows = windows(tree, &self.handle);
-        if self.overlays.here() == "switcher"
-            && let Some(at) = self.overlays.reached(
-                windows.len(),
-                windows.iter().position(|window| window.focused),
-            )
-        {
-            for (index, window) in windows.iter_mut().enumerate() {
-                window.focused = index == at;
+        if self.overlays.revealed(now) {
+            let (walked, front) = walked(&windows, self.overlays.scope());
+            if let Some(at) = self
+                .overlays
+                .reached(walked.len(), front)
+                .and_then(|at| walked.get(at).copied())
+            {
+                for (index, window) in windows.iter_mut().enumerate() {
+                    window.focused = index == at;
+                }
             }
         }
         windows
@@ -302,6 +364,7 @@ impl Desk {
     /// The desk now.
     pub(crate) fn reading(&self) -> DeskReading {
         let now = ui::clock::local_now();
+        let instant = std::time::Instant::now();
         let people = self.handle.read(|tree| {
             self.sync.as_ref().map_or_else(Vec::new, |sync| {
                 sync.people(tree, &|_: &str| None)
@@ -350,9 +413,11 @@ impl Desk {
             // task host reports to it.
             tasks: Vec::new(),
             here: self.overlays.here(),
+            switcher_revealed: self.overlays.revealed(instant),
+            switcher_scope: self.overlays.scope().name().to_owned(),
             spotlight: self.overlays.spotlight(),
             banner: String::new(),
-            windows: self.windows_reaching(tree),
+            windows: self.windows_reaching(tree, instant),
             agents: Vec::new(),
             rooms: tree
                 .workspaces
@@ -655,36 +720,18 @@ fn strip_in_front(tree: &DesktopTree) -> String {
 
 impl Desk {
     /// Bring the window the switcher's walk reached to the front, and close the switcher. The
-    /// walk counts from the window in front as the desk's windows are listed, wrapping.
+    /// walk counts from the window in front, over the windows its scope crosses, wrapping.
     fn commit_switcher(&self) {
         let windows = self.handle.read(|tree| windows(tree, &self.handle));
-        // The window in front leads the list, so the walk counts from its place.
-        let front = windows.iter().position(|window| window.focused);
-        let at = if windows.is_empty() {
-            None
-        } else {
-            Some(
-                self.overlays
-                    .walk()
-                    .rem_euclid(i64::try_from(windows.len()).unwrap_or(1)),
-            )
-            .and_then(|walk| {
-                let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
-                usize::try_from(
-                    front
-                        .saturating_add(walk)
-                        .rem_euclid(i64::try_from(windows.len()).unwrap_or(1)),
-                )
-                .ok()
-            })
-        };
-        let Some(window) = windows.get(at.unwrap_or_default()) else {
-            self.overlays.forget_walk();
-            self.overlays.show(crate::overlays::Overlay::Rest);
-            return;
-        };
-        let tab = window.key.parse::<u64>().unwrap_or_default();
-        self.handle.focus_tab(tab);
+        let (walked, front) = walked(&windows, self.overlays.scope());
+        let reached = self
+            .overlays
+            .reached(walked.len(), front)
+            .and_then(|at| walked.get(at).copied())
+            .and_then(|at| windows.get(at));
+        if let Some(tab) = reached.and_then(|window| window.key.parse::<u64>().ok()) {
+            self.handle.focus_tab(tab);
+        }
         self.overlays.forget_walk();
         self.overlays.show(crate::overlays::Overlay::Rest);
     }
@@ -861,12 +908,8 @@ impl Service for Desk {
             self.notices.clear_all();
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
-        if let DeskEffect::WalkSwitcher { steps } = &effect {
-            let opened = self.overlays.here() == "switcher";
-            self.overlays.show(crate::overlays::Overlay::Switcher);
-            if opened {
-                self.overlays.step(steps.unwrap_or(1));
-            }
+        if let DeskEffect::WalkSwitcher { steps, scope } = &effect {
+            self.overlays.walk(scope.as_deref(), steps.unwrap_or(1));
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::CommitSwitcher) {

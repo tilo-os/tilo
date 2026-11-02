@@ -602,6 +602,7 @@ fn overview_with(strips: &[&str]) -> DeskReading {
                 key: (at + 7).to_string(),
                 title: format!("Window {at}"),
                 origin_app: "so.tilo.notes".to_owned(),
+                app_key: "so.tilo.notes".to_owned(),
                 icon: "app_window".to_owned(),
                 strip: (*strip).to_owned(),
                 strip_key: at.to_string(),
@@ -918,6 +919,7 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
     // Holding Alt+Tab opens the switcher: every window the desk holds, in the walk's order.
     let mut reading = super::tests_support::reading_with_windows();
     reading.here = "switcher".to_owned();
+    reading.switcher_revealed = true;
     for (at, window) in reading.windows.iter_mut().enumerate() {
         window.recency = i64::try_from(at).unwrap_or(0) + 1;
         window.preview = "live".to_owned();

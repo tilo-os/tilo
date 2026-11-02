@@ -121,6 +121,18 @@ pub(super) fn tab(alt: bool, shift: bool) -> HostKey {
     }
 }
 
+/// The key above Tab, held with Alt: the walk over the app in front's windows.
+pub(super) fn grave(shift: bool) -> HostKey {
+    HostKey {
+        modifiers: KeyModifiers {
+            alt: true,
+            shift,
+            ..KeyModifiers::default()
+        },
+        ..key(0x0060, true)
+    }
+}
+
 /// `Alt_L`, held (`true`) or let go.
 pub(super) fn alt(pressed: bool) -> HostKey {
     HostKey {

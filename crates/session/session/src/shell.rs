@@ -236,6 +236,12 @@ impl Shell {
         if desk_changed && !self.link.publish(self.desk.reading()) {
             return false;
         }
+        // What the desk has to draw at an instant of its own (the switcher's panel coming up
+        // while Alt is held) wakes every part then, so nothing draws or polls in between.
+        let deadline = self.desk.next_deadline();
+        for (_, part) in &self.parts {
+            part.borrow_mut().set_deadline(deadline);
+        }
         desk_changed
     }
 

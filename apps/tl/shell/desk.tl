@@ -21,16 +21,19 @@ view desk(d: Desk) {
 ///
 /// The switcher is a panel over the desk rather than a page of it: it takes that room and
 /// centres itself there, where the surfaces that go on past a display are given the same room
-/// as a page that scrolls.
+/// as a page that scrolls. Until the session says its walk outlasted a flick
+/// (`switcher_revealed`) the desk is the one at rest, so a flick between two windows shows
+/// nothing over either.
 view desk_around(d: Desk, front: Option<Arrangement>) {
     let s = shell
     let docked = front != .none and dock_shows(s, d) and s.dock_edge == .bottom
+    let resting = d.here == "" or d.here == "none" or d.here == "desk" or (d.here == "switcher" and not d.switcher_revealed)
     layers {
         stack(gap: .tight, fill) {
             if bar_shows(s, d) {
                 bar_on_edge(s, d)
             }
-            if d.here == "" or d.here == "none" or d.here == "desk" {
+            if resting {
                 if let a = front {
                     stack(gap: .tight, fill) {
                         at_rest(d)

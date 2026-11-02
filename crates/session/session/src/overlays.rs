@@ -10,6 +10,43 @@
 //! names the one up either way, so a shell's views and the chrome agree.
 
 use std::cell::{Cell, RefCell};
+use std::time::{Duration, Instant};
+
+/// How long Alt has to stay down after Tab before the switcher's panel shows: shorter than a
+/// deliberate look, longer than a practised Alt+Tab, so the common "back to the last window"
+/// flick switches windows and flashes nothing.
+pub const REVEAL_DELAY: Duration = Duration::from_millis(120);
+
+/// Which windows a walk of the switcher crosses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SwitcherScope {
+    /// Every window of the workspace in front: Alt+Tab.
+    #[default]
+    Workspace,
+    /// The windows of the app the window in front shows: Alt and the grave key.
+    App,
+}
+
+impl SwitcherScope {
+    /// The scope `name` names in the walk's action: `workspace`, or `app` for the one in front.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Self> {
+        Some(match name {
+            "workspace" | "all" => Self::Workspace,
+            "app" => Self::App,
+            _ => return None,
+        })
+    }
+
+    /// Its name in the walk's action and in the desk's reading.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::App => "app",
+        }
+    }
+}
 
 /// The surface the desk shows over its windows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,6 +119,10 @@ pub struct Overlays {
     spotlight: RefCell<String>,
     /// How far Alt+Tab has walked from the window in front: the switcher's choice.
     walk: Cell<i64>,
+    /// Which windows that walk crosses.
+    scope: Cell<SwitcherScope>,
+    /// When the walk began, which decides when its panel shows ([`REVEAL_DELAY`]).
+    opened: Cell<Option<Instant>>,
 }
 
 impl Overlays {
@@ -93,12 +134,15 @@ impl Overlays {
             revision: Cell::new(0),
             spotlight: RefCell::new(String::new()),
             walk: Cell::new(0),
+            scope: Cell::new(SwitcherScope::default()),
+            opened: Cell::new(None),
         }
     }
 
     /// The walk starts again from the window in front, whichever surface was up.
     pub fn forget_walk(&self) {
         self.walk.set(0);
+        self.opened.set(None);
     }
 
     /// The surface up now, by the name the desk's reading uses.
@@ -120,28 +164,70 @@ impl Overlays {
             return;
         }
         self.here.set(surface);
-        if surface == Overlay::Switcher && self.walk.get() == 0 {
+        if surface == Overlay::Switcher {
+            self.opened.set(Some(Instant::now()));
+            self.scope.set(SwitcherScope::Workspace);
             self.walk.set(1);
+        } else {
+            self.opened.set(None);
         }
         self.revision.set(self.revision.get().wrapping_add(1));
     }
 
-    /// Walk the switcher `steps` windows on from where it is, wrapping: Alt+Tab's press, and
-    /// Shift+Alt+Tab's back.
-    pub fn step(&self, steps: i64) {
-        self.walk.set(self.walk.get().saturating_add(steps));
+    /// Alt+Tab's press: open the switcher in `scope` on the window before the one in front, or
+    /// walk it `steps` windows on while it is already up. A press in the other scope starts the
+    /// walk again, in that scope, from the window in front.
+    pub fn walk(&self, scope: Option<&str>, steps: i64) {
+        let scope = scope.and_then(SwitcherScope::named).unwrap_or_default();
+        let steps = if steps == 0 { 1 } else { steps };
+        let walking = self.here.get() == Overlay::Switcher && self.scope.get() == scope;
+        self.here.set(Overlay::Switcher);
+        self.scope.set(scope);
+        if walking {
+            self.walk.set(self.walk.get().saturating_add(steps));
+        } else {
+            self.opened.set(Some(Instant::now()));
+            self.walk.set(steps);
+        }
         self.revision.set(self.revision.get().wrapping_add(1));
+    }
+
+    /// Which windows the walk crosses.
+    #[must_use]
+    pub fn scope(&self) -> SwitcherScope {
+        self.scope.get()
+    }
+
+    /// Whether the switcher's panel shows: Alt has been held past [`REVEAL_DELAY`] since the
+    /// walk began, so a quick flick switched windows without a panel.
+    #[must_use]
+    pub fn revealed(&self, now: Instant) -> bool {
+        self.here.get() == Overlay::Switcher
+            && self
+                .opened
+                .get()
+                .is_some_and(|at| now.saturating_duration_since(at) >= REVEAL_DELAY)
+    }
+
+    /// When the switcher's panel comes up, while Alt is held on it and it has not yet: the one
+    /// instant the session sleeps to, so nothing draws in between.
+    #[must_use]
+    pub fn deadline(&self, now: Instant) -> Option<Instant> {
+        let opened = self.opened.get()?;
+        (self.here.get() == Overlay::Switcher && !self.revealed(now))
+            .then(|| opened.checked_add(REVEAL_DELAY))
+            .flatten()
     }
 
     /// How far the walk stands from the window in front. The reading turns it into the one
     /// window the switcher has reached, of `count`.
     #[must_use]
-    pub fn walk(&self) -> i64 {
+    pub fn walked(&self) -> i64 {
         self.walk.get()
     }
 
     /// Where the walk has reached of `count` windows, `front` being the window in front's
-    /// place among them: `None` when the walk is not up (`walk() == 0`).
+    /// place among them: `None` when the walk is not up (`walked() == 0`).
     #[must_use]
     pub fn reached(&self, count: usize, front: Option<usize>) -> Option<usize> {
         if self.walk.get() == 0 || count == 0 || self.here.get() != Overlay::Switcher {
@@ -224,5 +310,64 @@ mod tests {
             assert!(Overlay::named(surface.name()).is_some());
         }
         assert!(Overlay::named("gallery").is_none());
+    }
+
+    #[test]
+    fn a_flick_shows_nothing_and_holding_reveals_the_panel() {
+        let surfaces = Overlays::new();
+        let opened = Instant::now();
+        surfaces.walk(None, 1);
+        assert_eq!(surfaces.here(), "switcher", "the walk is going");
+        assert!(
+            !surfaces.revealed(opened + Duration::from_millis(100)),
+            "a flick shorter than the delay flashes no panel"
+        );
+        let deadline = surfaces
+            .deadline(opened + Duration::from_millis(100))
+            .expect("one wake is due when the delay is up");
+        assert!(
+            deadline >= opened && deadline <= opened + Duration::from_millis(200),
+            "the wake is the end of the delay: {deadline:?}"
+        );
+        assert!(
+            surfaces.revealed(opened + Duration::from_millis(200)),
+            "holding Alt past the delay shows it"
+        );
+        assert_eq!(
+            surfaces.deadline(opened + Duration::from_millis(200)),
+            None,
+            "and nothing else is due"
+        );
+        surfaces.forget_walk();
+        surfaces.show(Overlay::Rest);
+        assert!(!surfaces.revealed(opened + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn the_walk_carries_its_scope_and_a_press_in_the_other_one_starts_it_again() {
+        let surfaces = Overlays::new();
+        surfaces.walk(Some("app"), 1);
+        assert_eq!(surfaces.scope(), SwitcherScope::App);
+        assert_eq!(surfaces.walked(), 1);
+        surfaces.walk(Some("app"), 1);
+        assert_eq!(surfaces.walked(), 2, "the same scope walks on");
+        surfaces.walk(Some("workspace"), 1);
+        assert_eq!(surfaces.scope(), SwitcherScope::Workspace);
+        assert_eq!(
+            surfaces.walked(),
+            1,
+            "the other scope walks from the window in front again"
+        );
+        surfaces.walk(None, -1);
+        assert_eq!(
+            surfaces.scope(),
+            SwitcherScope::Workspace,
+            "Alt+Tab's scope"
+        );
+        assert_eq!(
+            surfaces.walked(),
+            0,
+            "stepping back past it walks to the window in front"
+        );
     }
 }

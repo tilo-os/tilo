@@ -328,6 +328,9 @@ pub struct WindowReading {
     pub key: String,
     pub title: String,
     pub origin_app: String,
+    /// The app it shows, as two windows of one app share it: the walk's app scope crosses
+    /// the windows holding it.
+    pub app_key: String,
     pub icon: String,
     pub strip: String,
     /// Its strip's id, as moving a window there names the strip.
@@ -437,6 +440,15 @@ pub struct DeskReading {
     /// `launcher`, `centre`, `workspaces` or `composer`.
     #[serde(default)]
     pub here: String,
+    /// Whether the switcher's panel shows: Alt has been held on the walk past the flick that
+    /// only switches windows, so a quick Alt+Tab draws nothing.
+    #[serde(default)]
+    pub switcher_revealed: bool,
+    /// Which windows the switcher's walk crosses: `workspace` for every window of the
+    /// workspace (Alt+Tab), or `app` for the ones the window in front's app shows (Alt and the
+    /// grave key).
+    #[serde(default)]
+    pub switcher_scope: String,
     /// What the person last typed in the shell's search.
     #[serde(default)]
     pub spotlight: String,
@@ -994,6 +1006,18 @@ impl SessionOrigin {
             reading.dock_covered != was.dock_covered,
         );
         set("here", text(&reading.here), reading.here != was.here);
+        // The switcher's panel: whether it shows yet (a flick draws nothing), and which
+        // windows its walk crosses.
+        set(
+            "switcher_revealed",
+            Value::Bool(reading.switcher_revealed),
+            reading.switcher_revealed != was.switcher_revealed,
+        );
+        set(
+            "switcher_scope",
+            text(&reading.switcher_scope),
+            reading.switcher_scope != was.switcher_scope,
+        );
         set(
             "spotlight",
             text(&reading.spotlight),
@@ -1117,6 +1141,7 @@ impl SessionOrigin {
                         ("key", text(&w.key)),
                         ("title", text(&w.title)),
                         ("origin_app", text(&w.origin_app)),
+                        ("app_key", text(&w.app_key)),
                         ("icon", text(&w.icon)),
                         ("strip", text(&w.strip)),
                         ("strip_key", text(&w.strip_key)),
@@ -1968,6 +1993,9 @@ pub struct ShellPart {
     /// where its view would draw it, and none for a window `windows` leaves out (one that may
     /// not be pictured).
     previews: Option<(ui::widget::Previews, WindowLookup)>,
+    /// An instant the session has something of its own to draw at (the switcher's panel
+    /// coming up while Alt is held): the part wakes then rather than sleeping over it.
+    deadline: Option<std::time::Instant>,
 }
 
 /// Which of the compositor's windows a view's window key names, if it may be pictured.
@@ -2087,6 +2115,7 @@ impl ShellPart {
             seen_heads: Vec::new(),
             layer,
             previews: None,
+            deadline: None,
         };
         if seed {
             part.seed();
@@ -2292,6 +2321,13 @@ impl ShellPart {
         }
         self.edges = edges;
         self.place(edges);
+    }
+
+    /// When the session has something of its own to draw, which the part does not know: it
+    /// wakes at `deadline` rather than sleeping over it, and draws what the session publishes
+    /// by then.
+    pub fn set_deadline(&mut self, deadline: Option<std::time::Instant>) {
+        self.deadline = deadline;
     }
 
     /// Stand the part on `output`, its connector name and logical rectangle `(x, y, w, h)`:
@@ -2607,13 +2643,16 @@ impl crate::Published for ShellPart {
 const XKB_TAB: u32 = 0xff09;
 /// The keysym of `Alt_L`.
 const XKB_ALT_L: u32 = 0xffe9;
+/// The keysym of the key above Tab: `` ` ``, and `~` with Shift held.
+const XKB_GRAVE: [u32; 2] = [0x0060, 0x007e];
 
 /// What a press means to the shell's surfaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SurfaceKey {
     /// Alt+Tab: open the switcher on the window before the one in front, walking on from
-    /// there (back with Shift).
-    Walk(bool),
+    /// there (back with Shift); the same over the app in front's windows with Alt and the grave
+    /// key.
+    Walk { back: bool, app_scope: bool },
     /// Enter, or letting Alt go while the switcher is up: go to the window it reached.
     Commit,
     /// Esc: close the surface that is up.
@@ -2624,8 +2663,14 @@ impl ShellPart {
     /// What `key` means to the shell while a surface of the desk's is up, or as a press that
     /// opens one. `None` when it belongs to whatever has the keyboard.
     fn surface_key(&self, key: &HostKey) -> Option<SurfaceKey> {
-        if key.keysym == XKB_TAB && key.modifiers.alt && key.pressed {
-            return Some(SurfaceKey::Walk(key.modifiers.shift));
+        if key.pressed && key.modifiers.alt {
+            let app_scope = XKB_GRAVE.contains(&key.keysym);
+            if key.keysym == XKB_TAB || app_scope {
+                return Some(SurfaceKey::Walk {
+                    back: key.modifiers.shift,
+                    app_scope,
+                });
+            }
         }
         let up = self.origin.borrow().link.surface();
         if matches!(up.as_str(), "" | "none" | "desk") {
@@ -2781,10 +2826,11 @@ impl SurfaceHost for ShellPart {
             return;
         };
         match action {
-            SurfaceKey::Walk(back) => {
+            SurfaceKey::Walk { back, app_scope } => {
                 // Holding Alt opens it; a further Tab walks it on (and back with Shift).
                 let steps = if back { "-1" } else { "1" };
-                self.ask("walk-switcher", &[("steps", steps)]);
+                let scope = if app_scope { "app" } else { "workspace" };
+                self.ask("walk-switcher", &[("steps", steps), ("scope", scope)]);
             }
             SurfaceKey::Commit => self.ask("commit-switcher", &[]),
             SurfaceKey::Close => {
@@ -2804,7 +2850,12 @@ impl SurfaceHost for ShellPart {
         if self.owes() {
             return Some(std::time::Instant::now());
         }
-        self.widgets.next_deadline()
+        // The session's own deadline (the switcher's panel coming up) is due as soon as it is.
+        self.widgets
+            .next_deadline()
+            .into_iter()
+            .chain(self.deadline)
+            .min()
     }
 
     fn prepare_frame(&mut self) -> bool {

@@ -47,10 +47,9 @@ use crate::overview_panel::{OverviewPanel, OverviewPick};
 use crate::shortcuts::{page_chord, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
-use crate::switcher_windows::{SwitcherPictures, SwitcherWindows};
 use crate::topbar::{BarSpace, Placement, Reveals, TOPBAR_HEIGHT_PX, TopBarChrome};
 use crate::window_flight::WindowFlight;
-use crate::window_switcher::{SwitcherOutcome, SwitcherScope, WindowSource, WindowSwitcher};
+use crate::window_switcher::WindowSource;
 use crate::workspace_menu::{
     WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
 };
@@ -663,12 +662,6 @@ pub struct DesktopChrome {
     /// Where the person is in the workspace (the strip ribbon grown into
     /// the strip switcher, and the window rail).
     navigator: StripNavigator,
-    /// The Alt+Tab switcher: the windows of the workspace by when they were
-    /// last used, shown over the desk while Alt is held.
-    switcher: WindowSwitcher,
-    /// The pictures its cards show, drawn by the host through the same
-    /// channel as the overview's.
-    switcher_pictures: SwitcherPictures,
     /// The emoji picker: Super+. opens its card at the caret of the field the
     /// person types into, and every pick is written into that field by the
     /// host.
@@ -726,8 +719,6 @@ pub struct DesktopChrome {
 enum PaintedOverlay {
     /// The strip ribbon's labels, open for the keyboard or under the pointer.
     StripLabels,
-    /// The Alt+Tab window switcher.
-    Windows,
     /// The emoji card.
     Emoji,
     /// The way out of the window that filled a display.
@@ -736,14 +727,13 @@ enum PaintedOverlay {
 
 impl PaintedOverlay {
     /// Every painted overlay, bottom to top.
-    const ALL: [Self; 4] = [Self::StripLabels, Self::Windows, Self::Emoji, Self::Hint];
+    const ALL: [Self; 3] = [Self::StripLabels, Self::Emoji, Self::Hint];
 
     /// The key its node keeps in the chrome's tree, so the id survives the
     /// other overlays opening and closing.
     fn key(self) -> u64 {
         ui::a11y::hash_key(&match self {
             Self::StripLabels => "chrome-strip-labels",
-            Self::Windows => "chrome-window-switcher",
             Self::Emoji => "chrome-emoji-card",
             Self::Hint => "chrome-fullscreen-way-out",
         })
@@ -753,7 +743,6 @@ impl PaintedOverlay {
     fn is_open(self, chrome: &DesktopChrome) -> bool {
         match self {
             Self::StripLabels => chrome.navigator.is_open(),
-            Self::Windows => chrome.switcher.is_active(),
             Self::Emoji => chrome.emoji.is_open(),
             Self::Hint => chrome.fullscreen_hint.is_up(ui::time::now()),
         }
@@ -783,8 +772,6 @@ impl DesktopChrome {
             tilo_menu,
             workspace_menu: WorkspaceMenu::new(),
             navigator: StripNavigator::default(),
-            switcher: WindowSwitcher::default(),
-            switcher_pictures: SwitcherPictures::default(),
             emoji: EmojiPicker::new(),
             emoji_link: EmojiLink::default(),
             emoji_viewport: Rect::ZERO,
@@ -905,7 +892,6 @@ impl DesktopChrome {
     /// press outside one closes — is what the chrome shows.
     fn publish_overlays(&mut self) {
         for (slot, open) in [
-            (Slot::Switcher, self.switcher.is_active()),
             (Slot::Emoji, self.emoji.is_open()),
             (Slot::WorkspaceMenu, self.workspace_menu.is_open()),
             (Slot::TiloMenu, self.tilo_menu.is_open()),
@@ -952,7 +938,6 @@ impl DesktopChrome {
     fn overlay_accessibility(&self, overlay: PaintedOverlay) -> Option<ui::a11y::AccessNode> {
         match overlay {
             PaintedOverlay::StripLabels => self.navigator.accessibility(),
-            PaintedOverlay::Windows => self.switcher.accessibility(),
             PaintedOverlay::Emoji => self.emoji.accessibility(),
             PaintedOverlay::Hint => self.fullscreen_hint.accessibility(ui::time::now()),
         }
@@ -1018,47 +1003,6 @@ impl DesktopChrome {
         }
     }
 
-    /// The Alt+Tab switcher is open: Alt is held after Tab, and every key
-    /// until it comes up is the switcher's.
-    #[must_use]
-    pub fn switcher_active(&self) -> bool {
-        self.switcher.is_active()
-    }
-
-    /// The window a release of Alt would go to.
-    #[must_use]
-    pub fn switcher_selected(&self) -> Option<u64> {
-        self.switcher.selected().map(|window| window.address.tab)
-    }
-
-    /// Where the switcher's panel is: empty while it is not up.
-    #[must_use]
-    pub fn switcher_panel(&self) -> Rect {
-        if self.switcher.is_active() {
-            self.switcher.panel_rect()
-        } else {
-            Rect::ZERO
-        }
-    }
-
-    /// The panel is up rather than waiting out its reveal delay.
-    #[must_use]
-    pub fn switcher_revealed(&self) -> bool {
-        self.switcher.is_revealed(ui::time::now())
-    }
-
-    /// Carry out what the switcher decided: go to the window it settled on,
-    /// or nothing when it was cancelled.
-    fn take_switcher(&self, outcome: SwitcherOutcome) -> bool {
-        if let SwitcherOutcome::Commit(address) = outcome {
-            self.dispatch(DeskEffect::Focus {
-                tab: address.tab.to_string(),
-            });
-            return true;
-        }
-        outcome != SwitcherOutcome::Ignored
-    }
-
     /// Whether a wheel at `point` steps strips (over the ribbon or its
     /// labels) rather than panning the desk.
     #[must_use]
@@ -1087,14 +1031,12 @@ impl DesktopChrome {
         self
     }
 
-    /// Have the overview's and the switcher's windows drawn by the host
-    /// through `flight`, their pictures resting where each panel draws them —
-    /// the overview's flying between the desk and the overview on the clock
-    /// the host keeps there; `open` is set as the chrome draws, for the host
-    /// that clock belongs to.
+    /// Have the overview's windows drawn by the host through `flight`, their
+    /// pictures resting where the panel draws them — flying between the desk
+    /// and the overview on the clock the host keeps there; `open` is set as
+    /// the chrome draws, for the host that clock belongs to.
     #[must_use]
     pub fn with_overview(mut self, flight: WindowFlight, open: Rc<Cell<bool>>) -> Self {
-        self.switcher_pictures.set_flight(flight.clone());
         self.overview.set_flight(flight);
         self.overview_open = Some(open);
         self
@@ -1673,34 +1615,6 @@ impl DesktopChrome {
         if let Some(action) = action {
             return self.shortcut(action);
         }
-        // Alt+Tab walks the workspace's windows, and Alt with the key above
-        // Tab the focused app's: fixed chords, as Super+Tab is the
-        // overview, since Alt is a modifier the shortcut table never holds.
-        if let Some(scope) = SwitcherScope::for_chord(&event.logical_key, modifiers.state()) {
-            let outcome = if self.switcher.is_active() {
-                self.switcher
-                    .key(&event.logical_key, event.state, modifiers.state())
-            } else {
-                let tree = self.rules.tree();
-                let opened = self.switcher.begin(
-                    &tree,
-                    &SwitcherWindows {
-                        handle: &self.handle,
-                    },
-                    scope,
-                    modifiers.state().shift_key(),
-                    ui::time::now(),
-                );
-                if opened {
-                    SwitcherOutcome::Consumed
-                } else {
-                    SwitcherOutcome::Ignored
-                }
-            };
-            self.take_switcher(outcome);
-            // Taken either way: a switcher's chord never reaches a window.
-            return true;
-        }
         // Super+S opens the strip switcher for the keyboard, fixed rather
         // than rebindable.
         let strips = page_chord(&event.logical_key, event.physical_key, *modifiers, self.mac)
@@ -1757,9 +1671,6 @@ impl DesktopChrome {
         self.navigator_frame = StripFrame::of_tree(&tree, self.content, (&shown, scroll), covered);
         self.navigator
             .observe(&self.navigator_frame, ui::time::now());
-        // Which window has focus now, however it got there, so Alt+Tab
-        // walks them in the order they were used.
-        self.switcher.observe(&tree);
     }
 
     /// Carry out what the strip ribbon, its labels or the rail asked for.
@@ -1939,7 +1850,6 @@ impl DesktopChrome {
         // An intent waiting to be carried out asks for the frame that
         // carries it.
         !self.intents.borrow().is_empty()
-            || self.switcher.is_active()
             || self.emoji.needs_redraw()
             || self.emoji_link.has_delivered()
             || self.navigator.needs_animation_frame(ui::time::now())
@@ -2077,7 +1987,6 @@ impl DesktopChrome {
         self.tilo_menu.is_menu_open()
             || self.workspace_menu.is_open()
             || self.navigator.is_open()
-            || self.switcher.is_active()
             || self.emoji.is_open()
             || self.bar.card_open()
             || self.bar.holds_itself_shown()
@@ -2454,20 +2363,6 @@ impl Widget for DesktopChrome {
         }
         // Last, so what the bar opens below its band stays above the rest.
         self.bar.draw(scene, transform, text, theme, presence);
-        // Above even that: while Alt is held, the switcher is what the
-        // person is looking at. Its cards picture their windows through the
-        // host's own channel, as the overview's do.
-        self.switcher_pictures.clip_to(self.switcher.panel_rect());
-        self.switcher.draw(
-            scene,
-            transform,
-            text,
-            theme,
-            self.rect,
-            ui::time::now(),
-            &mut self.switcher_pictures,
-        );
-        self.switcher_pictures.publish();
         // Above all of it: the emoji picker is modal, the one thing the person
         // works with until it closes.
         if self.emoji.is_open() {
@@ -2538,21 +2433,6 @@ impl Widget for DesktopChrome {
             self.publish_overlays();
             return;
         }
-        // While the switcher is open every key is the switcher's, and the
-        // pointer is once its panel is up.
-        if self.switcher.is_active() {
-            let outcome = self.switcher.route_event(
-                event,
-                ctx.modifiers.state(),
-                self.cursor,
-                ui::time::now(),
-            );
-            if self.take_switcher(outcome) {
-                *ctx.handled = true;
-                self.publish_overlays();
-                return;
-            }
-        }
         // The strip switcher's name field and keyboard choosing come before
         // the desktop's chords, as any field's typing does.
         if self.navigation_event(event, ctx.scale_factor, *ctx.modifiers) {
@@ -2619,9 +2499,8 @@ impl Widget for DesktopChrome {
         self.focused
     }
 
-    /// The desk's overlays a screen reader can reach: the labels, the card
-    /// and the switcher the chrome paints, plus the children widgets the
-    /// walk adds below them.
+    /// The desk's overlays a screen reader can reach: the labels and the card
+    /// the chrome paints, plus the children widgets the walk adds below them.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let children = self
             .painted_overlays()
@@ -2653,9 +2532,9 @@ impl Widget for DesktopChrome {
     }
 
     /// A strip label's semantic target, pressed as a click on the label is.
-    /// The card and the switcher name no targets: their elements are not
-    /// carried out by a target but pressed where they are drawn, which the
-    /// host does through [`Widget::synthetic_accessibility_rect`].
+    /// The card names no targets: its elements are not carried out by a
+    /// target but pressed where they are drawn, which the host does through
+    /// [`Widget::synthetic_accessibility_rect`].
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -2722,8 +2601,7 @@ impl Widget for DesktopChrome {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.switcher.needs_frame(ui::time::now())
-            || self.emoji.needs_animation_frame()
+        self.emoji.needs_animation_frame()
             || self.fullscreen_hint.is_moving(ui::time::now())
             || self.navigator.needs_animation_frame(ui::time::now())
             || self
