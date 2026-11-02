@@ -896,7 +896,7 @@ fn asked_of_desk(
             let rows = if gate == Gate::Owner && desk.locked {
                 Vec::new()
             } else {
-                desk.handle.read(|tree| window_rows(tree))
+                desk.handle.read(window_rows)
             };
             json!({"answer": {"windows": rows}})
         }

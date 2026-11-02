@@ -22,7 +22,6 @@ use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
-use tilo_service::Service as _;
 use tilo_session::surfaces::Surface;
 use tilo_session::{Options, Session};
 use tilo_test_env::ScopedEnv;
