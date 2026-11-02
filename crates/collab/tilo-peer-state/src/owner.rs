@@ -38,8 +38,6 @@ mod shortcuts;
 pub mod testing;
 #[cfg(test)]
 mod tests;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod voice;
 mod vouched;
 mod workspace_membership;
 

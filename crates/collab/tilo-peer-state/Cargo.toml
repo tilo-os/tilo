@@ -77,8 +77,6 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 # The HTTPS client seam of a host reached over its HTTPS routes.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
-# The relay voice carrier a call participation authorizes.
-tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
 
 [dev-dependencies]
