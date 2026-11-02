@@ -278,12 +278,13 @@ fn webtransport_origin(origin: &str, port: u16) -> String {
     let host = origin
         .strip_prefix("https://")
         .or_else(|| origin.strip_prefix("http://"))
-        .unwrap_or(origin);
+        .unwrap_or(origin)
+        .trim_end_matches('/');
     let host = match host.rsplit_once(':') {
         Some((host, named)) if named.bytes().all(|byte| byte.is_ascii_digit()) => host,
         _ => host,
     };
-    format!("https://{}:{port}", host.trim_end_matches('/'))
+    format!("https://{host}:{port}")
 }
 
 #[cfg(test)]
