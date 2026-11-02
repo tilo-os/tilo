@@ -660,6 +660,8 @@ pub struct Session {
     /// Where each display stands and where the person types, as the readout
     /// answers with them.
     readout_place: crate::panels::ReadoutPlaces,
+    /// The readout itself, so a theme the person changed reaches it.
+    readout: Rc<RefCell<crate::panels::Readout>>,
     /// When the on-screen keyboard runs, as the person chose: never, over a
     /// field they touch, or always.
     keyboard_preference: tilo_accessibility_settings::OnScreenKeyboard,
@@ -1236,7 +1238,7 @@ impl Session {
             portal_shortcuts.clone(),
             Rc::clone(&controller),
         );
-        let (commands, invocations, triggered, readout_place) = mount_controls(
+        let (commands, invocations, triggered, readout_place, readout) = mount_controls(
             &mut compositor,
             &mut doors,
             shortcuts,
@@ -1254,6 +1256,9 @@ impl Session {
             },
             options.scale,
         );
+        // The readout draws in the person's theme like the desk and the shell
+        // do: its ground is the theme's floating surface, never a fixed fill.
+        readout.borrow_mut().set_theme(presentation.theme);
 
         // Setup last.
         let setup = mount_setup(
@@ -1614,6 +1619,7 @@ impl Session {
             displays: display_settings::Displays::default(),
             displays_service,
             readout_place,
+            readout,
             confirmation: display_confirm::Confirmation::default(),
             display_sheet: display_sheet::DisplaySheet::new(
                 display_seat,

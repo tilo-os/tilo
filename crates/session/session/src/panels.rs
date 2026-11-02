@@ -411,6 +411,12 @@ impl Readout {
         }
     }
 
+    /// Draw in `theme`: the pill's ground is the theme's floating surface, so
+    /// a light style is light, and its words follow the person's settings.
+    pub(crate) fn set_theme(&mut self, theme: ui::Theme) {
+        self.host.set_theme(theme);
+    }
+
     /// Stand on the display `display` answers for, in the band the person is
     /// not typing in.
     fn stand(&mut self, display: Option<&str>) {

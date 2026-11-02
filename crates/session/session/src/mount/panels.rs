@@ -87,6 +87,17 @@ pub(crate) struct KeyContext {
 /// The hardware keys' readout above the apps, and the session's own
 /// resources and the keys it answers wherever the keyboard is: above every
 /// surface, so offered every press first.
+/// What mounting the session's controls hands the session back: the commands
+/// the key surface raises, the invocations it answers, the chords it pressed
+/// through, where the readout stands and the readout itself.
+pub(crate) type Controls = (
+    Rc<RefCell<Vec<SessionCommand>>>,
+    Invocations,
+    PressedChords,
+    ReadoutPlaces,
+    Rc<RefCell<Readout>>,
+);
+
 pub(crate) fn mount_controls(
     compositor: &mut Compositor,
     doors: &mut Doors,
@@ -102,18 +113,14 @@ pub(crate) fn mount_controls(
         reveals,
     }: KeyContext,
     scale: f64,
-) -> (
-    Rc<RefCell<Vec<SessionCommand>>>,
-    Invocations,
-    PressedChords,
-    ReadoutPlaces,
-) {
+) -> Controls {
     // Where each display stands and where the person types, filled in every
     // pass: what the readout answers with.
     let places: ReadoutPlaces = Rc::new(RefCell::new(ReadoutPlace::default()));
     let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(&places))));
     compositor.add_host(Box::new(Held(Rc::clone(&readout))));
-    doors.add(readout);
+    let shared: tilo_surface_host::Shared = readout.clone();
+    doors.add(shared);
     let commands = Rc::new(RefCell::new(Vec::new()));
     doors.add(Rc::new(RefCell::new(SessionControls::new(Rc::clone(
         &commands,
@@ -139,7 +146,7 @@ pub(crate) fn mount_controls(
         },
         reveals,
     )));
-    (commands, invocations, triggered, places)
+    (commands, invocations, triggered, places, readout)
 }
 
 /// The device's own backend, when the session runs one, and the quick

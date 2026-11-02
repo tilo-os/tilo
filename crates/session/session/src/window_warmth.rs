@@ -191,6 +191,7 @@ impl crate::Session {
         // from this frame, as every window is told it below.
         if let Some(theme) = self.warmth.follow_settings(&self.shared.person) {
             self.shared.desktop.set_theme(theme.clone());
+            self.readout.borrow_mut().set_theme(theme.clone());
             if let Some(shell) = self.shell.as_mut() {
                 shell.set_theme(&theme);
             }

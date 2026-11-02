@@ -72,6 +72,11 @@ pub const OSD_INSET: f32 = ui::tokens::Spacing::BASE.s16;
 /// long enough to read as a level rather than a dash.
 pub const OSD_BAR: f32 = ui::tokens::Metrics::BASE.icon_lg * 5.0;
 
+/// How wide the pill's content grows, in glyphs, before it stops and cuts the
+/// device's name with an ellipsis instead: a long device name widens the pill
+/// to a point, never across the display.
+pub const OSD_WIDEST: f32 = 12.0;
+
 /// Where a readout stands on its display.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Placement {
@@ -597,7 +602,9 @@ struct Words {
     name_w: f64,
     name_h: f64,
     value: String,
-    value_w: f64,
+    /// The column a level's value takes: as wide as the widest reading, so the
+    /// number gaining a digit never moves the name beside it.
+    slot: f64,
     /// The width the widest line needs: what the bar spans and the pill is as
     /// wide as.
     content: f64,
@@ -624,11 +631,12 @@ impl Words {
             content += gap / 2.0 + f64::from(w);
             (words, f64::from(w), f64::from(h))
         });
+        // A level's value stands in a column of its own, a gap after the
+        // device's name: the two never share a run of pixels, and the name is
+        // what gives way when there is no room for both.
+        let mut slot = 0.0;
         if matches!(osd, Osd::Level(_)) {
-            // The bar is as wide as the widest reading, never so short it
-            // reads as a dash: the number gaining a digit does not resize the
-            // pill.
-            let mut slot = f64::from(value_w);
+            slot = f64::from(value_w);
             for reading in [
                 t_args("osd-percent", &[("percent", 100.into())]),
                 t("osd-muted"),
@@ -637,14 +645,14 @@ impl Words {
                 let (w, _) = text.measure_style(&reading, None, &styles.value);
                 slot = slot.max(f64::from(w));
             }
-            content = content.max(slot).max(f64::from(OSD_BAR));
+            content = (f64::from(name_w) + gap + slot).max(f64::from(OSD_BAR));
         }
         Self {
             name: name_text,
             name_w: f64::from(name_w),
             name_h: f64::from(name_h),
             value: value_text,
-            value_w: f64::from(value_w),
+            slot,
             content,
             chord,
         }
@@ -661,7 +669,8 @@ impl Pill {
         let bar_gap = f64::from(sp.s2);
         let bar_h = f64::from(sp.s2).max(6.0);
         let words = Words::of(osd, &styles, text, gap);
-        let width = (pad * 2.0 + icon + gap + words.content).min(band.width());
+        let content = words.content.min(icon * f64::from(OSD_WIDEST));
+        let width = (pad * 2.0 + icon + gap + content).min(band.width());
         // Two rows for a level (the device and the value above the bar), one
         // for a hint, never taller than the band has room for.
         let levels = matches!(osd, Osd::Level(_));
@@ -695,10 +704,23 @@ impl Pill {
             Rect::new(content_x0, rect.y0 + vpad, content_x1, rect.y1 - vpad)
         };
         let middle = row.center().y;
+        // The value keeps its own column at the row's end; the name stops a
+        // gap short of it, so a long device name is cut with an ellipsis
+        // rather than running into the reading.
+        let slot = if levels {
+            words.slot.min((row.x1 - row.x0) / 2.0)
+        } else {
+            0.0
+        };
+        let name_x1 = if levels {
+            (row.x1 - slot - gap).max(row.x0)
+        } else {
+            row.x1
+        };
         let name = Rect::new(
             row.x0,
             middle - words.name_h / 2.0,
-            row.x1,
+            name_x1,
             middle + words.name_h / 2.0,
         );
         let bar = levels.then(|| {
@@ -709,8 +731,7 @@ impl Pill {
                 rect.y1 - vpad,
             )
         });
-        let value =
-            levels.then(|| Rect::new(content_x1 - words.value_w, name.y0, content_x1, name.y1));
+        let value = levels.then(|| Rect::new(content_x1 - slot, name.y0, content_x1, name.y1));
         let chord = words.chord.map(|(chord, w, h)| {
             let x0 = name.x0 + words.name_w + gap / 2.0;
             (
@@ -1406,6 +1427,62 @@ mod tests {
         let hint = pill(&night_light(true));
         assert!(hint.bar.is_none());
         assert!(hint.rect.height() < pill(&volume(0.65)).rect.height());
+    }
+
+    #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a pill's text room in logical pixels is far inside f32 range"
+    )]
+    fn the_device_name_never_runs_into_the_value() {
+        ui::i18n::I18nManager::init("en-US");
+        let named = |name: &str| {
+            Osd::from(Level {
+                kind: OsdKind::Volume,
+                level: 0.65,
+                on: true,
+                device: Some(Device::new(name, DeviceGlyph::Headphones)),
+            })
+        };
+        let theme = Theme::dark();
+        let styles = Styles::new(&theme);
+        let mut text = TextRenderer::new();
+        for osd in [
+            volume(0.65),
+            named("Studio monitoring headphones over there on the desk"),
+            named("Buds"),
+            brightness(0.4),
+        ] {
+            let pill = Pill::layout(band(), &theme, &mut text, &osd);
+            let value = pill.value.expect("a level has a value");
+            let name =
+                text.elide_to_width_style(&pill.name_text, pill.name.width() as f32, &styles.name);
+            let (name_w, _) = text.measure_style(&name, None, &styles.name);
+            let shown =
+                text.elide_to_width_style(&pill.value_text, value.width() as f32, &styles.value);
+            let (value_w, _) = text.measure_style(&shown, None, &styles.value);
+            // The two runs of words, where they are drawn: apart, never over
+            // each other, whatever the device is called.
+            let name_run = pill.name.x0..pill.name.x0 + f64::from(name_w);
+            let value_run = value.x1 - f64::from(value_w)..value.x1;
+            assert!(
+                name_run.end <= value_run.start,
+                "{}: the device's name runs into the value: {name_run:?} {value_run:?}",
+                pill.name_text
+            );
+        }
+        // A name a person meets every day fits whole at a normal width, rather
+        // than being cut to make room for a column the value could have kept.
+        let everyday = Pill::layout(band(), &theme, &mut text, &volume(0.65));
+        assert_eq!(
+            text.elide_to_width_style(
+                &everyday.name_text,
+                everyday.name.width() as f32,
+                &styles.name
+            ),
+            "Studio headphones",
+            "the whole device name is shown"
+        );
     }
 
     #[test]
