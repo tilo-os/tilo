@@ -174,8 +174,14 @@ impl CallLane {
             .endpoint
             .get_or_try_init(|| async {
                 let key = iroh::SecretKey::from_bytes(&self.device);
-                iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+                // What `presets::N0` builds, with its publisher behind number
+                // 0's directory gate ([`tilo_endpoint_reachability`]); the host
+                // keeps the default relays, since its members reach it there.
+                iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
                     .secret_key(key)
+                    .address_lookup(tilo_endpoint_reachability::collaborating())
+                    .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
+                    .relay_mode(iroh::endpoint::default_relay_mode())
                     .bind()
                     .await
                     .map_err(|error| Failed::NoLane(error.to_string()))

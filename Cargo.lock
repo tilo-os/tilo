@@ -20624,6 +20624,7 @@ dependencies = [
  "tilo-content",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
+ "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-fs",
  "tilo-identity-host",
