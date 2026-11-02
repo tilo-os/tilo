@@ -17,7 +17,7 @@ use crate::package::parse_package_files;
 use crate::print::print_file;
 use crate::source::{
     BuildError, BuiltPackage, PackageSource, Stamp, apps_of, catalogue_current, compile_package,
-    dependency_order_with, read_ids, search_of, write_catalogue, write_ids,
+    dependency_order_with, ids_current, read_ids, search_of, write_catalogue, write_ids,
 };
 
 /// Finds the published packages that are no tilolang package directory among the directories
@@ -175,19 +175,36 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                     }
                 }
                 let changes = lock_changes(b);
-                if changes.is_empty() {
+                if o.write_ids {
+                    if write_ids(b)? {
+                        if changes.is_empty() {
+                            eprintln!(
+                                "{}: the ids lock updated: its entries in the order the tool writes them",
+                                b.dir.display()
+                            );
+                        } else {
+                            explain(b, &changes, "updated");
+                        }
+                    }
                     continue;
                 }
-                if o.write_ids {
-                    write_ids(b)?;
-                    explain(b, &changes, "updated");
+                if changes.is_empty() && ids_current(b) {
+                    continue;
+                }
+                if changes.is_empty() {
+                    // The same entries, written another way (out of the tool's order): a build
+                    // would rewrite the file, so the lock is not what the sources say it is.
+                    eprintln!(
+                        "{}: the ids lock is not what the tool writes (its entries in another order); write it with `tilolangc check --write-ids` (or `build`), and commit it with the sources",
+                        b.dir.display()
+                    );
                 } else {
                     explain(b, &changes, "is out of date");
                     eprintln!(
                         "  write it with `tilolangc check --write-ids` (or `build`), and commit it with the sources"
                     );
-                    current = false;
                 }
+                current = false;
             }
             Ok(current)
         }

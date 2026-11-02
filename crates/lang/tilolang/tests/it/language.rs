@@ -342,6 +342,31 @@ fn check_fails_on_a_stale_ids_lock_and_writes_it_when_asked() {
     assert_eq!(written, format!("{:?}", std::process::ExitCode::SUCCESS));
     let lock = std::fs::read_to_string(dir.join("app.ids")).expect("lock");
     assert!(lock.contains("C.n = "), "{lock}");
+    // The same entries, in another order, are not what a build writes: a check says so, and
+    // --write-ids puts them back in the order the tool writes them.
+    let header = lock.lines().next().expect("header");
+    let mut entries: Vec<&str> = lock
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .collect();
+    entries.reverse();
+    std::fs::write(
+        dir.join("app.ids"),
+        format!("{header}\n{}\n", entries.join("\n")),
+    )
+    .expect("reordered lock");
+    assert_ne!(
+        run(&["check", &path]),
+        format!("{:?}", std::process::ExitCode::SUCCESS),
+        "a lock in another order is out of date"
+    );
+    let rewritten = run(&["check", &path, "--write-ids"]);
+    assert_eq!(rewritten, format!("{:?}", std::process::ExitCode::SUCCESS));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("app.ids")).expect("lock"),
+        lock,
+        "the tool's order is back"
+    );
     assert_eq!(
         run(&["check", &path]),
         format!("{:?}", std::process::ExitCode::SUCCESS)
