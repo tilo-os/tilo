@@ -1736,9 +1736,10 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.request.get()
-            || self.popover.is_open()
-            || (self.button.needs_redraw() || self.button.needs_animation_frame())
+        if self.request.get() || self.popover.is_open() {
+            return true;
+        }
+        self.button.needs_redraw() || self.button.needs_animation_frame()
     }
 
     fn modal_capture(&self) -> Option<Rect> {
