@@ -87,14 +87,13 @@ require_file /usr/lib/systemd/user/tilo-fs-recipient.socket
 require_file /usr/lib/systemd/user/tilo-fs-cloud.service
 require_file /usr/lib/systemd/user/tilo-graphical-session.target
 require_file /usr/share/tilo/selinux/tilo-base.cil
-require_file /usr/share/wayland-sessions/shell.desktop
 require_file /usr/share/wayland-sessions/tilo-session.desktop
-# The greeter offers the native session a login starts and the shell it
-# replaces. Any other entry, from a package the base pulls in, would be
-# offered at every login too.
+# The greeter offers the native session a login starts, and nothing else. Any
+# other entry, from a package the base pulls in or from a shell this image no
+# longer ships, would be offered at every login too.
 sessions="$(cd "$(at /usr/share)" && find wayland-sessions xsessions -name '*.desktop' 2>/dev/null | sort | tr '\n' ' ')"
-[ "$sessions" = "wayland-sessions/shell.desktop wayland-sessions/tilo-session.desktop " ] \
-  || die "login sessions are not exactly the shell and native sessions: ${sessions:-none}"
+[ "$sessions" = "wayland-sessions/tilo-session.desktop " ] \
+  || die "login sessions are not exactly the native session: ${sessions:-none}"
 require_file /usr/lib/tmpfiles.d/tilo.conf
 require_file /usr/share/tilo/fs-capabilities.json
 
@@ -226,7 +225,22 @@ require_exec "$payload/bin/file-explorer"
 # The packer serializes a normalized manifest rather than preserving authoring
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"
-require_toml_string "$manifest" sandbox.services.tilo-fs "optional@14"
+# The manifest asks for the runtime interface version this image serves, read
+# from the image's own declaration (/usr/share/tilo/system-interfaces.toml):
+# a hardcoded number here goes stale the moment the interface moves, and then
+# every image build fails on a manifest that is in fact correct.
+python3 - "$(at "$manifest")" "$(at /usr/share/tilo/system-interfaces.toml)" <<'PY' \
+  || die "$manifest does not ask for the runtime interface this image serves"
+import pathlib
+import sys
+import tomllib
+
+manifest = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+interfaces = tomllib.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+served = interfaces["interfaces"]["runtime"]
+declared = manifest["sandbox"]["services"]["tilo-fs"]
+raise SystemExit(0 if declared == f"optional@{served}" else 1)
+PY
 # The package names the exact runtime build it links, and the image ships it.
 runtime_version="$(python3 - "$(at "$manifest")" <<'PY'
 import pathlib, re, sys, tomllib

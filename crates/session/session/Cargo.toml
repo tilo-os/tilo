@@ -203,6 +203,9 @@ tilo-runtime = { path = "../../runtime/tilo-runtime" }
 # connection that sends one, and the sealed memfd its modules come in.
 tilolang-host = { path = "../../platform/tilolang-host" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+# The render service an app hands its frames to, started by this session as
+# a mode of its own binary.
+tilo-render-service = { path = "../render-service" }
 uuid.workspace = true
 # The kernel-attested custody of an executing app process a launch is
 # admitted by.
@@ -272,6 +275,10 @@ media = { package = "tilo-media", path = "../../platform/tilo-media", features =
 # A call's frames, sealed with the channel's keys and carried as datagrams on
 # this session's own endpoint.
 tilo-call-lane = { path = "../../collab/tilo-call-lane" }
+# The workspaces' live plane: a sealed `moq-lite` session per workspace over
+# this session's own endpoint, and the relay role a member serves for the
+# others.
+tilo-live = { path = "../../collab/tilo-live", features = ["native", "plane"] }
 # One-shot `PipeWire` registry custody for a call's microphone and output.
 pipewire = "0.10.1"
 

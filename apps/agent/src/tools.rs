@@ -769,7 +769,7 @@ fn finish_definition() -> ToolDefinition {
                             "description": "The view: one tilolang `view` declaration, as an \
                                 app declares one, over any app listed under \"Apps\" by its \
                                 name, such as `view unread(m: mail.Mail) { ... }` or \
-                                `view left() { column { ... } }`. It names no app with `use`."
+                                `view left() { stack { ... } }`. It names no app with `use`."
                         }
                     },
                     "required": ["title", "source"],

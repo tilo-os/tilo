@@ -32,7 +32,7 @@ const BEFORE: (&str, &str) = (
     include_str!("legacy/views/app.ids"),
 );
 
-const RELEASE: &str = "card(tasks.tasks, count: tasks.tasks.items.count(t -> not t.done)) {\n    list(tasks.tasks.items.filter(t -> not t.done)) { t ->\n        row(t)\n    }\n}";
+const RELEASE: &str = "ui.Card(item: tasks.tasks, title: meta(tasks.tasks).title, count: tasks.tasks.items.count(t -> not t.done)) {\n    list(tasks.tasks.items.filter(t -> not t.done)) { t ->\n        row(t)\n    }\n}";
 
 fn invoke(r: &Replica, who: &str, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(VIEWS).unwrap().meta;

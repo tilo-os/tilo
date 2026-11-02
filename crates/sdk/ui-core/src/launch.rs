@@ -205,7 +205,6 @@ pub struct LaunchSpec {
     max_positionals: usize,
     scenarios: &'static [&'static str],
     host_sources: &'static [HostSource],
-    without_identity: bool,
 }
 
 impl LaunchSpec {
@@ -241,20 +240,7 @@ impl LaunchSpec {
             max_positionals: 0,
             scenarios: &[],
             host_sources: &[],
-            without_identity: false,
         }
-    }
-
-    /// While the workspace has no identity selected, open what works without
-    /// it instead of a window asking who works there: an app whose own
-    /// purpose is not the workspace's (Settings, for the device). It reads
-    /// [`crate::workspace_identity::missing`] and shows
-    /// [`crate::workspace_identity::required_state`] where it needs the
-    /// workspace; once an identity is chosen it opens again, joined to it.
-    #[must_use]
-    pub fn runs_without_identity(mut self) -> Self {
-        self.without_identity = true;
-        self
     }
 
     /// The application this specification launches.
@@ -435,10 +421,6 @@ pub enum LaunchError {
     /// A capture would have set text in the host's faces instead of the
     /// product's, because no root holds this build's font catalog.
     SubstituteFont(String),
-    /// The workspace the app was launched into has no identity selected, so
-    /// it cannot join it. A live launch shows the window asking who is
-    /// working there ([`crate::workspace_identity`]) instead of ending.
-    IdentityRequired,
     /// The record the launch opens is not on this device yet, and the
     /// workspace's join, still under way, brings it: the launch builds
     /// once the join is over instead of creating a copy here.
@@ -489,7 +471,6 @@ impl fmt::Display for LaunchError {
             }
             Self::Scenario(message) | Self::Operation(message) => f.write_str(message),
             Self::SubstituteFont(problem) => write!(f, "refusing to capture: {problem}"),
-            Self::IdentityRequired => f.write_str("no identity selected for this workspace"),
             Self::RecordNotHere => {
                 f.write_str("the record is not on this device yet; it arrives with the workspace")
             }
@@ -546,7 +527,6 @@ impl fmt::Debug for LaunchError {
                 f.write_str("application definition cannot use legacy setup overrides")
             }
             Self::BindingMismatch => f.write_str("BindingMismatch"),
-            Self::IdentityRequired => f.write_str("IdentityRequired"),
             Self::RecordNotHere => f.write_str("RecordNotHere"),
             Self::SubstituteFont(_) => f.write_str("SubstituteFont"),
         }
@@ -580,7 +560,6 @@ impl LaunchError {
                 | Self::BindingMismatch
                 | Self::MissingComponentHost
                 | Self::IncompatibleComponentSetup
-                | Self::IdentityRequired
         ) {
             1
         } else {
@@ -925,66 +904,21 @@ fn run_parsed(
     if args.first_frame {
         return first_frame(spec, &args);
     }
-    // A live window opens until it is closed; while the workspace has no
-    // identity selected it waits for one in its window, and once one is
-    // chosen the app opens in that same window (`workspace_identity`).
-    let mut without_identity = false;
-    let dispatched = loop {
-        let dispatched = if without_identity {
-            dispatch_definition_without_identity(spec, &args)
-        } else {
-            // The app opens at once on what this device holds and joins its
-            // workspace in the background. A record not on this device yet
-            // arrives with the join: the window shows its loading state
-            // until it is told the join is over.
-            #[cfg(any(windows, target_os = "linux"))]
-            let dispatched = dispatch_live(spec, &args, |window| {
-                window.with_startup_renderer(renderer.take())
-            });
-            #[cfg(not(any(windows, target_os = "linux")))]
-            let dispatched = dispatch_live(spec, &args, |window| window);
-            let Some(dispatched) = dispatched else {
-                return Ok(());
-            };
-            dispatched
-        };
-        let (app, waits) = match dispatched {
-            Ok(DefinitionDispatch::Native(app)) => (app, without_identity),
-            Err(LaunchError::IdentityRequired) => match identity_step(spec) {
-                IdentityStep::RunWithoutIdentity => {
-                    without_identity = true;
-                    continue;
-                }
-                IdentityStep::AwaitInWindow => (Box::new(identity_window(spec)), true),
-            },
-            other => break other?,
-        };
-        crate::workspace_identity::set_missing(without_identity);
-        #[cfg(any(windows, target_os = "linux"))]
-        let app = Box::new((*app).with_startup_renderer(renderer.take()));
-        if waits {
-            let _entry = app.enter_wake_scope();
-            crate::workspace_identity::await_choice();
-        }
-        if waits {
-            (*app).run();
-        } else {
-            // Later windows of this app in its workspace open here
-            // (`crate::window_door`), built as the first was.
-            let mut open = |pending| crate::window_door::open_window(spec, &args, pending);
-            let open: &mut dyn FnMut(_) -> Option<App> = &mut open;
-            (*app).run_windows(|_| {}, Some(open));
-        }
-        if !crate::workspace_identity::take_chosen() {
-            return Ok(());
-        }
-        without_identity = false;
+    // The app opens at once on what this device holds and joins its
+    // workspace in the background. A record not on this device yet arrives
+    // with the join: the window shows its loading state until it is told the
+    // join is over.
+    #[cfg(any(windows, target_os = "linux"))]
+    let dispatched = dispatch_live(spec, &args, |window| {
+        window.with_startup_renderer(renderer.take())
+    });
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let dispatched = dispatch_live(spec, &args, |window| window);
+    let Some(dispatched) = dispatched else {
+        return Ok(());
     };
-    match dispatched {
-        DefinitionDispatch::Native(app) => {
-            // Opened and run by the loop above; a dispatch answers it there.
-            drop(app);
-        }
+    let app = match dispatched? {
+        DefinitionDispatch::Native(app) => app,
         DefinitionDispatch::Headless(status) => {
             // process::exit skips the ScopedDumper in run().
             tilo_startup_metrics::mark("headless-exit");
@@ -1008,11 +942,20 @@ fn run_parsed(
                 }
             }
             close_component_capture(&mut driver)?;
+            return Ok(());
         }
         DefinitionDispatch::Audit(mut driver) => {
             finish_component_audit(&mut driver, spec.app_id)?;
+            return Ok(());
         }
-    }
+    };
+    #[cfg(any(windows, target_os = "linux"))]
+    let app = Box::new((*app).with_startup_renderer(renderer.take()));
+    // Later windows of this app in its workspace open here
+    // (`crate::window_door`), built as the first was.
+    let mut open = |pending| crate::window_door::open_window(spec, &args, pending);
+    let open: &mut dyn FnMut(_) -> Option<App> = &mut open;
+    (*app).run_windows(|_| {}, Some(open));
     Ok(())
 }
 
@@ -1084,52 +1027,6 @@ fn dispatch_definition(
     dispatch_definition_with_manager(spec, args, construct_native, || {
         native_launch_manager(spec, args)
     })
-}
-
-/// [`dispatch_definition`] for a workspace with no identity selected, by an
-/// app that opens without it ([`LaunchSpec::runs_without_identity`]): it
-/// joins no workspace, and keeps what it writes on this device.
-#[cfg(feature = "native")]
-fn dispatch_definition_without_identity(
-    spec: &LaunchSpec,
-    args: &LaunchArgs,
-) -> Result<DefinitionDispatch, LaunchError> {
-    dispatch_definition_with_manager(spec, args, construct_native, || {
-        Ok(crate::collaboration::CollaborationManager::disabled())
-    })
-}
-
-/// What a live launch does while its workspace has no identity selected.
-#[cfg(any(feature = "native", test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum IdentityStep {
-    /// Keep the window open, asking who works in the workspace, and open
-    /// the app in it once someone is chosen.
-    AwaitInWindow,
-    /// Open what works without the workspace
-    /// ([`LaunchSpec::runs_without_identity`]).
-    RunWithoutIdentity,
-}
-
-#[cfg(any(feature = "native", test))]
-fn identity_step(spec: &LaunchSpec) -> IdentityStep {
-    if spec.without_identity {
-        IdentityStep::RunWithoutIdentity
-    } else {
-        IdentityStep::AwaitInWindow
-    }
-}
-
-/// The root of the window a launch keeps open while its workspace has no
-/// identity selected: who works here, and the button to choose.
-#[cfg(any(feature = "native", test))]
-fn identity_window_root(spec: &LaunchSpec) -> crate::widget::Scrollable {
-    crate::workspace_identity::required_state(spec.definition.title()).into_scrollable()
-}
-
-#[cfg(feature = "native")]
-fn identity_window(spec: &LaunchSpec) -> App {
-    App::without_workspace(|| Box::new(identity_window_root(spec)))
 }
 
 #[cfg(all(feature = "native", test))]
@@ -1355,7 +1252,6 @@ fn native_launch_manager(
 impl From<crate::collaboration::NativeLaunchError> for LaunchError {
     fn from(error: crate::collaboration::NativeLaunchError) -> Self {
         match error {
-            crate::collaboration::NativeLaunchError::IdentityRequired => Self::IdentityRequired,
             crate::collaboration::NativeLaunchError::Operation(message) => Self::Operation(message),
         }
     }
@@ -2687,18 +2583,13 @@ mod tests {
         assert!(!records.is_ready(&want.id));
     }
 
-    fn refuse_to_prepare(
-        _: &crate::application::ApplicationDefinition,
-        _: &LaunchArgs,
-    ) -> Result<crate::application::PreparedComponentInputs, LaunchError> {
-        Err(LaunchError::Operation(
-            "nothing is prepared before the workspace has an identity".into(),
-        ))
-    }
-
     #[test]
     #[cfg(feature = "native")]
-    fn a_launch_with_no_identity_selected_keeps_its_window_open_on_choosing_one() {
+    fn a_launch_that_cannot_join_its_workspace_reports_it_instead_of_asking_who_works_there() {
+        // The connection an app is launched with is already its workspace's,
+        // signed as the person the device's certificate names. A join that
+        // cannot happen says why, in the launch's own terms: there is no
+        // identity to choose, so no window opens to wait on one.
         let spec =
             LaunchSpec::from_definition(crate::application_test_support::runner_probe_definition())
                 .component_host(refuse_to_prepare)
@@ -2708,36 +2599,29 @@ mod tests {
             &spec,
             &args,
             |_, _, _| Err(LaunchError::Operation("no app is built".into())),
-            || Err(LaunchError::IdentityRequired),
+            || {
+                Err(LaunchError::Operation(
+                    "this device has no identity to sign in with".into(),
+                ))
+            },
         );
-        assert!(
-            matches!(dispatched, Err(LaunchError::IdentityRequired)),
-            "the launch hears that the workspace needs an identity, not a failure"
-        );
-        assert_eq!(
-            identity_step(&spec),
-            IdentityStep::AwaitInWindow,
-            "the window stays open and waits for the identity"
-        );
-        let mut harness = FrameHarness::for_root(
-            crate::State::new(),
-            identity_window_root(&spec),
-            (900, 640),
-            Theme::dark(),
-        );
-        harness.wait_until(crate::time::Duration::ZERO, |_| true);
-        assert!(
-            harness.a11y_node_named("Choose who you are here").is_some(),
-            "the window asks who is working here"
-        );
-        assert!(
-            harness.a11y_node_named("Choose identity").is_some(),
-            "and offers the identity chooser"
-        );
+        match dispatched {
+            Err(LaunchError::Operation(message)) => assert_eq!(
+                message, "this device has no identity to sign in with",
+                "the join's own reason reaches the launch"
+            ),
+            Err(other) => panic!("a launch that cannot join reports why: {other}"),
+            Ok(_) => panic!("a launch that cannot join dispatches no chooser"),
+        }
+    }
 
-        // Settings opens its device settings instead.
-        let settings = spec.clone().runs_without_identity();
-        assert_eq!(identity_step(&settings), IdentityStep::RunWithoutIdentity);
+    fn refuse_to_prepare(
+        _: &crate::application::ApplicationDefinition,
+        _: &LaunchArgs,
+    ) -> Result<crate::application::PreparedComponentInputs, LaunchError> {
+        Err(LaunchError::Operation(
+            "nothing is prepared before the app joins its workspace".into(),
+        ))
     }
 
     #[test]

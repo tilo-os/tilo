@@ -276,6 +276,11 @@ RUN --network=none \
 
 # base.json for tilo-vmd's layer checks, the dev-only update policy and the
 # flavour marker; then proof that every piece above is really in place.
+#
+# The session this image ships is the one it built: a release dev-overrides
+# build, which stamps the dev image's marker (crates/session/session). The
+# developer entry's marker is a debug build's and a release build never carries
+# it, so this check asks for the dev image's own.
 ARG BASE_IMAGE
 ARG TILO_BASE_DIGEST=
 ARG TILO_BASE_CREATED=
@@ -290,7 +295,7 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
        tilo-device-admin.service \
     && test -x /usr/libexec/tilo/tilo-control && test -x /usr/libexec/tilo/tilo-vmd \
     && /usr/libexec/tilo/tilo-vmd --version && /usr/libexec/tilo/tilo-device-admin --version \
-    && grep -aq 'tilo-app-session-build-marker-v1' /usr/bin/tilo-session \
+    && grep -aq 'tilo-dev-image-session-v1' /usr/bin/tilo-session \
     && systemd-sysext --version >/dev/null \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \
     && /usr/sbin/sshd -t -h /run/tilo-dev-hostkey \

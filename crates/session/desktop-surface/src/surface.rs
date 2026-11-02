@@ -234,9 +234,9 @@ struct Shared {
     /// What a caller of the published search asked of it, taken on the
     /// next update pass.
     search_asks: Vec<search::SearchAsk>,
-    /// The open search's query and rows, as last shown.
-    search_query: String,
-    search_rows: Vec<search::SearchRow>,
+    /// The open search, as last shown: its query and rows, and whether it
+    /// is still filling in.
+    shown_search: search::ShownSearch,
     /// The field the person types into in the desktop itself, as last
     /// shown, and the text committed into it from outside the keyboard,
     /// taken on the next update pass.
@@ -869,8 +869,7 @@ impl DesktopSurface {
             search_host: None,
             search_choices: Vec::new(),
             search_asks: Vec::new(),
-            search_query: String::new(),
-            search_rows: Vec::new(),
+            shown_search: search::ShownSearch::default(),
             typed_field: Err(search::TypedRefusal::NoField),
             typed_ask: None,
             personal_ask: None,
@@ -2817,7 +2816,12 @@ impl Widget for DesktopSurface {
                 || !shared.queue.is_empty()
                 || shared.search_revision != self.seen_search
         };
-        work || self.children().into_iter().any(Widget::needs_redraw)
+        // The desk asks its search sources a frame at a time, and cuts its
+        // rows to the card once the card gives its room: a search with such
+        // work left draws the frames that do it, so it ends with every
+        // source's rows rather than stalling part-way.
+        work || self.search.borrow().filling_in()
+            || self.children().into_iter().any(Widget::needs_redraw)
     }
 
     fn has_pending_visual_work(&self) -> bool {

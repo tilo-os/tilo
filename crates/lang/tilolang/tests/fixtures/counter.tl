@@ -12,8 +12,8 @@ action increment(c: Counter) {
 }
 
 view counter(c: Counter) {
-    column {
-        text(c.value)
+    stack {
+        text("{c.value}")
         button("+1", on: increment(c)) as plus
     }
 }

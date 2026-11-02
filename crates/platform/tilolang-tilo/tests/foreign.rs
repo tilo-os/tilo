@@ -36,8 +36,8 @@ const VIEW: &str = r#"app test.volume "Volume"
 use sound as sound
 
 view player(p: sound.Player) {
-  column {
-    text(p.level)
+  stack {
+    text("{p.level}")
     button("Up", on: sound.set_level(p, 1.0)) as up
   }
 }
@@ -117,7 +117,7 @@ fn shown(view: &ViewInstance) -> Value {
 #[test]
 fn a_view_shows_the_reading_the_app_publishes() {
     let (_host, view, _up, _module) = workspace(0.25);
-    assert_eq!(shown(&view), Value::Float(0.25));
+    assert_eq!(shown(&view), Value::text("0.25"));
 }
 
 #[test]
@@ -131,13 +131,13 @@ fn a_new_reading_runs_the_view_again() {
         matches!(
             patches.as_slice(),
             [Patch::SetProp {
-                value: Some(Value::Float(level)),
+                value: Some(Value::Text(level)),
                 ..
-            }] if (*level - 0.75).abs() < f64::EPSILON
+            }] if level == "0.75"
         ),
         "{patches:?}"
     );
-    assert_eq!(shown(&view), Value::Float(0.75));
+    assert_eq!(shown(&view), Value::text("0.75"));
 }
 
 #[test]

@@ -1362,57 +1362,38 @@ impl AppWindow {
         true
     }
 
-    /// Run the offered action an app declared `key: "x"` for, when the person presses `x` on its
-    /// own (no command, alt or shift) in this window: the row's action first (the content the
-    /// window after the list shows), else one the window's own header or content offers. The key
-    /// is the character the person's keymap puts on the key, so it is layout-correct on any
-    /// keyboard. Whether it ran one, so the press is the action's and typing does not take it.
-    fn plain_key_shortcut(
+    /// Run the offered action an app declared a shortcut for (`key: "Ctrl+Enter"`, `key: "e"`)
+    /// when the person presses it in this window: the row's action first (the content the
+    /// window after the list shows), else one the window's own header or content offers.
+    /// Whether it ran one, so the press is the action's and typing does not take it.
+    fn declared_shortcut(
         &mut self,
         event: &ui::winit::event::WindowEvent,
         modifiers: ui::winit::keyboard::ModifiersState,
     ) -> bool {
-        // A plain key: a chord belongs to the shell and to typing, and while a text field has
-        // the keyboard every key is typing.
-        if modifiers.shift_key()
-            || modifiers.control_key()
-            || modifiers.alt_key()
-            || modifiers.super_key()
-            || self.focused_text_field().is_some()
+        // While a text field has the keyboard every key is typing, and a shortcut is a press on
+        // its own: a paste, or a key an input method is composing, is neither.
+        if self.focused_text_field().is_some() || self.composing {
+            return false;
+        }
+        let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != ui::winit::event::ElementState::Pressed || key.repeat {
+            return false;
+        }
+        if key
+            .text
+            .as_ref()
+            .is_some_and(|text| text.chars().count() > 1)
         {
             return false;
         }
-        self.shortcut_ran(event)
-    }
-
-    /// Run the offered action an app declared `key: "x"` for, when the person presses `x` on its
-    /// own in this window. Whether it ran one, so the press is the action's.
-    fn shortcut_ran(&mut self, event: &ui::winit::event::WindowEvent) -> bool {
-        use ui::winit::event::WindowEvent;
-        use ui::winit::keyboard::Key;
-        let WindowEvent::KeyboardInput { event: key, .. } = event else {
-            return false;
-        };
-        if key.state != ui::winit::event::ElementState::Pressed || self.composing {
-            return false;
-        }
-        let Key::Character(typed) = &key.logical_key else {
-            return false;
-        };
-        // A plain key: a chord (a modifier held) belongs to the shell and to typing, and a paste
-        // is not a key.
-        if typed.chars().count() != 1
-            || key
-                .text
-                .as_ref()
-                .is_some_and(|text| text.chars().count() > 1)
-        {
-            return false;
-        }
+        let conventions = ui::platform::PlatformConventions::default();
         let Some((node_key, event)) = self
             .built
             .as_ref()
-            .and_then(|built| shortcut_action(built, typed))
+            .and_then(|built| shortcut_action(built, &key.logical_key, modifiers, conventions))
         else {
             return false;
         };
@@ -1421,14 +1402,15 @@ impl AppWindow {
         true
     }
 
-    /// Run the action the app declared the plain key `key` for, as pressing it does: the event
+    /// Run the action the app declared the shortcut `key` for, as pressing it does: the event
     /// it runs reaches the app at once. Whether the window offers it. A test's way in, and the
     /// person's key.
     pub fn run_shortcut(&mut self, key: &str) -> bool {
+        let wanted = ui::platform::Shortcut::from(key);
         let Some((node_key, event)) = self
             .built
             .as_ref()
-            .and_then(|built| shortcut_action(built, key))
+            .and_then(|built| shortcut_action_declared(built, &wanted))
         else {
             return false;
         };
@@ -1974,13 +1956,45 @@ fn keyed<'a>(widget: &'a dyn Widget, key: &str) -> Option<&'a dyn Widget> {
         .find_map(|child| keyed(child, key))
 }
 
-/// The node key and event to fire for the control in `node`'s tree whose plain `key` prop is
-/// `typed` (a `Button`'s `press`, a `MenuItem`'s `choose`, as the app's `key: "e"` reaches it
-/// through `std.header`). The content after the list (the row the person selected) leads, so a
-/// row's `e` beats the window's; then the whole shell. `None` when no control declares it.
-fn shortcut_action(node: &UiNode, typed: &str) -> Option<(String, String)> {
-    fn walk(node: &UiNode, typed: &str, found: &mut Option<(String, String)>) {
-        let declared = matches!(node.props.get("key"), Some(Value::Text(key)) if key == typed);
+/// The node key and event to fire for the control in `node`'s tree whose `key` prop is the press
+/// `key` with `modifiers` makes, matched the way the toolkit matches every shortcut
+/// ([`ui::platform::Shortcut::matches`]): one key, in one spelling, with the modifiers it names,
+/// and a command modifier that is the platform's own. So an app's `key: "Ctrl+Enter"` is
+/// Command+Enter on a Mac and `key: "e"` is the unshifted E on every layout (a `Button`'s
+/// `press`, a `MenuItem`'s `choose`, as the action's `key:` reaches them through `std.header`).
+/// The content after the list (the row the person selected) leads, so a row's shortcut beats the
+/// window's; then the whole shell. `None` when no control declares it.
+fn shortcut_action(
+    node: &UiNode,
+    key: &ui::winit::keyboard::Key,
+    modifiers: ui::winit::keyboard::ModifiersState,
+    conventions: ui::platform::PlatformConventions,
+) -> Option<(String, String)> {
+    let pressed = ui::platform::Shortcut::pressed(key, modifiers, conventions)?;
+    shortcut_action_where(node, &|declared| declared.same_press(&pressed))
+}
+
+/// The node key and event of the control in `node`'s tree whose `key` prop is `wanted`, as a
+/// test names it. See [`shortcut_action`].
+fn shortcut_action_declared(
+    node: &UiNode,
+    wanted: &ui::platform::Shortcut,
+) -> Option<(String, String)> {
+    shortcut_action_where(node, &|declared| declared.same_press(wanted))
+}
+
+/// The first control in `node`'s tree whose declared key shortcut `asks` for, the content after
+/// the list first.
+fn shortcut_action_where(
+    node: &UiNode,
+    asks: &dyn Fn(&ui::platform::Shortcut) -> bool,
+) -> Option<(String, String)> {
+    fn walk(
+        node: &UiNode,
+        asks: &dyn Fn(&ui::platform::Shortcut) -> bool,
+        found: &mut Option<(String, String)>,
+    ) {
+        let declared = matches!(node.props.get("key"), Some(Value::Text(key)) if asks(&ui::platform::Shortcut::from(key.as_str())));
         if declared {
             // The event the control runs its action on, by its kind: a button's `press`, a menu
             // item's `choose`.
@@ -1992,7 +2006,7 @@ fn shortcut_action(node: &UiNode, typed: &str) -> Option<(String, String)> {
             }
         }
         for child in &node.children {
-            walk(child, typed, found);
+            walk(child, asks, found);
             if found.is_some() {
                 return;
             }
@@ -2002,12 +2016,12 @@ fn shortcut_action(node: &UiNode, typed: &str) -> Option<(String, String)> {
     // selected, whose header and content offer its actions.
     let mut found = None;
     for child in crate::shell::slot_children(node, "content") {
-        walk(child, typed, &mut found);
+        walk(child, asks, &mut found);
         if found.is_some() {
             return found;
         }
     }
-    walk(node, typed, &mut found);
+    walk(node, asks, &mut found);
     found
 }
 
@@ -2125,7 +2139,7 @@ impl ui::widget::Decorator for AppWindow {
         }
         if self.hold_typing(event)
             || self.enter_moves_on(event, ctx.modifiers.state())
-            || self.plain_key_shortcut(event, ctx.modifiers.state())
+            || self.declared_shortcut(event, ctx.modifiers.state())
         {
             *ctx.handled = true;
             return;
@@ -2186,6 +2200,14 @@ mod tests {
             out.extend(wire::decode_batch::<ToApp>(&batch).expect("a batch"));
         }
         out
+    }
+
+    /// The actions a press asked the page to run.
+    fn fired(app: &mut tilo_render_protocol::patch::local::End) -> Vec<ToApp> {
+        sent(app)
+            .into_iter()
+            .filter(|message| matches!(message, ToApp::Fire { .. }))
+            .collect()
     }
 
     /// The note the page shows.
@@ -2559,15 +2581,15 @@ mod tests {
         assert!(window.receive(), "a scribble is refused, not a panic");
     }
 
-    /// A view whose header offers `Archive` as an icon button with `key: "e"`, as `std.header`
-    /// builds it for an action declaring that key: the `key` prop and the button's `press`.
-    fn keyed_menu() -> Vec<ToUi> {
+    /// A view whose header offers `Archive` as a button declaring `key`, as `std.header` builds
+    /// it for an action with that shortcut: the `key` prop and the button's `press`.
+    fn keyed_menu(key: &str) -> Vec<ToUi> {
         use wire::Event;
         let mut button = UiNode::empty("ui.Button", "archive");
         button
             .props
             .insert("label".to_owned(), Value::text("Archive"));
-        button.props.insert("key".to_owned(), Value::text("e"));
+        button.props.insert("key".to_owned(), Value::text(key));
         button.events.insert("press".to_owned(), Event::default());
         let mut shell = UiNode::empty("ui.NavShell", "shell");
         let mut actions = UiNode::empty("slot", "actions");
@@ -2585,10 +2607,10 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_key_runs_the_action_an_app_declared_it_for() {
+    fn a_declared_shortcut_runs_the_action_through_its_button() {
         let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
         let mut window = AppWindow::new(Box::new(window_end), Vec::new());
-        send(&mut app, &keyed_menu());
+        send(&mut app, &keyed_menu("Ctrl+Enter"));
         window.receive();
         assert!(
             window.failed().is_none(),
@@ -2598,13 +2620,79 @@ mod tests {
         assert!(
             window
                 .composed()
-                .is_some_and(|tree| shortcut_action(tree, "e").is_some()),
-            "the composed shell carries the declared key: {:#?}",
+                .is_some_and(|tree| shortcut_action_declared(
+                    tree,
+                    &ui::platform::Shortcut::from("Ctrl+Enter")
+                )
+                .is_some()),
+            "the composed shell carries the declared shortcut: {:#?}",
             window.composed()
         );
         let mut harness =
             ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
-        // The offered action's own `key:` names it: a plain `e`, no modifier, fires it.
+        let press = |harness: &mut ui::headless::FrameHarness, modifiers: &[&str], key: &str| {
+            let modifiers: Vec<String> = modifiers.iter().map(|name| (*name).to_owned()).collect();
+            harness.set_modifiers(&modifiers);
+            harness.key(key);
+            harness.set_modifiers(&[]);
+            let window = harness
+                .root_widget_mut()
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<AppWindow>())
+                .expect("the window");
+            window.flush();
+        };
+        // The action's own `key:` names its shortcut: its modifiers with its key, and neither
+        // half on its own, nor another modifier held with it.
+        press(&mut harness, &["command"], "Enter");
+        assert_eq!(
+            fired(&mut app),
+            [ToApp::Fire {
+                lane: Lane::Root,
+                key: "archive".to_owned(),
+                event: "press".to_owned(),
+                value: None,
+            }],
+            "the press ran the declared action, through its button"
+        );
+        for (modifiers, key) in [(&[][..], "Enter"), (&["command"][..], "E")] {
+            press(&mut harness, modifiers, key);
+            assert!(
+                fired(&mut app).is_empty(),
+                "{modifiers:?}+{key} is not the action's shortcut"
+            );
+        }
+        press(&mut harness, &["command", "shift"], "Enter");
+        assert!(
+            fired(&mut app).is_empty(),
+            "a modifier the shortcut does not name is another press"
+        );
+    }
+
+    /// A plain key is a shortcut too, and a press with any modifier held is another.
+    #[test]
+    fn a_plain_declared_key_runs_it_alone() {
+        let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+        let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+        send(&mut app, &keyed_menu("e"));
+        window.receive();
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
+        harness.set_modifiers(&["command".to_owned()]);
+        harness.key("e");
+        harness.set_modifiers(&[]);
+        {
+            let window = harness
+                .root_widget_mut()
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<AppWindow>())
+                .expect("the window");
+            window.flush();
+        }
+        assert!(
+            fired(&mut app).is_empty(),
+            "the command key is not the plain key"
+        );
         harness.key("e");
         {
             let window = harness
@@ -2618,16 +2706,7 @@ mod tests {
             .into_iter()
             .filter(|message| matches!(message, ToApp::Fire { .. }))
             .collect();
-        assert_eq!(
-            fired,
-            [ToApp::Fire {
-                lane: Lane::Root,
-                key: "archive".to_owned(),
-                event: "press".to_owned(),
-                value: None,
-            }],
-            "the press ran the declared action, through its button"
-        );
+        assert_eq!(fired.len(), 1, "the plain key ran it: {fired:?}");
         // A key no offered action declares is not the window's: typing and chords pass through.
         harness.key("q");
         {

@@ -24,7 +24,7 @@ action decrement(c: Counter) (icon: .minus) {
 view counter(c: Counter) {
     std.page(c) {
         section("Count") {
-            text("{c.value}", role: .numeric)
+            ui.Text("{c.value}", role: .title, numeric: true)
         }
         controls(c)
     }

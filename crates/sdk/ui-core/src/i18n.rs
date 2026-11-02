@@ -524,30 +524,6 @@ fn make_bundle(locale: &LanguageIdentifier, source: &str) -> Result<Bundle, I18n
     Ok(bundle)
 }
 
-/// Format `key` from `bundle`: `None` when the bundle has no such message,
-/// otherwise the text and whether it formatted without errors (a missing
-/// variable, an unknown reference).
-fn format_from_bundle(
-    bundle: &Bundle,
-    key: &str,
-    args: Option<&FluentArgs>,
-) -> Option<(String, bool)> {
-    // `message.attribute` names an attribute of a message: Fluent keys hold no `.`, so the
-    // split is unambiguous (a tilolang declaration's `d-<id>.noun`, `.doc`).
-    let pattern = match bundle.get_message(key) {
-        Some(message) => message.value()?,
-        None => {
-            let (name, attribute) = key.rsplit_once('.')?;
-            bundle.get_message(name)?.get_attribute(attribute)?.value()
-        }
-    };
-    let mut errors = Vec::new();
-    let value = bundle
-        .format_pattern(pattern, args, &mut errors)
-        .to_string();
-    Some((value, errors.is_empty()))
-}
-
 /// Log, once per message and thread, that `key` formatted only with errors
 /// in every catalogue: its caller left a variable out, or the message
 /// references one that does not exist. The person sees a `{ $… }`.
@@ -575,7 +551,7 @@ struct Resolution<'k, 'a> {
 
 impl Resolution<'_, '_> {
     fn attempt(&mut self, bundle: &Bundle) -> Option<String> {
-        match format_from_bundle(bundle, self.key, self.args)? {
+        match tilo_history::format_message(bundle, self.key, self.args)? {
             (value, true) => Some(value),
             (value, false) => {
                 self.partial.get_or_insert(value);
@@ -2093,7 +2069,7 @@ mod tests {
             args.set("name", FluentValue::from("scribe"));
             args.set("person", FluentValue::from("Ada"));
             for (locale, bundle) in [("en-US", &en), ("de-DE", &de)] {
-                let (value, clean) = format_from_bundle(bundle, key, Some(&args))
+                let (value, clean) = tilo_history::format_message(bundle, key, Some(&args))
                     .unwrap_or_else(|| panic!("{locale}.ftl lacks {key}"));
                 assert!(clean, "{locale}.ftl formats {key} with errors: {value}");
             }

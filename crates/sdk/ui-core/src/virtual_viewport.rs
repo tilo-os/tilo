@@ -1355,6 +1355,23 @@ where
         true
     }
 
+    /// Cache a row folded away as taking no room at all: a closed group's rows stand on the
+    /// same offset, under their heading's band.
+    pub fn collapse(&mut self, index: usize, key: K) -> bool {
+        if index >= self.count {
+            return false;
+        }
+        if self.measurements.get(&key) == Some(&0.0) && self.positions.get(&key) == Some(&index) {
+            return false;
+        }
+        let anchor = self.capture_numeric_anchor();
+        self.measurements.insert(key.clone(), 0.0);
+        self.positions.insert(key, index);
+        self.rebuild_prefix();
+        self.restore_numeric_anchor(anchor);
+        true
+    }
+
     /// Move a resident measurement to a replacement stable key without
     /// changing its logical position. Useful when a placeholder resolves to
     /// a real model id.
@@ -1505,7 +1522,13 @@ where
         self.prefix_deltas.push(0.0);
         self.height_by_index.clear();
         for (index, authored_height) in rows {
-            let height = authored_height.max(self.minimum_height);
+            // A row folded away takes no room: the minimum keeps the rows a person can see
+            // and press reachable, and a folded row is neither.
+            let height = if authored_height <= 0.0 {
+                0.0
+            } else {
+                authored_height.max(self.minimum_height)
+            };
             self.measured_indices.push(index);
             self.height_by_index.insert(index, height);
             let previous = self.prefix_deltas.last().copied().unwrap_or(0.0);

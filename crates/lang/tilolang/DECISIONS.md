@@ -41,7 +41,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   strings as before (see "Syntax revision"). Bare flags (`truncate`, `page(full)`) are `ui_prop_i(n, "<flag>", 1)`; `fill` is
   `ui_prop_f(n, "fill", 1.0)` and `fill(2)` carries the weight. `aspect: 16/9` is constant-folded to a
   Float. `primary`/`secondary` are primitives (slots of `split`); the compiler does not check they sit
-  in a `split`. `column` stays as an older name of `stack`. `;` separates statements on one line.
+  in a `split`. `;` separates statements on one line.
 - **`embed(source, author: p, invocation: i)`** is a UI primitive:
   `source` is `Text`, `author` a `Principal` and `invocation` an
   `Option<host.Invocation>`. `source` and `author` are required (E022; E020 for a wrong
@@ -76,7 +76,9 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   neither holds nor reads is still a `host.Resource` (`foreign_ref`): a value it passes to an
   action, as the reference a listing or an answer showed (`n2`) is written. Reading it fails as
   a read of any app the program may not read does.
-- **`list(items) { x -> ... }`** is parsed as `column { for x in items { ... } }`.
+- **`list(items) { x -> ... }`** is a `list` node whose children are one `item` node per resource,
+  the item block's nodes under it (or the type's `row view`). The host builds and lays out a row
+  when it scrolls to it, so a long list costs only the rows on screen.
 
 ## Language choices
 
@@ -91,8 +93,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - A flow can only invoke actions. In a view or a block, applying a flow (or an action) yields an
   `Action` value (`act_ref`), so a flow can be exposed as an action. Flows cannot call flows.
 - `sort_by(x -> key)` compiles to a loop that collects the keys into a parallel list and one call of
-  `list_sort_by_key(items, keys) -> list`: ascending and stable, keys Int, Float, Text or Bool
-  (E020 otherwise). There is no descending order and no `list_set`.
+  `list_sort_by_key(items, keys) -> list`: stable, ascending or `desc` (the same list reversed),
+  keys Int, Float, Text or Bool (E020 otherwise), and a Date or Time, which sorts as its ISO text.
+  A key that may be absent sorts as no text at all, before every day, so a list grouped by a day
+  sorts by the same field. There is no `list_set`.
 - `try act(args)` (flows only, E044 elsewhere) invokes an action and gives a `Result<T, Text>`
   (`Result<(), Text>` for an action without a result): `.ok(result)`, or `.err(reason)` when the
   invocation was denied, declined or trapped. It compiles to one import, `try_invoke(act) -> h`,
@@ -111,6 +115,28 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   `Action` values); a UI primitive or foreign view call, or a view body, is a `View`. The block module
   is `app agent.block.<run id>` (`main` for `compile_block`) and exports `memory` and `b_main`.
 - `module_hash` is the SHA-256 of the module without the `tilolang.meta` section.
+- **A primitive that is a component is only that component's shorter name.** `text`,
+  `rich_text`, `section`, `avatar`, `progress`, `toggle`, `checkbox`, `input`, `rich_input` and
+  `image` are `ui.Text`, `ui.RichText`, ... : `prims.rs` names the component (`Prim::component`)
+  and `checker::component::component_prim` checks and lowers the call as the component's own, so
+  its props, slots, events and bindings are the description's and nothing is added. `button` (a
+  declared action's button) and `facts` build `ui.Button` and `ui.PropertyList` (`Prim::builds`)
+  because their arguments are the statement form's own. Removed with replacements named in
+  E096: `card` (`ui.Card(item: x, title: meta(x).title)`), `column` (`stack`), `date`
+  (`ui.DateField`, or `ui.DatePicker` for a calendar), and the arguments a component's own props
+  carry (`text(x, style:)`, `button(act, size:)`, `image(src, width:)`). Layout stays the
+  layout.md vocabulary over the host's layout engine (`stack`, `row`, `grid`, `split`, `page`,
+  `layers`, `scroll`, `spacer`, `divider`, `fragment`), and `list`, `form`, `field`, `choice`,
+  `embed` and `show` lower with rules of their own.
+- **`text(x)` is `ui.Text`, so `x` is Text.** A number is interpolated (`text("{count}")`) or
+  shown by a component that takes one; a figure is `numeric: true`, not a role.
+- **`bind:` is the component's binding.** A component that declares one binding takes `bind:`
+  whatever the binding is called (`ui.TextInput(bind: t.title)`, `ui.Checkbox(bind: t.done)`,
+  `ui.DatePicker(bind: t.due)`, `ui.RichInput(bind: t.notes)`); a component that declares more
+  than one is written with the binding's own name. The checker resolves it from the description
+  (`only_binding`), so the value's type and its merge (text spliced, rich text rich, a register
+  replaced) are the description's, with no per-widget code, and a view's state binds like a
+  field.
 
 ## Packages of several files
 
@@ -182,12 +208,14 @@ workspace-model.md. The grammar is [grammar.md](grammar.md); the README shows it
   is written `enum Name` (`enum so.tilo.notes.NoteOrder` when foreign) in metadata only, so a
   reader of the metadata tells it from a record without the declaring package at hand; source
   and diagnostics write `Name`. `Ty::meta_text` writes it, `Ty::parse_meta` reads it.
-- **Built-in enums of the platform** (`Ty::Choice`): the options of UI primitives (`Gap`, `Align`,
-  `Distribute`, `Collapse`, `Side`, `Position`, `Axis`, `ButtonStyle`, `TextStyle`) and the
-  `space` enums (`WidthClass`, `Orientation`). Their values are the variant index (an `i64`),
-  so they compare with `==` and can be chosen at run time (`style: if on { .primary } else {
-  .plain }`); a UI option becomes `ui_prop_h(node, name, <variant name>)`, a constant for a
-  literal and an `if` chain otherwise. They have no names in source. A bare word where an option
+- **Built-in enums of the platform** (`Ty::Choice`): the options of the layout primitives (`Gap`,
+  `Align`, `Distribute`, `Collapse`, `Side`, `Position`, `Axis`) and the `space` enums
+  (`WidthClass`, `Orientation`). Their values are the variant index (an `i64`), so they compare
+  with `==` and can be chosen at run time (`at: if low { .bottom } else { .top }`); a UI option
+  becomes `ui_prop_h(node, name, <variant name>)`, a constant for a literal and an `if` chain
+  otherwise. The cases a `ui.*` component declares (`ui.Button`'s `role`, `ui.Text`'s `role`)
+  are the description's, checked by name against it and lowered the same way (`component.rs`,
+  `case_value`). They have no names in source. A bare word where an option
   is expected is E065 with the dot form; `space.width_class == wide` is now `== .wide`.
 - **One `if`.** `if c { a } else { b }` is an expression (`Ek::If` over two block values); `if ...
   then ... else` is gone. As an expression statement (and in a view body) the branches run as

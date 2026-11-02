@@ -10,12 +10,17 @@ license.workspace = true
 default = []
 # The HTTPS server identity alone (`tls`): rustls, without the relay stack.
 tls = ["dep:rustls"]
-relay = ["tls", "dep:moq-net", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:hex", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
+# The plane's names and the client half of its carrier: the namespace of one
+# device in one scope, the tracks within it and their delivery, and the
+# admission a page runs over WebTransport. Builds for the page, which
+# publishes and reads them itself.
+plane = ["dep:moq-net", "dep:hex", "dep:n0-future"]
+# The relay, the native carrier, and one participant's sealed plane: the
+# readers of a sealed plane run on the device's own runtime, which a page has
+# not.
+relay = ["tls", "plane", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json", "dep:tilo-call-lane", "dep:channel-crypto"]
 # The same carrier over a direct iroh connection, beside WebTransport.
 native = ["relay", "dep:iroh"]
-# The sealed plane: one participant's session in one scope, sealed under the
-# scope's channel content keys.
-plane = ["relay", "dep:tilo-call-lane", "dep:channel-crypto"]
 
 [dependencies]
 # The scope of a track is a channel of an app's record.
@@ -29,6 +34,8 @@ url = { workspace = true, optional = true }
 serde = { workspace = true, optional = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 moq-net = { workspace = true, optional = true }
+# Plain future polling: the client carrier runs in a page as it does natively.
+n0-future = { version = "0.3", optional = true }
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"], optional = true }
 quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 rustls = { workspace = true, optional = true }

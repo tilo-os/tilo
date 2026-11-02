@@ -686,6 +686,9 @@ pub struct Client {
     /// ALPN: what it answers on this device's endpoint, so the session can
     /// say whether it serves one ([`Self::serves`]).
     beside: Vec<Vec<u8>>,
+    /// The workspaces' live plane: their relays and this device's sessions in
+    /// them, on a thread of its own.
+    live: Option<crate::live::Live>,
     /// The thread running the peer actor, stopped when this drops.
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -709,6 +712,9 @@ impl std::fmt::Debug for Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
+        // The live planes dial through this endpoint: they end before it does,
+        // and before the thread that holds it joins.
+        drop(self.live.take());
         let _ = self.outgoing.send(Outgoing::Stop);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -770,6 +776,16 @@ impl Client {
         let bound_endpoint = Arc::clone(&endpoint_handle);
         let lane = crate::calls::LaneSlot::default();
         let served_lane = lane.clone();
+        // The workspaces' live plane: its relay role, when this device may
+        // serve one, is one more protocol on the endpoint this session binds.
+        // Its planes open once the endpoint is bound.
+        let mut live = engine
+            .as_ref()
+            .map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(&wake)));
+        let mut beside = beside;
+        if let Some(live) = &mut live {
+            beside.extend(live.protocols());
+        }
         let served: Vec<Vec<u8>> = beside.iter().map(|(alpn, _)| alpn.clone()).collect();
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
@@ -799,6 +815,9 @@ impl Client {
             .recv()
             .map_err(std::io::Error::other)?
             .map_err(std::io::Error::other)?;
+        if let (Some(live), Some(bound)) = (&mut live, endpoint_handle.get()) {
+            live.attach(bound.clone());
+        }
         if let Some(link) = &link {
             link.attach(outgoing.clone());
         }
@@ -832,6 +851,7 @@ impl Client {
             device_actions,
             reachability,
             beside: served,
+            live,
             thread: Some(thread),
         };
         // The person's other devices are heard from the start, so a list one
@@ -869,6 +889,14 @@ impl Client {
     #[must_use]
     pub fn engine(&self) -> Option<&Arc<Engine>> {
         self.engine.as_ref()
+    }
+
+    /// The workspaces' live plane: what this session says into and hears from
+    /// each of them, and the relay each one is carried by; `None` when this
+    /// session holds no workspaces.
+    #[must_use]
+    pub fn live(&self) -> Option<&crate::live::Live> {
+        self.live.as_ref()
     }
 
     /// Redeem `request`'s invitation off the loop: this device joins the
@@ -1825,6 +1853,7 @@ impl Client {
                 device_actions: Arc::new(std::sync::OnceLock::new()),
                 reachability,
                 beside: Vec::new(),
+                live: None,
                 thread: None,
             },
             said,
@@ -2195,22 +2224,9 @@ async fn redeem(
     link: Option<&ChannelLink>,
 ) -> Result<(), String> {
     let topic = workspace_topic_id(request.workspace_id);
-    // The workspace is joined as this person, under the identity they keep for
-    // it: a workspace they select another of their identities for shows that one.
-    let (selected, _) = identity.current_native_material(topic)?;
-    if identity.identity_paths.is_some() {
-        let registry = tilo_identity_host::registry::IdentityRegistryStore::from_env()
-            .map_err(|error| format!("this computer's identities cannot be read: {error}"))?;
-        registry
-            .bind_workspace(
-                &request.workspace_id.to_string(),
-                &hex::encode(selected.user_public_key),
-            )
-            .map_err(|error| format!("the workspace is not kept as this person's: {error}"))?;
-        if identity.current_native_material(topic)?.0 != selected {
-            return Err("this computer's identity for the workspace changed while joining".into());
-        }
-    }
+    // The workspace is joined as this computer's person: the device's own
+    // certificate signs the enrollment, so there is nothing to pick here.
+    identity.current_native_material(topic)?;
     let owner = engine.owner().clone();
     let client = tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint);
     let enrollment = tokio::time::timeout(

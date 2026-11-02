@@ -132,6 +132,11 @@ impl Session {
     pub(crate) fn is_open(&self) -> bool {
         !*self.end.borrow() && Instant::now() < self.expires
     }
+
+    /// The token that names this session on every route.
+    pub(crate) fn token(&self) -> [u8; 32] {
+        self.token
+    }
 }
 
 /// Every browser session of one host.
@@ -316,6 +321,9 @@ impl Sessions {
         let ended = lock(&self.live).remove(token);
         if let Some(session) = ended {
             session.close();
+            // What an admission over this session read has changed: the
+            // page's live plane re-answers and cuts its session.
+            crate::authority_epoch::bump();
         }
     }
 
@@ -445,8 +453,13 @@ impl Sessions {
             live.retain(|_, session| !ended.iter().any(|gone| Arc::ptr_eq(gone, session)));
             ended
         };
+        let ended_any = !ended.is_empty();
         for session in ended {
             session.close();
+        }
+        if ended_any {
+            // As [`Self::end`]: an admission over an ended session re-checks.
+            crate::authority_epoch::bump();
         }
         lock(&self.handshakes).retain(|_, pending| pending.started.elapsed() < HANDSHAKE_TTL);
     }

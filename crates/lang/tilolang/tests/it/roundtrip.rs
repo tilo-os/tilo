@@ -75,7 +75,7 @@ action a(l: T) -> Int proposal v(l) {
 view v(l: todo.TodoList) {
     window order: Shape = .dot
     lens picked: Option<Int> = .none
-    column(gap: .section, align: .center) {
+    stack(gap: .section, align: .center) {
         for i in l.items {
             if i.done {
                 text("done", role: .caption)

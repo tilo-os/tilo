@@ -1160,9 +1160,9 @@ impl App {
     }
 
     /// A window showing `factory`'s root that joins no workspace: what a
-    /// launch shows while its workspace has no identity selected
-    /// ([`crate::workspace_identity`]). It takes the process's other system
-    /// services as any window does; collaboration waits for the identity.
+    /// launch shows while the record it opens arrives with the workspace's
+    /// join ([`crate::launch::window`]). It takes the process's other system
+    /// services as any window does; collaboration waits for the join.
     #[cfg(feature = "native")]
     pub(crate) fn without_workspace(factory: impl FnOnce() -> Box<dyn Widget>) -> Self {
         Self::from_factory_with_inputs(State::new(), factory, || {

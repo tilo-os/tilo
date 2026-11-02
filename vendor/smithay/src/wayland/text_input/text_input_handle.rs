@@ -201,6 +201,16 @@ impl TextInputHandle {
         });
     }
 
+    /// Whether a `text-input-v3` client holds the field that types now: a
+    /// focused surface whose text input is active. What the compositor's own
+    /// fields are served instead when this does not hold.
+    pub fn has_active_text_input(&self) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let mut active = false;
+        inner.with_active_text_input(|_, _, _| active = true);
+        active
+    }
+
     /// Access what the active text-input instance's client last committed:
     /// the serial of that commit, the content type it declared and the cursor
     /// rectangle it reported.

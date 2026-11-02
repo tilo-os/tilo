@@ -123,10 +123,9 @@ impl LegacyImportAuthority for Authority {
         // Reads current enrollment and fleet revocations, not startup's snapshot.
         let (_, cert) =
             tilo_identity_host::broker::trusted_current_device(&request.destination_workspace)?;
-        let selected = tilo_identity_host::registry::selected_identity_profile(
-            &request.destination_workspace,
-        )?
-        .ok_or_else(|| anyhow::anyhow!("legacy import identity unavailable"))?;
+        let selected =
+            tilo_identity_host::registry::identity_for_workspace(&request.destination_workspace)?
+                .ok_or_else(|| anyhow::anyhow!("legacy import identity unavailable"))?;
         anyhow::ensure!(
             cert.device_public_key == self.device && selected.principal_id() == approval.account,
             "legacy import enrollment changed"

@@ -250,6 +250,27 @@ fn sort_by_takes_dates_and_times_and_a_descending_order() {
 }
 
 #[test]
+fn sort_by_takes_a_key_path_that_may_be_absent() {
+    // A list grouped by a day sorts by its date too, and the items without one come first.
+    ok("fn f(c: C) -> List<C> {\n    c.items.sort_by(.due)\n}");
+    ok("fn f(c: C) -> List<C> {\n    c.items.filter(.b).sort_by(.due, desc)\n}");
+    ok("fn f(c: C) -> List<C> {\n    c.items.sort_by(x -> x.at)\n}");
+}
+
+#[test]
+fn a_ui_let_writes_the_type_its_value_is_read_as() {
+    // What `std.rows` writes: a heading that is absent when the app names no group.
+    ok(
+        "view w(c: C) {\n    ui.VirtualList {\n        let heading: Option<Date> = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",
+    );
+    // Without it the `else` has nothing to say what it is.
+    expect(
+        "E020",
+        "view w(c: C) {\n    ui.VirtualList {\n        let heading = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",
+    );
+}
+
+#[test]
 fn an_action_label_reads_its_arguments_where_it_is_applied() {
     let src = format!(
         "app t.x \"X\"\n{C}action move_to(c: C, to: C) (label: \"Move to {{to.t}}\") {{\n    c.t = to.t\n}}\naction rename(c: C) (label: \"Rename {{c.t}}\") {{\n    c.t = \"x\"\n}}\nview w(c: C, d: C) {{\n    button(move_to(c, d))\n    button(rename(c))\n}}\n"
@@ -321,6 +342,31 @@ fn check_fails_on_a_stale_ids_lock_and_writes_it_when_asked() {
     assert_eq!(written, format!("{:?}", std::process::ExitCode::SUCCESS));
     let lock = std::fs::read_to_string(dir.join("app.ids")).expect("lock");
     assert!(lock.contains("C.n = "), "{lock}");
+    // The same entries, in another order, are not what a build writes: a check says so, and
+    // --write-ids puts them back in the order the tool writes them.
+    let header = lock.lines().next().expect("header");
+    let mut entries: Vec<&str> = lock
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .collect();
+    entries.reverse();
+    std::fs::write(
+        dir.join("app.ids"),
+        format!("{header}\n{}\n", entries.join("\n")),
+    )
+    .expect("reordered lock");
+    assert_ne!(
+        run(&["check", &path]),
+        format!("{:?}", std::process::ExitCode::SUCCESS),
+        "a lock in another order is out of date"
+    );
+    let rewritten = run(&["check", &path, "--write-ids"]);
+    assert_eq!(rewritten, format!("{:?}", std::process::ExitCode::SUCCESS));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("app.ids")).expect("lock"),
+        lock,
+        "the tool's order is back"
+    );
     assert_eq!(
         run(&["check", &path]),
         format!("{:?}", std::process::ExitCode::SUCCESS)

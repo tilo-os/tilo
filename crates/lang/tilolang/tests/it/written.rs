@@ -43,7 +43,7 @@ fn its_writer_is_part_of_what_it_is() {
 
 #[test]
 fn a_bare_body_is_a_view_that_takes_nothing() {
-    let v = written("column {\n    text(\"Good morning\")\n}").unwrap();
+    let v = written("stack {\n    text(\"Good morning\")\n}").unwrap();
     assert!(v.params.is_empty());
     assert_eq!(v.shows(), None);
     // Its diagnostics are where it was written, not where it was wrapped.

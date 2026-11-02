@@ -2249,7 +2249,7 @@ impl BlockEditor {
         };
         Self::remove_line_range(&mut b.line, 0..prefix_len);
         b.line.set_cursor_pos(0);
-        self.try_convert_to(idx, BlockKind::Heading(level))
+        self.start_typed_block(idx, BlockKind::Heading(level))
     }
 
     /// Converts a freshly typed `> ` paragraph prefix into a semantic quote.
@@ -2262,7 +2262,7 @@ impl BlockEditor {
         }
         Self::remove_line_range(&mut block.line, 0..2);
         block.line.set_cursor_pos(0);
-        self.try_convert_to(idx, BlockKind::Quote)
+        self.start_typed_block(idx, BlockKind::Quote)
     }
 
     /// Remove a typed command without discarding formatting on its contents.
@@ -2361,6 +2361,17 @@ impl BlockEditor {
         self.focused
             .and_then(|index| self.blocks.get(index))
             .map(|block| &block.kind)
+    }
+
+    /// Convert the block at `idx` because the person typed its Markdown
+    /// marker: the marker starts a block at its own level. A line that only
+    /// continues the list item above carries that item's depth in `nesting`,
+    /// which must not become the new block's level.
+    fn start_typed_block(&mut self, idx: usize, kind: BlockKind) -> bool {
+        if let Some(block) = self.blocks.get_mut(idx) {
+            block.nesting = 0;
+        }
+        self.try_convert_to(idx, kind)
     }
 
     /// Preserve authored formatting, caret, binding and outline context.
@@ -11697,8 +11708,9 @@ impl BlockEditor {
             let now = b.line.value();
             if now != before {
                 let caret = b.line.cursor_pos().min(now.len());
-                if let Some((kind, prefix_len)) = typed_list_prefix(&b.kind, now, caret) {
-                    self.try_convert_to(focused_idx, kind);
+                if let Some((kind, prefix_len)) = typed_list_prefix(&b.kind, b.indent(), now, caret)
+                {
+                    self.start_typed_block(focused_idx, kind);
                     let line = &mut self.blocks[focused_idx].line;
                     Self::remove_line_range(line, 0..prefix_len);
                     self.edit_pending = true;
@@ -11710,7 +11722,7 @@ impl BlockEditor {
                 } else if matches!(b.kind, BlockKind::Paragraph) && now == "---" && caret == 3 {
                     // A rule typed on its own line is a divider, as Markdown reads it.
                     Self::remove_line_range(&mut self.blocks[focused_idx].line, 0..3);
-                    self.try_convert_to(focused_idx, BlockKind::Divider);
+                    self.start_typed_block(focused_idx, BlockKind::Divider);
                     self.edit_pending = true;
                     self.commit_pending = true;
                 } else if matches!(b.kind, BlockKind::Paragraph)
@@ -11721,6 +11733,7 @@ impl BlockEditor {
                     let lang = (!language.is_empty()).then(|| language.to_string());
                     let block = &mut self.blocks[focused_idx];
                     let bound = block.line.bound_obj();
+                    block.nesting = 0;
                     block.kind = BlockKind::CodeBlock { lang: lang.clone() };
                     block.code_group = Some(block.id.clone());
                     block.line = RichTextLine::new().with_size(block.kind.font_size());
@@ -11748,9 +11761,22 @@ fn is_fence_language_character(character: char) -> bool {
 
 /// Recognize only a complete marker before the caret. A bullet can become a
 /// task after its `- ` marker has already promoted, preserving its indentation.
-fn typed_list_prefix(kind: &BlockKind, text: &str, caret: usize) -> Option<(BlockKind, usize)> {
+fn typed_list_prefix(
+    kind: &BlockKind,
+    depth: u8,
+    text: &str,
+    caret: usize,
+) -> Option<(BlockKind, usize)> {
     let prefix = text.get(..caret)?;
-    let indent = kind.indent();
+    // A marker typed on a line that only continues a list item starts at the
+    // level of the item it continues, not one deeper inside it: the line's
+    // inherited depth is where its text sits, not a level the marker names.
+    // On a list item the marker keeps that item's own level.
+    let indent = if matches!(kind, BlockKind::Bullet { .. }) {
+        depth
+    } else {
+        depth.saturating_sub(1)
+    };
     let task = match prefix {
         "[ ] " => Some(false),
         "[x] " | "[X] " => Some(true),
@@ -11765,8 +11791,8 @@ fn typed_list_prefix(kind: &BlockKind, text: &str, caret: usize) -> Option<(Bloc
         return None;
     }
     let new_kind = match prefix {
-        "- " | "* " | "+ " => BlockKind::Bullet { indent: 0 },
-        "1. " | "1) " => BlockKind::Numbered { indent: 0 },
+        "- " | "* " | "+ " => BlockKind::Bullet { indent },
+        "1. " | "1) " => BlockKind::Numbered { indent },
         _ => return None,
     };
     Some((new_kind, prefix.len()))

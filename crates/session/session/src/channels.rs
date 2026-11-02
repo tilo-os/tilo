@@ -560,11 +560,19 @@ fn spawn_pump(
 /// (Unix nanoseconds).
 pub(crate) type Roster = Vec<RosterDevice>;
 
-/// The roster of `workspace`: the devices its governance admits now, which
-/// are the ones its window streams carry between. A device the workspace
-/// removed, or whose certificate ran out, is not on it, and what it sent or
-/// would receive is refused from then on.
-pub(crate) fn roster_of(engine: &Engine, workspace: RoomId) -> Result<Roster, String> {
+/// One device `workspace` admits, with the certificate the workspace
+/// certified it under: what its role in the workspace is read from.
+#[derive(Clone, Debug)]
+pub(crate) struct Member {
+    pub(crate) device: [u8; 32],
+    pub(crate) cert: tilo_user_identity::DeviceCert,
+}
+
+/// The members of `workspace`: the devices its governance admits now, with
+/// the certificate it holds of each. A device the workspace removed, or whose
+/// certificate ran out, is not one, and what it sent or would receive is
+/// refused from then on.
+pub(crate) fn members_of(engine: &Engine, workspace: RoomId) -> Result<Vec<Member>, String> {
     let now = SystemTime::now();
     engine.owner().with_current(workspace, |view| {
         let admitted: BTreeSet<[u8; 32]> = view
@@ -578,7 +586,7 @@ pub(crate) fn roster_of(engine: &Engine, workspace: RoomId) -> Result<Roster, St
             .peer()
             .admitted_workspace()
             .ok_or("no admitted workspace")?;
-        let mut roster = BTreeMap::new();
+        let mut members = BTreeMap::new();
         for bytes in tilo_peer_state::workspace::governance_of(Some(document))
             .identities
             .values()
@@ -588,18 +596,30 @@ pub(crate) fn roster_of(engine: &Engine, workspace: RoomId) -> Result<Roster, St
             };
             let device = row.device_cert.device_public_key;
             if admitted.contains(&device) {
-                roster.insert(device, row.device_cert.expires_at_ns);
+                members.insert(
+                    device,
+                    Member {
+                        device,
+                        cert: row.device_cert,
+                    },
+                );
             }
         }
-        roster
-            .into_iter()
-            .map(|(device, expires_at_ns)| {
-                iroh::EndpointId::from_bytes(&device)
-                    .map(|publisher| (publisher, expires_at_ns))
-                    .map_err(|error| error.to_string())
-            })
-            .collect()
+        Ok(members.into_values().collect())
     })
+}
+
+/// The roster of `workspace`, as [`members_of`] reads it: the devices whose
+/// window streams carry between.
+pub(crate) fn roster_of(engine: &Engine, workspace: RoomId) -> Result<Roster, String> {
+    members_of(engine, workspace)?
+        .into_iter()
+        .map(|member| {
+            iroh::EndpointId::from_bytes(&member.device)
+                .map(|publisher| (publisher, member.cert.expires_at_ns))
+                .map_err(|error| error.to_string())
+        })
+        .collect()
 }
 
 #[cfg(test)]

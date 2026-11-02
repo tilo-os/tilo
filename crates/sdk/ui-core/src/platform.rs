@@ -247,8 +247,54 @@ impl Shortcut {
         .into_iter()
         .filter(|(held, _)| *held)
         .map(|(_, modifier)| keycaps.modifier(modifier).to_owned())
-        .chain(std::iter::once(self.key.clone()))
+        .chain(std::iter::once(keycaps.key(&self.key)))
         .collect()
+    }
+
+    /// Whether the press of `key` with `modifiers` asks for this shortcut: the
+    /// same key, with exactly the modifiers it names. A command modifier is
+    /// the platform's own ([`PlatformConventions::command_modifier`]), so a
+    /// declared `Ctrl+Enter` is Command+Enter on a Mac and Ctrl+Enter
+    /// elsewhere, and no other modifier held along with it matches.
+    #[must_use]
+    pub fn matches(
+        &self,
+        key: &winit::keyboard::Key,
+        modifiers: winit::keyboard::ModifiersState,
+        conventions: PlatformConventions,
+    ) -> bool {
+        Self::pressed(key, modifiers, conventions).is_some_and(|pressed| self.same_press(&pressed))
+    }
+
+    /// The shortcut a live press asks for, in `conventions`' spelling, or
+    /// `None` for a key no shortcut can name.
+    #[must_use]
+    pub fn pressed(
+        key: &winit::keyboard::Key,
+        modifiers: winit::keyboard::ModifiersState,
+        conventions: PlatformConventions,
+    ) -> Option<Self> {
+        let key = crate::keys::token(key)?;
+        let command = conventions.command_modifier_down(modifiers);
+        Some(Self {
+            key,
+            command,
+            shift: modifiers.shift_key(),
+            alt: modifiers.alt_key(),
+            // On a Mac the command modifier is Super, so it is named once.
+            system: modifiers.super_key() && !command,
+        })
+    }
+
+    /// Whether both ask for one press: one key, in one spelling, with the
+    /// same modifiers.
+    #[must_use]
+    pub fn same_press(&self, other: &Self) -> bool {
+        crate::keys::canonical(&self.key) == crate::keys::canonical(&other.key)
+            && self.command == other.command
+            && self.shift == other.shift
+            && self.alt == other.alt
+            && self.system == other.system
     }
 }
 
@@ -406,22 +452,23 @@ mod tests {
     }
 }
 
+/// A chord as an app, a menu or the person's table writes it (`Ctrl+Enter`,
+/// `Super+W`, `F2`, `e`): one table for the modifiers and the key names it
+/// parses with ([`tilo_ui_graph::keys::Chord`]), the same one the compiler
+/// checks an app's declared shortcut against.
 impl From<&str> for Shortcut {
     fn from(label: &str) -> Self {
-        let mut parts = label.split('+').map(str::trim).collect::<Vec<_>>();
-        let key = parts.pop().unwrap_or_default();
+        let Ok(chord) = tilo_ui_graph::keys::Chord::parse(label) else {
+            // Not a chord the toolkit knows: it matches the press of that one
+            // key, spelled as it was written, and nothing else.
+            return Self::key(label.trim());
+        };
         Self {
-            key: key.to_owned(),
-            command: parts
-                .iter()
-                .any(|part| matches!(*part, "Ctrl" | "Cmd" | "Command" | "⌘")),
-            shift: parts.iter().any(|part| matches!(*part, "Shift" | "⇧")),
-            alt: parts
-                .iter()
-                .any(|part| matches!(*part, "Alt" | "Option" | "⌥")),
-            system: parts
-                .iter()
-                .any(|part| matches!(*part, "Super" | "Meta" | "Win")),
+            key: chord.key,
+            command: chord.command,
+            shift: chord.shift,
+            alt: chord.alt,
+            system: chord.system,
         }
     }
 }

@@ -17,7 +17,8 @@ fn own_workspace(session: &Session, members: &[&str]) {
             &PERSON.to_owned(),
             &(*member).to_owned(),
             tilo_action_policy::Role::Viewer,
-        );
+        )
+        .expect("the person may admit a member");
     }
     session.handle().replace_tree(tree);
 }

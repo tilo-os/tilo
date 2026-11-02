@@ -552,16 +552,13 @@ fn register_fields(meta: &Meta, ty: &str) -> Result<Vec<(String, Ty)>, String> {
         .collect()
 }
 
-/// The collection inside the root's collection `outer` that people use: one of the root's
-/// records (the workspace's mail accounts) holds conversations, which open in a window of
-/// their own and hold messages. `None` when one of them does not.
-///
-/// A holder may hold more than one collection with a window of its own (an account's mailboxes
-/// and its conversations): the one people work in is the deepest, whose own items hold a
-/// collection in turn (a conversation's messages), not the one that stops at a list of names.
+/// The collection inside the root's collection `outer` that people use: the one whose items
+/// hold a collection of their own (a mail account's conversations, each holding its messages),
+/// whose items' windows edit them and which grows with the workspace; failing that, the holder's
+/// first collection a window opens. `None` when it has none.
 fn inside(meta: &Meta, outer: &List) -> Option<List> {
     let holder_schema = lookup(&outer.item_ty)?;
-    let mut found: Vec<List> = Vec::new();
+    let mut fallback = None;
     for field in &holder_schema.fields {
         if field.kind != MergeKind::Collection {
             continue;
@@ -572,21 +569,31 @@ fn inside(meta: &Meta, outer: &List) -> Option<List> {
         if meta.default_view(&item_ty).is_none() {
             continue;
         }
-        let Some(list) = list_in(
+        let list = list_in(
             &field.id,
-            item_ty,
+            item_ty.clone(),
             vec![Holder {
                 field: outer.field.clone(),
                 ty: outer.item_ty.clone(),
                 texts: texts_of(holder_schema),
             }],
-        ) else {
-            continue;
-        };
-        found.push(list);
+        );
+        // What people work in is the collection whose items hold their own (a conversation's
+        // messages, a channel's): it grows with the workspace, and its window edits the item.
+        // The holder's other collections (a mail account's mailboxes) open windows too, but
+        // they are where a person starts from, a few per holder, not what the workspace fills.
+        if lookup(&item_ty).is_some_and(|schema| {
+            schema
+                .fields
+                .iter()
+                .any(|field| field.kind == MergeKind::Collection)
+        }) && list.is_some()
+        {
+            return list;
+        }
+        fallback = fallback.or(list);
     }
-    let at = found.iter().position(|list| list.nested.is_some())?;
-    found.into_iter().nth(at)
+    fallback
 }
 
 /// The id the seeded item number `i` has.

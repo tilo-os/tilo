@@ -87,7 +87,6 @@ use smithay::reexports::wayland_server::{Display, ListeningSocket};
 use crate::backend::drm::access_keys::AccessKeys;
 use crate::output_management::Pending;
 use smithay::wayland::socket::ListeningSocketSource;
-use smithay::wayland::text_input::TextInputSeat;
 
 pub use a11y::{A11y, CursorA11y, Magnifier, MagnifierView};
 pub use backdrop::{BackdropImage, BackdropRequest};
@@ -102,7 +101,9 @@ pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
 pub use effects::{WindowEffect, WindowPicture};
-pub use host::{CursorIcon, HostDrag, HostFrame, HostLayer, Region, SurfaceHost};
+pub use host::{
+    CursorIcon, HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, Region, SurfaceHost,
+};
 pub use idle::{IdleConfig, LockedBy, SessionTransition};
 pub use input::{
     GestureEvent, HostKey, InputEvent, KeyModifiers, ObservedInput, PadAction, Switch, TabletEvent,
@@ -511,6 +512,17 @@ impl Compositor {
     /// connect with `DISPLAY=:N`, at once).
     pub fn start_xwayland(&mut self) -> Result<u32, Error> {
         xwayland::start(&self.event_loop.handle(), &self.data.state)
+    }
+
+    /// The GPU clients import their dma-bufs on, as the render node a
+    /// process that allocates for them opens (`/dev/dri/renderD128`):
+    /// `None` on a backend with no GPU to import from.
+    pub fn render_node(&self) -> Option<PathBuf> {
+        self.data
+            .state
+            .render_node
+            .as_ref()
+            .and_then(smithay::backend::drm::DrmNode::dev_path)
     }
 
     /// Whether the session is locked.
@@ -1581,23 +1593,16 @@ impl Compositor {
 
     /// Keep the text fields the person can type into on the keyboard's
     /// focus: clients hear about the field that has it and the input method
-    /// that serves it.
-    fn sync_text_input(&self) {
-        let seat = &self.data.state.seat;
-        let handle = seat.text_input();
-        let focused = seat
-            .get_keyboard()
-            .and_then(|keyboard| keyboard.current_focus());
-        if handle.focus() == focused {
-            return;
-        }
-        handle.leave();
-        let enter = focused.is_some();
-        handle.set_focus(focused);
-        if enter {
-            handle.enter();
-        }
-        handle.done(false);
+    /// that serves it, whether the field is a client's or the session's own.
+    fn sync_text_input(&mut self) {
+        self.data.state.sync_text_input();
+    }
+
+    /// Whether an input method — the on-screen keyboard, a composing engine
+    /// — is connected now, and so serves the field the person types into.
+    #[must_use]
+    pub fn input_method_connected(&self) -> bool {
+        self.data.state.input_method_connected()
     }
 
     /// Draw a frame on every output that can take one and tell clients it

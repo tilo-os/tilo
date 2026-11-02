@@ -560,7 +560,7 @@ fn a_running_host_holds_the_persons_own_documents_store() {
         return;
     };
     let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
-    let identity = tilo_identity_host::registry::selected_identity_profile(session.workspace())
+    let identity = tilo_identity_host::registry::identity_for_workspace(session.workspace())
         .unwrap()
         .unwrap();
     let personal = session.personal();

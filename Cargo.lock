@@ -17814,6 +17814,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "messages",
+ "moq-net",
  "n0-future",
  "neighbour-wire",
  "opus",
@@ -17837,6 +17838,7 @@ dependencies = [
  "tilo-contact-directory",
  "tilo-desktop-model",
  "tilo-identity-host",
+ "tilo-live",
  "tilo-lock",
  "tilo-media",
  "tilo-messaging",
@@ -19451,6 +19453,7 @@ dependencies = [
  "hex",
  "iroh",
  "moq-net",
+ "n0-future",
  "quinn",
  "rcgen",
  "rustls",
@@ -19844,6 +19847,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-transport-quinn",
+ "web-transport-trait",
  "workspace-hack",
  "zbus",
 ]
@@ -20654,6 +20658,7 @@ dependencies = [
  "tilo-files",
  "tilo-fs",
  "tilo-identity-host",
+ "tilo-live",
  "tilo-lock",
  "tilo-moderation",
  "tilo-net",
@@ -20830,6 +20835,27 @@ dependencies = [
  "tilo-ui-graph",
  "tilo-vello",
  "tilo-vello-encoding",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-render-service"
+version = "0.1.0"
+dependencies = [
+ "gbm",
+ "libc",
+ "pollster",
+ "rustix 1.1.4",
+ "serde",
+ "skrifa 0.44.0",
+ "thiserror 2.0.21",
+ "tilo-font-catalog",
+ "tilo-render-protocol",
+ "tilo-rt",
+ "tilo-sandbox-core",
+ "tilo-ui",
+ "tilo-vello",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -21340,6 +21366,7 @@ dependencies = [
  "tilo-identity-authority",
  "tilo-identity-host",
  "tilo-installed-apps",
+ "tilo-live",
  "tilo-liveness",
  "tilo-lock",
  "tilo-media",
@@ -21367,6 +21394,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-relay-session",
  "tilo-render-protocol",
+ "tilo-render-service",
  "tilo-resource",
  "tilo-rt",
  "tilo-runtime",

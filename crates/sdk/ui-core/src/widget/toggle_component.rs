@@ -13,6 +13,7 @@ pub struct ToggleProps {
     #[component(bind)]
     pub value: Bound<bool>,
     /// The setting's name, read beside its state by assistive technology.
+    #[component(positional)]
     pub label: Option<String>,
     /// Whether it can be turned now.
     pub enabled: bool,

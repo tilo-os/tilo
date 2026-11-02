@@ -30,8 +30,14 @@ pub fn shown_brief(node: &UiNode, name: &str) -> Option<String> {
 /// A day as briefly as it is clear from today.
 fn brief_day(day: NaiveDate) -> String {
     let today = ui::clock::today();
-    if let Some(near) = ui::format::near_day(day.signed_duration_since(today).num_days()) {
+    let ahead = day.signed_duration_since(today).num_days();
+    if let Some(near) = ui::format::near_day(ahead) {
         return near;
+    }
+    // The coming week reads by its weekday: a list grouped by day heads a group "Thursday"
+    // where a date would make the person count from today.
+    if (2..=6).contains(&ahead) {
+        return ui::format::weekday_name(day.weekday());
     }
     if day.year() == today.year() {
         ui::format::month_day(day)

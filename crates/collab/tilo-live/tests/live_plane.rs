@@ -16,6 +16,10 @@
     clippy::panic,
     reason = "in a test these are the assertion; the scenario is a workspace's live session"
 )]
+#![allow(
+    clippy::too_many_lines,
+    reason = "each test is one workspace session end to end"
+)]
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -387,4 +391,56 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
             .any(|object| object.body == b"relay=moved")
     });
     assert_eq!(plane::TRACKS.len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plane_seals_under_the_keys_it_now_holds() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+
+    // `a` joins under the channel's first keys, `b` under the ones the
+    // channel moved to. The carriers hold each device's endpoint: dropping
+    // one closes the endpoint and the session with it, so they live as long
+    // as the planes.
+    let first = keys();
+    let next = keys();
+    let a_carrier = native::Iroh::new(a_endpoint, addr(&relay_endpoint));
+    let a = Plane::join(
+        &a_carrier,
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), first),
+    )
+    .await
+    .unwrap();
+    let b_carrier = native::Iroh::new(b_endpoint, addr(&relay_endpoint));
+    let b = Plane::join(
+        &b_carrier,
+        &grant_for(&b_cert),
+        join(b_key, roster, next.clone()),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+
+    // Once the channel's epoch moves, what `a` publishes is sealed under the
+    // keys it now holds, not the ones it joined with.
+    a.set_keys(next);
+    let mut sequence = 1;
+    wait_until(
+        "the re-keyed object opens on the member at the new keys",
+        || {
+            a.publish(Track::Presence, sequence, b"epoch=moved")
+                .unwrap();
+            sequence = sequence.saturating_add(1);
+            heard(&b, Track::Presence)
+                .iter()
+                .any(|object| object.body == b"epoch=moved" && object.sender == a_key)
+        },
+    );
 }

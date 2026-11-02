@@ -458,9 +458,10 @@ pub struct ActionMeta {
     /// both would show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toggles: Option<String>,
-    /// `key: "e"`: the plain key that runs the action while its window has the keyboard, and (on
-    /// a row's action) while that row is selected. It is the key's own character read through the
-    /// person's keymap, never a key code, so it is layout-correct on any keyboard.
+    /// `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the keyboard,
+    /// and (on an item's action) while that item is selected or its view shows. One spelling —
+    /// the modifiers in one order, then the key's token (`Ctrl+Shift+enter`) — that the toolkit
+    /// matches a press against, with the platform's own command modifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     /// `group: "Reply"`: the run of the resource's actions this one stands in, as the app names

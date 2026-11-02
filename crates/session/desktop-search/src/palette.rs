@@ -152,6 +152,32 @@ impl Sources {
     }
 }
 
+/// How many rows the palette cut its rows to, and whether the card had given
+/// the room they stand in when it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowRoom {
+    /// The card has not given its room since search was opened: the rows
+    /// are cut to a guess it will correct, so they are not what the search
+    /// ends with.
+    Guess(usize),
+    /// The card gave its room: the rows are cut to that many rows of it.
+    Room(usize),
+}
+
+impl RowRoom {
+    /// The rows the palette cut to, however it knew the room.
+    fn cut(self) -> usize {
+        match self {
+            RowRoom::Guess(rows) | RowRoom::Room(rows) => rows,
+        }
+    }
+
+    /// The same cut, against the room the card gave.
+    fn given(self) -> Self {
+        RowRoom::Room(self.cut())
+    }
+}
+
 pub struct DesktopSearch {
     palette: ActionPalette,
     sources: Option<Sources>,
@@ -188,9 +214,10 @@ pub struct DesktopSearch {
     /// The sources this search asks, in the order it asks them, and where
     /// each stands in the empty palette.
     order: Vec<(String, (u8, usize))>,
-    /// The row capacity the rows were cut to: when the card grew or shrank
-    /// since, the groups are cut again.
-    shown_capacity: usize,
+    /// How many rows the palette cut its rows to, and whether that is the
+    /// card's real room: when the card grew or shrank since, the groups are
+    /// cut again.
+    rows_room: RowRoom,
     /// Whether the rows the palette holds stand two lines tall: what the
     /// capacity is counted in.
     shown_two_lines: bool,
@@ -235,7 +262,7 @@ impl DesktopSearch {
             stream: None,
             costs: SourceCosts::default(),
             order: Vec::new(),
-            shown_capacity: 0,
+            rows_room: RowRoom::Guess(0),
             shown_two_lines: false,
             kept_choice: None,
         }
@@ -245,8 +272,9 @@ impl DesktopSearch {
         self.sources.is_some()
     }
 
-    /// Whether an application's answer to the query is still coming: the
-    /// host keeps calling [`Self::refresh`] until it arrives.
+    /// Whether a source has still to answer the query, or an application's
+    /// answer is still coming: the host keeps calling [`Self::refresh`]
+    /// until it arrives.
     pub fn waiting(&self) -> bool {
         self.sources.as_ref().is_some_and(Sources::waiting)
             || self
@@ -340,6 +368,47 @@ impl DesktopSearch {
     pub fn set_room(&mut self, width: f64, list_height: f64) {
         self.palette.set_max_width(Some(width));
         self.palette.set_max_list_height(list_height);
+        self.rows_room = self.rows_room.given();
+    }
+
+    /// Whether a source has still to be asked for the query: the search
+    /// asks its sources a frame at a time, and the rows are complete only
+    /// once none is left.
+    fn awaiting_sources(&self) -> bool {
+        self.stream
+            .as_ref()
+            .is_some_and(crate::model::SearchStream::pending)
+    }
+
+    /// Whether the rows shown are cut to the room the card gave them: before
+    /// it has given one, and in the frame it gives a new one, they are not.
+    fn rows_placed(&self) -> bool {
+        match self.rows_room {
+            RowRoom::Guess(_) => false,
+            RowRoom::Room(rows) => {
+                rows == self.palette.entry_row_capacity_for(0, self.shown_two_lines)
+            }
+        }
+    }
+
+    /// Whether the search has a frame's work of its own left: a source
+    /// still to ask, or rows to cut to the card's room. A host draws the
+    /// frames this asks for; an application's answer still coming is not
+    /// this, and is looked for on the host's clock ([`Self::waiting`]).
+    #[must_use]
+    pub fn filling_in(&self) -> bool {
+        self.sources.is_some() && (self.awaiting_sources() || !self.rows_placed())
+    }
+
+    /// Whether the search is over: every source has answered for the query,
+    /// no application's answer is still coming, and the rows are cut to the
+    /// room the card gave them. While this is false the search is still
+    /// filling in and its rows will change — what the desk publishes as a
+    /// search still searching.
+    #[must_use]
+    pub fn settled(&self) -> bool {
+        // With nothing open there is nothing to wait for.
+        self.sources.is_none() || (self.rows_placed() && !self.waiting())
     }
 
     /// Run the query again when the palette's text changed since the rows
@@ -373,7 +442,7 @@ impl DesktopSearch {
             return true;
         }
         // The card grew or shrank: the groups share what it shows now.
-        if self.palette.entry_row_capacity_for(0, self.shown_two_lines) != self.shown_capacity {
+        if self.palette.entry_row_capacity_for(0, self.shown_two_lines) != self.rows_room.cut() {
             self.render(&query, generation);
             return true;
         }
@@ -563,7 +632,10 @@ impl DesktopSearch {
         self.rows = rows;
         self.shown_query = Some(query.to_owned());
         self.shown_generation = generation;
-        self.shown_capacity = capacity;
+        self.rows_room = match self.rows_room {
+            RowRoom::Guess(_) => RowRoom::Guess(capacity),
+            RowRoom::Room(_) => RowRoom::Room(capacity),
+        };
         self.shown_two_lines = two_lines;
     }
 

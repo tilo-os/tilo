@@ -2222,9 +2222,14 @@ impl<'a> Parser<'a> {
             Tok::Kw("let") => {
                 self.bump();
                 let name = self.ident("a variable name")?;
+                let ty = if self.eat(&Tok::Colon) {
+                    Some(self.type_expr()?)
+                } else {
+                    None
+                };
                 self.expect(&Tok::Assign)?;
                 let value = self.expr()?;
-                UiKind::Let { name, value }
+                UiKind::Let { name, ty, value }
             }
             Tok::Ident(word)
                 if word == "on"

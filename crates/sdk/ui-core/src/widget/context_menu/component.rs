@@ -74,8 +74,14 @@ impl MenuItemProps {
         } else {
             MenuEntry::new(props.label, move || run())
         };
-        match props.icon {
+        let entry = match props.icon {
             Some(icon) => entry.with_icon(icon),
+            None => entry,
+        };
+        // The app's declared key shows at the row's trailing edge, as the keyboard in use
+        // spells it.
+        match props.key {
+            Some(key) => entry.with_shortcut(key),
             None => entry,
         }
     }

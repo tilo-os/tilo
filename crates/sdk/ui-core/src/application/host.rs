@@ -172,9 +172,9 @@ impl NativeProcessHost {
         }
         PROCESS_HOST.with(|slot| {
             let mut slot = slot.borrow_mut();
-            // A window that waited for its workspace's identity
-            // (`crate::workspace_identity`) wrote as no one; the window that
-            // replaces it writes as the person chosen, on a host of theirs.
+            // A window that held a launch's place (its workspace's join)
+            // wrote as no one; the window that replaces it writes as the
+            // person, on a host of theirs.
             let author = crate::collaboration::local_user_id();
             if slot.as_ref().is_some_and(|host| host.host.author != author) {
                 *slot = None;

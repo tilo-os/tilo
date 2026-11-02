@@ -49,17 +49,17 @@ mod cases {
         let shown = |v: &tilolang_runtime::ViewInstance| {
             of_kind(v.tree(), "ui.Text")[0].props["value"].clone()
         };
-        assert_eq!(shown(&view), Value::Int(0));
+        assert_eq!(shown(&view), Value::text("0"));
 
         let plus = app.anchor("counter", "plus");
         assert!(view.tree().find(&plus).is_some(), "{}", dump(view.tree()));
         assert!(matches!(view.press(&plus).unwrap(), InvokeOutcome::Done(_)));
         let patches = view.poll_patches().unwrap();
         assert!(
-            matches!(patches.as_slice(), [Patch::SetProp { name, value: Some(Value::Int(1)), .. }] if name == "value"),
+            matches!(patches.as_slice(), [Patch::SetProp { name, value: Some(Value::Text(shown)), .. }] if name == "value" && shown == "1"),
             "{patches:?}"
         );
-        assert_eq!(shown(&view), Value::Int(1));
+        assert_eq!(shown(&view), Value::text("1"));
     }
 
     #[test]
@@ -87,9 +87,9 @@ mod cases {
             matches!(
                 patches.as_slice(),
                 [Patch::SetProp {
-                    value: Some(Value::Int(1)),
+                    value: Some(Value::Text(shown)),
                     ..
-                }]
+                }] if shown == "1"
             ),
             "{patches:?}"
         );

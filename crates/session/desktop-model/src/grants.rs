@@ -313,13 +313,11 @@ mod tests {
     }
 }
 
-/// What a governance change wrote into one workspace's policy, so the host
-/// mirrors exactly that into the workspace document. Empty means nothing changed:
-/// the actor lacked authority, or there was nothing to do.
+/// What a governance change wrote into one workspace's policy. Empty means
+/// nothing changed: the actor lacked authority, or there was nothing to do.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PolicyEdit {
-    /// People whose membership was set or ended: the mirror writes their
-    /// role as it now stands, or removes them.
+    /// People whose membership was set or ended.
     pub members: Vec<UserId>,
     pub granted: Vec<tilo_action_policy::GrantId>,
     pub revoked: Vec<tilo_action_policy::GrantId>,
@@ -346,55 +344,11 @@ impl PolicyEdit {
         self.sandbox_revoked.extend(other.sandbox_revoked);
         self
     }
-
-    /// Write this edit of `workspace` into the workspace document `doc`.
-    pub fn write(&self, doc: &mut automerge::AutoCommit, workspace: &crate::Workspace) {
-        use crate::desktop_doc;
-        let id = workspace.id;
-        for person in &self.members {
-            match workspace.policy.members.get(person) {
-                Some(role) => {
-                    desktop_doc::set_member(doc, id, person, *role);
-                }
-                None => {
-                    desktop_doc::remove_member(doc, id, person);
-                }
-            }
-            desktop_doc::set_member_joined(
-                doc,
-                id,
-                person,
-                workspace.policy.joined.get(person).copied(),
-            );
-        }
-        for grant in workspace
-            .policy
-            .grants
-            .iter()
-            .filter(|grant| self.granted.contains(&grant.id))
-        {
-            desktop_doc::insert_grant(doc, id, grant);
-        }
-        for grant in &self.revoked {
-            desktop_doc::revoke_grant(doc, id, grant);
-        }
-        for cap in workspace
-            .sandbox
-            .iter()
-            .filter(|cap| self.sandbox_granted.contains(&cap.id))
-        {
-            desktop_doc::insert_sandbox(doc, id, cap);
-        }
-        for cap in &self.sandbox_revoked {
-            desktop_doc::revoke_sandbox(doc, id, cap);
-        }
-    }
 }
 
 impl crate::Workspace {
     /// Apply `changes` as `actor` at `now`, all or none: each is checked
-    /// against the policy as the ones before it left it. What changed, for
-    /// the host to mirror.
+    /// against the policy as the ones before it left it. What changed.
     ///
     /// # Errors
     /// The first change refused; nothing is applied then.

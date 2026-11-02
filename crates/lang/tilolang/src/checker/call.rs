@@ -1806,7 +1806,8 @@ impl Checker<'_> {
     }
 
     /// `sort_by(x -> key)`: collects the keys in a parallel list, then asks the host for the
-    /// items ordered by them (ascending, stable). Keys are Int, Float, Text or Bool.
+    /// items ordered by them (ascending, stable). Keys are Int, Float, Text or Bool; a Date or
+    /// a Time sorts in time order, one that may be absent before every other.
     fn sort_by(
         &mut self,
         list: Ex,
@@ -1862,9 +1863,19 @@ impl Checker<'_> {
             }
             _ => self.expr(&body, None),
         };
-        // A Date or a Time is ISO text, which sorts in time order.
+        // A Date or a Time is ISO text, which sorts in time order. One that may be absent
+        // sorts as no text at all, which comes before every day.
         let key = match key.ty {
             Ty::Date | Ty::Time => key.typed(Ty::Text),
+            Ty::Option(ref inner) if matches!(**inner, Ty::Date | Ty::Time) => {
+                let inner = (**inner).clone();
+                let present = Ex::host(Imp::IsSome, vec![key.clone()], Ty::Bool);
+                let value = Ex::host(Imp::UnwrapH, vec![key], inner).typed(Ty::Text);
+                Ex::new(
+                    Ek::If(Box::new(present), Box::new(value), Box::new(Ex::str(""))),
+                    Ty::Text,
+                )
+            }
             _ => key,
         };
         if !matches!(

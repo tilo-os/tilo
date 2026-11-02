@@ -328,7 +328,8 @@ fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
                 Access::Read
             ));
 
-            let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
+            let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft)
+                .expect("the owner may grant");
             assert_eq!(edit.sandbox_granted.len(), 1);
             assert!(
                 ws.allows(
@@ -354,7 +355,8 @@ fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
             while draft.choice().label() != "Microphone" {
                 draft.cycle_choice();
             }
-            let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
+            let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft)
+                .expect("the owner may grant");
             let id = &edit.sandbox_granted[0];
             let cap = ws
                 .sandbox
@@ -382,7 +384,7 @@ fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
             while draft.choice().label() != "Camera" {
                 draft.cycle_choice();
             }
-            apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
+            apply_grant_draft(&mut ws, &OWNER.to_string(), &draft).expect("the owner may grant");
             let camera = ws
                 .sandbox
                 .iter()
@@ -420,8 +422,10 @@ fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
                 expiry: Expiry::Never,
             };
             let before = ws.sandbox.len();
-            let edit = apply_grant_draft(&mut ws, &"someone-else".to_string(), &draft);
-            assert!(edit.is_empty(), "grant_as must refuse a non-administrator");
+            assert!(
+                apply_grant_draft(&mut ws, &"someone-else".to_string(), &draft).is_err(),
+                "grant_as must refuse a non-administrator"
+            );
             assert_eq!(ws.sandbox.len(), before);
         }
 
@@ -509,6 +513,7 @@ fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
             assert_eq!(row.allows, grant_allows(&grant, &NoAppDirectory));
             assert_eq!(
                 apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id)
+                    .expect("the owner may revoke")
                     .revoked
                     .len(),
                 1
@@ -524,7 +529,8 @@ fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
                 .iter()
                 .find(|r| r.allows.contains("camera"))
                 .expect("camera row");
-            let edit = apply_revoke(&mut ws, &OWNER.to_string(), &camera_row.cap_id);
+            let edit = apply_revoke(&mut ws, &OWNER.to_string(), &camera_row.cap_id)
+                .expect("the owner may revoke");
             assert_eq!(edit.sandbox_revoked, vec![camera_row.cap_id.clone()]);
             assert!(
                 !ws.allows(
@@ -542,8 +548,8 @@ fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
             let mut ws = ws_with_grants();
             let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory, VIEWER);
             let target = layout.rows[0].cap_id.clone();
-            let edit = apply_revoke(&mut ws, &"someone-else".to_string(), &target);
-            assert!(edit.is_empty());
+            let refusal = apply_revoke(&mut ws, &"someone-else".to_string(), &target);
+            assert!(refusal.is_err(), "only an administrator may revoke");
             assert_eq!(
                 permissions_pane_layout(&ws, pane(), &NoAppDirectory, VIEWER)
                     .rows
@@ -554,8 +560,8 @@ fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
 
         {
             let mut ws = ws_with_grants();
-            let edit = apply_revoke(&mut ws, &OWNER.to_string(), "cap-does-not-exist");
-            assert!(edit.is_empty());
+            let refusal = apply_revoke(&mut ws, &OWNER.to_string(), "cap-does-not-exist");
+            assert!(refusal.is_err(), "there is no such grant to revoke");
             assert_eq!(ws.sandbox.len(), 2, "the two grants");
         }
     }
@@ -707,6 +713,7 @@ fn a_grant_naming_a_resource_is_listed_by_that_resources_name() {
     );
     assert_eq!(
         apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id)
+            .expect("the owner may revoke")
             .revoked
             .len(),
         1

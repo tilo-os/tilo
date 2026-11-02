@@ -443,11 +443,13 @@ fn rows_of_derived_values_and_resources() {
     ));
     expect("E027", &with_t("fn f(x: T) -> Int {\n    x.t.last()\n}"));
     ok(&with_t(
-        "view v(x: T) {\n    card(x, count: x.items.len()) {\n        text(x.t)\n    }\n}",
+        "view v(x: T) {\n    ui.Card(item: x, title: meta(x).title, count: x.items.len()) {\n        text(x.t)\n    }\n}",
     ));
     expect(
         "E020",
-        &with_t("view v(x: T) {\n    card(x, count: x.t) {\n        text(x.t)\n    }\n}"),
+        &with_t(
+            "view v(x: T) {\n    ui.Card(item: x, title: meta(x).title, count: x.t) {\n        text(x.t)\n    }\n}",
+        ),
     );
     expect(
         "E020",
@@ -619,6 +621,10 @@ fn e096_removed_vocabulary_names_its_replacement() {
         "view v() {\n    text(\"a\", style: .caption)\n}",
         "view v() {\n    button(\"a\", style: .primary)\n}",
         "view v() {\n    button(\"a\", size: .small)\n}",
+        "view v() {\n    column {\n        text(\"a\")\n    }\n}",
+        "view v() {\n    card(1)\n}",
+        "view v() {\n    date(\"x\")\n}",
+        "view v() {\n    image(\"a.png\", alt: \"a\", width: 4rem)\n}",
     ] {
         assert_eq!(codes(body), vec!["E096"], "{body}");
     }
@@ -682,20 +688,21 @@ fn e098_controls_and_facts_misused() {
     ));
 }
 
-// A `date` control picks a Date, like `toggle` a Bool: it needs what it binds.
+// A date field picks a Date, like a toggle a Bool: any control that binds a value checks it
+// against what it binds.
 #[test]
-fn date_binds_a_date() {
+fn a_date_field_binds_a_date() {
     let head = "type Task {\n    due: Option<Date> = .none\n    on: Date = Date(\"2026-10-24\")\n    t: Text\n}\n";
     ok(&format!(
-        "{head}view v(x: Task) {{\n    window d: Date = Date(\"2026-01-01\")\n    lens o: Option<Date> = .none\n    stack {{\n        date(bind: x.due)\n        date(bind: x.on)\n        date(bind: d)\n        date(bind: o)\n    }}\n}}"
+        "{head}view v(x: Task) {{\n    window d: Date = Date(\"2026-01-01\")\n    lens o: Option<Date> = .none\n    stack {{\n        ui.DateField(bind: x.due, optional: true)\n        ui.DateField(bind: x.on)\n        ui.DateField(bind: d)\n        ui.DateField(bind: o, optional: true)\n    }}\n}}"
     ));
     expect(
         "E062",
-        &format!("{head}view v(x: Task) {{\n    date(bind: x.t)\n}}"),
+        &format!("{head}view v(x: Task) {{\n    ui.DateField(bind: x.t)\n}}"),
     );
     expect(
         "E022",
-        &format!("{head}view v(x: Task) {{\n    date(\"x\")\n}}"),
+        &format!("{head}view v(x: Task) {{\n    ui.DateField(\"x\")\n}}"),
     );
 }
 
@@ -796,31 +803,101 @@ fn an_action_whose_on_is_its_subjects_field_says_which_state_it_toggles() {
     assert_eq!(action(&m, "star").toggles, None, "no `on:`, no state");
 }
 
-// An action declares the plain key that runs it while its window has the keyboard; the key is
-// the character itself (read through the person's keymap), never a key code.
+// An action declares the shortcut that runs it while its window has the keyboard, published as
+// one spelling: the modifiers in one order and the key's token, which the toolkit matches a
+// press against with the platform's own command modifier.
 #[test]
-fn an_action_carries_the_plain_key_it_declares() {
+fn an_action_carries_the_shortcut_it_declares() {
     let m = compile_body(
         r#"type Thread {
     subject: Text (title)
 }
 action archive(t: Thread) (icon: .archive, key: "e") {}
-action reply(t: Thread) (key: "r") {}
+action reply(t: Thread) (key: "Ctrl+Enter") {}
+action share(t: Thread) (key: "control+shift+Return") {}
 action nothing(t: Thread) {}"#,
     )
     .meta;
     assert_eq!(action(&m, "archive").key.as_deref(), Some("e"));
-    assert_eq!(action(&m, "reply").key.as_deref(), Some("r"));
+    assert_eq!(action(&m, "reply").key.as_deref(), Some("Ctrl+enter"));
+    assert_eq!(
+        action(&m, "share").key.as_deref(),
+        Some("Ctrl+Shift+enter"),
+        "one spelling, whatever order and case it was written in"
+    );
     assert_eq!(action(&m, "nothing").key, None, "no `key:`, no shortcut");
-    // A key is one character, so `key: "ee"` and `key: " "` are refused.
-    assert!(
-        codes(
-            r#"type Thread {
+    // A shortcut is modifiers and one key: no second key, no key that does not exist, and no
+    // chord that stops before its key.
+    for wrong in [r#"key: "ee""#, r#"key: "Entr""#, r#"key: "Ctrl+""#] {
+        let said = format!(
+            r"type Thread {{
+    subject: Text (title)
+}}
+action a(t: Thread) ({wrong}) {{}}"
+        );
+        expect("E090", &said);
+    }
+}
+
+// Two actions of one subject cannot answer the same keys: one would silently take the other's.
+// The same key on another subject is another place, and an action on the app's root answers
+// window-wide against the other root actions, not against an item's.
+#[test]
+fn two_actions_of_one_subject_share_no_shortcut() {
+    let thread = r"type Thread {
     subject: Text (title)
 }
-action a(t: Thread) (key: "ee") {}"#
-        )
-        .iter()
-        .any(|code| code == "E090")
+type Draft {
+    subject: Text (title)
+}";
+    expect(
+        "E090",
+        &format!(
+            r#"{thread}
+action archive(t: Thread) (key: "Ctrl+E") {{}}
+action reply(t: Thread) (key: "control+e") {{}}"#
+        ),
     );
+    ok(&format!(
+        r#"{thread}
+action archive(t: Thread) (key: "Ctrl+E") {{}}
+action pin(d: Draft) (key: "Ctrl+E") {{}}"#
+    ));
+    expect(
+        "E090",
+        &format!(
+            r#"{thread}
+type Threads {{
+    threads: Collection<Thread>
+}}
+root threads: Threads
+default view thread_list for Threads
+row view thread_row for Thread
+view thread_row(t: Thread) {{
+    row(t.subject)
+}}
+view thread_list(threads: Threads) {{
+    std.list(threads, threads.threads, empty: "No thread yet")
+}}
+primary action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(subject: "")) }}
+action tidy(threads: Threads) (key: "Ctrl+N") {{ threads.threads.remove_where(s -> s.subject == "") }}"#
+        ),
+    );
+    ok(&format!(
+        r#"{thread}
+type Threads {{
+    threads: Collection<Thread>
+}}
+root threads: Threads
+default view thread_list for Threads
+row view thread_row for Thread
+view thread_row(t: Thread) {{
+    row(t.subject)
+}}
+view thread_list(threads: Threads) {{
+    std.list(threads, threads.threads, empty: "No thread yet")
+}}
+action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(subject: "")) }}
+action archive(t: Thread) (key: "Ctrl+N") {{}}"#
+    ));
 }

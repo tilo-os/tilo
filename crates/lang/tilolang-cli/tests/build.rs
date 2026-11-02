@@ -13,23 +13,9 @@ use std::path::Path;
 use tilo_app_package::manifest::Manifest;
 use tilolang_cli::package::{self, BuildOptions};
 
-fn packages() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
-}
+mod support;
 
-/// Copy the package at `from` into `to`, created: its sources, ids lock and catalogues
-/// (`locales/`).
-fn copy_package(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).unwrap();
-    for entry in std::fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        if entry.file_type().unwrap().is_dir() {
-            copy_package(&entry.path(), &to.join(entry.file_name()));
-        } else {
-            std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
-        }
-    }
-}
+use support::{copy_package, packages};
 
 #[test]
 fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {

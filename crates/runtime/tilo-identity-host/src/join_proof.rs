@@ -3,16 +3,16 @@
 //!
 //! A join proof is this device's signature over the workspace's join bytes,
 //! presented with its certificate. Ed25519 signatures are deterministic, so
-//! the proof for a workspace changes only when the identity it selects, the
+//! the proof for a workspace changes only when the identity it signs as, the
 //! device key, the device certificate or the device fleet changes, and each
 //! of those lives in a file. A proof is served from memory while one `stat`
 //! of every such file matches the stamp taken when it was minted:
 //!
-//! * the identity directory and its registry file: which identity the
-//!   workspace selects (a selection change, an imported or removed identity);
+//! * the identity directory and its registry file: which identity this
+//!   device holds (an imported or removed identity);
 //! * the device key file: key rotation. A key in the macOS Keychain has no
 //!   file to stamp, so its proofs are never cached;
-//! * the selected identity's device certificate: certificate rotation;
+//! * the held identity's device certificate: certificate rotation;
 //! * the fleet file and the home-peer registry: revocation and enrollment.
 //!
 //! A file changed within the last two seconds is never trusted to its stamp,
@@ -221,7 +221,7 @@ impl Files {
     /// The identity `workspace` selects now, read from the registry.
     fn selected(workspace: &str) -> io::Result<Option<Selected>> {
         Ok(
-            crate::registry::selected_identity_profile(workspace)?.map(|profile| Selected {
+            crate::registry::identity_for_workspace(workspace)?.map(|profile| Selected {
                 id: profile.id,
                 user_public_key: profile.user_public_key,
             }),
@@ -251,7 +251,7 @@ fn remember(key: CacheKey, entry: Entry) {
 
 /// The stamp of everything `workspace`'s join proof is derived from: equal
 /// settled stamps mean an unchanged proof, including whether there is one.
-/// One `stat` per file once its selection is known; `None` when a
+/// One `stat` per file once its identity is known; `None` when a
 /// file can't be examined or the device key has no file, so the caller must
 /// treat the proof as changed.
 #[must_use]
@@ -395,7 +395,7 @@ pub(crate) mod tests {
             )
             .expect("provision");
             let workspace = uuid_like_workspace();
-            let profile = crate::registry::selected_identity_profile(&workspace)
+            let profile = crate::registry::identity_for_workspace(&workspace)
                 .expect("registry")
                 .expect("selected identity");
             let fixture = Self {

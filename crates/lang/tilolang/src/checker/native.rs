@@ -37,21 +37,6 @@ impl Checker<'_> {
                 Some(self.action_button(&callee, c, args))
             }
             "choice" => Some(self.choice(c, args)),
-            "date"
-                if !args
-                    .iter()
-                    .any(|a| a.name.as_ref().is_some_and(|n| n.name == "bind")) =>
-            {
-                self.err(
-                    "E022",
-                    c.call.span,
-                    "`date` needs the Date it picks: `date(bind: task.due)`, a Date or Option<Date> field or view state",
-                );
-                for a in args {
-                    let _ = self.expr(&a.value, None);
-                }
-                Some(self.dead_node())
-            }
             _ => None,
         }
     }
@@ -61,61 +46,6 @@ impl Checker<'_> {
     fn titled(&self, args: &[ast::Arg]) -> bool {
         args.iter()
             .any(|a| a.name.is_none() && !self.is_flag(None, &a.value))
-    }
-
-    /// The arguments of primitives that take a value of one type; `true` when handled.
-    pub(super) fn typed_arg(
-        &mut self,
-        prim: &str,
-        n: LocalId,
-        name: &str,
-        value: &ast::Expr,
-    ) -> bool {
-        let node = Ex::local(n, Ty::View);
-        let want = match (prim, name) {
-            ("toggle", "bind") => {
-                let _ = self.bind_typed(&node, value, &[Ty::Bool], false);
-                return true;
-            }
-            ("date", "bind") => {
-                let day = [Ty::Date, Ty::Option(Box::new(Ty::Date))];
-                // Only a date that may be none can be cleared.
-                if let Some(Ty::Option(_)) = self.bind_typed(&node, value, &day, false) {
-                    let yes = Ex::new(Ek::Bool(true), Ty::Bool);
-                    self.prop(node, "optional", yes, value.span);
-                }
-                return true;
-            }
-            ("card", "item") => {
-                let v = self.expr(value, None);
-                if !matches!(v.ty, Ty::Record(_) | Ty::Error) {
-                    let t = self.show(&v.ty);
-                    self.err(
-                        "E020",
-                        value.span,
-                        format!("`{prim}` shows a resource, a record; found {t}"),
-                    );
-                    return true;
-                }
-                // The card is named after its resource, as a native dashboard card is: the
-                // resource's title heads it, beside the count.
-                let r = self.fresh(v.ty.clone());
-                self.emit(Stmt::Set(r, v.clone()));
-                let item = Ex::local(r, v.ty);
-                self.prop(node.clone(), name, item.clone(), value.span);
-                let title = self.meta_field(item, "title", Ty::Text);
-                self.prop(node, "title", title, value.span);
-                return true;
-            }
-            ("avatar", "who") => Ty::Principal,
-            ("rich_text", "value") => Ty::RichText,
-            ("card", "count") => Ty::Int,
-            ("section", "title") | ("field" | "toggle", "label") => Ty::Text,
-            _ => return false,
-        };
-        let v = self.expr_as(value, &want);
-        self.prop(node, name, v, value.span);
-        true
     }
 
     /// A row view's body is one list row, after any `let`s it reads.
@@ -629,17 +559,6 @@ impl Checker<'_> {
             value.span,
         );
         Some(title)
-    }
-
-    /// The field `name` of what the platform shows of the resource `item` (its `host.Meta`).
-    fn meta_field(&mut self, item: Ex, name: &str, ty: Ty) -> Ex {
-        let meta_ty = super::platform::host_ty("Meta");
-        let m = self.fresh(meta_ty.clone());
-        self.emit(Stmt::Set(
-            m,
-            Ex::host(Imp::MetaOf, vec![item], meta_ty.clone()),
-        ));
-        Self::field_of_meta(Ex::local(m, meta_ty), name, ty)
     }
 
     /// The field `name` of the `host.Meta` `meta`.

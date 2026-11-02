@@ -34,6 +34,7 @@ pub mod health;
 mod held_live;
 pub mod invite;
 pub mod live;
+mod previews;
 mod replica;
 pub mod session;
 #[cfg(feature = "toolkit")]
@@ -52,7 +53,7 @@ pub use custody::{
     certify, certify_with_root, decide_pairing, issue_device_cert, pending_pairings,
 };
 pub use health::{PeerSnapshot, SessionHealth};
-pub use live::{LiveChange, LiveState, RemoteMember};
+pub use previews::{LiveChange, LiveState, RemoteMember};
 pub use session::{
     Failure, FailureSubject, Host, LaneCompletion, LocalState, NodeCompletion, PAGE_FAILURE_CODES,
     PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
