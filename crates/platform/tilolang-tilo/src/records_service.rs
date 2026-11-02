@@ -38,6 +38,11 @@ pub struct RecordService {
     watch: crate::store::Watch,
     /// Who the changes made here are steps of.
     person: String,
+    /// The resources whose readings moved since [`Service::moved`] was last asked, by their
+    /// published ids, and whether something moved that names no one resource (the record was
+    /// taken in anew, a document changed as a whole).
+    moved: std::collections::BTreeSet<String>,
+    moved_unsaid: bool,
 }
 
 impl RecordService {
@@ -57,6 +62,8 @@ impl RecordService {
             publications,
             watch,
             person: person.into(),
+            moved: std::collections::BTreeSet::new(),
+            moved_unsaid: false,
         }
     }
 
@@ -91,10 +98,25 @@ impl RecordService {
         self.publications.set_waker(wake);
     }
 
-    /// Whether a field of any record changed since the last call.
-    fn moved(&self) -> bool {
+    /// Whether a field of any record changed since the last call. What changed is kept for
+    /// [`Service::moved`]: each resource a changed field is of, by its published id.
+    fn watched(&mut self) -> bool {
+        use tilolang_runtime::store::Store as _;
         let changes = self.watch.take();
-        changes.everything || !changes.whole.is_empty() || !changes.docs.is_empty()
+        let changed = changes.everything || !changes.whole.is_empty() || !changes.docs.is_empty();
+        self.moved_unsaid |= changes.everything || !changes.whole.is_empty();
+        // A resource that is gone has no app to name it by: what listed it moved too, and
+        // names it no more.
+        for key in changes.docs.values().flatten() {
+            if let Some(app) = ResourceRef::parse_id(&key.resource, String::new())
+                .and_then(|probe| self.host.store().type_of(&probe).ok())
+                .and_then(|ty| crate::schema::lookup(&ty))
+                .map(|schema| schema.app.clone())
+            {
+                self.moved.insert(resource_id(&app, &key.resource));
+            }
+        }
+        changed
     }
 
     /// The reading of the record or item `path` of `app`.
@@ -285,7 +307,20 @@ impl Service for RecordService {
 
     fn poll(&mut self) -> bool {
         let touched = self.publications.update(&self.host, &self.planner);
-        self.moved() || !touched.is_empty()
+        self.watched() || !touched.is_empty()
+    }
+
+    fn moved(&mut self) -> Option<Vec<String>> {
+        self.watched();
+        let moved = std::mem::take(&mut self.moved);
+        if std::mem::take(&mut self.moved_unsaid) {
+            return None;
+        }
+        Some(moved.into_iter().collect())
+    }
+
+    fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
+        self.host.package(app).map(|package| package.wasm)
     }
 
     fn settle(&mut self) {

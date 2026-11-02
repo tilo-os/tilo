@@ -960,6 +960,11 @@ impl AppWindow {
     #[must_use]
     pub fn owes(&self) -> bool {
         !self.out.is_empty()
+            || self
+                .rows
+                .borrow()
+                .values()
+                .any(|rows| rows.borrow().wants())
     }
 
     /// Send the app what the person did since the last frame: one batch.

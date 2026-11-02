@@ -54,6 +54,9 @@ pub struct Package {
     pub id: PackageId,
     /// The ids lock after compiling, to write back next to the source.
     pub ids: String,
+    /// The compiled module, its metadata embedded: what another runtime loads to draw this
+    /// package's resources through its own views ([`Host::load_foreign_package`]).
+    pub wasm: std::sync::Arc<[u8]>,
 }
 
 impl Package {
@@ -387,6 +390,36 @@ fn union_label(keys: &[tilolang_runtime::meta::TypeKey]) -> String {
         .map(|key| key.name.as_str())
         .collect::<Vec<_>>()
         .join(" | ")
+}
+
+/// `meta` as a runtime that does not run its app loads it: each of its roots (`root Mail`,
+/// `root notes: Notes`) named as the resource its app publishes it as, the root's record
+/// (`root-<type id>`) by its published id. A root it names already is left as it is.
+fn published_roots(meta: &Meta) -> Meta {
+    let mut meta = meta.clone();
+    for ty in meta.roots.clone() {
+        let published = crate::publish::resource_id(&meta.app, &format!("root-{ty}"));
+        match meta.named_roots.iter_mut().find(|root| root.ty == ty) {
+            Some(named) => {
+                named.published.get_or_insert(published);
+            }
+            None => {
+                // An unnamed root (`root Mail`) is reached by its type alone; its name here
+                // is its type's, which no `alias.name` of another package's code reaches.
+                let name = meta
+                    .types
+                    .iter()
+                    .find(|declared| declared.id == ty)
+                    .map_or_else(|| ty.clone(), |declared| declared.name.clone());
+                meta.named_roots.push(tilolang::meta::NamedRootMeta {
+                    name,
+                    ty,
+                    published: Some(published),
+                });
+            }
+        }
+    }
+    meta
 }
 
 /// The argument `value` of the type `ty`, as the door takes it: in the shape the action's
@@ -979,7 +1012,12 @@ impl Host {
         crate::schema::register_package(&meta, &id);
         self.inner.store.open_index(&meta.app, &meta.schema_text());
         self.inner.authority.load(&id, &meta);
-        let package = Package { meta, id, ids };
+        let package = Package {
+            meta,
+            id,
+            ids,
+            wasm: std::sync::Arc::from(wasm),
+        };
         let mut packages = self.inner.packages.borrow_mut();
         match packages
             .iter_mut()
@@ -999,13 +1037,29 @@ impl Host {
     ///
     /// # Errors
     /// The module does not link.
+    ///
+    /// Its views read its roots as they do in its own app (`let m = root Mail`): each root is
+    /// the resource its app publishes it as ([`crate::publish::resource_id`]), whose reading
+    /// the session hands in as it does any other of that app's.
     pub fn load_foreign_package(&self, wasm: &[u8], meta: &Meta) -> Result<(), HostError> {
+        let meta = published_roots(meta);
         let id = self
             .inner
             .runtime
             .load_foreign_package(wasm, meta.clone())?;
-        self.inner.authority.load(&id, meta);
+        self.inner.authority.load(&id, &meta);
         Ok(())
+    }
+
+    /// Unload the package of the app `app` this host does not run, once nothing here shows
+    /// any of its resources: its views run here no more, and the readings of its resources
+    /// are forgotten. Whether it was loaded.
+    pub fn unload_foreign(&self, app: &str) -> bool {
+        let unloaded = self.inner.runtime.unload_foreign(app);
+        if unloaded {
+            self.inner.authority.forget_app(app);
+        }
+        unloaded
     }
 
     /// Every loaded package.

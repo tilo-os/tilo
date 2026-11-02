@@ -85,6 +85,9 @@ pub struct Scrollable {
     axis: ScrollAxis,
     reveal_focus: bool,
     last_focus_path: Option<Vec<usize>>,
+    /// The descendant (by its id) to show at the next layout that places it
+    /// ([`Self::reveal_on_layout`]).
+    reveal_id: Option<String>,
     offset_x: f32,
     offset_y: f32,
     content_w: f32,
@@ -297,6 +300,7 @@ impl Scrollable {
             axis,
             reveal_focus: false,
             last_focus_path: None,
+            reveal_id: None,
             offset_x: 0.0,
             offset_y: 0.0,
             content_w: 0.0,
@@ -827,6 +831,14 @@ impl Scrollable {
         self
     }
 
+    /// Show the descendant whose id is `id` (`Widget::test_id`) once a layout
+    /// has placed it, moving as little as it takes: what just arrived on a
+    /// surface the person pans (a place put on the desk) is where they can
+    /// see it. The latest asked wins; one never placed is never shown.
+    pub fn reveal_on_layout(&mut self, id: impl Into<String>) {
+        self.reveal_id = Some(id.into());
+    }
+
     /// Show the content rect at `x`, `y` (`w` by `h`, in content
     /// coordinates), moving as little as it takes. A jump the person's hand
     /// or key just asked for moves there ([`crate::motion::ScrollTo`]): it
@@ -851,6 +863,55 @@ impl Scrollable {
         }
         if self.scroll_to.is_moving(now) {
             self.scroll_dirty = true;
+        }
+    }
+
+    /// Show the descendant [`Self::reveal_on_layout`] asked for, when this
+    /// layout placed it, and lay the content out again where it now stands.
+    fn reveal_asked(&mut self, taffy: &TaffyTree<()>) {
+        fn placed(widget: &dyn Widget, id: &str) -> Option<Rect> {
+            if widget.test_id() == Some(id) {
+                return Some(widget.get_rect());
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| placed(child, id))
+        }
+        let Some(id) = self.reveal_id.as_deref() else {
+            return;
+        };
+        let Some(rect) = self
+            .child
+            .as_ref()
+            .and_then(|child| placed(child.as_ref(), id))
+        else {
+            return;
+        };
+        self.reveal_id = None;
+        let viewport = self.content_viewport_rect();
+        let (tx, ty) = self.offset_showing(
+            f32_of_f64(rect.x0 - viewport.x0) + self.offset_x,
+            f32_of_f64(rect.y0 - viewport.y0) + self.offset_y,
+            f32_of_f64(rect.width()),
+            f32_of_f64(rect.height()),
+        );
+        // The content lands on a device pixel, as a hand's scroll leaves it: the offset it
+        // reached, the content's end at most, taken down to the pixel.
+        let scale = f64::from(super::layout::device_scale()).max(f64::MIN_POSITIVE);
+        let snap = |offset: f32| f32_of_f64((f64::from(offset) * scale).floor() / scale);
+        self.glide.stop();
+        self.move_by(tx - self.offset_x, ty - self.offset_y);
+        let (tx, ty) = (snap(self.offset_x), snap(self.offset_y));
+        self.move_by(tx - self.offset_x, ty - self.offset_y);
+        self.scroll_to
+            .land(vello::kurbo::Vec2::new(f64::from(tx), f64::from(ty)));
+        let clip = self.content_viewport_rect();
+        let origin = self.content_origin();
+        if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
+            crate::widget::with_layout_clip(clip, || {
+                child.apply_layout(taffy, node, origin);
+            });
         }
     }
 
@@ -1381,6 +1442,7 @@ impl Widget for Scrollable {
                 }
             }
         }
+        self.reveal_asked(taffy);
         let scrollable_now = self.vbar_active() || self.hbar_active();
         // Content that has just begun to overflow is something to scroll, not
         // something the person did: an overlay bar appears when they scroll

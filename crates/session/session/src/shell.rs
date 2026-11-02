@@ -75,6 +75,15 @@ pub(crate) struct Shell {
     seen: Option<crate::desk_resource::DeskKey>,
     /// The services' revision and the arrangement the places' readings were last followed at.
     followed: Option<(u64, ArrangementReading)>,
+    /// The resources whose readings the shell holds for its places, by id, each with its type
+    /// as the shell's runtime names another app's (`<app>#<Type>`): what a place names, and
+    /// what the views composed there read.
+    reading: std::collections::BTreeMap<String, String>,
+    /// How often each was read for the shell.
+    reads: std::collections::BTreeMap<String, u64>,
+    /// How many of the session's turns read some of them: what the views composed in places
+    /// waited on comes in one turn for everything one run of them read, not one per resource.
+    rounds: u64,
     /// The shell's record, shared by every part: the bar draws it and every other display's
     /// bar draws the same.
     record: Rc<RefCell<tilo_resource::Doc>>,
@@ -127,6 +136,9 @@ impl Shell {
             link,
             seen: None,
             followed: None,
+            reading: std::collections::BTreeMap::new(),
+            reads: std::collections::BTreeMap::new(),
+            rounds: 0,
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             parts: Vec::new(),
             packages,
@@ -318,17 +330,100 @@ impl Shell {
         }
     }
 
-    /// Hand the shell the reading of every resource a place of `arrangement` names, from what
-    /// `services` publish, whenever the arrangement or a reading moved: a place showing a note
-    /// draws the note's own view over the note the notes app shows.
-    pub(crate) fn follow_places(&mut self, arrangement: &ArrangementReading, services: &Services) {
+    /// Hand the shell what its places show, from what `services` publish: the package of each
+    /// app a place shows a resource of, so the place draws it through that app's own views
+    /// (and none of an app no place shows); the reading of each resource a place names; and
+    /// the reading of each resource those views read, as they read it (an item of a
+    /// collection a reading lists by id). Each reading is read again only when its service
+    /// says it moved, so a change costs the shell only the resources it touched.
+    pub(crate) fn follow_places(
+        &mut self,
+        arrangement: &ArrangementReading,
+        services: &mut Services,
+    ) {
+        let wanted = self.link.take_wanted();
         let key = (services.revision(), arrangement.clone());
-        if self.followed.as_ref() == Some(&key) {
+        let moved_on = self.followed.as_ref() != Some(&key);
+        if !moved_on && wanted.is_empty() {
             return;
         }
-        self.link
-            .follow_places(arrangement, &services.resources(), |id| services.read(id));
+        let mut fresh: Vec<(String, String)> = Vec::new();
+        if self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
+            let placed = tilo_surface_host::shell_part::readings::placed_records(
+                arrangement,
+                &services.resources(),
+            );
+            let mut packages = std::collections::BTreeMap::new();
+            for ty in placed.values() {
+                let Some(app) = tilo_surface_host::shell_part::readings::app_of(ty) else {
+                    continue;
+                };
+                if let Some(module) = services.module(app) {
+                    packages.insert(app.to_owned(), module);
+                }
+            }
+            // A resource of an app no place shows any more is followed no more.
+            self.reading.retain(|_, ty| {
+                tilo_surface_host::shell_part::readings::app_of(ty)
+                    .is_some_and(|app| packages.contains_key(app))
+            });
+            self.link.publish_packages(packages);
+            for (id, ty) in placed {
+                if !self.reading.contains_key(&id) {
+                    fresh.push((id.clone(), ty.clone()));
+                }
+                self.reading.insert(id, ty);
+            }
+        }
+        for (id, ty) in wanted {
+            let shown = tilo_surface_host::shell_part::readings::app_of(&ty)
+                .is_some_and(|app| self.link.package_apps().iter().any(|held| held == app));
+            if shown && !self.reading.contains_key(&id) {
+                self.reading.insert(id.clone(), ty.clone());
+                fresh.push((id, ty));
+            }
+        }
+        if moved_on {
+            let followed: std::collections::BTreeSet<String> =
+                self.reading.keys().cloned().collect();
+            for id in services.moved_among(&followed) {
+                if let Some(ty) = self.reading.get(&id)
+                    && !fresh.iter().any(|(was, _)| *was == id)
+                {
+                    fresh.push((id.clone(), ty.clone()));
+                }
+            }
+        }
+        if !fresh.is_empty() {
+            self.rounds += 1;
+        }
+        for (id, ty) in fresh {
+            *self.reads.entry(id.clone()).or_default() += 1;
+            if let Some(reading) = services.read(&id) {
+                self.link.publish_reading(&id, &ty, reading);
+            }
+        }
         self.followed = Some(key);
+    }
+
+    /// How often the shell read each resource its places show, by id, since it started: what
+    /// a test proves a change re-reads only what it touched by.
+    pub(crate) fn reads(&self) -> std::collections::BTreeMap<String, u64> {
+        self.reads.clone()
+    }
+
+    /// How many of the session's turns read readings for the shell's places.
+    pub(crate) const fn reading_rounds(&self) -> u64 {
+        self.rounds
+    }
+
+    /// The apps whose packages the shell's runtime holds loaded now, because a place shows
+    /// them: every display's part loads the same.
+    pub(crate) fn loaded_apps(&self) -> Vec<String> {
+        self.parts
+            .first()
+            .map(|(_, part)| part.borrow().loaded_apps())
+            .unwrap_or_default()
     }
 
     /// Hand the shell the person's arrangement, which its views draw, whenever it changed.
@@ -517,6 +612,14 @@ impl Shell {
             .any(|(_, part)| part.borrow_mut().says(text))
     }
 
+    /// Where a shown part lays out `text` for assistive technology.
+    pub(crate) fn text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.parts
+            .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
+            .find_map(|(_, part)| part.borrow_mut().text_bounds(text))
+    }
+
     /// Where each display's bar stands now, by connector name: what a test reads to prove a
     /// bar on every display, and none on one a fullscreen window owns.
     pub(crate) fn parts(&self) -> Vec<BarPlace> {
@@ -627,9 +730,145 @@ pub(crate) fn bar_under(
     }
 }
 
+/// `host`, the desktop's desk, as the desk stands under `layer`: the shell's whole screen draws
+/// the desk itself (its strips, their frames and the places in them, around the wells the windows
+/// stand in), so the desktop's own desk steps aside ([`Aside`]) rather than drawing a second set of
+/// strips under it. It still keeps the windows' model the wells place them by, and answers its
+/// chords.
+pub(crate) fn desk_under(
+    layer: Option<ShellLayer>,
+    host: impl SurfaceHost + 'static,
+) -> Box<dyn SurfaceHost> {
+    bar_under(layer, host)
+}
+
+/// The chrome's published side as the desk stands under `layer`: on the shell's whole screen
+/// the chrome draws none of its surfaces, so its `overview` (what the touchpad's pinch, the
+/// overview's shortcut, an agent and the REPL run) opens and closes the shell's own overview,
+/// the surface the desk shows over its windows (`overlays`), which the screen's views draw.
+/// Every other action is the chrome's.
+pub(crate) fn chrome_door<T: tilo_surface_host::Published + 'static>(
+    layer: Option<ShellLayer>,
+    chrome: &Rc<RefCell<T>>,
+    overlays: &Rc<crate::overlays::Overlays>,
+) -> tilo_surface_host::Shared {
+    let chrome = Rc::clone(chrome) as tilo_surface_host::Shared;
+    if layer == Some(ShellLayer::Screen) {
+        let overlays = Rc::clone(overlays);
+        Rc::new(RefCell::new(ScreenChrome { chrome, overlays }))
+    } else {
+        chrome
+    }
+}
+
+/// The chrome's door on the shell's whole screen ([`chrome_door`]).
+struct ScreenChrome {
+    chrome: tilo_surface_host::Shared,
+    overlays: Rc<crate::overlays::Overlays>,
+}
+
+impl ScreenChrome {
+    /// Whether the overview is to be open after `address` with `arguments`, when it is one of
+    /// the chrome's ways of opening or closing it: `Ok(None)` for every other action.
+    fn overview(
+        &self,
+        address: &ActionAddress,
+        arguments: &Map<String, Value>,
+    ) -> Result<Option<bool>, tilo_actions::DoorError> {
+        if address.resource != tilo_desktop::desk_verbs::CHROME_RESOURCE {
+            return Ok(None);
+        }
+        let open = self.overlays.here() == crate::overlays::Overlay::Overview.name();
+        match address.action.as_str() {
+            "overview" => match arguments.get("open") {
+                None | Some(Value::Null) => Ok(Some(!open)),
+                Some(Value::Bool(wanted)) => Ok(Some(*wanted)),
+                Some(other) => Err(tilo_actions::DoorError::InvalidArguments(format!(
+                    "argument `open` must be boolean, got {other}"
+                ))),
+            },
+            "shortcut"
+                if arguments.get("action").cloned().and_then(|action| {
+                    serde_json::from_value::<ui::shortcut_table::ShortcutAction>(action).ok()
+                }) == Some(ui::shortcut_table::ShortcutAction::WorkspaceOverview) =>
+            {
+                Ok(Some(!open))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Open or close the shell's overview.
+    fn show_overview(&self, open: bool) -> ui::host_operation::ResourceOperationStart {
+        let name = crate::overlays::Overlay::Overview.name();
+        if open {
+            self.overlays.open(name);
+        } else {
+            self.overlays.close(name);
+        }
+        ui::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+    }
+}
+
+impl tilo_surface_host::Published for ScreenChrome {
+    fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
+        self.chrome.borrow_mut().resources()
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &Map<String, Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        if let Some(open) = self.overview(address, arguments)? {
+            return Ok(self.show_overview(open));
+        }
+        self.chrome.borrow_mut().invoke(address, arguments)
+    }
+
+    fn invoke_as(
+        &mut self,
+        actor: &str,
+        address: &ActionAddress,
+        arguments: &Map<String, Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        if let Some(open) = self.overview(address, arguments)? {
+            return Ok(self.show_overview(open));
+        }
+        self.chrome
+            .borrow_mut()
+            .invoke_as(actor, address, arguments)
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        self.chrome.borrow_mut().accessible_labels()
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.chrome.borrow().revision()
+    }
+
+    fn offered(&self) -> bool {
+        self.chrome.borrow().offered()
+    }
+
+    fn exclusive(&self) -> bool {
+        self.chrome.borrow().exclusive()
+    }
+
+    fn serves_while_locked(&self) -> bool {
+        self.chrome.borrow().serves_while_locked()
+    }
+
+    fn locked_resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
+        self.chrome.borrow_mut().locked_resources()
+    }
+}
+
 /// A surface of the session's own the shell's whole screen stands in for: the desktop's bar,
-/// whose band the screen's bar takes. It draws nothing and takes no pointer, and still answers
-/// the chords it answers anywhere, so a key the person presses does what it did.
+/// whose band the screen's bar takes, and the desktop's desk, whose strips the screen draws. It
+/// draws nothing and takes no pointer, and still answers the chords it answers anywhere, so a key
+/// the person presses does what it did.
 pub(crate) struct Aside<T>(pub(crate) T);
 
 impl<T: SurfaceHost> SurfaceHost for Aside<T> {
@@ -695,7 +934,7 @@ impl crate::Session {
         shell.publish();
         let arrangement = self.shared.arrangement.borrow().reading();
         shell.publish_readings(&self.shared.services.borrow());
-        shell.follow_places(&arrangement, &self.shared.services.borrow());
+        shell.follow_places(&arrangement, &mut self.shared.services.borrow_mut());
         shell.publish_arrangement(arrangement);
         // What the screen says of its edges is what a bar or dock that shows only sometimes
         // follows; it moves without the desk, so it goes every turn. The part covers the bands
@@ -801,6 +1040,36 @@ impl crate::Session {
     #[must_use]
     pub fn shell_says(&self, text: &str) -> bool {
         self.shell.as_ref().is_some_and(|shell| shell.says(text))
+    }
+
+    /// Where the shell lays out `text` for assistive technology, logical `(x, y, w, h)`: the
+    /// first node whose label, description or value holds it, on any shown part.
+    #[must_use]
+    pub fn shell_text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.shell.as_ref()?.text_bounds(text)
+    }
+
+    /// The apps whose packages the shell's runtime holds loaded, because a place shows them.
+    #[must_use]
+    pub fn shell_apps(&self) -> Vec<String> {
+        self.shell
+            .as_ref()
+            .map(Shell::loaded_apps)
+            .unwrap_or_default()
+    }
+
+    /// How many of the session's turns read readings for the shell's places: each hands the
+    /// shell everything the views composed there read in one run of them.
+    #[must_use]
+    pub fn shell_reading_rounds(&self) -> u64 {
+        self.shell.as_ref().map_or(0, Shell::reading_rounds)
+    }
+
+    /// How often the session read each resource the shell's places show, by id, for the
+    /// shell: a reading is read again only when its service says it moved.
+    #[must_use]
+    pub fn shell_reads(&self) -> std::collections::BTreeMap<String, u64> {
+        self.shell.as_ref().map(Shell::reads).unwrap_or_default()
     }
 
     /// The shell's bars, one per display, as each stands now: the output it is on, where it

@@ -1008,7 +1008,7 @@ impl Session {
         a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(display_settings::PanelBacklight::find()));
         let machine = mount::power::install(&mut compositor, &options);
-        compositor.add_host(Box::new(desktop.clone()));
+        compositor.add_host(shell::desk_under(options.shell, desktop.clone()));
         doors.add(Rc::new(RefCell::new(desktop.clone())));
 
         // The chrome above the windows: its own tree, beside the desk's.
@@ -1134,11 +1134,9 @@ impl Session {
             &overlays,
         )));
         compositor.add_host(shell::bar_under(options.shell, Held(Rc::clone(&chrome))));
-        doors.add(Rc::clone(&chrome) as tilo_surface_host::Shared);
-
-        // The desk as the session publishes it, and the shell's bar over the
-        // chrome, which reads it through the door.
+        // The desk as the session publishes it, which the shell reads through the door.
         let desk_overlays = Rc::new(overlays::Overlays::new());
+        doors.add(shell::chrome_door(options.shell, &chrome, &desk_overlays));
         // The runs people ask of this session's agents: the session keeps
         // its own, or plays the run channel a test handed it. Its broker
         // delivers them, it is one of the session's services, and the desk

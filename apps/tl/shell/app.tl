@@ -1,8 +1,5 @@
 app so.tilo.shell "Shell" (icon: .monitor, category: .system, records: .own)
 
-use so.tilo.lang.chat as chat
-use so.tilo.lang.notes as notes
-use so.tilo.lang.tasks as tasks
 use so.tilo.session as session
 
 /// This device's desk as the session holds it: the time in the person's style, who they are,
@@ -205,39 +202,21 @@ default view desk_view for arrangement
 
 default view shell_settings for Shell
 
-/// The person's desk as a window shows it: the top bar over the preset they picked, and the
-/// preset switch beside the bar's actions — or, for the traditional desktop, the whole screen:
-/// its frames on the desk under the desk's own bar and dock, as the session shows them on an
-/// output. The bar reads `desk`, this package's other root, as
-/// any view reads a root of the package it uses. A change of the arrangement runs the preset
-/// body; a change of the desk reading runs the bar.
+/// The person's desk as a window shows it, as a display shows it (`screen`): the top bar on its
+/// edge, the switch between the presets under it and the preset they picked under that, so the
+/// switch, the bar and the places each keep their own room at every width — or, for the
+/// traditional desktop, its frames on the desk under the desk's own bar and dock. The bar reads
+/// `desk`, this package's other root, as any view reads a root of the package it uses. A change
+/// of the arrangement runs the preset body; a change of the desk reading runs the bar.
 view desk_view(a: Arrangement) {
     let v = viewing
-    if v.showing == .desktop {
-        if space.compact {
-            desk_around(root Desk, .some(a), fill)
-        } else {
-            layers(fill) {
-                traditional_desktop(a, bar_lists_actions(shell, root Desk, space.width_class == .expanded or space.width_class == .wide), fill)
-                desk(root Desk, fill)
-            }
+    if v.showing == .desktop and not space.compact {
+        layers(fill) {
+            traditional_desktop(a, bar_lists_actions(shell, root Desk, space.width_class == .expanded or space.width_class == .wide), fill)
+            desk(root Desk, fill)
         }
     } else {
-        ui.NavShell(content_kind: .page) {
-            actions: {
-                bar(root Desk)
-                preset_switch(v)
-            }
-            content: {
-                if v.showing == .frames {
-                    framed_canvas(a)
-                } else if v.showing == .spaces {
-                    spaces_canvas(a)
-                } else {
-                    strips_view(a, v)
-                }
-            }
-        }
+        desk_around(root Desk, .some(a), fill)
     }
 }
 
@@ -258,14 +237,16 @@ view clock(d: Desk) {
 /// The top bar: the parts the person put on it, in their order, each a view of its own — so a
 /// change runs only the part that reads it: the minute, the clock alone. The bar is a run the
 /// person reorders by dragging a part, and a part dragged onto it from the settings lands where
-/// it is dropped; letting go runs one action, `place_part`.
+/// it is dropped; letting go runs one action, `place_part`. Who is here takes no room on a phone
+/// with no question waiting, where it shows nobody.
 view bar(d: Desk) {
     let s = shell
     let roomy = space.width_class == .expanded or space.width_class == .wide
+    let nobody = d.ask == "" and (d.person == "" or space.compact) and (not space.wide or d.people.is_empty())
     ui.DragRun(axis: .horizontal, name: "Top bar") {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
-            if part.shown and (space.wide or not part_gives_way(part, roomy)) {
+            if part.shown and (space.wide or not part_gives_way(part, roomy)) and not (part.slot == .people and nobody) {
                 ui.DragItem(part, title: part.title, group: if part.slot == .clock { .center } else if part.slot == .people or part.slot == .status or part.slot == .power { .trailing } else if part.slot == .space { .space } else { .leading }) {
                     bar_part(d, part)
                 }
@@ -353,9 +334,10 @@ view bar_part(d: Desk, part: BarPart) {
 }
 
 /// The workspace in front, opening the workspaces to switch between and the actions on this
-/// device's workspaces.
+/// device's workspaces. On a bar too narrow for its name beside the clock and the status (a
+/// phone with large text), it is the workspaces' icon, named for the workspace.
 view workspace_menu(d: Desk) {
-    ui.MenuButton(d.workspace, role: .bar) {
+    ui.MenuButton(d.workspace, icon: if space.width < 18.0 { .layers }, icon_only: space.width < 18.0, role: .bar) {
         for w in d.workspaces {
             ui.MenuItem(w.name, checked: .some(w.current)) {
                 on choose: device.switch_workspace(device.desk, workspace: w.key)

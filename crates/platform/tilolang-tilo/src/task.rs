@@ -487,6 +487,15 @@ impl Invoker for DoorInvoker {
             return Invoked::Done(Value::Unit);
         }
         match self.door.invoke(&call) {
+            // An action that only reads or shows (`overview`, `search`) changes nothing of the
+            // workspace: it is no step, and nothing of it is taken back. What it showed is
+            // closed as it was opened, never undone.
+            Answered::Done(output) if reads_only(invocation) => {
+                match result_of(meta, invocation, &output) {
+                    Ok(result) => Invoked::Done(result),
+                    Err(why) => Invoked::Failed(why),
+                }
+            }
             Answered::Done(output) => {
                 let mut steps = self.steps.borrow_mut();
                 steps.done = steps.done.saturating_add(1);
@@ -517,6 +526,36 @@ impl Invoker for DoorInvoker {
             Answered::Asks(why) => Invoked::Asks(why),
         }
     }
+}
+
+/// Whether the parameter `name` of the action `action` of `meta` is a flag (`Bool`, or an
+/// optional one).
+fn declared_flag(meta: &Meta, action: &str, name: &str) -> bool {
+    meta.actions
+        .iter()
+        .find(|declared| declared.id == action)
+        .and_then(|declared| declared.params.iter().find(|param| param.name == name))
+        // optional-decode: a type this cannot read is no flag; the action still checks the value
+        .and_then(|param| parse_ty(&param.ty, &meta.app).ok())
+        .is_some_and(|ty| match ty {
+            tilolang_runtime::meta::Ty::Bool => true,
+            tilolang_runtime::meta::Ty::Option(inner) => {
+                matches!(*inner, tilolang_runtime::meta::Ty::Bool)
+            }
+            _ => false,
+        })
+}
+
+/// Whether `invocation` only reads or shows: an action declared `read` (a surface opened or
+/// closed, a search run), which changes no resource.
+fn reads_only(invocation: &Invocation) -> bool {
+    matches!(
+        invocation,
+        Invocation::Action {
+            class: tilolang_runtime::meta::EffectClass::Read,
+            ..
+        }
+    )
 }
 
 /// The door's call for `invocation` of the platform's package `meta`: its declared verb on the
@@ -566,6 +605,9 @@ fn published_call(
         };
         let json = match value {
             Value::Ref(r) => json!(published_id(&r.target)),
+            // A flag travels as the integer the guest boxed it as; the published action takes
+            // it as the flag its parameter declares.
+            Value::Int(n) if declared_flag(meta, action, name) => json!(*n != 0),
             other => tilolang_runtime::value::to_json(other)
                 .map_err(|error| format!("`{name}` does not send: {error}"))?,
         };
