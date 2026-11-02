@@ -935,7 +935,7 @@ fn asked_of_desk(
         }
         Op::ProcessMemory => json!({"answer": tilo_compositor::memory_report::report()}),
         Op::ProfileStart => profile_start(request),
-        Op::ProfileStatus => json!({"answer": {"profile": tilo_frame_metrics::profile::status()}}),
+        Op::ProfileStatus => json!({"answer": crate::diagnostics::reading()}),
         Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
         Op::StateDump => owner_shown(gate, desk.handle.read(|tree| state_dump(tree, desk))),
         Op::Windows => {

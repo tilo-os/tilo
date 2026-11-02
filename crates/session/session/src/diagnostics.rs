@@ -7,18 +7,23 @@
 //! through this resource: [`tilo_frame_metrics::profile`] records the loop's
 //! frames, phases and threads, and completes itself when the window is over.
 //!
-//! The resource also reads what the session's heap is doing
+//! The resource also reports what the session's heap is doing
 //! ([`tilo_compositor::heap_trim`]): whether a trim a close asked for is still
-//! owed, how many ran, and whether startup's trim has run. The diagnostics UI
-//! and a person's own scripts read the same resource, so there is one path to
-//! what the session knows about its own cost.
+//! owed, how many ran, and whether startup's trim has run.
+//!
+//! It is published on the session's door like the desk and the session's
+//! controls, so the action model lists it: `tilo-control actions list
+//! session-diagnostics`, an agent through the broker, and the test-control
+//! door all reach the same verbs, and `profile-status` answers the same
+//! reading the owner's `profile_status` request does.
 
 use serde_json::{Map, Value, json};
 use tilo_actions::{
     ActionAddress, ActionOutput, ActionParam, ActionSpec, DoorError, EncodedAction, OperationKind,
     ParamType, ResourceSpec,
 };
-use tilo_service::{Service, Started};
+use tilo_surface_host::Published;
+use ui::host_operation::ResourceOperationStart;
 
 /// The resource the session's diagnostics are published under.
 pub const RESOURCE: &str = "session-diagnostics";
@@ -60,53 +65,77 @@ fn resource() -> ResourceSpec {
             payload: b"profile-stop".to_vec(),
         },
     );
-    stop.type_mut().contract.result = result;
+    stop.type_mut().contract.result = result.clone();
+    let mut status = ActionSpec::typed_operation(
+        "profile-status",
+        "What the session's profiler and heap are doing",
+        "The profile recording now, the last one finished, and the heap trims owed and run.",
+        OperationKind::View,
+        KIND,
+        Vec::new(),
+        |_| EncodedAction {
+            type_id: KIND.into(),
+            payload: b"profile-status".to_vec(),
+        },
+    );
+    status.type_mut().contract.result = result;
     ResourceSpec::new(RESOURCE, KIND, "Session diagnostics")
         .with_action(start)
         .with_action(stop)
+        .with_action(status)
 }
 
-/// The session's diagnostics as one resource: the profiler and the heap trim.
+/// What the session knows of its own cost now: the profiler's state and the
+/// heap trim's. One reading for every door that asks.
+#[must_use]
+pub fn reading() -> Value {
+    json!({
+        "profile": tilo_frame_metrics::profile::status(),
+        "heap_trim": {
+            "pending": tilo_compositor::heap_trim::close_trim_pending(),
+            "trims": tilo_compositor::heap_trim::trims_completed(),
+            "startup_trimmed": tilo_compositor::heap_trim::startup_trimmed(),
+        },
+    })
+}
+
+/// The session's diagnostics as a surface on its door: the profiler, its
+/// reading, and the heap trim.
 pub(crate) struct Served;
 
-impl Service for Served {
-    fn resources(&self) -> Vec<ResourceSpec> {
+impl Published for Served {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
         vec![resource()]
     }
 
-    fn read(&self, resource: &str) -> Option<Value> {
-        (resource == RESOURCE).then(|| {
-            json!({
-                "profile": tilo_frame_metrics::profile::status(),
-                "heap_trim": {
-                    "pending": tilo_compositor::heap_trim::close_trim_pending(),
-                    "trims": tilo_compositor::heap_trim::trims_completed(),
-                    "startup_trimmed": tilo_compositor::heap_trim::startup_trimmed(),
-                },
-            })
-        })
+    fn revision(&self) -> Option<u64> {
+        // What it offers never changes; what it answers does, and is read
+        // when asked.
+        Some(0)
     }
 
     fn invoke(
         &mut self,
-        resource: &str,
-        action: &str,
+        address: &ActionAddress,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
-        if resource != RESOURCE {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+    ) -> Result<ResourceOperationStart, DoorError> {
+        if address.resource != RESOURCE {
+            return Err(DoorError::Unknown(address.clone()));
         }
-        let profile = match action {
+        let answered = match address.action.as_str() {
             "profile-start" => profile_start(arguments)?,
-            "profile-stop" => tilo_frame_metrics::profile::stop(),
-            other => {
-                return Err(DoorError::Unknown(ActionAddress::new(resource, other)));
-            }
+            "profile-stop" => json!({ "profile": tilo_frame_metrics::profile::stop() }),
+            "profile-status" => reading(),
+            _ => return Err(DoorError::Unknown(address.clone())),
         };
-        Ok(Started::Done(ActionOutput {
-            value: Some(json!({ "profile": profile })),
+        Ok(ResourceOperationStart::Completed(ActionOutput {
+            value: Some(answered),
             resources: Vec::new(),
         }))
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        Vec::new()
     }
 }
 
@@ -127,15 +156,18 @@ fn profile_start(arguments: &Map<String, Value>) -> Result<Value, DoorError> {
         code: "no-state-dir".into(),
         reason: "there is no state directory to keep the profile in".into(),
     })?;
-    profile::start(&root, std::time::Duration::from_secs(seconds)).map_err(|error| match error {
-        profile::StartError::AlreadyRecording(path) => DoorError::Unavailable {
-            code: "already-recording".into(),
-            reason: format!("a profile is already recording into {}", path.display()),
+    let profile = profile::start(&root, std::time::Duration::from_secs(seconds)).map_err(
+        |error| match error {
+            profile::StartError::AlreadyRecording(path) => DoorError::Unavailable {
+                code: "already-recording".into(),
+                reason: format!("a profile is already recording into {}", path.display()),
+            },
+            profile::StartError::Io(error) => DoorError::Failed(format!(
+                "the profile directory could not be created: {error}"
+            )),
         },
-        profile::StartError::Io(error) => DoorError::Failed(format!(
-            "the profile directory could not be created: {error}"
-        )),
-    })
+    )?;
+    Ok(json!({ "profile": profile }))
 }
 
 #[cfg(test)]
@@ -143,8 +175,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_resource_offers_the_profiler_and_reads_what_the_session_knows_of_its_cost() {
-        let served = Served;
+    fn the_resource_offers_the_profiler_and_reports_what_the_session_knows_of_its_cost() {
+        let mut served = Served;
         let resources = served.resources();
         assert_eq!(resources.len(), 1);
         let resource = &resources[0];
@@ -154,15 +186,21 @@ mod tests {
             .iter()
             .map(|spec| spec.id.as_str())
             .collect();
-        assert_eq!(actions, ["profile-start", "profile-stop"]);
+        assert_eq!(actions, ["profile-start", "profile-stop", "profile-status"]);
         // The reading: the profiler's state and the heap trim's, whether or
         // not a trim ever ran in this process.
-        let reading = served.read(RESOURCE).expect("the resource's reading");
+        let reading = reading();
         assert_eq!(reading["profile"]["state"], "idle");
         assert!(reading["heap_trim"]["pending"].is_boolean());
         assert!(reading["heap_trim"]["trims"].is_u64());
         assert!(reading["heap_trim"]["startup_trimmed"].is_boolean());
-        assert!(served.read("session:devices").is_none());
+        let status = served
+            .invoke(&ActionAddress::new(RESOURCE, "profile-status"), &Map::new())
+            .expect("the reading");
+        let ResourceOperationStart::Completed(output) = status else {
+            panic!("a reading answers at once");
+        };
+        assert_eq!(output.value.expect("a value")["profile"]["state"], "idle");
     }
 
     #[test]
@@ -178,7 +216,17 @@ mod tests {
             );
         }
         assert!(matches!(
-            Served.invoke(RESOURCE, "profile-elsewhere", &Map::new()),
+            Served.invoke(
+                &ActionAddress::new(RESOURCE, "profile-elsewhere"),
+                &Map::new()
+            ),
+            Err(DoorError::Unknown(_))
+        ));
+        assert!(matches!(
+            Served.invoke(
+                &ActionAddress::new("session:devices", "profile-stop"),
+                &Map::new()
+            ),
             Err(DoorError::Unknown(_))
         ));
     }

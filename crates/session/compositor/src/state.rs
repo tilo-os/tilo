@@ -263,23 +263,25 @@ pub struct State {
     retired: std::sync::Mutex<Option<(u64, Instant)>>,
 }
 
+/// Besides 8-bit RGB, the 10-bit and half-float buffers an HDR surface's
+/// signal is carried in.
+fn shm_formats() -> Vec<smithay::reexports::wayland_server::protocol::wl_shm::Format> {
+    use smithay::reexports::wayland_server::protocol::wl_shm::Format;
+    vec![
+        Format::Xrgb2101010,
+        Format::Xbgr2101010,
+        Format::Argb2101010,
+        Format::Abgr2101010,
+        Format::Xrgb16161616f,
+        Format::Abgr16161616f,
+    ]
+}
+
 impl State {
     pub(crate) fn new(display: &DisplayHandle, policy: Box<dyn WindowPolicy>) -> Self {
         let compositor_state = CompositorState::new::<Self>(display);
         let xdg_shell_state = XdgShellState::new::<Self>(display);
-        // Besides 8-bit RGB, the 10-bit and half-float buffers an HDR
-        // surface's signal is carried in.
-        let shm_state = ShmState::new::<Self>(
-            display,
-            vec![
-                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb2101010,
-                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xbgr2101010,
-                smithay::reexports::wayland_server::protocol::wl_shm::Format::Argb2101010,
-                smithay::reexports::wayland_server::protocol::wl_shm::Format::Abgr2101010,
-                smithay::reexports::wayland_server::protocol::wl_shm::Format::Xrgb16161616f,
-                smithay::reexports::wayland_server::protocol::wl_shm::Format::Abgr16161616f,
-            ],
-        );
+        let shm_state = ShmState::new::<Self>(display, shm_formats());
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(display);
         let data_device_state = DataDeviceState::new::<Self>(display);
         let mut seat_state = SeatState::new();
