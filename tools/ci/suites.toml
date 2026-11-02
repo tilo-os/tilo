@@ -1483,6 +1483,7 @@ readers = [
   "crates/session/session/tests/firstboot.rs",
   "crates/session/session/tests/shell_screen.rs",
   "crates/session/session/tests/session_package.rs",
+  "crates/session/session/tests/repl_door.rs",
   "crates/session/session/src/channels/vault.rs",
 ]
 
