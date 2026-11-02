@@ -23,7 +23,9 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
-use tilo_compositor::{CursorIcon, HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_compositor::{
+    CursorIcon, HostIme, HostKey, HostLayer, HostTextInput, KeyClaim, SurfaceHost,
+};
 use tilo_render_protocol::patch::local::pair;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::background::Waker;

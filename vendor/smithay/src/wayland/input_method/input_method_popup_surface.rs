@@ -40,7 +40,13 @@ impl PopupSurface {
         rectangle: Arc<Mutex<Rectangle<i32, Logical>>>,
         parent: Option<PopupParent>,
     ) -> Self {
-        let location = Arc::new(Mutex::new(rectangle.lock().unwrap().loc));
+        let rect = *rectangle.lock().unwrap();
+        let location = Arc::new(Mutex::new(rect.loc));
+        // The text field's place is known before the popup is: a field the
+        // compositor serves itself reports its caret before the method asks
+        // for a popup, and one that was reported while there was no popup
+        // would otherwise never reach it.
+        surface_role.text_input_rectangle(rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
         Self {
             surface_role,
             rectangle,

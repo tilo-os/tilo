@@ -146,6 +146,19 @@ impl SurfaceHost for ShellPart {
         SurfaceHost::set_backdrops(&mut self.widgets, images);
     }
 
+    /// A field of the shell has the focus (the bar's search, a settings
+    /// field): the input method composes into it.
+    fn text_input(&self) -> Option<HostTextInput> {
+        (!self.hidden())
+            .then(|| self.widgets.text_input())
+            .flatten()
+    }
+
+    fn ime(&mut self, event: HostIme) {
+        self.input = true;
+        self.widgets.ime(event);
+    }
+
     fn key(&mut self, key: &HostKey) {
         self.input = true;
         let Some(action) = self.surface_key(key) else {

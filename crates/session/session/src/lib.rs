@@ -76,6 +76,7 @@ mod here;
 mod i18n;
 pub mod identity;
 mod import_readiness;
+mod input_method;
 mod input_sources;
 pub mod keyboard;
 mod keys;
@@ -700,7 +701,7 @@ pub struct Session {
     /// The runtime the shortcuts' runs execute on, which the apps' broker
     /// starts them on. Kept for the session's life: dropping it stops the
     /// record feed and the runs still executing on it.
-    _automation_runtime: tokio::runtime::Runtime,
+    automation_runtime: tokio::runtime::Runtime,
     /// The desktop services the portal and the notifications daemon run
     /// in, fed what the session knows of itself.
     desktop: Option<Rc<desktop_services::DesktopServices>>,
@@ -748,6 +749,8 @@ pub struct Session {
     rotation: rotation::Rotation,
     /// The keyboard input sources, and the one that types.
     sources: config::Sources,
+    /// The composing input method of the active source, while one runs.
+    input_method: input_method::InputMethod,
     /// The machine's power: the idle policy, the service over logind and
     /// what holds it awake.
     machine: mount::power::PowerRun,
@@ -1680,7 +1683,7 @@ impl Session {
             action_plane,
             control,
             automation,
-            _automation_runtime: automation_runtime,
+            automation_runtime,
             screen_locked: false,
             desktop: options.desktop,
             running: Vec::new(),
@@ -1704,6 +1707,7 @@ impl Session {
             projection_video: projection_video::ProjectionVideo::new(),
             rotation: rotation::Rotation::mount(options.accelerometer),
             sources,
+            input_method: input_method::InputMethod::default(),
             shell,
             a11y,
             ended: false,
@@ -2338,6 +2342,9 @@ impl Session {
         self.follow_owner_session()?;
         self.follow_lock()?;
         self.follow_keyboard();
+        // The engine of the active source, after the on-screen keyboard gave
+        // up the seat: one input method owns it.
+        self.follow_input_method();
         // Quick settings runs while the stack has its slot up, where the
         // stack placed it.
         self.follow_quick_settings();

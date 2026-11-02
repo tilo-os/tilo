@@ -69,7 +69,7 @@ impl InputMethodHandle {
     }
 
     /// Whether there's an acitve instance of input-method.
-    pub(crate) fn has_instance(&self) -> bool {
+    pub fn has_instance(&self) -> bool {
         self.inner.lock().unwrap().instance.is_some()
     }
 
@@ -100,7 +100,10 @@ impl InputMethodHandle {
         keyboard.grab.is_some()
     }
 
-    pub(crate) fn set_text_input_rectangle<D: SeatHandler + 'static>(
+    /// Where the field's caret stands, as the input method places its popup:
+    /// the rectangle the focused `text-input-v3` client reported last, or the
+    /// one the compositor reported for a field it serves itself.
+    pub fn set_text_input_rectangle<D: SeatHandler + 'static>(
         &self,
         state: &mut D,
         rect: Rectangle<i32, Logical>,
@@ -122,7 +125,7 @@ impl InputMethodHandle {
     }
 
     /// Activate input method on the given surface.
-    pub(crate) fn activate_input_method<D: SeatHandler + 'static>(&self, state: &mut D, surface: &WlSurface) {
+    pub fn activate_input_method<D: SeatHandler + 'static>(&self, state: &mut D, surface: &WlSurface) {
         self.with_input_method(|im| {
             if let Some(instance) = im.instance.as_ref() {
                 instance.object.activate();
@@ -144,19 +147,47 @@ impl InputMethodHandle {
         });
     }
 
+    /// Activate the input method for a field no `text-input-v3` client
+    /// serves: the compositor owns the field (a surface it draws itself), and
+    /// hands what the input method composes to
+    /// [`InputMethodHandler::commit_to_host`] and its siblings. `rect` is
+    /// where the field's caret stands, where a popup goes; the input method's
+    /// popup, if it has one, is registered with no parent surface.
+    pub fn activate_without_text_input<D: InputMethodHandler + SeatHandler + 'static>(
+        &self,
+        state: &mut D,
+        rect: Rectangle<i32, Logical>,
+    ) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.popup_handle.rectangle = rect;
+        let Some(instance) = inner.instance.as_ref() else {
+            return;
+        };
+        instance.object.activate();
+        let Some(mut popup) = inner.popup_handle.surface.clone() else {
+            return;
+        };
+        popup.set_text_input_rectangle(rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+        popup.set_parent(None);
+        let data = instance.object.data::<InputMethodUserData<D>>().unwrap();
+        (data.new_popup)(state, popup);
+    }
+
     /// Deactivate the active input method.
     ///
     /// The `done` is always send when deactivating IME.
-    pub(crate) fn deactivate_input_method<D: SeatHandler + 'static>(&self, state: &mut D) {
+    pub fn deactivate_input_method<D: SeatHandler + 'static>(&self, state: &mut D) {
         self.with_input_method(|im| {
             if let Some(instance) = im.instance.as_mut() {
                 instance.object.deactivate();
                 instance.done();
                 if let Some(popup) = im.popup_handle.surface.as_mut() {
                     let data = instance.object.data::<InputMethodUserData<D>>().unwrap();
-                    if popup.get_parent().is_some() {
-                        (data.dismiss_popup)(state, popup.clone());
-                    }
+                    // A popup is registered with its parent's surface or, for a
+                    // field the compositor serves itself, with none: dismissing
+                    // one that was never registered is the compositor's to
+                    // ignore.
+                    (data.dismiss_popup)(state, popup.clone());
                     popup.set_parent(None);
                 }
             }
@@ -206,18 +237,28 @@ where
     ) {
         match request {
             zwp_input_method_v2::Request::CommitString { text } => {
-                data.text_input_handle.with_active_text_input(|ti, _surface| {
-                    ti.commit_string(Some(text.clone()));
-                });
+                if data.text_input_handle.has_active_text_input() {
+                    data.text_input_handle.with_active_text_input(|ti, _surface| {
+                        ti.commit_string(Some(text.clone()));
+                    });
+                } else {
+                    // The field is the compositor's own: it composes the text
+                    // into what it draws.
+                    state.commit_to_host(&text);
+                }
             }
             zwp_input_method_v2::Request::SetPreeditString {
                 text,
                 cursor_begin,
                 cursor_end,
             } => {
-                data.text_input_handle.with_active_text_input(|ti, _surface| {
-                    ti.preedit_string(Some(text.clone()), cursor_begin, cursor_end);
-                });
+                if data.text_input_handle.has_active_text_input() {
+                    data.text_input_handle.with_active_text_input(|ti, _surface| {
+                        ti.preedit_string(Some(text.clone()), cursor_begin, cursor_end);
+                    });
+                } else {
+                    state.preedit_to_host(&text, cursor_begin, cursor_end);
+                }
             }
             zwp_input_method_v2::Request::DeleteSurroundingText {
                 before_length,
@@ -270,9 +311,10 @@ where
                 let popup_rect = Arc::new(Mutex::new(input_method.popup_handle.rectangle));
                 let popup = PopupSurface::new(instance, surface, popup_rect, parent);
                 input_method.popup_handle.surface = Some(popup.clone());
-                if popup.get_parent().is_some() {
-                    state.new_popup(popup);
-                }
+                // A popup registered without a parent surface is placed at
+                // the rectangle the compositor reports for the field it
+                // serves itself.
+                state.new_popup(popup);
             }
             zwp_input_method_v2::Request::GrabKeyboard { keyboard } => {
                 let input_method = data.handle.inner.lock().unwrap();

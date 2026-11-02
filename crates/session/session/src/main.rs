@@ -563,6 +563,10 @@ fn run(
     } else {
         start_x11(session.compositor())
     };
+    // X11 apps on this display compose through the input method's XIM: the
+    // engine opens the display once it runs, as the session's own Xwayland
+    // accepts this login's X clients.
+    session.set_x11_display(x11_display.clone());
     // The apps opened from now on connect where the person's windows are.
     // X11 needs the authority file Xwayland was started with as well, which
     // the compositor does not hand out yet.

@@ -153,6 +153,40 @@ pub struct HostDrag {
     )>,
 }
 
+/// A text field a hosted surface draws, when it is the one the person types
+/// into: what an input method serves it with — how to compose in it, and
+/// where its composition stands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostTextInput {
+    /// The field's content hint, as `text-input-v3` names it: what it takes
+    /// and whether it may be shown, learned from or completed.
+    pub hint: u32,
+    /// The field's purpose, as `text-input-v3` names it: text, a name, an
+    /// email, a URL, digits, a password, a terminal.
+    pub purpose: u32,
+    /// Where its caret stands, in the desk's logical coordinates: the
+    /// candidate window and the composition go under it.
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// What an input method sends a hosted surface's field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostIme {
+    /// The composed text is in the field: insert it, replacing any
+    /// composition shown before.
+    Commit(String),
+    /// The composition in progress (empty when it ended), with the byte
+    /// offsets its cursor and selection stand at (`None` for no selection).
+    Preedit(String, Option<(usize, usize)>),
+    /// The field is the one an input method serves from now on.
+    Enabled,
+    /// The field stopped being served: composing in it is over.
+    Disabled,
+}
+
 /// A hosted surface app, as the compositor sees it.
 pub trait SurfaceHost {
     /// The layers this surface shows now, bottom first. Hosts draw above
@@ -219,6 +253,17 @@ pub trait SurfaceHost {
     /// A key, while [`SurfaceHost::wants_keyboard`] holds, or one this
     /// surface claimed (its press, repeats and release).
     fn key(&mut self, _key: &HostKey) {}
+
+    /// The text field this surface draws that the person types into now, when
+    /// it has the focus: an input method serves it as it serves a client's
+    /// field — composing into it, its candidate window under the caret — and
+    /// keys it does not use come back to the field.
+    fn text_input(&self) -> Option<HostTextInput> {
+        None
+    }
+
+    /// What the input method serving [`SurfaceHost::text_input`] sent.
+    fn ime(&mut self, _event: HostIme) {}
 
     /// Offered every press before whoever has the keyboard gets it, the
     /// topmost surface first: a desktop chord or a hardware key this

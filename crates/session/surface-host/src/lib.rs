@@ -28,15 +28,15 @@ pub use widget::WidgetHost;
 use std::cell::Cell;
 
 use tilo_compositor::{
-    BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostKey, HostLayer, KeyModifiers,
-    SurfaceHost,
+    BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostIme, HostKey, HostLayer,
+    HostTextInput, KeyModifiers, SurfaceHost,
 };
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
 use ui::device_local_door::SharedDoor;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{
-    DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, RawKeyEvent,
+    DeviceId, ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, RawKeyEvent,
     TouchPhase, WindowEvent,
 };
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
@@ -405,6 +405,29 @@ impl SurfaceHost for AppHost {
         self.input(key_event(key));
     }
 
+    /// The field the app keeps the focus in, if it takes typing: an input
+    /// method composes into it as into a client's field, its candidate window
+    /// under the caret.
+    fn text_input(&self) -> Option<HostTextInput> {
+        let field = self.app.ime_window_state()?;
+        let (hint, purpose) = field.content.wayland();
+        let (ox, oy) = self.placement.origin;
+        let scale = self.placement.scale;
+        let edge = |v: u32, at: i32| f64::from(at) + f64::from(v) / scale;
+        Some(HostTextInput {
+            hint,
+            purpose,
+            x: edge(field.x, ox),
+            y: edge(field.y, oy),
+            width: f64::from(field.width) / scale,
+            height: f64::from(field.height) / scale,
+        })
+    }
+
+    fn ime(&mut self, event: HostIme) {
+        self.input(WindowEvent::Ime(ime_event(event)));
+    }
+
     fn cursor(&self) -> CursorIcon {
         self.surface.cursor.get()
     }
@@ -601,6 +624,17 @@ pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
         device_id: DeviceId::dummy(),
         event,
         is_synthetic: false,
+    }
+}
+
+/// The toolkit's IME event for what the input method serving a hosted field
+/// sent.
+pub(crate) fn ime_event(event: HostIme) -> Ime {
+    match event {
+        HostIme::Commit(text) => Ime::Commit(text),
+        HostIme::Preedit(text, cursor) => Ime::Preedit(text, cursor),
+        HostIme::Enabled => Ime::Enabled,
+        HostIme::Disabled => Ime::Disabled,
     }
 }
 

@@ -23,7 +23,7 @@ use crate::{
     wayland::seat::{keyboard::for_each_focused_kbds, WaylandFocus},
 };
 
-use super::VirtualKeyboardManagerState;
+use super::{VirtualKeyboardHandler, VirtualKeyboardManagerState};
 
 #[derive(Debug, Default)]
 pub(crate) struct VirtualKeyboard {
@@ -74,7 +74,7 @@ impl<D: SeatHandler> fmt::Debug for VirtualKeyboardUserData<D> {
 impl<D> Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardUserData<D>, D> for VirtualKeyboardManagerState
 where
     D: Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardUserData<D>>,
-    D: SeatHandler + 'static,
+    D: SeatHandler + VirtualKeyboardHandler + 'static,
     <D as SeatHandler>::KeyboardFocus: WaylandFocus,
 {
     fn request(
@@ -106,7 +106,17 @@ where
                 let mut internal = keyboard_handle.arc.internal.lock().unwrap();
                 let focus = internal.focus.as_mut().map(|(focus, _)| focus);
                 keyboard_handle.send_keymap(user_data, &focus, &vk_state.keymap, vk_state.mods);
+                drop(internal);
 
+                // The compositor routes the key itself when it has fields of
+                // its own to feed: an input method's keys are the person's.
+                if user_data.virtual_key(key, state == 1, time) {
+                    return;
+                }
+
+                let keyboard_handle = data.seat.get_keyboard().unwrap();
+                let mut internal = keyboard_handle.arc.internal.lock().unwrap();
+                let focus = internal.focus.as_mut().map(|(focus, _)| focus);
                 if let Some(wl_surface) = focus.and_then(|f| f.wl_surface()) {
                     for_each_focused_kbds(&data.seat, &wl_surface, |kbd| {
                         // This should be wl_keyboard::KeyState, but the protocol does not state
