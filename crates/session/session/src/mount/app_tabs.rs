@@ -5,8 +5,8 @@
 //! asks for that over its authenticated `shell-ui` connection
 //! ([`ui::shell_tabs`]): another window right after its own tab, its own tab
 //! closed, the last closed tab back, its group stepped on, or its next window
-//! placed beside its own. The connection vouches for the app and the room it
-//! runs in; an app can never place, close or step another app's tab, and a
+//! placed beside its own. The connection vouches for the app and the
+//! workspace it runs in; an app can never place, close or step another app's tab, and a
 //! request refused changes nothing.
 //!
 //! The socket is served here, and the asks become desk commands on the
@@ -22,7 +22,7 @@
 //! Every connection also receives the appearance of the window it belongs to
 //! ([`FloatingSurfaceHostMessage::Appearance`]): the temperature of the
 //! workspace that window is in, the person's own colour, the theme, and
-//! whether the room it stands in is in sync. It is sent when the connection
+//! whether the workspace it stands in is in sync. It is sent when the connection
 //! opens and again whenever any of that changes.
 //!
 //! The same connections are made for a window the session opens in an app's
@@ -89,7 +89,7 @@ impl ServiceLinks {
     fn collaboration(
         &self,
         app: &str,
-        room: &str,
+        workspace: &str,
         instance: u64,
         launch: Option<u32>,
     ) -> Option<OwnedFd> {
@@ -98,11 +98,11 @@ impl ServiceLinks {
                 tracing::warn!(%error, %app, "a window could not reach the collaboration broker");
             })
             .ok()?;
-        self.launches.window(app, room, instance, launch);
+        self.launches.window(app, workspace, instance, launch);
         if let Err(error) =
-            launcher::services::write_collab_window_handoff(&mut stream, app, room, instance)
+            launcher::services::write_collab_window_handoff(&mut stream, app, workspace, instance)
         {
-            self.launches.window_withdrawn(app, room, instance);
+            self.launches.window_withdrawn(app, workspace, instance);
             tracing::warn!(%error, %app, "a window's collaboration connection was not named");
             return None;
         }
@@ -110,7 +110,8 @@ impl ServiceLinks {
     }
 
     /// The window's shell-ui connection, attributed to the launch whose
-    /// process `launcher` is: the app and the room it runs in, without which
+    /// process `launcher` is: the app and the workspace it runs in, without
+    /// which
     /// what it asks reaches no desk.
     fn shell_ui(&self, app: &str, launcher: Option<u32>) -> Option<OwnedFd> {
         let launcher = launcher?;
@@ -147,12 +148,12 @@ impl Connects for ServiceLinks {
     fn window(
         &self,
         app: &str,
-        room: &str,
+        workspace: &str,
         instance: u64,
         launcher_pid: Option<u32>,
     ) -> WindowConnections {
         WindowConnections {
-            collaboration: self.collaboration(app, room, instance, launcher_pid),
+            collaboration: self.collaboration(app, workspace, instance, launcher_pid),
             shell_ui: self.shell_ui(app, launcher_pid),
         }
     }
@@ -214,8 +215,8 @@ enum Ask {
 struct Request {
     /// The app the launcher vouched for.
     app: String,
-    /// The room its launch runs it in.
-    room: String,
+    /// The workspace its launch runs it in.
+    workspace: String,
     /// The connection the ask came in on, which its answer goes back on and
     /// which its capture protection lasts as long as.
     connection: u64,
@@ -338,7 +339,7 @@ fn answer(
 ) {
     let Request {
         app,
-        room,
+        workspace,
         connection,
         reply,
         ask,
@@ -387,7 +388,7 @@ fn answer(
             // The place it opens into is there from this frame; a launch
             // that starts nothing takes it back.
             let held = desktop.with_policy(|policy| policy.hold_beside(&app, anchor, background));
-            if let Err(error) = apps.start_beside(&launch, &apps.workspace_named(&room)) {
+            if let Err(error) = apps.start_beside(&launch, &apps.workspace_named(&workspace)) {
                 if held {
                     desktop.with_policy(|policy| policy.release_held(&app));
                 }
@@ -631,7 +632,7 @@ fn serve_connection(
         return;
     }
     let app = handshake.app_id;
-    let Some(room) = launched_room(launches, peer, &app) else {
+    let Some(workspace) = launched_workspace(launches, peer, &app) else {
         tracing::info!(%app, "a shell-ui connection names no app this session started");
         return;
     };
@@ -641,7 +642,7 @@ fn serve_connection(
     if requests
         .send(Request {
             app: app.clone(),
-            room: room.clone(),
+            workspace: workspace.clone(),
             connection,
             reply: Arc::clone(&reply),
             ask: Ask::Connected {
@@ -674,7 +675,7 @@ fn serve_connection(
         if requests
             .send(Request {
                 app: app.clone(),
-                room: room.clone(),
+                workspace: workspace.clone(),
                 connection,
                 reply: Arc::clone(&reply),
                 ask: Ask::Message(Box::new(message)),
@@ -688,7 +689,7 @@ fn serve_connection(
     // What this connection asked of what a capture may show goes with it.
     let _ = requests.send(Request {
         app: app.clone(),
-        room,
+        workspace,
         connection,
         reply,
         ask: Ask::Closed,
@@ -723,9 +724,9 @@ fn peer_pid(stream: &UnixStream) -> Option<u32> {
     u32::try_from(credentials.pid).ok().filter(|pid| *pid > 0)
 }
 
-/// The room the app the connection names runs in, when this session started
-/// it: the launch the peer's process belongs to.
-fn launched_room(launches: &Launches, peer: Option<u32>, app: &str) -> Option<String> {
+/// The workspace the app the connection names runs in, when this session
+/// started it: the launch the peer's process belongs to.
+fn launched_workspace(launches: &Launches, peer: Option<u32>, app: &str) -> Option<String> {
     let pid = match peer {
         // The session connects a window it opens in an app's running process
         // itself: what it recorded for that connection names the launch.
