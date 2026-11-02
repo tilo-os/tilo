@@ -320,6 +320,7 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         country: None,
         fetch: None,
         calls: Arc::new(call_lane::CallLane::new(host.device_public_key, None)),
+        live: None,
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -624,6 +625,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
             .unwrap(),
         ),
         calls: Arc::new(call_lane::CallLane::new(host.device_public_key, None)),
+        live: None,
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -867,6 +869,7 @@ async fn a_page_turns_its_call_at_the_host_and_only_an_admitted_device_is_answer
         country: None,
         fetch: None,
         calls: Arc::new(call_lane::CallLane::at(lane)),
+        live: None,
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await

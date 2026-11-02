@@ -22,6 +22,7 @@
 //! | `/rooms` | [`RoomsRequest`](crate::rooms::RoomsRequest) | [`RoomsReply`](crate::rooms::RoomsReply) |
 //! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
+//! | `/live` ([`LIVE_INFO_PATH`]) | [`LiveRequest`] | [`LiveInfo`]; `403` when the page's device is not admitted |
 //! | `/channel-keys` ([`CHANNEL_KEYS_PATH`]) | [`ChannelKeysRequest`] | [`ChannelKeys`]; `403` when not admitted |
 //! | `/private` ([`PRIVATE_PATH`](crate::rooms::private::PRIVATE_PATH)) | [`PrivateCall`](crate::rooms::private::PrivateCall) | [`PrivateReply`](crate::rooms::private::PrivateReply) (a watch long-polls) |
 //! | `/workspace-join` ([`WORKSPACE_JOIN_PATH`]) | `tilo_workspace_join::JoinTransportRequest` | `JoinTransportResponse` |
@@ -378,6 +379,38 @@ impl core::fmt::Debug for ChannelKeys {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ChannelKeys").finish_non_exhaustive()
     }
+}
+
+/// Route of the live plane: how a page learns where the relay's WebTransport
+/// listener is and which certificate to pin for it.
+pub const LIVE_INFO_PATH: &str = "/live";
+
+/// A page's ask to join `workspace_id`'s live plane. The host answers only
+/// when the page's session device is admitted to the workspace now, so the
+/// answer is also the admission the page dials with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveRequest {
+    /// The workspace as this host numbers it, for the admission decision.
+    pub workspace_id: u64,
+    /// The workspace's own name, which its live namespace carries: the same
+    /// string every device of the workspace names its tracks by. The host
+    /// checks it against [`tilo_relay_protocol::room_workspace_id_matches`].
+    pub workspace: String,
+}
+
+/// Where a page joins the live plane: the relay's WebTransport listener, its
+/// certificate, and the origin to dial it at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveInfo {
+    /// The UDP port of the relay's WebTransport listener.
+    pub webtransport_port: u16,
+    /// Base64 SHA-256 of the listener's leaf certificate: what a page pins as
+    /// `serverCertificateHashes` (a development or self-signed certificate is
+    /// trusted by no root store).
+    pub certificate_sha256: String,
+    /// `https://<host>:<port>`: the origin the page dials, with the route and
+    /// the `moq-lite` subprotocol added by the page's carrier.
+    pub webtransport_origin: String,
 }
 
 /// Route of "who is here and what are they doing" in a workspace: a member

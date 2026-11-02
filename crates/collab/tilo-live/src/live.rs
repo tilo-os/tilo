@@ -52,11 +52,17 @@ impl Namespace {
     #[must_use]
     pub fn path(&self) -> String {
         format!(
-            "{WORKSPACE}/{}/{SCOPE}/{}/{PARTICIPANT}/{}",
-            self.workspace,
-            self.scope,
+            "{}/{PARTICIPANT}/{}",
+            self.scope_path(),
             hex::encode(self.device)
         )
+    }
+
+    /// `workspace/<workspace>/scope/<scope id>`: the subtree every participant
+    /// of this scope publishes in, this device included.
+    #[must_use]
+    pub fn scope_path(&self) -> String {
+        format!("{WORKSPACE}/{}/{SCOPE}/{}", self.workspace, self.scope)
     }
 
     /// The subtree of everything this participant publishes.
@@ -290,6 +296,8 @@ mod tests {
             )
         );
         assert_eq!(Namespace::parse(&namespace.path()), Some(namespace.clone()));
+        assert_eq!(namespace.scope_path(), "workspace/w1/scope/workspace");
+        assert!(namespace.path().starts_with(&namespace.scope_path()));
         assert_eq!(namespace.scope_id(), "workspace");
         assert_eq!(namespace.device(), DEVICE);
     }

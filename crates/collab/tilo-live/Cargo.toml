@@ -10,7 +10,11 @@ license.workspace = true
 default = []
 # The HTTPS server identity alone (`tls`): rustls, without the relay stack.
 tls = ["dep:rustls"]
-relay = ["tls", "dep:moq-net", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:hex", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
+# The plane's names: the namespace of one device in one scope, the tracks
+# within it and their delivery. Builds for the page, which publishes and reads
+# them itself.
+plane = ["dep:moq-net", "dep:hex"]
+relay = ["tls", "plane", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
 # The same carrier over a direct iroh connection, beside WebTransport.
 native = ["relay", "dep:iroh"]
 # The sealed plane: one participant's session in one scope, sealed under the

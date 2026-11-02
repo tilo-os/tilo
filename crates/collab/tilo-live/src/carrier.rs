@@ -64,33 +64,15 @@ use rustls::pki_types::CertificateDer;
 
 /// The WebTransport subprotocol and `moq-lite` draft every Tilo `MoQ` route
 /// negotiates. No other version is offered or accepted.
-pub const PROTOCOL: &str = "moq-lite-06";
-/// Admission preface version byte.
-pub const PREFACE_VERSION: u8 = 1;
-/// Largest grant the preface carries. Routes may apply a smaller ceiling.
-pub const MAX_GRANT_BYTES: usize = 8192;
+pub use crate::preface::PROTOCOL;
+pub use crate::preface::{
+    CLOSE_DENIED, CLOSE_PREFACE, CLOSE_REVOKED, MAX_GRANT_BYTES, PREFACE_VERSION, STATUS_ADMITTED,
+    STATUS_DENIED, STATUS_REVOKED,
+};
+
 /// Time from session open to the complete preface.
 pub const PREFACE_BUDGET: Duration = Duration::from_secs(5);
-/// Preface reply: admitted.
-pub const STATUS_ADMITTED: u8 = 0;
-/// Preface reply: refused.
-pub const STATUS_DENIED: u8 = 1;
-/// Control message after admission: authority lapsed, close now.
-pub const STATUS_REVOKED: u8 = 2;
-/// WebTransport close code for a missing, malformed or late preface.
-pub const CLOSE_PREFACE: u32 = 0x7400;
-/// WebTransport close code for a refused grant.
-pub const CLOSE_DENIED: u32 = 0x7401;
-/// How long a refused session stays open for its client to read the
-/// refusal and close it.
-const DENIED_GRACE: Duration = Duration::from_secs(1);
-/// How long a refused client waits for the host's close reason after the
-/// refusal byte itself was lost. Longer than [`DENIED_GRACE`], so a host that
-/// is still holding the session open for the client is not read as a lost
-/// connection.
-const DENIED_REPORT: Duration = Duration::from_secs(2);
-/// WebTransport close code for a session whose authority lapsed.
-pub const CLOSE_REVOKED: u32 = 0x7402;
+pub use crate::preface::{DENIED_GRACE, DENIED_REPORT};
 
 /// Budget for QUIC, TLS and the HTTP/3 CONNECT of one pending session. A
 /// satellite path (600 ms RTT) needs about four round trips plus one loss
@@ -229,11 +211,7 @@ pub async fn read_preface<S: Carrier>(
         if !read_exact(&mut recv, &mut header).await {
             return Err(PrefaceError::Malformed);
         }
-        let [version, high, low] = header;
-        let length = usize::from(u16::from_be_bytes([high, low]));
-        if version != PREFACE_VERSION || length == 0 || length > MAX_GRANT_BYTES {
-            return Err(PrefaceError::Malformed);
-        }
+        let length = crate::preface::grant_length(header).ok_or(PrefaceError::Malformed)?;
         let mut grant = vec![0u8; length];
         if !read_exact(&mut recv, &mut grant).await {
             return Err(PrefaceError::Malformed);
@@ -318,19 +296,12 @@ impl<S: Carrier> Admitted<S> {
 /// Returns [`AdmissionError::Denied`] when the host refuses the grant and
 /// [`AdmissionError::Unavailable`] when the session fails first.
 pub async fn present<S: Carrier>(session: &S, grant: &[u8]) -> Result<Admitted<S>, AdmissionError> {
-    let length = u16::try_from(grant.len())
-        .ok()
-        .filter(|length| *length > 0 && usize::from(*length) <= MAX_GRANT_BYTES)
-        .ok_or(AdmissionError::Invalid)?;
+    let preface = crate::preface::preface(grant).ok_or(AdmissionError::Invalid)?;
     let mut session = session.clone();
     let (mut send, mut recv) = session
         .open_bi()
         .await
         .map_err(|_| AdmissionError::Unavailable)?;
-    let [high, low] = length.to_be_bytes();
-    let mut preface = Vec::with_capacity(grant.len().saturating_add(3));
-    preface.extend_from_slice(&[PREFACE_VERSION, high, low]);
-    preface.extend_from_slice(grant);
     if !write_all(&mut send, &preface).await {
         return Err(AdmissionError::Unavailable);
     }

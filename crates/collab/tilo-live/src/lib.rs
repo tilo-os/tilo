@@ -4,6 +4,7 @@
 
 pub use collab_types::scope;
 
+pub mod preface;
 pub mod video;
 pub mod voice;
 
@@ -22,7 +23,7 @@ pub mod grant;
 #[cfg(feature = "native")]
 pub mod native;
 
-#[cfg(feature = "relay")]
+#[cfg(feature = "plane")]
 pub mod live;
 
 #[cfg(feature = "relay")]
