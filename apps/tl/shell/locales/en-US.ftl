@@ -426,6 +426,9 @@ d-yesjoqbj = Record
 d-iu3wwk2u = Title
     .doc = The title it is shown under.
 
+d-joj2ey7d = Name
+    .doc = What this place is called, on every surface: its window's title with its app's own name, or the app's name alone when the window has no title.
+
 d-aonjenrr = Pinned
     .doc = Whether the person pinned it: an agent's arrangement leaves it alone (§5).
 
@@ -789,54 +792,38 @@ d-tnecawb6 = A foreign place
     .doc = A place of a kind this build has no record for: it stands as it is, which is what a place another shell made looks like (§2).
 
 d-i6ll2n4j = Desk view
-    .doc = The person's desk as a window or a display shows it: the top bar on its edge, the switch between the presets under it and the preset they picked under that.
 
 d-72tgr4px = Clock
-    .doc = The time, to the minute, and the timer Clocks runs beside it: its label and what it has left (a stopwatch: what it has run), paused when the person paused it.
 
 d-3ezewqgy = Bar
-    .doc = The top bar: the parts the person put on it, in their order, each a view of its own, so a change runs only the part that reads it.
 
 d-pvl6wwx6 = Bar part
-    .doc = One part of the bar, drawn from what it is.
 
 d-vidcax4k = Workspace menu
-    .doc = The workspace in front, opening the workspaces to switch between and the actions on this device's workspaces.
 
 d-k7lksxkj = Status icons
-    .doc = The device's status as the session publishes it: the sound's level, the connection the machine's traffic leaves on, and the pack's charge.
 
 d-hac3p23j = Volume status
-    .doc = The sound's level, and that it is muted; nothing on a device whose sound reads no level.
 
 d-iwv7cd5i = Network status
-    .doc = The connection the machine's traffic leaves on: Wi-Fi under its network's name, a cable, or offline; nothing on a device that publishes no connection at all.
 
 d-agni63m4 = Battery status
-    .doc = The pack's charge as a percentage beside the battery, its glyph the charging battery while the pack takes charge (or waits for it) and the plain battery otherwise — the power service's own state, not whether the machine happens to run on the pack; nothing on a machine with no battery.
 
 d-moh3hzne = Bell
-    .doc = The notifications: an icon button named with what it shows ("Notifications", how many are unread, or that they are silenced), with the count on the bell's corner.
 
 d-fniigjed = Viewing settings
-    .doc = The shell's own settings: the preset the desk shows, and where to pick another (§6, §8).
 
 d-j2fnnt4g = Show preset~present
 
 d-m4owmri7 = Framed canvas
-    .doc = The canvases of shell.md §2 and §8: places at points on a surface that pans and zooms, each drawn in a frame (`frames`), or as its own view standing as content and grouped by where it is into a space per task (`spaces`).
 
 d-nt2inbrl = Spaces canvas
-    .doc = The frameless canvas: every place at its point, drawn as its own view with no frame around it, grouped into the strip's space by nearness.
 
 d-t3cux3yd = Framed place
-    .doc = A place on the framed canvas: the shell's frame around it (the window frame a desktop's windows stand in, its controls at the end of the bar), and its resource's view composed inside, filling it, or the well its window shows in (shell.md §8).
 
 d-s6b5stgz = Space content
-    .doc = A place on the frameless canvas: its resource's view standing as content (or its window's well), with a line naming what it is rather than a frame around it.
 
 d-w6ftt2gh = Canvas entry
-    .doc = What the person types on the canvas: a search that becomes a place.
 
 d-ewgdlyyr = Show app menus~present
 
@@ -849,253 +836,170 @@ d-gkca5uj2 = Move item~present
 d-i4odzov3 = Pin~present
 
 d-bzxwxsra = Composer
-    .doc = The agent composer: ask an agent from anywhere, about what the person points at or has selected, and see the tasks running and what they did.
 
 d-6hsxbazg = Task line
-    .doc = One running task: what it is on, its state, and the way into its log.
 
 d-dz2lhlbc = Conversation
-    .doc = The conversation: the agent chat and the command line in one view, over a run of the session's agent.
 
 d-edxsethn = Said
-    .doc = Words in the conversation: the person's to the agent, or the agent's between its steps, under who said them.
 
 d-zhqh5ven = Said now
-    .doc = What the agent is saying now, as the model streams it, until its turn ends.
 
 d-ojxyofwa = Program step
-    .doc = One program run in the conversation, by the person or the agent: the program as code, how it ended when it did not run to its end, what it answered when that is more than what it names, the resources it changed and the ones it printed.
 
 d-ghaelk2z = Reference
-    .doc = A resource a step printed, as a reference: a row naming it and its type.
 
 d-dterbuii = Phase badge
-    .doc = Where a run is, as a status badge.
 
 d-2u2ny6gr = Outcome badge
-    .doc = How a step that did not run to its end ended, as a status badge; nothing for one that did.
 
 d-gctjtdv7 = Desk
-    .doc = The desk: what this device shows.
 
 d-6jkhhsvr = Desk around
-    .doc = The desk, with the arrangement `front` filling the room between its bar and its dock when there is one, as its preset shows it (`shown_preset`).
 
 d-p2yoggx4 = Screen
-    .doc = The desk as the whole of a display (`tilo-session --shell screen`): the bar, the dock and the desk's surfaces around the person's arrangement as the preset they picked shows it, each app's window standing in the well its place leaves it, as a window of the desk shows it (`desk_view`).
 
 d-bhxvwkho = Shown preset
-    .doc = What stands between the bar and the dock when the desk shows the arrangement: the places as the preset the person picked lays them out, under the switch between the presets, as `desk_view` shows them.
 
 d-afjfzjl6 = Bar on edge
-    .doc = The top bar on the edge it rides: the whole width with its parts spread along it at the `full` fit, or an inset run centred on the edge at the floating one, where it covers less of what is under it.
 
 d-su7ogm3c = Top bar
-    .doc = The bar's parts in the person's order, as the run the person reorders by dragging a part: what the desk's bar and the desk window's bar both draw.
 
 d-37bjhdfb = At rest
-    .doc = The desk at rest under its bar: the banner a notice rose as.
 
 d-6a3axsap = Surface
-    .doc = The surface the person is in, at the place its kind shows: the launcher fills the desk under the bar, the overview and the workspaces fill it, the centre sits at the trailing edge and the composer at the foot.
 
 d-ojscef66 = Dock
-    .doc = The dock: a run of items on the edge the person set (the launcher, the apps and resources they pinned, and the apps running now), each with its badge, and the ones that want the person marked.
 
 d-lwre5gd7 = Dock run
-    .doc = The dock's items in a run the person rearranges by dragging one onto another place.
 
 d-lwt7iwsj = Dock tile
-    .doc = One dock item: its glyph, with its badge on the glyph's top trailing corner (the count of what is new, or the mark that it wants the person), as a dock has always badged an app.
 
 d-dpqvjh2f = Launcher
-    .doc = The launcher and command palette: search and launching over everything the person can reach, typed at once.
 
 d-tst43bqy = Window row
-    .doc = One window the search found: what it is, what it shows, and where it is.
 
 d-hlv2uw7o = Desk doors
-    .doc = The desk's own doors, as rows that open them: each surface, and the ways to make and join a workspace.
 
 d-outvdzmi = Layouts
-    .doc = Layouts: the presets a person picks among, each a named set of the settings `chrome.tl` holds, and the individual settings underneath for anyone who wants to tune one thing.
 
 d-5q3okayl = Layout card
-    .doc = One preset's card: its name, what it is, and a miniature of the shell it makes, drawn from the preset's own settings rather than pictured.
 
 d-mwph24zz = Preview
-    .doc = A preset's shell in miniature: where its bar and dock stand, how they sit, and what they hold, drawn with the same views the shell itself uses at the size a card gives them.
 
 d-cpowx55e = Preview bar
-    .doc = The miniature bar: its parts, left to right, in the fit the preset gives it.
 
 d-ebrt7kdg = Preview dock
-    .doc = The miniature dock: the launcher and three items, on the fit the preset gives it.
 
 d-grqdyggg = Shell settings
-    .doc = The settings underneath the presets: the bar's and the dock's, each change one action.
 
 d-p7ismolp = Bar parts
-    .doc = The bar's parts, in the person's order, each shown or hidden, and the two the bar can gain.
 
 d-6phinc3w = Part row
-    .doc = One bar part in the settings: its glyph, its name, and whether it shows.
 
 d-e25dashr = Dock settings
-    .doc = The dock's settings the form does not hold: what it shows besides the pinned items.
 
 d-clgbrhsn = Notices
-    .doc = The notifications: the banner that arrives, and the centre that keeps them.
 
 d-wud3t5ro = Notice group
-    .doc = One sender's notices, under its name: each with its title, what it says and its actions.
 
 d-t3ywtwqj = Notice row
-    .doc = One notice: its title, what it says, its sender, its actions and the way to dismiss it.
 
 d-yyk2izra = Banner
-    .doc = A banner: the newest notice, risen over the desk, with its first action and a dismiss.
 
 d-gke2gvrj = Banner full
-    .doc = A banner on a desk with the room: the notice with its kind's tone and its first action.
 
 d-wh7n4fhq = Banner row
-    .doc = A banner on a narrow desk: the notice as a row, its actions under it.
 
 d-rcjzvfxp = Overview
-    .doc = The overview: what the desk holds, to search and move things in, over the windows it covers.
 
 d-f5tl6n63 = Rooms here
-    .doc = The workspaces the person is in, as chips that switch to them, and how many people are here.
 
 d-7nxhynyj = Picture
-    .doc = One strip: its windows as places left to right, each opening what it shows and carrying its menu of moves.
 
 d-nxpbvfox = Window place
-    .doc = One window's place: its picture, its title and the app it shows, lifted while it has focus, with a menu that moves it to another strip or workspace, closes it, or asks about it.
 
 d-6l3wldtm = Window menu
-    .doc = A window's commands, where its place shows them: going there, carrying it to another strip or workspace, asking about it, and closing it.
 
 d-6nn35yb7 = Found
-    .doc = What a search finds across the person's other workspaces: each window, going there or moving it here.
 
 d-kxdzjhoo = Window line
-    .doc = One window of another workspace, as a row that opens there, with the way to bring it here.
 
 d-luuijvwf = Key hints launcher
-    .doc = The keys a surface shows under it, as `ui.KeyHints`: the drawn keycaps of each chord and what pressing them does, side by side, in the person's own keyboard legends.
 
 d-z4hw2mcw = Key hints switcher
-    .doc = The keys of the switcher: hold the modifier, Tab walks, letting go goes there.
 
 d-uhzjvuan = People button
-    .doc = Who is here, and their menus.
 
 d-uvwnwa4d = Agent chip
-    .doc = An agent here, as its presence: a chip that opens its menu.
 
 d-e7u7zirf = Agent line
-    .doc = An agent here with what it is doing and what it last changed: its face, its activity line and the mark of what it did, which opens the run's log.
 
 d-teccuwja = Quick settings
-    .doc = The quick settings: Wi-Fi, Bluetooth, dark mode and do-not-disturb as tiles, the volume and the brightness as sliders, the battery and the ways to leave the session.
 
 d-yxl6yq2r = Wifi tile
-    .doc = Wi-Fi, on while it is on, naming the network it is joined to; it cannot be pressed on a device without it.
 
 d-d5wzqn37 = Bluetooth tile
-    .doc = Bluetooth, on while it is on; it cannot be pressed on a device without it.
 
 d-uzi5ah2q = Dark tile
-    .doc = Dark mode: on while every app draws dark, each with the theme the person chose for it.
 
 d-s66oqjwe = Quiet tile
-    .doc = Do not disturb: on while banners and sounds wait.
 
 d-w3fe7tjv = Levels
-    .doc = The volume and the brightness, each where the device has it: dragging sets it as the device reads it back.
 
 d-lcjohgdk = Battery line
-    .doc = The battery's charge and whether it is charging, on a device that has one.
 
 d-ycck5awo = Power row
-    .doc = Locking the screen, and the ways to leave the session or the device.
 
 d-wdjxaekq = Workspaces
-    .doc = The workspace overview: every workspace the person is in, with who is there and what it holds, to switch to, join, or make one.
 
 d-wcb3o55u = Room card
-    .doc = One workspace: its name, who is in it, and what happened last.
 
 d-r34xb7ak = Preset switch
-    .doc = The preset switch: the three ways of showing the same arrangement, the one in use lit, so a person moves between the strips, the framed canvas and the spaces canvas as shell.md §6 picks.
 
 d-qrahog47 = Strips view
-    .doc = The desk: its rows stacked and scrolled vertically, each row's strips scrolled sideways.
 
 d-xwdhqtyz = Row of
-    .doc = One row: the strip across the desk, named, with its columns of places side by side.
 
 d-7oiz3phb = Strip column
-    .doc = One strip: a column of places in the shell's frame, headed by the strip's name (what its place in front shows) and lit while it is the strip in front; a press on it brings it to the front.
 
 d-scru4wch = Strip controls
-    .doc = A strip's controls under its name: its width, one of the three, and the controls of the place in front (its pin, closing it, moving it to another row of the desk), each committing what a drag would.
 
 d-so5z33zr = Tab chip
-    .doc = One tab of a column: the place it stands for, lit when it is the place in front.
 
 d-74cbhzyb = Place content
-    .doc = A place's content: its resource drawn inline through the view it names, as its own app's code (shell.md §8, "The canvas composes views"), or the well the app's window shows in when there is no resource here to draw (a terminal, a legacy window).
 
 d-43am22do = Place view
-    .doc = What stands where a place's content goes: its record drawn through the view the place names (its type's default view when it names none), as its own app's code, or the well the app's window shows in when the place has no record this shell can draw (a terminal, a legacy window).
 
 d-z4vc77e6 = Place controls
-    .doc = A place's frame chrome: its pinned mark, and its pin, close and move controls.
 
 d-fziuz57n = Switcher
-    .doc = The window switcher: the windows of the desk in the order Alt+Tab walks them, in a panel over what the person is in.
 
 d-dswgb57x = Window card
-    .doc = One window of the walk: its picture or its app's glyph, its title, and the app it shows.
 
 d-jzxijptr = Window names
-    .doc = The window's title and the app it shows, under its picture or beside it.
 
 d-3bxeb2i2 = Window face
-    .doc = What a window's card shows of the window itself: its live picture where this names it, over the app's glyph.
 
 d-4hp326dv = Traditional desktop
-    .doc = The traditional desktop (`docs/designs/app-language/shell.md` §4, §8.2 step 5): the preset furthest from the strips and the canvas.
 
 d-uekksuqv = Front window
-    .doc = The window in front alone, filling the room it is given: what a compact output shows of the desktop (`desk`), where windows standing where they were left would show their corners cut off and the window the person is in could stand behind another.
 
 d-6izhhsie = Desktop frame
-    .doc = One frame on the desktop, at its strip's canvas point and size.
 
 d-fabwkpdf = Frame classic
-    .doc = A place's frame (§4): the window, with the shell's controls for the place at the trailing end of its bar.
 
 d-efc4bnyi = Frame buttons
-    .doc = A frame's controls: the way to carry the place to another row, and close.
 
 d-u55srubm = Action bar
-    .doc = The focused window's commands, as a macOS menu bar draws an app's: the window's name, then the actions its resource publishes (exactly what the app's window header offers), the frequent ones as controls and the rest in the run each action's declaration names.
 
 d-ysqdgpzc = Action run
-    .doc = The window's name, then the frequent commands of `offered` as bar controls, then one menu per run the app declared, in the order the app declared them, and the commands that name no run under the window's own name.
 
 d-35o7co3i = Action control
-    .doc = One command the person reaches for often: a bar control, lifted while the state it toggles is on.
 
 d-cijhlzxf = Window commands
-    .doc = The shell's own commands on a window whose record it cannot read (a foreign surface): its name, moving it to another row, and closing it.
 
 d-yx7doxgr = Traditional bar
-    .doc = The desktop's top bar, one row edge to edge: the system menu and the focused window's commands leading, and the tasks running, the time, who is here, the status, the notifications and the person's own face flush at the trailing edge, as a macOS or GNOME bar has them.
 
 d-3ezewqgy~row0 = Bar for part
 

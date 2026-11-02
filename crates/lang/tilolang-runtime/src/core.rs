@@ -84,9 +84,11 @@ pub struct Core {
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
     /// The network came back: entries waiting to go online are tried again on the next settle.
     pub retry_waiting: std::cell::Cell<bool>,
-    /// The platform's phrases in the person's language (`phrase(...)`); the id itself until
-    /// the host says.
-    pub phrases: RefCell<Option<crate::platform::Phrases>>,
+    /// The words packages and the platform show, in the reader's language: the source words
+    /// until the host says (`Runtime::set_words`).
+    pub words: RefCell<Box<dyn crate::words::Words>>,
+    /// Every loaded package's catalogues, handed to the words the host sets later too.
+    pub catalogues: RefCell<Vec<(String, String)>>,
     /// Compiled embedded blocks.
     pub embeds: RefCell<crate::embed::EmbedState>,
     /// The `window` and `lens` state of every view.
@@ -212,7 +214,8 @@ impl Core {
             members: RefCell::new(crate::members::Members::default()),
             sink: RefCell::new(None),
             retry_waiting: std::cell::Cell::new(false),
-            phrases: RefCell::new(None),
+            words: RefCell::new(Box::new(crate::words::SourceWords)),
+            catalogues: RefCell::new(Vec::new()),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
             clock: RefCell::new(None),

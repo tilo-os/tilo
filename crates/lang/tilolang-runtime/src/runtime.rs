@@ -126,6 +126,7 @@ impl Runtime {
     /// package's declaration ids.
     pub fn load_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
         let hash = self.core.engine.compile(wasm)?;
+        self.add_catalogues(wasm);
         self.check_exports(&hash, &meta)?;
         let pkg =
             crate::registry::Package::new(hash.clone(), meta).map_err(RuntimeError::Package)?;
@@ -245,6 +246,7 @@ impl Runtime {
     /// As [`Runtime::load_package`].
     pub fn load_foreign_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
         let hash = self.core.engine.compile(wasm)?;
+        self.add_catalogues(wasm);
         self.check_exports(&hash, &meta)?;
         let pkg = crate::registry::Package::foreign_with_code(hash.clone(), meta)
             .map_err(RuntimeError::Package)?;
@@ -724,10 +726,22 @@ impl Runtime {
         *self.core.zone.borrow_mut() = Some(Box::new(zone));
     }
 
-    /// What `phrase(id, ...)` reads: the platform's phrases in the person's language. Until
-    /// it is set, a phrase is its id.
-    pub fn set_phrases(&self, phrases: impl Fn(&str, &[(String, String)]) -> String + 'static) {
-        *self.core.phrases.borrow_mut() = Some(Box::new(phrases));
+    /// Where the words packages and the platform show come from, in the reader's language
+    /// (`phrase(id, ...)`, a declaration's label and noun). It takes every package's catalogues
+    /// loaded so far, and those loaded after. Until it is set, the source words stand.
+    pub fn set_words(&self, words: impl crate::words::Words + 'static) {
+        words.add(&self.core.catalogues.borrow());
+        *self.core.words.borrow_mut() = Box::new(words);
+    }
+
+    /// Takes in the catalogues the module `wasm` carries.
+    fn add_catalogues(&self, wasm: &[u8]) {
+        let catalogues = tilolang::meta::locales_from_wasm(wasm);
+        if catalogues.is_empty() {
+            return;
+        }
+        self.core.words.borrow().add(&catalogues);
+        self.core.catalogues.borrow_mut().extend(catalogues);
     }
 
     /// What a reference to a resource the person cannot read says, in their language: the

@@ -823,10 +823,11 @@ impl Host {
         self.inner.runtime.set_clock(clock);
     }
 
-    /// What the platform's phrases say in the person's language (`phrase(...)`, and what a
-    /// reference to a resource they do not hold says wherever rich text is read for them).
-    pub fn set_phrases(&self, phrases: impl Fn(&str, &[(String, String)]) -> String + 'static) {
-        self.inner.runtime.set_phrases(phrases);
+    /// Where the words packages and the platform show come from, in the person's language
+    /// (`phrase(...)`, declarations' labels and nouns, and what a reference to a resource they
+    /// do not hold says wherever rich text is read for them).
+    pub fn set_words(&self, words: impl crate::runtime::Words + 'static) {
+        self.inner.runtime.set_words(words);
         self.inner
             .store
             .set_unshared(&self.inner.runtime.unshared());
