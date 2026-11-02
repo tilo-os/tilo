@@ -223,7 +223,7 @@ impl HostJobs for ComputeJobs {
             Err(reason) => return Pending::ready(Err(ActionHostError::Refused { reason })),
         };
         let jobs = self.clone();
-        let (workspace_id, app) = (job.workspace_id, job.offload.app.clone());
+        let (workspace_id, app) = (job.workspace_id, job.offload.app);
         let invocation = request.invocation;
         let cancellation = CaptureCancellation::default();
         let mut running = self.shared.running.lock_recover();

@@ -326,19 +326,23 @@ impl ActionHost for HostActions {
             return Pending::ready(Err(refused));
         }
         let invocation = request.invocation;
-        match self.0.ledger.lock_recover().reserve(caller, &request) {
-            Err(error) => return Pending::ready(Err(error)),
-            Ok(Reservation::Admitted) => {
-                return Pending::ready(
-                    self.0
-                        .ledger
-                        .lock_recover()
+        // An invocation this host already admitted is answered with what it
+        // has, and is never run a second time.
+        let admitted = {
+            let mut ledger = self.0.ledger.lock_recover();
+            match ledger.reserve(caller, &request) {
+                Err(error) => return Pending::ready(Err(error)),
+                Ok(Reservation::Admitted) => Some(
+                    ledger
                         .get(caller, &invocation)
                         .map(InvocationState::receipt)
                         .ok_or(ActionHostError::UnknownInvocation),
-                );
+                ),
+                Ok(Reservation::Reserved) => None,
             }
-            Ok(Reservation::Reserved) => {}
+        };
+        if let Some(receipt) = admitted {
+            return Pending::ready(receipt);
         }
         let shared = Arc::clone(&self.0);
         let workspace = workspace.to_owned();

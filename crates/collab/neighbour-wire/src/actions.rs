@@ -284,7 +284,7 @@ pub enum PlaneFrame {
     /// An action this device asks the addressed one to run.
     Action(Box<SignedDeviceAction>),
     /// A route this device asks the addressed one whether it would run.
-    Offer(crate::offer::Query),
+    Offer(Box<crate::offer::Query>),
 }
 
 /// Signed actions a target admitted while they are still fresh, so a device

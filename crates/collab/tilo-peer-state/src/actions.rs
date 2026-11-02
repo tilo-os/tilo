@@ -1105,7 +1105,7 @@ impl Device {
         };
         let started = Instant::now();
         let heard = async {
-            let bytes = postcard::to_allocvec(&PlaneFrame::Offer(query)).ok()?;
+            let bytes = postcard::to_allocvec(&PlaneFrame::Offer(Box::new(query))).ok()?;
             let answer = self.exchange(&bytes).await.ok()?;
             postcard::from_bytes::<Answer>(&answer).ok()
         };
