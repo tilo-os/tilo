@@ -15,9 +15,26 @@ description = "The per-user shared runtime daemon: private profile, native endpo
 name = "tilo_runtime"
 path = "src/lib.rs"
 
+[features]
+# Honour the developer environment overrides, in the crates this host reads a
+# device's installed packages and identity through, exactly as a dev build of
+# the desktop does. NEVER SHIP THIS: it accepts fixed credentials from the
+# environment (tools/policy/check_dev_overrides_contract.py).
+dev-overrides = [
+  "tilo-identity-host/throwaway-test-identity",
+  "package-store/dev-overrides",
+  "launcher/dev-overrides",
+]
+
 [[bin]]
 name = "tilo-runtime"
 path = "src/bin/tilo-runtime.rs"
+
+# The host a Tilo login runs, which `runtime_portal::native` finds by this
+# name inside a login: the same services, under the name the login looks for.
+[[bin]]
+name = "tilo-runtime-mcp"
+path = "src/bin/tilo-runtime-mcp.rs"
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
@@ -120,6 +137,9 @@ tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "mi
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [dev-dependencies]
+# The attachment an app makes to the host this runtime serves, which the
+# process-boundary tests drive as an app inside a login does.
+runtime-portal = { path = "../runtime-portal" }
 # The channel fixtures owner tests seal writes with.
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 # The join protocol a runtime joins rooms over.

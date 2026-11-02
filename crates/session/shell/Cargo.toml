@@ -76,12 +76,6 @@ path = "src/bin/shots/main.rs"
 required-features = ["hosted-test-control", "test-support"]
 
 [[bin]]
-name = "tilo-runtime-mcp"
-path = "src/bin/tilo-runtime-mcp.rs"
-test = false
-bench = false
-
-[[bin]]
 name = "network-boundary-fixture"
 path = "tests/fixtures/network-boundary.rs"
 test = false

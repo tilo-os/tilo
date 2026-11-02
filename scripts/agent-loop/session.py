@@ -167,7 +167,7 @@ def start(args) -> int:
         if not binary.exists():
             sys.exit(
                 f"FAIL: {binary} is missing; build it with\n"
-                "  cargo build -p shell --bin shell --bin tilo-runtime-mcp --features agent-control && cargo build -p tilo-app-cli"
+                "  cargo build -p shell --bin shell --features agent-control && cargo build -p tilo-runtime --bin tilo-runtime-mcp && cargo build -p tilo-app-cli"
             )
     prepare(session)
     env = session.env()

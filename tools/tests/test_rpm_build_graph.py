@@ -145,6 +145,8 @@ class RpmBuildGraphTest(unittest.TestCase):
                 "shell",
                 "--bin",
                 "shell",
+                "-p",
+                "tilo-runtime",
                 "--bin",
                 "tilo-runtime-mcp",
                 "--no-default-features",

@@ -219,8 +219,6 @@ mod remote_typing_wire;
 mod removed_run_modes;
 #[path = "reopen_closed_tab.rs"]
 mod reopen_closed_tab;
-#[path = "runtime_daemon_process.rs"]
-mod runtime_daemon_process;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
 #[path = "saved_layout_keymap.rs"]

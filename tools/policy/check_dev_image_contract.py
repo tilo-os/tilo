@@ -294,6 +294,10 @@ def dev_only_needles(repo: Path) -> list[tuple[re.Pattern[str], str]]:
     for component in manifest.components:
         for feature in component.dev_features:
             add(rf"(?<![\w/-]){re.escape(feature)}(?![\w-])", f"dev feature {feature!r}")
+            # A production build may spell it bare, which turns the feature on
+            # for whichever selected package declares it: also a dev build.
+            name = feature.rpartition("/")[2]
+            add(rf"(?<![\w/-]){re.escape(name)}(?![\w-])", f"dev feature {name!r}")
         if not component.dev_only:
             continue
         what = f"dev-only component {component.name!r}"

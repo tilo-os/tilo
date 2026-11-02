@@ -170,10 +170,16 @@ pub(crate) fn owner_action<S: RuntimeServices>(
     }
 }
 
-/// Run the executable named `program` over the services `S` hosts. Call it
-/// from `main` before starting any thread.
+/// Run the executable named `program` over the services `S` hosts, serving the
+/// Automerge isolation workers that re-enter it on their way. Call it from
+/// `main`, before starting any thread.
 #[must_use]
-pub fn main<S: RuntimeServices>(program: &str) -> std::process::ExitCode {
+pub fn host<S: RuntimeServices>(program: &str) -> std::process::ExitCode {
+    // Untrusted Automerge bytes are decoded in worker processes started from
+    // this executable; each of them is served here and exits.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return std::process::ExitCode::from(code);
+    }
     match run::<S>() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {

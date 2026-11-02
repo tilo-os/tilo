@@ -21304,6 +21304,7 @@ dependencies = [
  "runtime-collab",
  "runtime-fs",
  "runtime-identity",
+ "runtime-portal",
  "rustix 1.1.4",
  "serde",
  "serde_json",

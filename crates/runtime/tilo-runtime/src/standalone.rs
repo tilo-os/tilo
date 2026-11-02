@@ -97,6 +97,16 @@ pub struct Standalone {
     _lock: advisory_lock::FileLock,
 }
 
+/// The services a profile is served as: the person's own runtime, the same in
+/// development, or an isolated admission profile of the device's existing
+/// owner, which nothing is provisioned for.
+#[derive(Clone, Copy)]
+enum Serving {
+    Profile,
+    Dev,
+    Admission { owner_uid: u32 },
+}
+
 impl Drop for Standalone {
     fn drop(&mut self) {
         self.policy_origin.invalidate();
@@ -119,12 +129,18 @@ impl Standalone {
         personal
     }
 
-    fn start(root: &Path, stage: &mut dyn FnMut(&str), dev: bool) -> io::Result<Self> {
+    fn start(root: &Path, stage: &mut dyn FnMut(&str), serving: Serving) -> io::Result<Self> {
         stage("locking the profile");
         let lock = profile::lock(root)?;
-        stage("provisioning the collaboration identity");
         let storage = IdentityStorage::for_session();
-        let device = provision_device(storage)?;
+        let device = match serving {
+            Serving::Profile | Serving::Dev => {
+                stage("provisioning the collaboration identity");
+                provision_device(storage)?
+            }
+            Serving::Admission { owner_uid } => admit_device(owner_uid, stage)?,
+        };
+        let dev = matches!(serving, Serving::Dev);
         stage("loading the workspace");
         let workspace = ProfileWorkspace::open(root)?;
         let workspace_id = workspace.workspace();
@@ -315,11 +331,19 @@ impl RuntimeServices for Standalone {
     type ActionHost = RuntimeActionHost;
 
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
-        Self::start(root, stage, false)
+        Self::start(root, stage, Serving::Profile)
+    }
+
+    fn start_admission_reporting(
+        root: &Path,
+        owner_uid: u32,
+        stage: &mut dyn FnMut(&str),
+    ) -> io::Result<Self> {
+        Self::start(root, stage, Serving::Admission { owner_uid })
     }
 
     fn start_in_dev_mode(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
-        Self::start(root, stage, true)
+        Self::start(root, stage, Serving::Dev)
     }
 
     fn workspace(&self) -> &str {
@@ -856,6 +880,36 @@ fn provision_device(storage: IdentityStorage) -> io::Result<[u8; 32]> {
         &paths,
         storage,
     )?;
+    Ok(tilo_user_identity::persist::load_device_key(&paths)
+        .map_err(io::Error::other)?
+        .verifying_key()
+        .to_bytes())
+}
+
+/// The identity an isolated admission profile is served under: the existing
+/// owner's, verified and never created, renewed or written. Answers its device
+/// key.
+fn admit_device(owner_uid: u32, stage: &mut dyn FnMut(&str)) -> io::Result<[u8; 32]> {
+    if owner_uid == 0 || rustix::process::geteuid().as_raw() != owner_uid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "native admission must run as the existing non-root device owner",
+        ));
+    }
+    stage("verifying the existing collaboration identity");
+    let identity_dir = runtime_identity::identity_dir_from_env()?;
+    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    tilo_identity_host::provisioning::verify_collaboration_identity(
+        &identity_dir,
+        &paths,
+        tilo_clock::unix_now_ns(),
+    )?;
+    if !tilo_identity_host::provisioning::active_identity_owns_device(&identity_dir, &paths)? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "native admission identity does not own this device",
+        ));
+    }
     Ok(tilo_user_identity::persist::load_device_key(&paths)
         .map_err(io::Error::other)?
         .verifying_key()

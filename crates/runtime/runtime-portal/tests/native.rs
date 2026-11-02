@@ -74,7 +74,10 @@ fn source_profile_host_lookup_keeps_installed_and_desktop_boundaries() {
         !output.status.success(),
         "the desktop never selects the standalone host"
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("-p shell --bin tilo-runtime-mcp"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("cargo build --locked -p tilo-runtime --bin tilo-runtime-mcp")
+    );
     std::fs::remove_file(&host).unwrap();
     let output = child_at(&app).env("PATH", &root).output_locked().unwrap();
     assert!(!output.status.success());
@@ -287,28 +290,30 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
         assert!(!stdout.contains("RETURNED"));
         std::fs::remove_dir_all(root).unwrap();
     }
+}
 
-    // Ancestor-owned descriptors are hidden even when bootstrap is skipped.
-    {
-        let (a, _a_peer) = UnixStream::pair().unwrap();
-        let (b, _b_peer) = UnixStream::pair().unwrap();
-        let fds = [a.as_raw_fd(), b.as_raw_fd()];
-        let mut command = child();
-        command
-            .env("TILO_BOOTSTRAP_LOOKUP_ONLY", "1")
-            .env("TILO_WORKSPACE_ID", "ancestor-workspace")
-            .env(
-                "TILO_RUNTIME_CONNECTION_OWNER_PID",
-                std::process::id().to_string(),
-            )
-            .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
-            .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
-        inherit(&mut command, fds.to_vec());
-        assert!(
-            command.status_locked().unwrap().success(),
-            "case ancestor hidden"
-        );
-    }
+/// Ancestor-owned descriptors are hidden even when bootstrap is skipped, and
+/// a standalone child ignores that metadata without mutating them.
+#[test]
+fn bootstrap_hides_ancestor_metadata_and_standalone_ignores_it() {
+    let (a, _a_peer) = UnixStream::pair().unwrap();
+    let (b, _b_peer) = UnixStream::pair().unwrap();
+    let fds = [a.as_raw_fd(), b.as_raw_fd()];
+    let mut command = child();
+    command
+        .env("TILO_BOOTSTRAP_LOOKUP_ONLY", "1")
+        .env("TILO_WORKSPACE_ID", "ancestor-workspace")
+        .env(
+            "TILO_RUNTIME_CONNECTION_OWNER_PID",
+            std::process::id().to_string(),
+        )
+        .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+        .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
+    inherit(&mut command, fds.to_vec());
+    assert!(
+        command.status_locked().unwrap().success(),
+        "case ancestor hidden"
+    );
 
     // A standalone child ignores ancestor metadata without mutating it.
     let output = child()
