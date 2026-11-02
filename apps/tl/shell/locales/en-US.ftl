@@ -427,7 +427,7 @@ d-iu3wwk2u = Title
     .doc = The title it is shown under.
 
 d-joj2ey7d = Name
-    .doc = What this place is called, on every surface: its window's title with its app's own name, or the app's name alone when the window has no title.
+    .doc = What this place is called, on every surface: its window's title and its app's own name (`Groceries` in `Notes`, the one the person picked), or the app's name alone when the window has no title.
 
 d-aonjenrr = Pinned
     .doc = Whether the person pinned it: an agent's arrangement leaves it alone (§5).

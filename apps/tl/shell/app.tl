@@ -334,9 +334,11 @@ view bar_part(d: Desk, part: BarPart) {
 
 /// The workspace in front, opening the workspaces to switch between and the actions on this
 /// device's workspaces. On a bar too narrow for its name beside the clock and the status (a
-/// phone with large text), it is the workspaces' icon, named for the workspace.
+/// phone with large text), it is the workspaces' icon, named for the workspace; a desk whose
+/// workspace the session has not published a name for still opens by the workspaces' name.
 view workspace_menu(d: Desk) {
-    ui.MenuButton(d.workspace, icon: if space.width < 18.0 { .layers }, icon_only: space.width < 18.0, role: .bar) {
+    let name = if d.workspace != "" { d.workspace } else { "Workspaces" }
+    ui.MenuButton(name, icon: if space.width < 18.0 { .layers }, icon_only: space.width < 18.0, role: .bar) {
         for w in d.workspaces {
             ui.MenuItem(w.name, checked: .some(w.current)) {
                 on choose: device.switch_workspace(device.desk, workspace: w.key)
@@ -405,8 +407,8 @@ view network_status() {
 }
 
 /// The pack's charge as a percentage beside the battery, its glyph the charging battery while
-/// the pack takes charge (or waits for it) and the plain battery otherwise — the power
-/// service's own state, not whether the machine happens to run on the pack; nothing on a
+/// the pack takes charge (or waits for it) and the plain battery otherwise. It is the power
+/// service's own state, not whether the machine happens to run on the pack, and nothing on a
 /// machine with no battery. A compact bar shows the glyph alone. The glyph says the charging,
 /// so the reading is the charge alone and the name assistive technology hears says both.
 view battery_status() {
