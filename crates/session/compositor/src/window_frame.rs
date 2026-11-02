@@ -78,6 +78,19 @@ impl WindowFrame {
         }
     }
 
+    /// A window whose host paints it whole — its card, the lift under it
+    /// and the edge around it, in the host's own colours: the compositor
+    /// only shapes its corners to the host's card and draws nothing
+    /// around it. The desk's tiles are drawn this way.
+    #[must_use]
+    pub const fn corners(radius: f64) -> Self {
+        Self {
+            radius,
+            shadow: None,
+            edge: None,
+        }
+    }
+
     /// Whether this draws nothing around a window.
     #[must_use]
     pub fn is_square(&self) -> bool {
@@ -174,27 +187,33 @@ impl FrameImages {
         size: (f64, f64),
         scale: f64,
     ) -> Option<std::rc::Rc<FrameImage>> {
-        if frame.is_square() || size.0 <= 0.0 || size.1 <= 0.0 || scale <= 0.0 {
+        // A frame that draws nothing around the window (its host paints the
+        // card whole) has no image at all: only its corners are drawn, from
+        // `bands`.
+        let shadow = frame.shadow.filter(|shadow| shadow.rgba[3] > 0);
+        let edge = frame
+            .edge
+            .filter(|edge| edge.rgba[3] > 0 && edge.width > 0.0);
+        if frame.is_square()
+            || (shadow.is_none() && edge.is_none())
+            || size.0 <= 0.0
+            || size.1 <= 0.0
+            || scale <= 0.0
+        {
             return None;
         }
         // The image is drawn in the output's pixels: the signature says so.
         let signature = Signature {
             size: (sixtyfourths(size.0 * scale), sixtyfourths(size.1 * scale)),
             radius: sixtyfourths(frame.radius * scale),
-            shadow: frame
-                .shadow
-                .filter(|shadow| shadow.rgba[3] > 0)
-                .map(|shadow| {
-                    (
-                        sixtyfourths(shadow.offset_y * scale),
-                        sixtyfourths(shadow.blur * scale),
-                        shadow.rgba,
-                    )
-                }),
-            edge: frame
-                .edge
-                .filter(|edge| edge.rgba[3] > 0 && edge.width > 0.0)
-                .map(|edge| (sixtyfourths(edge.width * scale), edge.rgba)),
+            shadow: shadow.map(|shadow| {
+                (
+                    sixtyfourths(shadow.offset_y * scale),
+                    sixtyfourths(shadow.blur * scale),
+                    shadow.rgba,
+                )
+            }),
+            edge: edge.map(|edge| (sixtyfourths(edge.width * scale), edge.rgba)),
         };
         if let Some(image) = self.images.borrow().by_signature.get(&signature) {
             return Some(std::rc::Rc::clone(image));
@@ -576,6 +595,18 @@ mod tests {
         assert!((edge.width - 1.0).abs() < f64::EPSILON);
         assert!(!frame.is_square());
         assert!(WindowFrame::square().is_square());
+    }
+
+    #[test]
+    fn a_window_its_host_paints_whole_only_has_its_corners_shaped() {
+        let frame = WindowFrame::corners(14.0);
+        assert!((frame.radius - 14.0).abs() < f64::EPSILON, "corners stay");
+        assert!(frame.shadow.is_none(), "the host draws the lift");
+        assert!(frame.edge.is_none(), "and the edge");
+        assert!(
+            !frame.is_square(),
+            "the corners are still the compositor's to cut"
+        );
     }
 
     #[test]
