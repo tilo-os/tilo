@@ -198,7 +198,6 @@ impl ResourceApp for QuickSettingsApp {
     // The panel shows this device's desktop: it is nobody's workspace
     // participant and opens before anyone is chosen.
     const ATTACHES_RUNTIME: bool = false;
-    const OPENS_WITHOUT_IDENTITY: bool = true;
     // The panel is a card over this device's desktop, not a window with a
     // surface of its own: what its card does not paint shows what lies
     // under it, and the card's finish paints the material the theme gives

@@ -114,6 +114,42 @@ fn read_workspace<T>(
     answer
 }
 
+/// The identity this device presents in `workspace`: the person its own
+/// certificate belongs to (person root plus device subkey), when the
+/// workspace has them in it. A workspace without them is a membership bug,
+/// answered as a fault here, never as something an app chooses its way out
+/// of; the person's own cluster has no roster and is theirs.
+fn identity_in(
+    tree: &dyn WorkspaceMembership,
+    workspace: &RoomId,
+) -> Result<crate::registry::IdentityProfile, Response> {
+    let profile = match crate::registry::identity_for_workspace(&workspace.to_string()) {
+        Ok(Some(profile)) => profile,
+        Ok(None) => {
+            return Err(Response::Error(
+                "this device has no identity to sign in with".into(),
+            ));
+        }
+        Err(error) => return Err(Response::Error(error.to_string())),
+    };
+    if collab_types::personal_cluster(&profile.user_public_key).to_string() == workspace.to_string()
+    {
+        return Ok(profile);
+    }
+    let principal = profile.principal_id();
+    match read_workspace(tree, workspace, |workspace| {
+        workspace.policy.members.contains_key(&principal)
+    }) {
+        Some(true) => Ok(profile),
+        Some(false) => Err(Response::Error(format!(
+            "the person this device signs as is not a member of workspace {workspace}"
+        ))),
+        None => Err(Response::Error(format!(
+            "workspace {workspace} is not available on this device"
+        ))),
+    }
+}
+
 pub struct IdentityBrokerHandle {
     path: PathBuf,
     stop: Arc<AtomicBool>,
@@ -267,7 +303,7 @@ fn serve(
     while let Ok(request) = read_action_frame::<Request>(&mut stream) {
         let response = match request {
             Request::Metadata => {
-                metadata_response(&workspace, negotiated.presentation_version != 0)
+                metadata_response(tree, &workspace, negotiated.presentation_version != 0)
             }
             // No policy grant or caller-chosen action can turn the device
             // key into an arbitrary-message signing oracle.
@@ -280,7 +316,7 @@ fn serve(
                     app_id: &handshake.app_id,
                     person,
                 };
-                sign_collaboration_join(&bound, &workspace_id)
+                sign_collaboration_join(tree, &bound, &workspace_id)
             }
             Request::CollaborationOp {
                 workspace_id,
@@ -326,11 +362,14 @@ fn serve(
     }
 }
 
-fn metadata_response(workspace: &RoomId, presentation: bool) -> Response {
-    let profile = match crate::registry::selected_identity_profile(&workspace.to_string()) {
-        Ok(Some(profile)) => profile,
-        Ok(None) => return Response::Denied(runtime_identity::wire::NO_IDENTITY_SELECTED.into()),
-        Err(error) => return Response::Error(error.to_string()),
+fn metadata_response(
+    tree: &dyn WorkspaceMembership,
+    workspace: &RoomId,
+    presentation: bool,
+) -> Response {
+    let profile = match identity_in(tree, workspace) {
+        Ok(profile) => profile,
+        Err(refusal) => return refusal,
     };
     let record = match runtime_identity::load_metadata_from_path(&profile.record_path) {
         Ok(record) => record,
@@ -424,7 +463,11 @@ impl Bound<'_> {
     }
 }
 
-fn sign_collaboration_join(bound: &Bound<'_>, workspace_id: &str) -> Response {
+fn sign_collaboration_join(
+    tree: &dyn WorkspaceMembership,
+    bound: &Bound<'_>,
+    workspace_id: &str,
+) -> Response {
     // The launch workspace, or the person's own cluster for the records of
     // theirs the app declares; the broker admits each of those records alone.
     let foreign = |profile: &crate::registry::IdentityProfile| {
@@ -436,10 +479,9 @@ fn sign_collaboration_join(bound: &Bound<'_>, workspace_id: &str) -> Response {
     {
         return Response::Denied("collaboration join requested for a different workspace".into());
     }
-    let profile = match crate::registry::selected_identity_profile(&bound.workspace.to_string()) {
-        Ok(Some(profile)) => profile,
-        Ok(None) => return Response::Denied(runtime_identity::wire::NO_IDENTITY_SELECTED.into()),
-        Err(error) => return Response::Error(error.to_string()),
+    let profile = match identity_in(tree, bound.workspace) {
+        Ok(profile) => profile,
+        Err(refusal) => return refusal,
     };
     if foreign(&profile) {
         return Response::Denied("collaboration join requested for a different workspace".into());
@@ -502,10 +544,9 @@ fn sign_collaboration_op(
             "collaboration operation requested for a different launch route".into(),
         );
     }
-    let profile = match crate::registry::selected_identity_profile(&bound_workspace.to_string()) {
-        Ok(Some(profile)) => profile,
-        Ok(None) => return Response::Denied(runtime_identity::wire::NO_IDENTITY_SELECTED.into()),
-        Err(error) => return Response::Error(error.to_string()),
+    let profile = match identity_in(tree, bound_workspace) {
+        Ok(profile) => profile,
+        Err(refusal) => return refusal,
     };
     if !launch_workspace && !bound.in_personal_cluster(&profile, workspace_id) {
         return Response::Denied(
@@ -623,10 +664,9 @@ fn channel_keys(
         return Response::Denied("channel keys requested for a different launch route".into());
     }
     let launch = bound.workspace.to_string();
-    let profile = match crate::registry::selected_identity_profile(&launch) {
-        Ok(Some(profile)) => profile,
-        Ok(None) => return Response::Denied(runtime_identity::wire::NO_IDENTITY_SELECTED.into()),
-        Err(error) => return Response::Error(error.to_string()),
+    let profile = match identity_in(tree, bound.workspace) {
+        Ok(profile) => profile,
+        Err(refusal) => return refusal,
     };
     if !launch_workspace && !bound.in_personal_cluster(&profile, route.workspace_id) {
         return Response::Denied("channel keys requested for a different launch route".into());
@@ -689,15 +729,16 @@ fn channel_keys(
     }
 }
 
-/// This machine's device key and its certificate for the identity selected
-/// in `workspace`, while that certificate is valid, enrolled and not revoked.
+/// This machine's device key and its certificate for the identity this device
+/// presents in `workspace`, while that certificate is valid, enrolled and not
+/// revoked.
 /// For the host that governs the workspace with the device key; apps never get
 /// it.
 pub fn trusted_current_device(
     workspace: &str,
 ) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
-    let profile = crate::registry::selected_identity_profile(workspace)?
-        .ok_or_else(|| io::Error::other("no identity is selected for this workspace"))?;
+    let profile = crate::registry::identity_for_workspace(workspace)?
+        .ok_or_else(|| io::Error::other("this device has no identity to sign in with"))?;
     require_trusted_current_device(&profile)
 }
 
@@ -771,13 +812,13 @@ pub struct LocalDeviceIdentity {
     pub device_public_key: [u8; 32],
 }
 
-/// The identity selected for `workspace` and this device's key, only while the
-/// device holds a valid, enrolled, non-revoked certificate for it.
+/// The identity this device presents in `workspace` and its own key, only
+/// while the device holds a valid, enrolled, non-revoked certificate for it.
 ///
 /// # Errors
 ///
-/// Rejects an invalid or unminted workspace, one with no selected identity, and
-/// a missing, mismatched, unenrolled or revoked device certificate.
+/// Rejects an invalid or unminted workspace, one this device has no identity
+/// for, and a missing, mismatched, unenrolled or revoked device certificate.
 pub fn trusted_current_device_public(workspace: &str) -> io::Result<LocalDeviceIdentity> {
     let workspace = RoomId::parse(workspace)
         .filter(|workspace| !workspace.is_nil())
@@ -785,10 +826,10 @@ pub fn trusted_current_device_public(workspace: &str) -> io::Result<LocalDeviceI
             io::Error::new(io::ErrorKind::InvalidInput, "invalid minted workspace id")
         })?;
     let profile =
-        crate::registry::selected_identity_profile(&workspace.to_string())?.ok_or_else(|| {
+        crate::registry::identity_for_workspace(&workspace.to_string())?.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                runtime_identity::wire::NO_IDENTITY_SELECTED,
+                "this device has no identity to sign in with",
             )
         })?;
     let (device, _cert) = require_trusted_current_device(&profile)?;
@@ -1002,7 +1043,7 @@ mod tests {
         let mut invalid = operation.clone();
         invalid.expires_at_unix = invalid.issued_at_unix;
         assert!(sign_external_moderation(&workspace, &invalid).is_err());
-        let profile = crate::registry::selected_identity_profile(&workspace)
+        let profile = crate::registry::identity_for_workspace(&workspace)
             .expect("registry")
             .expect("profile");
         crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
@@ -1038,7 +1079,7 @@ mod tests {
         let workspace_id = workspace.to_string();
         let app_id = "so.tilo.notes";
         let record_id = "meeting-notes";
-        let profile = crate::registry::selected_identity_profile(&workspace_id)
+        let profile = crate::registry::identity_for_workspace(&workspace_id)
             .expect("registry")
             .expect("profile");
         let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
@@ -1316,7 +1357,7 @@ params = []
         let launched = "so.tilo.notes";
         let owner = collab_types::WORKSPACE_RECORDS[0];
         let emoji = collab_types::workspace_record_id(owner.kind);
-        let profile = crate::registry::selected_identity_profile(&workspace_id)
+        let profile = crate::registry::identity_for_workspace(&workspace_id)
             .expect("registry")
             .expect("profile");
         let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
@@ -1383,7 +1424,7 @@ params = []
         runtime_identity::update_identity_photo(&identity_dir, "primary", Some(photo.clone()))
             .unwrap();
         let workspace = RoomId::new();
-        let profile = crate::registry::selected_identity_profile(&workspace.to_string())
+        let profile = crate::registry::identity_for_workspace(&workspace.to_string())
             .unwrap()
             .unwrap();
         let original = std::fs::read(&profile.record_path).unwrap();
@@ -1490,7 +1531,7 @@ params = []
 
         let workspace = RoomId::new();
         let workspace_id = workspace.to_string();
-        let profile = crate::registry::selected_identity_profile(&workspace_id)
+        let profile = crate::registry::identity_for_workspace(&workspace_id)
             .expect("registry")
             .expect("profile");
         let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
@@ -1790,7 +1831,7 @@ params = []
         let fixture = crate::join_proof::tests::Fixture::new();
         let workspace = RoomId::parse(&fixture.workspace).expect("workspace");
         let app_id = "so.tilo.notes";
-        let profile = crate::registry::selected_identity_profile(&fixture.workspace)
+        let profile = crate::registry::identity_for_workspace(&fixture.workspace)
             .expect("registry")
             .expect("profile");
         let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");

@@ -173,7 +173,7 @@ mod tests {
             )
             .expect("provision");
             let workspace = uuid::Uuid::new_v4().to_string();
-            let profile = tilo_identity_host::registry::selected_identity_profile(&workspace)
+            let profile = tilo_identity_host::registry::identity_for_workspace(&workspace)
                 .expect("registry")
                 .expect("selected identity");
             let fixture = Self {
@@ -331,7 +331,7 @@ mod tests {
         std::fs::remove_file(&fixture.profile.record_path).expect("remove identity record");
         store.save(&registry).expect("remove identity");
         assert!(
-            tilo_identity_host::registry::selected_identity_profile(&fixture.workspace)
+            tilo_identity_host::registry::identity_for_workspace(&fixture.workspace)
                 .expect("selection")
                 .is_none()
         );

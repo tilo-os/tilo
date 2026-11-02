@@ -74,7 +74,7 @@ fn person() -> Person {
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let profile = tilo_identity_host::registry::selected_identity_profile(WORKSPACE)
+    let profile = tilo_identity_host::registry::identity_for_workspace(WORKSPACE)
         .expect("the identity registry")
         .expect("the identity is selected for the workspace");
     let device = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");

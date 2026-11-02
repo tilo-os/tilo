@@ -369,7 +369,6 @@ pub mod window_share;
 pub mod window_slots;
 pub mod window_toolbar;
 pub mod workspace_emoji;
-pub mod workspace_identity;
 #[cfg(feature = "native")]
 pub use native::warmup;
 /// Private completion receipts shared by native and browser text editors.

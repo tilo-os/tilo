@@ -343,14 +343,6 @@ pub(super) fn connection_failed(error: FrameError) -> NotAvailable {
 }
 
 pub(super) fn permission_denied(reason: String) -> NotAvailable {
-    // The one refusal a caller acts on rather than reports: the workspace
-    // has no identity yet, which someone can choose.
-    if reason == wire::NO_IDENTITY_SELECTED {
-        return NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            crate::NoIdentitySelected,
-        ));
-    }
     NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::PermissionDenied, reason))
 }
 
@@ -428,13 +420,11 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_without_an_identity_is_told_apart_from_every_other_refusal() {
+    fn a_refusal_reads_as_the_service_wrote_it() {
         let (stream, _) = channel(&[wire::Response::Denied(
             wire::NO_IDENTITY_SELECTED.to_owned(),
         )]);
-        let error =
-            BrokerSigningIdentity::from_connected_io(stream).expect_err("no identity is selected");
-        assert!(crate::is_no_identity_selected(&error));
+        let error = BrokerSigningIdentity::from_connected_io(stream).expect_err("refused");
         assert_eq!(
             error.to_string(),
             format!("service connection failed: {}", wire::NO_IDENTITY_SELECTED),
@@ -445,16 +435,12 @@ mod tests {
             io::ErrorKind::PermissionDenied
         );
 
-        for refusal in [
-            wire::Response::Denied(
-                "identity record no longer matches the selected principal".into(),
-            ),
-            wire::Response::Error("registry unreadable".into()),
-        ] {
-            let (stream, _) = channel(&[refusal]);
-            let error = BrokerSigningIdentity::from_connected_io(stream).expect_err("refused");
-            assert!(!crate::is_no_identity_selected(&error), "{error}");
-        }
+        let (stream, _) = channel(&[wire::Response::Error("registry unreadable".into())]);
+        let error = BrokerSigningIdentity::from_connected_io(stream).expect_err("failed");
+        assert_eq!(
+            error.to_string(),
+            "service connection failed: registry unreadable"
+        );
     }
 
     #[test]

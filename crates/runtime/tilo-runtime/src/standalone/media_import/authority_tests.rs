@@ -57,7 +57,7 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
         ..invocation
     };
     let (host, permit) = service.prepare(&invocation).unwrap();
-    let selected = tilo_identity_host::registry::selected_identity_profile(workspace)
+    let selected = tilo_identity_host::registry::identity_for_workspace(workspace)
         .unwrap()
         .unwrap();
     let (_, cert) = tilo_identity_host::broker::trusted_current_device(workspace).unwrap();

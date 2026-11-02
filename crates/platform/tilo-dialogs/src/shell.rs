@@ -43,7 +43,6 @@ pub const PROTOCOL: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 const NOBODY: &str = "nobody is at this computer to choose a file; name the file instead";
-const NOBODY_TO_CHOOSE: &str = "nobody is at this computer to choose an identity";
 const NOBODY_TO_CHOOSE_APP: &str = "nobody is at this computer to choose an app";
 const OUT_OF_TURN: &str = "the session's shell answered out of turn";
 // What an app may show the person when the shell's chooser itself is out
@@ -151,19 +150,6 @@ pub enum Request {
         id: u64,
         uri: String,
     },
-    /// Answer once the workspace the app was launched into has an identity
-    /// selected: [`Reply::IdentitySelected`], at once when it already has
-    /// one, or [`Reply::Failed`]. Nothing is shown.
-    AwaitIdentity {
-        id: u64,
-    },
-    /// Show the shell's identity chooser for the workspace the app was
-    /// launched into; answered by [`Reply::Opened`] once it is on screen,
-    /// [`Reply::Nobody`] or [`Reply::Failed`]. What the person chooses
-    /// reaches the app through [`Self::AwaitIdentity`].
-    ChooseIdentity {
-        id: u64,
-    },
     /// Show the shell's app chooser: the installed apps, each with its
     /// icon, to choose one for `purpose` (what the app will do with it, in
     /// the person's words). Answered by [`Reply::AppChosen`],
@@ -225,11 +211,6 @@ pub enum Reply {
         id: u64,
         reason: String,
     },
-    /// The app's workspace has an identity selected
-    /// ([`Request::AwaitIdentity`]).
-    IdentitySelected {
-        id: u64,
-    },
     /// The person chose `app` ([`Request::ChooseApp`]).
     AppChosen {
         id: u64,
@@ -249,7 +230,6 @@ impl Reply {
             | Reply::Nobody { id }
             | Reply::Opened { id }
             | Reply::Unclaimed { id }
-            | Reply::IdentitySelected { id }
             | Reply::AppChosen { id, .. }
             | Reply::Failed { id, .. } => *id,
         }
@@ -416,39 +396,6 @@ impl ShellLink {
             link: self.clone(),
             elsewhere,
         })
-    }
-
-    /// Call `selected` once the workspace this app was launched into has an
-    /// identity selected (at once when it already has one), with the reason
-    /// when the shell cannot say. It runs on the connection's reader thread.
-    pub fn await_identity(&self, selected: impl FnOnce(Result<(), String>) + Send + 'static) {
-        self.connection().ask(
-            |id| Request::AwaitIdentity { id },
-            Box::new(move |reply| {
-                selected(match reply {
-                    Reply::IdentitySelected { .. } => Ok(()),
-                    Reply::Failed { reason, .. } => Err(reason),
-                    _ => Err(OUT_OF_TURN.to_owned()),
-                });
-            }),
-        );
-    }
-
-    /// Ask the shell to show its identity chooser for this app's workspace;
-    /// `answered` hears whether it is on screen, on the connection's reader
-    /// thread. The choice itself arrives through [`Self::await_identity`].
-    pub fn choose_identity(&self, answered: impl FnOnce(Result<(), String>) + Send + 'static) {
-        self.connection().ask(
-            |id| Request::ChooseIdentity { id },
-            Box::new(move |reply| {
-                answered(match reply {
-                    Reply::Opened { .. } => Ok(()),
-                    Reply::Nobody { .. } => Err(NOBODY_TO_CHOOSE.to_owned()),
-                    Reply::Failed { reason, .. } => Err(reason),
-                    _ => Err(OUT_OF_TURN.to_owned()),
-                });
-            }),
-        );
     }
 
     /// Ask the shell to show its app chooser for `purpose`; `chosen` hears
@@ -953,8 +900,6 @@ mod tests {
             | Request::PickContents { id, .. }
             | Request::ReadContents { id, .. }
             | Request::ReleaseContents { id, .. }
-            | Request::AwaitIdentity { id }
-            | Request::ChooseIdentity { id }
             | Request::ChooseApp { id, .. } => *id,
         }
     }
@@ -1123,36 +1068,6 @@ mod tests {
             self.0.lock().unwrap().push(uri.to_owned());
             Ok(())
         }
-    }
-
-    #[test]
-    fn identity_requests_hear_the_choice_and_whether_the_chooser_opened() {
-        let link = ShellLink::connect(shell(|request| match request {
-            Request::AwaitIdentity { id } => Reply::IdentitySelected { id },
-            Request::ChooseIdentity { id } => Reply::Opened { id },
-            other => Reply::Failed {
-                id: id_of(&other),
-                reason: "unexpected".into(),
-            },
-        }))
-        .unwrap();
-        let (selected_tx, selected) = std::sync::mpsc::channel();
-        link.await_identity(move |outcome| selected_tx.send(outcome).unwrap());
-        assert_eq!(selected.recv_timeout(answer()).unwrap(), Ok(()));
-        let (opened_tx, opened) = std::sync::mpsc::channel();
-        link.choose_identity(move |outcome| opened_tx.send(outcome).unwrap());
-        assert_eq!(opened.recv_timeout(answer()).unwrap(), Ok(()));
-
-        let unattended = ShellLink::connect(shell(|request| Reply::Nobody {
-            id: id_of(&request),
-        }))
-        .unwrap();
-        let (opened_tx, opened) = std::sync::mpsc::channel();
-        unattended.choose_identity(move |outcome| opened_tx.send(outcome).unwrap());
-        assert_eq!(
-            opened.recv_timeout(answer()).unwrap(),
-            Err(NOBODY_TO_CHOOSE.to_owned())
-        );
     }
 
     #[test]

@@ -221,7 +221,7 @@ impl Files {
     /// The identity `workspace` selects now, read from the registry.
     fn selected(workspace: &str) -> io::Result<Option<Selected>> {
         Ok(
-            crate::registry::selected_identity_profile(workspace)?.map(|profile| Selected {
+            crate::registry::identity_for_workspace(workspace)?.map(|profile| Selected {
                 id: profile.id,
                 user_public_key: profile.user_public_key,
             }),
@@ -395,7 +395,7 @@ pub(crate) mod tests {
             )
             .expect("provision");
             let workspace = uuid_like_workspace();
-            let profile = crate::registry::selected_identity_profile(&workspace)
+            let profile = crate::registry::identity_for_workspace(&workspace)
                 .expect("registry")
                 .expect("selected identity");
             let fixture = Self {

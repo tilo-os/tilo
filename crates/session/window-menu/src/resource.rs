@@ -35,7 +35,6 @@ impl ResourceApp for WindowMenuApp {
     // The menu shows this device's desk: it is nobody's workspace participant
     // and opens before anyone is chosen.
     const ATTACHES_RUNTIME: bool = false;
-    const OPENS_WITHOUT_IDENTITY: bool = true;
 
     fn view(cx: &mut ViewCx<WindowMenu>) -> Element {
         cx.surface(WindowMenuSurface::new())

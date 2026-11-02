@@ -2042,7 +2042,6 @@ impl StoreState {
                 return Ok(Job::admitted(Request::RemoteRemove(name), Finish::Status));
             }
             StoreEffect::SubmitReport { app, operation } => {
-                ask_who_works_here()?;
                 let operation = self.check_moderation(&app, &operation, false)?;
                 self.reserve_job()?;
                 return Ok(Job::admitted(
@@ -2065,7 +2064,6 @@ impl StoreState {
                 ));
             }
             StoreEffect::Appeal { app, operation } => {
-                ask_who_works_here()?;
                 let operation = self.check_moderation(&app, &operation, true)?;
                 self.reserve_job()?;
                 return Ok(Job::admitted(
@@ -2915,18 +2913,6 @@ fn inspect_item(
     })
 }
 
-/// A report or an appeal is signed as the person working in the workspace.
-/// The Store opens without one chosen (browsing is anonymous), so this is the
-/// moment to ask: the shell's chooser opens, and the request waits for the
-/// person to send it again as who they are.
-fn ask_who_works_here() -> Result<(), String> {
-    if !ui::workspace_identity::missing() {
-        return Ok(());
-    }
-    ui::workspace_identity::choose();
-    Err(ui::i18n!("store-identity-needed-to-sign"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2956,11 +2942,8 @@ mod tests {
     }
 
     #[test]
-    fn viewing_an_app_page_needs_no_identity_only_signing_asks() {
+    fn a_report_or_an_appeal_is_signed_as_the_person_without_asking() {
         use ui::framework::ResourceApp as _;
-        // The Store opens while the workspace has nobody chosen.
-        const { assert!(crate::resource::StoreShell::OPENS_WITHOUT_IDENTITY) };
-        ui::workspace_identity::set_missing(true);
         let mut app = seeded_app();
         app.directory
             .set_registries(vec![moderation_test_registry()]);
@@ -2969,7 +2952,7 @@ mod tests {
                 app: "id.notes".into(),
             })
             .is_ok(),
-            "an app's page opens with nobody chosen"
+            "an app's page opens"
         );
         assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
         draft(
@@ -2977,13 +2960,11 @@ mod tests {
             "The app connected to a remote host while offline mode was active.",
         );
         let report = app.moderation_effect("id.notes", false).unwrap();
-        let refused = app.admit(report).err();
-        ui::workspace_identity::set_missing(false);
-        assert_eq!(
-            refused.as_deref(),
-            Some("Choose who you are in this workspace, then send it again."),
-            "sending a signed report is when it asks who you are"
+        assert!(
+            app.admit(report).is_ok(),
+            "a signed report goes out as the person working here"
         );
+        let _ = <crate::resource::StoreShell as ResourceApp>::ID;
     }
 
     #[test]
