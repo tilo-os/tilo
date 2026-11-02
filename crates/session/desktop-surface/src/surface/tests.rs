@@ -914,8 +914,7 @@ fn the_strip_keeps_the_bands_above_and_below_it_and_a_maximized_window_takes_bot
         } else {
             assert!(
                 (top - tiled_top).abs() < 0.5 && (end - tiled_end).abs() < 0.5,
-                "restored, both bands are back: {} to {end}, were {tiled_top} to {tiled_end}",
-                top
+                "restored, both bands are back: {top} to {end}, were {tiled_top} to {tiled_end}"
             );
         }
     }

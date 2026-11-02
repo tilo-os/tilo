@@ -1071,7 +1071,7 @@ impl App {
     /// boundary as the public managed constructor.
     /// # Errors
     /// Refuses invalid or mismatched managed owner registrations.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, all(feature = "native", feature = "test-support")))]
     pub fn from_managed_root_with_controlled_inputs(
         state: State,
         root: crate::history_mode::ManagedRoot,
