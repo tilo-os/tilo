@@ -139,6 +139,54 @@ view rows<T>(
     }
 }
 
+/// Items as an outline, each item over its own to any depth, opened and closed where a person
+/// puts them, its row the one `row` draws. A move — a drag, `Tab` and `Shift-Tab`, the
+/// accessibility move actions — is reported with the item it lands under and the item it lands
+/// before, and `place` puts it in the one place they name:
+/// `(moved, .none, .none)` is the end of the top level, `(moved, .some(x), .none)` the end of
+/// `x`'s own, and `(moved, .none, .some(x))` where `x` stands. One step, so two people moving
+/// items at once never leave one in two places. A row's checkbox asks `toggled`. An item whose
+/// parent is not among `items` stands at the top, so a deleted parent never hides what was
+/// inside it.
+view outline<T>(
+    name: Text,
+    items: List<T>,
+    parent: (T) -> Option<T>,
+    label: (T) -> Text,
+    empty: Text,
+    place: (T, Option<T>, Option<T>) -> Action,
+    toggled: (T) -> Action,
+    icon: Option<Text> = .none,
+    fill: Bool = true,
+    row: (T) -> View
+) {
+    if items.is_empty() {
+        ui.EmptyState(empty, icon: icon)
+    } else {
+        ui.TreeView(name: .some(name), fill: fill, reorder: true, tab_indents: true) {
+            on drop(moved: T): place(moved, .none, .none)
+            for x in items {
+                let offered = actions(x)
+                ui.TreeViewNode(x, label(x), parent: parent(x)) {
+                    on drop(moved: T): place(moved, .none, .some(x))
+                    on into(moved: T): place(moved, .some(x), .none)
+                    on check: toggled(x)
+                    menu: {
+                        for a in offered {
+                            ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key) {
+                                on choose: a.run
+                            }
+                        }
+                    }
+                    row: {
+                        row(x)
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A header's controls, as native headers place them: the sort menu and search first, then
 /// `extra`, then each action in the app's order — one with an icon as an icon button (drawn on
 /// while the state it toggles is), one without as a button labelled with the name the app gave

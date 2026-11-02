@@ -61,6 +61,7 @@ imports! {
     ListSortByKey = "list_sort_by_key" ([H, H] -> [H]);
     ListReverse = "list_reverse" ([H] -> [H]);
     ListEnd = "list_end" ([H, I32] -> [H]);
+    ListIndexOf = "list_index_of" ([H, H] -> [H]);
 
     TupleNew = "tuple_new" ([I32] -> [H]);
     TupleSetI = "tuple_set_i" ([H, I32, I64] -> []);

@@ -92,14 +92,14 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
         replica.commit();
     }
     view.poll_patches().unwrap();
-    // Each card counts what its app's scenario made: the open todos, the pinned notes and the
-    // conversations at the top of Chat's sidebar — six, its four channels and categories plus
-    // the direct conversation with Leo and the conversation with yourself, the notes, which
-    // Chat's scenario opens.
+    // Each card counts what its app's scenario made: the open todos (nine tasks, and the three
+    // open subtasks under the launch post), the pinned notes, and the conversations at the top
+    // of Chat's sidebar — six, its four channels and categories plus the direct conversation
+    // with Leo and the conversation with yourself, the notes, which Chat's scenario opens.
     let counts: Vec<String> = format!("{:?}", view.tree())
         .split("\"count\": Int(")
         .skip(1)
         .filter_map(|rest| rest.split(')').next().map(str::to_owned))
         .collect();
-    assert_eq!(counts, ["9", "3", "6"]);
+    assert_eq!(counts, ["12", "3", "6"]);
 }

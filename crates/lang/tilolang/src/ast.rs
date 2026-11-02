@@ -582,8 +582,9 @@ pub enum ExprKind {
         name: Ident,
         args: Option<Vec<Arg>>,
     },
+    /// `x -> ...`, or `(x, y) -> ...` for the values a function parameter of several takes.
     Lambda {
-        param: Ident,
+        params: Vec<Ident>,
         body: Box<Expr>,
     },
     Unary {

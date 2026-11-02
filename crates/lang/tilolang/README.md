@@ -187,6 +187,10 @@ when it was left out.
 Int, Float, Text, Bool, Date or Time keys, and `desc` for the largest or latest first:
 `items.sort_by(.due, desc)`.
 
+**Lambdas.** A parameter of a function type takes the values the function is handed: `x -> ...`
+for one, `(a, b) -> ...` for several, as `std.outline`'s place is told what moved, where to and
+before which of its siblings: `(moved, parent, before) -> move_to(tasks, moved, parent, before)`.
+
 **Reflection.** The log records who made every change, when and by which action, so code reads
 it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
 `Option<host.Version>` (`.who`, `.at`, `.what`, the action's label), `history(r)` all of them,
@@ -225,9 +229,10 @@ takes a card from its column to the foot of `done`, the same card, with its hist
 reference to it. An item cannot go inside itself. A place may count only a run of the
 collection, the items a board's lane shows: `items.move(x, to: i, among: items.filter(t ->
 t.section == s))` puts `x` at the place `i` among that run's other items, beside the one it
-then comes before, or after the run's last. A board lane's drop says both what was dropped and
-where: `on drop(moved: Task, at: Int): place(moved, s, at)`. How moves, edits and removals made
-at the same time merge is convergence.md, "Storage and sync".
+then comes before, or after the run's last. Where an item stands among them is
+`items.index_of(x)`, an `Option<Int>`: none when it is not one. A board lane's drop says both
+what was dropped and where: `on drop(moved: Task, at: Int): place(moved, s, at)`. How moves,
+edits and removals made at the same time merge is convergence.md, "Storage and sync".
 
 **Flows** invoke actions by calling them. `try act(args)` gives a `Result<T, Text>` (`Result<(),
 Text>` for an action without a result) instead of failing:

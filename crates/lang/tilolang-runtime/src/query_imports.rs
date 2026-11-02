@@ -400,7 +400,7 @@ impl Core {
     }
 
     /// The items of a list (or a collection read whole) handed to `what`.
-    fn items_of(&self, list: Value, what: &str) -> HResult<Vec<Value>> {
+    pub(crate) fn items_of(&self, list: Value, what: &str) -> HResult<Vec<Value>> {
         match list {
             Value::List(items) => Ok(items),
             Value::Coll(c) => Ok(self.coll_items(&c)?),

@@ -903,7 +903,17 @@ impl Checker<'_> {
                         },
                         _ => false,
                     };
+                    // What the caller of a template gives the slot — its block or a view of
+                    // its own — is the component where it is written.
+                    let from_caller = match &c.call.kind {
+                        ExprKind::Call { callee, .. } => match &callee.kind {
+                            ExprKind::Ident(v) => self.macro_slot(d, slot, v, calls),
+                            _ => false,
+                        },
+                        _ => false,
+                    };
                     let fits = own_view
+                        || from_caller
                         || component_of(c).is_some_and(|(base, name)| {
                             slot.accepts.takes(name) && self.names_toolkit(base)
                         });
@@ -935,6 +945,41 @@ impl Checker<'_> {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Whether `name`, a parameter of the template being expanded, fills `slot`: its block is
+    /// checked against the slot as if it stood there, and a view by what its body makes.
+    fn macro_slot(
+        &mut self,
+        d: &Description,
+        slot: &tilo_ui_graph::component::Slot,
+        name: &str,
+        calls: &mut usize,
+    ) -> bool {
+        match self.st.macros.get(name).cloned() {
+            Some(super::template::Macro::Some(inner)) => match &*inner {
+                super::template::Macro::View(v) => self
+                    .env
+                    .view_makes
+                    .get(&v.name)
+                    .is_some_and(|made| slot.accepts.takes(made)),
+                super::template::Macro::Block(block) => {
+                    self.slot_calls(d, slot, &block.body, calls);
+                    true
+                }
+                _ => false,
+            },
+            Some(super::template::Macro::View(v)) => self
+                .env
+                .view_makes
+                .get(&v.name)
+                .is_some_and(|made| slot.accepts.takes(made)),
+            Some(super::template::Macro::Block(block)) => {
+                self.slot_calls(d, slot, &block.body, calls);
+                true
+            }
+            _ => false,
         }
     }
 }

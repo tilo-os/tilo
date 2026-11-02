@@ -4638,6 +4638,16 @@
           "name": "multi_select",
           "doc": "Whether several nodes may be selected at once (Ctrl-click, Shift-click).",
           "type": "bool"
+        },
+        {
+          "name": "reorder",
+          "doc": "Rows move: by dragging one onto another (before it, inside it or after it), and by `Tab` and `Shift-Tab` to indent and outdent, `Alt-Up` and `Alt-Down` to reorder among siblings. A move is reported by the node it lands at ([`TreeViewNodeProps::drop`], [`TreeViewNodeProps::into`]) or, at the top level's end, by the tree's [`Self::drop`].",
+          "type": "bool"
+        },
+        {
+          "name": "tab_indents",
+          "doc": "`Tab` and `Shift-Tab` indent and outdent the focused row. On by itself with [`Self::reorder`]; off, `Tab` moves the focus on as it otherwise would.",
+          "type": "bool"
         }
       ],
       "slots": [
@@ -4660,6 +4670,11 @@
         {
           "name": "activate",
           "doc": "A node was activated (a double click, Enter, an assistive technology): carries the resource it shows.",
+          "value": "resource"
+        },
+        {
+          "name": "drop",
+          "doc": "A node was dropped at the end of the top level, past every row: carries the node that moved.",
           "value": "resource"
         }
       ],
@@ -6367,10 +6382,31 @@
           }
         },
         {
+          "name": "secondary",
+          "doc": "Dim text after the label: what the row belongs to (a project, a folder).",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "trailing",
           "doc": "Trailing text: a count, a kind, a size.",
           "type": {
             "option": "text"
+          }
+        },
+        {
+          "name": "progress",
+          "doc": "How far the branch got while it is folded, just before the trailing text: a done count among its children (\"2/5\"), counted from their checkboxes when the row gives none. Shown only when the branch is closed.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "checkbox",
+          "doc": "A checkbox at the start of the row: a task's done state, a selection. A press on it asks the node's [`TreeViewNodeProps::check`] instead of selecting the row.",
+          "type": {
+            "option": "bool"
           }
         },
         {
@@ -6428,6 +6464,30 @@
           "accepts": {
             "component": "TreeViewRow"
           }
+        },
+        {
+          "name": "menu",
+          "doc": "The commands of its context menu: a right-click, the Menu key or a long press opens it, so every action a row has stays reachable without a drag.",
+          "accepts": {
+            "component": "MenuItem"
+          },
+          "many": true
+        }
+      ],
+      "events": [
+        {
+          "name": "drop",
+          "doc": "A node was dropped just before this one, or moved here by the keyboard: carries the node that moved, so the owner places it before this one under the same parent.",
+          "value": "resource"
+        },
+        {
+          "name": "into",
+          "doc": "A node was dropped inside this one, at the end of its children, or indented here by the keyboard: carries the node that moved.",
+          "value": "resource"
+        },
+        {
+          "name": "check",
+          "doc": "This node's checkbox was pressed: the owner toggles what the box stands for."
         }
       ],
       "semantics": {

@@ -1215,6 +1215,7 @@ impl Checker<'_> {
                     | "all"
                     | "find"
                     | "count"
+                    | "index_of"
                     | "sort_by"
                     | "first"
                     | "last"
@@ -1254,6 +1255,7 @@ impl Checker<'_> {
                 "all",
                 "find",
                 "count",
+                "index_of",
                 "sort_by",
                 "first",
                 "last",
@@ -1645,6 +1647,22 @@ impl Checker<'_> {
                 let elem = (**t).clone();
                 Self::end_item(r, &elem, m == "last")
             }
+            // `items.index_of(x)`: where it stands among the items, or none when it is not one.
+            (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "index_of") => {
+                let elem = (**t).clone();
+                if !self.arity(name, args, 1, span) {
+                    return Ex::error();
+                }
+                let Some(a) = args.first() else {
+                    return Ex::error();
+                };
+                let what = self.expr_as(&a.value, &elem);
+                Ex::host(
+                    Imp::ListIndexOf,
+                    vec![r, what],
+                    Ty::Option(Box::new(Ty::Int)),
+                )
+            }
             (Ty::List(_), "of") => self.list_of(r, args, span),
             (Ty::List(t) | Ty::Collection(t), "matching") => {
                 let elem = (**t).clone();
@@ -1685,7 +1703,7 @@ impl Checker<'_> {
                         "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
                     }
                     Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => {
-                        "len, is_empty, first, last, map, filter, any, all, find, count, sort_by, count_by, group, take, each, single"
+                        "len, is_empty, first, last, map, filter, any, all, find, count, index_of, sort_by, count_by, group, take, each, single"
                     }
                     _ => "none",
                 };
