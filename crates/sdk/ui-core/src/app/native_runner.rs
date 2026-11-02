@@ -1313,11 +1313,13 @@ impl AppHandler {
                                 preparation.wait()
                             });
                         match startup {
+                            // The surface the launch prepared carries no alpha: a window
+                            // that stands on nothing is given one that does.
                             Ok(Ok(startup)) => prepare_window_render(
                                 &worker_window,
                                 transparent,
                                 Some(startup.prepared),
-                                startup.surface,
+                                startup.surface.filter(|_| !transparent),
                             ),
                             Ok(Err(error)) => {
                                 tracing::warn!(%error, "renderer preparation failed; selecting device for the actual surface");
@@ -3751,21 +3753,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // A window that stands on nothing needs a transparent surface, which
         // the launch makes before it knows the app: it gives way to one made
         // for the app below, as an input surface's does.
+        // The early window is kept even for an app that stands on nothing: a second window
+        // would be refused where the first holds a role of its own (a lock screen's early
+        // window already holds its output's lock). It is made to carry alpha instead, and
+        // `init_render` gives it a surface that does.
         let stands_on_ground = self.app.root_widget.paints_ground();
-        let early = if stands_on_ground {
-            early_for(take_early_window(), &app_id)
-        } else {
-            Early::Discarded
-        };
-        let early = match early {
+        let early = match early_for(take_early_window(), &app_id) {
             Early::Kept(window) => {
                 tilo_startup_metrics::mark("startup-window-adopted");
                 window.set_title(&title);
+                if !stands_on_ground {
+                    window.set_transparent(true);
+                }
                 Some(window)
             }
             Early::Discarded => {
-                // An input surface announces its own id: its window is made
-                // below, and `init_render` discards the early surface.
+                // Made for another app's id: this app's window is made below,
+                // and `init_render` discards the early surface.
                 tilo_startup_metrics::mark("startup-window-discarded");
                 None
             }
