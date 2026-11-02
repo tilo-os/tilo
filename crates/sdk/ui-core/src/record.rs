@@ -52,13 +52,15 @@ pub mod workspace;
 
 use ::collaboration::record::fields::{META, ObjectAt, StringAt, meta_ro, object_at, string_at};
 /// Key in a record document for the workspace that owns this local replica.
-/// `RecordId` is a user/application name; it is not an authority boundary.
-const WORKSPACE: &str = "workspace";
-/// The key this module wrote a record's workspace under while a workspace
-/// was still called a room. Every document written before then holds it, so
-/// it is read where it is (see [`stored_workspace`]) and never rewritten on
-/// load: a person's records are not changed behind their back.
-pub const LEGACY_WORKSPACE_KEY: &str = "room";
+/// It keeps the name records were first written under: a record is synced to
+/// devices and apps that may run a build from before this module named the
+/// field for what it means, and their reader knows no other key. `RecordId` is
+/// a user/application name; it is not an authority boundary.
+const WORKSPACE: &str = "room";
+/// The key a record written while the field was named `workspace` carries its
+/// workspace under. Those documents exist, so it reads where it is (see
+/// [`stored_workspace`]) and is never written.
+pub const WORKSPACE_ALIAS: &str = "workspace";
 /// Key, in a workspace's index document, of the map of record references.
 const INDEX: &str = "tilo:records";
 /// Key, in a record's meta map, of the identities it was adopted from.
@@ -87,25 +89,15 @@ fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
 }
 
 /// The workspace a record document is stamped with, read from the one place
-/// every reader goes: the current key, or the one written before a workspace
-/// was called a workspace. Naming the same workspace under both keys is one
-/// stamp; naming two different ones, or a value that is not a name, is a
-/// document that cannot say which workspace it belongs to, and it is refused
-/// rather than guessed at.
+/// every reader goes: the key every record is written under, or the key one
+/// build wrote it under while the field was named `workspace`. A document
+/// holding both reads under the key every record is written with; a value
+/// that is not a name is a document that cannot say which workspace it
+/// belongs to, and it is refused rather than guessed at.
 fn stored_workspace(doc: &AutoCommit, meta: &ObjId) -> StringAt {
-    let current = string_at(doc, meta, WORKSPACE);
-    let legacy = string_at(doc, meta, LEGACY_WORKSPACE_KEY);
-    match (current, legacy) {
-        (StringAt::Missing, StringAt::Missing) => StringAt::Missing,
-        (StringAt::Missing, kept) | (kept, StringAt::Missing) => kept,
-        (StringAt::Invalid, _) | (_, StringAt::Invalid) => StringAt::Invalid,
-        (StringAt::String(current), StringAt::String(legacy)) => {
-            if current == legacy {
-                StringAt::String(current)
-            } else {
-                StringAt::Invalid
-            }
-        }
+    match string_at(doc, meta, WORKSPACE) {
+        StringAt::Missing => string_at(doc, meta, WORKSPACE_ALIAS),
+        written => written,
     }
 }
 
@@ -197,7 +189,8 @@ fn stamp_scoped(
         let _ = doc.put(&m, "home", home);
     }
     // A document that already names a workspace — under either key — keeps
-    // it: nothing here moves an old record's workspace to the new key.
+    // it: nothing here rewrites a record's workspace, or moves it to the key
+    // this build writes.
     if let Some(workspace) = workspace
         && matches!(&existing_workspace, StringAt::Missing)
     {
@@ -373,12 +366,11 @@ pub fn home(doc: &AutoCommit) -> Option<String> {
     str_at(doc, &m, "home")
 }
 
-/// The workspace this local record replica is bound to: the key records are
-/// written with now, or the [`LEGACY_WORKSPACE_KEY`] a document written
-/// before then keeps. Absent only for records written before records were
-/// scoped to a workspace; callers may adopt those once with
-/// [`init_scoped`], but must never treat an explicit different workspace as
-/// interchangeable.
+/// The workspace this local record replica is bound to: the key every record
+/// is written under, or the [`WORKSPACE_ALIAS`] one build wrote it under.
+/// Absent only for records written before records were scoped to a
+/// workspace; callers may adopt those once with [`init_scoped`], but must
+/// never treat an explicit different workspace as interchangeable.
 pub fn workspace_scope(doc: &AutoCommit) -> Option<String> {
     let m = meta_ro(doc)?;
     match stored_workspace(doc, &m) {

@@ -957,7 +957,22 @@ fn an_owner_file_from_before_the_workspace_host_had_its_name_restores() {
 }
 
 #[test]
-fn an_owner_file_from_before_the_storage_named_its_workspaces_restores() {
+fn a_state_file_names_its_workspaces_under_the_stored_key() {
+    let joined = enrolled();
+    drop(joined.owner);
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+    let object = value.as_object().expect("a storage object");
+    assert!(
+        object.contains_key("rooms"),
+        "a build any image can roll back to reads this key: {}",
+        serde_json::to_string_pretty(&value).unwrap()
+    );
+    assert!(!object.contains_key("workspaces"), "one key, one spelling");
+}
+
+#[test]
+fn an_owner_file_written_while_the_map_was_named_for_workspaces_restores() {
     let joined = enrolled();
     drop(joined.owner);
     let mut value: serde_json::Value =
@@ -965,31 +980,47 @@ fn an_owner_file_from_before_the_storage_named_its_workspaces_restores() {
     let workspaces = value
         .as_object_mut()
         .expect("a storage object")
-        .remove("workspaces")
+        .remove("rooms")
         .expect("the storage names its workspaces");
-    value["rooms"] = workspaces;
+    value["workspaces"] = workspaces;
     std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
-    let reopened = open_file(&joined.path).expect("a file from before the rename reads");
+    let reopened = open_file(&joined.path).expect("a file written by that build reads");
     assert_eq!(
         reopened.workspaces(),
         vec![joined.workspace],
-        "the workspaces read under their old key"
+        "the workspaces read under the key it was written under"
     );
 }
 
 #[test]
-fn a_pending_enrollment_handle_from_before_the_rename_reads() {
+fn a_pending_enrollment_handle_is_written_under_the_stored_key() {
+    let id = PendingEnrollmentId::new(RoomId::parse(WORKSPACE).unwrap(), 7, [3; 32]);
+    let value = serde_json::to_value(&id).unwrap();
+    let object = value.as_object().expect("a handle object");
+    assert!(
+        object.contains_key("room"),
+        "a build any image can roll back to reads this key"
+    );
+    assert!(!object.contains_key("workspace"), "one key, one spelling");
+    assert_eq!(
+        serde_json::from_value::<PendingEnrollmentId>(value).unwrap(),
+        id
+    );
+}
+
+#[test]
+fn a_pending_enrollment_handle_written_under_the_workspace_key_reads() {
     let id = PendingEnrollmentId::new(RoomId::parse(WORKSPACE).unwrap(), 7, [3; 32]);
     let mut value = serde_json::to_value(&id).unwrap();
     let object = value.as_object_mut().expect("a handle object");
     let workspace = object
-        .remove("workspace")
+        .remove("room")
         .expect("the handle names its workspace");
-    object.insert("room".into(), workspace);
+    object.insert("workspace".into(), workspace);
     assert_eq!(
         serde_json::from_value::<PendingEnrollmentId>(value).unwrap(),
         id,
-        "the handle reads under its old key"
+        "the handle reads under the key it was written under"
     );
 }
 

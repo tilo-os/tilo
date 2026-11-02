@@ -155,10 +155,11 @@ fn records_stamped_with_former_writer_kinds_reopen_without_rewrite() {
     }
 }
 
-/// A record written now names its workspace under the new key, and reads
-/// back with that workspace after a save.
+/// A record written now names its workspace under the key every record is
+/// written with — the name a record written before this build carried it —
+/// and reads back with that workspace after a save.
 #[test]
-fn a_record_written_now_names_its_workspace_under_the_new_key() {
+fn a_record_written_now_names_its_workspace_under_the_stored_key() {
     let workspace = uuid::Uuid::new_v4().to_string();
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("test.workspace-key"));
     let mut doc = AutoCommit::new();
@@ -175,11 +176,8 @@ fn a_record_written_now_names_its_workspace_under_the_new_key() {
         Some(workspace.as_str())
     );
     assert!(
-        matches!(
-            string_at(&doc, &meta, LEGACY_WORKSPACE_KEY),
-            StringAt::Missing
-        ),
-        "a new record does not also write the key it replaced"
+        matches!(string_at(&doc, &meta, WORKSPACE_ALIAS), StringAt::Missing),
+        "a new record does not also write the key one build named"
     );
     assert_eq!(workspace_scope(&doc).as_deref(), Some(workspace.as_str()));
     let saved = doc.save();
@@ -191,15 +189,15 @@ fn a_record_written_now_names_its_workspace_under_the_new_key() {
     );
 }
 
-/// A record written before workspaces were called workspaces keeps its
-/// workspace under the old key: it opens with that workspace and its
-/// history, and opening it does not rewrite it.
+/// A record written while the field was named `workspace` keeps its workspace
+/// under that key: it opens with that workspace and its history, and opening
+/// it does not rewrite it.
 #[test]
-fn a_record_written_before_the_rename_opens_with_its_workspace_and_history() {
+fn a_record_written_while_the_field_was_named_workspace_reads_with_its_workspace() {
     let workspace = uuid::Uuid::new_v4().to_string();
     let package = "so.tilo.test-legacy-key";
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("test.legacy-note"));
-    // The document as the app of the time left it on disk.
+    // The document as the build of the time left it on disk.
     let mut written = AutoCommit::new();
     written.put(ROOT, "title", "Field notes").unwrap();
     assert!(init_scoped(
@@ -210,9 +208,8 @@ fn a_record_written_before_the_rename_opens_with_its_workspace_and_history() {
         None
     ));
     let meta = meta_obj(&mut written).unwrap();
-    written
-        .put(&meta, LEGACY_WORKSPACE_KEY, &workspace)
-        .unwrap();
+    written.delete(&meta, WORKSPACE).unwrap();
+    written.put(&meta, WORKSPACE_ALIAS, &workspace).unwrap();
     written.commit();
     let history = written.get_heads();
 
@@ -227,20 +224,20 @@ fn a_record_written_before_the_rename_opens_with_its_workspace_and_history() {
     store
         .try_open_record(&checkout)
         .expect("it opens as before");
-    let (title, heads, current, legacy) = store
+    let (title, heads, current, namespaced) = store
         .read(&checkout.id, |doc| {
             let meta = meta_ro(doc).unwrap();
             (
                 str_at(doc, &ROOT, "title"),
                 doc.clone().get_heads(),
                 str_at(doc, &meta, WORKSPACE),
-                str_at(doc, &meta, LEGACY_WORKSPACE_KEY),
+                str_at(doc, &meta, WORKSPACE_ALIAS),
             )
         })
         .unwrap();
     assert_eq!(title.as_deref(), Some("Field notes"));
     assert_eq!(
-        legacy.as_deref(),
+        namespaced.as_deref(),
         Some(workspace.as_str()),
         "its workspace reads"
     );
@@ -257,36 +254,6 @@ fn a_record_written_before_the_rename_opens_with_its_workspace_and_history() {
         .read(&checkout.id, |doc| str_at(doc, &ROOT, "title"))
         .unwrap();
     assert_eq!(edited.as_deref(), Some("Field notes, revised"));
-}
-
-/// A document that names one workspace under the current key and another
-/// under the old one cannot say which it belongs to, and is refused
-/// rather than guessed at; the same workspace under both is one stamp.
-#[test]
-fn a_document_naming_two_workspaces_names_none() {
-    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("test.two-keys"));
-    let mut doc = AutoCommit::new();
-    assert!(init_scoped(
-        &mut doc,
-        &checkout.id,
-        &checkout.kind,
-        "a",
-        Some("a")
-    ));
-    let meta = meta_obj(&mut doc).unwrap();
-    doc.put(&meta, LEGACY_WORKSPACE_KEY, "b").unwrap();
-    doc.commit();
-    assert_eq!(workspace_scope(&doc), None);
-    assert!(!init_scoped(
-        &mut doc,
-        &checkout.id,
-        &checkout.kind,
-        "a",
-        Some("a")
-    ));
-    doc.put(&meta, LEGACY_WORKSPACE_KEY, "a").unwrap();
-    doc.commit();
-    assert_eq!(workspace_scope(&doc).as_deref(), Some("a"));
 }
 
 /// Two members of a workspace each create the record the workspace derives for

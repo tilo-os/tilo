@@ -1063,7 +1063,7 @@ fn identity_mutation(
     let value = match field {
         "id" => "uuid:00000000-0000-4000-8000-000000000099",
         "kind" => "foreign-kind",
-        "workspace" | "room" => "00000000-0000-4000-8000-000000000099",
+        "room" => "00000000-0000-4000-8000-000000000099",
         "home" => "foreign-origin",
         _ => unreachable!(),
     };
@@ -1083,7 +1083,7 @@ fn identity_mutation(
 #[test]
 fn signed_owned_identity_mutations_are_atomic_invalid_and_recover_with_fresh_snapshot() {
     for incremental in [false, true] {
-        for field in ["id", "kind", "workspace", "room", "home"] {
+        for field in ["id", "kind", "room", "home"] {
             let mut fixture = RoutedOwners::new();
             let family = "tilo:record";
             let incoming = identity_mutation(&fixture, 0, family, field, incremental);
@@ -1160,7 +1160,7 @@ fn signed_owned_corrupt_incremental_preserves_document_history_generation_and_st
 fn signed_owned_concurrent_losing_identity_values_are_rejected() {
     use automerge::ReadDoc;
     for incremental in [false, true] {
-        for field in ["id", "kind", "workspace", "home"] {
+        for field in ["id", "kind", "room", "home"] {
             let mut fixture = RoutedOwners::new();
             let binding = &fixture.bindings[0];
             let family = "tilo:record";

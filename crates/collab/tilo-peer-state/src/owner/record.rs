@@ -8,8 +8,10 @@ use tilo_user_identity::DeviceCert;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NativeAuthorityStorage {
     pub(crate) revision: u64,
-    /// Files written before this map was named for the workspace carry `rooms`.
-    #[serde(alias = "rooms")]
+    /// A state file outlives an image update and is read by whatever build the
+    /// update left, so the map is written under the key it was first written
+    /// under; a file written while it was named for the workspace still reads.
+    #[serde(rename = "rooms", alias = "workspaces")]
     pub(crate) workspaces: BTreeMap<RoomId, StoredWorkspace>,
     pub(crate) pending: BTreeMap<RoomId, StoredPendingEnrollment>,
 }
@@ -168,8 +170,10 @@ pub(crate) struct StoredVouch {
 /// Only a successful state-file publication creates an enrollment handle.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingEnrollmentId {
-    /// Files written before this field was named for the workspace carry `room`.
-    #[serde(alias = "room")]
+    /// Written under the key it was first written under, as the state file it
+    /// belongs to is; a handle written while the field was named for the
+    /// workspace still reads.
+    #[serde(rename = "room", alias = "workspace")]
     workspace: RoomId,
     generation: u64,
     digest: [u8; 32],
