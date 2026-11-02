@@ -696,3 +696,74 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         "the mailbox placed is the inbox"
     );
 }
+
+/// A text naming what something is, not what it is called, places the one that kind means:
+/// "my mails" is mail's Inbox, its mailboxes' declared primary, though no word of it says
+/// "Inbox" and "my" names nothing.
+#[test]
+fn my_mails_on_the_canvas_places_the_inbox() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let questions = Questions::new();
+    let program = std::env::current_exe().expect("this test's program");
+    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: Some(ShellLayer::Screen),
+            collab: false,
+            services: vec![Box::new(apps)],
+            questions: Some(questions.clone()),
+            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            agent_door: Some(root.path().join("agent.sock")),
+            admit_repl: vec![program],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, "the preset switch", |session| {
+        on_screen(session, "Frames").is_some()
+    });
+    press(&mut session, "Frames");
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, "Typed").is_some()
+    });
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+
+    let (answer, failed) = repl.call(
+        &mut session,
+        "tilo",
+        json!({"program": "session.place_found(text: \"my mails\", view: .none, x: .some(80), y: .some(60))"}),
+    );
+    assert!(!failed, "the program ran: {answer}");
+    let placed = |session: &Session| {
+        let resources = session.resources();
+        session
+            .arrangement()
+            .borrow()
+            .strips()
+            .places()
+            .filter_map(|place| {
+                tilo_actions::door::locate(
+                    &resources,
+                    &tilo_actions::ActionAddress::new(&place.record, "open"),
+                )
+                .map(|(resource, _)| (resource.kind.clone(), resource.label.clone()))
+            })
+            .collect::<Vec<_>>()
+    };
+    until(&mut session, "what \"my mails\" names placed", |session| {
+        !placed(session).is_empty()
+    });
+    assert_eq!(
+        placed(&session),
+        [(
+            "tl.so.tilo.lang.mail.Mailbox".to_owned(),
+            "Inbox".to_owned()
+        )],
+        "\"my mails\" places mail's Inbox"
+    );
+}

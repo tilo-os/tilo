@@ -219,9 +219,10 @@ pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionState, ActionType,
     ArgsBuilder, Collects, ContinuationArguments, ContinuationEvidence, ContinuationKey,
     ContinuationQuery, ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET,
-    PROMPTED_PARAM, Readers, ResourceId, ResourcePresentation, ResourceSemanticIdentity,
-    ResourceSpec, ResourceViewMountSpec, ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target,
-    flatten, listed_row, listed_row_problems, sole_text_argument,
+    Noun, PROMPTED_PARAM, Primary, Readers, ResourceId, ResourcePresentation,
+    ResourceSemanticIdentity, ResourceSpec, ResourceType, ResourceViewMountSpec,
+    ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target, flatten, listed_row,
+    listed_row_problems, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,

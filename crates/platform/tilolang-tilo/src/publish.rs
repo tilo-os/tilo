@@ -12,8 +12,8 @@ use std::sync::Arc;
 use serde_json::Value as Json;
 use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
-    ActionArgs, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus, ParamType,
-    ResourceSpec, ResourceViewSpec, Target,
+    ActionArgs, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus, Noun,
+    ParamType, Primary, ResourceSpec, ResourceType, ResourceViewSpec, Target,
 };
 
 use crate::action::DynAction;
@@ -232,6 +232,11 @@ struct TypeActions {
     /// The views that show a resource of the type, each with the action that opens it through
     /// that view, when that is not the resource's own `open` ([`views_of`]).
     views: Vec<(ResourceViewSpec, Option<Arc<ActionType>>)>,
+    /// What its resources are, as people name them: its noun, its app's name, and whether
+    /// it is a root (each resource published with it says so, [`ResourceType`]).
+    named: ResourceType,
+    /// Its `primary`: the test the one of its type a search naming the type means passes.
+    primary: Option<tilolang::pred::Pred<String>>,
 }
 
 impl ActionTypes {
@@ -261,6 +266,20 @@ impl ActionTypes {
                     edits: edit_types(meta, &declared.name),
                     actions,
                     views: views_of(meta, &declared.name),
+                    named: ResourceType {
+                        noun: Noun::new(declared.noun(), declared.plural()),
+                        app: Noun::new(
+                            meta.title.clone(),
+                            tilolang::meta::plural(&meta.title.to_lowercase()),
+                        ),
+                        // A root is the app's one resource of its type.
+                        primary: if meta.roots.contains(&declared.id) {
+                            Primary::Root
+                        } else {
+                            Primary::No
+                        },
+                    },
+                    primary: declared.search.primary.clone(),
                 },
             );
         }
@@ -268,6 +287,38 @@ impl ActionTypes {
             meta: meta.clone(),
             planner: Arc::clone(planner),
             on_type,
+        }
+    }
+
+    /// Whether a change to the field `field` (an id) of a resource of `type_name` may change
+    /// whether it is its type's primary: its `primary` reads the field.
+    fn primary_reads(&self, type_name: &str, field: &str) -> bool {
+        self.on_type
+            .get(type_name)
+            .and_then(|of_type| of_type.primary.as_ref())
+            .is_some_and(|primary| primary.fields().into_iter().any(|read| read == field))
+    }
+
+    /// Mark `resource`, the one at `path` of `schema`, its type's primary when it passes its
+    /// type's `primary`, its fields as `view` reads them.
+    fn mark_primary(
+        &self,
+        resource: &mut ResourceSpec,
+        view: &crate::index::view::View<'_>,
+        path: &str,
+        schema: &crate::schema::TypeSchema,
+    ) {
+        let Some(primary) = self
+            .on_type
+            .get(&schema.name)
+            .and_then(|of_type| of_type.primary.as_ref())
+        else {
+            return;
+        };
+        if view.passes(path, schema, primary).unwrap_or(false)
+            && let Some(named) = resource.resource_type.as_mut()
+        {
+            named.primary = Primary::Declared;
         }
     }
 
@@ -297,6 +348,7 @@ impl ActionTypes {
         let Some(of_type) = self.on_type.get(type_name) else {
             return resource;
         };
+        resource = resource.with_type(of_type.named.clone());
         for (view, opens) in &of_type.views {
             if let Some(opens) = opens {
                 resource = resource.with_action(open_with_spec(opens, id, &view.id));
@@ -529,6 +581,7 @@ impl Whole {
             .and_then(|(app, _)| snapshot.view(app));
         let mut tree = publish_record(&self.types, &self.type_name, &self.doc, &label);
         if let (Some(view), Some(schema)) = (view, schema) {
+            self.types.mark_primary(&mut tree, &view, &self.doc, schema);
             for child in indexed_items(&self.types, &view, snapshot, &self.doc, schema) {
                 tree = tree.with_child(child);
             }
@@ -594,6 +647,7 @@ fn indexed_item(
         .and_then(|(text, _)| reader.said(path, text))
         .unwrap_or_else(|| schema.name.clone());
     let mut resource = types.resource(&schema.name, path, label, false);
+    types.mark_primary(&mut resource, view, path, schema);
     for child in indexed_items(types, view, reader, path, schema) {
         resource = resource.with_child(child);
     }
@@ -840,9 +894,11 @@ impl Publications {
                 || changes.whole.contains(doc)
                 || !self.trees.contains_key(doc)
                 || changes.docs.get(doc).is_some_and(|fields| {
-                    fields
-                        .iter()
-                        .any(|key| key.resource == *doc && key.field == ANY_FIELD)
+                    fields.iter().any(|key| {
+                        key.resource == *doc
+                            && (key.field == ANY_FIELD
+                                || types.primary_reads(type_name, &key.field))
+                    })
                 });
             if whole {
                 whole_docs.push(Whole {
@@ -1084,6 +1140,14 @@ impl Published<'_> {
                     if named_chain.is_some() && rework.relabel != Relabel::Whole {
                         rework.relabel = Relabel::Whole;
                     }
+                }
+                // A field its type's `primary` reads: whether it is the primary, built again.
+                Some(_)
+                    if self.schema_at(&key.resource).is_some_and(|schema| {
+                        self.types.primary_reads(&schema.name, &key.field)
+                    }) =>
+                {
+                    rework.nodes.insert(key.resource.clone());
                 }
                 // A field of the item's own: its label, read again.
                 Some(_) if key.field != ANY_FIELD => {}

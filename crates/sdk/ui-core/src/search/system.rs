@@ -354,6 +354,153 @@ pub fn action_search_fields<'a>(
     fields
 }
 
+/// Words a query is never required to match: possessives and filler ("my
+/// mails", "all the notes", "videos of <channel>"). The published resources
+/// on a person's search are theirs to read, so "my" narrows nothing further;
+/// it is dropped with the rest.
+pub const FILLER_WORDS: &[&str] = &["my", "mine", "our", "the", "all", "of"];
+
+/// `needle` without its [`FILLER_WORDS`]: what every source is asked. A
+/// query of filler alone is asked as typed ("the" may be all the person
+/// remembers of a title).
+#[must_use]
+pub fn without_filler(needle: &str) -> std::borrow::Cow<'_, str> {
+    let filler = |word: &str| {
+        let folded = super::fold_search_text(word);
+        FILLER_WORDS.contains(&folded.as_str())
+    };
+    let words: Vec<&str> = needle.split_whitespace().collect();
+    if !words.iter().any(|word| filler(word)) || words.iter().all(|word| filler(word)) {
+        return std::borrow::Cow::Borrowed(needle);
+    }
+    std::borrow::Cow::Owned(
+        words
+            .into_iter()
+            .filter(|word| !filler(word))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+/// What a query naming a resource's type rather than its title scores on the
+/// provider scale, by how it named it and whether the resource is its type's
+/// primary. Above a loose match (a typo, words spread over fields) and below
+/// any real match of a title, so "Groceries" finds the note called that
+/// before the grocery lists, and "my mails" finds mail's Inbox before a
+/// conversation that only resembles the word.
+const TYPE_MATCH_SCORE: i32 = 20;
+
+/// What naming a resource's type rather than its app adds: "mailboxes" is
+/// closer to a mailbox than "mail" is.
+const TYPE_NOUN_BONUS: i32 = 1;
+
+/// What each step of [`tilo_actions::Primary`] adds: a type's declared
+/// primary leads the app's root, which leads the rest of its type.
+const PRIMARY_STEP: i32 = 3;
+
+/// What a query that names a type and matches the rest by text adds to the
+/// text's own score: "mail inbox" is the inbox more surely than "inbox".
+const TYPE_AND_TEXT_BONUS: i32 = 5;
+
+/// The positions of the words of `words` (folded) that `name` is, one word or
+/// several standing together ("todo list").
+fn named_at(words: &[String], name: &str, out: &mut Vec<usize>) -> bool {
+    let name: Vec<String> = super::fold_search_text(name)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    if name.is_empty() || name.len() > words.len() {
+        return false;
+    }
+    let mut found = false;
+    for start in 0..=words.len().saturating_sub(name.len()) {
+        if words.get(start..start.saturating_add(name.len())) == Some(&name[..]) {
+            out.extend(start..start.saturating_add(name.len()));
+            found = true;
+        }
+    }
+    found
+}
+
+/// How well `needle` names a resource by what it is ([`tilo_actions::ResourceType`]):
+/// a word naming its type's noun or plural, or its app's name, matches it
+/// whatever it is called, and the rest of the query must match its text,
+/// which `text` ranks (on the provider scale). A word naming another type of
+/// its app (`kin`, each type's noun) is about the app's things and need not
+/// match either: "videos of <channel>" finds the channel by its name. `None`
+/// when no word names what it is, or the rest names nothing of it.
+///
+/// What only names a type scores below any title match, its type's primary
+/// first: "my mails" is mail's Inbox, "notes" the notebook. A query that
+/// names the type and matches the rest by text ("mail inbox") scores a
+/// little above the text alone.
+pub fn type_match_score<'k>(
+    needle: &str,
+    ty: &tilo_actions::ResourceType,
+    kin: impl IntoIterator<Item = &'k tilo_actions::Noun>,
+    text: impl FnOnce(&str) -> Option<i32>,
+) -> Option<i32> {
+    let words: Vec<String> = super::fold_search_text(needle)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    let mut own = Vec::new();
+    let mut by_noun = false;
+    for name in [&ty.noun.one, &ty.noun.many] {
+        by_noun |= named_at(&words, name, &mut own);
+    }
+    for name in [&ty.app.one, &ty.app.many] {
+        named_at(&words, name, &mut own);
+    }
+    let mut covered = own.clone();
+    let mut kin_named = false;
+    // A type called as its app is ("Mail" in Mail) names the app, not
+    // another type of it.
+    let app_names = [
+        super::fold_search_text(&ty.app.one),
+        super::fold_search_text(&ty.app.many),
+    ];
+    for noun in kin {
+        for name in [&noun.one, &noun.many] {
+            if !app_names.contains(&super::fold_search_text(name)) {
+                kin_named |= named_at(&words, name, &mut covered);
+            }
+        }
+    }
+    if covered.is_empty() {
+        return None;
+    }
+    let rest: Vec<&str> = words
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| !covered.contains(at))
+        .map(|(_, word)| word.as_str())
+        .collect();
+    if rest.is_empty() {
+        // Another type of its app is named and its own is not: "youtube
+        // videos" are not its channels.
+        if own.is_empty() || (kin_named && !by_noun) {
+            return None;
+        }
+        let primary: i32 = match ty.primary {
+            tilo_actions::Primary::No => 0,
+            tilo_actions::Primary::Root => 1,
+            tilo_actions::Primary::Declared => 2,
+        };
+        return Some(
+            TYPE_MATCH_SCORE
+                .saturating_add(primary.saturating_mul(PRIMARY_STEP))
+                .saturating_add(if by_noun { TYPE_NOUN_BONUS } else { 0 }),
+        );
+    }
+    let matched = text(&rest.join(" "))?;
+    Some(
+        matched
+            .saturating_add(TYPE_AND_TEXT_BONUS)
+            .min(MAX_PROVIDER_SCORE),
+    )
+}
+
 /// How well `needle` names an action by its fields, on [`action_ranks`]:
 /// [`rank_fields`] for an action.
 #[must_use]
