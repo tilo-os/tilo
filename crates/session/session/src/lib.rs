@@ -1609,9 +1609,8 @@ impl Session {
                 // Which of the person's devices this one is, and which of
                 // them are online: each schedule runs on one of them.
                 fabric: sync.as_ref().and_then(|sync| sync.fabric()),
-                // The apps this session starts, the person's focus modes,
-                // and what its workspaces revoke: each is a trigger a shortcut
-                // can answer.
+                // The apps this session starts, the person's focus modes, and
+                // what its workspaces revoke: each is a trigger a shortcut can answer.
                 launches: std::sync::Arc::clone(&options.launches),
                 policy: std::sync::Arc::clone(&notification_policy),
                 revocations,
@@ -2495,8 +2494,7 @@ impl Session {
         // The menu the reading says is up has its view over the desk, and
         // the view goes when the menu does.
         self.follow_window_menu();
-        // Each open window takes the temperature of the workspace it is in,
-        // as this pass left it.
+        // Each open window takes the temperature of the workspace it is in, as this pass left it.
         self.follow_window_warmth();
         self.shared.clipboard.serve_asks(&mut self.compositor);
         // One file of a paste in flight per turn, so a folder of files does
@@ -2964,8 +2962,7 @@ impl Session {
         self.shared.observe();
         self.shared.keep_desk();
         self.shared.keep_arrangement();
-        // The picture is the workspace in front's, which a change covering
-        // one workspace lands on.
+        // The picture is the workspace in front's, which a change covering one workspace lands on.
         self.shared
             .wallpapers
             .set_active(self.shared.handle.read(|tree| {
