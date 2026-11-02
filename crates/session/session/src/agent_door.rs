@@ -263,6 +263,29 @@ impl Mounted {
     }
 }
 
+/// The door `options` name, bound and asking `questions`; `None`, saying
+/// why, when it does not open.
+pub(crate) fn mount_named(
+    options: &crate::Options,
+    questions: Option<Questions>,
+) -> Option<Mounted> {
+    let path = options.agent_door.as_deref()?;
+    match mount(
+        path,
+        questions,
+        Arc::clone(&options.launches),
+        options.wake.handle(),
+        options.state.as_deref(),
+        &options.admit_repl,
+    ) {
+        Ok(mounted) => Some(mounted),
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "the agent door does not open");
+            None
+        }
+    }
+}
+
 /// Bind the door at `path`, asking `questions` and naming a client's app
 /// from `launches`. "Always allow" answers are
 /// kept under `state`, when the session keeps anything.
@@ -699,7 +722,7 @@ fn proposed_agent_id(client: &str) -> String {
 /// Bind `path` for this account alone: 0600 in a 0700 directory, staged and
 /// renamed into place so nothing sees a socket it cannot connect to. A path
 /// that is something else, or that a live session answers on, is refused.
-fn bind_private(path: &Path) -> io::Result<UnixListener> {
+pub(crate) fn bind_private(path: &Path) -> io::Result<UnixListener> {
     use std::os::unix::fs::{DirBuilderExt, FileTypeExt as _, PermissionsExt};
     let parent = path
         .parent()
@@ -905,8 +928,8 @@ fn refuse_control(mut stream: UnixStream) {
 /// What a connection asks of the session's own doors: answered on the loop's
 /// pass, the only place that may touch them.
 enum DoorAsk {
-    /// Everything they publish now.
-    Resources(tilo_actions::remote::Completer<Vec<tilo_actions::ResourceSpec>>),
+    /// Everything they publish now, and the revision it stands at.
+    Resources(tilo_actions::remote::Completer<Offered>),
     /// Run one of their actions as `actor`; `reads_only` refuses one that
     /// changes anything.
     Invoke {
@@ -918,6 +941,38 @@ enum DoorAsk {
             Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError>,
         >,
     },
+}
+
+/// What the session's own doors offer now, and the revision it stands at:
+/// equal revisions offer the same, so a cursor a page of it answered reads
+/// on in the next page of the same listing.
+struct Offered {
+    resources: Vec<tilo_actions::ResourceSpec>,
+    revision: String,
+}
+
+impl Offered {
+    fn of(doors: &tilo_surface_host::Doors) -> Self {
+        let resources = doors.resources();
+        let revision = doors.revision().map_or_else(
+            // A surface that cannot tell where it stands: what is offered
+            // names the revision itself.
+            || {
+                use std::hash::{Hash as _, Hasher as _};
+                let mut hasher = std::hash::DefaultHasher::new();
+                for descriptor in tilo_actions::door::survey(&resources) {
+                    descriptor.address.resource.hash(&mut hasher);
+                    descriptor.address.action.hash(&mut hasher);
+                }
+                format!("session.{:016x}", hasher.finish())
+            },
+            |revision| format!("session.{revision:?}"),
+        );
+        Self {
+            resources,
+            revision,
+        }
+    }
 }
 
 /// The seam between the door's connections and the session's own doors.
@@ -938,7 +993,7 @@ impl SessionDoors {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
-                DoorAsk::Resources(done) => done.complete(doors.resources()),
+                DoorAsk::Resources(done) => done.complete(Offered::of(doors)),
                 DoorAsk::Invoke {
                     actor,
                     reads_only,
@@ -998,32 +1053,34 @@ impl Host {
         }
     }
 
-    /// The session's own rows `caller` is offered, as a page of `query`.
-    fn session_rows(
-        &self,
-        caller: &Caller,
-        query: &CatalogueQuery,
-    ) -> Pending<Vec<tilo_actions::remote::CatalogueRow>> {
+    /// The session's own rows `caller` is offered, as a page of `query`: the
+    /// page's cursor reads on to the next, as for any other provider.
+    fn session_page(&self, caller: &Caller, query: &CatalogueQuery) -> Pending<CataloguePage> {
         let (_, reads_only) = Self::at_session(caller);
-        let (done, resources) = tilo_actions::remote::pending();
+        let (done, offered) = tilo_actions::remote::pending();
         self.session.ask(DoorAsk::Resources(done));
         let query = query.clone();
-        resources.map(move |resources| {
-            let rows: Vec<_> = tilo_actions::door::survey(&resources)
-                .into_iter()
-                .filter(|descriptor| {
-                    !reads_only || descriptor.kind == tilo_actions::OperationKind::View
-                })
-                .map(|descriptor| {
-                    tilo_actions::remote::CatalogueRow::for_action(
-                        SESSION_PROVIDER,
-                        SESSION_PROVIDER,
-                        descriptor,
-                    )
-                })
-                .collect();
-            CataloguePage::from_rows(String::new(), rows, &query).rows
-        })
+        offered.map(
+            move |Offered {
+                      resources,
+                      revision,
+                  }| {
+                let rows: Vec<_> = tilo_actions::door::survey(&resources)
+                    .into_iter()
+                    .filter(|descriptor| {
+                        !reads_only || descriptor.kind == tilo_actions::OperationKind::View
+                    })
+                    .map(|descriptor| {
+                        tilo_actions::remote::CatalogueRow::for_action(
+                            SESSION_PROVIDER,
+                            SESSION_PROVIDER,
+                            descriptor,
+                        )
+                    })
+                    .collect();
+                CataloguePage::from_rows(revision, rows, &query)
+            },
+        )
     }
 }
 
@@ -1035,17 +1092,12 @@ impl ActionHost for Host {
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         let room = caller.room().unwrap_or_default().to_owned();
         match query.provider.as_deref() {
-            Some(SESSION_PROVIDER) => self.session_rows(caller, &query).map(|rows| {
-                Ok(CataloguePage {
-                    revision: format!("session.{}", rows.len()),
-                    rows,
-                    ..CataloguePage::default()
-                })
-            }),
+            Some(SESSION_PROVIDER) => self.session_page(caller, &query).map(Ok),
             Some(_) => self.state.action_query(caller, &query),
             None => {
-                // The broker's page, with the session's own beside it.
-                let session = self.session_rows(caller, &query);
+                // The broker's page, with the session's own first page beside
+                // it: a cursor of the broker's pages the broker alone.
+                let session = self.session_page(caller, &query).map(|page| page.rows);
                 let (done, merged) = tilo_actions::remote::pending();
                 self.state.action_query(caller, &query).then(move |page| {
                     let Some(page) = page else {

@@ -105,6 +105,13 @@ pub(crate) fn seat(options: &crate::Options) -> Seat {
     }
 }
 
+/// The person a session started with `options` sits as: what [`seat`]
+/// reads, for what is made for them before the session starts.
+#[must_use]
+pub fn seated_person(options: &crate::Options) -> String {
+    seat(options).person
+}
+
 /// Read who sits here at startup, and keep it current from then on. A value
 /// that cannot be watched is read where it is asked for, as before.
 ///
