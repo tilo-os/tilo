@@ -99,8 +99,6 @@ pub struct Sessions {
     pub environments: Vec<EnvironmentSummary>,
     /// Whether that list came from the shell runtime.
     pub directory: Directory,
-    /// The person's relays an environment can run on, as last listed.
-    pub relays: Vec<crate::target::RelaySummary>,
     /// Legacy VMs the legacy VM service reports. Empty until that service
     /// exists, which keeps them out of the picker.
     pub legacy_vms: Vec<String>,
@@ -113,11 +111,10 @@ pub struct Sessions {
     listing: Option<std::sync::mpsc::Receiver<Listing>>,
 }
 
-/// What the supervisor listed: the environments (or why it could not), the
-/// person's relays (`None` where it could not say) and the legacy VMs.
+/// What the supervisor listed: the environments (or why it could not) and
+/// the legacy VMs.
 struct Listing {
     environments: Result<Vec<EnvironmentSummary>, String>,
-    relays: Option<Vec<crate::target::RelaySummary>>,
     legacy_vms: Vec<String>,
 }
 
@@ -148,7 +145,6 @@ impl Sessions {
             environments: Vec::new(),
             directory: Directory::Unasked,
             legacy_vms: Vec::new(),
-            relays: Vec::new(),
             allow: None,
             intent: None,
             host_requested: false,
@@ -371,12 +367,6 @@ impl Sessions {
             #[cfg(test)]
             Source::Scripted(_) => {}
         }
-        if matches!(self.source, Source::Hosted { .. })
-            && let Ok(reply) =
-                crate::HostedProcessServices::ask(&serde_json::json!({"op": "list-relays"}))
-        {
-            self.relays = parse_relays_reply(&reply);
-        }
     }
 
     /// [`Self::refresh_environments`] off the UI thread, for a picker that
@@ -401,13 +391,8 @@ impl Sessions {
                     &serde_json::json!({"op": "list-environments"}),
                 )
                 .and_then(|reply| parse_directory_reply(&reply));
-                let relays =
-                    crate::HostedProcessServices::ask(&serde_json::json!({"op": "list-relays"}))
-                        .ok()
-                        .map(|reply| parse_relays_reply(&reply));
                 let _ = send.send(Listing {
                     environments,
-                    relays,
                     legacy_vms,
                 });
                 crate::inner::request_terminal_wake(&waker);
@@ -434,9 +419,6 @@ impl Sessions {
         self.listing = None;
         self.legacy_vms = listing.legacy_vms;
         self.take_listing(listing.environments);
-        if let Some(relays) = listing.relays {
-            self.relays = relays;
-        }
         true
     }
 
@@ -569,35 +551,4 @@ pub(crate) fn legacy_vms_under(data_home: &std::path::Path) -> Vec<String> {
         })
         .map(str::to_owned)
         .collect()
-}
-
-/// Decode the supervisor's list of the person's relays; anything else is none.
-pub(crate) fn parse_relays_reply(reply: &str) -> Vec<crate::target::RelaySummary> {
-    #[derive(serde::Deserialize)]
-    struct Entry {
-        relay: String,
-        #[serde(default)]
-        label: String,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(tag = "result", rename_all = "kebab-case")]
-    enum Reply {
-        Relays { relays: Vec<Entry> },
-    }
-    match serde_json::from_str::<Reply>(reply.trim()) {
-        Ok(Reply::Relays { relays }) => relays
-            .into_iter()
-            .filter(|entry| {
-                crate::target::Location::Relay {
-                    relay: entry.relay.clone(),
-                }
-                .is_valid()
-            })
-            .map(|entry| crate::target::RelaySummary {
-                relay: entry.relay,
-                label: entry.label,
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    }
 }

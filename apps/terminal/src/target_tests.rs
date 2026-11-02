@@ -546,15 +546,7 @@ fn an_agent_is_told_why_and_never_offered_the_device_shell() {
     );
 }
 
-const RELAY: &str = "abababababababababababababababababababababababababababababababab";
-
-fn on_relay(record: &str) -> SessionTarget {
-    SessionTarget::environment(record).at(crate::target::Location::Relay {
-        relay: RELAY.into(),
-    })
-}
-
-/// Give the hosted terminal a session source that records every relay
+/// Give the hosted terminal a session source that records every carried
 /// session it is asked to re-attach to and answers with `answer`.
 fn attach_with(
     app: &mut App,
@@ -576,30 +568,28 @@ fn attach_with(
 }
 
 #[test]
-fn a_relay_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() {
+fn a_carried_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() {
     let attaches: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
     let session = "0123456789abcdef0123456789abcdef";
-    let on_the_relay = move |target: &SessionTarget, _: Option<&str>| {
+    let carried = move |_: &SessionTarget, _: Option<&str>| {
         let mut backend = crate::inner::TerminalBackend::for_test();
-        if target.location().is_some_and(|l| !l.is_this_device()) {
-            backend.relay_session = Some(session.into());
-        }
+        backend.relay_session = Some(session.into());
         Ok(backend)
     };
     let mut app = App::new().unwrap();
-    attach_with(&mut app, &attaches, on_the_relay);
+    attach_with(&mut app, &attaches, carried);
     on_tab(&mut app, |tab| {
-        tab.switch_target(&on_relay("work"), Requester::Person)
+        tab.switch_target(&SessionTarget::environment("work"), Requester::Person)
     })
     .unwrap();
     assert_eq!(app.state().relay(), Some(session));
 
     // Reopened, it re-attaches.
     let mut app = app.reopen().unwrap();
-    attach_with(&mut app, &attaches, on_the_relay);
+    attach_with(&mut app, &attaches, carried);
     assert_eq!(attaches.borrow().last(), Some(&Some(session.to_owned())));
 
-    // A session the relay no longer has is replaced by a new one.
+    // A session the other side no longer has is replaced by a new one.
     let gone = "ffffffffffffffffffffffffffffffff";
     app.invoke(crate::resource::Terminal::RECORD_RELAY_SESSION.with(Some(gone.to_owned())))
         .unwrap();
@@ -609,7 +599,7 @@ fn a_relay_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() {
         if attach.is_some() {
             return Err(OpenError::Refused("unknown session".into()));
         }
-        on_the_relay(target, attach)
+        carried(target, attach)
     });
     assert_eq!(attaches.borrow()[before..], [Some(gone.to_owned()), None]);
     assert_eq!(
@@ -617,17 +607,10 @@ fn a_relay_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() {
         OpenState::Open
     );
     assert_eq!(app.state().relay(), Some(session));
-
-    // Back on this device, nothing is left to re-attach to.
-    on_tab(&mut app, |tab| {
-        tab.switch_target(&SessionTarget::environment("work"), Requester::Person)
-    })
-    .unwrap();
-    assert_eq!(app.state().relay(), None);
 }
 
 #[test]
-fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
+fn every_environment_target_runs_where_it_is_asked_for() {
     let (mut widget, opened) = tab(RecentTarget::none(), |_| Ok(()));
     let doc = AutoCommit::new();
     widget.sync(&doc, &ROOT);
@@ -636,43 +619,27 @@ fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
     let run_on = crate::i18n::t("terminal-run-on");
     assert!(
         !labels.iter().any(|l| l.contains(&run_on)),
-        "without relays there is nowhere else to run: {labels:?}"
+        "an environment runs where it is asked for: {labels:?}"
     );
 
-    widget.set_relays(vec![crate::target::RelaySummary {
-        relay: RELAY.into(),
-        label: "Home".into(),
-    }]);
-    widget.open_target_menu();
-    let labels = widget.target_menu_labels().unwrap();
-    let here = crate::i18n::t("terminal-run-on-this-device");
-    let checked = widget.target_menu_checked().unwrap();
-    let row = |label: String| labels.iter().position(|l| *l == label);
-    let this_device = row(format!("{run_on} {here}")).expect("run on this device");
-    let home = row(format!("{run_on} Home")).expect("run on the relay");
-    assert!(
-        checked[this_device] && !checked[home],
-        "where it runs carries the menu's check, not a glyph: {labels:?}"
-    );
-
-    // An agent names the relay with the environment.
+    // An agent names the environment, without a place.
     let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::actor(
         "agent:helper",
     ));
     widget
         .perform(crate::resource::TerminalEffect::OpenIn {
-            target: format!("environment:work@{RELAY}"),
+            target: "environment:work".into(),
         })
         .unwrap();
     assert_eq!(
         opened.borrow().last(),
-        Some(&(on_relay("work"), Requester::Agent))
+        Some(&(SessionTarget::environment("work"), Requester::Agent))
     );
     assert_eq!(crate::parse_target_argument("host@ab"), None);
     assert_eq!(
         crate::parse_target_argument("environment:work@home"),
         None,
-        "a relay is named by its endpoint id"
+        "an environment has no place to name"
     );
 }
 
@@ -1335,19 +1302,19 @@ fn a_shell_that_could_not_start_says_so_in_the_window_with_a_retry() {
     let opened = host_tab(&mut app, RecentTarget::none(), move |_| {
         count.set(count.get() + 1);
         if count.get() == 1 {
-            Err(OpenError::Failed("the relay cannot be reached".into()))
+            Err(OpenError::Failed("the shell cannot be reached".into()))
         } else {
             Ok(())
         }
     });
     let retry = on_tab(&mut app, |widget| {
-        assert_eq!(widget.start_failure(), Some("the relay cannot be reached"));
+        assert_eq!(widget.start_failure(), Some("the shell cannot be reached"));
         assert_eq!(widget.lifecycle_banner(), None, "the reason is said once");
         let tree = widget.accessibility().unwrap();
         let failure = tree
             .children
             .iter()
-            .find(|node| node.description.as_deref() == Some("the relay cannot be reached"))
+            .find(|node| node.description.as_deref() == Some("the shell cannot be reached"))
             .expect("the window says why plainly");
         let retry = failure
             .children
@@ -1419,8 +1386,8 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
     let keep = handed.clone();
     let up = reachable.clone();
     attach_with(&mut app, &attaches, move |target, _| {
-        if target.location().is_some_and(|l| !l.is_this_device()) && !up.get() {
-            return Err(OpenError::Failed("the relay cannot be reached".into()));
+        if target.environment_record().is_some() && !up.get() {
+            return Err(OpenError::Failed("the session cannot be reached".into()));
         }
         let (output, supervisor_output) = std::os::unix::net::UnixStream::pair().unwrap();
         let (lease, supervisor_lease) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -1431,7 +1398,7 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
         ))
     });
     on_tab(&mut app, |tab| {
-        tab.switch_target(&on_relay("work"), Requester::Person)
+        tab.switch_target(&SessionTarget::environment("work"), Requester::Person)
     })
     .unwrap();
     assert_eq!(
@@ -1439,11 +1406,11 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
         OpenState::Open
     );
 
-    // The connection to the relay is lost, and the relay stays out of reach.
+    // The connection to the session is lost, and it stays out of reach.
     reachable.set(false);
     end_remote(
         &handed,
-        "{\"ended\":\"lost\",\"reason\":\"the relay went quiet\"}\n",
+        "{\"ended\":\"lost\",\"reason\":\"the connection went quiet\"}\n",
     );
     settle_until(&mut app, "the tab notices the lost connection", |app| {
         on_tab(app, |tab| tab.reconnecting().is_some())
@@ -1480,7 +1447,7 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
         )));
     };
 
-    // Try again while the relay is out of reach: still reconnecting, to the
+    // Try again while it is out of reach: still reconnecting, to the
     // same session.
     let before = attaches.borrow().len();
     activate(&mut app, &retry);
@@ -1493,7 +1460,7 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
     assert!(!window.take_close());
     assert_eq!(app.state().relay(), Some(session), "the session is kept");
 
-    // The relay is back: Try again re-attaches.
+    // It is back: Try again re-attaches.
     reachable.set(true);
     activate(&mut app, &retry);
     assert_eq!(
@@ -1625,7 +1592,6 @@ fn directory_runtime(
             }
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();
             let reply = match request["op"].as_str() {
-                Some("list-relays") => serde_json::json!({"result": "relays", "relays": []}),
                 Some("stop") => break,
                 op => {
                     if op == Some("create-environment") {

@@ -6,25 +6,25 @@ makes that place explicit. Every session is bound to a **target**:
 | Target | What it is | Identity and files | Packages |
 |---|---|---|---|
 | **Host** | The machine's own login shell (desktop installs; the owner's shell on Tilo OS) | The real user, the real home | The host's own (rpm-ostree, Flatpak, …) |
-| **Environment** | A sandbox whose `/usr` is a stack of read-only images, on this device or on a relay | The real uid inside its own namespaces; the workspace's folder as `~` plus directories granted to it | Tool images listed in the environment record |
+| **Environment** | A sandbox whose `/usr` is a stack of read-only images, on this device or one that takes work | The real uid inside its own namespaces; the workspace's folder as `~` plus directories granted to it | Tool images listed in the environment record |
 | **Legacy VM** | One VM per user and guest OS, for software that needs a whole system | A normal user account in the guest; granted directories shared in | Whatever the guest installs (Flatpak, its package manager) |
 
 The terminal never receives a namespace or a VM. It receives a pty from a
 broker. The broker decides where the session runs, so the same Terminal works
-against this device, a relay, or a VM. This is the boundary `ush` already
+against this device or a VM. This is the boundary `ush` already
 draws (`ServeRequest::OpenSession` → pty over `SCM_RIGHTS`); environments
 extend what is on the other side of it.
 
 ## Cost classes
 
-| Class | Runs as | Per-tenant cost on a relay |
+| Class | Runs as | Per-tenant cost where it is served |
 |---|---|---|
 | Tilo apps | The launcher sandbox (unchanged) | ~0 |
 | Environments (CLI) | Namespaces + seccomp + Landlock over shared read-only images | ~0 idle (socket activated); images are shared by content address |
 | Legacy apps | A VM on a host with KVM | Real: metered, quota'd, suspended when idle |
 
-A relay itself only runs the first two. A legacy launch on a relay is a request
-to a compute worker that advertises KVM.
+A member that takes work runs the first two. A legacy launch is a request to
+a member that advertises KVM.
 
 ## The guest helper
 
@@ -97,16 +97,16 @@ on cached images. Host paths in the returned JSON are local observations, not
 collaborative resource identifiers.
 
 `tilo app runtime image add --publisher KEY` trusts that key for that admission only;
-it does not change subsequent image-reader trust. A device or relay normally
-uses its enrolled publisher. A developer probe may use the existing
+it does not change subsequent image-reader trust. A device normally uses its
+enrolled publisher. A developer probe may use the existing
 `TILO_USH_TRUSTED_PUBLISHER` setting scoped to its own private profile. This does
 not persist a publisher policy or bypass signature, revocation or runtime checks.
 
 ## The environment record
 
 An environment is a synced record (`#[resource(kind = "environment")]`,
-declared by the Terminal app), so it follows the user to every device and to a
-relay:
+declared by the Terminal app), so it follows the user to every device that
+holds the workspace:
 
 ```rust
 pub struct Environment {
@@ -130,7 +130,7 @@ pub struct ToolRef {
 ```
 
 The record is architecture-neutral: an environment created on an x86_64 laptop
-opens on an aarch64 relay. A node uses the images for its own architecture; when
+opens on an aarch64 device. A member uses the images for its own architecture; when
 a tool has no image for it yet, the node builds it (same packages, same runtime
 release) and records the id, so the next session there is a cache hit. An image
 another of the user's devices built for the same architecture is fetched from
@@ -192,7 +192,8 @@ Host target.
    it up on `restart`; new sessions have it immediately.
 
 `pkg remove`, `pkg list` and `pkg diff` read and edit the record. Builds run
-where the session runs (device or relay compute worker). CI publishes a catalog
+where the session runs (this device or the member that took the work). CI
+publishes a catalog
 of common tool images (git, python3, pandoc, ffmpeg, imagemagick, ripgrep,
 jq, …) for each published runtime, so most installs are cache hits.
 
@@ -235,24 +236,25 @@ the supervisor asks the legacy VM service to ensure the VM; the guest agent runs
 The Windows appliance (`crates/windows/windows-vm`) is the `windows` legacy VM;
 its guest bridge moves to the same vsock agent protocol.
 
-## Relays
+## Members that take work
 
-A relay runs environment sessions for its members:
+A member with the take-work appetite serves its workspace's environments the
+way a device serves its own:
 
-- The compute session protocol gains an interactive kind: `OpenEnvironment {
-  record, cols, rows }` → a pty stream over iroh. The relay builds the guest
-  exactly as a device does, with images fetched from the registry.
-- Granted directories map to the member's synced files on the relay.
+- The action plane carries a request to open a session (`OpenEnvironment {
+  record, cols, rows }`) and the accepting member answers with a pty stream
+  over iroh. It builds the guest exactly as a device does, with images fetched
+  from the registry.
+- Granted directories map to the workspace's synced files on that member.
 - Sessions are socket-activated and survive the client disconnecting; the
   Terminal re-attaches by session id.
-- A legacy launch from a relay environment is routed to a compute worker that
-  advertises `kvm`; its windows reach the member as a window stream
-  (`surface_stream`), with input routed back.
+- A legacy launch goes to a member that advertises `kvm`; its windows reach
+  the requester as a window stream (`surface_stream`), with input routed back.
 
 ## Terminal
 
-`terminal.session` gains `target: Target` (`Host | Environment { record,
-location } | Legacy { vm }`), where `location` is `ThisDevice` or a relay. A
-new tab picks its target (default: the most recently used environment); the
-tab shows a target chip; a session's target is part of its synced state, so
-reopening it on another device re-attaches to the same place where possible.
+`terminal.session` gains `target: Target` (`Host | Environment { record } |
+Legacy { vm }`). A new tab picks its target (default: the most recently used
+environment); the tab shows a target chip; a session's target is part of its
+synced state, so reopening it on another device re-attaches to the same place
+where possible.

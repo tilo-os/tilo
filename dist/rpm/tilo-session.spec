@@ -260,8 +260,6 @@ ln -s ../libexec/tilo/tilo-model-http %{buildroot}%{_bindir}/tilo-model-http
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
 install -Dpm 0755 apps/libexec/tilo-app-host %{buildroot}%{_libexecdir}/tilo-app-host
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
-install -Dpm 0755 apps/libexec/tilo-relay-environment %{buildroot}%{_libexecdir}/tilo-relay-environment
-install -Dpm 0755 apps/libexec/tilo-relay-offers %{buildroot}%{_libexecdir}/tilo-relay-offers
 install -Dpm 0755 apps/bin/tilo-legacy %{buildroot}%{_libexecdir}/tilo/tilo-legacy
 ln -s ../libexec/tilo/tilo-legacy %{buildroot}%{_bindir}/tilo-legacy
 for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
@@ -344,9 +342,7 @@ test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07+native.*/bun
 test ! -e %{buildroot}%{_prefix}/lib/tilo-runtime/.gc.lock
 grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
-# What the ush supervisor runs, at the paths it looks for them.
-test -x %{buildroot}%{_libexecdir}/tilo-relay-environment
-test -x %{buildroot}%{_libexecdir}/tilo-relay-offers
+# What the ush supervisor runs, at the paths it looks for it.
 test -x %{buildroot}%{_bindir}/tilo-legacy
 for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     test -f %{buildroot}%{_userunitdir}/$unit.service
@@ -400,8 +396,6 @@ done
 %{_libexecdir}/tilo-cli-shim
 %{_libexecdir}/tilo-app-host
 %{_libexecdir}/tilo-ush
-%{_libexecdir}/tilo-relay-environment
-%{_libexecdir}/tilo-relay-offers
 %{_bindir}/tilo-legacy
 %{_libexecdir}/tilo/tilo-legacy
 %{_userunitdir}/tilo-app-host.service

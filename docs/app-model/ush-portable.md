@@ -10,8 +10,7 @@ Status: decided 2026-10-28 (see [Decisions](#decisions)), built in slices
 ## Problem
 
 Today every ush command, even `ls`, needs a real shell on a real Linux: a
-bwrap guest on the person's own device, or a guest on one of the person's own
-relays ([`ush.md`](ush.md), "Environments on a relay"). So:
+bwrap guest on the person's own device. So:
 
 - a workspace hosted elsewhere (tilo.coffee, a browser tab, a phone) can't
   run any command at all;

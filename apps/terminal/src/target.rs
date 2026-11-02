@@ -2,18 +2,13 @@
 //!
 //! Every session is bound to a target (`docs/app-model/environments.md`):
 //! the device's own login shell ([`SessionTarget::Host`]), a guest built from
-//! an environment record on this device or a relay
-//! ([`SessionTarget::Environment`]), or a legacy VM
+//! an environment record ([`SessionTarget::Environment`]), or a legacy VM
 //! ([`SessionTarget::Legacy`]). The target is part of the synced
 //! `terminal.session` record, so reopening a session — here or on another
 //! device — goes back to the same place where it can.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Model, Refusal, resource};
-
-/// Where an environment session runs: this device, or one of the person's
-/// relays by endpoint id — the vocabulary the supervisor speaks.
-pub use tilo_environment::Location;
 
 /// Where a session runs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -26,8 +21,6 @@ pub enum SessionTarget {
     Environment {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         record: Option<String>,
-        #[serde(default, skip_serializing_if = "Location::is_this_device")]
-        location: Location,
     },
     /// A legacy VM, by name.
     Legacy { vm: String },
@@ -45,10 +38,7 @@ const MAX_TARGET_BYTES: usize = 1024;
 impl SessionTarget {
     /// The default environment on this device.
     pub fn default_environment() -> Self {
-        Self::Environment {
-            record: None,
-            location: Location::ThisDevice,
-        }
+        Self::Environment { record: None }
     }
 
     /// An environment on this device.
@@ -56,7 +46,6 @@ impl SessionTarget {
         let record = record.into();
         Self::Environment {
             record: (record != tilo_environment::DEFAULT_RECORD).then_some(record),
-            location: Location::ThisDevice,
         }
     }
 
@@ -76,55 +65,28 @@ impl SessionTarget {
         }
     }
 
-    /// Whether every field is one a request may carry: record keys and relay
-    /// and VM names arrive from synced state, so they are checked before they
-    /// are used for anything.
+    /// Whether every field is one a request may carry: record keys and VM
+    /// names arrive from synced state, so they are checked before they are
+    /// used for anything.
     pub fn is_valid(&self) -> bool {
         match self {
             Self::Host => true,
-            Self::Environment {
-                record, location, ..
-            } => {
-                record
-                    .as_deref()
-                    .is_none_or(tilo_environment::is_record_key)
-                    && location.is_valid()
-            }
+            Self::Environment { record } => record
+                .as_deref()
+                .is_none_or(tilo_environment::is_record_key),
             Self::Legacy { vm } => tilo_environment::is_record_key(vm),
         }
     }
 
-    /// The target as the `ush` supervisor on this device understands it:
-    /// it serves this device's environments and carries a relay's.
+    /// The target as the `ush` supervisor on this device understands it.
     /// `None` for a legacy VM.
     pub fn to_supervisor(&self) -> Option<tilo_environment::Target> {
         match self {
             Self::Host => Some(tilo_environment::Target::Host),
-            Self::Environment { record, location } => Some(tilo_environment::Target::Environment {
+            Self::Environment { record } => Some(tilo_environment::Target::Environment {
                 record: record.clone(),
-                location: location.clone(),
             }),
             Self::Legacy { .. } => None,
-        }
-    }
-
-    /// The same environment, run at `location`; any other target as it is.
-    #[must_use]
-    pub fn at(&self, location: Location) -> Self {
-        match self {
-            Self::Environment { record, .. } => Self::Environment {
-                record: record.clone(),
-                location,
-            },
-            other => other.clone(),
-        }
-    }
-
-    /// Where an environment runs; `None` for any other target.
-    pub fn location(&self) -> Option<&Location> {
-        match self {
-            Self::Environment { location, .. } => Some(location),
-            _ => None,
         }
     }
 
@@ -154,14 +116,6 @@ pub struct EnvironmentSummary {
     pub tools: Vec<String>,
     /// Granted directories, `(path, writable)`.
     pub grants: Vec<(String, bool)>,
-}
-
-/// One of the person's relays, as the picker offers it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RelaySummary {
-    /// The relay's endpoint id (hex).
-    pub relay: String,
-    pub label: String,
 }
 
 /// Every target the picker offers, in order: each environment, then the
@@ -307,12 +261,6 @@ mod tests {
             SessionTarget::Host,
             SessionTarget::default_environment(),
             SessionTarget::environment("work"),
-            SessionTarget::Environment {
-                record: Some("work".into()),
-                location: Location::Relay {
-                    relay: "ab".repeat(32),
-                },
-            },
             SessionTarget::Legacy { vm: "linux".into() },
         ] {
             assert_eq!(SessionTarget::decode(&target.encode()), Some(target));
@@ -358,31 +306,12 @@ mod tests {
             SessionTarget::environment("work").to_supervisor(),
             Some(tilo_environment::Target::Environment {
                 record: Some("work".into()),
-                location: Location::ThisDevice,
             })
         );
         assert_eq!(
-            SessionTarget::Environment {
-                record: None,
-                location: Location::Relay {
-                    relay: "ab".repeat(32)
-                },
-            }
-            .to_supervisor(),
-            Some(tilo_environment::Target::Environment {
-                record: None,
-                location: Location::Relay {
-                    relay: "ab".repeat(32)
-                },
-            }),
-            "the supervisor carries a relay's environments"
-        );
-        assert!(
-            SessionTarget::decode(
-                r#"{"kind":"environment","location":{"kind":"relay","relay":"home"}}"#
-            )
-            .is_none(),
-            "a relay is named by its endpoint id"
+            SessionTarget::decode(r#"{"kind":"environment","location":{"kind":"relay"}}"#),
+            Some(SessionTarget::default_environment()),
+            "a location stored while environments could run elsewhere means this device"
         );
         assert_eq!(
             SessionTarget::Legacy { vm: "linux".into() }.to_supervisor(),

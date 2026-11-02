@@ -80,8 +80,6 @@ class RpmBuildGraphTest(unittest.TestCase):
             "fs",
             "tilo-relay-admin",
             "tilo-enroll",
-            "tilo-relay-environment",
-            "tilo-relay-offers",
             "tilo-legacy",
         }
         workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]

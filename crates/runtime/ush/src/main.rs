@@ -389,11 +389,6 @@ explain when the host does not offer them.\n";
         };
         match ask(&request)? {
             Response::Command { code } => Ok(code),
-            // A relay worker took the launch; the app runs there.
-            Response::Applied { detail } => {
-                println!("{detail}");
-                Ok(0)
-            }
             Response::Denied { reason } => anyhow::bail!("{reason}"),
             other => anyhow::bail!("the broker returned an unexpected response: {other:?}"),
         }

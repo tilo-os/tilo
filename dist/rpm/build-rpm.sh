@@ -70,7 +70,7 @@ if (( run_cargo )); then
         --bin tilo-cli-shim --bin tilo-app-host --bin app --bin tilo-ush \
         --bin tilo-model-catalog --bin tilo-model-manager --bin tilo-speech-worker \
         --bin tilo-model-gateway --bin tilo-model-http --bin imager \
-        --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-relay-admin --bin tilo-enroll --bin fs --bin tilo-legacy )
+        --bin tilo-relay-admin --bin tilo-enroll --bin fs --bin tilo-legacy )
     say "cargo build --release (runtime host, no default features)"
     # The runtime package also owns developer tools such as `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
@@ -90,7 +90,7 @@ target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
 for bin in shell tilo-session tilo fs tilo-relay-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
            tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway tilo-model-http \
-           tilo-relay-environment tilo-relay-offers tilo-legacy app; do
+           tilo-legacy app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
 (( run_cargo )) || check_rpmbuild
@@ -152,8 +152,6 @@ install -pm 0755 "$rel/tilo-model-http" "$app_stage/bin/tilo-model-http"
 install -pm 0755 "$rel/tilo-cli-shim" "$app_stage/libexec/tilo-cli-shim"
 install -pm 0755 "$rel/tilo-app-host" "$app_stage/libexec/tilo-app-host"
 install -pm 0755 "$rel/tilo-ush" "$app_stage/libexec/tilo-ush"
-install -pm 0755 "$rel/tilo-relay-environment" "$app_stage/libexec/tilo-relay-environment"
-install -pm 0755 "$rel/tilo-relay-offers" "$app_stage/libexec/tilo-relay-offers"
 install -pm 0755 "$rel/tilo-legacy" "$app_stage/bin/tilo-legacy"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-app-host.service" \
     "$app_stage/systemd-user/tilo-app-host.service"

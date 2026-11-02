@@ -226,19 +226,6 @@ these hold (`crates/runtime/ush/src/host.rs`):
    `{"result":"host-not-allowed",…}`; a shell-hosted Terminal tab then raises
    the shell's permission prompt, which records the answer there.
 
-### Environments on a relay
-
-`{"kind":"environment","record":…,"location":{"kind":"relay","relay":<endpoint id>}}`
-runs the environment on one of the person's relays: those this device
-enrolled as home peers for its user's personal workspace
-(`home-peers.json` beside the identity keys; `{"op":"list-relays"}` lists
-them). The supervisor still hands back a pty, and runs
-`tilo-relay-environment` on its other end to carry it to the session there
-(`crates/runtime/ush/src/relay.rs`). The answer's `relay_session` names the
-session, which outlives the tab; a later request with
-`"relay_session":<hex>` re-attaches to it. Tools the relay builds for the
-session are added to the record as `pkg install` here would.
-
 ### Environments
 
 `{"op":"list-environments"}`, `{"op":"create-environment","name":…}` and
@@ -256,8 +243,7 @@ launcher capability.
 A request with `"end_report":true` reads one line on the lease just before it
 closes, saying how the session ended: `{"ended":"exited"}`;
 `{"ended":"failed","reason":…}` when the guest could not be set up and no shell
-started; and for a relay session `{"ended":"lost","reason":…}` or
-`{"ended":"superseded"}`. The reason is for the log. Terminal says the
+started. The reason is for the log. Terminal says the
 environment could not be set up and offers to try again.
 
 Nothing about setting a guest up is written on its terminal
@@ -286,8 +272,8 @@ An environment made before this had its home in the ush store
 (`environments/<record>/home`). Nothing there is moved or deleted: when it
 holds anything, the same step grants it read-only, so the shell and the
 guest still read it at that path (`cat ~/.local/share/ush/environments/default/home/.bashrc`).
-Where a device has no workspace (a relay), and for an ephemeral home, the
-guest binds a home of the environment's own at `/home/<user>` as before.
+Where a device has no workspace, and for an ephemeral home, the guest binds a
+home of the environment's own at `/home/<user>` as before.
 
 ## The session's shell
 
@@ -448,8 +434,7 @@ new one (each window the launcher opens has a record of its own, and a new
 terminal opened in a window is a new record), and reopening a window returns
 to its session. The screen, the scrollback and
 the window title stay on the device that runs the process: they are live
-output, like the pixels of a legacy window, and another device reaches them by
-re-attaching to the session on its relay.
+output, like the pixels of a legacy window.
 
 ### The shell marks each run
 
@@ -497,8 +482,8 @@ variable the rc file takes out of the environment before anything runs, so no
 program the session runs sees it, and output that imitates a mark (a `cat` of
 a file holding one) is not taken for one: Terminal acts only on marks
 carrying its key, and takes every mark out of what the screen shows. Another
-shell writes no marks; a `command` session and an environment on a relay
-answer `"runs":false`. Their output is live only.
+shell writes no marks; a `command` session answers `"runs":false`. Its output
+is live only.
 
 ### A run
 
@@ -811,15 +796,15 @@ An image the record names is looked for, in order, in the system app store,
 the user's store, the shelf in the user's synced files, and the OCI registry
 CI publishes env-runtimes and catalog tools to
 (`registry.tilo.so/tilo/env-runtime` and `tilo/env-tools`, cached under
-`$XDG_CACHE_HOME/tilo/env-images`; a relay names its own repositories in
-`$TILO_USH_IMAGE_SOURCES`). Only a tool none of them has is built. Where an
+`$XDG_CACHE_HOME/tilo/env-images`; `$TILO_USH_IMAGE_SOURCES` names other
+repositories). Only a tool none of them has is built. Where an
 image came from earns it no trust: it opens when the CI key the system store
 names, or one of your devices, signed it.
 
 ## Images your other devices built
 
-A tool built on one of your devices opens on the others — your relay
-included — without being built again:
+A tool built on one of your devices opens on the others without being built
+again:
 
 - **Trust.** The supervisor's store trusts, besides the publishers the
   installation ships and this device's own key, every device key your
@@ -829,8 +814,8 @@ included — without being built again:
   device you remove stops counting at once. Its images are refused from then
   on, the ones already materialised here included and whenever they claim to
   have been signed, because a lost key can back-date a signature; your other
-  devices build their own. A relay is one of your devices exactly when it
-  holds a certificate from your identity; a relay without one is anyone, and
+  devices build their own. A device is one of yours exactly when it holds a
+  certificate from your identity; one without a certificate is anyone, and
   its images open only when the CI catalog key signed them. Another person's
   devices are never trusted this way: only your identity speaks for your
   fleet.
@@ -846,8 +831,8 @@ included — without being built again:
   `tilo-ush.service` user unit, started with no workspace in its environment
   and in the host's mount namespace, so it reads your synced files where the
   Files app does: the filesystem daemon's mount at `/var/workspace`
-  (`$TILO_WORKSPACE_ROOT` when a session names another; a relay names the
-  member's shelf in `$TILO_USH_IMAGE_SHELF`). A device without that mount
+  (`$TILO_WORKSPACE_ROOT` when a session names another;
+  `$TILO_USH_IMAGE_SHELF` names the shelf directly). A device without that mount
   neither shares nor fetches through the shelf.
 
 ## Verifying it yourself

@@ -2927,7 +2927,6 @@ impl TerminalWidget {
         self.session_disconnected.store(false, Ordering::Release);
         if let Some((target, environments)) = crate::scenarios::target(name) {
             self.show_target(target, environments);
-            self.set_relays(crate::scenarios::relays(name));
         }
         self.feed(&crate::scenarios::output(name));
         if name == "ended" {
@@ -5915,27 +5914,15 @@ pub fn environments_available() -> bool {
 /// The invariants under test: `service_available` wins unconditionally, so no
 /// target reaches a local process while the supervisor is present; the
 /// device's own shell is reached only by naming it; and an environment that
-/// cannot run is unavailable, never quietly the host shell instead. Relay and
-/// relay targets are carried there by this device's supervisor; legacy VMs
-/// are not served by it.
+/// cannot run is unavailable, never quietly the host shell instead. Legacy
+/// VMs are not served by the supervisor.
 pub fn decide_route(
     target: &crate::target::SessionTarget,
     service_available: bool,
     can_self_host: bool,
     runtime: Option<std::path::PathBuf>,
 ) -> ConfineRoute {
-    use crate::target::{Location, SessionTarget};
     match target {
-        SessionTarget::Environment {
-            location: Location::Relay { .. },
-            ..
-        } if !service_available => {
-            return ConfineRoute::Unavailable(
-                "Environments on a relay are reached through Tilo's shell runtime, which is \
-                 not available here"
-                    .into(),
-            );
-        }
         SessionTarget::Legacy { .. } => {
             return ConfineRoute::Unavailable("The legacy VM service is not running".into());
         }

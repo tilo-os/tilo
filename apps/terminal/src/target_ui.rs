@@ -4,14 +4,12 @@
 
 use crate::i18n::t;
 use crate::sessions::OpenState;
-use crate::target::{EnvironmentSummary, Location, RelaySummary, SessionTarget};
+use crate::target::{EnvironmentSummary, SessionTarget};
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TargetMenuRow {
     Open(SessionTarget),
-    /// Run the current environment here or on a relay.
-    RunOn(Location),
     Manage,
 }
 
@@ -30,10 +28,6 @@ impl TargetMenuRow {
     fn encode(&self) -> String {
         match self {
             Self::Open(target) => format!("open:{}", target.encode()),
-            Self::RunOn(location) => format!(
-                "run-on:{}",
-                serde_json::to_string(location).unwrap_or_default()
-            ),
             Self::Manage => "manage".to_owned(),
         }
     }
@@ -44,14 +38,7 @@ impl TargetMenuRow {
         if raw == "manage" {
             return Some(Self::Manage);
         }
-        if let Some(target) = raw.strip_prefix("open:") {
-            return SessionTarget::decode(target).map(Self::Open);
-        }
-        let location = raw.strip_prefix("run-on:")?;
-        serde_json::from_str::<Location>(location)
-            .ok()
-            .filter(Location::is_valid)
-            .map(Self::RunOn)
+        SessionTarget::decode(raw.strip_prefix("open:")?).map(Self::Open)
     }
 }
 
@@ -128,26 +115,11 @@ fn environment_details(env: &EnvironmentSummary) -> (String, String) {
     (tools, grants)
 }
 
-/// What the picker calls a place an environment runs.
-fn location_label(location: &Location, relays: &[RelaySummary]) -> String {
-    match location {
-        Location::ThisDevice => t("terminal-run-on-this-device"),
-        Location::Relay { relay } => relays
-            .iter()
-            .find(|r| r.relay == *relay)
-            .map_or_else(|| relay.chars().take(8).collect(), |r| r.label.clone()),
-    }
-}
-
 /// What the chip and the picker call a target.
-fn target_label(
-    target: &SessionTarget,
-    environments: &[EnvironmentSummary],
-    relays: &[RelaySummary],
-) -> String {
+fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> String {
     match target {
         SessionTarget::Host => t("terminal-target-host"),
-        SessionTarget::Environment { record, location } => {
+        SessionTarget::Environment { record } => {
             let name = record
                 .as_deref()
                 .and_then(|key| environments.iter().find(|env| env.key == key))
@@ -165,10 +137,7 @@ fn target_label(
                     },
                     |env| env.name.clone(),
                 );
-            match location {
-                Location::ThisDevice => name,
-                Location::Relay { .. } => format!("{name} on {}", location_label(location, relays)),
-            }
+            name
         }
         SessionTarget::Legacy { vm } => crate::i18n::t_args(
             "terminal-target-legacy",
@@ -181,25 +150,13 @@ fn target_label(
 /// `environment`, `environment:<record>` or `legacy:<vm>`.
 pub fn parse_target_argument(raw: &str) -> Option<SessionTarget> {
     let raw = raw.trim();
-    // `…@<relay endpoint id>` runs an environment on that relay.
-    let (raw, location) = match raw.split_once('@') {
-        Some((base, relay)) if base.starts_with("environment") => (
-            base,
-            Location::Relay {
-                relay: relay.to_ascii_lowercase(),
-            },
-        ),
-        Some(_) => return None,
-        None => (raw, Location::ThisDevice),
-    };
     let target = match raw.split_once(':') {
         None if raw == "host" => SessionTarget::Host,
         None if raw == "environment" => SessionTarget::default_environment(),
         Some(("environment", record)) => SessionTarget::environment(record),
         Some(("legacy", vm)) => SessionTarget::Legacy { vm: vm.to_owned() },
         _ => return None,
-    }
-    .at(location);
+    };
     target.is_valid().then_some(target)
 }
 
@@ -232,12 +189,6 @@ impl TerminalWidget {
     /// only while there are any.
     pub fn set_legacy_vms(&mut self, vms: Vec<String>) {
         self.sessions.legacy_vms = vms;
-    }
-
-    /// Report the person's relays, for "Run on" — for hosts and screenshot
-    /// scenes; a live tab lists them from the supervisor.
-    pub fn set_relays(&mut self, relays: Vec<RelaySummary>) {
-        self.sessions.relays = relays;
     }
 
     /// The tab's session source and the places it lists — for tests.
@@ -296,12 +247,7 @@ impl TerminalWidget {
             self.record_target(&target);
             target
         };
-        // A session on a relay outlives the tab; reopening re-attaches to it.
-        let attach = target
-            .location()
-            .is_some_and(|location| !location.is_this_device())
-            .then(|| self.recorded_relay_session.clone())
-            .flatten();
+        let attach = self.recorded_relay_session.clone();
         self.open_session_attaching(&target, Requester::Person, attach.as_deref());
     }
 
@@ -562,7 +508,7 @@ impl TerminalWidget {
         self.sessions
             .target
             .as_ref()
-            .map(|target| target_label(target, &self.sessions.environments, &self.sessions.relays))
+            .map(|target| target_label(target, &self.sessions.environments))
     }
 
     fn draw_target_header(
@@ -617,55 +563,22 @@ impl TerminalWidget {
     }
 
     /// The target picker's rows, in order: the targets (the current one
-    /// marked), "Run on" this device or one of the person's relays for the
-    /// environment the tab runs, then "Manage environments…", each group
-    /// after a separator. The same rows in the window bar's picker and in
-    /// the picker the tab opens itself.
+    /// marked), then "Manage environments…" after a separator. The same rows
+    /// in the window bar's picker and in the picker the tab opens itself.
     fn target_picker_rows(&self) -> Vec<PickerRow> {
         let targets = crate::target::picker_targets(
             &self.sessions.environments,
             true,
             &self.sessions.legacy_vms,
         );
-        let mut rows = Vec::with_capacity(targets.len() + 2);
-        // Picking another environment keeps it where the current one runs.
-        let here = self
-            .sessions
-            .target
-            .as_ref()
-            .and_then(SessionTarget::location)
-            .cloned();
+        let mut rows = Vec::with_capacity(targets.len() + 1);
         for target in targets {
-            let target = match here.clone() {
-                Some(location) => target.at(location),
-                None => target,
-            };
             rows.push(PickerRow {
-                label: target_label(&target, &self.sessions.environments, &self.sessions.relays),
+                label: target_label(&target, &self.sessions.environments),
                 current: self.sessions.target.as_ref() == Some(&target),
                 separated: false,
                 row: TargetMenuRow::Open(target),
             });
-        }
-        if let Some(here) = here.filter(|_| !self.sessions.relays.is_empty()) {
-            let places =
-                std::iter::once(Location::ThisDevice).chain(self.sessions.relays.iter().map(|r| {
-                    Location::Relay {
-                        relay: r.relay.clone(),
-                    }
-                }));
-            for (index, place) in places.enumerate() {
-                rows.push(PickerRow {
-                    label: format!(
-                        "{} {}",
-                        t("terminal-run-on"),
-                        location_label(&place, &self.sessions.relays)
-                    ),
-                    current: place == here,
-                    separated: index == 0,
-                    row: TargetMenuRow::RunOn(place),
-                });
-            }
         }
         rows.push(PickerRow {
             label: t("terminal-target-manage"),
@@ -680,11 +593,6 @@ impl TerminalWidget {
         match row {
             TargetMenuRow::Open(target) => {
                 let _ = self.switch_target(&target, Requester::Person);
-            }
-            TargetMenuRow::RunOn(location) => {
-                if let Some(target) = self.sessions.target.clone() {
-                    let _ = self.switch_target(&target.at(location), Requester::Person);
-                }
             }
             TargetMenuRow::Manage => self.open_environments_panel(),
         }

@@ -77,7 +77,6 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
             term: None,
             command: Vec::new(),
             requested_by: ush::host::RequestedBy::Person,
-            relay_session: None,
             runs: None,
             editor_protocol: None,
             end_report: false,
@@ -173,7 +172,6 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
         term: None,
         command: Vec::new(),
         requested_by: ush::host::RequestedBy::Person,
-        relay_session: None,
         runs: None,
         editor_protocol: None,
         end_report: false,
@@ -637,7 +635,6 @@ fn open_session(socket: &Path, runs: Option<&str>, command: Vec<String>) -> (Uni
         term: Some("xterm-256color".into()),
         command,
         requested_by: ush::host::RequestedBy::Person,
-        relay_session: None,
         runs: runs.map(str::to_owned),
         editor_protocol: None,
         end_report: false,
@@ -658,9 +655,7 @@ fn open_session(socket: &Path, runs: Option<&str>, command: Vec<String>) -> (Uni
         | ServeResponse::NoRuntime { reason } => {
             panic!("the service refused the session: {reason}")
         }
-        ServeResponse::Environments { .. }
-        | ServeResponse::Allowed
-        | ServeResponse::Relays { .. } => {
+        ServeResponse::Environments { .. } | ServeResponse::Allowed => {
             panic!("a session request answered with something else")
         }
     }
@@ -828,7 +823,6 @@ fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_termina
         term: Some("xterm-256color".into()),
         command: Vec::new(),
         requested_by: ush::host::RequestedBy::Person,
-        relay_session: None,
         runs: None,
         editor_protocol: None,
         end_report: true,

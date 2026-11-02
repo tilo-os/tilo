@@ -4267,7 +4267,7 @@ fn confinement_routes_are_mandatory_for_hosted_terminals() {
         // target names it; an environment that cannot run here is unavailable,
         // never quietly `$SHELL` instead.
         use crate::inner::{ConfineRoute, decide_route};
-        use crate::target::{Location, SessionTarget};
+        use crate::target::SessionTarget;
         use std::path::PathBuf;
         let bin = PathBuf::from("/usr/libexec/tilo-ush");
         let env = SessionTarget::default_environment();
@@ -4287,22 +4287,9 @@ fn confinement_routes_are_mandatory_for_hosted_terminals() {
             decide_route(&SessionTarget::Host, false, true, Some(bin.clone())),
             ConfineRoute::Host
         );
-        // A relay's environment is carried there by the supervisor, and only
-        // by it; legacy VMs are not its to serve.
-        let on_relay = SessionTarget::Environment {
-            record: None,
-            location: Location::Relay {
-                relay: "ab".repeat(32),
-            },
-        };
-        assert_eq!(
-            decide_route(&on_relay, true, false, None),
-            ConfineRoute::Service
-        );
-        assert!(matches!(
-            decide_route(&on_relay, false, true, Some(bin.clone())),
-            ConfineRoute::Unavailable(_)
-        ));
+        // An environment runs through the supervisor, and only through it;
+        // legacy VMs are not its to serve.
+        assert_eq!(decide_route(&env, true, false, None), ConfineRoute::Service);
         assert!(matches!(
             decide_route(
                 &SessionTarget::Legacy { vm: "linux".into() },

@@ -29,8 +29,6 @@ ush-shell = { path = "../ush-shell" }
 ush-tilo = { path = "../ush-tilo" }
 # The environment record a guest is built from, and the tool builder seam.
 tilo-environment = { path = "../environment" }
-# The person's relays (home-peer registrations) and their personal workspace.
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # Two sessions of one environment never carry the same file action out twice.
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # Atomic writes of the host-shell decisions.
