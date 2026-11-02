@@ -122,7 +122,14 @@ class TestEnvironmentSetupTests(unittest.TestCase):
     def test_the_ci_profile_runs_the_setup_where_its_tests_run(self) -> None:
         config = tomllib.loads((ROOT / ".config/nextest.toml").read_text())
         self.assertIn("setup-scripts", config["experimental"])
-        scripts = config["scripts"]["setup"]
+        scripts = dict(config["scripts"]["setup"])
+        # The shell's sibling binaries are built before its tests in every
+        # profile that has no environment of its own (the default one).
+        siblings = scripts.pop("shell-siblings")
+        self.assertEqual(siblings["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
+        self.assertIn("click-test-client:click_test_client", siblings["command"][2:])
+        default_rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["default"]["scripts"]}
+        self.assertEqual(default_rules, {"package(shell)": "shell-siblings"})
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "headless-audio": ["audio"],
                                  "ntfs-fixtures": ["ntfs"]})
