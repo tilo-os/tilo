@@ -65,6 +65,6 @@ d-ufycrk6s = Card tile
 
 d-zzww2gmr = Card page
 
-d-t5kjcxjq~row0 = Board for col
+d-t5kjcxjq-row0 = Board for col
 
-d-t5kjcxjq~row1 = Board for col
+d-t5kjcxjq-row1 = Board for col

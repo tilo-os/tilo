@@ -6,7 +6,7 @@ use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
 use tilo_actions::{Did, Scalar};
 use tilolang_runtime::value::ResourceRef;
-use tilolang_runtime::{Meta, Value};
+use tilolang_runtime::{Meta, SourceWords, Value};
 use tilolang_tilo::DynAction;
 use tilolang_tilo::publish::{Caller, PlanRequest};
 use tilolang_tilo::record::DynValue;
@@ -205,7 +205,13 @@ fn the_published_action_offers_done_as_optional_and_describes_its_default() {
     );
     let planner: std::sync::Arc<dyn tilolang_tilo::publish::Planner> =
         std::sync::Arc::new(ada.host.handle());
-    let ty = tilolang_tilo::publish::action_type(&meta, &format!("tl.{APP}.Todo"), check, &planner);
+    let ty = tilolang_tilo::publish::action_type(
+        &meta,
+        &format!("tl.{APP}.Todo"),
+        check,
+        &planner,
+        &SourceWords,
+    );
     let spec = ty.bind(tilo_actions::Target::new(String::new()));
     let param = spec
         .params()

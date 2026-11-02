@@ -127,6 +127,12 @@ pub trait Platform {
         let _ = catalogues;
     }
 
+    /// What the words resolve at now: it moves when the person's language, or a catalogue of
+    /// theirs, does, so a package's published labels and nouns are published again in it.
+    fn words_revision(&self) -> u64 {
+        0
+    }
+
     /// The time now, as `now` reads it: ISO-8601 UTC text.
     fn now(&self) -> String;
 
@@ -160,6 +166,10 @@ impl crate::runtime::Words for PlatformWords {
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
         let said = self.0.phrase(key, args);
         if said == key { source.to_owned() } else { said }
+    }
+
+    fn revision(&self) -> u64 {
+        self.0.words_revision()
     }
 }
 /// How an instance starts.

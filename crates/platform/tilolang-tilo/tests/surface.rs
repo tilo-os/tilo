@@ -3,7 +3,7 @@ use std::sync::Arc;
 use automerge::AutoCommit;
 use serde_json::json;
 use tilo_actions::{ActionKind, ActionRegistry};
-use tilolang_runtime::Meta;
+use tilolang_runtime::{Meta, SourceWords};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction, register_actions};
 use tilolang_tilo::publish::{
     ActionTypes, PlanRequest, Planner, publish_package, publish_record, resource_id,
@@ -190,7 +190,7 @@ fn a_published_action_builds_the_planned_dyn_action() {
     let meta = counter();
     let planner: Arc<dyn Planner> = Arc::new(Recording);
     let resource = publish_record(
-        &ActionTypes::new(&meta, &planner),
+        &ActionTypes::new(&meta, &planner, &SourceWords),
         "Counter",
         "c1",
         "Counter",
@@ -213,7 +213,11 @@ fn a_published_action_builds_the_planned_dyn_action() {
             .decode(&built)
             .is_ok()
     );
-    assert!(publish_package(&meta, &planner).actions.is_empty());
+    assert!(
+        publish_package(&meta, &planner, &SourceWords)
+            .actions
+            .is_empty()
+    );
 }
 
 /// A parameter of another app's record type (`list: todo.TodoList` in a package that uses the
@@ -246,7 +250,12 @@ action attach(b: Board, list: todo.TodoList) {
     let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, ""), (BOARD, "")]);
     let meta = &packages[1].meta;
     let planner: Arc<dyn Planner> = Arc::new(Recording);
-    let resource = publish_record(&ActionTypes::new(meta, &planner), "Board", "b1", "Board");
+    let resource = publish_record(
+        &ActionTypes::new(meta, &planner, &SourceWords),
+        "Board",
+        "b1",
+        "Board",
+    );
     let attach = meta.actions.iter().find(|a| a.name == "attach").unwrap();
     let spec = resource
         .actions
@@ -292,6 +301,6 @@ fn a_scenarios_action_is_never_published_or_on_a_surface() {
         assert!(surface.verb(&scenario.id).is_none(), "{}", surface.kind);
     }
     let planner: Arc<dyn Planner> = Arc::new(Recording);
-    let package = publish_package(meta, &planner);
+    let package = publish_package(meta, &planner, &SourceWords);
     assert!(package.actions.iter().all(|spec| spec.id != scenario.id));
 }

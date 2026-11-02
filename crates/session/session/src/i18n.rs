@@ -26,6 +26,25 @@ pub(crate) fn ensure() {
     tilo_desktop_search::i18n::ensure();
 }
 
+/// The words of a tilolang package the session runs, in the person's language: its catalogues
+/// join the session's, so a declaration's label, description and noun read through them
+/// (`docs/designs/app-language/i18n.md`).
+pub(crate) struct PackageWords;
+
+impl tilolang_tilo::runtime::Words for PackageWords {
+    fn add(&self, catalogues: &[(String, String)]) {
+        tilo_ui_host::i18n::add_catalogues(catalogues);
+    }
+
+    fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
+        tilo_ui_host::i18n::word(key, args, source)
+    }
+
+    fn revision(&self) -> u64 {
+        tilo_ui_host::i18n::revision()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

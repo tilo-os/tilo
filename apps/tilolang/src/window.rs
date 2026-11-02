@@ -30,7 +30,6 @@ use ui::tilo_actions::{ActionAddress, ControlInvocation, InvocationId};
 use ui::widget::controls::ControlResult;
 use ui::widget::{AppModel, Element, ModelPath, Widget};
 
-use crate::i18n::t_args;
 use crate::names::Names;
 use crate::resource::{Live, Workspace, WorkspaceState, caller_of};
 use ui::tilo_resource::profiling::Phase;
@@ -114,13 +113,22 @@ impl Platform for InProcess {
         }
     }
 
-    /// The platform's phrases, which the standard library's frames say.
+    /// The platform's phrases, which the standard library's frames say, in the person's
+    /// language.
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
-        let args: Vec<(&str, ui::i18n::ArgValue)> = args
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str().into()))
-            .collect();
-        t_args(id, &args)
+        tilo_ui_host::i18n::word(id, args, id)
+    }
+
+    /// The package's own words: its catalogues join the person's, so what it declares reads in
+    /// their language.
+    fn add_words(&self, catalogues: &[(String, String)]) {
+        tilo_ui_host::i18n::add_catalogues(catalogues);
+    }
+
+    /// When the person's language, or a catalogue, moves, what the window published is
+    /// published again in it.
+    fn words_revision(&self) -> u64 {
+        tilo_ui_host::i18n::revision()
     }
 
     /// The toolkit's clock, as every time the window shows is: a capture pins it, so a

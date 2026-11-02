@@ -13,6 +13,12 @@ pub trait Words {
     /// `d-<id>.noun` with a `count`, or one of the platform's phrases); `source` when no
     /// catalogue holds it.
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String;
+    /// What the words resolve at now: it moves when the reader's language, or a catalogue,
+    /// does. What a package published in one language is published again when it moves
+    /// ([`crate::Words::word`] reads the language as it is, not as it was).
+    fn revision(&self) -> u64 {
+        0
+    }
 }
 
 /// The source words: what a package's declarations say, untranslated.

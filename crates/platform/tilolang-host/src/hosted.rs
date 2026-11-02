@@ -147,8 +147,9 @@ impl Surface {
                 .values()
                 .map(|tree| (**tree).clone()),
         );
+        let words = self.host.runtime().words();
         for package in self.host.packages() {
-            let mut resource = publish_package(&package.meta, &self.planner);
+            let mut resource = publish_package(&package.meta, &self.planner, &*words);
             if package.meta.app == self.app {
                 resource = with_app_actions(resource, &self.activate);
             }

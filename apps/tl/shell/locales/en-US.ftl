@@ -1003,72 +1003,72 @@ d-cijhlzxf = Window commands
 
 d-yx7doxgr = Traditional bar
 
-d-3ezewqgy~row0 = Bar for part
+d-3ezewqgy-row0 = Bar for part
 
-d-pvl6wwx6~row0 = Bar part for t
+d-pvl6wwx6-row0 = Bar part for t
 
-d-pvl6wwx6~row1 = Bar part for item
+d-pvl6wwx6-row1 = Bar part for item
 
-d-vidcax4k~row0 = Workspace menu for w
+d-vidcax4k-row0 = Workspace menu for w
 
-d-m4owmri7~row0~row0 = Framed canvas for p
+d-m4owmri7-row0-row0 = Framed canvas for p
 
-d-m4owmri7~row0 = Framed canvas for s
+d-m4owmri7-row0 = Framed canvas for s
 
-d-nt2inbrl~row0~row0 = Spaces canvas for p
+d-nt2inbrl-row0-row0 = Spaces canvas for p
 
-d-nt2inbrl~row0 = Spaces canvas for s
+d-nt2inbrl-row0 = Spaces canvas for s
 
-d-dz2lhlbc~row0 = Conversation for e
+d-dz2lhlbc-row0 = Conversation for e
 
-d-ojxyofwa~row0 = Program step for x
+d-ojxyofwa-row0 = Program step for x
 
-d-lwre5gd7~row0 = Dock run for item
+d-lwre5gd7-row0 = Dock run for item
 
-d-lwre5gd7~row1 = Dock run for item
+d-lwre5gd7-row1 = Dock run for item
 
-d-lwre5gd7~row2 = Dock run for item
+d-lwre5gd7-row2 = Dock run for item
 
-d-p7ismolp~row0 = Bar parts for part
+d-p7ismolp-row0 = Bar parts for part
 
-d-clgbrhsn~row0 = Notices for g
+d-clgbrhsn-row0 = Notices for g
 
-d-t3ywtwqj~row0 = Notice row for a
+d-t3ywtwqj-row0 = Notice row for a
 
-d-wh7n4fhq~row0 = Banner row for a
+d-wh7n4fhq-row0 = Banner row for a
 
-d-f5tl6n63~row0 = Rooms here for r
+d-f5tl6n63-row0 = Rooms here for r
 
-d-6l3wldtm~row0 = Window menu for s
+d-6l3wldtm-row0 = Window menu for s
 
-d-6l3wldtm~row1 = Window menu for r
+d-6l3wldtm-row1 = Window menu for r
 
-d-qrahog47~row0 = Strips view for workspace
+d-qrahog47-row0 = Strips view for workspace
 
-d-7oiz3phb~row0 = Strip column for p
+d-7oiz3phb-row0 = Strip column for p
 
-d-z4vc77e6~row0 = Place controls for r
+d-z4vc77e6-row0 = Place controls for r
 
-d-4hp326dv~row0~row0 = Traditional desktop for p
+d-4hp326dv-row0-row0 = Traditional desktop for p
 
-d-4hp326dv~row0 = Traditional desktop for s
+d-4hp326dv-row0 = Traditional desktop for s
 
-d-4hp326dv~row1~row0 = Traditional desktop for p
+d-4hp326dv-row1-row0 = Traditional desktop for p
 
-d-4hp326dv~row1 = Traditional desktop for s
+d-4hp326dv-row1 = Traditional desktop for s
 
-d-efc4bnyi~row0 = Frame buttons for r
+d-efc4bnyi-row0 = Frame buttons for r
 
-d-ysqdgpzc~row0 = Action run for c
+d-ysqdgpzc-row0 = Action run for c
 
-d-ysqdgpzc~row1 = Action run for c
+d-ysqdgpzc-row1 = Action run for c
 
-d-ysqdgpzc~row2 = Action run for c
+d-ysqdgpzc-row2 = Action run for c
 
-d-ysqdgpzc~row3~row0 = Action run for b
+d-ysqdgpzc-row3-row0 = Action run for b
 
-d-ysqdgpzc~row3 = Action run for c
+d-ysqdgpzc-row3 = Action run for c
 
-d-cijhlzxf~row0 = Window commands for r
+d-cijhlzxf-row0 = Window commands for r
 
-d-yx7doxgr~row0 = Traditional bar for t
+d-yx7doxgr-row0 = Traditional bar for t

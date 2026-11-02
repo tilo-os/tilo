@@ -243,7 +243,12 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
         SHELL_FILES
             .iter()
             .map(|(path, text)| (format!("apps/tl/shell/{path}"), (*text).to_owned())),
-    );
+    )
+    // The shell's own words travel in its module, as an installed app's do.
+    .with_locales([(
+        "en-US".to_owned(),
+        include_str!("../../../../apps/tl/shell/locales/en-US.ftl").to_owned(),
+    )]);
     let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> = vec![session];
     imports.extend(platform_packages()?);
     let shell = tilolang_tilo::tilolang::compile_package_source(&source, &lock, &imports).map_err(
@@ -1848,11 +1853,15 @@ impl Platform for ShellPlatform {
     }
 
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
-        let args: Vec<(&str, ui::i18n::ArgValue)> = args
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str().into()))
-            .collect();
-        tilo_ui_host::i18n::t_args(id, &args)
+        tilo_ui_host::i18n::word(id, args, id)
+    }
+
+    fn add_words(&self, catalogues: &[(String, String)]) {
+        tilo_ui_host::i18n::add_catalogues(catalogues);
+    }
+
+    fn words_revision(&self) -> u64 {
+        tilo_ui_host::i18n::revision()
     }
 
     fn now(&self) -> String {

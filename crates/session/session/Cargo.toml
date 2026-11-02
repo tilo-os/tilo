@@ -52,6 +52,8 @@ tilo-surface-host = { path = "../surface-host" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the desk's
 # action vocabulary.
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+# The toolkit's words, which what a package the session runs publishes reads through.
+tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-desktop = { path = "../desktop" }
 tilo-desktop-model = { path = "../desktop-model" }

@@ -337,80 +337,80 @@ d-tsxcwdoy = Media
 
 d-rygoropv = Shell parts
 
-d-wjo4okew~row0 = Gallery for x
+d-wjo4okew-row0 = Gallery for x
 
-d-wjo4okew~row1 = Gallery for x
+d-wjo4okew-row1 = Gallery for x
 
-d-wjo4okew~row2 = Gallery for x
+d-wjo4okew-row2 = Gallery for x
 
-d-wjo4okew~row3 = Gallery for x
+d-wjo4okew-row3 = Gallery for x
 
-d-wjo4okew~row4 = Gallery for x
+d-wjo4okew-row4 = Gallery for x
 
-d-wjo4okew~row5 = Gallery for x
+d-wjo4okew-row5 = Gallery for x
 
-d-wjo4okew~row6 = Gallery for x
+d-wjo4okew-row6 = Gallery for x
 
-d-wjo4okew~row7 = Gallery for x
+d-wjo4okew-row7 = Gallery for x
 
-d-wjo4okew~row8 = Gallery for x
+d-wjo4okew-row8 = Gallery for x
 
-d-wjo4okew~row9 = Gallery for x
+d-wjo4okew-row9 = Gallery for x
 
-d-wjo4okew~row10 = Gallery for x
+d-wjo4okew-row10 = Gallery for x
 
-d-wjo4okew~row11 = Gallery for x
+d-wjo4okew-row11 = Gallery for x
 
-d-wjo4okew~row12 = Gallery for x
+d-wjo4okew-row12 = Gallery for x
 
-d-wjo4okew~row13 = Gallery for x
+d-wjo4okew-row13 = Gallery for x
 
-d-wjo4okew~row14 = Gallery for x
+d-wjo4okew-row14 = Gallery for x
 
-d-wjo4okew~row15 = Gallery for x
+d-wjo4okew-row15 = Gallery for x
 
-d-wjo4okew~row16 = Gallery for x
+d-wjo4okew-row16 = Gallery for x
 
-d-wjo4okew~row17 = Gallery for x
+d-wjo4okew-row17 = Gallery for x
 
-d-vvxmf5ve~row0 = Backlog list for x
+d-vvxmf5ve-row0 = Backlog list for x
 
-d-qczmqkvq~row0 = Release board for x
+d-qczmqkvq-row0 = Release board for x
 
-d-qczmqkvq~row1~row0 = Release board for x
+d-qczmqkvq-row1-row0 = Release board for x
 
-d-qczmqkvq~row1 = Release board for stage
+d-qczmqkvq-row1 = Release board for stage
 
-d-qczmqkvq~row2 = Release board for x
+d-qczmqkvq-row2 = Release board for x
 
-d-qczmqkvq~row3~row0 = Release board for x
+d-qczmqkvq-row3-row0 = Release board for x
 
-d-qczmqkvq~row3 = Release board for stage
+d-qczmqkvq-row3 = Release board for stage
 
-d-wxq3apea~row0 = Data for x
+d-wxq3apea-row0 = Data for x
 
-d-wxq3apea~row1 = Data for f
+d-wxq3apea-row1 = Data for f
 
-d-wxq3apea~row2 = Data for m
+d-wxq3apea-row2 = Data for m
 
-d-wxq3apea~row3 = Data for c
+d-wxq3apea-row3 = Data for c
 
-d-wxq3apea~row4 = Data for c
+d-wxq3apea-row4 = Data for c
 
-d-wxq3apea~row5 = Data for x
+d-wxq3apea-row5 = Data for x
 
-d-wxq3apea~row6 = Data for f
+d-wxq3apea-row6 = Data for f
 
-d-wxq3apea~row7 = Data for m
+d-wxq3apea-row7 = Data for m
 
-d-wxq3apea~row8 = Data for c
+d-wxq3apea-row8 = Data for c
 
-d-wxq3apea~row9 = Data for c
+d-wxq3apea-row9 = Data for c
 
-d-rygoropv~row0 = Shell parts for pinned
+d-rygoropv-row0 = Shell parts for pinned
 
-d-rygoropv~row1 = Shell parts for pinned
+d-rygoropv-row1 = Shell parts for pinned
 
-d-rygoropv~row2 = Shell parts for pinned
+d-rygoropv-row2 = Shell parts for pinned
 
-d-rygoropv~row3 = Shell parts for pinned
+d-rygoropv-row3 = Shell parts for pinned

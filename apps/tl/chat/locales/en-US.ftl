@@ -161,16 +161,16 @@ d-dcprca6g = Thread typing here
 
 d-hjw5xd6b = Said
 
-d-5rkfnkg4~row0~row0 = Sidebar for ch
+d-5rkfnkg4-row0-row0 = Sidebar for ch
 
-d-5rkfnkg4~row0 = Sidebar for item
+d-5rkfnkg4-row0 = Sidebar for item
 
-d-5rkfnkg4~row1 = Sidebar for p
+d-5rkfnkg4-row1 = Sidebar for p
 
-d-ymtess4x~row0 = Channel for m
+d-ymtess4x-row0 = Channel for m
 
-d-jbezqvlc~row0 = Direct for m
+d-jbezqvlc-row0 = Direct for m
 
-d-enkgjyn7~row0 = Thread for m
+d-enkgjyn7-row0 = Thread for m
 
-d-hjw5xd6b~row0 = Said for p
+d-hjw5xd6b-row0 = Said for p

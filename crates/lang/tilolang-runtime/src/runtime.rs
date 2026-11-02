@@ -148,6 +148,9 @@ impl Runtime {
     /// As [`Runtime::load_package`]; the old version stays loaded when the new one is refused.
     pub fn reload_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
         let hash = self.core.engine.compile(wasm)?;
+        // The version loaded now brings its own words: a package reloaded after its catalogues
+        // were translated reads them, not the ones it was loaded with before.
+        self.add_catalogues(wasm);
         self.check_exports(&hash, &meta)?;
         let pkg =
             crate::registry::Package::new(hash.clone(), meta).map_err(RuntimeError::Package)?;
@@ -749,6 +752,14 @@ impl Runtime {
     pub fn set_words(&self, words: impl crate::words::Words + 'static) {
         words.add(&self.core.catalogues.borrow());
         *self.core.words.borrow_mut() = Box::new(words);
+    }
+
+    /// Where the words packages and the platform show come from now, in the reader's language:
+    /// what a published label, description or noun reads through
+    /// ([`crate::words::Words::word`]).
+    #[must_use]
+    pub fn words(&self) -> std::cell::Ref<'_, dyn crate::words::Words> {
+        std::cell::Ref::map(self.core.words.borrow(), |words| &**words)
     }
 
     /// Takes in the catalogues the module `wasm` carries.

@@ -20,3 +20,12 @@ d-qymo5lg2 = Neue Notiz
 
 d-qhmjwgei = Anheften
     .doc = Heftet eine Notiz an oder löst sie.
+
+d-v7cub7aw = Notizen
+    .doc = Die Notizen des Arbeitsbereichs.
+    .noun = { $count ->
+        [one] Notizbuch
+       *[other] Notizbücher
+    }
+
+d-akcqjax3 = Notizbuch

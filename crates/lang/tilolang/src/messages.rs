@@ -20,9 +20,21 @@ pub const SOURCE_LOCALE: &str = "en-US";
 pub const LOCALES_DIR: &str = "locales";
 
 /// The key of the message of the declaration with the stable id `id`.
+///
+/// A key is a Fluent message id, which takes letters, digits, `_` and `-` only; a written view's
+/// id carries the `~` of the loop it was made in, so anything else becomes `-`. A catalogue with
+/// one invalid key parses as nothing at all, so no app's words would read.
 #[must_use]
 pub fn key_of(id: &str) -> String {
-    format!("d-{id}")
+    let mut key = String::from("d-");
+    key.extend(id.chars().map(|c| {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            c
+        } else {
+            '-'
+        }
+    }));
+    key
 }
 
 /// The comment that marks a message of the source catalogue as the author's own.
@@ -169,13 +181,16 @@ fn pattern(words: &str) -> String {
     while let Some((before, after)) = rest.split_once('{') {
         out.push_str(&escape(before));
         match after.split_once('}') {
-            Some((expr, next)) => {
+            Some((expr, next)) if interpolation(expr) => {
                 let _ = write!(out, "{{ ${} }}", variable(expr));
                 rest = next;
             }
-            None => {
-                out.push_str(&escape(&format!("{{{after}")));
-                rest = "";
+            // Braces that do not hold a value are text: a description quotes code as its author
+            // wrote it (`{ ... }`), and Fluent would fail the catalogue's whole message on a
+            // variable the code sample was read as.
+            _ => {
+                out.push_str(&escape("{"));
+                rest = after;
             }
         }
     }
@@ -186,21 +201,36 @@ fn pattern(words: &str) -> String {
     out
 }
 
-/// What a variable is called: the last name the interpolated expression reads.
-fn variable(expr: &str) -> String {
-    let name: String = expr
-        .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .find(|part| part.chars().next().is_some_and(char::is_alphabetic))
-        .unwrap_or("value")
-        .to_owned();
-    name
+/// Whether what is between braces reads a value: a path, a call, a name, written without any
+/// space (`{t.count}`, `{count()}`, `{n}`).
+fn interpolation(expr: &str) -> bool {
+    !expr.is_empty()
+        && expr
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '(' | ')'))
 }
 
-/// Text Fluent takes literally: braces as quoted literals, one line.
+/// What a variable is called: the last name the interpolated expression reads.
+fn variable(expr: &str) -> String {
+    expr.rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .find(|part| part.chars().next().is_some_and(char::is_alphabetic))
+        .unwrap_or("value")
+        .to_owned()
+}
+
+/// Text Fluent takes literally: braces as quoted literals, one line. One pass over the text:
+/// replacing in two passes would escape the `}` of the `{` it just wrote.
 fn escape(text: &str) -> String {
-    text.replace('{', "{\"{\"}")
-        .replace('}', "{\"}\"}")
-        .replace(['\n', '\r'], " ")
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '{' => out.push_str("{\"{\"}"),
+            '}' => out.push_str("{\"}\"}"),
+            '\n' | '\r' => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -236,5 +266,17 @@ mod tests {
         assert_eq!(variable("count()"), "count");
         assert_eq!(pattern("a } b"), "a {\"}\"} b");
         assert_eq!(pattern("[draft]"), "{\"\"}[draft]");
+    }
+
+    #[test]
+    fn a_code_sample_in_a_description_is_not_a_variable() {
+        assert_eq!(
+            pattern("Declared one (`view open_threads(m: mail.Mail) { ... }`)"),
+            "Declared one (`view open_threads(m: mail.Mail) {\"{\"} ... {\"}\"}`)"
+        );
+        assert_eq!(
+            pattern("Then `{a.b}` is a value and `{ }` is not."),
+            "Then `{ $b }` is a value and `{\"{\"} {\"}\"}` is not."
+        );
     }
 }

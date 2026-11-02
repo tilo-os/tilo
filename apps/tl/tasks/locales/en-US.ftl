@@ -224,26 +224,26 @@ d-ypbiaiq3 = Task outline row
 
 d-mtmufg3w = Task page
 
-d-i2mhsb3h~row0 = Home for p
+d-i2mhsb3h-row0 = Home for p
 
-d-i2mhsb3h~row1 = Home for p
+d-i2mhsb3h-row1 = Home for p
 
-d-i2mhsb3h~row2 = Home for x
+d-i2mhsb3h-row2 = Home for x
 
-d-asnonvwl~row0 = Project page for x
+d-asnonvwl-row0 = Project page for x
 
-d-gu3twlv2~row0 = Project board for s
+d-gu3twlv2-row0 = Project board for s
 
-d-gu3twlv2~row1 = Project board for s
+d-gu3twlv2-row1 = Project board for s
 
-d-mtmufg3w~row0 = Task page for p
+d-mtmufg3w-row0 = Task page for p
 
-d-mtmufg3w~row1 = Task page for x
+d-mtmufg3w-row1 = Task page for x
 
-d-mtmufg3w~row2~row0 = Task page for c
+d-mtmufg3w-row2-row0 = Task page for c
 
-d-mtmufg3w~row2~row1~row0 = Task page for c
+d-mtmufg3w-row2-row1-row0 = Task page for c
 
-d-mtmufg3w~row2~row1 = Task page for v
+d-mtmufg3w-row2-row1 = Task page for v
 
-d-mtmufg3w~row2 = Task page for s
+d-mtmufg3w-row2 = Task page for s
