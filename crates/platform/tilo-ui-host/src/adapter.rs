@@ -147,7 +147,12 @@ impl Adapter {
                     .map(|item| self.value_of(item))
                     .collect::<Option<_>>()?,
             ),
-            Prop::None | Prop::Rich(_) | Prop::Map(_) | Prop::Action(_) | Prop::Picture(_) => {
+            Prop::None
+            | Prop::Rich(_)
+            | Prop::Map(_)
+            | Prop::Action(_)
+            | Prop::Picture(_)
+            | Prop::Case { .. } => {
                 return None;
             }
         })

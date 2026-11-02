@@ -974,7 +974,8 @@ fn lang_type(ty: &Type) -> Ty {
         Type::List(inner) | Type::Set(inner) => Ty::List(Box::new(lang_type(inner))),
         Type::Map { value, .. } => Ty::Map(Box::new(lang_type(value))),
         Type::Action => super::platform::host_ty("Action"),
-        Type::Resource | Type::Icon | Type::Choice { .. } => Ty::Error,
+        // A `Cases` set is the `ui` package's enum of that name (components.md §4.1).
+        Type::Resource | Type::Icon | Type::Choice { .. } | Type::Cases { .. } => Ty::Error,
     }
 }
 

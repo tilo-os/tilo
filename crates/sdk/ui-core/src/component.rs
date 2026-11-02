@@ -1175,6 +1175,7 @@ pub fn catalogue() -> Catalogue {
             .map(|entry| (entry.describe)())
             .chain(parts().iter().map(|describe| describe()))
             .collect(),
+        enums: Vec::new(),
     }
 }
 
