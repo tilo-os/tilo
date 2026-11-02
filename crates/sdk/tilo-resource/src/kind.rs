@@ -3,10 +3,10 @@
 //!
 //! Every record names the kind of resource it holds (`RecordKind`, the
 //! `record_kind` of an app's definition, [`Resource::KIND`]). A host that
-//! works with whatever a room holds — an agent, a service, a script runner —
-//! looks the kind up here and gets everything the typed [`Resource`] offers,
-//! with the type erased: read a document's state, publish the tree the
-//! palette and agents see, register the decoders replay needs, and build a
+//! works with whatever a workspace holds — an agent, a service, a script
+//! runner — looks the kind up here and gets everything the typed [`Resource`]
+//! offers, with the type erased: read a document's state, publish the tree
+//! the palette and agents see, register the decoders replay needs, and build a
 //! typed action from its JSON form. Each type registers once, as
 //! [`ResourceKind::of`]; an app framework adds who hosts it
 //! ([`ResourceKind::hosted_by`]) and what an open resource is called
@@ -396,7 +396,7 @@ impl ResourceKind {
 
     /// Whether `doc` holds a resource of this kind, or was kept before the
     /// app changed its storage and is brought up to it when it opens: a
-    /// room still keeps the older document after a replica migrated its
+    /// workspace still keeps the older document after a replica migrated its
     /// own.
     pub fn holds_or_older(&self, doc: &Doc) -> bool {
         crate::evolution::stored_version(doc) < self.version || self.holds(doc)

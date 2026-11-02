@@ -726,10 +726,10 @@ fn a_path_reads_its_value_and_names_its_tree_node() {
     let tree = snippet
         .favorite
         .set(true)
-        .tree_path("room", "app", "record");
+        .tree_path("workspace", "app", "record");
     assert_eq!(
         tree,
-        tilo_action_policy::TreePath::workspace("room")
+        tilo_action_policy::TreePath::workspace("workspace")
             .app("app")
             .kind("test.library")
             .resource("record")

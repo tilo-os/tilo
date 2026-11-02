@@ -3,7 +3,7 @@
 //! A record names its binaries (a picture, an attachment) by hash; the bytes
 //! live in the content store the host lends the window, joined to the
 //! record's route. Every window has its own: two windows of one app in two
-//! rooms — in one process, as the shell mounts apps — keep their content
+//! workspaces — in one process, as the shell mounts apps — keep their content
 //! apart. The host registers a window's store against the window's wake
 //! scope ([`register`]), the scope the toolkit enters whenever it runs the
 //! window's code; [`current`] answers the store of the scope entered now.
@@ -64,9 +64,9 @@ pub enum ContentRefusal {
     /// from anywhere on this machine.
     #[error("{0} cannot be read here: this window's content store does not name a workspace")]
     NotInWorkspace(String),
-    /// The room does not reference the content, or this device does not
+    /// The workspace does not reference the content, or this device does not
     /// hold it.
-    #[error("{0} is not readable in this room: put the content into this room first")]
+    #[error("{0} is not readable in this workspace: put the content into this workspace first")]
     NotReadable(String),
 }
 
@@ -116,7 +116,7 @@ pub fn read_hash(hash: &str) -> Result<Vec<u8>, ContentRefusal> {
 }
 
 /// The schema of a byte parameter: the bytes inline, as integers, or a
-/// reference to content readable in the room.
+/// reference to content readable in the workspace.
 #[must_use]
 pub fn bytes_schema() -> serde_json::Value {
     serde_json::json!({
@@ -280,10 +280,10 @@ mod tests {
         );
     }
 
-    /// A store that is not a room's resolves no reference, even to content it
-    /// holds: a hash is never a capability by itself.
+    /// A store that is not a workspace's resolves no reference, even to
+    /// content it holds: a hash is never a capability by itself.
     #[test]
-    fn a_store_outside_a_room_resolves_no_reference() {
+    fn a_store_outside_a_workspace_resolves_no_reference() {
         let window = tilo_wake::WakeScope::new();
         let machine = ContentStore::memory();
         register(&window.handle(), machine.clone());
