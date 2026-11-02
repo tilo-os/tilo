@@ -398,6 +398,7 @@ impl QuickTile {
             expand: details,
             on: self.on,
             hovered,
+            ground: selection_floor(theme, theme.tokens.colors.surfaces.base),
             radius,
         };
         // A tile that is off stands on a quiet floor and answers the pointer
@@ -405,13 +406,7 @@ impl QuickTile {
         // hover.
         let base = theme.tokens.colors.surfaces.base;
         if !self.on {
-            crate::surface::card(
-                scene,
-                transform,
-                self.rect,
-                radius,
-                selection_floor(theme, base),
-            );
+            crate::surface::card(scene, transform, self.rect, radius, face.ground);
         }
         let off_hover = selection_floor_ramp(theme, SelectionState::new(false, true, false), base);
         face.paint_ground(scene, transform, theme, off_hover);
@@ -428,7 +423,7 @@ impl QuickTile {
             transform,
             glyph,
             self.icon,
-            ink,
+            face.glyph_ink(theme),
             LUCIDE_DEFAULT_STROKE_PX,
         );
         let text_x = glyph.x1 + metrics.gap;

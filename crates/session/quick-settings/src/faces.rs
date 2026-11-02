@@ -28,8 +28,11 @@ pub(crate) struct SliderFace {
     pub kind: SliderKind,
     /// The accessible name.
     pub name: String,
-    /// The display's name over its slider, when there are several.
-    pub caption: Option<String>,
+    /// What the slider sets, when it is one of several: the display's name,
+    /// or the output sound plays on.
+    pub device: Option<String>,
+    /// The level as the person reads it, or that it is muted.
+    pub value: String,
     pub level: f64,
     pub available: bool,
 }
@@ -55,7 +58,8 @@ impl Sliders {
                 id: "qs-brightness".into(),
                 kind: SliderKind::Brightness,
                 name: t("qs-brightness"),
-                caption: None,
+                device: None,
+                value: percent(f64::from(state.brightness)),
                 level: f64::from(state.brightness),
                 available: true,
             });
@@ -72,24 +76,27 @@ impl Sliders {
                 } else {
                     t("qs-brightness")
                 },
-                caption: several.then(|| display.name.clone()),
+                device: several.then(|| display.name.clone()),
+                value: percent(f64::from(display.level)),
                 level: f64::from(display.level),
                 available: true,
             });
         }
         let muted = state.volume_muted();
+        let level = f64::from(state.volume_level());
         sliders.push(SliderFace {
             id: "qs-volume".into(),
             kind: SliderKind::Volume,
             name: t("qs-volume"),
-            caption: None,
+            device: state
+                .sound_outputs
+                .iter()
+                .find(|output| output.current)
+                .map(|output| output.name.clone()),
+            value: if muted { t("qs-muted") } else { percent(level) },
             // A muted output is silent at any level: its track is empty, as
             // the volume readout's is.
-            level: if muted {
-                0.0
-            } else {
-                f64::from(state.volume_level())
-            },
+            level: if muted { 0.0 } else { level },
             available: state.volume_available && state.status.volume.is_some(),
         });
         Self {
@@ -98,6 +105,14 @@ impl Sliders {
             outputs: state.volume_available && !state.sound_outputs.is_empty(),
         }
     }
+}
+
+/// A level from 0 to 1 as the person reads it.
+fn percent(level: f64) -> String {
+    t_args(
+        "qs-percent",
+        &[("percent", format!("{:.0}", level * 100.0).into())],
+    )
 }
 
 /// One tile of the grid.
@@ -426,6 +441,9 @@ pub(crate) fn wifi_off_message(state: &QuickSettingsState) -> String {
 pub(crate) enum RootRow {
     /// The battery (or, without one, the power mode): opens its section.
     Battery,
+    /// The mode the machine runs in, standing with the battery's row: opens
+    /// the power modes in place.
+    PowerMode,
     Devices,
     Clipboard,
     Notifications,
@@ -448,6 +466,7 @@ impl RowFace {
     pub(crate) fn section(&self) -> Option<QsSection> {
         match self.row {
             RootRow::Battery => Some(QsSection::Battery),
+            RootRow::PowerMode => Some(QsSection::PowerMode),
             RootRow::Devices => Some(QsSection::Devices),
             RootRow::Clipboard => Some(QsSection::Clipboard),
             RootRow::Notifications => None,
@@ -457,6 +476,7 @@ impl RowFace {
     pub(crate) fn id(&self) -> &'static str {
         match self.row {
             RootRow::Battery => "qs-row-battery",
+            RootRow::PowerMode => "qs-row-power-mode",
             RootRow::Devices => "qs-row-devices",
             RootRow::Clipboard => "qs-row-clipboard",
             RootRow::Notifications => "qs-row-notifications",
@@ -468,12 +488,14 @@ impl RowFace {
 pub(crate) fn rows(state: &QuickSettingsState) -> Vec<RowFace> {
     let mut rows = Vec::new();
     let battery = state.battery();
-    if battery.present || !state.power_profiles.is_empty() || !state.awake_holders.is_empty() {
-        let present = battery.present;
+    let present = battery.present;
+    // The charge and the mode it runs in stand together: what is left, and
+    // what the machine is doing to make it last.
+    if present || !state.awake_holders.is_empty() {
         rows.push(RowFace {
             row: RootRow::Battery,
             icon: match battery.state {
-                tilo_power_mgmt::BatteryState::Charging if present => Icon::BatteryCharging,
+                tilo_power_mgmt::BatteryState::Charging => Icon::BatteryCharging,
                 _ if present => Icon::Battery,
                 _ => Icon::Gauge,
             },
@@ -481,9 +503,18 @@ pub(crate) fn rows(state: &QuickSettingsState) -> Vec<RowFace> {
             detail: Some(if present {
                 battery_time_text(state).unwrap_or_else(|| battery_state_text(state))
             } else {
-                state.power_profile.label()
+                awake_sentence(state).unwrap_or_else(|| battery_state_text(state))
             }),
             value: present.then(|| format!("{}%", battery.percent)),
+        });
+    }
+    if !state.power_profiles.is_empty() {
+        rows.push(RowFace {
+            row: RootRow::PowerMode,
+            icon: Icon::Gauge,
+            title: t("qs-power-mode"),
+            detail: None,
+            value: Some(state.power_profile.label()),
         });
     }
     rows.push(RowFace {
@@ -1074,6 +1105,87 @@ mod tests {
             .map(|row| row.id)
             .collect();
         assert_eq!(ids, ["qs-brightness", "qs-volume"]);
+    }
+
+    #[test]
+    fn each_slider_names_what_it_sets_and_the_value_it_stands_at() {
+        let mut state = QuickSettingsState::fixture();
+        state.sound_outputs = vec![
+            SoundOutput {
+                node: 41,
+                name: "Speakers".into(),
+                current: true,
+            },
+            SoundOutput {
+                node: 52,
+                name: "Studio headphones".into(),
+                current: false,
+            },
+        ];
+        let sliders = Sliders::of(&state);
+        let brightness = sliders
+            .rows
+            .iter()
+            .find(|row| row.id == "qs-brightness")
+            .expect("a screen to dim");
+        assert_eq!(brightness.value, "60%");
+        assert_eq!(
+            brightness.device, None,
+            "one screen needs no name of its own"
+        );
+        let volume = sliders
+            .rows
+            .iter()
+            .find(|row| row.id == "qs-volume")
+            .expect("an output to set");
+        assert_eq!(
+            volume.device.as_deref(),
+            Some("Speakers"),
+            "it names where the sound plays"
+        );
+        assert_eq!(volume.value, "40%");
+        assert!((volume.level - 0.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_muted_output_says_so_and_stands_empty() {
+        let mut state = QuickSettingsState::fixture();
+        state
+            .status
+            .volume
+            .as_mut()
+            .expect("a default output")
+            .muted = true;
+        let volume = Sliders::of(&state)
+            .rows
+            .into_iter()
+            .find(|row| row.id == "qs-volume")
+            .expect("an output to set");
+        assert_eq!(volume.value, "Muted");
+        assert!(
+            volume.level.abs() < 0.001,
+            "a muted output is silent at any level"
+        );
+    }
+
+    #[test]
+    fn the_charge_and_the_mode_it_runs_in_stand_together_above_the_rest() {
+        use tilo_power_mgmt::{BatterySnapshot, BatteryState, BatteryTime};
+        let mut state = QuickSettingsState::fixture();
+        state.status.battery = Some(BatterySnapshot {
+            present: true,
+            percent: 76,
+            state: BatteryState::Discharging,
+        });
+        state.status.battery_time = Some(BatteryTime::ToEmpty(214));
+        state.power_profiles = vec![PowerProfile::Saver, PowerProfile::Balanced];
+        let faces = rows(&state);
+        assert_eq!(faces[0].row, RootRow::Battery);
+        assert_eq!(faces[0].value.as_deref(), Some("76%"));
+        assert_eq!(faces[0].detail.as_deref(), Some("3 h 34 min left"));
+        assert_eq!(faces[1].row, RootRow::PowerMode);
+        assert_eq!(faces[1].value.as_deref(), Some("Balanced"));
+        assert_eq!(faces[1].detail, None);
     }
 
     #[test]

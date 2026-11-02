@@ -1,20 +1,27 @@
-//! The Quick Settings tile and its level gauge: a control that is on is
-//! filled with the on colour, the half under the pointer lifts, and a tile
-//! with a section of its own sets its chevron apart with a hairline.
+//! The Quick Settings tile and its level gauge: a control that is on wears
+//! the person's accent as a tint over its own floor and its glyph takes the
+//! accent as ink, the half under the pointer lifts, and a tile with a
+//! section of its own sets its chevron apart with a hairline.
 
 use crate::theme::Theme;
+use crate::tokens::colors::{Colors, NON_TEXT_MIN_CONTRAST};
+use crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-/// How far the half under the pointer lifts on a tile that is on: the on
-/// mark's colour at this share.
-const ON_HOVER_LIFT: f32 = 0.12;
-/// A tile that is on letters its second line in the on mark at this share.
-const ON_SECONDARY_INK: f32 = 0.82;
-/// The hairline before a tile's chevron area: the on mark's colour on a
-/// tile that is on, the primary ink on one that is off, at these shares.
-const ON_DIVIDER: f32 = 0.35;
+/// How far a tile that is on is lifted off its own floor, in surface steps:
+/// the same step a selected row takes.
+const ON_LIFT: f32 = 0.5;
+/// How much of the accent is washed into that lift. Enough for the tile to
+/// read as on beside one that is off at a glance, little enough that the
+/// label keeps body-text contrast and the tile never becomes a slab.
+const ON_TINT: f32 = 0.20;
+/// How much accent the half under the pointer adds on a tile that is on.
+const ON_HOVER_LIFT: f32 = 0.10;
+/// The hairline before a tile's chevron area on a tile that is on; one that
+/// is off keeps the primary ink at [`OFF_DIVIDER`].
+const ON_DIVIDER: u8 = 44;
 const OFF_DIVIDER: f32 = 0.12;
 
 /// A Quick Settings tile's ground: its switch half (`main`) and, when it
@@ -30,13 +37,27 @@ pub struct QuickTileFace {
     pub on: bool,
     /// The half under the pointer, if any.
     pub hovered: Option<Rect>,
+    /// The floor the tile stands on, which its on fill is tinted over.
+    pub ground: Color,
     /// The tile's corner radius.
     pub radius: f64,
 }
 
 impl QuickTileFace {
+    /// The tile's own fill: the floor its host painted, lifted and washed
+    /// with the accent when it is on.
+    #[must_use]
+    pub fn fill(&self, theme: &Theme) -> Color {
+        let colors = &theme.tokens.colors;
+        if self.on {
+            colors.lift_tinted_on(self.ground, ON_LIFT, ON_TINT)
+        } else {
+            self.ground
+        }
+    }
+
     /// Paint the on fill (a tile that is off keeps the control ground its
-    /// host painted) and lift the half under the pointer: by the on mark on
+    /// host painted) and lift the half under the pointer: by the accent on
     /// a tile that is on, by `off_hover` on one that is off.
     pub fn paint_ground(
         &self,
@@ -48,17 +69,11 @@ impl QuickTileFace {
         let colors = &theme.tokens.colors;
         let shape = RoundedRect::from_rect(self.rect, self.radius);
         if self.on {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.intent.on_state,
-                None,
-                &shape,
-            );
+            scene.fill(Fill::NonZero, transform, self.fill(theme), None, &shape);
         }
         if let Some(half) = self.hovered {
             let lift = if self.on {
-                colors.intent.on_state_mark.multiply_alpha(ON_HOVER_LIFT)
+                colors.intent.accent.multiply_alpha(ON_HOVER_LIFT)
             } else {
                 off_hover
             };
@@ -79,10 +94,29 @@ impl QuickTileFace {
     pub fn ink(&self, theme: &Theme) -> (Color, Color) {
         let colors = &theme.tokens.colors;
         if self.on {
-            let mark = colors.intent.on_state_mark;
-            (mark, mark.multiply_alpha(ON_SECONDARY_INK))
+            let fill = self.fill(theme);
+            (
+                colors.ink_on(fill, colors.text_primary, BODY_TEXT_MIN_CONTRAST),
+                colors.ink_on(fill, colors.text_dim, BODY_TEXT_MIN_CONTRAST),
+            )
         } else {
             (colors.text_primary, colors.text_dim)
+        }
+    }
+
+    /// The glyph's ink: the accent on a tile that is on, the primary ink on
+    /// one that is off.
+    #[must_use]
+    pub fn glyph_ink(&self, theme: &Theme) -> Color {
+        let colors = &theme.tokens.colors;
+        if self.on {
+            colors.ink_on(
+                self.fill(theme),
+                colors.intent.accent_ink,
+                NON_TEXT_MIN_CONTRAST,
+            )
+        } else {
+            colors.text_primary
         }
     }
 
@@ -94,7 +128,7 @@ impl QuickTileFace {
         };
         let colors = &theme.tokens.colors;
         let divider = if self.on {
-            colors.intent.on_state_mark.multiply_alpha(ON_DIVIDER)
+            Colors::hairline_on(self.fill(theme), ON_DIVIDER)
         } else {
             colors.text_primary.multiply_alpha(OFF_DIVIDER)
         };

@@ -1166,6 +1166,115 @@ fn an_apps_open_the_shell_calls_starts_it() {
 /// A session of `width` by `height` with the shell's bar, the person's settings and a sound
 /// card: what the quick settings read and change.
 fn session_with_devices(width: i32, height: i32) -> Session {
+    session_with_services(width, height, Vec::new())
+}
+
+/// The connectivity service as a session reaches it: a Wi-Fi radio joined to
+/// Home, Bluetooth with a paired headset, and one VPN profile — the devices a
+/// laptop has, so the panel's controls and their details are worked as a
+/// person works them.
+struct Radio;
+
+fn radio_network() -> tilo_connectivity_service::model::Network {
+    use tilo_connectivity_service::model::{Link, LinkKind, Network, WifiNetwork};
+    let mut network = Network::default();
+    network.wifi.available = true;
+    network.wifi.on = true;
+    network.wifi.networks = vec![
+        WifiNetwork {
+            name: "Home".into(),
+            signal: 4,
+            secure: true,
+            known: true,
+            connected: true,
+        },
+        WifiNetwork {
+            name: "Office".into(),
+            signal: 3,
+            known: true,
+            ..WifiNetwork::default()
+        },
+        WifiNetwork {
+            name: "Cafe guest".into(),
+            signal: 2,
+            ..WifiNetwork::default()
+        },
+    ];
+    network.link = Some(Link {
+        kind: LinkKind::Wifi,
+        name: Some("Home".into()),
+        signal: 4,
+    });
+    network
+}
+
+fn radio_bluetooth() -> tilo_connectivity_service::model::Bluetooth {
+    use tilo_connectivity_service::model::{Accessory, Bluetooth};
+    Bluetooth {
+        available: true,
+        on: true,
+        accessories: vec![Accessory {
+            name: "Studio headphones".into(),
+            address: "00:1B:66:A1:B2:C3".into(),
+            battery: Some(80),
+            connected: true,
+        }],
+        ..Bluetooth::default()
+    }
+}
+
+fn radio_vpn() -> tilo_connectivity_service::model::Vpn {
+    use tilo_connectivity_service::model::{Vpn, VpnProfile};
+    Vpn {
+        profiles: vec![VpnProfile {
+            name: "Work".into(),
+            id: "7c1e3a5e-0d61-4f3c-9b1a-2d6f9f0e1a11".into(),
+            kind: "wireguard".into(),
+            connected: false,
+        }],
+        ..Vpn::default()
+    }
+}
+
+impl tilo_session::Service for Radio {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        vec![
+            tilo_connectivity_service::network_resource(&radio_network()),
+            tilo_connectivity_service::bluetooth_resource(&radio_bluetooth()),
+            tilo_connectivity_service::vpn_resource(&radio_vpn()),
+        ]
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        match resource {
+            tilo_connectivity_service::NETWORK => serde_json::to_value(radio_network()).ok(),
+            tilo_connectivity_service::BLUETOOTH => serde_json::to_value(radio_bluetooth()).ok(),
+            tilo_connectivity_service::VPN => serde_json::to_value(radio_vpn()).ok(),
+            _ => None,
+        }
+    }
+
+    fn invoke(
+        &mut self,
+        _: &str,
+        _: &str,
+        _: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        Ok(tilo_service::Started::Accepted)
+    }
+}
+
+/// The devices session, on a machine with a radio too.
+fn session_with_radio(width: i32, height: i32) -> Session {
+    session_with_services(width, height, vec![Box::new(Radio)])
+}
+
+/// A session serving the settings and the sound, and `extra` beside them.
+fn session_with_services(
+    width: i32,
+    height: i32,
+    extra: Vec<Box<dyn tilo_session::Service>>,
+) -> Session {
     use tilo_session::Service as _;
     let card = Card {
         graph: std::sync::Mutex::new(media::audio::AudioGraph {
@@ -1186,12 +1295,14 @@ fn session_with_devices(width: i32, height: i32) -> Session {
     let mut sound =
         tilo_audio_service::sound::SoundService::new(std::sync::Arc::new(card), None).unwrap();
     sound.settle();
+    let mut services: Vec<Box<dyn tilo_session::Service>> = vec![
+        Box::new(tilo_settings_service::SettingsService::new()),
+        Box::new(sound),
+    ];
+    services.extend(extra);
     Session::headless(
         Options {
-            services: vec![
-                Box::new(tilo_settings_service::SettingsService::new()),
-                Box::new(sound),
-            ],
+            services,
             collab: false,
             ..options()
         },
@@ -1378,6 +1489,66 @@ fn quick_settings_volume_slider_sets_the_published_volume() {
     assert!(
         session.shell_refusals().is_empty(),
         "the slider's change reached the sound: {:?}",
+        session.shell_refusals()
+    );
+}
+
+/// The panel says at a glance which radios are on, and each tile's chevron
+/// opens its own details in place under the tiles and closes them again:
+/// the networks this laptop knows and the devices it is paired with, in both
+/// appearance modes. Each resting panel is kept for the capture that shows
+/// it (`TL_SHELL_SHOTS`).
+#[test]
+fn quick_settings_opens_each_radios_details_in_place() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_radio(WIDTH, HEIGHT);
+    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    press_at_rest(&mut session, "Volume, 40%");
+    until_settled(&mut session, |session| here(session) == "quick-settings");
+    until_settled(&mut session, |session| {
+        says(session, "Wi-Fi") && says(session, "Bluetooth") && says(session, "VPN")
+    });
+    assert!(
+        !says(&session, "Office"),
+        "nothing is open when the panel opens"
+    );
+    let dark = serde_json::json!("dark");
+    let mode = |session: &Session| {
+        if appearance_mode(session) == dark {
+            "dark"
+        } else {
+            "light"
+        }
+    };
+    let showing = mode(&session);
+    keep(&mut session, &format!("quick-settings-{showing}"));
+    // Wi-Fi's chevron: the networks under the tiles, the one in use first.
+    press_at_rest(&mut session, "Wi-Fi networks");
+    until_settled(&mut session, |session| says(session, "Office"));
+    keep(&mut session, &format!("quick-settings-{showing}-wifi"));
+    press_at_rest(&mut session, "Wi-Fi networks");
+    until_settled(&mut session, |session| !says(session, "Office"));
+    // Bluetooth's: the paired devices under them.
+    press_at_rest(&mut session, "Bluetooth devices");
+    until_settled(&mut session, |session| says(session, "Studio headphones"));
+    keep(&mut session, &format!("quick-settings-{showing}-bluetooth"));
+    press_at_rest(&mut session, "Bluetooth devices");
+    until_settled(&mut session, |session| !says(session, "Studio headphones"));
+    // The panel in the other appearance, with the same details.
+    press_at_rest(&mut session, "Dark mode");
+    until_settled(&mut session, |session| mode(session) != showing);
+    let other = mode(&session);
+    keep(&mut session, &format!("quick-settings-{other}"));
+    press_at_rest(&mut session, "Wi-Fi networks");
+    until_settled(&mut session, |session| says(session, "Office"));
+    keep(&mut session, &format!("quick-settings-{other}-wifi"));
+    press_at_rest(&mut session, "Bluetooth devices");
+    until_settled(&mut session, |session| says(session, "Studio headphones"));
+    keep(&mut session, &format!("quick-settings-{other}-bluetooth"));
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the panel's presses reached the radios: {:?}",
         session.shell_refusals()
     );
 }

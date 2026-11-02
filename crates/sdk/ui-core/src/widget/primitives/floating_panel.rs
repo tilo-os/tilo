@@ -233,6 +233,7 @@ pub struct FloatingPanel {
     body: Box<dyn Widget>,
     footer: Option<Box<dyn Widget>>,
     width: Option<f32>,
+    fill_width: bool,
     rect: Rect,
     header_rect: Rect,
     body_rect: Rect,
@@ -258,6 +259,7 @@ impl FloatingPanel {
             body,
             footer: None,
             width: None,
+            fill_width: false,
             rect: Rect::ZERO,
             header_rect: Rect::ZERO,
             body_rect: Rect::ZERO,
@@ -283,6 +285,15 @@ impl FloatingPanel {
     #[must_use]
     pub fn width(mut self, px: f32) -> Self {
         self.width = Some(px);
+        self
+    }
+
+    /// Take the width of the room it is offered rather than the width of
+    /// its content: a panel that is the whole of its surface, as a popover's
+    /// is, so a long row never stands past the window's edge.
+    #[must_use]
+    pub fn fill_width(mut self) -> Self {
+        self.fill_width = true;
         self
     }
 
@@ -363,9 +374,12 @@ impl Widget for FloatingPanel {
             flex_direction: taffy::FlexDirection::Column,
             flex_shrink: 0.0,
             size: taffy::Size {
-                width: self
-                    .width
-                    .map_or(taffy::Dimension::auto(), taffy::Dimension::length),
+                width: if self.fill_width {
+                    taffy::Dimension::percent(1.0)
+                } else {
+                    self.width
+                        .map_or(taffy::Dimension::auto(), taffy::Dimension::length)
+                },
                 height: taffy::Dimension::auto(),
             },
             ..Default::default()

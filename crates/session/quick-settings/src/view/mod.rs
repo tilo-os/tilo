@@ -14,8 +14,7 @@ use std::rc::Rc;
 
 use ui::LocalState;
 use ui::framework::{Effected, Upkeep, ViewCx};
-use ui::tokens::Rhythm;
-use ui::widget::{Column, Element, Scrollable};
+use ui::widget::{Element, FloatingPanel, Scrollable};
 
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
@@ -144,16 +143,17 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
         told.showing(showing);
         page(cx, showing, &parts)
     });
-    let content = Column::new()
-        .with_intrinsic_height()
-        .with_padding_rhythm(Some(Rhythm::Section), Some(Rhythm::Section))
-        .with_id("quick-settings")
-        .push(page);
+    // The panel is the floating card every surface of its kind stands on,
+    // sized to what it shows: the window around it is the desktop, not the
+    // panel, so the card never trails an empty band under the last row.
+    let card = FloatingPanel::new(page)
+        .footer(root::footer(cx))
+        .fill_width();
     let panel = Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
             .with_label(crate::i18n::t("qs-title"))
-            .with_child(Box::new(content)),
+            .with_child(Box::new(card)),
     ) as Element;
     // The readings arrive on the worker; the transport band is this
     // process's own, so it is shown what plays here, before the widgets

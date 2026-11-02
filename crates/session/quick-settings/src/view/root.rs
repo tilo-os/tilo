@@ -1,5 +1,5 @@
-//! The controls page: the sliders, the tiles two to a row, the rows under
-//! them and the footer, each tile's or row's section opening and closing in
+//! The controls page: the tiles two to a row, the sliders, what plays and
+//! the rows under them, each tile's or row's section opening and closing in
 //! place under it on the disclosure motion.
 
 use ui::LocalState;
@@ -25,6 +25,12 @@ pub(super) fn page(cx: &ViewCx<QuickSettings>, open: Option<QsSection>, parts: &
         .with_intrinsic_height()
         .with_no_padding()
         .with_rhythm(Rhythm::Section);
+    // What the machine is connected to stands first: the tiles say at a
+    // glance what is on, and the rest of the page reads under them.
+    let tile_parts = parts.clone();
+    column = column.push(cx.switch(&parts.tiles, move |cx, tiles| {
+        tile_grid(cx, tiles, open, &tile_parts)
+    }));
     let sound = open == Some(QsSection::Sound);
     let sliders = cx.switch(&parts.sliders, move |cx, sliders| {
         slider_block(cx, sliders, sound)
@@ -34,10 +40,6 @@ pub(super) fn page(cx: &ViewCx<QuickSettings>, open: Option<QsSection>, parts: &
         column = column.push(super::sections::in_place(cx, QsSection::Sound, parts));
     }
     column = column.push(super::now_playing::card(cx, &parts.now_playing));
-    let tile_parts = parts.clone();
-    column = column.push(cx.switch(&parts.tiles, move |cx, tiles| {
-        tile_grid(cx, tiles, open, &tile_parts)
-    }));
     let row_parts = parts.clone();
     column = column.push(cx.switch(&parts.rows, move |cx, rows| {
         let mut list = Column::new()
@@ -52,82 +54,111 @@ pub(super) fn page(cx: &ViewCx<QuickSettings>, open: Option<QsSection>, parts: &
         }
         Box::new(list)
     }));
-    column.push(footer(cx)).into_widget()
+    column.into_widget()
 }
 
-/// The sliders: brightness (one per display, captioned with its name when
-/// there are several) and volume, with the speaker that mutes and, when
-/// there are outputs to choose from, the chevron that opens them.
+/// The sliders: what each sets, the device it sets it on and the value it
+/// stands at over the track; the volume's speaker mutes it, and the chevron
+/// opens the outputs to play on.
 fn slider_block(cx: &ViewCx<QuickSettings>, sliders: &Sliders, sound_open: bool) -> Element {
     let mut block = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
-        .with_rhythm(Rhythm::Related);
+        .with_rhythm(Rhythm::Section);
     for face in &sliders.rows {
-        if let Some(caption) = &face.caption {
-            block = block.push(Box::new(Text::new(caption).with_role(TextRole::Caption)));
+        block = block.push(slider_row(cx, face, sliders, sound_open));
+    }
+    block.into_widget()
+}
+
+/// One slider: its control and name, the device it sets, its value and, for
+/// sound, the chevron that opens the outputs, over the track it moves.
+fn slider_row(
+    cx: &ViewCx<QuickSettings>,
+    face: &SliderFace,
+    sliders: &Sliders,
+    sound_open: bool,
+) -> Element {
+    let leading: Element = match face.kind {
+        SliderKind::Volume => {
+            let mute = Button::icon_only(
+                "qs-volume-mute",
+                if sliders.muted {
+                    Icon::VolumeX
+                } else {
+                    Icon::Volume2
+                },
+                &t("qs-volume-mute"),
+            )
+            .role(ButtonRole::Plain)
+            .toggled(sliders.muted)
+            .with_enabled(face.available);
+            Box::new(cx.actions().bind_effect_invocation(
+                mute,
+                &QsEffect::SetMuted {
+                    muted: !sliders.muted,
+                },
+            ))
         }
-        let leading: Element = match face.kind {
-            SliderKind::Volume => {
-                let mute = Button::icon_only(
-                    "qs-volume-mute",
-                    if sliders.muted {
-                        Icon::VolumeX
+        _ => Box::new(glyph(Icon::Sun)),
+    };
+    let mut label = Row::new()
+        .no_wrap()
+        .with_align_items(ui::taffy::AlignItems::Center)
+        .with_rhythm(Rhythm::Related)
+        .push(leading)
+        .push(Box::new(Text::new(&face.name).with_role(TextRole::Label)));
+    if let Some(device) = &face.device {
+        label = label.push(Box::new(
+            Text::new(device)
+                .with_role(TextRole::Caption)
+                .with_id(format!("{}-device", face.id)),
+        ));
+    }
+    label = label.push(Box::new(Spacer::new())).push(Box::new(
+        Text::new(&face.value)
+            .with_role(TextRole::Label)
+            .with_id(format!("{}-value", face.id)),
+    ));
+    let trailing: Element = if face.kind == SliderKind::Volume && sliders.outputs {
+        Box::new(
+            cx.actions().bind_invocation(
+                Button::icon_only(
+                    "qs-sound-outputs",
+                    if sound_open {
+                        Icon::ChevronDown
                     } else {
-                        Icon::Volume2
+                        Icon::ChevronRight
                     },
-                    &t("qs-volume-mute"),
+                    &t("qs-sound-output"),
                 )
                 .role(ButtonRole::Plain)
-                .toggled(sliders.muted)
-                .with_enabled(face.available);
-                Box::new(cx.actions().bind_effect_invocation(
-                    mute,
-                    &QsEffect::SetMuted {
-                        muted: !sliders.muted,
-                    },
-                ))
-            }
-            _ => Box::new(glyph(Icon::Sun)),
-        };
-        let trailing: Element = if face.kind == SliderKind::Volume && sliders.outputs {
-            Box::new(
-                cx.actions().bind_invocation(
-                    Button::icon_only(
-                        "qs-sound-outputs",
-                        if sound_open {
-                            Icon::ChevronDown
-                        } else {
-                            Icon::ChevronRight
-                        },
-                        &t("qs-sound-output"),
-                    )
-                    .role(ButtonRole::Plain)
-                    .toggled(sound_open),
-                    QuickSettings::TOGGLE_SECTION.with(QsSection::Sound),
-                ),
-            )
-        } else if sliders.outputs {
-            // Every track is one length, whether or not it has a chevron.
-            Box::new(glyph_space())
-        } else {
-            Box::new(Spacer::new())
-        };
-        block = block.push(Box::new(
+                .toggled(sound_open),
+                QuickSettings::TOGGLE_SECTION.with(QsSection::Sound),
+            ),
+        )
+    } else if sliders.outputs {
+        // Every label is one length, whether or not it has a chevron.
+        Box::new(glyph_space())
+    } else {
+        Box::new(Container::new().with_no_padding())
+    };
+    let block = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_rhythm(Rhythm::Related)
+        .push(Box::new(label.push(trailing)))
+        .push(Box::new(
             Row::new()
                 .no_wrap()
                 .with_align_items(ui::taffy::AlignItems::Center)
-                .with_rhythm(Rhythm::Related)
-                .push(leading)
                 .push(Box::new(
                     Container::new()
                         .with_no_padding()
                         .with_flex_grow()
                         .with_child(slider(cx, face)),
-                ))
-                .push(trailing),
+                )),
         ));
-    }
     block.into_widget()
 }
 
@@ -267,12 +298,26 @@ fn root_row(
     })
 }
 
-/// Edit at the leading end; Settings, Lock and Power at the trailing one.
-/// Each is named, and the name is its tooltip.
-fn footer(cx: &ViewCx<QuickSettings>) -> Element {
+/// The panel's footer: who is signed in on the left, then the controls a
+/// panel's bottom edge is reached for — arranging, Settings, Lock and the
+/// power menu — grouped at the right, each named for the pointer and for
+/// assistive technology.
+pub(super) fn footer(cx: &ViewCx<QuickSettings>) -> Element {
     let actions = cx.actions();
+    let account = actions.bind_effect_invocation(
+        named(
+            Button::new("qs-account", &t("qs-account")).with_icon(Icon::User),
+            &t("qs-account"),
+        )
+        .tooltip(t("qs-account-description")),
+        &QsEffect::OpenSettings {
+            link: "settings://users".to_owned(),
+        },
+    );
     let edit = actions.bind_invocation(
-        Button::icon_only("qs-edit", Icon::Pencil, &t("qs-edit-controls")).role(ButtonRole::Plain),
+        Button::icon_only("qs-edit", Icon::Pencil, &t("qs-edit-controls"))
+            .role(ButtonRole::Plain)
+            .tooltip(t("qs-edit-controls")),
         QuickSettings::EDIT.with(true),
     );
     let settings = actions.bind_effect_invocation(
@@ -300,10 +345,17 @@ fn footer(cx: &ViewCx<QuickSettings>) -> Element {
             .no_wrap()
             .with_align_items(ui::taffy::AlignItems::Center)
             .with_rhythm(Rhythm::Related)
-            .push(Box::new(edit))
+            .push(Box::new(account))
             .push(Box::new(Spacer::new()))
+            .push(Box::new(edit))
             .push(Box::new(settings))
             .push(Box::new(lock))
             .push(Box::new(power)),
     )
+}
+
+/// A footer control that says its name, so it reads as what it does rather
+/// than as a bare glyph.
+fn named(button: Button, name: &str) -> Button {
+    button.role(ButtonRole::Plain).with_accessible_name(name)
 }

@@ -65,32 +65,162 @@ fn has(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) -> bool {
 }
 
 #[test]
-fn the_controls_page_has_the_sliders_then_the_tiles_two_to_a_row_then_the_rows_and_the_footer() {
+fn the_controls_page_has_the_tiles_two_to_a_row_then_the_sliders_then_the_rows_and_the_footer() {
     let mut app = staged("controls");
+    let brightness = target(&mut app, "qs-brightness");
     let volume = target(&mut app, "qs-volume");
     let wifi = target(&mut app, "qs-tile-wifi");
     let bluetooth = target(&mut app, "qs-tile-bluetooth");
     let vpn = target(&mut app, "qs-tile-vpn");
     let battery = target(&mut app, "qs-row-battery");
+    let mode = target(&mut app, "qs-row-power-mode");
     let notifications = target(&mut app, "qs-row-notifications");
     let power = target(&mut app, "qs-power");
+    let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
     assert!(
-        target(&mut app, "qs-brightness").y1 <= volume.y0,
-        "brightness, then volume"
+        card.width() <= f64::from(VIEWPORT.0) && card.width() > f64::from(VIEWPORT.0) - 1.0,
+        "the panel takes its window and never stands past it: {card:?}"
     );
-    assert!(volume.y1 <= wifi.y0, "the sliders come first");
+    assert!(
+        power.x1 <= card.x1 && power.x0 >= card.x0,
+        "its controls stay on it"
+    );
     assert!(
         (wifi.y0 - bluetooth.y0).abs() < 1.0 && wifi.x1 <= bluetooth.x0,
         "two tiles to a row: {wifi:?} {bluetooth:?}"
     );
     assert!(vpn.y0 >= wifi.y1, "the third tile starts the next row");
-    assert!(battery.y0 >= vpn.y1);
-    assert!(notifications.y0 > battery.y0);
+    assert!(brightness.y0 >= vpn.y1, "the sliders come under the tiles");
+    assert!(volume.y0 >= brightness.y1, "brightness, then volume");
+    assert!(battery.y0 >= volume.y1, "the rows come under the sliders");
+    assert!(
+        mode.y0 >= battery.y0,
+        "the power mode stands with the charge"
+    );
+    assert!(notifications.y0 > mode.y0);
     assert!(power.y0 >= notifications.y1, "the footer comes last");
     assert!(
         !has(&mut app, "qs-section-wifi"),
         "nothing is open when the panel opens"
     );
+}
+
+/// A detail page closes without leaving room behind: what stood under it
+/// rests exactly where it stood before the section opened.
+#[test]
+fn a_section_leaving_gives_back_its_room_and_the_page_rests_as_it_stood() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, _host) = hosted("controls");
+    let anchors = [
+        "qs-tile-vpn",
+        "qs-brightness",
+        "qs-volume",
+        "qs-row-battery",
+    ];
+    let before: Vec<Rect> = anchors.iter().map(|name| target(&mut app, name)).collect();
+    open_details(&mut app, "qs-tile-wifi");
+    assert!(has(&mut app, "qs-section-wifi"));
+    open_details(&mut app, "qs-tile-wifi");
+    assert!(!has(&mut app, "qs-section-wifi"), "gone at rest");
+    for (name, was) in anchors.iter().zip(before) {
+        let now = target(&mut app, name);
+        assert!(
+            (now.y0 - was.y0).abs() < 0.5 && (now.y1 - was.y1).abs() < 0.5,
+            "{name} rests where it stood: was {was:?}, now {now:?}"
+        );
+    }
+}
+
+/// Each detail page opens in place and its chevron returns the page: the
+/// Bluetooth devices, then the outputs sound plays on.
+#[test]
+fn each_detail_page_opens_in_place_and_returns_the_page() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("controls");
+    open_details(&mut app, "qs-tile-bluetooth");
+    assert_eq!(
+        host.showing().map(|showing| showing.section),
+        Some(Some(QsSection::Bluetooth))
+    );
+    assert!(
+        has(&mut app, "qs-accessory-00:1B:66:A1:B2:C3"),
+        "the paired device shows with its row"
+    );
+    let tile = target(&mut app, "qs-tile-bluetooth");
+    let section = target(&mut app, "qs-section-bluetooth");
+    assert!(section.y0 >= tile.y1, "under its own tile");
+    open_details(&mut app, "qs-tile-bluetooth");
+    assert!(!has(&mut app, "qs-section-bluetooth"));
+    click(&mut app, "qs-sound-outputs");
+    assert_eq!(
+        host.showing().map(|showing| showing.section),
+        Some(Some(QsSection::Sound))
+    );
+    let volume = target(&mut app, "qs-volume");
+    let sound = target(&mut app, "qs-section-sound");
+    assert!(sound.y0 >= volume.y1, "under the sliders it belongs to");
+    assert!(has(&mut app, "qs-output-41") && has(&mut app, "qs-output-52"));
+    click(&mut app, "qs-sound-outputs");
+    assert!(!has(&mut app, "qs-section-sound"));
+}
+
+/// The whole panel answers the keyboard: Tab to a tile, Enter toggles it,
+/// Right reaches its details, Enter opens them and the chevron closes them.
+#[test]
+fn the_keyboard_toggles_a_tile_reaches_its_details_and_opens_them() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("controls");
+    app.harness().tab(false);
+    assert_eq!(
+        key_on(&mut app).as_deref(),
+        Some("Wi-Fi"),
+        "the first Tab reaches the first tile"
+    );
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        host.ran(),
+        [QsEffect::SetWifi { on: false }],
+        "Enter throws the switch under the keyboard"
+    );
+    app.harness().key("ArrowRight");
+    app.settle();
+    assert_eq!(
+        key_on(&mut app).as_deref(),
+        Some("Wi-Fi networks"),
+        "Right reaches the tile's details"
+    );
+    app.harness().key("ArrowLeft");
+    app.settle();
+    assert_eq!(
+        key_on(&mut app).as_deref(),
+        Some("Wi-Fi"),
+        "Left comes back to the switch"
+    );
+    app.harness().key("ArrowRight");
+    app.settle();
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        host.showing().map(|showing| showing.section),
+        Some(Some(QsSection::Wifi)),
+        "Enter opens them in place"
+    );
+    assert!(has(&mut app, "qs-section-wifi") && has(&mut app, "qs-network-Office"));
+    app.harness().key("ArrowDown");
+    app.settle();
+    assert_ne!(
+        key_on(&mut app).as_deref(),
+        Some("Wi-Fi"),
+        "Down leaves the tile for the next control"
+    );
+    open_details(&mut app, "qs-tile-wifi");
+    assert_eq!(
+        host.showing().map(|showing| showing.section),
+        Some(None),
+        "the chevron closes the section again"
+    );
+    assert!(!has(&mut app, "qs-section-wifi"));
 }
 
 #[test]
@@ -474,6 +604,18 @@ fn focused(app: &mut HeadlessApp<QuickSettingsApp>) -> Option<ui::a11y::AccessNo
     app.harness().focused_access_node()
 }
 
+/// The name the keyboard is on: a tile is a group whose focused half holds
+/// the name, so the deepest focused node is the one that answers the keys.
+fn key_on(app: &mut HeadlessApp<QuickSettingsApp>) -> Option<String> {
+    fn deepest(node: ui::a11y::AccessNode) -> Option<String> {
+        if node.state.focused {
+            return node.name;
+        }
+        node.children.into_iter().find_map(deepest)
+    }
+    focused(app).and_then(deepest)
+}
+
 /// Tab until the keyboard is on the arranged row named `name`.
 fn tab_to_row(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) {
     for _ in 0..40 {
@@ -626,7 +768,7 @@ fn every_scenario_renders() {
 }
 
 #[test]
-fn tab_walks_the_controls_from_brightness() {
+fn tab_walks_the_controls_from_the_tiles() {
     let mut app = staged("controls");
     let d = app.harness();
     assert!(
@@ -638,7 +780,7 @@ fn tab_walks_the_controls_from_brightness() {
         d.focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Brightness"),
-        "the first Tab reaches brightness"
+        Some("Wi-Fi"),
+        "the first Tab reaches the first tile"
     );
 }
