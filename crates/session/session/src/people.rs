@@ -266,6 +266,7 @@ pub(crate) fn mount(
         shown: Rc::clone(&shown),
         open: Rc::clone(&open),
         handle: handle.clone(),
+        drawn: Cell::new(0),
         sync,
     };
     let placement = Placement {
@@ -398,6 +399,10 @@ struct Panel {
     shown: Rc<RefCell<Shown>>,
     open: Rc<Cell<bool>>,
     handle: DesktopHandle,
+    /// The presence revision this panel last drew: another person's pointer
+    /// moving, arriving or leaving moves it, and a desk where nothing moved
+    /// asks for no frame.
+    drawn: Cell<u64>,
     sync: Option<Rc<crate::sync::Client>>,
 }
 
@@ -474,6 +479,13 @@ impl Panel {
         }
     }
 
+    /// How many times what the desk's people say of themselves changed.
+    fn presence_revision(&self) -> u64 {
+        self.sync
+            .as_ref()
+            .map_or(0, |sync| sync.presence_revision())
+    }
+
     /// Open this workspace's activity at what `author` changed.
     fn open_activity(&self, author: &str) {
         let workspace = self.handle.read(|tree| {
@@ -547,6 +559,7 @@ impl Widget for Panel {
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
+        let revision = self.presence_revision();
         let mut shown = self.shown.borrow_mut();
         let open = self.open.get();
         // Where everyone else's pointer is now, from the plane: it names the
@@ -632,6 +645,7 @@ impl Widget for Panel {
             let area = shown.area;
             ui::presence::draw_peer_cursors(scene, transform, area, text, theme, &cursors);
         }
+        self.drawn.set(revision);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -646,12 +660,12 @@ impl Widget for Panel {
         self.follow(hit, &mut shown);
     }
 
-    /// The roster and the pointers of people working on this desk change
-    /// without an event reaching the panel: while either shows, every frame
-    /// reads them again. Closed with nobody's pointer on the desk, it shows
-    /// nothing and asks for no frame.
+    /// Whether the panel owes a frame: while it is open, because its rows
+    /// move with the people on the desk; closed, only once somebody else's
+    /// pointer has moved or left since the last frame. A desk where a remote
+    /// pointer rests where it was drawn asks for no frame.
     fn needs_redraw(&self) -> bool {
-        self.open.get() || !self.shown.borrow().pointers.is_empty()
+        self.open.get() || self.presence_revision() != self.drawn.get()
     }
 
     fn name(&self) -> &'static str {

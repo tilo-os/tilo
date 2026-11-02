@@ -234,6 +234,10 @@ struct Workspace {
     /// The devices a record's content of this workspace reaches this one
     /// from: those heard on its topic, and its hosts.
     content: content::Topology,
+    /// How many times what this workspace knows of its people changed: what a
+    /// surface drawing them compares against the revision it drew, so a change
+    /// draws one frame and a desk that holds still draws none.
+    revision: u64,
 }
 
 impl Workspace {
@@ -244,14 +248,26 @@ impl Workspace {
             .peers
             .iter()
             .position(|peer| peer.publisher == publisher)
-            && let Some(peer) = self.peers.get_mut(index)
         {
-            change(peer);
+            let changed = self.peers.get_mut(index).is_some_and(|peer| {
+                let before = peer.clone();
+                change(peer);
+                *peer != before
+            });
+            if changed {
+                self.touch();
+            }
             return;
         }
         let mut peer = Peer::new(publisher);
         change(&mut peer);
         self.peers.push(peer);
+        self.touch();
+    }
+
+    /// Record that what is known here changed.
+    fn touch(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// They are here: this and what they say of themselves.
@@ -310,25 +326,50 @@ impl Workspace {
         }
     }
 
-    /// Where their pointer moved on the tile of a tab of this workspace.
+    /// Where their pointer moved on the tile of a tab of this workspace. A
+    /// pointer moves many times a second, so nothing is copied to tell
+    /// whether it moved: it is compared where it is.
     fn point(&mut self, from: EndpointId, key: &PresenceKey, point: (f64, f64)) {
-        if let PresenceKey::Pointer {
+        let PresenceKey::Pointer {
             space: PointerSpace::Tile { room, tab },
         } = key
-            && *room == self.id
-        {
-            self.with(from, |peer| peer.pointer = Some((*tab, point.0, point.1)));
+        else {
+            return;
+        };
+        if *room != self.id {
+            return;
         }
+        let now = Some((*tab, point.0, point.1));
+        if let Some(peer) = self.peers.iter_mut().find(|peer| peer.publisher == from) {
+            if peer.pointer != now {
+                peer.pointer = now;
+                self.touch();
+            }
+            return;
+        }
+        let mut peer = Peer::new(from);
+        peer.pointer = now;
+        self.peers.push(peer);
+        self.touch();
     }
 
     /// Their pointer left the tile it was on.
     fn clear_point(&mut self, from: EndpointId, key: &PresenceKey) {
-        if let PresenceKey::Pointer {
-            space: PointerSpace::Tile { .. },
-        } = key
-            && let Some(peer) = self.peers.iter_mut().find(|peer| peer.publisher == from)
-        {
-            peer.pointer = None;
+        if !matches!(
+            key,
+            PresenceKey::Pointer {
+                space: PointerSpace::Tile { .. },
+            }
+        ) {
+            return;
+        }
+        let cleared = self
+            .peers
+            .iter_mut()
+            .find(|peer| peer.publisher == from)
+            .is_some_and(|peer| peer.pointer.take().is_some());
+        if cleared {
+            self.touch();
         }
     }
 
@@ -362,7 +403,11 @@ impl Workspace {
 
     /// They left the workspace.
     fn depart(&mut self, publisher: EndpointId) {
+        let before = self.peers.len();
         self.peers.retain(|peer| peer.publisher != publisher);
+        if self.peers.len() != before {
+            self.touch();
+        }
     }
 
     /// The calls in progress here, as those in them say: the people of one
@@ -484,6 +529,16 @@ impl Plane {
             NeighbourMsg::IdentityHello { cert, .. } => workspace.certified(from, &cert),
             _ => {}
         }
+    }
+
+    /// How many times what the workspace in front knows of its people
+    /// changed: a surface drawing that workspace draws again when this moved.
+    fn revision(&self) -> u64 {
+        let active = self.active;
+        self.workspaces
+            .iter()
+            .find(|workspace| Some(workspace.ws) == active)
+            .map_or(0, |workspace| workspace.revision)
     }
 
     /// Everyone whose pointer is over `tab` of `workspace` now, by publisher, if
@@ -999,6 +1054,7 @@ impl Client {
                         id: id.clone(),
                         peers: Vec::new(),
                         content: content::Topology::default(),
+                        revision: 0,
                     });
                     joined.push((*ws, id.clone()));
                 }
@@ -1696,6 +1752,14 @@ impl Client {
             ws,
             msg: Box::new(msg),
         });
+    }
+
+    /// How many times what the workspace in front knows of its people
+    /// changed: a surface that draws them draws again when this moved, and
+    /// asks for no frame while it holds still.
+    #[must_use]
+    pub fn presence_revision(&self) -> u64 {
+        self.plane.borrow().revision()
     }
 
     /// Everyone whose pointer is over `tab` of `workspace` now, by publisher. The
