@@ -296,7 +296,6 @@ fn refresh_home_peer_endpoint(
         })
         .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
     registration.relay_endpoint = Some(endpoint.clone());
-    registration.environments = response.environments;
     registration.schema_version = tilo_relay::HomePeerRegistration::CURRENT_SCHEMA;
     tilo_files::native::atomic::write_with_mode(
         &path,
@@ -393,7 +392,6 @@ fn cmd_home_peer_remove(
         label: "Removed".into(),
         files_ready: false,
         services: tilo_relay_protocol::ServiceCapabilities::default(),
-        environments: tilo_relay_protocol::RelayEnvironments::default(),
         decommissioned: false,
     });
     println!("{}", serde_json::to_string(&response)?);

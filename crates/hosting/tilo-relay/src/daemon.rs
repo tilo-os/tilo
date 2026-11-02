@@ -5,10 +5,9 @@
 //! Also exposes the `Relay` struct so integration tests can spin up
 //! two relays in the same process and let them merge.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use iroh::endpoint::{Endpoint, presets};
@@ -19,9 +18,6 @@ use tokio::task::JoinHandle;
 
 use tilo_user_identity::{RevocationList, verify_revocation_entry};
 
-use crate::compute_session::ComputeProtocol;
-use crate::compute_transport::COMPUTE_ALPN;
-use crate::compute_worker::{ProductionComputeWorkerConfig, run_production_compute_worker};
 use crate::config::RelayConfig;
 use crate::handshake::{EndpointTrust, LiveIdentity};
 use crate::host::RelayProtocol;
@@ -32,7 +28,6 @@ use crate::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, DISCOVERY_ALPN,
     HomePeerManagementRequest, HomePeerManagementResponse, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
-use crate::workspace::SharedWorkspace;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 #[derive(serde::Deserialize)]
@@ -147,8 +142,8 @@ pub struct Relay {
     /// Only the browser listener publishes this public navigation origin.
     #[cfg(feature = "web")]
     pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
-    /// Background tasks (revocation refresh, metrics persistence, compute
-    /// worker). Aborted (per-handle) when the `Relay` drops.
+    /// Background tasks (revocation refresh, metrics persistence). Aborted
+    /// (per-handle) when the `Relay` drops.
     background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
     /// Effective same-identity replication and serving policy, safe to expose
     /// to the shell/fs orchestrators because service claims were intersected
@@ -158,9 +153,6 @@ pub struct Relay {
     full_replica: ReplicaProof,
     /// What the browser carriers need to serve sessions of this relay.
     web: Box<WebContext>,
-    /// Live proof that the owned signed-package compute worker completed all
-    /// health checks and still owns its authenticated session.
-    compute_ready: Arc<AtomicBool>,
     /// The rooms this relay governs; absent when it hosts no room authority.
     rooms: Option<crate::rooms::Rooms>,
 }
@@ -228,7 +220,6 @@ pub struct RelayHandle {
     /// Effective device-mesh policy for routing and replication consumers.
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     full_replica: ReplicaProof,
-    compute_ready: Arc<AtomicBool>,
 }
 
 /// Verify `cert`'s device's delegation against the relay's user `own_user`
@@ -442,13 +433,9 @@ impl Relay {
         }
         // A certificate authorises a service, but it cannot make a service
         // exist. The composite process starts relay + filesystem planes; live
-        // workspace control uses relay's non-retained presence plane, while
-        // compute and app serving exist only when their workers are present:
-        // app serving needs a plane supplied by an embedding process.
-        let compute_requested = cfg.services.compute
-            && matches!(cfg.device_role, crate::mesh::DeviceRole::AlwaysOnServer);
+        // workspace control uses relay's non-retained presence plane, and app
+        // serving needs a plane supplied by an embedding process.
         let mut available_services = crate::mesh::ServiceCapabilities::home_peer();
-        available_services.compute = compute_requested;
         available_services.app_serving = app_serving.is_some();
         cfg.services = cfg
             .services
@@ -457,13 +444,6 @@ impl Relay {
         let app_serving = app_serving.filter(|_| cfg.services.app_serving);
         // Reject unavailable local backends before binding endpoints, publishing
         // capabilities or starting background tasks.
-        let environments = crate::environment_host::worker_environments(
-            cfg.environments.as_ref().filter(|_| cfg.services.compute),
-            &cfg.state_root.join("environments"),
-            &identity.device_signing_key,
-            &tilo_user_identity::IdentityPaths::under(&cfg.identity_root).device_privkey,
-        )?;
-        let compute_ready = Arc::new(AtomicBool::new(false));
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
             role: cfg.device_role,
@@ -517,7 +497,6 @@ impl Relay {
             trust_policy: live_trust_policy.clone(),
             mesh_profile: mesh_profile.clone(),
             full_replica: full_replica.clone(),
-            compute_ready: Arc::clone(&compute_ready),
             home_peer_bundle: cfg.home_peer_bundle.clone(),
             autobind: handler.autobind.clone(),
             agents: handler.agents.clone(),
@@ -527,19 +506,8 @@ impl Relay {
             identity: live.clone(),
             mesh_profile: mesh_profile.clone(),
             full_replica: full_replica.clone(),
-            compute_ready: Arc::clone(&compute_ready),
             state_root: cfg.state_root.clone(),
-            workspaces: workspaces.clone(),
         };
-        let compute = ComputeProtocol::new(
-            workspaces.clone(),
-            live.clone(),
-            crate::compute_session::ComputeTrust {
-                trust_policy: live_trust_policy.clone(),
-                agents: handler.agents.clone(),
-            },
-            Arc::new(crate::environment_host::TracingMetering),
-        );
         let certification = crate::certification::CertificationProtocol::new(live.clone());
         let web = Box::new(WebContext {
             relay: handler.clone(),
@@ -551,8 +519,7 @@ impl Relay {
             .accept(ALPN, handler)
             .accept(crate::certify::CERTIFY_ALPN, certification)
             .accept(DISCOVERY_ALPN, discovery)
-            .accept(MANAGEMENT_ALPN, management)
-            .accept(COMPUTE_ALPN, compute);
+            .accept(MANAGEMENT_ALPN, management);
         if let Some(rooms) = &rooms {
             for (alpn, handler) in crate::host::rooms_protocols(&sessions, rooms) {
                 router = router.accept(alpn, handler);
@@ -564,42 +531,13 @@ impl Relay {
         let router = router.spawn();
 
         let background_tasks = spawn_background_tasks(&cfg, &identity, &metrics, &live);
-        if cfg.services.compute {
-            // Running jobs on the replica's copies only saves transfers;
-            // without them every input is fetched.
-            let replicas = home_peer_replicas(&cfg.home_peer_bundle).unwrap_or_else(|error| {
-                tracing::warn!(%error, "compute worker runs without the home-peer replica");
-                BTreeMap::new()
-            });
-            // The worker serves the rooms this host holds when it starts and
-            // those its home-peer replica keeps.
-            let mut worker_workspaces = replicas.keys().copied().collect::<BTreeSet<u64>>();
-            for (id, workspace) in workspaces.lock().await.iter() {
-                workspace
-                    .lock()
-                    .await
-                    .admit_device(identity.device_cert.device_public_key)?;
-                worker_workspaces.insert(*id);
-            }
-            let worker_config = ProductionComputeWorkerConfig {
-                endpoint: endpoint.clone(),
-                relay_address: endpoint.addr(),
-                user_public_key: identity.user_public_key,
-                device_cert: identity.device_cert.clone(),
-                device_signing_key: identity.device_signing_key.clone(),
-                revocations: identity.revocations.clone(),
-                workspaces: worker_workspaces,
-                state_root: cfg.state_root.join("compute-worker"),
-                readiness: Arc::clone(&compute_ready),
-                environments,
-                replicas,
-            };
-            let worker_task = tokio::spawn(async move {
-                if let Err(error) = run_production_compute_worker(worker_config).await {
-                    tracing::warn!(%error, "production compute worker withdrawn");
-                }
-            });
-            push_background_task(&background_tasks, worker_task);
+        // The host is a member of every room it holds: its own device is on
+        // those rosters, so it reads and serves them as any participant does.
+        for workspace in workspaces.lock().await.values() {
+            workspace
+                .lock()
+                .await
+                .admit_device(identity.device_cert.device_public_key)?;
         }
         Ok(Self {
             endpoint,
@@ -611,7 +549,6 @@ impl Relay {
             mesh_profile,
             full_replica: full_replica.clone(),
             web,
-            compute_ready,
             rooms,
         })
     }
@@ -655,7 +592,6 @@ impl Relay {
             metrics: self.sessions.metrics.clone(),
             mesh_profile: self.mesh_profile.clone(),
             full_replica: self.full_replica.clone(),
-            compute_ready: Arc::clone(&self.compute_ready),
         }
     }
 
@@ -817,29 +753,6 @@ fn home_peer_relay_workspaces(
     Ok((ticket, relay_workspace_ids))
 }
 
-/// The filesystem replica stores the home peer on this device keeps, by the
-/// relay workspace each backs: content this device's compute worker may run
-/// a job on once the job's requester proves it holds the same bytes.
-fn home_peer_replicas(bundle_path: &Path) -> Result<BTreeMap<u64, Vec<PathBuf>>, RelayError> {
-    let mut replicas = BTreeMap::<u64, Vec<PathBuf>>::new();
-    if !bundle_path.exists() {
-        return Ok(replicas);
-    }
-    let text = std::fs::read_to_string(bundle_path)?;
-    let bundle: fs::full_replica::HomePeerSet = toml::from_str(&text)
-        .map_err(|error| RelayError::Identity(format!("invalid home-peer bundle: {error}")))?;
-    for workspace in &bundle.workspaces {
-        let (_, relay_workspace_ids) = home_peer_relay_workspaces(workspace)?;
-        for id in relay_workspace_ids {
-            let dirs = replicas.entry(id).or_default();
-            if !dirs.contains(&workspace.cache_dir) {
-                dirs.push(workspace.cache_dir.clone());
-            }
-        }
-    }
-    Ok(replicas)
-}
-
 /// Check the home-peer bundle the filesystem worker consumes and, when there
 /// is one, serve full-content replication. Which rooms this relay holds is
 /// not the bundle's to say: the rooms' own governance admits it as one of
@@ -872,7 +785,6 @@ impl RelayHandle {
     pub fn advertised_services(&self) -> crate::mesh::ServiceCapabilities {
         let mut services = self.mesh_profile.services.clone();
         services.full_content_replication &= !self.filesystem_endpoints().is_empty();
-        services.compute &= self.compute_ready.load(Ordering::Acquire);
         services
     }
 
@@ -934,7 +846,7 @@ async fn bind_endpoint(
 }
 
 fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
-    let reserved: &[&[u8]] = &[ALPN, DISCOVERY_ALPN, MANAGEMENT_ALPN, COMPUTE_ALPN];
+    let reserved: &[&[u8]] = &[ALPN, DISCOVERY_ALPN, MANAGEMENT_ALPN];
     if alpn.is_empty() {
         return Err(RelayError::ProtocolRegistration(
             "additional ALPN must not be empty".into(),
@@ -1129,7 +1041,6 @@ struct DiscoveryProtocol {
     trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     full_replica: ReplicaProof,
-    compute_ready: Arc<AtomicBool>,
     home_peer_bundle: PathBuf,
     autobind: Option<WorkspaceAutobind>,
     agents: crate::peer::AgentRegistry,
@@ -1146,31 +1057,13 @@ impl DiscoveryProtocol {
     }
 }
 
-/// What this relay's workers run for environments, across its workspaces.
-async fn environment_offer(
-    workspaces: &WorkspaceRegistry,
-) -> tilo_relay_protocol::RelayEnvironments {
-    let bound: Vec<SharedWorkspace> = workspaces.lock().await.values().cloned().collect();
-    let now_ms = tilo_clock::unix_now_ms();
-    let mut offer = tilo_relay_protocol::RelayEnvironments::default();
-    for workspace in bound {
-        let here = crate::compute_transport::compute_state(&mut *workspace.lock().await)
-            .environment_offer(now_ms);
-        offer.sessions |= here.sessions;
-        offer.legacy_apps |= here.legacy_apps;
-    }
-    offer
-}
-
 #[derive(Clone)]
 struct ManagementProtocol {
     endpoint: Endpoint,
     identity: LiveIdentity,
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     full_replica: ReplicaProof,
-    compute_ready: Arc<AtomicBool>,
     state_root: PathBuf,
-    workspaces: WorkspaceRegistry,
 }
 
 impl std::fmt::Debug for ManagementProtocol {
@@ -1203,8 +1096,7 @@ impl ProtocolHandler for ManagementProtocol {
             )
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let mut services = self.mesh_profile.services.clone();
-        services.compute &= self.compute_ready.load(Ordering::Acquire);
+        let services = self.mesh_profile.services.clone();
         let request: HomePeerManagementRequest =
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
                 .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
@@ -1270,7 +1162,6 @@ impl ProtocolHandler for ManagementProtocol {
             .filter(|label| !label.trim().is_empty())
             .unwrap_or_else(|| self.identity.cert.device_label.clone());
         let files_ready = self.full_replica.current().is_some();
-        let environments = environment_offer(&self.workspaces).await;
         write_frame(
             &mut send,
             &postcard::to_allocvec(&HomePeerManagementResponse {
@@ -1279,7 +1170,6 @@ impl ProtocolHandler for ManagementProtocol {
                 label: label.trim().to_string(),
                 files_ready,
                 services,
-                environments,
                 decommissioned,
             })
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
@@ -1376,7 +1266,6 @@ impl ProtocolHandler for DiscoveryProtocol {
             )));
         }
         let mut profile = (*self.mesh_profile).clone();
-        profile.services.compute &= self.compute_ready.load(Ordering::Acquire);
         let proof = self.full_replica.current();
         profile.filesystem_endpoints = proof
             .as_ref()
@@ -1504,17 +1393,6 @@ mod tests {
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
-            // The compute worker beside the replica holds its store for the
-            // shard's jobs, and only that shard's.
-            assert_eq!(
-                home_peer_replicas(&bundle_path).unwrap(),
-                BTreeMap::from([(42, vec![temp.path().join("cache")])])
-            );
-            assert!(
-                home_peer_replicas(&temp.path().join("absent.toml"))
-                    .unwrap()
-                    .is_empty()
-            );
             let mut config = RelayConfig {
                 home_peer_bundle: bundle_path,
                 full_replica_status: status,
@@ -1628,10 +1506,6 @@ mod tests {
             assert!(!services.app_serving);
             assert!(!services.compute);
             assert!(services.remote_control_relay);
-            relay.compute_ready.store(true, Ordering::Release);
-            assert!(relay.handle().mesh_profile().services.compute);
-            relay.compute_ready.store(false, Ordering::Release);
-            assert!(!relay.handle().mesh_profile().services.compute);
             relay.shutdown().await;
         }
         // Phase `ready_profile_serializes_the_direct_filesystem_endpoint`.
@@ -1929,7 +1803,7 @@ mod tests {
 
     #[test]
     fn additional_protocol_rejects_relay_owned_alpns() {
-        for alpn in [ALPN, DISCOVERY_ALPN, MANAGEMENT_ALPN, COMPUTE_ALPN] {
+        for alpn in [ALPN, DISCOVERY_ALPN, MANAGEMENT_ALPN] {
             assert!(matches!(
                 validate_additional_alpn(alpn),
                 Err(RelayError::ProtocolRegistration(_))

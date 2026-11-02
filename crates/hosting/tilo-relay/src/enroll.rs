@@ -1275,7 +1275,6 @@ fn register_home_peer(
         user_public_key: hex::encode(cert.user_public_key),
         device_cert: Some(cert.clone()),
         relay_workspace_ids: relay_workspace_ids.to_vec(),
-        environments: tilo_relay_protocol::RelayEnvironments::default(),
     });
     if registrations.len() > 128 {
         bail!("home-peer registry is full");

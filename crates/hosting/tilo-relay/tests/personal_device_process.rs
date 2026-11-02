@@ -134,7 +134,6 @@ fn write_approver_fixture(
         user_public_key: hex::encode(user),
         device_cert: Some(home_cert),
         relay_workspace_ids: vec![FILE_WORKSPACE],
-        environments: tilo_relay_protocol::RelayEnvironments::default(),
     };
     tilo_files::native::atomic::write_creating_parent(
         &tilo_relay::home_peer_registry_path(root_dir),

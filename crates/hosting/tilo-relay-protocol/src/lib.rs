@@ -13,7 +13,6 @@
 //! - [`compaction`] — a member device's coverage statement for a sealed
 //!   route the host cannot read;
 //! - [`live`] — the ephemeral presence and preview frames of the live plane;
-//! - [`environment`] — interactive environment sessions a relay runs for its
 //!   members, and the legacy launches they route to KVM workers;
 //! - [`legacy_window`] — legacy windows a session streams, as the live plane
 //!   carries them to browsers, and the input members send back;
@@ -24,9 +23,7 @@
 //! - [`room_operator`] — the JSON-lines protocol between the public-room
 //!   service and each `tilo-relay room` child it runs;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
-//!   the server advertisements compute admission checks;
-//! - [`placement`] — which advertised device a compute job is sent to, and
-//!   why every other one was passed over;
+//!   the server advertisements devices offer work with;
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
 //! - [`home_peer`] — the registry record written after enrolling an
 //!   always-on peer;
@@ -48,13 +45,11 @@ pub mod certify;
 pub mod compaction;
 pub mod config;
 pub mod directory;
-pub mod environment;
 pub mod home_peer;
 pub mod legacy_window;
 pub mod live;
 pub mod mesh;
 pub mod metrics;
-pub mod placement;
 pub mod policy;
 pub mod process_lease;
 pub mod proxies;
@@ -74,21 +69,16 @@ pub use tilo_workspace_join::delegation;
 pub use tilo_workspace_join::room_workspace_id;
 
 pub use auth::{AuthError, AuthenticatedPeer};
-pub use config::{ConfigError, EnvironmentsConfig, RelayConfig};
+pub use config::{ConfigError, RelayConfig};
 pub use home_peer::{
-    HomePeerRegistration, RELAY_OFFERS_FILE, RelayEnvironments, RelayOffer, RelayOffers,
-    home_peer_registry_path, personal_device_peer_path, remember_personal_device,
-    valid_home_peer_label,
+    HomePeerRegistration, home_peer_registry_path, personal_device_peer_path,
+    remember_personal_device, valid_home_peer_label,
 };
 pub use mesh::{
     ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, PowerAvailability,
     ReplicationIntent, ReplicationResource, ServerAdvertisement, ServiceCapabilities,
 };
 pub use metrics::MetricsSnapshot;
-pub use placement::{
-    ComputeRequirements, Ineligible, NoEligibleWorker, Placement, PlacementCandidate,
-    PlacementRank, PowerClass, place_compute_job,
-};
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
 pub use transport::{ALPN, ContentPeerRegistration, Envelope};

@@ -31,21 +31,12 @@ mod client_owns_its_endpoint;
 mod coedit_through_host;
 #[path = "commit_dedup.rs"]
 mod commit_dedup;
-#[path = "compute_content.rs"]
-mod compute_content;
-#[path = "compute_session.rs"]
-mod compute_session;
 #[path = "device_certification.rs"]
 mod device_certification;
 #[path = "durable_host_restart.rs"]
 mod durable_host_restart;
 #[path = "end_to_end_sync.rs"]
 mod end_to_end_sync;
-#[cfg(target_os = "linux")]
-#[path = "environment_from_a_device.rs"]
-mod environment_from_a_device;
-#[path = "environment_sessions.rs"]
-mod environment_sessions;
 #[path = "governed_rooms.rs"]
 mod governed_rooms;
 #[path = "governed_workspace_access.rs"]
@@ -54,9 +45,6 @@ mod governed_workspace_access;
 mod hosting_cost;
 #[path = "hosting_member.rs"]
 mod hosting_member;
-#[cfg(target_os = "linux")]
-#[path = "legacy_on_kvm.rs"]
-mod legacy_on_kvm;
 #[path = "live_plane.rs"]
 mod live_plane;
 #[path = "multi_host.rs"]

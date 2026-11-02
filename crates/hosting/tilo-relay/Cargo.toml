@@ -8,11 +8,6 @@ publish.workspace = true
 description = "Tilo host + relay daemon: authenticated iroh transport for workspace CRDT ops, pins WorkspaceDirectory, store-and-forwards for offline peers."
 license = "MIT OR Apache-2.0"
 
-# cargo-machete cannot see serde_bytes: it is only named in
-# `#[serde(with = "serde_bytes")]` attributes (compute_transport.rs).
-[package.metadata.cargo-machete]
-ignored = ["serde_bytes"]
-
 [lib]
 name = "tilo_relay"
 path = "src/lib.rs"
@@ -46,18 +41,6 @@ path = "src/enroll.rs"
 [[bin]]
 name = "tilo-home-peer-control"
 path = "src/home_peer_control/main.rs"
-
-# A terminal's pty carried to an environment session on a relay; the
-# device's `ush` supervisor runs it for a relay environment target.
-[[bin]]
-name = "tilo-relay-environment"
-path = "src/environment_cli.rs"
-
-# Asks this device's relays what their workers run for environments, for
-# Terminal's relay picker; the `ush` supervisor runs it without waiting.
-[[bin]]
-name = "tilo-relay-offers"
-path = "src/relay_offers_cli.rs"
 
 # The host / relay daemon.
 #
@@ -138,7 +121,6 @@ tilo-automerge.workspace = true
 # the ALPN. Same encoding the identity crate uses so byte layouts
 # stay compatible.
 serde.workspace = true
-serde_bytes.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 # Install bodies carry certificates' canonical encoding as base64.
@@ -218,10 +200,6 @@ bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 # Installed packages and their integrity records.
 package-store = { path = "../../packaging/package-store" }
-# The environment record a relay session is opened from.
-tilo-environment = { path = "../../runtime/environment" }
-# Members' tool builds: built as the member, signed here.
-env-tools = { path = "../../runtime/env-tools" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # App surfaces, fetched by hash from the registry's reviewed payload blobs.
 clap.workspace = true
@@ -265,8 +243,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Only the local Linux guest backend needs namespaces, Landlock and vsock.
-# Portable relay routing and remote environment sessions do not link it.
-ush = { path = "../../runtime/ush" }
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

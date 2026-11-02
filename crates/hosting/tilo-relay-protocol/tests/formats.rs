@@ -112,7 +112,6 @@ fn json_encodings_are_pinned() {
             user_public_key: "33".repeat(32),
             device_cert: None,
             relay_workspace_ids: vec![7, u64::MAX],
-            environments: tilo_relay_protocol::RelayEnvironments::default(),
         },
         concat!(
             r#"{"schema_version":3,"#,
@@ -321,7 +320,6 @@ fn toml_encodings_are_pinned() {
         },
         device_role: DeviceRole::AlwaysOnServer,
         services: ServiceCapabilities::home_peer(),
-        environments: None,
         web_entry: None,
         member_limits: None,
         max_room_grants: None,

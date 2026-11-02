@@ -698,7 +698,6 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             user_public_key: hex::encode(other_cert.user_public_key),
             device_cert: Some(other_cert),
             relay_workspace_ids: vec![7],
-            environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         tilo_files::native::atomic::write_creating_parent(
             &tilo_relay::home_peer_registry_path(identity_root.path()),
@@ -740,7 +739,6 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             user_public_key: hex::encode(cert.user_public_key),
             device_cert: Some(cert),
             relay_workspace_ids: vec![7],
-            environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         assert!(valid_home_peer_registration(&registration));
 

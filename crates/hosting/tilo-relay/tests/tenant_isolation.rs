@@ -41,7 +41,7 @@ use tilo_relay::rooms::{
 };
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
-use tilo_relay::{ComputeClient, ContentFetchError, Envelope, Relay, RelayClient, RelayConfig};
+use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -910,9 +910,6 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
     );
     assert_eq!(t.rooms().list().await.len(), 2, "the agent created a room");
 
-    // The host's compute is its person's, never an agent's.
-    compute_control_refused("the agent", &t, &agent).await;
-
     // Outside its delegation it is not admitted to a room at all.
     let probe = connect(&t.relay, &agent).await;
     assert!(
@@ -922,50 +919,5 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
         ),
         "the agent reads a room its delegation does not name"
     );
-    t.relay.shutdown().await;
-}
-
-/// `device`, which completes the compute handshake, drives none of the
-/// host's compute: job content in either tenant's room is refused before any
-/// device holding bytes is asked, and its first control message ends the
-/// control stream, so it attaches to no room's compute plane and receives
-/// no one's queued job.
-async fn compute_control_refused(who: &str, t: &TwoTenants, device: &TestDevice) {
-    let mut client = ComputeClient::connect(
-        device_endpoint(device).await,
-        t.relay.node_addr(),
-        t.provider.user_pk,
-        Some(t.host.device_pubkey()),
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("the device completes the compute handshake");
-    for workspace_id in [t.acme.workspace_id, t.globex.workspace_id] {
-        assert_eq!(
-            client
-                .fetch_content(workspace_id, [0x31; 16], [0x32; 32], u64::MAX)
-                .await,
-            Err(ContentFetchError::Refused("not_authorised".into())),
-            "{who} fetched compute content in workspace {workspace_id}"
-        );
-    }
-    client.attach(t.acme.workspace_id).await.ok();
-    let answer = tokio::time::timeout(Duration::from_secs(5), client.receive())
-        .await
-        .expect("the relay answers a compute control message");
-    let answer = answer.map(|delivery| delivery.envelope);
-    assert!(
-        answer.is_err(),
-        "{who} holds compute control: the relay answered {answer:?}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_tenants_member_gets_no_compute_control_and_no_job_content() {
-    let t = TwoTenants::start().await;
-    compute_control_refused("Acme's inviter", &t, &t.ann_laptop).await;
-    compute_control_refused("Globex's member", &t, &t.bob_phone).await;
     t.relay.shutdown().await;
 }

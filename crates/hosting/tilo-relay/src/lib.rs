@@ -70,33 +70,9 @@ pub mod certification;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod compute_content;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod compute_session;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod compute_transport;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod compute_worker;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod environment_bridge;
-#[cfg(target_os = "linux")]
-pub mod environment_guest;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod environment_host;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod environment_routing;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod environment_tools;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod host_jobs;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod legacy_host;
-#[cfg(target_os = "linux")]
-pub mod legacy_route;
-#[cfg(target_os = "linux")]
-pub mod legacy_vm_host;
 #[cfg(feature = "agents")]
 pub mod moderation;
 #[cfg(not(target_arch = "wasm32"))]
@@ -107,8 +83,6 @@ mod offload_content;
 mod offload_media;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod public_avatars;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod relay_offers;
 #[cfg(feature = "agents")]
 pub mod room_bots;
 #[cfg(not(target_arch = "wasm32"))]
@@ -136,7 +110,7 @@ pub use tilo_room_host::{
     room_records, rooms, store, surfaces, workspace,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_room_host::{authority_epoch, handshake, host_authority, room_access, workspace_io};
+use tilo_room_host::{authority_epoch, handshake, room_access};
 
 pub use tilo_relay_client::frame;
 pub use tilo_relay_protocol::{
@@ -163,22 +137,6 @@ pub use compute::{
     ComputeJobResult, ComputeJobSpec, ComputeOutputSource, ComputePackageCatalogue,
     ComputeResourceLimits, ComputeSandbox, ComputeSandboxInvocation, ComputeWorker, HeldContent,
     InstalledComputeCatalogue, LauncherComputeSandbox, admit_compute_job,
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub use compute_content::{ContentFetchError, content_proof, fetch_job_content, prove_job_input};
-#[cfg(not(target_arch = "wasm32"))]
-pub use compute_session::{ComputeClient, ComputeDelivery, ComputeSessionError};
-#[cfg(not(target_arch = "wasm32"))]
-pub use compute_transport::{
-    ComputeEnvelope, ComputeJobBinding, ComputeResultUpdate, ComputeRouteOutcome,
-    ComputeStatusUpdate, ComputeTransportError, ComputeWorkerAdvertisement,
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub use compute_worker::{
-    ComputeAssignment, ComputeWorkerError, FileComputeContentStore, InputStaging, InputTransfer,
-    ProductionComputeWorkerConfig, WorkerEnvironments, WorkerHeldContent, hydrate_job_inputs,
-    run_compute_assignment, run_production_compute_worker, serve_worker_stream,
-    serve_worker_stream_with, spawn_worker_stream,
 };
 pub use config::RelayConfig;
 #[cfg(not(target_arch = "wasm32"))]
