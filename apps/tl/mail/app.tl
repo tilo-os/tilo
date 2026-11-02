@@ -656,9 +656,7 @@ view inbox(b: Mailbox) {
 /// it in search (`is:inbox`), or those filed in it when no filter names it.
 fn in_mailbox(a: Account, b: Mailbox) -> List<Thread> {
     let query = "is:{b.key}"
-    if filters(Thread).any(f -> f.query == query) {
-        a.threads.matching(query)
-    } else {
+    if filters(Thread).any(f -> f.query == query) { a.threads.matching(query) } else {
         a.threads.filter(t -> t.boxes.any(x -> x == b.key))
     }
 }

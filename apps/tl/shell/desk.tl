@@ -27,7 +27,7 @@ view desk(d: Desk) {
 view desk_around(d: Desk, front: Option<Arrangement>) {
     let s = shell
     let docked = front != .none and dock_shows(s, d) and s.dock_edge == .bottom
-    let resting = d.here == "" or d.here == "none" or d.here == "desk" or (d.here == "switcher" and not d.switcher_revealed)
+    let resting = d.here == "" or d.here == "none" or d.here == "desk" or d.here == "switcher" and not d.switcher_revealed
     layers {
         stack(gap: .tight, fill) {
             if bar_shows(s, d) {

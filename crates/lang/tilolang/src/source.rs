@@ -398,6 +398,43 @@ pub fn compile_dirs(
 ///
 /// # Errors
 /// The lock cannot be written.
+/// Where a package keeps its source catalogue: `locales/en-US.ftl`.
+#[must_use]
+pub fn catalogue_path(dir: &Path) -> PathBuf {
+    dir.join(crate::messages::LOCALES_DIR)
+        .join(format!("{}.ftl", crate::messages::SOURCE_LOCALE))
+}
+
+/// The package's source catalogue as its source says it should read.
+#[must_use]
+pub fn catalogue(built: &BuiltPackage) -> String {
+    let committed = std::fs::read_to_string(catalogue_path(&built.dir)).unwrap_or_default();
+    crate::messages::source_catalogue_keeping(&built.compiled.meta, &committed)
+}
+
+/// Whether the package's committed source catalogue reads as its source says.
+#[must_use]
+pub fn catalogue_current(built: &BuiltPackage) -> bool {
+    std::fs::read_to_string(catalogue_path(&built.dir)).is_ok_and(|old| old == catalogue(built))
+}
+
+/// Writes the package's source catalogue; `true` when it changed.
+///
+/// # Errors
+///
+/// The catalogue cannot be written.
+pub fn write_catalogue(built: &BuiltPackage) -> Result<bool, String> {
+    if catalogue_current(built) {
+        return Ok(false);
+    }
+    let path = catalogue_path(&built.dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    std::fs::write(&path, catalogue(built)).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(true)
+}
+
 pub fn write_ids(built: &BuiltPackage) -> Result<bool, String> {
     let path = built.dir.join(IDS_FILE);
     let text = built.compiled.ids.to_text();

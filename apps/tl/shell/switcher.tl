@@ -28,7 +28,9 @@ view switcher(d: Desk) {
     let at = if let p = pick { walk_place(windows, p) } else { 1 }
     let from = if at > page(space.compact) / 2 { at - page(space.compact) / 2 } else { 1 }
     let shown = windows.filter(w -> walk_place(windows, w) >= from and walk_place(windows, w) < from + page(space.compact))
-    let this_app = if d.switcher_scope == "app" { if let p = pick { p.origin_app } else { "" } } else { "" }
+    let this_app = if d.switcher_scope == "app" {
+        if let p = pick { p.origin_app } else { "" }
+    } else { "" }
     let caption = if this_app != "" { "{this_app} · {at} of {count}" } else if count > page(space.compact) { "{at} of {count}" } else { "" }
     row(fill, align: .center, distribute: .center, padding: .related) {
         ui.FloatingPanel {

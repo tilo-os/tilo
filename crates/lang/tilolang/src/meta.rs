@@ -494,24 +494,7 @@ impl TypeMeta {
     /// `todo list`).
     #[must_use]
     pub fn noun(&self) -> String {
-        let mut words: Vec<String> = Vec::new();
-        let mut word = String::new();
-        for ch in self.name.chars() {
-            if ch == '_' || ch == ' ' {
-                if !word.is_empty() {
-                    words.push(std::mem::take(&mut word));
-                }
-            } else if ch.is_uppercase() && !word.is_empty() {
-                words.push(std::mem::take(&mut word));
-                word.extend(ch.to_lowercase());
-            } else {
-                word.extend(ch.to_lowercase());
-            }
-        }
-        if !word.is_empty() {
-            words.push(word);
-        }
-        words.join(" ")
+        in_words(&self.name)
     }
 
     /// What several are called in a sentence: [`plural`] of its [`noun`](Self::noun).
@@ -519,6 +502,29 @@ impl TypeMeta {
     pub fn plural(&self) -> String {
         plural(&self.noun())
     }
+}
+
+/// A declared name in words, lower case: `TodoList` and `todo_list` are `todo list`.
+#[must_use]
+pub fn in_words(name: &str) -> String {
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    for ch in name.chars() {
+        if ch == '_' || ch == ' ' {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+        } else if ch.is_uppercase() && !word.is_empty() {
+            words.push(std::mem::take(&mut word));
+            word.extend(ch.to_lowercase());
+        } else {
+            word.extend(ch.to_lowercase());
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words.join(" ")
 }
 
 /// What several of a noun are called, as English writes most: `notes`, `entries`, `boxes`.

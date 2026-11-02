@@ -16,8 +16,8 @@ use crate::meta::PackageMeta;
 use crate::package::parse_package_files;
 use crate::print::print_file;
 use crate::source::{
-    BuildError, BuiltPackage, PackageSource, Stamp, apps_of, compile_package,
-    dependency_order_with, read_ids, search_of, write_ids,
+    BuildError, BuiltPackage, PackageSource, Stamp, apps_of, catalogue_current, compile_package,
+    dependency_order_with, read_ids, search_of, write_catalogue, write_ids,
 };
 
 /// Finds the published packages that are no tilolang package directory among the directories
@@ -162,6 +162,18 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
             }
             let mut current = true;
             for b in &built {
+                if !catalogue_current(b) {
+                    if o.write_ids {
+                        write_catalogue(b)?;
+                        eprintln!("{}: the source catalogue updated", b.dir.display());
+                    } else {
+                        eprintln!(
+                            "{}: the source catalogue (locales/en-US.ftl) is out of date; write it with `tilolangc check --write-ids` (or `build`), and commit it with the sources",
+                            b.dir.display()
+                        );
+                        current = false;
+                    }
+                }
                 let changes = lock_changes(b);
                 if changes.is_empty() {
                     continue;
@@ -253,6 +265,9 @@ fn build(dir: &Path, o: &Options) -> Result<bool, String> {
         let changes = lock_changes(b);
         if write_ids(b)? {
             explain(b, &changes, "updated");
+        }
+        if write_catalogue(b)? {
+            eprintln!("{}: the source catalogue updated", b.dir.display());
         }
     }
     if let Some(root) = built.last() {
