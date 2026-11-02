@@ -225,7 +225,22 @@ require_exec "$payload/bin/file-explorer"
 # The packer serializes a normalized manifest rather than preserving authoring
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"
-require_toml_string "$manifest" sandbox.services.tilo-fs "optional@14"
+# The manifest asks for the runtime interface version this image serves, read
+# from the image's own declaration (/usr/share/tilo/system-interfaces.toml):
+# a hardcoded number here goes stale the moment the interface moves, and then
+# every image build fails on a manifest that is in fact correct.
+python3 - "$(at "$manifest")" "$(at /usr/share/tilo/system-interfaces.toml)" <<'PY' \
+  || die "$manifest does not ask for the runtime interface this image serves"
+import pathlib
+import sys
+import tomllib
+
+manifest = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+interfaces = tomllib.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+served = interfaces["interfaces"]["runtime"]
+declared = manifest["sandbox"]["services"]["tilo-fs"]
+raise SystemExit(0 if declared == f"optional@{served}" else 1)
+PY
 # The package names the exact runtime build it links, and the image ships it.
 runtime_version="$(python3 - "$(at "$manifest")" <<'PY'
 import pathlib, re, sys, tomllib
