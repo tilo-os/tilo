@@ -211,7 +211,7 @@ tilo-agent-runs = { path = "../agent-runs" }
 # The watchdog that ends a session whose main loop stopped for good.
 tilo-liveness = { path = "../liveness" }
 # The room left on the person's filesystems, for the storage notice.
-rustix = { workspace = true, features = ["fs"] }
+rustix = { workspace = true, features = ["fs", "process"] }
 # Planning and starting the apps the person opens.
 tilo-app-launch = { path = "../app-launch" }
 # The udisks2 names the removable media are read and ejected by. The

@@ -110,6 +110,51 @@ impl PasswordVerifier for Unavailable {
     }
 }
 
+/// Whose password the lock checks: the login this session runs as. `$USER`
+/// when the login set it, else the name the login database has for the user
+/// this session runs as — a session started outside a login still locks with
+/// its person's name on the screen, and still takes that person's password.
+#[must_use]
+pub fn login_user() -> String {
+    let named = std::env::var("USER").unwrap_or_default();
+    if !named.is_empty() {
+        return named;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(name) = user_name(rustix::process::geteuid().as_raw()) {
+            return name;
+        }
+    }
+    String::new()
+}
+
+/// The name the login database has for `uid`, when it has one.
+#[cfg(target_os = "linux")]
+fn user_name(uid: u32) -> Option<String> {
+    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut found = std::ptr::null_mut();
+    let mut buffer = vec![0_u8; 16 * 1024];
+    // SAFETY: every pointer is to a live local buffer of the stated size;
+    // `found` is read back as the success flag.
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            pwd.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &raw mut found,
+        )
+    };
+    if status != 0 || found.is_null() {
+        return None;
+    }
+    // SAFETY: getpwuid_r succeeded, so `pwd` is initialised and `pw_name`
+    // points into `buffer`, which is still alive.
+    let name = unsafe { std::ffi::CStr::from_ptr(pwd.assume_init().pw_name) };
+    Some(name.to_string_lossy().into_owned())
+}
+
 /// The verifier of this machine: the installed helper, else none.
 #[must_use]
 pub fn installed() -> std::sync::Arc<dyn PasswordVerifier> {
@@ -167,6 +212,20 @@ mod tests {
         let silent = fake_helper(dir.path(), "exec sleep 1000000\n")
             .with_timeout(Duration::from_millis(150));
         assert_eq!(silent.verify("bob", "s3cr3t"), Verdict::Unavailable);
+    }
+
+    /// A session started outside a login shell knows who is at the desk from
+    /// the login database, so its lock still checks that person's password.
+    #[test]
+    fn the_login_the_session_runs_as_is_always_named() {
+        assert!(!login_user().is_empty(), "the lock knows whose it is");
+        #[cfg(target_os = "linux")]
+        {
+            let uid = rustix::process::geteuid().as_raw();
+            let named = user_name(uid).expect("this login is in the login database");
+            assert!(!named.is_empty() && !named.contains(':'), "{named:?}");
+            assert_eq!(user_name(u32::MAX), None, "a uid no login has");
+        }
     }
 
     /// A session that cannot check a password says so before it locks,

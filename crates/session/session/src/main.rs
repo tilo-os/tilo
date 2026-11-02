@@ -605,14 +605,10 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
     Options {
         config: SessionConfig::load(),
         search: search_options(),
-        // The apps this session starts reach its services over the socket
-        // the launcher hands them; a session inside another desktop's
-        // window leaves that desktop's own socket alone.
-        action_plane: if owned {
-            ActionPlane::Launcher
-        } else {
-            ActionPlane::Off
-        },
+        // The apps this session starts reach its services over the socket the
+        // launcher hands them; a session inside another desktop's window
+        // serves them on a socket of its own, leaving that desktop's alone.
+        action_plane: ActionPlane::for_machine(machine),
         // A program of this login asks the person at the seat's agent door
         // to work in a workspace as an agent; a session in another
         // desktop's window serves none.
@@ -635,7 +631,7 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
         // keyboard whenever the person may want it, under the hands they
         // type with.
         surfaces: surfaces(),
-        user: std::env::var("USER").unwrap_or_default(),
+        user: tilo_session::unlock::login_user(),
         verifier: tilo_session::unlock::installed(),
         state: tilo_paths::state_dir(),
         // A session in a window of another desktop leaves the machine's
@@ -672,7 +668,7 @@ fn lock_screen() -> Vec<tilo_session::surfaces::Surface> {
     };
     vec![
         tilo_session::surfaces::Surface::new("lock", program)
-            .person(std::env::var("USER").unwrap_or_default())
+            .person(tilo_session::unlock::login_user())
             .lock(),
     ]
 }

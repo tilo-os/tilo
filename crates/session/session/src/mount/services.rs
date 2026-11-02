@@ -110,11 +110,14 @@ pub(crate) struct Collaboration<'a> {
 }
 
 /// Where this session's apps reach its services, when it serves them: the
-/// socket the launcher hands them, or the one it was told to serve.
+/// socket the launcher hands them, the session's own, or the one it was told
+/// to serve.
 ///
 /// # Errors
 ///
-/// The services root the launcher hands apps could not be made this user's.
+/// The services root the launcher hands apps could not be made this user's,
+/// or this login has no private directory to serve the session's own socket
+/// in.
 fn action_plane_path(options: &Options) -> Result<Option<std::path::PathBuf>, Error> {
     Ok(match &options.action_plane {
         ActionPlane::Off => return Ok(None),
@@ -124,8 +127,54 @@ fn action_plane_path(options: &Options) -> Result<Option<std::path::PathBuf>, Er
             launcher::services::ensure_services_root()?;
             Some(launcher::services::collab_socket())
         }
+        ActionPlane::Own => Some(own_plane_path()?),
         ActionPlane::At(path) => Some(path.clone()),
     })
+}
+
+/// The socket this session serves its own apps on when it draws in a window of
+/// another desktop: [`own_plane_path_in`] for this process, in a directory
+/// only this account may reach, as the broker that binds it requires.
+///
+/// # Errors
+///
+/// This login has no runtime directory to keep the socket private in, or the
+/// directory could not be made.
+fn own_plane_path() -> Result<std::path::PathBuf, std::io::Error> {
+    let path = own_plane_path_in(std::env::var_os("XDG_RUNTIME_DIR")).ok_or_else(|| {
+        std::io::Error::other("this login has no runtime directory to serve the session's apps in")
+    })?;
+    private_parent(&path)?;
+    Ok(path)
+}
+
+/// [`own_plane_path`] for the runtime directory it reads, so what it decides
+/// can be checked: the login's private session directory under `runtime_dir`,
+/// with a socket named for this process, so two sessions of one login never
+/// take each other's.
+fn own_plane_path_in(runtime_dir: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    let directory = tilo_paths::login::session_dir(runtime_dir)?;
+    Some(directory.join(format!("services-{}.sock", std::process::id())))
+}
+
+/// Make the directory `path` lives in exist and be this account's alone: the
+/// broker that binds a socket there serves only a directory no one else may
+/// reach.
+fn private_parent(path: &std::path::Path) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return Ok(());
+    };
+    if !parent.exists() {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+    }
+    Ok(())
 }
 
 /// The plane the apps read and invoke this session's services on, when it
@@ -347,4 +396,36 @@ pub(crate) fn mount_services(
         services: Rc::clone(&services),
     })));
     services
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    use super::own_plane_path_in;
+
+    /// A session in another desktop's window serves its apps in the login's
+    /// private session directory, under a name of its own; a login with no
+    /// runtime directory of its own leaves it nowhere private to serve them.
+    #[test]
+    fn a_sessions_own_socket_lives_in_its_private_directory() {
+        let path = own_plane_path_in(Some(OsString::from("/run/user/1000")))
+            .expect("a login with a runtime directory has a private one");
+        assert_eq!(
+            path.parent(),
+            Some(Path::new("/run/user/1000/tilo-session"))
+        );
+        assert_eq!(
+            path.file_name(),
+            Some(std::ffi::OsStr::new(&format!(
+                "services-{}.sock",
+                std::process::id()
+            ))),
+            "{} is a socket named for this session",
+            path.display()
+        );
+        assert!(own_plane_path_in(None).is_none());
+        assert!(own_plane_path_in(Some(OsString::from("relative"))).is_none());
+    }
 }
