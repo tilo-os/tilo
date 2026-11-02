@@ -12,7 +12,7 @@ use ui::icons::Icon;
 
 use crate::source::{
     ActivationModifier, Answer, ArgumentSpec, Ask, CommandEntry, LauncherSource, ResourceKind,
-    Search, SearchScope,
+    Scope, Search,
 };
 
 /// Row id of a value an argument step offers.
@@ -192,7 +192,7 @@ struct Steps {
 /// The fixed desktop, answering as the shell's source does.
 pub struct FixtureSource {
     search: Search,
-    scope: SearchScope,
+    scope: Scope,
     volume: u8,
     steps: Option<Steps>,
     /// The row whose other actions are listed, and the query to give back.
@@ -210,7 +210,7 @@ impl FixtureSource {
     pub fn new() -> Self {
         Self {
             search: Search::default(),
-            scope: SearchScope::Workspace,
+            scope: Scope::Workspace,
             volume: 40,
             steps: None,
             others: None,
@@ -254,10 +254,10 @@ impl FixtureSource {
     fn scoped(&self, row: &Row) -> bool {
         match self.scope {
             // Notes is the app in front: its own windows and actions.
-            SearchScope::ActiveApp => {
+            Scope::InApp(_) => {
                 row.detail.starts_with("Notes") || row.id.starts_with("action:new-note")
             }
-            SearchScope::Workspace | SearchScope::All => true,
+            _ => true,
         }
     }
 
@@ -269,18 +269,20 @@ impl FixtureSource {
         answer.status = None;
         answer.field_only = self.field_only && query.is_empty();
         answer.placeholder = match self.scope {
-            SearchScope::ActiveApp => "Search Notes…".into(),
+            Scope::InApp(_) => "Search Notes…".into(),
             _ => "Search apps, windows, files and actions…".into(),
         };
-        answer.scope = self.scope;
+        answer.scope = self.scope.clone();
         answer.scope_token = match self.scope {
-            SearchScope::ActiveApp => Some("Notes".into()),
-            SearchScope::Workspace => Some("This workspace".into()),
-            SearchScope::All => None,
+            Scope::InApp(_) => Some("Notes".into()),
+            Scope::Workspace => Some("This workspace".into()),
+            _ => None,
         };
         answer.scope_token_action =
-            (self.scope == SearchScope::Workspace).then(|| "Search every workspace".into());
-        if query.is_empty() && self.search.kinds.is_empty() && self.scope != SearchScope::ActiveApp
+            (self.scope == Scope::Workspace).then(|| "Search every workspace".into());
+        if query.is_empty()
+            && self.search.kinds.is_empty()
+            && !matches!(self.scope, Scope::InApp(_))
         {
             answer.rows = rows
                 .iter()
@@ -436,8 +438,8 @@ impl LauncherSource for FixtureSource {
             }
             Ask::Widen => {
                 self.scope = match self.scope {
-                    SearchScope::ActiveApp => SearchScope::Workspace,
-                    SearchScope::Workspace | SearchScope::All => SearchScope::All,
+                    Scope::InApp(_) => Scope::Workspace,
+                    _ => Scope::Everywhere,
                 };
                 self.results(answer);
             }
@@ -519,7 +521,7 @@ mod tests {
         let answer = answered(
             &mut source,
             Ask::Open {
-                scope: SearchScope::Workspace,
+                scope: Scope::Workspace,
                 query: None,
             },
         );

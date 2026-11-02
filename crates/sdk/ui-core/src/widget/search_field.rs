@@ -30,7 +30,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::icons::Icon;
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
-use crate::search::{ScopeDecl, SearchOpener, SearchRequest, SearchRequestScope};
+use crate::search::{ScopeDecl, SearchOpener, SearchRequest};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -138,7 +138,7 @@ pub fn sync_filter(field: &mut SearchField, content: &mut dyn Widget) {
         let mut scope = None;
         if visit_filterable(content, &mut |target| scope = target.search_scope()) {
             field.escalation =
-                Some(scope.map_or(SearchRequestScope::ThisApp, SearchRequestScope::Resource));
+                Some(scope.map_or_else(SearchRequest::this_app, SearchRequest::within));
         }
     }
 }
@@ -167,7 +167,8 @@ pub struct SearchField {
     platform: PlatformConventions,
     /// Where Enter and "Search everywhere" send the query; `None` keeps the
     /// field a plain input (the palette's own query field).
-    escalation: Option<SearchRequestScope>,
+    /// The search this field escalates to, with the query it holds.
+    escalation: Option<SearchRequest>,
     opener: SearchOpener,
     count: Option<FilterCount>,
     reserve_count: bool,
@@ -203,7 +204,7 @@ impl SearchField {
     /// reserved so the text never runs under the count.
     pub fn filter() -> Self {
         let mut field = Self::new().with_placeholder("Filter");
-        field.escalation = Some(SearchRequestScope::ThisApp);
+        field.escalation = Some(SearchRequest::this_app());
         field.reserve_count = true;
         field
     }
@@ -255,7 +256,7 @@ impl SearchField {
     /// the whole app.
     #[must_use]
     pub fn escalates_within(mut self, scope: ScopeDecl) -> Self {
-        self.escalation = Some(SearchRequestScope::Resource(scope));
+        self.escalation = Some(SearchRequest::within(scope));
         self
     }
 
@@ -487,19 +488,10 @@ impl SearchField {
 
     /// Hand the current query to the platform search, as Enter does.
     pub fn escalate(&mut self) -> bool {
-        let Some(scope) = self.escalation.clone() else {
+        let Some(request) = self.escalation.clone() else {
             return false;
         };
-        self.opener.open(
-            SearchRequest {
-                scope,
-                query: None,
-                offer: None,
-                action: None,
-                ..SearchRequest::default()
-            }
-            .with_query(self.input.value()),
-        );
+        self.opener.open(request.with_query(self.input.value()));
         true
     }
 
@@ -1401,10 +1393,7 @@ mod tests {
         let invocation = take_control_invocation(&mut sf).expect("Enter escalates");
         let request = SearchRequest::from_invocation(&invocation).expect("a search request");
         assert_eq!(request.query.as_deref(), Some("invoice"));
-        assert_eq!(
-            request.resource_scope().map(|s| s.label.as_str()),
-            Some("Inbox")
-        );
+        assert_eq!(request.part().map(|s| s.label.as_str()), Some("Inbox"));
         assert!(
             take_control_invocation(&mut sf).is_none(),
             "one request per Enter"
@@ -1536,7 +1525,7 @@ mod tests {
         assert_eq!(sf.count(), Some(FilterCount::new(3, 3)));
         assert_eq!(
             sf.escalation,
-            Some(SearchRequestScope::Resource(ScopeDecl::new(
+            Some(SearchRequest::within(ScopeDecl::new(
                 "list:people",
                 "People"
             )))

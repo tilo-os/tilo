@@ -196,24 +196,6 @@ impl ActionPalette {
         changed
     }
 
-    /// The card grows by exactly `rows` of host-painted controls and the
-    /// results start below them, rather than a host with too many controls
-    /// painting over results. Returns whether the reservation changed.
-    pub fn set_host_filter_strip_rows(&mut self, rows: usize) -> bool {
-        let rows = rows.max(1);
-        let changed = self.band_rows != rows;
-        self.band_rows = rows;
-        self.structure_dirty |= changed;
-        self.sync_list();
-        changed
-    }
-
-    /// The band rows the card is reserving.
-    #[must_use]
-    pub fn host_filter_strip_rows(&self) -> usize {
-        self.band_rows.max(1)
-    }
-
     /// The band the host paints its own controls into.
     #[must_use]
     pub fn filter_strip_rect(&self) -> Rect {
@@ -498,7 +480,7 @@ impl ActionPalette {
     }
 
     fn band_height(&self) -> f64 {
-        BAND_HEIGHT * self.layout_scale() * usize_to_f64(self.host_filter_strip_rows())
+        BAND_HEIGHT * self.layout_scale()
     }
 
     /// Room the band takes in the card: its rows and the padding under them.
@@ -1302,8 +1284,4 @@ impl ActionPalette {
             self.results.replace_groups(self.host_groups());
         }
     }
-}
-
-fn usize_to_f64(value: usize) -> f64 {
-    f64::from(u32::try_from(value).unwrap_or(u32::MAX))
 }

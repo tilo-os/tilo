@@ -46,6 +46,7 @@ pub mod rank;
 mod registry;
 pub(crate) mod request;
 mod row;
+pub mod scope;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
@@ -63,10 +64,11 @@ pub use rank::{FieldWeight, MatchTier, result_relevance};
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
 pub use request::{
     APP_SEARCH_BUTTON_ID, Anchor, ScopeDecl, SearchOffer, SearchOpener, SearchRequest,
-    SearchRequestScope, open_search_binding, open_search_invocation, scope_contains, search_button,
+    open_search_binding, open_search_invocation, scope_contains, search_button,
 };
 pub(crate) use request::{search_address, search_resource};
 pub use row::{ActivationModifier, Alternate, CommandRow, RowFace, SearchRow};
+pub use scope::{AppScope, Scope, WindowGroupId};
 /// Fold text the way every index does: case, compatibility forms and
 /// alphabetic diacritics.
 pub use tilo_search::fold as fold_search_text;

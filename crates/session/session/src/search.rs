@@ -44,7 +44,7 @@ use tilo_desktop_search::providers::waiting::Waiting;
 use tilo_desktop_search::{DESKTOP_APP, InvokeTarget, SearchPreferences, Source, Target, Usage};
 use tilo_desktop_surface::{SearchHost, SearchHostFeed};
 use ui::record::{RecordCheckout, RecordId, RecordKind};
-use ui::search::system::SearchScope;
+use ui::search::Scope;
 
 /// The action host as the session's search reaches it: what open apps
 /// publish and run, and running what is chosen by address.
@@ -603,20 +603,20 @@ impl SessionSearch {
 }
 
 impl SearchHost for SessionSearch {
-    fn feed(&self, workspace: &str, scope: SearchScope) -> SearchHostFeed {
+    fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed {
         let (settings, catalogue) = self.for_workspace(workspace);
         let kept = self.kept.borrow();
         // Every workspace's places name their workspace when the search is
         // widened; the one in front needs no name.
         let continue_places = match scope {
-            SearchScope::All => Continue::everywhere(
+            Scope::Everywhere => Continue::everywhere(
                 &self.places.borrow(),
                 workspace,
                 self.open_tabs.borrow().clone(),
                 self.workspaces.borrow().clone(),
                 app_name,
             ),
-            SearchScope::ActiveApp | SearchScope::Workspace => Continue::new(
+            _ => Continue::new(
                 &self.places.borrow(),
                 workspace,
                 self.open_tabs.borrow().clone(),
@@ -625,7 +625,7 @@ impl SearchHost for SessionSearch {
         };
         let mut sources: Vec<Box<dyn Source>> = vec![
             Box::new(Happening::new(
-                scope == SearchScope::All,
+                scope.everywhere(),
                 self.here.borrow().clone(),
             )),
             Box::new(settings),
@@ -787,7 +787,7 @@ mod tests {
     /// The installed apps and the host apps matching `needle` that a search
     /// opened now is fed.
     fn found(search: &SessionSearch, needle: &str) -> (Vec<String>, Vec<String>) {
-        let feed = search.feed("workspace", SearchScope::Workspace);
+        let feed = search.feed("workspace", &Scope::Workspace);
         let applications = feed.applications.into_iter().map(|app| app.title).collect();
         let host = feed
             .sources
@@ -966,7 +966,7 @@ mod tests {
     fn places_listed(
         search: &SessionSearch,
         workspace: &str,
-        scope: SearchScope,
+        scope: &Scope,
     ) -> Vec<(String, Vec<String>)> {
         let feed = search.feed(workspace, scope);
         feed.sources
@@ -1014,7 +1014,7 @@ mod tests {
 
         // Narrowed to the workspace in front, its own places only.
         assert_eq!(
-            places_listed(&search, "here", SearchScope::Workspace)
+            places_listed(&search, "here", &Scope::Workspace)
                 .into_iter()
                 .map(|(title, _)| title)
                 .collect::<Vec<_>>(),
@@ -1023,7 +1023,7 @@ mod tests {
 
         // Widened, another workspace's place is found beside its own, saying
         // where it is.
-        let wide = places_listed(&search, "here", SearchScope::All);
+        let wide = places_listed(&search, "here", &Scope::Everywhere);
         let elsewhere = wide
             .iter()
             .find(|(title, _)| title == "Quarterly plan")
@@ -1043,7 +1043,7 @@ mod tests {
     fn fixed_lists_keep_what_search_built_from_them() {
         let search = SessionSearch::new(SearchOptions::default(), None);
         let before = Rc::clone(&search.kept.borrow().host_apps);
-        let _ = search.feed("workspace", SearchScope::Workspace);
+        let _ = search.feed("workspace", &Scope::Workspace);
         assert!(Rc::ptr_eq(&before, &search.kept.borrow().host_apps));
     }
 }

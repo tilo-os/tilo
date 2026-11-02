@@ -29,6 +29,7 @@ use ui::automerge::{AutoCommit, ObjId};
 use ui::collaboration::PresencePayload;
 use ui::kurbo::{Affine, Point, Rect};
 use ui::presence::PresenceKey;
+use ui::search::Scope;
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::time::{Duration, Instant};
 use ui::vello::Scene;
@@ -1488,15 +1489,9 @@ impl DesktopSurface {
                 .reconcile_strip_topology(strip_id, &shape)
                 .is_some();
         }
-        // The new-tab control asks which application to open there: search
-        // over the applications, aimed at that window.
-        if let Some(group) = new_tab {
-            shared.search_request = Some(search::SearchRequest::NewTab(strip_id, group));
-        }
-        // A window's search control searches what that window shows, as
-        // the native shell's does.
-        if let Some((group, query)) = search_in {
-            shared.search_request = Some(search::SearchRequest::Window(strip_id, group, query));
+        if let Some(request) = search::search_asked(&mut shared.tree, strip_id, new_tab, search_in)
+        {
+            shared.search_request = Some(request);
         }
         if changed {
             shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
@@ -1634,7 +1629,10 @@ impl DesktopSurface {
                     }
                     // Opening search changes no model state.
                     Admitted::Search(query) => {
-                        shared.search_request = Some(search::SearchRequest::Open(query));
+                        shared.search_request = Some(search::SearchRequest::Open {
+                            scope: Scope::Workspace,
+                            query,
+                        });
                         continue;
                     }
                     // Presentation only: the tree does not change.

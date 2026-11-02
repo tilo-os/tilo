@@ -20,7 +20,8 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 pub use ui::search::ActivationModifier;
-pub use ui::search::system::{ResourceKind, SearchScope};
+pub use ui::search::system::ResourceKind;
+pub use ui::search::{AppScope, Scope};
 pub use ui::{ArgumentSpec, CommandEntry};
 
 /// What the person searches for: the text typed and the kinds of result
@@ -37,10 +38,7 @@ pub enum Ask {
     /// The launcher opened in `scope` (the source may search a narrower or
     /// wider one when that is all there is), showing `query`, or what the
     /// source opens it on when `None`.
-    Open {
-        scope: SearchScope,
-        query: Option<String>,
-    },
+    Open { scope: Scope, query: Option<String> },
     /// The rows for `search`.
     Search(Search),
     /// The person chose row `row`, with `modifier` held: the source opens
@@ -85,7 +83,7 @@ pub struct Answer {
     /// Whether the filter band shows.
     pub band: bool,
     /// The scope searched now.
-    pub scope: SearchScope,
+    pub scope: Scope,
     /// The token at the start of the field naming a narrowed scope, and
     /// the accessible name of what pressing it does (widen), if anything.
     pub scope_token: Option<String>,
@@ -138,7 +136,7 @@ struct Shared {
     generation: u64,
     open: bool,
     /// The host asked the launcher to open, in this scope.
-    open_request: Option<SearchScope>,
+    open_request: Option<Scope>,
     room: Option<(f64, f64)>,
     fit: Option<CardFit>,
     /// The modifier keys the host sees held.
@@ -232,7 +230,7 @@ impl Link {
     /// does: the launcher opens before it handles anything else, so the
     /// first key typed after the shortcut is never lost to a closed card.
     /// Agents and scripts open it through its `open` action instead.
-    pub fn request_open(&self, scope: SearchScope) {
+    pub fn request_open(&self, scope: Scope) {
         let wake = {
             let mut shared = self.shared.borrow_mut();
             shared.open_request = Some(scope);
@@ -244,7 +242,7 @@ impl Link {
     }
 
     /// The scope the host asked the launcher to open in, once.
-    pub fn take_open_request(&self) -> Option<SearchScope> {
+    pub fn take_open_request(&self) -> Option<Scope> {
         self.shared.borrow_mut().open_request.take()
     }
 
@@ -341,7 +339,7 @@ mod tests {
     fn asks_are_answered_in_order_and_each_answer_is_a_new_generation() {
         let link = Link::new();
         link.ask(Ask::Open {
-            scope: SearchScope::Workspace,
+            scope: Scope::Workspace,
             query: None,
         });
         link.ask(Ask::Search(Search {

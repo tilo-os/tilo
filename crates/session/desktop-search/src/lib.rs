@@ -48,7 +48,7 @@ pub use model::{
     ALL_APPS_COMMAND, ActionTarget, CHROME_RESOURCE, DESKTOP_APP, Hit, InvokeTarget, OPEN_ACTION,
     OPEN_ANCHOR, SHOW_COLLABORATORS, Source, Target, WORKSPACE_COMMAND_PREFIX, search,
 };
-pub use palette::{DesktopSearch, Reach, SearchData};
+pub use palette::{DesktopSearch, SearchData};
 pub use preferences::SearchPreferences;
 pub use ui::search::system::ResourceKind;
 pub use usage::Usage;

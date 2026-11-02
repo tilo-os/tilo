@@ -15,6 +15,7 @@ use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, Route, Verb};
 use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, TileSource, TypedInsertion, TypedRefusal, seed_tree,
 };
+use ui::search::Scope;
 use ui::widget::TileHost;
 
 struct Notices(Rc<Cell<usize>>);
@@ -1484,7 +1485,7 @@ fn labels(snapshot: &tilo_desktop_surface::navigation::Snapshot) -> Vec<String> 
 #[test]
 fn text_committed_into_the_open_search_goes_in_at_the_caret() {
     let (mut driver, handle, _) = mount();
-    handle.open_search(None);
+    handle.open_search(Scope::Workspace, None);
     driver.relayout();
     let field = handle
         .typed_field()
@@ -1622,7 +1623,7 @@ fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
 #[test]
 fn escape_clears_what_was_typed_before_it_closes_search() {
     let (mut driver, handle, _) = mount();
-    handle.open_search(Some("sheets".into()));
+    handle.open_search(Scope::Workspace, Some("sheets".into()));
     driver.relayout();
     assert!(handle.search_open());
     assert_eq!(handle.search_rows().0, "sheets");
@@ -1659,12 +1660,12 @@ fn result_rows(driver: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode>
 #[test]
 fn an_app_chosen_from_search_while_its_window_is_open_is_focused_not_opened_twice() {
     let (mut driver, handle, _) = mount();
-    handle.open_search(Some("sheets".into()));
+    handle.open_search(Scope::Workspace, Some("sheets".into()));
     driver.relayout();
     choose_row(&mut driver, "Sheets");
     assert!(handle.focus_app("so.tilo.notes"));
     driver.relayout();
-    handle.open_search(Some("sheets".into()));
+    handle.open_search(Scope::Workspace, Some("sheets".into()));
     driver.relayout();
     choose_row(&mut driver, "Sheets");
     let snapshot = handle.snapshot("g", vec![]);
@@ -1689,7 +1690,7 @@ fn an_app_chosen_from_search_while_its_window_is_open_is_focused_not_opened_twic
 #[test]
 fn windows_titled_alike_say_which_one_each_is() {
     let (mut driver, handle, _) = mount_with(&["Chat", "Chat", "Notes"]);
-    handle.open_search(Some("chat".into()));
+    handle.open_search(Scope::Workspace, Some("chat".into()));
     driver.relayout();
     let chats: Vec<String> = result_rows(&driver)
         .into_iter()
@@ -1732,7 +1733,7 @@ fn the_search_shortcut_closes_open_search_and_a_host_can_toggle_it() {
 #[test]
 fn a_host_command_from_search_runs_against_the_focused_window() {
     let (mut driver, handle, _) = mount();
-    handle.open_search(Some("close window".into()));
+    handle.open_search(Scope::Workspace, Some("close window".into()));
     driver.relayout();
     driver.key("Enter");
     driver.relayout();
@@ -1816,7 +1817,7 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
     let _background = pumped.background().enter();
     ui::host::scoped(&services, || {
         let (mut driver, handle, _) = mount();
-        handle.open_search(Some("12*7".into()));
+        handle.open_search(Scope::Workspace, Some("12*7".into()));
         driver.relayout();
         assert_eq!(
             result_rows(&driver)
@@ -1830,11 +1831,11 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
         driver.relayout();
         assert!(!handle.search_open(), "choosing the answer closes search");
 
-        handle.open_search(Some("5 km in miles".into()));
+        handle.open_search(Scope::Workspace, Some("5 km in miles".into()));
         driver.relayout();
         choose_row(&mut driver, "3.1069 mi");
 
-        handle.open_search(Some("tilo desktop".into()));
+        handle.open_search(Scope::Workspace, Some("tilo desktop".into()));
         driver.relayout();
         choose_row(&mut driver, "Search the web for tilo desktop");
         assert!(!handle.search_open());

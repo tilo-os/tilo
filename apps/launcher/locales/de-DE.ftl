@@ -11,4 +11,3 @@ launcher-a11y-filter-more = Filter: Mehr
 launcher-a11y-filter-kind = Filter: { $kind }
 launcher-a11y-filters = Suchfilter
 launcher-a11y-result-kinds = Ergebnisarten
-launcher-a11y-scope = Suchbereich

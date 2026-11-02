@@ -7,39 +7,7 @@ pub mod filters;
 #[cfg(test)]
 mod tests;
 pub const PALETTE_ROW_BUDGET: usize = 8;
-/// Seeded by which chord opened the palette: `Ctrl+K` →
-/// [`SearchScope::ActiveApp`]; `Super+K` / `Super+Space` / `Alt+Space` →
-/// [`SearchScope::All`] (`Alt+Space` because a nested Wayland client can't
-/// claim Super from the host DE). Degrades rather than empties: no
-/// provider claiming the focused tab widens `ActiveApp` to every
-/// provider; nothing focused widens the palette to `All`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SearchScope {
-    ActiveApp,
-    #[default]
-    Workspace,
-    All,
-}
-
-impl SearchScope {
-    /// `ActiveApp` renders the tab's title instead of this static
-    /// string. Must not share a word with the kind-filter chips —
-    /// those name result sorts, this names places.
-    pub fn label(self) -> &'static str {
-        match self {
-            SearchScope::ActiveApp => "This app",
-            SearchScope::Workspace => "Workspace",
-            SearchScope::All => "Everywhere",
-        }
-    }
-
-    /// The pill renders a narrowing scope with an explicit `Only …`
-    /// prefix so an empty result list is attributable to the scope,
-    /// not the query.
-    pub fn narrows_results(self) -> bool {
-        matches!(self, SearchScope::ActiveApp)
-    }
-}
+use crate::search::Scope;
 
 /// One well-known category a result can belong to — the domain vocabulary
 /// the chip strip and grouping use. Providers pick from it or, via
@@ -288,17 +256,21 @@ pub fn query_input_is_bounded(needle: &str) -> bool {
         .count()
         <= super::MAX_SEARCH_QUERY_SCALARS
 }
+/// Whether a search of `scope` asks the provider `provider_id`: only a
+/// search of one app narrows, to that app's own providers and the ones that
+/// keep to the app in front. Nothing focused widens it to every provider
+/// rather than emptying it.
 pub fn scope_allows(
-    scope: SearchScope,
+    scope: &Scope,
     provider_id: &str,
     active_provider_id: Option<&str>,
     narrows_to_active_app: bool,
 ) -> bool {
     match scope {
-        SearchScope::All | SearchScope::Workspace => true,
-        SearchScope::ActiveApp => {
+        Scope::InApp(_) => {
             active_provider_id.is_none_or(|id| id == provider_id || narrows_to_active_app)
         }
+        Scope::WindowGroup(_) | Scope::Workspace | Scope::Everywhere => true,
     }
 }
 /// The package id in full names exactly one app, so an exact id is as
@@ -1004,10 +976,10 @@ pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Query<'a> {
     pub needle: &'a str,
-    pub scope: SearchScope,
+    pub scope: &'a Scope,
     pub active_provider_id: Option<&'a str>,
     pub wanted_kinds: &'a [ResourceKind],
 }
@@ -1018,8 +990,8 @@ pub trait Provider<Host, Row: SearchRow> {
     fn max_score(&self) -> i32 {
         MAX_PROVIDER_SCORE
     }
-    /// Whether this provider keeps to the focused app under
-    /// [`SearchScope::ActiveApp`], answering only with that app's own rows.
+    /// Whether this provider keeps to the focused app under a
+    /// [`Scope::InApp`] search, answering only with that app's own rows.
     /// A search scoped to an app shows that app and nothing else: system
     /// actions and other apps come back only when the scope is cleared.
     fn narrows_to_active_app(&self) -> bool {
@@ -1093,7 +1065,7 @@ impl<'a, Host, Row: SearchRow> Registry<'a, Host, Row> {
             }
             let routed = Query {
                 wanted_kinds: &wanted,
-                ..*query
+                ..query.clone()
             };
             let page = provider.query_page(host, &routed, None, SearchBudget::PALETTE);
             if page.stale_cursor {
@@ -1147,7 +1119,7 @@ impl<'a, Host, Row: SearchRow> Registry<'a, Host, Row> {
                 &Query {
                     needle: "",
                     wanted_kinds: &wanted,
-                    ..*query
+                    ..query.clone()
                 },
             )
             .filter(|r| wanted.contains(r.kind()))

@@ -512,7 +512,6 @@ pub struct ActionPalette {
     band_shown: bool,
     /// Chip rows the host's band is reserving: the palette doesn't know how
     /// many controls the host has, so this is negotiated, not fixed.
-    band_rows: usize,
     /// Tallest the host rows' list may grow before it scrolls; the host knows
     /// the display, the palette does not.
     max_list_height: Option<f64>,
@@ -749,7 +748,6 @@ impl ActionPalette {
             scope_token_action: None,
             field_only_while_empty: false,
             band_shown: false,
-            band_rows: 1,
             max_list_height: None,
             max_width: None,
             held: winit::keyboard::ModifiersState::empty(),
@@ -1177,7 +1175,7 @@ impl ActionPalette {
             }
             return true;
         }
-        self.set_scope(request.resource_scope().cloned());
+        self.set_scope(request.part().cloned());
         if let Some(query) = &request.query {
             self.set_query(query);
             self.select_query();

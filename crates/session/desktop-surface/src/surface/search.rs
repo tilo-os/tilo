@@ -16,10 +16,10 @@
 
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
-use tilo_desktop_search::{Reach, SearchData, Target};
+use tilo_desktop_search::{SearchData, Target};
 use ui::automerge::AutoCommit;
 use ui::kurbo::Rect;
-use ui::search::system::SearchScope;
+use ui::search::{AppScope, Scope};
 use ui::taffy::{NodeId, TaffyTree};
 use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
@@ -29,17 +29,41 @@ use super::{DesktopHandle, DesktopSurface, holder_refusal, route_of};
 use crate::navigation::{self, Admitted};
 
 /// What a host asked of search, taken on the next update pass.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum SearchRequest {
-    Open(Option<String>),
+    /// Open search at a [`Scope`], with `query` typed.
+    Open {
+        scope: Scope,
+        query: Option<String>,
+    },
     Toggle,
-    Applications,
-    /// Window `GroupId`'s new-tab control: which application to open there.
-    NewTab(StripId, GroupId),
-    /// Window `GroupId`'s search control, or its app's own search button:
-    /// search what its shown tab holds, narrowed and prefilled as the app
-    /// asked.
-    Window(StripId, GroupId, ui::search::SearchRequest),
+}
+
+/// The search the windows of strip `strip` asked for: a new-tab control asks
+/// which application to show there, a window's search control (or an app's
+/// own search button) asks what that window shows, narrowed to the app that
+/// window has in front.
+pub(super) fn search_asked(
+    tree: &mut DesktopTree,
+    strip: StripId,
+    new_tab: Option<GroupId>,
+    search_in: Option<(GroupId, ui::search::SearchRequest)>,
+) -> Option<SearchRequest> {
+    let mut asked = new_tab.map(|group| SearchRequest::Open {
+        scope: Scope::WindowGroup(Some(group)),
+        query: None,
+    });
+    if let Some((group, request)) = search_in {
+        let part = request.part().cloned();
+        let app = super::find_group(tree, strip, group)
+            .and_then(|window| window.tabs.iter().find(|tab| tab.id == window.active_tab))
+            .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile));
+        asked = Some(SearchRequest::Open {
+            scope: Scope::InApp(AppScope { app, part }),
+            query: request.query,
+        });
+    }
+    asked
 }
 
 /// What a host adds to the desktop's search over everything, collected as
@@ -141,12 +165,14 @@ fn typed_field(
 /// host, starting an app, opening an address.
 pub trait SearchHost {
     /// What to search beyond the desktop's own, in the workspace
-    /// `workspace`, narrowed to it unless `scope` is
-    /// [`SearchScope::All`](ui::search::system::SearchScope::All): then the
-    /// rows of every workspace are offered too, each saying which workspace
-    /// it is in. Called as search opens, inside the desktop's update pass: it
-    /// reads what the host keeps, never the desktop's own tree.
-    fn feed(&self, workspace: &str, scope: SearchScope) -> SearchHostFeed;
+    /// `workspace`, narrowed to it unless `scope` reaches every workspace
+    /// ([`Scope::Everywhere`]): then the rows of every workspace are offered
+    /// too, each saying which workspace it is in. Only a search over the
+    /// workspace asks the host at all: an app's own search and a window
+    /// group's applications are the desktop's. Called as search opens,
+    /// inside the desktop's update pass: it reads what the host keeps, never
+    /// the desktop's own tree.
+    fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed;
     /// Whether the host carries out `target` itself; the desktop then hands
     /// it back through [`DesktopHandle::take_search_choices`].
     fn performs(&self, target: &Target) -> bool;
@@ -323,15 +349,10 @@ impl DesktopHandle {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Toggle);
     }
 
-    /// Open search with `query` typed. The host schedules a frame.
-    pub fn open_search(&self, query: Option<String>) {
-        self.shared.borrow_mut().search_request = Some(SearchRequest::Open(query));
-    }
-
-    /// Open search over every application, each listed (an empty desk's
-    /// "Open an app"). The host schedules a frame.
-    pub fn open_applications(&self) {
-        self.shared.borrow_mut().search_request = Some(SearchRequest::Applications);
+    /// Open search at `scope`, with `query` typed. The host schedules a
+    /// frame.
+    pub fn open_search(&self, scope: Scope, query: Option<String>) {
+        self.shared.borrow_mut().search_request = Some(SearchRequest::Open { scope, query });
     }
 
     /// Whether the search palette is open, as of the last update pass.
@@ -622,14 +643,169 @@ fn commands(
 }
 
 impl DesktopSurface {
-    /// Open search over what the desktop has open now: over the workspace in
-    /// front, or over every workspace when `every_workspace`.
-    pub(super) fn open_search(
-        &mut self,
+    /// Open search at `scope`, with `query` typed: over what the desktop
+    /// has open in the workspace in front ([`Scope::Workspace`]), over every
+    /// workspace ([`Scope::Everywhere`]), over what an app's window holds
+    /// ([`Scope::InApp`]), or over the applications a window group's new tab
+    /// may show ([`Scope::WindowGroup`]).
+    pub(super) fn open_search(&mut self, doc: &AutoCommit, scope: Scope, query: Option<String>) {
+        // An app's search runs in that app's window; a window group's
+        // applications open into it. The others stand over the desk.
+        let window = match &scope {
+            Scope::InApp(app) => self.app_window(app),
+            Scope::WindowGroup(Some(group)) => {
+                self.group_strip(*group).map(|strip| (strip, *group))
+            }
+            Scope::WindowGroup(None) | Scope::Workspace | Scope::Everywhere => None,
+        };
+        let (scope, window, data, usage) = match (scope, window) {
+            (Scope::InApp(app), Some((strip, group))) => {
+                let scope = Scope::InApp(app);
+                if let Some(data) = self.window_search_data(doc, strip, group, &scope) {
+                    (scope, window, data, None)
+                } else {
+                    // The window's app is gone: there is nothing of its own
+                    // left to search.
+                    let scope = Scope::Workspace;
+                    let (data, usage) = self.desk_search_data(doc, &scope);
+                    (scope, None, data, usage)
+                }
+            }
+            // An app with no window open has nothing of its own to search:
+            // the search opens over the workspace instead.
+            (Scope::InApp(_), None) => {
+                let scope = Scope::Workspace;
+                let (data, usage) = self.desk_search_data(doc, &scope);
+                (scope, None, data, usage)
+            }
+            (scope @ Scope::WindowGroup(_), _) => {
+                let data = self.applications_search_data(&scope);
+                (scope, window, data, None)
+            }
+            (scope @ (Scope::Workspace | Scope::Everywhere), _) => {
+                let (data, usage) = self.desk_search_data(doc, &scope);
+                (scope, None, data, usage)
+            }
+        };
+        // Choosing a row of an app's search runs in that app's window; the
+        // others find their window by the resource the row names.
+        let owners = if matches!(scope, Scope::Workspace | Scope::Everywhere) {
+            self.search_owners(doc)
+        } else {
+            std::collections::HashMap::new()
+        };
+        self.search.open(data);
+        if let Some(usage) = usage {
+            self.search.set_usage(usage);
+        }
+        self.search.set_platform_conventions(self.platform);
+        // What a chosen application opens in: a tab of the window group
+        // the new-tab control belongs to, else a window of its own.
+        self.new_tab_into = match &scope {
+            Scope::WindowGroup(_) => window,
+            _ => None,
+        };
+        // Where the card stands and where an action row runs.
+        self.search_window = match &scope {
+            Scope::InApp(_) => window,
+            _ => None,
+        };
+        self.search_owners = owners;
+        if let Some(query) = query {
+            self.search.set_query(&query);
+        }
+        self.structure_dirty = true;
+    }
+
+    fn close_search(&mut self) {
+        self.search.close();
+        self.structure_dirty = true;
+    }
+
+    /// The window an app is open in: its window in front, or the window in
+    /// front when the scope names no app ([`AppScope::front`]).
+    fn app_window(&self, app: &AppScope) -> Option<(StripId, GroupId)> {
+        let shared = self.shared.borrow();
+        match &app.app {
+            Some(app) => {
+                navigation::window_of_app(&shared.tree, app).map(|ids| (ids.strip, ids.group))
+            }
+            None => navigation::active_route(&shared.tree).map(|ids| (ids.strip, ids.group)),
+        }
+    }
+
+    /// The strip showing the window group `group`, wherever it is.
+    fn group_strip(&self, group: GroupId) -> Option<StripId> {
+        let shared = self.shared.borrow();
+        shared
+            .tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .find(|strip| strip.window_groups.iter().any(|window| window.id == group))
+            .map(|strip| strip.id)
+    }
+
+    /// What window `group` shows: its shown tab's resources, what its search
+    /// providers find and its actions
+    /// ([`tilo_desktop_search::window::WindowSearch`]), as the in-app search
+    /// its search control and the app's own search button offer, narrowed to
+    /// the part of the app `scope` names. `None` when the window's app is no
+    /// longer on screen.
+    fn window_search_data(
+        &self,
         doc: &AutoCommit,
-        query: Option<String>,
-        every_workspace: bool,
-    ) {
+        strip: StripId,
+        group: GroupId,
+        scope: &Scope,
+    ) -> Option<SearchData> {
+        let host = self
+            .rows
+            .get(&strip)?
+            .groups
+            .iter()
+            .find(|window| window.id == group)?
+            .active_host()?;
+        // The field says what it searches: the part of the app asked for,
+        // else the app itself.
+        let part = match scope {
+            Scope::InApp(app) => app.part.clone(),
+            _ => None,
+        };
+        let searched = part
+            .as_ref()
+            .map(|part| part.label.clone())
+            .or_else(|| window_app(&self.shared.borrow().tree, group))
+            .filter(|name| !name.is_empty());
+        let published = host.window_search(doc);
+        Some(SearchData {
+            resources: published.resources,
+            providers: published.providers,
+            scope: scope.clone(),
+            placeholder: searched.map(|name| {
+                crate::i18n::t_args("search-window-placeholder", &[("searched", name.into())])
+            }),
+            ..SearchData::default()
+        })
+    }
+
+    /// The applications alone, each listed: what a window group's new tab
+    /// may show, the empty desk's launchpad.
+    fn applications_search_data(&self, scope: &Scope) -> SearchData {
+        SearchData {
+            applications: self.tiles.search_applications(),
+            scope: scope.clone(),
+            ..SearchData::default()
+        }
+    }
+
+    /// What the desktop has open now and what its host adds: over the
+    /// workspace in front, or over every workspace.
+    fn desk_search_data(
+        &self,
+        doc: &AutoCommit,
+        scope: &Scope,
+    ) -> (SearchData, Option<tilo_desktop_search::Usage>) {
         let (windows, commands, (workspace, people), host) = {
             let shared = self.shared.borrow();
             (
@@ -640,11 +816,6 @@ impl DesktopSurface {
                 people(&shared.tree),
                 shared.search_host.clone(),
             )
-        };
-        let scope = if every_workspace {
-            SearchScope::All
-        } else {
-            SearchScope::Workspace
         };
         let mut feed = host
             .map(|host| host.feed(&workspace, scope))
@@ -660,23 +831,31 @@ impl DesktopSurface {
             applications,
             windows,
             commands,
-            reach: if every_workspace {
-                Reach::EveryWorkspace
-            } else {
-                Reach::Workspace
-            },
+            scope: scope.clone(),
             published: feed.published,
             sources,
             preferences: feed.preferences,
             now: feed.now,
             ..SearchData::default()
         };
-        let mut owners = std::collections::HashMap::new();
-        for (strip, row) in &self.rows {
+        for row in self.rows.values() {
             data.resources
                 .extend(ui::widget::published_resources(row, doc));
             data.providers
                 .extend(ui::widget::published_search_providers(row));
+        }
+        (data, usage)
+    }
+
+    /// The window each of the desk's resources is published in, for a row
+    /// chosen in the search over everything: the app's window comes forward
+    /// and runs it.
+    fn search_owners(
+        &self,
+        doc: &AutoCommit,
+    ) -> std::collections::HashMap<String, (StripId, GroupId)> {
+        let mut owners = std::collections::HashMap::new();
+        for (strip, row) in &self.rows {
             for window in &row.groups {
                 let Some(host) = window.active_host() else {
                     continue;
@@ -690,92 +869,7 @@ impl DesktopSurface {
                 }
             }
         }
-        self.search.open(data);
-        if let Some(usage) = usage {
-            self.search.set_usage(usage);
-        }
-        self.search.set_platform_conventions(self.platform);
-        self.new_tab_into = None;
-        self.search_window = None;
-        self.search_owners = owners;
-        if let Some(query) = query {
-            self.search.set_query(&query);
-        }
-        self.structure_dirty = true;
-    }
-
-    fn close_search(&mut self) {
-        self.search.close();
-        self.structure_dirty = true;
-    }
-
-    /// Open search over the applications only, with nothing typed: every app
-    /// is listed, a group of one kind being shown whole. Aimed at a window
-    /// (`into`), what is chosen opens as its tab; else as a window of its
-    /// own. Opens even while search is already open, as another press of a
-    /// window's new-tab control re-aims it.
-    fn open_applications_search(&mut self, into: Option<(StripId, GroupId)>) {
-        let data = SearchData {
-            applications: self.tiles.search_applications(),
-            ..SearchData::default()
-        };
-        self.search.open(data);
-        self.search.set_platform_conventions(self.platform);
-        self.search.set_query("");
-        self.new_tab_into = into;
-        self.search_window = None;
-        self.search_owners.clear();
-        self.structure_dirty = true;
-    }
-
-    /// Open search over what window `group` shows: its shown tab's
-    /// resources, what its search providers find and its actions
-    /// ([`tilo_desktop_search::window::WindowSearch`]), the in-app search its
-    /// search control and the app's own search button offer, narrowed to the part of the
-    /// app `request` names and with its query typed. Opens over everything
-    /// when the window is gone.
-    fn open_window_search(
-        &mut self,
-        doc: &AutoCommit,
-        strip: StripId,
-        group: GroupId,
-        request: ui::search::SearchRequest,
-    ) {
-        let host = self
-            .rows
-            .get(&strip)
-            .and_then(|row| row.groups.iter().find(|candidate| candidate.id == group))
-            .and_then(|window| window.active_host());
-        let Some(host) = host else {
-            self.open_search(doc, request.query, false);
-            return;
-        };
-        // The field says what it searches: the part of the app asked for,
-        // else the app itself.
-        let scope = request.resource_scope();
-        let searched = scope
-            .map(|scope| scope.label.clone())
-            .or_else(|| window_app(&self.shared.borrow().tree, group))
-            .filter(|name| !name.is_empty());
-        let published = host.window_search(doc);
-        let data = SearchData {
-            resources: published.resources,
-            providers: published.providers,
-            window: true,
-            scope: scope.map(|scope| scope.anchor.clone()),
-            placeholder: searched.map(|name| {
-                crate::i18n::t_args("search-window-placeholder", &[("searched", name.into())])
-            }),
-            ..SearchData::default()
-        };
-        self.search.open(data);
-        self.search.set_platform_conventions(self.platform);
-        self.search
-            .set_query(request.query.as_deref().unwrap_or_default());
-        self.new_tab_into = None;
-        self.search_window = Some((strip, group));
-        self.search_owners.clear();
-        self.structure_dirty = true;
+        owners
     }
 
     /// Take a host's search request, follow the palette, and perform what
@@ -784,15 +878,8 @@ impl DesktopSurface {
         let request = self.shared.borrow_mut().search_request.take();
         match request {
             Some(SearchRequest::Toggle) if self.search.is_open() => self.close_search(),
-            Some(SearchRequest::Toggle) => self.open_search(doc, None, false),
-            Some(SearchRequest::Open(query)) => self.open_search(doc, query, false),
-            Some(SearchRequest::Applications) => self.open_applications_search(None),
-            Some(SearchRequest::NewTab(strip, group)) => {
-                self.open_applications_search(Some((strip, group)));
-            }
-            Some(SearchRequest::Window(strip, group, request)) => {
-                self.open_window_search(doc, strip, group, request);
-            }
+            Some(SearchRequest::Toggle) => self.open_search(doc, Scope::Workspace, None),
+            Some(SearchRequest::Open { scope, query }) => self.open_search(doc, scope, query),
             None => {}
         }
         let asks = std::mem::take(&mut self.shared.borrow_mut().search_asks);
@@ -871,7 +958,7 @@ impl DesktopSurface {
         // takes the scope away: the same search, over every workspace.
         if self.search.is_open() && self.search.take_scope_widened() {
             let query = self.search.query().to_owned();
-            self.open_search(doc, Some(query), true);
+            self.open_search(doc, Scope::Everywhere, Some(query));
         }
         if self.search.is_open() {
             let closed = self.search.observe();
@@ -1016,7 +1103,10 @@ impl DesktopSurface {
                 } else if id == tilo_desktop_search::ALL_APPS_COMMAND {
                     // Every app by its name: the applications' own search,
                     // as the empty desk's launchpad opens it.
-                    shared.search_request = Some(SearchRequest::Applications);
+                    shared.search_request = Some(SearchRequest::Open {
+                        scope: Scope::WindowGroup(None),
+                        query: None,
+                    });
                     None
                 } else if id == CLOSE_WINDOW {
                     match active {
@@ -1104,7 +1194,7 @@ impl DesktopSurface {
         let modifiers = *ctx.modifiers;
         if !self.search.is_open() {
             if is_search_chord(event, modifiers, self.platform) {
-                self.open_search(&ctx.state, None, false);
+                self.open_search(&ctx.state, Scope::Workspace, None);
                 self.shared.borrow_mut().search_open = true;
                 return true;
             }

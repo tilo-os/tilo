@@ -2,8 +2,9 @@
 //!
 //! Apps never draw a search field of their own. A control that starts a
 //! search — the toolbar's magnifier, a "Search everywhere" escalation, `/` or
-//! Ctrl+K — asks the platform to open its one search surface, narrowed to
-//! this app or to one of its resources:
+//! Ctrl+K — asks the platform to open its one search surface, over this app
+//! ([`Scope::InApp`](crate::search::Scope::InApp)) or over one of its
+//! resources:
 //!
 //! ```
 //! use tilo_ui::search::{ScopeDecl, SearchRequest, search_button};
@@ -18,7 +19,7 @@
 //! The request travels as an ordinary action invocation addressed to the host
 //! search resource (`tilo.host:search` / `open`). A standalone window opens
 //! its own palette; inside the Tilo shell the framework hands the request to
-//! the shell, which opens the system palette scoped to the app's tab. The app
+//! the shell, which opens the system palette over the app's window. The app
 //! does the same thing either way.
 
 use serde::{Deserialize, Serialize};
@@ -44,22 +45,13 @@ const ANCHOR_PARAM: &str = "anchor";
 
 pub use tilo_resource::{ScopeDecl, scope_contains};
 
-/// What a search opened from an app narrows to.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SearchRequestScope {
-    /// Everything the app publishes.
-    #[default]
-    ThisApp,
-    /// One part of the app (see [`ScopeDecl`]).
-    Resource(ScopeDecl),
-}
-
 /// A request to open the platform search from inside an app.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SearchRequest {
-    pub scope: SearchRequestScope,
+    /// The part of the app to search (see [`ScopeDecl`]); the whole app when
+    /// absent.
+    pub part: Option<ScopeDecl>,
     /// Text the search field starts with, selected so typing replaces it:
     /// the argument an asked action starts from ([`SearchRequest::asking`]).
     pub query: Option<String>,
@@ -113,7 +105,7 @@ impl SearchRequest {
     #[must_use]
     pub fn within(scope: ScopeDecl) -> Self {
         Self {
-            scope: SearchRequestScope::Resource(scope),
+            part: Some(scope),
             query: None,
             offer: None,
             action: None,
@@ -152,7 +144,7 @@ impl SearchRequest {
     /// ([`SearchRequest::asking`]).
     #[must_use]
     pub fn asked(&self) -> Option<tilo_actions::ActionAddress> {
-        let scope = self.resource_scope()?;
+        let scope = self.part.as_ref()?;
         let action = self.action.as_deref()?;
         Some(tilo_actions::ActionAddress::new(
             scope.anchor.as_str(),
@@ -196,11 +188,8 @@ impl SearchRequest {
     }
 
     #[must_use]
-    pub fn resource_scope(&self) -> Option<&ScopeDecl> {
-        match &self.scope {
-            SearchRequestScope::ThisApp => None,
-            SearchRequestScope::Resource(scope) => Some(scope),
-        }
+    pub fn part(&self) -> Option<&ScopeDecl> {
+        self.part.as_ref()
     }
 
     /// The request as the `open` action's arguments.
@@ -210,7 +199,7 @@ impl SearchRequest {
         if let Some(query) = &self.query {
             arguments.insert(QUERY_PARAM.into(), query.clone().into());
         }
-        if let Some(scope) = self.resource_scope() {
+        if let Some(scope) = self.part() {
             arguments.insert(SCOPE_PARAM.into(), scope.anchor.clone().into());
             arguments.insert(SCOPE_LABEL_PARAM.into(), scope.label.clone().into());
         }
@@ -291,12 +280,12 @@ impl SearchRequest {
     }
 
     fn from_parts(query: Option<String>, anchor: Option<String>, label: Option<String>) -> Self {
-        let scope = anchor.map_or(SearchRequestScope::ThisApp, |anchor| {
+        let part = anchor.map(|anchor| {
             let label = label.unwrap_or_else(|| anchor.clone());
-            SearchRequestScope::Resource(ScopeDecl { anchor, label })
+            ScopeDecl { anchor, label }
         });
         Self {
-            scope,
+            part,
             query,
             offer: None,
             action: None,
@@ -414,11 +403,11 @@ pub const APP_SEARCH_BUTTON_ID: &str = "search-open";
 #[must_use]
 pub fn search_button(request: SearchRequest) -> crate::widget::Button {
     let label = I18nManager::lookup_plain("standalone-search-title");
-    let id = match request.resource_scope() {
+    let id = match request.part() {
         Some(scope) => format!("search-open-{}", scope.anchor),
         None => APP_SEARCH_BUTTON_ID.to_owned(),
     };
-    let name = match request.resource_scope() {
+    let name = match request.part() {
         Some(scope) => format!("{label} {}", scope.label),
         None => label,
     };

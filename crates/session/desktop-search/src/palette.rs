@@ -13,6 +13,7 @@ use crate::providers::{
     PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
 };
 use crate::window::WindowSearch;
+use ui::search::Scope;
 use ui::search::system::ResourceKind;
 
 /// Row id prefix of the row that lists the rest of a group the palette's
@@ -21,19 +22,6 @@ const MORE_PREFIX: &str = "more:";
 
 /// The row under the apps that lists every one of them, by its name.
 const ALL_APPS_ID: &str = "all-apps";
-
-/// How far the desk's own search reaches.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Reach {
-    /// Names only: the applications a new tab may show.
-    #[default]
-    Names,
-    /// Everything the desk has open, over the workspace in front, and what a
-    /// query that is not a name answers.
-    Workspace,
-    /// The same over every workspace, each row saying which one holds it.
-    EveryWorkspace,
-}
 
 /// What the host can search right now, collected when search opens.
 #[derive(Default)]
@@ -47,12 +35,6 @@ pub struct SearchData {
     pub published: Vec<PublishedActions>,
     /// The search providers open applications publish.
     pub providers: Vec<Box<dyn ui::search::SearchProvider>>,
-    /// Search what the resources hold, not what can be done to them.
-    pub content_only: bool,
-    /// How far the search reaches: the desktop's search over everything
-    /// answers what is not a name and covers a workspace, a search narrowed
-    /// to the apps or one window does neither.
-    pub reach: Reach,
     /// The exchange rates the host last fetched, which money is answered
     /// with, and now, in Unix seconds, to say how old they are.
     pub rates: Option<crate::answers::currency::Rates>,
@@ -60,13 +42,12 @@ pub struct SearchData {
     /// The installed app that claims a URI scheme, by name: a service an
     /// app serves is searched there ([`WebSearch::app_for_scheme`]).
     pub app_for_scheme: Option<fn(&str) -> Option<String>>,
-    /// Search one window, over what it publishes (`resources` and
-    /// `providers` are that window's): what it holds, then what can be done
-    /// in it ([`crate::window::WindowSearch`]), as an app's own search does.
-    pub window: bool,
-    /// The part of the application a search it opened is narrowed to (a
-    /// [`ui::search::ScopeDecl`] anchor): one mailbox, one folder.
-    pub scope: Option<String>,
+    /// How far the search reaches and what it is narrowed to: an app's own
+    /// resources ([`Scope::InApp`], its `part` one mailbox or folder), the
+    /// applications a window group's new tab may show
+    /// ([`Scope::WindowGroup`]), the workspace in front, or every workspace
+    /// (see [`Scope`]).
+    pub scope: Scope,
     /// What the empty field says it searches, where that is not
     /// everything ("Search Tube…").
     pub placeholder: Option<String>,
@@ -104,7 +85,13 @@ struct Sources {
 
 impl Sources {
     fn new(data: SearchData) -> Self {
-        if data.window {
+        // The part of the app the search is narrowed to, when it is: one
+        // mailbox, one folder.
+        let anchor = match &data.scope {
+            Scope::InApp(app) => app.part.as_ref().map(|part| part.anchor.clone()),
+            _ => None,
+        };
+        if matches!(data.scope, Scope::InApp(_)) {
             return Self {
                 applications: Applications::new(data.applications),
                 windows: Windows(data.windows),
@@ -113,7 +100,7 @@ impl Sources {
                 actions: Actions(Vec::new()),
                 published: Published(Vec::new()),
                 answers: None,
-                window: Some(WindowSearch::new(data.resources, data.providers).within(data.scope)),
+                window: Some(WindowSearch::new(data.resources, data.providers).within(anchor)),
                 host: Vec::new(),
                 preferences: data.preferences,
                 now: data.now,
@@ -123,18 +110,10 @@ impl Sources {
             applications: Applications::new(data.applications),
             windows: Windows(data.windows),
             commands: Commands(data.commands),
-            content: Content::new(data.providers, data.resources.clone()).within(data.scope),
-            actions: Actions(if data.content_only {
-                Vec::new()
-            } else {
-                data.resources
-            }),
-            published: Published(if data.content_only {
-                Vec::new()
-            } else {
-                data.published
-            }),
-            answers: (data.reach != Reach::Names).then(|| {
+            content: Content::new(data.providers, data.resources.clone()).within(anchor),
+            actions: Actions(data.resources),
+            published: Published(data.published),
+            answers: matches!(data.scope, Scope::Workspace | Scope::Everywhere).then(|| {
                 (
                     Answers {
                         rates: data.rates,
@@ -241,18 +220,18 @@ impl DesktopSearch {
         // A search over the workspace in front says so at the start of the
         // field, and offers the one control that widens it; over every
         // workspace there is nothing left to say or widen.
-        let (token, widen) = match data.reach {
-            Reach::Workspace => (
+        let (token, widen) = match data.scope {
+            Scope::Workspace => (
                 Some(crate::i18n::t("search-scope-workspace")),
                 Some(crate::i18n::t("search-launcher-widen")),
             ),
-            Reach::Names | Reach::EveryWorkspace => (None, None),
+            Scope::InApp(_) | Scope::WindowGroup(_) | Scope::Everywhere => (None, None),
         };
         self.palette.set_scope_token(token);
         self.palette.set_scope_token_action(widen);
         // The apps alone, listed whole: nothing else is searched, so there
         // is nothing a row could lead to that is not already here.
-        self.catalogue = data.reach == Reach::Names && !data.window;
+        self.catalogue = matches!(data.scope, Scope::WindowGroup(_));
         self.sources = Some(Sources::new(data));
         self.choice = None;
         self.shown_query = None;
@@ -742,6 +721,7 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::search::AppScope;
 
     fn data() -> SearchData {
         SearchData {
@@ -766,6 +746,7 @@ mod tests {
                 app: Some("so.tilo.notes".into()),
                 place: vec!["Workspace".into(), "Main".into()],
             }],
+            scope: Scope::Workspace,
             ..SearchData::default()
         }
     }
@@ -826,7 +807,6 @@ mod tests {
             }],
         };
         let mut data = data();
-        data.reach = Reach::Workspace;
         data.sources
             .push(Box::new(Happening::new(false, vec![here])));
         let mut search = DesktopSearch::new();
@@ -862,8 +842,7 @@ mod tests {
     /// catalogue, as the empty desk's launchpad opens it.
     #[test]
     fn every_app_is_one_row_under_the_apps() {
-        let mut full = data();
-        full.reach = Reach::Workspace;
+        let full = data();
         let mut search = DesktopSearch::new();
         search.open(full);
         let entries = search.palette().visible_entries();
@@ -889,7 +868,7 @@ mod tests {
 
         // The catalogue itself is every app: it does not offer itself again.
         let mut catalogue = data();
-        catalogue.reach = Reach::Names;
+        catalogue.scope = Scope::WindowGroup(None);
         catalogue.windows.clear();
         catalogue.commands.clear();
         catalogue.resources.clear();
@@ -1070,10 +1049,10 @@ mod tests {
     }
 
     /// A search over the desktop and what one host adds.
-    fn with_notes(reach: Reach) -> SearchData {
+    fn with_notes(scope: Scope) -> SearchData {
         SearchData {
             sources: vec![Box::new(Notes)],
-            reach,
+            scope,
             ..data()
         }
     }
@@ -1081,7 +1060,7 @@ mod tests {
     #[test]
     fn switching_a_source_off_from_its_row_takes_its_rows_away_and_stays_open() {
         let mut search = DesktopSearch::new();
-        search.open(with_notes(Reach::Workspace));
+        search.open(with_notes(Scope::Workspace));
         search.set_query("groceries tomatoes");
         assert!(
             search.results().iter().any(|hit| hit.provider == "notes"),
@@ -1140,7 +1119,7 @@ mod tests {
     #[test]
     fn the_actions_stay_whatever_is_switched_off() {
         let mut search = DesktopSearch::new();
-        search.open(with_notes(Reach::Workspace));
+        search.open(with_notes(Scope::Workspace));
         search.set_query("disable");
         assert!(
             !search.results().iter().any(|hit| matches!(
@@ -1155,7 +1134,7 @@ mod tests {
     #[test]
     fn a_search_over_the_workspace_in_front_offers_to_widen_it() {
         let mut search = DesktopSearch::new();
-        search.open(with_notes(Reach::Workspace));
+        search.open(with_notes(Scope::Workspace));
         assert_eq!(search.palette().scope_token(), Some("Workspace"));
         assert_eq!(
             search.palette().scope_token_action(),
@@ -1164,7 +1143,7 @@ mod tests {
 
         // Widened, the token is gone: there is nothing left to widen.
         search.close();
-        search.open(with_notes(Reach::EveryWorkspace));
+        search.open(with_notes(Scope::Everywhere));
         assert_eq!(search.palette().scope_token(), None);
         assert_eq!(search.palette().scope_token_action(), None);
     }
@@ -1176,6 +1155,7 @@ mod tests {
         let mut search = DesktopSearch::new();
         search.open(SearchData {
             applications: data().applications,
+            scope: Scope::WindowGroup(None),
             ..SearchData::default()
         });
         assert_eq!(search.palette().scope_token(), None);
@@ -1313,7 +1293,7 @@ mod tests {
             providers: vec![Box::new(LateApp {
                 arrived: std::rc::Rc::clone(&arrived),
             })],
-            content_only: true,
+            scope: Scope::InApp(AppScope::front()),
             ..base
         });
         (search, arrived)
@@ -1378,7 +1358,7 @@ mod tests {
         search.open(SearchData {
             resources: vec![notebook],
             providers: vec![Box::new(Places)],
-            window: true,
+            scope: Scope::InApp(AppScope::front()),
             ..SearchData::default()
         });
         let rows: Vec<(&str, &ResourceKind)> = search

@@ -1,4 +1,5 @@
 use super::*;
+use crate::search::AppScope;
 
 #[derive(Clone, Debug)]
 struct Row(ResourceKind, i32, &'static str);
@@ -18,20 +19,20 @@ impl SearchRow for Row {
 }
 #[test]
 fn scope_defaults_and_fallback_preserve_native_routing() {
-    assert_eq!(SearchScope::default(), SearchScope::Workspace);
-    assert_eq!(SearchScope::All.label(), "Everywhere");
-    assert!(scope_allows(SearchScope::ActiveApp, "apps", None, false));
-    assert!(!scope_allows(
-        SearchScope::ActiveApp,
+    assert_eq!(Scope::default(), Scope::Workspace);
+    assert!(Scope::Workspace.answers());
+    assert!(Scope::Everywhere.answers());
+    assert!(!Scope::WindowGroup(Some(4)).answers());
+    let in_app = Scope::InApp(AppScope::front());
+    assert!(scope_allows(&in_app, "apps", None, false));
+    assert!(!scope_allows(&in_app, "apps", Some("notes"), false));
+    assert!(scope_allows(&in_app, "notes", Some("notes"), false));
+    assert!(scope_allows(&in_app, "actions", Some("notes"), true));
+    assert!(scope_allows(
+        &Scope::Everywhere,
         "apps",
         Some("notes"),
         false
-    ));
-    assert!(scope_allows(
-        SearchScope::ActiveApp,
-        "actions",
-        Some("notes"),
-        true
     ));
 }
 #[test]
@@ -182,9 +183,7 @@ fn application_identity_and_metadata_share_native_match_bands() {
 }
 #[test]
 fn filters_targets_match_semantic_activation_after_draw() {
-    use crate::search::system::filters::{
-        FilterAction, FilterText, KindChip, ScopeSegment, SearchFilters,
-    };
+    use crate::search::system::filters::{FilterAction, FilterText, KindChip, SearchFilters};
     use crate::text_render::TextRenderer;
     use crate::theme::Theme;
     use vello::kurbo::{Affine, Rect};
@@ -195,11 +194,6 @@ fn filters_targets_match_semantic_activation_after_draw() {
             KindChip::english(ResourceKind::File),
         ],
         vec![],
-        vec![
-            ScopeSegment::english(SearchScope::Workspace, "Workspace".into()),
-            ScopeSegment::english(SearchScope::All, "Everywhere".into()),
-        ],
-        SearchScope::All,
         FilterText::default(),
     );
     let mut renderer = TextRenderer::new();
@@ -214,7 +208,6 @@ fn filters_targets_match_semantic_activation_after_draw() {
         crate::search::system::filters::FilterStripSlot {
             band: Rect::new(0., 0., 680., 36.),
             row_height: 36.,
-            reserved_rows: 1,
         },
         None,
     );
@@ -224,13 +217,10 @@ fn filters_targets_match_semantic_activation_after_draw() {
         filters.hit(target.center()),
         Some(FilterAction::ToggleKind(ResourceKind::Application))
     );
-    assert_eq!(
-        filters.action_for_path(&[1, 1]),
-        Some(FilterAction::Scope(SearchScope::All))
-    );
+    assert_eq!(filters.action_for_path(&[1, 1]), None);
     let node = filters.accessibility();
+    assert_eq!(node.children.len(), 1);
     assert_eq!(node.children[0].children.len(), 3);
-    assert_eq!(node.children[1].children.len(), 2);
 }
 struct ProviderFixture {
     id: &'static str,
@@ -284,9 +274,10 @@ fn typed_registry_routes_scope_and_kinds_and_discards_stale_pages() {
     registry.register(&apps);
     registry.register(&files);
     registry.register(&stale);
+    let everywhere = Scope::Everywhere;
     let mut query = Query {
         needle: "x",
-        scope: SearchScope::All,
+        scope: &everywhere,
         active_provider_id: Some("apps"),
         wanted_kinds: &[],
     };
@@ -298,9 +289,11 @@ fn typed_registry_routes_scope_and_kinds_and_discards_stale_pages() {
             .collect::<Vec<_>>(),
         ["apps", "files"]
     );
-    query.scope = SearchScope::ActiveApp;
+    let in_app = Scope::InApp(AppScope::of("apps"));
+    query.scope = &in_app;
     assert_eq!(registry.query(&(), &query).len(), 1);
-    query.scope = SearchScope::All;
+    assert_eq!(registry.query(&(), &query)[0].2, "apps");
+    query.scope = &everywhere;
     query.wanted_kinds = &[ResourceKind::File];
     assert_eq!(registry.query(&(), &query)[0].2, "files");
     let oversized = "x".repeat(crate::search::MAX_SEARCH_QUERY_SCALARS + 1);

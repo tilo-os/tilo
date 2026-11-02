@@ -602,7 +602,7 @@ mod open_with_tests {
             ui::widget::controls::take_control_invocation(&mut w).expect("the host's search opens");
         let request = ui::search::SearchRequest::from_arguments(&invocation.arguments);
         assert_eq!(
-            request.resource_scope().map(|scope| scope.anchor.as_str()),
+            request.part().map(|scope| scope.anchor.as_str()),
             Some(entry_id.as_str()),
             "on the file"
         );

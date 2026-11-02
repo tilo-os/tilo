@@ -17,7 +17,6 @@ mod tests {
             "launcher-a11y-filter-more",
             "launcher-a11y-filters",
             "launcher-a11y-result-kinds",
-            "launcher-a11y-scope",
         ] {
             let s = t(key);
             assert_ne!(s, key, "{key} has no entry in the catalogue");

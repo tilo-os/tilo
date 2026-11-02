@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::navigation::{ChromeEffect, DeskEffect, Route};
+use ui::search::Scope;
 use ui::widget::TileContent;
 use ui::winit::dpi::PhysicalPosition;
 
@@ -264,7 +265,7 @@ fn a_press_on_the_open_palette_leaves_it_open() {
     // The pointer rests where the person left it, inside where the card
     // will stand: they open search with a chord and press the card without
     // moving the mouse first.
-    handle.open_search(None);
+    handle.open_search(Scope::Workspace, None);
     for _ in 0..4 {
         frame.relayout();
     }
@@ -299,7 +300,7 @@ fn a_press_off_the_open_palette_leaves_search() {
     for _ in 0..4 {
         frame.relayout();
     }
-    handle.open_search(None);
+    handle.open_search(Scope::Workspace, None);
     for _ in 0..4 {
         frame.relayout();
     }
@@ -332,7 +333,7 @@ fn typing_reaches_the_open_palettes_query_after_frames() {
     for _ in 0..4 {
         frame.relayout();
     }
-    handle.open_search(None);
+    handle.open_search(Scope::Workspace, None);
     for _ in 0..8 {
         frame.relayout();
     }
@@ -409,7 +410,7 @@ fn the_all_apps_row_opens_the_catalogue() {
     for _ in 0..3 {
         frame.relayout();
     }
-    handle.open_search(None);
+    handle.open_search(Scope::Workspace, None);
     for _ in 0..3 {
         frame.relayout();
     }
@@ -500,7 +501,7 @@ fn the_search_card_follows_the_display() {
         for _ in 0..3 {
             frame.relayout();
         }
-        handle.open_search(None);
+        handle.open_search(Scope::Workspace, None);
         for _ in 0..3 {
             frame.relayout();
         }
@@ -573,7 +574,7 @@ impl tilo_desktop_search::Source for Plenty {
 }
 
 impl SearchHost for Many {
-    fn feed(&self, _: &str, _: ui::search::system::SearchScope) -> SearchHostFeed {
+    fn feed(&self, _: &str, _: &Scope) -> SearchHostFeed {
         SearchHostFeed {
             sources: vec![Box::new(Plenty)],
             ..SearchHostFeed::default()
@@ -590,7 +591,7 @@ impl SearchHost for Many {
 #[derive(Default)]
 struct Everywhere {
     /// The scope search asked it to cover, in order.
-    scopes: std::cell::RefCell<Vec<ui::search::system::SearchScope>>,
+    scopes: std::cell::RefCell<Vec<Scope>>,
 }
 
 /// The place another workspace names, offered only when search covers every
@@ -629,11 +630,11 @@ impl tilo_desktop_search::Source for Elsewhere {
 }
 
 impl SearchHost for Everywhere {
-    fn feed(&self, _: &str, scope: ui::search::system::SearchScope) -> SearchHostFeed {
-        self.scopes.borrow_mut().push(scope);
+    fn feed(&self, _: &str, scope: &Scope) -> SearchHostFeed {
+        self.scopes.borrow_mut().push(scope.clone());
         SearchHostFeed {
             sources: vec![Box::new(Elsewhere {
-                every_workspace: scope == ui::search::system::SearchScope::All,
+                every_workspace: scope.everywhere(),
             })],
             ..SearchHostFeed::default()
         }
@@ -661,13 +662,13 @@ fn a_search_of_the_workspace_in_front_widens_to_every_workspace() {
     for _ in 0..3 {
         frame.relayout();
     }
-    handle.open_search(None);
+    handle.open_search(Scope::Workspace, None);
     for _ in 0..3 {
         frame.relayout();
     }
     assert_eq!(
         *host.scopes.borrow(),
-        [ui::search::system::SearchScope::Workspace],
+        [Scope::Workspace],
         "the search opens over the workspace in front"
     );
     let (_, rows) = handle.search_rows();
@@ -682,10 +683,7 @@ fn a_search_of_the_workspace_in_front_widens_to_every_workspace() {
     }
     assert_eq!(
         *host.scopes.borrow(),
-        [
-            ui::search::system::SearchScope::Workspace,
-            ui::search::system::SearchScope::All
-        ],
+        [Scope::Workspace, Scope::Everywhere],
         "the same search, over every workspace"
     );
     let (_, rows) = handle.search_rows();

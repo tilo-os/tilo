@@ -3,7 +3,9 @@
 //! cycles through that app's controls and never reaches the desktop's
 //! chrome, a window brought forward (opened, clicked, switched to) takes
 //! focus, a click anywhere in a window, partly off screen too, aims typing
-//! there, and an app's own search button opens search over its window.
+//! there, and an app's own search button opens search over its window. What
+//! each search reaches — one app's window, a window group's applications, or
+//! the workspace — and where the hit it offers opens are here too.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -11,14 +13,17 @@
     reason = "test fixtures: a failed lookup is the assertion"
 )]
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
-use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowWidth, Workspace};
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
+use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowGroup, WindowWidth, Workspace};
+use tilo_desktop_surface::{
+    DesktopHandle, DesktopSurface, SearchHost, SearchHostFeed, TileSource, seed_tree,
+};
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use ui::automerge::{ROOT, transaction::Transactable};
 use ui::kurbo::{Point, Rect};
 use ui::owner_wake::OwnerWakeQueue;
+use ui::search::Scope;
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::widget::{
     AppKind, AppWidget, EventCtx, IconDescriptor, TaffyTreeExt as _, TileHost, Widget,
@@ -26,6 +31,8 @@ use ui::widget::{
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 const APP: &str = "so.tilo.keyboard-test";
+/// An app the desk has installed and not opened.
+const NOTES: &str = "so.tilo.notes";
 
 /// What each field was typed, by its test id.
 type Typed = Rc<RefCell<HashMap<String, String>>>;
@@ -369,6 +376,63 @@ struct SearchLog {
     labels: HashMap<u64, String>,
 }
 
+/// The desk's host, recording what each search asked it to cover.
+#[derive(Default)]
+struct HostLog {
+    /// The scope search asked it to cover, in order.
+    scopes: RefCell<Vec<Scope>>,
+}
+
+/// The host the desk searches through: one source of its own, which only a
+/// search of the workspace asks.
+struct DeskHost(Rc<HostLog>);
+
+impl SearchHost for DeskHost {
+    fn feed(&self, _: &str, scope: &Scope) -> SearchHostFeed {
+        self.0.scopes.borrow_mut().push(scope.clone());
+        SearchHostFeed {
+            sources: vec![Box::new(Plan)],
+            ..SearchHostFeed::default()
+        }
+    }
+
+    fn performs(&self, _: &tilo_desktop_search::Target) -> bool {
+        false
+    }
+}
+
+/// What the host finds beyond the desktop: a plan another workspace holds.
+struct Plan;
+
+impl tilo_desktop_search::Source for Plan {
+    fn id(&self) -> &'static str {
+        "plan"
+    }
+
+    fn name(&self) -> String {
+        "Plan".into()
+    }
+
+    fn query(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
+        if !needle.to_lowercase().contains("quarterly") {
+            return Vec::new();
+        }
+        vec![tilo_desktop_search::Hit {
+            faces: Vec::new(),
+            outcome: None,
+            kind: ui::search::system::ResourceKind::Note,
+            provider: self.id().into(),
+            id: "quarterly-plan".into(),
+            title: "Quarterly plan".into(),
+            subtitle: Some("in Planning".into()),
+            facts: Vec::new(),
+            score: ui::search::system::MAX_PROVIDER_SCORE,
+            icon: None,
+            target: tilo_desktop_search::Target::Window { tab: 0, app: None },
+        }]
+    }
+}
+
 impl AppWidget for Root {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
@@ -443,6 +507,14 @@ struct Source {
 
 impl TileSource for Source {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
+        // An app that is not what this desk is about: a window of its own,
+        // enough to see where search puts what it opens.
+        if matches!(&tab.tile, TileContent::LocalApp { app_id, .. } if app_id == NOTES) {
+            return TileHost::new(ui::widget::TileContent::Notice {
+                title: tab.title.clone(),
+                detail: String::new(),
+            });
+        }
         let workspace = workspace.room().to_string();
         NEXT.with_borrow_mut(|slot| *slot = Some((tab.id, Rc::clone(&self.typed))));
         let definition = ApplicationDefinition {
@@ -492,7 +564,25 @@ impl TileSource for Source {
     }
 
     fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
-        (app == APP).then(|| keyboard_tab(id))
+        match app {
+            APP => Some(keyboard_tab(id)),
+            NOTES => Some(notes_tab(id)),
+            _ => None,
+        }
+    }
+
+    fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        [(APP, "Keyboard", "Tools"), (NOTES, "Notes", "Writing")]
+            .into_iter()
+            .map(
+                |(id, title, category)| tilo_desktop_search::providers::AppEntry {
+                    id: id.into(),
+                    title: title.into(),
+                    category: Some(category.into()),
+                    description: None,
+                },
+            )
+            .collect()
     }
 }
 
@@ -503,6 +593,19 @@ fn keyboard_tab(id: u64) -> Tab {
         tile: TileContent::LocalApp {
             app_id: APP.into(),
             label: "Keyboard".into(),
+            note: String::new(),
+        },
+        app_title: None,
+    }
+}
+
+fn notes_tab(id: u64) -> Tab {
+    Tab {
+        id,
+        title: "Notes".into(),
+        tile: TileContent::LocalApp {
+            app_id: NOTES.into(),
+            label: "Notes".into(),
             note: String::new(),
         },
         app_title: None,
@@ -521,12 +624,40 @@ impl Desk {
     /// `windows` app windows, each `permille` of the strip wide, in a
     /// viewport 1200 px wide: wide windows run off its right edge.
     fn new(windows: usize, permille: u32) -> Self {
+        Self::of(windows, permille, false)
+    }
+
+    /// The same desk with the windows' tabs on one bar, as a window group
+    /// holding several tabs: a window a person adds a tab to.
+    fn one_window(windows: usize, permille: u32) -> Self {
+        Self::of(windows, permille, true)
+    }
+
+    fn of(windows: usize, permille: u32, one_window: bool) -> Self {
         ui::i18n::I18nManager::init("en-US");
         let root = std::env::temp_dir().join(format!("tilo-keyboard-{}", uuid::Uuid::new_v4()));
         let mut minter = IdMinter::new(29);
         let tabs: Vec<Tab> = (0..windows).map(|_| keyboard_tab(minter.mint())).collect();
         let ids = tabs.iter().map(|tab| tab.id).collect();
         let mut tree = seed_tree(&mut minter, "Desk", tabs);
+        if one_window {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let id = strip.window_groups[0].id;
+            let tabs: Vec<Tab> = strip
+                .window_groups
+                .drain(..)
+                .flat_map(|group| group.tabs)
+                .collect();
+            let active_tab = tabs[0].id;
+            strip.window_groups = vec![WindowGroup {
+                id,
+                tabs,
+                active_tab,
+                width: WindowWidth::Fraction(permille),
+                maximized: false,
+                focus_history: Vec::new(),
+            }];
+        }
         for group in &mut tree.workspaces[0].strips[0].window_groups {
             group.width = WindowWidth::Fraction(permille);
         }
@@ -585,6 +716,49 @@ impl Desk {
 
     fn rect(&self, name: &str) -> Rect {
         self.driver.targets()[name]
+    }
+
+    /// Search through a host that records what it is asked to cover.
+    fn with_host(&self) -> Rc<HostLog> {
+        let log = Rc::new(HostLog::default());
+        self.handle
+            .set_search_host(Rc::new(DeskHost(Rc::clone(&log))));
+        log
+    }
+
+    /// The desk's windows, each `(strip, group, tabs)`.
+    fn windows(&self) -> Vec<(u64, u64, usize)> {
+        self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .map(|group| (strip.id.0, group.id, group.tabs.len()))
+                })
+                .collect()
+        })
+    }
+
+    /// Where the window's new-tab control is drawn, as a person finds it.
+    fn new_tab_control(&self) -> Point {
+        let node = self
+            .driver
+            .a11y_node_named("New tab")
+            .expect("a window offers a new tab");
+        let bounds = self
+            .driver
+            .a11y_nodes()
+            .into_iter()
+            .find(|(id, _)| *id == node)
+            .and_then(|(_, node)| node.bounds())
+            .expect("the new tab is drawn");
+        Point::new(
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        )
     }
 }
 
@@ -760,7 +934,7 @@ fn an_apps_action_chosen_in_search_over_everything_runs_in_its_window() {
     let mut desk = Desk::new(2, 450);
     let second = desk.tabs[1];
     SEARCH.with_borrow_mut(|search| search.labels.insert(second, "Archive".into()));
-    desk.handle.open_search(None);
+    desk.handle.open_search(Scope::Workspace, None);
     desk.settle();
     assert!(desk.handle.search_open());
     desk.driver.type_text("open archive");
@@ -789,6 +963,137 @@ fn an_apps_action_chosen_in_search_over_everything_runs_in_its_window() {
         "z",
         "the app's window came forward and has the keyboard"
     );
+}
+
+/// Search over one app's window asks that window's app and nothing else:
+/// not the desk's host, and not the desk's own commands; the hit it offers
+/// opens inside the app.
+#[test]
+fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
+    SEARCH.with_borrow_mut(|search| search.answered = true);
+    let mut desk = Desk::new(2, 450);
+    let host = desk.with_host();
+    desk.driver.click_named("search-open").unwrap();
+    desk.settle();
+    assert!(desk.handle.search_open());
+    assert!(
+        host.scopes.borrow().is_empty(),
+        "an app's search is its window's: the host was asked {:?}",
+        host.scopes.borrow()
+    );
+    desk.driver.type_text("lofi");
+    desk.settle();
+    let (_, rows) = desk.handle.search_rows();
+    assert!(
+        rows.iter().any(|row| row.title.contains("lofi")),
+        "the window's app answers: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|row| row.title != "Close window"),
+        "the desk's own commands are not the window's: {rows:?}"
+    );
+    desk.driver.key("Enter");
+    desk.settle();
+    assert_eq!(
+        SEARCH.with_borrow(|search| search.opened.clone()),
+        ["videos.search:lofi"],
+        "the hit opens inside the app"
+    );
+    assert!(!desk.handle.search_open());
+    assert!(
+        desk.driver.control_failures().is_empty(),
+        "{:?}",
+        desk.driver.control_failures()
+    );
+}
+
+/// A window group's new tab asks which application to show there: the
+/// applications, not the rest of the desk, and the one chosen opens as a
+/// tab of that window group.
+#[test]
+fn a_window_groups_new_tab_lists_the_applications_and_opens_the_one_chosen_there() {
+    let mut desk = Desk::one_window(2, 450);
+    let host = desk.with_host();
+    let before = desk.windows();
+    assert_eq!(before.len(), 1, "one window, two tabs: {before:?}");
+    let (strip, group, tabs) = before[0];
+    let plus = desk.new_tab_control();
+    desk.driver.click_at(plus.x, plus.y);
+    desk.settle();
+    assert!(desk.handle.search_open());
+    assert!(
+        host.scopes.borrow().is_empty(),
+        "the applications are the desk's own, not the host's: {:?}",
+        host.scopes.borrow()
+    );
+    let (_, rows) = desk.handle.search_rows();
+    assert!(
+        rows.iter().any(|row| row.title == "Notes"),
+        "what a new tab may show: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|row| row.title != "Quarterly plan"),
+        "and nothing the desk's host holds: {rows:?}"
+    );
+    desk.driver.type_text("notes");
+    desk.settle();
+    desk.driver.key("Enter");
+    desk.settle();
+    let after = desk.windows();
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "no window opened of its own: {after:?}"
+    );
+    let opened = after
+        .iter()
+        .find(|(window_strip, window_group, _)| *window_strip == strip && *window_group == group)
+        .expect("the window group is still there");
+    assert_eq!(
+        opened.2,
+        tabs + 1,
+        "the app opens a tab of that window group: {after:?}"
+    );
+}
+
+/// Search over the workspace asks the desk's host and the desk's own
+/// windows; an application chosen there opens as a window of its own.
+#[test]
+fn search_over_the_workspace_asks_the_host_and_opens_an_app_as_its_own_window() {
+    let mut desk = Desk::new(2, 450);
+    let host = desk.with_host();
+    let before = desk.windows();
+    desk.handle
+        .open_search(Scope::Workspace, Some("quarterly".into()));
+    desk.settle();
+    assert_eq!(*host.scopes.borrow(), [Scope::Workspace]);
+    let (_, rows) = desk.handle.search_rows();
+    assert!(
+        rows.iter().any(|row| row.title == "Quarterly plan"),
+        "what the host holds is searched: {rows:?}"
+    );
+
+    desk.handle
+        .open_search(Scope::Workspace, Some("notes".into()));
+    desk.settle();
+    desk.driver.key("Enter");
+    desk.settle();
+    assert_eq!(
+        *host.scopes.borrow(),
+        [Scope::Workspace, Scope::Workspace],
+        "each search covers the workspace in front"
+    );
+    let after = desk.windows();
+    assert_eq!(
+        after.len(),
+        before.len() + 1,
+        "the app opens a window of its own: {after:?}"
+    );
+    let opened = after
+        .iter()
+        .find(|(_, group, _)| !before.iter().any(|(_, open, _)| open == group))
+        .expect("one window is new");
+    assert_eq!(opened.2, 1, "the window shows that one tab: {after:?}");
 }
 
 #[test]

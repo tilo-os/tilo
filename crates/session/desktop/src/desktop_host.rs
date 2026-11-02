@@ -27,6 +27,7 @@ use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, DeskEffect, D
 use tilo_desktop_surface::{DesktopHandle, HostActionSource};
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
+use ui::search::Scope;
 use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};
@@ -400,7 +401,9 @@ impl DeskLayer {
             // search already open instead.
             DeskEffect::Search { query } => match query {
                 None => self.handle.toggle_search(),
-                Some(_) => self.handle.open_search(query.clone()),
+                Some(query) => self
+                    .handle
+                    .open_search(Scope::Workspace, Some(query.clone())),
             },
             DeskEffect::ChooseSearchRow { row, argument } => self.handle.choose_search_row(
                 usize::try_from(*row).unwrap_or(usize::MAX),
@@ -408,7 +411,7 @@ impl DeskLayer {
             ),
             DeskEffect::Launchpad { card } => {
                 if card == "apps" {
-                    self.handle.open_applications();
+                    self.handle.open_search(Scope::WindowGroup(None), None);
                 } else if let Some(card) = LaunchpadAction::ALL
                     .into_iter()
                     .find(|action| action.slug() == card)
@@ -503,7 +506,7 @@ impl Widget for DeskLayer {
             child.settle(edits, path);
         }
         if crate::launchpad::take_open_app(edits, path) {
-            self.handle.open_applications();
+            self.handle.open_search(Scope::WindowGroup(None), None);
         }
         if let Some(action) = LaunchpadAction::take(edits, path) {
             self.asks.borrow_mut().push(DesktopAsk::Launchpad(action));

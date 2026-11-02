@@ -31,7 +31,7 @@ use crate::fixture::FixtureSource;
 use crate::i18n::{t, t_args};
 use crate::resource::{Launcher, LauncherEffect};
 use crate::source::{
-    ActivationModifier, Answer, Ask, CardFit, Link, ResourceKind, Search, SearchScope,
+    ActivationModifier, Answer, AppScope, Ask, CardFit, Link, ResourceKind, Scope, Search,
 };
 
 /// The card's width on its own: the desktop's search card at its widest.
@@ -53,7 +53,7 @@ pub struct LauncherSurface {
     open: bool,
     /// What the person searches for, as last asked.
     search: Search,
-    scope: SearchScope,
+    scope: Scope,
     /// The chips offered, with their labels.
     kinds: Vec<(ResourceKind, String)>,
     band: bool,
@@ -101,7 +101,7 @@ impl LauncherSurface {
             shown: 0,
             open: false,
             search: Search::default(),
-            scope: SearchScope::Workspace,
+            scope: Scope::Workspace,
             kinds: Vec::new(),
             band: false,
             narrows: false,
@@ -148,7 +148,7 @@ impl LauncherSurface {
     }
 
     /// Open in `scope`, on `query` or a fresh field.
-    pub fn open(&mut self, scope: SearchScope, query: Option<String>) {
+    pub fn open(&mut self, scope: Scope, query: Option<String>) {
         self.open = true;
         self.palette.open();
         self.palette.set_focus(true);
@@ -311,8 +311,6 @@ impl LauncherSurface {
         self.filters.configure(
             kinds,
             self.search.kinds.clone(),
-            Vec::new(),
-            self.scope,
             FilterText {
                 all_label: t("launcher-filter-all"),
                 all_name: t("launcher-a11y-filter-all"),
@@ -320,7 +318,6 @@ impl LauncherSurface {
                 more_name: t("launcher-a11y-filter-more"),
                 filters_name: t("launcher-a11y-filters"),
                 kinds_name: t("launcher-a11y-result-kinds"),
-                scopes_name: t("launcher-a11y-scope"),
             },
         );
     }
@@ -341,7 +338,6 @@ impl LauncherSurface {
                 self.filters.more_open = !self.filters.more_open;
                 self.structure_dirty = true;
             }
-            FilterAction::Scope(_) => {}
         }
     }
 
@@ -449,9 +445,9 @@ impl LauncherSurface {
             self.own = Some(FixtureSource::new().field_only());
         }
         let scope = match scenario {
-            Some("app") => SearchScope::ActiveApp,
-            Some("everywhere") => SearchScope::All,
-            _ => SearchScope::Workspace,
+            Some("app") => Scope::InApp(AppScope::front()),
+            Some("everywhere") => Scope::Everywhere,
+            _ => Scope::Workspace,
         };
         self.open(scope, None);
         let typed = match scenario {
@@ -498,11 +494,11 @@ fn modifier_of(how: Option<&str>) -> Result<Option<ActivationModifier>, String> 
 }
 
 /// The scope `name` names.
-fn scope_of(name: Option<&str>) -> Result<SearchScope, String> {
+fn scope_of(name: Option<&str>) -> Result<Scope, String> {
     match name.map(|name| name.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("" | "workspace") => Ok(SearchScope::Workspace),
-        Some("app" | "this-app" | "active-app") => Ok(SearchScope::ActiveApp),
-        Some("everywhere" | "all") => Ok(SearchScope::All),
+        None | Some("" | "workspace") => Ok(Scope::Workspace),
+        Some("app" | "this-app" | "active-app") => Ok(Scope::InApp(AppScope::front())),
+        Some("everywhere" | "all") => Ok(Scope::Everywhere),
         Some(other) => Err(format!(
             "`{other}` is not a place to search: app, workspace or everywhere"
         )),
@@ -593,19 +589,14 @@ impl Decorator for LauncherSurface {
             .draw(scene, transform, text_renderer, theme, presence);
         if self.shows_band() {
             let band = self.palette.filter_strip_rect();
-            let before = self.filters.search_chip_rows;
-            let rows = self.filters.draw(
+            self.filters.draw(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 FilterStripSlot {
                     band,
                     row_height: self.palette.filter_strip_row_height(),
-                    reserved_rows: self.palette.host_filter_strip_rows(),
                 },
                 Some(self.cursor),
             );
-            if rows != before && self.palette.set_host_filter_strip_rows(rows) {
-                self.structure_dirty = true;
-            }
         }
     }
 
@@ -767,7 +758,7 @@ pub(crate) fn window(cx: &ViewCx<Launcher>, link: Option<Link>) -> Element {
     // On its own (its own window, a capture) the launcher is the window: it
     // opens at once. A host opens it when the person asks.
     if window.own.is_some() && cx.mode().is_live() {
-        window.open(SearchScope::Workspace, None);
+        window.open(Scope::Workspace, None);
     }
     let staged = Rc::clone(&window.staged);
     cx.on_stage(move |scenario| *staged.borrow_mut() = Some(Scenario(scenario.map(str::to_owned))));
@@ -916,7 +907,7 @@ mod tests {
 
     fn opened(query: &str) -> LauncherSurface {
         let mut surface = LauncherSurface::new(None);
-        surface.open(SearchScope::Workspace, None);
+        surface.open(Scope::Workspace, None);
         if !query.is_empty() {
             surface.palette.set_query(query);
             surface.search_for(query.to_owned());
@@ -983,7 +974,7 @@ mod tests {
             Ok(Some(ActivationModifier::Ctrl))
         );
         assert!(modifier_of(Some("sideways")).is_err());
-        assert_eq!(scope_of(Some("everywhere")), Ok(SearchScope::All));
-        assert_eq!(scope_of(None), Ok(SearchScope::Workspace));
+        assert_eq!(scope_of(Some("everywhere")), Ok(Scope::Everywhere));
+        assert_eq!(scope_of(None), Ok(Scope::Workspace));
     }
 }

@@ -25,6 +25,7 @@ use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::notifications::Notification;
 use tilo_desktop_surface::{DesktopHandle, DesktopNotifications};
 use tilo_surface_host::{Placement as SurfacePlacement, WidgetHost};
+use ui::search::Scope;
 
 use crate::notifications::NoticeSignals;
 
@@ -621,7 +622,7 @@ impl crate::Shared {
                         tracing::warn!(%error, app, "launchpad");
                     }
                 }
-                None => self.handle.open_search(None),
+                None => self.handle.open_search(Scope::WindowGroup(None), None),
             },
         }
     }
