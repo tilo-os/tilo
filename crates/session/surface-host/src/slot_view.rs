@@ -201,9 +201,22 @@ impl Platform for SlotPlatform {
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
         let args: Vec<(&str, ui::i18n::ArgValue)> = args
             .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str().into()))
+            .map(|(name, value)| {
+                // A number stays a number, so a plural rule selects by it.
+                let value: ui::i18n::ArgValue = match value.parse::<f64>() {
+                    Ok(number) => number.into(),
+                    Err(_) => value.as_str().into(),
+                };
+                (name.as_str(), value)
+            })
             .collect();
         tilo_ui_host::i18n::t_args(id, &args)
+    }
+
+    fn add_words(&self, catalogues: &[(String, String)]) {
+        for (locale, text) in catalogues {
+            ui::i18n::I18nManager::add_resource(locale, text.clone());
+        }
     }
 
     fn now(&self) -> String {

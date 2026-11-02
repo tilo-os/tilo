@@ -121,6 +121,12 @@ pub trait Platform {
     /// library's frames say.
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String;
 
+    /// Takes in a package's catalogues, `(locale, Fluent text)`, so [`Self::phrase`] says its
+    /// messages too (i18n.md). A platform without catalogues of its own shows the source words.
+    fn add_words(&self, catalogues: &[(String, String)]) {
+        let _ = catalogues;
+    }
+
     /// The time now, as `now` reads it: ISO-8601 UTC text.
     fn now(&self) -> String;
 
@@ -141,6 +147,21 @@ pub trait Platform {
     }
 }
 
+/// The words an instance shows, in the person's language: every package's catalogues go to
+/// the platform, and a key says what the platform's phrases say of it, or the source words where
+/// no catalogue holds it (a phrase no catalogue holds is its own key) (i18n.md).
+struct PlatformWords(Rc<dyn Platform>);
+
+impl crate::runtime::Words for PlatformWords {
+    fn add(&self, catalogues: &[(String, String)]) {
+        self.0.add_words(catalogues);
+    }
+
+    fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
+        let said = self.0.phrase(key, args);
+        if said == key { source.to_owned() } else { said }
+    }
+}
 /// How an instance starts.
 pub struct Config {
     /// The package the window runs.
@@ -731,8 +752,7 @@ impl Instance {
         host.set_clock(move || platform.now());
         let platform = Rc::clone(&self.platform);
         host.runtime().set_zone(move || platform.zone());
-        let platform = Rc::clone(&self.platform);
-        host.set_phrases(move |id, args| platform.phrase(id, args));
+        host.set_words(PlatformWords(Rc::clone(&self.platform)));
         if let Some(sink) = self.sink.take() {
             host.runtime().set_sink(crate::origin::RoutingSink {
                 origins: Rc::clone(&self.origins),

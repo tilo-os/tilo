@@ -316,37 +316,26 @@ d-gv3ymzbk = Mark moved
     .doc = Note the item moved, in the window's last answer.
 
 d-wjo4okew = Gallery
-    .doc = The gallery's window: each group, opening in a window of its own.
 
 d-7chkyi44 = Basics
-    .doc = The basics' window: places in the sidebar, the parts in the content.
 
 d-vvxmf5ve = Backlog list
-    .doc = The backlog's window: its items as rows, each with a menu, a swipe and a hover toolbar, over a composer.
 
 d-7ptc3r7a = Item row
-    .doc = One item in the list: its row, what it says, its reactions and the message it answers, with a menu, a swipe and a hover toolbar of its own.
 
 d-qczmqkvq = Release board
-    .doc = The release's window: its items as tabs, as a frame holds them, over a lane per stage, each card an item.
 
 d-z5ai6zk5 = Controls
-    .doc = The controls window: each kind in a section of its own page.
 
 d-wxq3apea = Data
-    .doc = The data window: each data view as an app places it, over the window's collection.
 
 d-5cczuoub = Feedback
-    .doc = The feedback window: each kind in a section of its own page.
 
 d-irl4ws35 = Places
-    .doc = The canvas's window: a map filling it, as a canvas stands, with a place at each point and a window standing on it as a traditional desktop's does.
 
 d-tsxcwdoy = Media
-    .doc = The media window: each kind in a section of its own page.
 
 d-rygoropv = Shell parts
-    .doc = The shell window: each kind in a section of its own page.
 
 d-wjo4okew~row0 = Gallery for x
 

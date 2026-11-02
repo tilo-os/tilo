@@ -24,9 +24,6 @@ pub const LENS_WINDOW: &str = "$lenses";
 /// Where the runtime keeps how each resource's outside effects stand (`delivery(r)`).
 pub const DELIVERY_WINDOW: &str = "$delivery";
 
-/// The platform's phrases in the person's language, with their arguments.
-pub type Phrases = Box<dyn Fn(&str, &[(String, String)]) -> String>;
-
 /// A name in sentence case: `new_note` and `NewNote` read "New note".
 #[must_use]
 pub fn sentence(name: &str) -> String {
@@ -325,10 +322,7 @@ impl Core {
                         .collect::<Vec<_>>(),
                     _ => Vec::new(),
                 };
-                let text = match self.phrases.borrow().as_ref() {
-                    Some(phrases) => phrases(&id, &args),
-                    None => id,
-                };
+                let text = self.words.borrow().word(&id, &args, &id);
                 self.ret_h(Value::Text(text))
             }
             _ => trap("not a platform import"),
@@ -1167,13 +1161,22 @@ impl Core {
         Ok(Value::Tuple(vec![
             Value::Text(title),
             Value::Text(type_name),
-            Value::Text(declared.noun()),
-            Value::Text(declared.plural()),
+            Value::Text(self.noun(&declared.id, 1, &declared.noun())),
+            Value::Text(self.noun(&declared.id, 2, &declared.plural())),
             meta.icon
                 .clone()
                 .map_or_else(Value::none, |icon| Value::some(Value::Text(icon))),
             Value::Bool(meta.default_view(ty).is_some()),
         ]))
+    }
+
+    /// What one (`count` 1) or several of the type `id` are called, in the reader's language:
+    /// its catalogue's noun, else `source`.
+    fn noun(&self, id: &str, count: i64, source: &str) -> String {
+        let key = format!("{}.noun", tilolang::messages::key_of(id));
+        self.words
+            .borrow()
+            .word(&key, &[("count".to_owned(), count.to_string())], source)
     }
 
     /// The title of `target`: its field marked `title`, when it holds more than spaces; else,
@@ -1298,7 +1301,11 @@ impl Core {
     /// `None` while a requirement of it on the subject does not hold: it is not offered.
     fn action_value(&self, shown: &Offered<'_>, subject: &RefValue) -> HResult<Option<Value>> {
         let action = shown.action;
-        let mut label = label_of(action);
+        let mut label = self.words.borrow().word(
+            &tilolang::messages::key_of(&action.id),
+            &[],
+            &label_of(action),
+        );
         let mut icon = action.icon.clone();
         let mut on: Option<bool> = None;
         if shown.present

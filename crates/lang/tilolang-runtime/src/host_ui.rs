@@ -309,10 +309,7 @@ impl Core {
         else {
             return trap("a change holds what it was before and after");
         };
-        let phrase = |id: &str| match self.phrases.borrow().as_ref() {
-            Some(phrases) => phrases(id, &[]),
-            None => id.to_owned(),
-        };
+        let phrase = |id: &str| self.words.borrow().word(id, &[], id);
         let root = self.with_view(|vs| {
             let root = shown_nodes(vs, &key, &shown, &phrase);
             // What a field held before reads quieter than what it holds now. A rich text

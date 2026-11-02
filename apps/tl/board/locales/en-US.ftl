@@ -60,13 +60,10 @@ d-yjwm6mjf = Rename column
     .doc = Renames a column.
 
 d-t5kjcxjq = Board
-    .doc = The board's window: a lane per column with its cards, each card its title and the start of its notes.
 
 d-ufycrk6s = Card tile
-    .doc = A card on the board: its title and the start of its notes.
 
 d-zzww2gmr = Card page
-    .doc = A card's page: its title and its notes.
 
 d-t5kjcxjq~row0 = Board for col
 

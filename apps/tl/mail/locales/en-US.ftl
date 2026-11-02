@@ -304,37 +304,26 @@ d-i3cueozg = Undo send~present
 d-4hds3dwy = Answer~present
 
 d-5wix2354 = Compose
-    .doc = The message as it will leave, shown when someone is asked to send it.
 
 d-7rcrynvm = Mail
-    .doc = The mail window: every account's mail.
 
 d-4fjgzcq6 = Unified
-    .doc = Every account's mail in one window: the unified inbox first, then each account's mail, and each account's own places under it.
 
 d-gka45our = Mailboxes
-    .doc = An account's window: its mailboxes in the sidebar with how many unread each holds, the conversations of the one chosen, newest first, and the one open beside them.
 
 d-zp2cy2sc = Inbox
-    .doc = A mailbox on its own, as a place shows it: the conversations in it, newest first, as its account's window lists them under it.
 
 d-jgdzx3la = Thread list
-    .doc = Conversations as a list: each a row that opens the conversation beside it, read as it opens, its actions on its menu and the destructive one on its swipe; "Nothing here" when there are none.
 
 d-u43u7z6w = Thread row
-    .doc = One conversation in a list: who wrote, the subject, the start of the newest message and when it came.
 
 d-77noqogh = Draft row
-    .doc = One message being written in a list: its subject and who it goes to.
 
 d-bbuecgsi = Conversation
-    .doc = A conversation's window: its subject, then every message in order with who wrote it, to whom and when, what it says and what came with it, and a reply at the foot.
 
 d-n2xgxnbw = Message
-    .doc = One message of a conversation: who wrote it, to whom, what it says and, folded under it, the message it quotes, as Gmail and Apple Mail fold a quotation; and what came with it.
 
 d-oqpazwvc = Editor
-    .doc = A message being written: its window.
 
 d-4fjgzcq6~row0 = Unified for l
 

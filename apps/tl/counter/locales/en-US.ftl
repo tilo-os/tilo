@@ -18,6 +18,5 @@ d-6vyvuejf = Decrement
     .doc = Take one away from the counter.
 
 d-njld6xdx = Counter
-    .doc = The counter's window: the value, and the two buttons that change it.
 
 d-6ehvhxp4 = Controls

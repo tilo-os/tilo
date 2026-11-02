@@ -146,28 +146,20 @@ d-comllwls = Edit~present
 d-c2x2a6dh = Pin~present
 
 d-5rkfnkg4 = Sidebar
-    .doc = The sidebar: channels outside any category first, then each category with its channels.
 
 d-ymtess4x = Channel
-    .doc = A text channel: its messages, and a composer that can answer one of them.
 
 d-jbezqvlc = Direct
-    .doc = A direct conversation: the same messages and composer as a channel, with the person's name over it.
 
 d-enkgjyn7 = Thread
-    .doc = A thread: its messages and a composer, the same way.
 
 d-rydgecpc = Typing here
-    .doc = Who is typing here, from the system's presence: the lenses on `of` whose person is composing a message in it (`l.composing`), never the person looking.
 
 d-tx3zjawu = Direct typing here
-    .doc = {""}[`typing_here`] for a direct conversation.
 
 d-dcprca6g = Thread typing here
-    .doc = {""}[`typing_here`] for a thread.
 
 d-hjw5xd6b = Said
-    .doc = What a message says, and that it was edited when its history holds an edit.
 
 d-5rkfnkg4~row0~row0 = Sidebar for ch
 
