@@ -8,6 +8,11 @@
 //! certificate takes part in no channels: the workspace's records are
 //! documents the owner commits.
 
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "the host's relay deliberately stays alive until each test ends"
+)]
+
 tilo_automerge_isolate::test_worker!();
 
 use std::collections::HashMap;
