@@ -450,7 +450,11 @@ pub struct Notebook {
     pub notes: Collection<Note>,
 }
 
-#[resource(kind = "test.notebook", label = "Notebook")]
+fn notebook_scopes(_: &Notebook) -> Vec<ScopeDecl> {
+    vec![ScopeDecl::new("test.notebook/notes/7", "One note")]
+}
+
+#[resource(kind = "test.notebook", label = "Notebook", scopes = notebook_scopes)]
 impl Notebook {
     /// Add a note.
     #[action]
@@ -579,9 +583,30 @@ fn a_record_the_person_may_not_read_is_found_nothing() {
     app.invoke(Notebook::ADD.with("Groceries")).unwrap();
     app.settle();
     assert_eq!(found(&mut app, "groceries").len(), 1);
+    let scopes = app
+        .harness()
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            RootSearch::search_providers(root)[0].search_scopes()
+        })
+        .unwrap();
+    assert_eq!(
+        scopes.len(),
+        1,
+        "the app's own scopes are there to narrow it"
+    );
     app.leave_workspace();
     assert!(
         found(&mut app, "groceries").is_empty(),
         "nothing of a record they may not read is found"
     );
+    let (scopes, facets) = app
+        .harness()
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            let providers = RootSearch::search_providers(root);
+            let search = &providers[0];
+            (search.search_scopes(), search.facets())
+        })
+        .unwrap();
+    assert!(scopes.is_empty(), "nor the parts of it a search narrows to");
+    assert!(facets.is_empty(), "nor what its entries are filed under");
 }

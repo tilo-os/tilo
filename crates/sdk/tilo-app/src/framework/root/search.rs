@@ -414,14 +414,23 @@ impl SearchProvider for ResourceSearch {
     }
 
     fn facets(&self) -> Vec<ui_core::search::Facet> {
+        if !self.readable {
+            return Vec::new();
+        }
         self.indexed().facets.clone()
     }
 
     fn search_scopes(&self) -> Vec<ScopeDecl> {
+        if !self.readable {
+            return Vec::new();
+        }
         self.scopes.clone()
     }
 
     fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+        if !self.readable {
+            return None;
+        }
         self.opens.clone()
     }
 }

@@ -196,9 +196,9 @@ impl SearchRow {
         }
     }
 
-    /// The resource id of the item this row is, when it is one: `<kind>
-    /// /<collection>/<id>` (`notes.notebook/pages/<id>`), the address its
-    /// app's `open` shows. `None` for a row that names no item.
+    /// The resource id of the item this row is, when it is one:
+    /// `<resource>/<collection>/<id>` (`notes.notebook/pages/<id>`), the
+    /// address its app's `open` shows. `None` for a row that names no item.
     #[must_use]
     pub fn item_resource(&self) -> Option<String> {
         let Self::Item { kind, id, .. } = self else {
