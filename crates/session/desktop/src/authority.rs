@@ -94,7 +94,8 @@ impl WorkspaceAuthority for Workspace {
             .pop()
     }
     fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
-        !crate::workspace_settings::apply_revoke(self, revoker, id).is_empty()
+        crate::workspace_settings::apply_revoke(self, revoker, id)
+            .is_ok_and(|edit| !edit.is_empty())
     }
     fn may_administer(&self, user: &UserId) -> bool {
         self.may_govern_at(user, roles::governance::GRANT, unix_now())

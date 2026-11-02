@@ -772,6 +772,9 @@ workspace-settings-member-extra = { $count ->
 }
 workspace-settings-remove = Remove
 workspace-settings-owner-only = Only the workspace owner can change permissions.
+workspace-settings-refused = The workspace refused that change
+workspace-settings-refused-own-role = Nobody changes their own role.
+workspace-settings-refused-own-membership = Nobody removes themselves from the workspace.
 workspace-settings-agents-count = { $count ->
     [one] 1 agent collaborator
    *[other] { $count } agent collaborators
