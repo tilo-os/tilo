@@ -296,25 +296,25 @@ else
     unit="$REPO/$unit_rel"
     users="$(grep -l "^$svc *= *\"required@" "${manifests[@]}" \
                | sed 's|.*/apps/\([^/]*\)/.*|\1|' | tr '\n' ' ')"
-    # Collaboration is session state owned by the compositor, not an
-    # independent daemon. Starting a second broker would race the compositor
+    # Collaboration is session state owned by the desktop, not an
+    # independent daemon. Starting a second broker would race the desktop
     # for the same socket and split apps across two CRDT sessions. Prove the
     # image ships the owner and that it binds the launcher's canonical path.
     if [ "$svc" = "collab" ]; then
-      native="$REPO/crates/session/shell/src/compositor/native.rs"
-      if grep -Eq 'let (mut )?collab_broker.*=' "$native" \
-          && grep -q 'spawn_session_collab_broker' "$native" \
-          && grep -q 'launcher::services::collab_socket()' "$native"; then
-        ok "the native compositor starts 'collab' on the launcher's canonical service socket"
+      native="$REPO/crates/session/session/src/mount/services.rs"
+      if grep -Fq 'pub(crate) fn start_action_plane(' "$native" \
+          && grep -Fq 'launcher::services::collab_socket()' "$native" \
+          && grep -Fq 'start_action_plane(' "$REPO/crates/session/session/src/lib.rs"; then
+        ok "the session starts 'collab' on the launcher's canonical service socket"
       else
-        bad "apps [$users] require 'collab', but the native compositor does not visibly start its broker on launcher::services::collab_socket()."
+        bad "apps [$users] require 'collab', but the session does not visibly serve its plane on launcher::services::collab_socket()."
       fi
-      containerfile_installs_output "$CONTAINERFILE" shell /usr/bin/shell \
-        && ok "the image installs the compositor that owns 'collab'" \
-        || bad "os/Containerfile does not install /usr/bin/shell, so the compositor-owned 'collab' broker cannot start."
+      containerfile_installs_output "$CONTAINERFILE" tilo-session /usr/bin/tilo-session \
+        && ok "the image installs the session that owns 'collab'" \
+        || bad "os/Containerfile does not install /usr/bin/tilo-session, so the session-owned 'collab' plane cannot start."
       continue
     fi
-    # Typed tool launches are also compositor-owned session state. Their
+    # Typed tool launches are session state the old shell still owns: its
     # handler dispatches into the shell and pumps workspace routes on its UI
     # loop; a separate systemd daemon cannot supply that ownership.
     if [ "$svc" = "tools" ]; then

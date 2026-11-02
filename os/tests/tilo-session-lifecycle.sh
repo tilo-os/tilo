@@ -20,7 +20,7 @@ selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
 identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
 recipient_unit="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service"
 recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
-shell_main="$repo/crates/session/shell/src/linux_main.rs"
+session_main="$repo/crates/session/session/src/main.rs"
 
 grep -Fqx 'readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "$wrapper"
 grep -Fqx '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES' "$wrapper"
@@ -55,15 +55,16 @@ if [ -e "$identity_unit" ] || grep -q 'tilo-identity\.service' "$recipient_unit"
   echo 'a pre-session identity unit is back' >&2
   exit 1
 fi
-# Helper entry points must return before long-lived compositor services bind.
-# GPU selection intentionally happens earlier now so every process shape uses
-# the same explicit device policy; line-order checks against an older startup
+# The identity helper must return before the long-lived session services bind:
+# the process verifies or repairs this device's identity, then starts the desk.
+# GPU selection intentionally happens elsewhere so every process shape uses the
+# same explicit device policy; line-order checks against an older startup
 # layout made this lifecycle test fail without proving a runtime defect.
-identity_prepare_line=$(grep -n 'if let Some(exit_code) = prepare_identity(provision_identity_requested)' "$shell_main" | cut -d: -f1)
-invite_broker_line=$(grep -n 'let _invite_broker = match identity_provisioning::start_configured_invite_broker()' "$shell_main" | cut -d: -f1)
-if [ -z "$identity_prepare_line" ] || [ -z "$invite_broker_line" ] \
-   || [ "$identity_prepare_line" -ge "$invite_broker_line" ]; then
-  echo 'identity helper no longer returns before compositor services start' >&2
+identity_line=$(grep -n 'tilo_session::startup::identity()' "$session_main" | cut -d: -f1)
+desk_start_line=$(grep -n '^    start(ours, command, line, host_desktop)$' "$session_main" | cut -d: -f1)
+if [ -z "$identity_line" ] || [ -z "$desk_start_line" ] \
+   || [ "$identity_line" -ge "$desk_start_line" ]; then
+  echo 'identity helper no longer returns before the session services start' >&2
   exit 1
 fi
 grep -Fqx 'PartOf=graphical-session.target' "$recipient_unit"
