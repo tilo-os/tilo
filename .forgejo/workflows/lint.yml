@@ -1,7 +1,7 @@
 name: CI / fast quality
 
-# Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly
-# (ci-weekly-quality.yml) or in t; this cheap path runs on every main commit so
+# Clippy over the whole tree runs nightly (ci-nightly.yml); push runs lint the
+# packages a push touches (check.yml). This cheap path runs on every main commit so
 # the format, dependency and policy gates of the commit being promoted have a
 # result. Main is not gated, so a red result here blocks only the promotion.
 #

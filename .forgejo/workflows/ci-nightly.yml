@@ -246,12 +246,15 @@ jobs:
           cargo nextest run -p music --locked --profile ci --run-ignored all
           -E 'test(live_search_and_stream_resolve_through_the_app)'
 
-      - name: Check every workspace target
+      # Push runs lint only the packages their commits touch, so a crate no
+      # later change touches would keep a red lint forever. Clippy over the
+      # whole tree (a check plus the lints) catches it within a day.
+      - name: Lint every workspace target
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: >-
-          bash tools/ci/measure.sh "nightly all-target check" --
-          bash scripts/ci-run.sh "cargo check --workspace --all-targets" --
-          cargo check --workspace --locked --all-targets
+          bash tools/ci/measure.sh "nightly all-target clippy" --
+          bash scripts/ci-run.sh "cargo clippy --workspace --all-targets" --
+          cargo clippy --workspace --locked --all-targets --keep-going -- -D warnings
 
       # Source-level protocol checks prevent an app from opting out, but only
       # the laid-out production root can prove that visible effect controls
