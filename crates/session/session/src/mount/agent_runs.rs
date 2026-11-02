@@ -35,5 +35,8 @@ impl Shared {
             (front, workspaces)
         });
         self.agent_runs.here(&self.person, &front, workspaces);
+        // The lines people typed in a run's conversation that ended since the last pass are
+        // steps of that run: recorded here, where the runs are, and never on the door's thread.
+        self.conversation.take_finished();
     }
 }
