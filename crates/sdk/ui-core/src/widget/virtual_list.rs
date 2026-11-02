@@ -172,8 +172,9 @@ pub trait ListModel {
 pub enum RowGroup {
     /// Rows whose group reads this heading stand together under it, in the order they come.
     Heading(String),
-    /// The items done with: they stand after every heading group, under the list's tail title
-    /// ([`VirtualList::with_tail_title`]), closed until the person opens them.
+    /// The items done with: the model stands them last, after every heading group, and the
+    /// list draws them under its tail title ([`VirtualList::with_tail_title`]), closed until
+    /// the person opens them.
     Tail,
 }
 
@@ -1384,6 +1385,7 @@ impl<M: ListModel> VirtualList<M> {
             .into_iter()
             .map(|row| (row.key.clone(), row))
             .collect::<HashMap<_, _>>();
+        self.groups.clear_folded();
         let mut seen = HashSet::new();
         let mut mounted = Vec::with_capacity(range.len());
         let mut replaced = false;
@@ -1393,15 +1395,18 @@ impl<M: ListModel> VirtualList<M> {
                 continue;
             };
             if !self.row_open(index) {
-                // A closed group: its heading's band stands where its first row would, and
-                // its rows take no room and are never built.
-                let room = if self.row_starts(index) {
-                    self.groups.height
+                // A closed group: its rows take no room and are never built, and its
+                // heading's band stands where its first row would (placed with the bands).
+                if self.row_starts(index) {
+                    // The heading still takes its band's room: it is what the person presses
+                    // to open the group again.
+                    self.groups.fold(index);
+                    let band = self.groups.height;
+                    // ratchet-allow(legacy_size_api): the row's height, not a text's, is measured.
+                    self.viewport.measure(index, key, band);
                 } else {
-                    0.0
-                };
-                // ratchet-allow(legacy_size_api): the row's height, not a text's, is measured.
-                self.viewport.measure(index, key, room);
+                    self.viewport.collapse(index, key);
+                }
                 continue;
             }
             if !seen.insert(key.clone()) {
@@ -2396,16 +2401,22 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             *ctx.handled = true;
             return;
         }
-        // A press on a group's heading opens or closes it, before the row under it acts.
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
+        // A press on a group's heading is the heading's, before the row under it acts: it
+        // opens or closes the group when it is let go there.
+        if let Some(cursor) = self.last_cursor
+            && match event {
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } => self.hold_band(cursor),
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                    ..
+                } => self.release_band(cursor),
+                _ => false,
             }
-        ) && let Some(cursor) = self.last_cursor
-            && self.press_band(cursor)
         {
             *ctx.handled = true;
             return;

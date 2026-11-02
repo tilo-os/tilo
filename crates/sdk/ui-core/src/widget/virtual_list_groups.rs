@@ -3,10 +3,10 @@
 //!
 //! A model says which group each row is in ([`super::ListModel::group_at`]); rows of one
 //! group come together, and the list draws the heading over the group's first row, held at
-//! the top of the box while the person scrolls through it. A tail group (the model's
-//! [`super::RowGroup::Tail`], the items done with) stands after every heading group, under
-//! the list's tail title, closed until the person opens it: its rows then take no room and
-//! are never built.
+//! the top of the box while the person scrolls through it. A tail group holds the items done
+//! with, which the model stands last (the model's [`super::RowGroup::Tail`]): it stands under
+//! the list's tail title, closed until the person opens it, and its rows meanwhile take no
+//! room and are never built.
 
 use std::collections::HashMap;
 
@@ -27,6 +27,8 @@ type Group = (String, bool);
 /// is the top of the box, as [`super::VirtualList::item_view_top`] reads).
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Band {
+    /// The row whose group the band heads.
+    pub index: usize,
     /// Where the band stands.
     pub top: f64,
     /// The heading the group reads.
@@ -42,7 +44,12 @@ pub(super) struct Groups {
     /// group asks for: a tail group starts closed, any other open.
     open: HashMap<String, bool>,
     /// The bands of the groups whose first row the last layout placed.
-    bands: Vec<Band>,
+    pub(super) bands: Vec<Band>,
+    /// The rows heading a group folded away, as the last mount walked them.
+    folded: Vec<usize>,
+    /// The heading a press is holding, until it is let go: a heading opens on the release, as
+    /// a button does, so starting a press and moving off it folds nothing.
+    held: Option<String>,
     /// The band height the last theme asks, in logical pixels.
     pub height: f64,
 }
@@ -87,12 +94,7 @@ impl Groups {
     }
 
     /// Whether the row `index` starts its group: the heading over it.
-    pub(super) fn starts<M: ListModel>(
-        &mut self,
-        model: &M,
-        index: usize,
-        tail: Option<&str>,
-    ) -> bool {
+    pub(super) fn starts<M: ListModel>(&self, model: &M, index: usize, tail: Option<&str>) -> bool {
         let Some(group) = group_of(model, index, tail) else {
             return false;
         };
@@ -103,6 +105,21 @@ impl Groups {
         }
     }
 
+    /// Hold the heading a press landed on.
+    pub(super) fn hold(&mut self, heading: String) {
+        self.held = Some(heading);
+    }
+
+    /// The heading a press holds, while it holds it.
+    pub(super) fn held(&self) -> Option<&str> {
+        self.held.as_deref()
+    }
+
+    /// Let go of the heading a press held: the one it held.
+    pub(super) fn release(&mut self) -> Option<String> {
+        self.held.take()
+    }
+
     /// A heading's group opened or closed: whether it is open now.
     pub(super) fn toggle(&mut self, heading: &str) -> bool {
         let open = !self.open.get(heading).copied().unwrap_or(true);
@@ -111,9 +128,10 @@ impl Groups {
     }
 
     /// The band of the group the row `index` starts, as the layout placed it.
-    pub(super) fn place(&mut self, index_group: Group, top: f64, closed: bool) {
+    pub(super) fn place(&mut self, index: usize, index_group: Group, top: f64, closed: bool) {
         self.bands.retain(|band| band.heading != index_group.0);
         self.bands.push(Band {
+            index,
             top,
             heading: index_group.0,
             closed,
@@ -126,13 +144,17 @@ impl Groups {
         self.bands.sort_by(|a, b| a.top.total_cmp(&b.top));
         let mut bands = std::mem::take(&mut self.bands);
         if let Some((group, closed)) = held {
-            let starts = bands
-                .first()
-                .is_some_and(|band| band.heading == group.0 && band.top >= 0.0);
+            let at = bands.iter().position(|band| band.heading == group.0);
+            let starts = at.is_some_and(|at| bands[at].top >= 0.0);
             if !starts {
+                // The group under the top holds its heading there: the one sliding out above
+                // it is not drawn as well, or its label would read over the held one.
+                let index = at.map(|at| bands[at].index).unwrap_or_default();
+                bands.retain(|band| band.heading != group.0);
                 bands.insert(
                     0,
                     Band {
+                        index,
                         top: 0.0,
                         heading: group.0,
                         closed,
@@ -145,9 +167,19 @@ impl Groups {
         bands
     }
 
-    /// Forget the bands the last layout placed.
-    pub(super) fn clear(&mut self) {
-        self.bands.clear();
+    /// Forget the folded groups the last mount walked.
+    pub(super) fn clear_folded(&mut self) {
+        self.folded.clear();
+    }
+
+    /// The row `index` heads a folded group: its band stands where it would.
+    pub(super) fn fold(&mut self, index: usize) {
+        self.folded.push(index);
+    }
+
+    /// The rows heading a folded group, as the last mount walked them.
+    pub(super) fn take_folded(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.folded)
     }
 
     /// The heading whose band holds the y `local` of the list's box.
@@ -177,9 +209,7 @@ impl<M: ListModel> VirtualList<M> {
     /// The row's group, as the model names it: asked of the model once per row, while its
     /// props stand as they were.
     pub(super) fn row_group(&mut self, index: usize) -> Option<Group> {
-        let Some(key) = self.model.key_at(index) else {
-            return None;
-        };
+        let key = self.model.key_at(index)?;
         if let Some(group) = self.row_groups.get(&key) {
             return group.clone();
         }
@@ -210,7 +240,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// Whether the row `index` starts a group: the heading over it.
-    pub(super) fn row_starts(&mut self, index: usize) -> bool {
+    pub(super) fn row_starts(&self, index: usize) -> bool {
         self.groups
             .starts(&self.model, index, self.tail_title.as_deref())
     }
@@ -227,7 +257,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// The room the band over the row `index` takes, when it starts a group.
-    pub(super) fn band_room(&mut self, index: usize) -> f64 {
+    pub(super) fn band_room(&self, index: usize) -> f64 {
         if self.row_starts(index) {
             self.groups.height
         } else {
@@ -244,11 +274,41 @@ impl<M: ListModel> VirtualList<M> {
             return;
         }
         let closed = !self.row_open(index);
-        self.groups.place(group, top, closed);
+        self.groups.place(index, group, top, closed);
+    }
+
+    /// Place the band of every group the layout holds: those whose first row is mounted, and
+    /// those whose rows are folded away under it, from where the viewport stands the row.
+    pub(super) fn place_bands(&mut self, mounted: impl Iterator<Item = usize>) {
+        let mut starts: Vec<usize> = std::mem::take(&mut self.groups.bands)
+            .into_iter()
+            .map(|band| band.index)
+            .collect();
+        // A group folded away before the person ever opened it has no row of its own: the
+        // mount that walked its rows named the one heading it.
+        starts.extend(self.groups.take_folded());
+        for index in mounted {
+            if self.row_starts(index) {
+                starts.push(index);
+            }
+        }
+        starts.sort_unstable();
+        starts.dedup();
+        for index in starts {
+            let top = self.viewport.item_view_top(index).unwrap_or_default();
+            self.place_band(index, top);
+        }
     }
 
     /// The bands the groups in view show, the one holding the top of the box first.
-    fn bands_in_view(&mut self) -> Vec<Band> {
+    pub(super) fn bands_in_view(&mut self) -> Vec<Band> {
+        // Where each group starts now: a scroll moves the bands with their rows, and the
+        // layout that placed them may be a frame behind.
+        for band in &mut self.groups.bands {
+            if let Some(top) = self.viewport.item_view_top(band.index) {
+                band.top = top;
+            }
+        }
         let held = self.viewport.hit_test(0.0).and_then(|top| {
             let group = self.row_group(top)?;
             if self.row_starts(top) {
@@ -274,6 +334,7 @@ impl<M: ListModel> VirtualList<M> {
         if bands.is_empty() {
             return;
         }
+        let cursor = self.last_cursor;
         let height = self.groups.height;
         let x1 = if self.rows_beside_bar {
             self.rect.x1 - self.gutter
@@ -300,13 +361,25 @@ impl<M: ListModel> VirtualList<M> {
         }
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         for (band, rect) in bands.iter().zip(rects) {
-            SectionHeaderFace::group(&band.heading).paint(&mut ctx, rect, Interaction::default());
+            let hovered = cursor.is_some_and(|point| rect.contains(point));
+            let held = self.groups.held() == Some(band.heading.as_str());
+            SectionHeaderFace::group(&band.heading)
+                .disclosure(!band.closed)
+                .paint(
+                    &mut ctx,
+                    rect,
+                    Interaction {
+                        hovered,
+                        pressed: hovered && held,
+                        ..Interaction::default()
+                    },
+                );
         }
     }
 
-    /// A press at `point` (the list's own coordinates) on a heading's band: that group opened
-    /// or closed. Whether a band was there.
-    pub(super) fn press_band(&mut self, point: Point) -> bool {
+    /// A press at `point` (the list's own coordinates) on a heading's band, held until it is
+    /// let go. Whether a band was there.
+    pub(super) fn hold_band(&mut self, point: Point) -> bool {
         if !self.rect.contains(point) {
             return false;
         }
@@ -314,6 +387,22 @@ impl<M: ListModel> VirtualList<M> {
         let Some(heading) = self.groups.heading_at(point.y - self.rect.y0) else {
             return false;
         };
+        self.groups.hold(heading);
+        true
+    }
+
+    /// A press on a heading's band let go at `point`: the group it heads opened or closed,
+    /// when the pointer never left it. Whether a band was there.
+    pub(super) fn release_band(&mut self, point: Point) -> bool {
+        let Some(heading) = self.groups.release() else {
+            return false;
+        };
+        self.bands_in_view();
+        if !self.rect.contains(point)
+            || self.groups.heading_at(point.y - self.rect.y0).as_deref() != Some(heading.as_str())
+        {
+            return false;
+        }
         self.groups.toggle(&heading);
         self.regroup();
         true

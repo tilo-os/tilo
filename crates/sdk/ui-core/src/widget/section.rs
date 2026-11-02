@@ -295,6 +295,9 @@ pub struct SectionHeaderFace<'a> {
     level: Level,
     count: Option<usize>,
     action: Option<&'a str>,
+    /// Whether the header shows a chevron, and which way it points: a header a person presses
+    /// to fold what stands under it.
+    disclosure: Option<bool>,
 }
 
 impl<'a> SectionHeaderFace<'a> {
@@ -305,6 +308,7 @@ impl<'a> SectionHeaderFace<'a> {
             level: Level::Section,
             count: None,
             action: None,
+            disclosure: None,
         }
     }
 
@@ -330,12 +334,21 @@ impl<'a> SectionHeaderFace<'a> {
         self
     }
 
+    /// A chevron saying what the header folds: `open` while its content shows, closed while it
+    /// is folded away.
+    #[must_use]
+    pub fn disclosure(mut self, open: bool) -> Self {
+        self.disclosure = Some(open);
+        self
+    }
+
     /// The header's height: one small control's, or the title's wrapped
     /// lines when they are taller.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let m = HeaderMetrics::new(theme);
         let style = theme.text(self.level.role());
-        let room = (width - self.trailing_width(text, theme, &m)).max(1.0);
+        let room =
+            (width - self.leading_inset(theme, &m) - self.trailing_width(text, theme, &m)).max(1.0);
         let title_h = f64::from(
             text.measure_style(self.title, Some(crate::num::f32_of_f64(room)), &style)
                 .1,
@@ -351,6 +364,15 @@ impl<'a> SectionHeaderFace<'a> {
                 .control_size(ControlSize::Small)
                 .intrinsic_width(text, theme)
         })
+    }
+
+    /// The room the chevron takes before the title.
+    fn leading_inset(&self, theme: &Theme, m: &HeaderMetrics) -> f64 {
+        if self.disclosure.is_some() {
+            f64::from(theme.tokens.metrics.icon_sm) + m.gap
+        } else {
+            0.0
+        }
     }
 
     fn trailing_width(&self, text: &mut TextRenderer, theme: &Theme, m: &HeaderMetrics) -> f64 {
@@ -389,7 +411,8 @@ impl<'a> SectionHeaderFace<'a> {
         let theme = ctx.theme;
         let m = HeaderMetrics::new(theme);
         let style = theme.text(self.level.role());
-        let room = (rect.width() - self.trailing_width(ctx.text, theme, &m)).max(1.0);
+        let inset = self.leading_inset(theme, &m);
+        let room = (rect.width() - inset - self.trailing_width(ctx.text, theme, &m)).max(1.0);
         let wrap = crate::num::f32_of_f64(room);
         let (title_w, title_h) = ctx.text.measure_style(self.title, Some(wrap), &style);
         let first_line = f64::from(style.line_height_px());
@@ -400,17 +423,27 @@ impl<'a> SectionHeaderFace<'a> {
         } else {
             cy - f64::from(title_h) / 2.0
         };
+        if let Some(open) = self.disclosure {
+            let side = f64::from(theme.tokens.metrics.icon_sm);
+            let chevron = Rect::new(rect.x0, cy - side / 2.0, rect.x0 + side, cy + side / 2.0);
+            let icon = if open {
+                Icon::ChevronDown
+            } else {
+                Icon::ChevronRight
+            };
+            icon.draw(ctx.scene, ctx.transform, chevron, theme.text_dim);
+        }
         ctx.text(
             self.title,
             &style,
             theme.text_primary,
-            Point::new(rect.x0, top),
+            Point::new(rect.x0 + inset, top),
             Some(wrap),
         );
         if let Some(count) = self.count {
             let label = count.to_string();
             let (w, h) = m.count_size(ctx.text, &label);
-            let x = rect.x0 + f64::from(title_w).min(room) + m.gap;
+            let x = rect.x0 + inset + f64::from(title_w).min(room) + m.gap;
             paint_count(ctx, Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0), &label);
         }
         if let (Some(label), Some(target)) = (self.action, self.action_rect(rect, ctx.text, theme))

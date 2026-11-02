@@ -115,10 +115,10 @@ impl<M: ListModel + 'static> VirtualList<M> {
                 (row.index, top, row.node)
             })
             .collect::<Vec<_>>();
-        // The bands of the groups in view stand where their first row's place is.
-        self.groups.clear();
+        // The bands of the groups in view stand where their first row's place is, folded ones
+        // too: their rows take no room, and the band stands where the row would.
+        self.place_bands(places.iter().map(|(index, _, _)| *index));
         for (index, top, node) in places {
-            self.place_band(index, top);
             let Some(child) = node else {
                 continue;
             };

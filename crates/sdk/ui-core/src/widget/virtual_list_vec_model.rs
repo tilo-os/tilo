@@ -2,6 +2,7 @@
 //! rows from a vector keyed once at build.
 
 use std::collections::HashMap;
+use std::hash::Hash;
 
 use super::{DuplicateListKey, ListModel};
 

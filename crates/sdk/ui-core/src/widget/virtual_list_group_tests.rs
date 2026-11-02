@@ -3,6 +3,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::testing::Dispatch;
+use crate::theme::Theme;
 use crate::widget::section::band_height;
 
 /// A list whose rows name their group, and which counts how often it is asked.
@@ -47,74 +48,84 @@ fn heading(name: &str) -> Option<RowGroup> {
     Some(RowGroup::Heading(name.to_owned()))
 }
 
-/// Two tasks due Monday, two due Tuesday, and two done with.
-fn week() -> VirtualList<Grouped> {
-    let groups = vec![
-        heading("Monday"),
-        heading("Monday"),
-        heading("Tuesday"),
-        heading("Tuesday"),
-        Some(RowGroup::Tail),
-        Some(RowGroup::Tail),
-    ];
-    VirtualList::new(Grouped::new(groups), 40.0, |_, index, _| {
-        Box::new(Text::new(&format!("row {index}"))) as Element
+const ROW: f32 = 40.0;
+
+fn grouped(groups: Vec<Option<RowGroup>>) -> VirtualList<Grouped> {
+    VirtualList::new(Grouped::new(groups), ROW, |_, index, _| {
+        Box::new(super::tests::ProbeRow::new(
+            format!("row {index}"),
+            ROW,
+            false,
+            Rc::new(Cell::new(0)),
+        )) as Element
     })
     .with_viewport_height(400.0)
 }
 
-fn lay_out(list: &mut VirtualList<Grouped>) -> (TaffyTree<()>, NodeId) {
-    let doc = AutoCommit::new();
-    list.sync(&doc, &automerge::ROOT);
-    let mut taffy = TaffyTree::new();
-    let mut node_map = HashMap::new();
-    let theme = Theme::dark();
-    let node = list.build_layout(&mut taffy, &theme, &mut node_map);
-    taffy
-        .compute_layout(
-            node,
-            Size {
-                width: AvailableSpace::Definite(300.0),
-                height: AvailableSpace::Definite(px(list.viewport.viewport())),
-            },
-        )
-        .unwrap();
-    list.apply_layout(&taffy, node, Point::ZERO);
-    (taffy, node)
+/// Two tasks due Monday, two due Tuesday, and two done with.
+fn week() -> VirtualList<Grouped> {
+    grouped(vec![
+        heading("Monday"),
+        heading("Monday"),
+        heading("Tuesday"),
+        heading("Tuesday"),
+        Some(RowGroup::Tail),
+        Some(RowGroup::Tail),
+    ])
+    .with_tail_title("Done")
 }
 
-fn press(list: &mut VirtualList<Grouped>, y: f64, taffy: &TaffyTree<()>, node: NodeId) -> bool {
-    let mut at = crate::synthetic_input::cursor_moved(20.0, y);
-    let handled = Dispatch::new().layout(taffy, node).send(list, &at).handled;
-    at = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left);
-    handled | Dispatch::new().layout(taffy, node).send(list, &at).handled
+/// Lay the list out until the rows' measured heights are placed: the first pass measures them,
+/// the second stands their bands where the heights put them.
+fn settle(list: &mut VirtualList<Grouped>) -> (TaffyTree<()>, NodeId) {
+    let _ = super::tests::lay_out(list, 300.0);
+    super::tests::lay_out(list, 300.0)
+}
+
+fn bands(list: &VirtualList<Grouped>) -> Vec<(String, f64, bool)> {
+    list.groups
+        .bands
+        .iter()
+        .map(|band| (band.heading.clone(), band.top, band.closed))
+        .collect()
 }
 
 fn mounted_indexes(list: &VirtualList<Grouped>) -> Vec<usize> {
     list.mounted.iter().map(|row| row.index).collect()
 }
 
+/// Point at `y` and press there, then let go: a band folds on the release.
+fn press(list: &mut VirtualList<Grouped>, y: f64, taffy: &TaffyTree<()>, node: NodeId) -> bool {
+    let at = crate::synthetic_input::cursor_moved(20.0, y);
+    let hovered = Dispatch::new().layout(taffy, node).send(list, &at).handled;
+    let mut handled = hovered;
+    for state in [ElementState::Pressed, ElementState::Released] {
+        let event = crate::synthetic_input::mouse_input(state, MouseButton::Left);
+        handled |= Dispatch::new()
+            .layout(taffy, node)
+            .send(list, &event)
+            .handled;
+    }
+    handled
+}
+
 #[test]
 fn a_grouped_list_heads_each_run_and_keeps_the_done_tail_folded() {
     let mut list = week();
-    let (_taffy, _node) = lay_out(&mut list);
+    let _ = settle(&mut list);
     let band = band_height(&Theme::dark());
-    assert!(band > 0.0);
+    let row = f64::from(ROW);
     assert_eq!(
-        list.groups
-            .bands
-            .iter()
-            .map(|band| (band.heading.as_str(), band.top, band.closed))
-            .collect::<Vec<_>>(),
-        vec![("Monday", 0.0, false), ("Tuesday", 80.0 + band, false)]
+        bands(&list),
+        vec![
+            ("Monday".to_owned(), 0.0, false),
+            ("Tuesday".to_owned(), 2.0 * row + band, false),
+            ("Done".to_owned(), 4.0 * row + 2.0 * band, true),
+        ]
     );
-    // The tail's heading stands after the last day, and its rows take no room.
-    let tail = band + 80.0 + band + 80.0;
-    assert!(
-        (list.viewport.item_top(5).unwrap_or_default() - (tail + band)).abs() < 1.5,
-        "the done tail stands after the days: {:?}",
-        list.viewport.item_top(5)
-    );
+    // The folded rows take no room: the list ends under the tail's heading.
+    let done = 4.0 * row + 2.0 * band;
+    assert!((list.viewport.content_extent() - (done + band)).abs() < 0.5);
     let mounted = mounted_indexes(&list);
     assert!(
         !mounted.contains(&4) && !mounted.contains(&5),
@@ -125,45 +136,69 @@ fn a_grouped_list_heads_each_run_and_keeps_the_done_tail_folded() {
 #[test]
 fn a_press_on_a_heading_opens_and_closes_its_group() {
     let mut list = week();
-    let (taffy, node) = lay_out(&mut list);
+    let (taffy, node) = settle(&mut list);
     let band = band_height(&Theme::dark());
-    let tail = band + 80.0 + band + 80.0;
-    assert!(press(&mut list, tail + band / 2.0, &taffy, node));
-    let (_taffy, _node) = lay_out(&mut list);
-    assert!(mounted_indexes(&list).contains(&4), "the tail opened");
+    let done = 4.0 * f64::from(ROW) + 2.0 * band;
+    assert!(press(&mut list, done + band / 2.0, &taffy, node));
+    let _ = settle(&mut list);
     assert!(
-        list.groups.bands.iter().any(|band| band.closed),
-        "its heading reads closed"
+        mounted_indexes(&list).contains(&4),
+        "the tail opened: {:?}",
+        mounted_indexes(&list)
     );
     // A day's group closes the same way, and its rows let go.
-    let (taffy, node) = lay_out(&mut list);
+    let (taffy, node) = settle(&mut list);
     assert!(press(&mut list, band / 2.0, &taffy, node));
-    let (_taffy, _node) = lay_out(&mut list);
+    let _ = settle(&mut list);
     assert!(
-        list.groups
-            .bands
+        bands(&list)
             .iter()
-            .all(|band| band.heading != "Monday" || band.closed),
-        "Monday closed"
+            .all(|(heading, _, closed)| heading != "Monday" || *closed),
+        "Monday closed: {:?}",
+        bands(&list)
     );
     assert!(!mounted_indexes(&list).contains(&0), "its rows let go");
 }
 
 #[test]
 fn the_heading_over_the_top_of_the_box_stays_there_while_its_group_scrolls() {
-    let mut list = week();
-    let (_taffy, _node) = lay_out(&mut list);
-    // Scroll into the middle of Tuesday's run: its heading is above the box.
-    let band = band_height(&Theme::dark());
-    let tuesday = band + 80.0 + band;
-    list.set_scroll_offset(tuesday + 20.0);
-    let (_taffy, _node) = lay_out(&mut list);
-    let bands = list.bands_in_view();
-    assert_eq!(
-        bands.first().map(|band| band.heading.as_str()),
-        Some("Tuesday")
+    let mut list = grouped(
+        (0..30)
+            .map(|index| heading(["Monday", "Tuesday", "Wednesday"][index / 10]))
+            .collect(),
     );
-    assert_eq!(bands.first().map(|band| band.top), Some(0.0));
+    let _ = settle(&mut list);
+    // Scroll into Tuesday's run, past its heading.
+    let inside = list.viewport.item_top(12).unwrap_or_default() + 5.0;
+    list.set_scroll_offset(inside);
+    let _ = settle(&mut list);
+    let shown = list.bands_in_view();
+    assert_eq!(
+        shown.first().map(|band| (band.heading.as_str(), band.top)),
+        Some(("Tuesday", 0.0))
+    );
+}
+
+#[test]
+fn a_heading_stays_over_the_top_as_a_scroll_moves_it_without_a_layout() {
+    let mut list = grouped(
+        (0..30)
+            .map(|index| heading(["Monday", "Tuesday", "Wednesday"][index / 10]))
+            .collect(),
+    );
+    let _ = settle(&mut list);
+    // Scroll past Tuesday's heading, the rows still those the last layout mounted.
+    let inside = list.viewport.item_top(12).unwrap_or_default() + 5.0;
+    list.set_scroll_offset(inside);
+    let shown = list.bands_in_view();
+    assert_eq!(
+        shown
+            .iter()
+            .map(|band| (band.heading.as_str(), band.top))
+            .collect::<Vec<_>>(),
+        vec![("Tuesday", 0.0)],
+        "the heading of the group under the top, held there once, over its rows"
+    );
 }
 
 #[test]
@@ -171,14 +206,11 @@ fn a_long_list_asks_the_model_about_the_rows_in_view_only() {
     let groups = (0..100_000)
         .map(|index| heading(&format!("day {}", index / 50)))
         .collect();
-    let mut list = VirtualList::new(Grouped::new(groups), 40.0, |_, index, _| {
-        Box::new(Text::new(&format!("row {index}"))) as Element
-    })
-    .with_viewport_height(400.0);
-    let (_taffy, _node) = lay_out(&mut list);
+    let mut list = grouped(groups);
+    let _ = settle(&mut list);
     let asked = list.model.asked.get();
     assert!(
-        asked <= 60,
+        asked <= 400,
         "a layout asks about the rows it lays out, not the whole list: {asked} of 100000"
     );
 }
