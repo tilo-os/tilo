@@ -204,6 +204,27 @@ fn press(session: &mut Session, name: &str) {
     }
 }
 
+/// Press the point `(x, y, width, height)` on screen with the pointer, as the person does: the
+/// control a name happens to share.
+fn press_at(session: &mut Session, (x, y, w, h): (f64, f64, f64, f64)) {
+    let (x, y) = (x + w / 2.0, y + h / 2.0);
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x, y })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed,
+            })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+}
+
 /// Place `resource` on the canvas of the workspace in front, through the arrangement's
 /// published `place`.
 fn place(session: &mut Session, resource: &str) -> u64 {
@@ -440,4 +461,218 @@ fn within(session: &Session, name: &str, width: i32, height: i32) -> Option<(f64
 /// Whether two rectangles `(x, y, w, h)` share any area.
 fn intersects(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
     a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+}
+
+/// The session with the shell as `layer` on a device whose every id sits above `i64::MAX`: the
+/// salt is the top of an id's high bits, so no place, strip or row fits an integer.
+fn salted_session(layer: ShellLayer) -> (Session, Vec<String>) {
+    let (notebook, notes) = notebook();
+    let session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: Some(layer),
+            collab: false,
+            salt: 0x8000,
+            services: vec![Box::new(notebook)],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    (session, notes)
+}
+
+/// Place `resource` on the surface in front, as activating a reference in a view does: the
+/// desk's own workspace, row, strip and place ids, minted on this device. The place's id.
+fn place_here(session: &mut Session, resource: &str) -> u64 {
+    let before: Vec<u64> = session
+        .arrangement()
+        .borrow()
+        .strips()
+        .places()
+        .map(|place| place.id)
+        .collect();
+    let arguments: Map<String, Value> = json!({
+        "resource": resource,
+        "x": 80,
+        "y": 60,
+        "width": 480,
+        "height": 360,
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    session
+        .invoke("shell:arrangement", "place", &arguments)
+        .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
+    until(session, "the place is in the record", |session| {
+        session.arrangement().borrow().strips().places().count() > before.len()
+    });
+    session
+        .arrangement()
+        .borrow()
+        .strips()
+        .places()
+        .map(|place| place.id)
+        .find(|id| !before.contains(id))
+        .expect("a place the record did not hold before")
+}
+
+/// An empty strip called `name` in the row in front: what the person makes by dragging one out.
+/// Its id, which is its row's.
+fn add_strip(session: &Session, name: &str) -> u64 {
+    let handle = session.handle();
+    let mut tree = handle.read(Clone::clone);
+    let made = tilo_desktop_model::commands::apply_to_active_workspace(
+        &mut tree,
+        &tilo_desktop_model::commands::DesktopCommand::CreateStrip { name: name.into() },
+        &mut || Ok(handle.mint_id()),
+    )
+    .expect("a strip is made")
+    .expect("the strip has an id");
+    handle.replace_tree(tree);
+    made.0
+}
+
+/// The strip the place `place` stands in, by the record's ids.
+fn place_strip(session: &Session, place: u64) -> Option<u64> {
+    session
+        .arrangement()
+        .borrow()
+        .strips()
+        .strip_of(place)
+        .map(|strip| strip.id)
+}
+
+/// The row the place `place` stands in, by the record's ids.
+fn place_row(session: &Session, place: u64) -> Option<u64> {
+    session
+        .arrangement()
+        .borrow()
+        .strips()
+        .strip_of(place)
+        .map(|strip| strip.row.0)
+}
+
+/// The width of the strip `strip`, in per-mille of its row.
+fn strip_width(session: &Session, strip: u64) -> Option<u32> {
+    session
+        .arrangement()
+        .borrow()
+        .strips()
+        .strip(strip)
+        .map(|strip| strip.width.permille())
+}
+
+/// Keep the screen as `name.png` where `TL_SHELL_SHOTS` names.
+fn keep(session: &mut Session, name: &str) {
+    let Some(dir) = std::env::var_os("TL_SHELL_SHOTS") else {
+        return;
+    };
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("the screen");
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).expect("the shots' directory");
+    image::save_buffer(
+        dir.join(format!("{name}.png")),
+        &shot.rgba,
+        shot.width,
+        shot.height,
+        image::ColorType::Rgba8,
+    )
+    .expect("the shot is written");
+}
+
+/// The strip and place controls press the place they name, on a device whose every id is above
+/// `i64::MAX`: a key read as a number reaches nothing of this desk.
+#[test]
+fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = salted_session(ShellLayer::Screen);
+    let note = notes.first().expect("a note").clone();
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Strips").is_some()
+    });
+    let placed = place_here(&mut session, &note);
+    assert!(
+        placed > u64::try_from(i64::MAX).unwrap(),
+        "the desk's ids do not fit an integer: {placed}"
+    );
+    until(&mut session, "the place's controls", |session| {
+        on_screen(session, "Width").is_some() && on_screen(session, "Close place").is_some()
+    });
+    let strip = place_strip(&session, placed).expect("the place stands in a strip");
+    assert_ne!(strip_width(&session, strip), Some(1000), "it starts narrow");
+
+    // The strip's width menu resizes the strip the menu is on.
+    press(&mut session, "Width");
+    until(&mut session, "the width menu", |session| {
+        on_screen(session, "Wide").is_some()
+    });
+    keep(&mut session, "arrangement-strip-width-menu");
+    press(&mut session, "Wide");
+    until(&mut session, "the strip widened", |session| {
+        strip_width(session, strip) == Some(1000)
+    });
+
+    // The place's pin presses the place the frame is on.
+    press(&mut session, "Pin");
+    until(&mut session, "the place pinned", |session| {
+        session
+            .arrangement()
+            .borrow()
+            .strips()
+            .place(placed)
+            .is_some_and(|place| place.pinned)
+    });
+
+    // A second row on the desk: the place's move names it, by its own resource.
+    let second = add_strip(&session, "Elsewhere");
+    until(&mut session, "the second row", |session| {
+        session
+            .arrangement()
+            .borrow()
+            .strips()
+            .rows
+            .iter()
+            .any(|row| row.id.0 == second)
+    });
+    until(&mut session, "the move menu", |session| {
+        on_screen(session, "Move to row").is_some()
+    });
+    // The bar names the row it shows too; the menu's item is the one that was not there
+    // before the menu opened.
+    let chips = session.shell_controls("Elsewhere");
+    press(&mut session, "Move to row");
+    until(&mut session, "the rows to move to", |session| {
+        session
+            .shell_controls("Elsewhere")
+            .iter()
+            .any(|rect| !chips.contains(rect))
+    });
+    keep(&mut session, "arrangement-move-to-row-menu");
+    let item = session
+        .shell_controls("Elsewhere")
+        .into_iter()
+        .find(|rect| !chips.contains(rect))
+        .expect("the row's item in the menu");
+    press_at(&mut session, item);
+    until(&mut session, "the place moved", |session| {
+        place_row(session, placed) == Some(second)
+    });
+
+    // Closing presses the place it names, never another.
+    until(&mut session, "the place's controls", |session| {
+        on_screen(session, "Close place").is_some()
+    });
+    press(&mut session, "Close place");
+    until(&mut session, "the place closed", |session| {
+        place_strip(session, placed).is_none()
+    });
 }

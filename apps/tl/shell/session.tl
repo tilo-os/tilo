@@ -17,8 +17,20 @@ fn run(key: Text) -> session.AgentRun {
     return resource("agent-run:{key}", of: session.AgentRun)
 }
 
-/// The id of a place, strip or row of the arrangement as its actions take it: the number its
-/// record's key writes.
-fn arranged(key: Text) -> Int {
-    return key.to_int() ?? 0
+/// The place `key` of the arrangement as the session publishes it, whose own actions pin, close
+/// and move it. A place, a strip and a row are resources of their own, so a press names the
+/// thing it presses and no key is a number.
+fn the_place(key: Text) -> session.Place {
+    return resource("shell:place:{key}", of: session.Place)
+}
+
+/// The strip `key` of the arrangement as the session publishes it, whose own action resizes it.
+fn the_strip(key: Text) -> session.Strip {
+    return resource("shell:strip:{key}", of: session.Strip)
+}
+
+/// The row `key` of the arrangement as the session publishes it: what a place's move names as
+/// where the place goes.
+fn the_row(key: Text) -> session.Row {
+    return resource("shell:row:{key}", of: session.Row)
 }
