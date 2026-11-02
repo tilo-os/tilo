@@ -228,12 +228,9 @@ impl Banners {
         }
         // The banners' own coordinates start at the display's corner.
         let local = |(x0, y0, w, h): (i32, i32, i32, i32)| {
-            Rect::new(
-                f64::from(x0 - x),
-                f64::from(y0 - y),
-                f64::from(x0 - x + w),
-                f64::from(y0 - y + h),
-            )
+            let left = f64::from(x0) - f64::from(x);
+            let top = f64::from(y0) - f64::from(y);
+            Rect::new(left, top, left + f64::from(w), top + f64::from(h))
         };
         let under_bar = |output: (i32, i32, i32, i32)| {
             let mut display = local(output);
