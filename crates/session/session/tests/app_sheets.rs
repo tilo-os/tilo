@@ -305,6 +305,11 @@ fn uninstalling_the_only_copy_says_its_file_is_in_the_trash() {
         !published(session, &desktop_id)
     });
     assert!(!file.exists(), "its file went");
+    // What it did is said once the registry reads the app as gone, which is
+    // a pass after the app leaves their apps.
+    until(&mut session, "the notice saying where it went", |session| {
+        !notices(session).is_empty()
+    });
     assert_eq!(
         notices(&session),
         [(
