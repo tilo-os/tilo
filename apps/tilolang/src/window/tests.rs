@@ -769,7 +769,10 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
         .is_some(),
         "an empty workspace says so"
     );
-    workspace.header_action("New channel");
+    // While there is no channel the empty state carries the only New channel button, so the
+    // header does not show the same one twice; its button comes back with the first channel.
+    let empty = workspace.key_of("ui.EmptyState", "title", "No channels yet");
+    workspace.fire(&empty, "act", None);
     assert_eq!(workspace.items_of("so.tilo.lang.chat", "items"), 1);
     let shell = workspace.composed();
     let item = node_with(&shell, "ui.NavItem", "label", "new-channel")
@@ -809,7 +812,17 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
     assert_eq!(
         all,
         [
-            "general", "random", "design", "release", "planning", "weekend", "books"
+            "general",
+            "random",
+            "design",
+            "release",
+            "planning",
+            "weekend",
+            "books",
+            // The conversations with a person, and the one with yourself, which the sidebar
+            // labels as your notes: they come after the channels they are listed with.
+            "Leo",
+            "Notes to self"
         ],
         "the channels outside any category first"
     );
@@ -2272,7 +2285,11 @@ fn todays_cards_show_their_resources_title_count_and_first_rows() {
             talks.extend(buttons.iter().map(|button| text(button, "label")));
             talks.extend(captions.iter().map(|caption| text(caption, "value")));
             assert!(rows.is_empty(), "{rows:?}");
-            assert_eq!(talks.len(), preview, "a card shows its first entries: Chat");
+            assert_eq!(
+                talks.len(),
+                usize::try_from(*count).unwrap(),
+                "a card counts what it lists: Chat"
+            );
             continue;
         }
         assert_eq!(
@@ -2293,7 +2310,9 @@ fn todays_cards_show_their_resources_title_count_and_first_rows() {
     );
     assert_eq!(
         talks,
-        ["# general", "# random", "Team", "Social"],
+        // The channels outside a category, the conversations with people (your own is
+        // "You"), and then the categories, which the card names.
+        ["# general", "# random", "Leo", "You", "Team", "Social"],
         "the chat card's entries"
     );
     // And the window draws them: a header and a row widget for each.
