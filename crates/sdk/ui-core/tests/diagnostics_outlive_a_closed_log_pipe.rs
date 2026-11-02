@@ -20,6 +20,7 @@ use std::os::fd::{AsRawFd, IntoRawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Mutex;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_lock::MutexRecover as _;
 use tilo_ui::diag;
@@ -57,7 +58,7 @@ fn app_whose_log_reader_left(role: &str, test_name: &str) -> ExitStatus {
         .env(ROLE, role)
         .stdout(Stdio::null())
         .stderr(writer)
-        .spawn()
+        .spawn_locked()
         .expect("spawn the child");
     child.wait().expect("wait for the child")
 }

@@ -455,6 +455,7 @@ impl Drop for AppBuilder {
 #[cfg(target_os = "linux")]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     const CACHE_PEER: &str = r#"
 import base64,json,sys
@@ -649,7 +650,7 @@ for line in sys.stdin:
         let child = Command::new("sleep")
             .arg("600")
             .stdout(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let process = std::path::PathBuf::from(format!("/proc/{}", child.id()));
         assert!(process.try_exists().unwrap());

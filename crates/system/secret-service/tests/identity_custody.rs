@@ -31,6 +31,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::{Signature, SigningKey, Verifier};
 use runtime_identity::KeyProtection;
@@ -100,7 +101,7 @@ impl Bus {
             .args(["--user", "--no-pager", "status", NAME])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
+            .status_locked()
             .expect("this test needs busctl (systemd)")
             .success()
     }
@@ -122,7 +123,7 @@ impl Bus {
 
     fn spawn_service(&mut self, mut command: Command) {
         assert!(self.service.is_none(), "a service is already running");
-        self.service = Some(command.spawn().expect("the service binary starts"));
+        self.service = Some(command.spawn_locked().expect("the service binary starts"));
         self.wait_for_owner();
     }
 
@@ -156,7 +157,7 @@ impl Bus {
         let output = self
             .command(service())
             .arg("status")
-            .output()
+            .output_locked()
             .expect("the service binary runs");
         assert!(
             output.status.success(),
@@ -691,7 +692,7 @@ impl Bus {
         // SAFETY: the hook makes only async-signal-safe system calls.
         unsafe { command.pre_exec(drop_capabilities) };
         command
-            .spawn()
+            .spawn_locked()
             .expect("this test binary starts again as a child")
     }
 

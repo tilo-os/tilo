@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn launch(host: &Path, env: &[(&str, &str)]) {
     std::fs::create_dir_all(host).unwrap();
@@ -36,7 +37,7 @@ fn launch(host: &Path, env: &[(&str, &str)]) {
         .arg("--headless-drive")
         .arg(serde_json::json!({"actions": [], "dump": host.join("dump.json")}).to_string())
         .stdin(Stdio::null())
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success(), "sheets exited with {status}");
 }

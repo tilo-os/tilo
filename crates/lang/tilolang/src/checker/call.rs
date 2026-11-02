@@ -795,6 +795,15 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
+        if !self.st.takes_resource {
+            self.err(
+                "E047",
+                span,
+                "`outside` queues its effect on the action's resource, and this action takes none: \
+                 give it the resource the effect is about (`action go(d: Desk, …)`)",
+            );
+            return Ex::error();
+        }
         // `outside(capability, payload)` or, held back until a moment, `outside(capability,
         // payload, at: <a Time>)`: the device carries it out only once the clock reaches it.
         let (Some(cap), Some(payload)) = (args.first(), args.get(1)) else {
@@ -1545,6 +1554,11 @@ impl Checker<'_> {
                 Ex::error()
             }
             (Ty::Text, "len") if args.is_empty() => Ex::host(Imp::StrLen, vec![r], Ty::Int),
+            // The number the text writes, `.none` for text that writes none: an id another
+            // app gave as text, passed where its action takes the number.
+            (Ty::Text, "to_int") if args.is_empty() => {
+                Ex::host(Imp::StrToInt, vec![r], Ty::Option(Box::new(Ty::Int)))
+            }
             (Ty::Text, "find") => {
                 if !self.arity(name, args, 1, span) {
                     return Ex::error();
@@ -1661,7 +1675,7 @@ impl Checker<'_> {
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
-                    Ty::Text => "len, find, slice, replace",
+                    Ty::Text => "len, find, slice, replace, to_int",
                     Ty::RichText => "is_empty (and the members excerpt, text, references, people)",
                     Ty::Int => "to_float, to_text",
                     Ty::Float => "to_int, to_text",

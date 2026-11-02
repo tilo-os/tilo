@@ -1003,6 +1003,8 @@ mod command_path_tests {
     use super::*;
     use crate::model::Entry;
     use std::path::PathBuf;
+    #[cfg(target_os = "linux")]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// Wake scheduling, record-preserving metadata refresh and record-id search
     /// reveal — each phase with its own fixture and scoped environment.
@@ -1406,7 +1408,7 @@ mod command_path_tests {
             .arg(&work)
             .arg(SIZE.to_string())
             .arg(name)
-            .status()
+            .status_locked()
             .unwrap();
         assert!(status.success());
 

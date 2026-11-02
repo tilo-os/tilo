@@ -22,21 +22,21 @@ view composer(d: Desk) {
         }
         body: {
             ui.TextInput(value: words, placeholder: "What should it do?", lines: 3) {
-                on submit: send_to_agent(agent_key(agents), subject, words)
+                on submit: session.ask(id: .none, title: words, body: .none, agent: agent_key(agents), quick: .none)
             }
             if live.is_empty() {
                 ui.EmptyState("No task is running", message: "What you ask becomes one, and its log stays here", icon: .bot, inline: true)
             } else {
                 ui.Section("Running") {
                     for t in live {
-                        task_line(t)
+                        task_line(d, t)
                     }
                 }
             }
             if not agents.is_empty() {
                 ui.Section("Agents here") {
                     for a in agents {
-                        agent_line(a)
+                        agent_line(d, a)
                     }
                 }
             }
@@ -44,10 +44,10 @@ view composer(d: Desk) {
         footer: {
             row(gap: .related, align: .center, wrap: true) {
                 ui.Button("Send", icon: .send, role: .primary) {
-                    on press: send_to_agent(agent_key(agents), subject, words)
+                    on press: session.ask(id: .none, title: words, body: .none, agent: agent_key(agents), quick: .none)
                 }
                 ui.Button("What I am on", icon: .paperclip, role: .plain, size: .small) {
-                    on press: show_surface("overview")
+                    on press: device.show_surface(device.desk, surface: "overview")
                 }
                 spacer
                 ui.InputHint(["Enter"])
@@ -58,15 +58,8 @@ view composer(d: Desk) {
 }
 
 /// One running task: what it is on, its state, and the way into its log.
-view task_line(t: Task) {
-    ui.ListRow(t.title, secondary: .some(t.state), icon: if t.state == "waiting" { .pause } else { .bot }) {
-        trailing: {
-            ui.Button("Its log", icon: .list, icon_only: true, size: .small, role: .plain) {
-                on press: open_task(t.key)
-            }
-        }
-        on activate: open_task(t.key)
-    }
+view task_line(d: Desk, t: Task) {
+    ui.ListRow(t.title, secondary: .some(t.state), icon: if t.state == "waiting" { .pause } else { .bot })
 }
 
 /// The agent an ask goes to: the first here that is not done, else the workspace's own.

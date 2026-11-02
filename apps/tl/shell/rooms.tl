@@ -16,14 +16,14 @@ view workspaces(d: Desk) {
             }
         }
         row(gap: .related, align: .end, wrap: true) {
-            ui.TextInput(value: name, placeholder: "Name a new workspace") {
-                on submit: create_room(d, name)
+            ui.TextInput(value: name, placeholder: "Name a new workspace", fill) {
+                on submit: session.new_workspace(workspace: .none, name: .some(name))
             }
             ui.Button("Create", icon: .plus, role: .primary) {
-                on press: create_room(d, name)
+                on press: session.new_workspace(workspace: .none, name: .some(name))
             }
             ui.Button("Join a workspace", icon: .users) {
-                on press: join_workspace(d)
+                on press: session.join_workspace()
             }
         }
     }
@@ -43,6 +43,6 @@ view room_card(r: Room) {
                 }
             }
         }
-        on activate: switch_to_key(r.key, r.current)
+        on activate: device.switch_workspace(device.desk, workspace: r.key)
     }
 }

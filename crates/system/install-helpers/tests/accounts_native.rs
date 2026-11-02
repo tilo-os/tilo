@@ -15,6 +15,7 @@ mod tests {
     use std::process::{Command, Output, Stdio};
     use tilo_install_helpers::account_handoff::InstallAccounts;
     use tilo_seal::SymmetricKey;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     const OPERATION: &str = "49b48a8c-9dd0-46ad-b1d2-abc241d8e002";
     const TARGET: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -33,7 +34,7 @@ mod tests {
     }
 
     fn checked(command: &mut Command) {
-        let output = command.output().expect("execute isolation command");
+        let output = command.output_locked().expect("execute isolation command");
         assert!(
             output.status.success(),
             "isolation command failed: {output:?}"
@@ -149,7 +150,7 @@ mod tests {
                 });
             }
             let mut child = command
-                .spawn()
+                .spawn_locked()
                 .expect("execute production helper in chroot");
             // A helper that refuses before reading closes its input: its
             // status and stderr below say why, not the broken pipe.

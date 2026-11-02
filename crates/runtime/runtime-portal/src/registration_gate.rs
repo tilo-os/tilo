@@ -174,6 +174,7 @@ fn read_release() -> io::Result<()> {
 mod tests {
     use std::io::{BufRead as _, BufReader, Read as _};
     use std::os::fd::FromRawFd as _;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     use super::*;
 
@@ -246,7 +247,7 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         let gate = install(&mut command).expect("install the gate");
-        let mut child = command.spawn().expect("spawn the gated child");
+        let mut child = command.spawn_locked().expect("spawn the gated child");
         drop(command);
         let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
         (child, stdout, gate)

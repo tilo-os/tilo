@@ -22,8 +22,9 @@ use std::collections::HashMap;
 use std::io::BufRead as _;
 use std::rc::Rc;
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
-use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{Options, Session};
 use tilo_surface_host::DeskReading;
@@ -38,14 +39,22 @@ fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
-        shell_bar: true,
+        shell: Some(tilo_surface_host::shell_part::ShellLayer::Bar),
         ..Options::default()
     }
 }
 
 fn session() -> Session {
-    Session::headless(options(), &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)])
-        .expect("session")
+    let mut session =
+        Session::headless(options(), &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)])
+            .expect("session");
+    // A tap here is a press and a release a frame apart, and a frame on a loaded machine can
+    // outlast the repeat delay: held keys would repeat ("stuuudio"). No test here holds one.
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(1),
+        rate: 0,
+    });
+    session
 }
 
 /// The desk as the session publishes it on its door: what an agent reads.
@@ -68,7 +77,10 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
         }
     }
     panic!(
-        "condition not reached; the session says: {:?}",
+        "condition not reached; the shell's refusals: {:?}; effects handed {:?} served {:?}; the session says: {:?}",
+        session.shell_refusals(),
+        session.shell_work().map(|work| work.handed),
+        session.shell_work().map(|work| work.served),
         session.accessible_labels()
     );
 }
@@ -137,7 +149,10 @@ fn the_bar_shows_the_time_the_workspace_its_strip_and_the_person_the_session_pub
     let mut session = session();
     until(&mut session, |session| {
         let desk = desk(session);
-        says(session, &desk.clock) && says(session, &desk.workspace)
+        says(session, &desk.clock)
+            && says(session, &desk.workspace)
+            && (desk.strip.is_empty() || says(session, &desk.strip))
+            && says(session, PERSON)
     });
     let desk = desk(&session);
     assert_eq!(desk.person, PERSON);
@@ -361,7 +376,7 @@ impl SessionBus {
                 directory.path().join("bus").display()
             ))
             .stdout(std::process::Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .expect("the session bus needs dbus-daemon, which the builder image installs");
         let mut address = String::new();
         std::io::BufReader::new(daemon.stdout.take().unwrap())
@@ -755,20 +770,700 @@ fn a_persons_presence_opens_their_menu() {
         .borrow_mut()
         .set_members(None, Some(vec![member]));
     until(&mut session, |session| says(session, "Mia Clayton"));
-    // Their presence opens their menu: follow, message, and what they are working on.
+    let shown = |session: &Session| {
+        session
+            .accessible_labels()
+            .iter()
+            .filter(|label| label.as_str() == "Mia Clayton")
+            .count()
+    };
+    let before = shown(&session);
+    // Their presence calls the session's own `show-person`: the roster opens at them, and
+    // names them there too.
     press(&mut session, "Mia Clayton");
+    until(&mut session, |session| shown(session) > before);
+    keep(&mut session, "shell-person-menu");
+}
+
+/// An action host that keeps what it was asked to run: where the session starts an app.
+#[derive(Default)]
+struct Apps {
+    invoked: std::cell::RefCell<Vec<tilo_actions::remote::RemoteActionTarget>>,
+}
+
+impl tilo_session::AppActions for Apps {
+    fn published(&self) -> Vec<tilo_desktop_search::providers::PublishedActions> {
+        Vec::new()
+    }
+
+    fn jobs(&self) -> Vec<tilo_desktop_search::providers::jobs::JobEntry> {
+        Vec::new()
+    }
+
+    fn invoke(
+        &self,
+        target: tilo_actions::remote::RemoteActionTarget,
+        _: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        self.invoked.borrow_mut().push(target);
+        Ok(())
+    }
+
+    fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), tilo_actions::DoorError> {
+        Ok(())
+    }
+
+    fn open_uri(&self, _: &str, _: &str) -> Result<(), tilo_actions::DoorError> {
+        Ok(())
+    }
+
+    fn start_host_app(&self, _: &str) -> Result<(), tilo_actions::DoorError> {
+        Ok(())
+    }
+}
+
+/// A sound card in memory: the speakers, at 40%.
+struct Card {
+    graph: std::sync::Mutex<media::audio::AudioGraph>,
+}
+
+impl tilo_audio_service::sound::Graph for Card {
+    fn read(&self) -> tilo_audio_service::sound::Read {
+        tilo_audio_service::sound::Read {
+            graph: self.graph.lock().unwrap().clone(),
+            uses: Vec::new(),
+        }
+    }
+
+    fn control(&self) -> &dyn media::audio::GraphControl {
+        self
+    }
+}
+
+impl media::audio::GraphControl for Card {
+    fn set_default_sink(&self, _node_id: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_default_source(&self, _node_id: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn route_stream(&self, _stream_id: u32, _target_serial: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn unroute_stream(&self, _stream_id: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String> {
+        for sink in &mut self.graph.lock().unwrap().sinks {
+            if sink.id == node_id {
+                sink.volume = Some(perceptual);
+            }
+        }
+        Ok(())
+    }
+
+    fn set_node_mute(&self, _node_id: u32, _muted: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_device_profile(&self, _device_id: u32, _profile_index: u32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// An app's own `open` the shell calls (`session.open(app)`, a dock's press) starts the app
+/// in the workspace in front, as the launcher's row of it does. (The press making that call is
+/// `tilo-surface-host`'s `a_press_on_a_dock_app_asks_the_session_to_open_it`.)
+#[test]
+fn an_apps_open_the_shell_calls_starts_it() {
+    let _settled = ui::motion::testing::settled();
+    let apps = Rc::new(Apps::default());
+    let mut session = Session::headless(
+        Options {
+            apps: Some(Rc::clone(&apps) as Rc<dyn tilo_session::AppActions>),
+            ..options()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, |session| says(session, &desk(session).clock));
+    session
+        .shell_link()
+        .expect("the shell runs")
+        .ask(tilo_surface_host::shell_part::Ask {
+            resource: "app.so.tilo.sheets".to_owned(),
+            action: "open".to_owned(),
+            arguments: std::collections::BTreeMap::new(),
+        });
+    until(&mut session, |_| !apps.invoked.borrow().is_empty());
+    assert_eq!(
+        apps.invoked.borrow()[0].address,
+        tilo_actions::ActionAddress::new("app.so.tilo.sheets", "open"),
+        "the app opens by the workspace's address for it"
+    );
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// A session of `width` by `height` with the shell's bar, the person's settings and a sound
+/// card: what the quick settings read and change.
+fn session_with_devices(width: i32, height: i32) -> Session {
+    use tilo_session::Service as _;
+    let card = Card {
+        graph: std::sync::Mutex::new(media::audio::AudioGraph {
+            sinks: vec![media::audio::AudioDevice {
+                id: 40,
+                serial: 40,
+                name: "node-40".to_owned(),
+                description: "Speakers".to_owned(),
+                is_default: true,
+                volume: Some(0.4),
+                muted: Some(false),
+                channels: 2,
+                codec: None,
+            }],
+            ..media::audio::AudioGraph::default()
+        }),
+    };
+    let mut sound =
+        tilo_audio_service::sound::SoundService::new(std::sync::Arc::new(card), None).unwrap();
+    sound.settle();
+    Session::headless(
+        Options {
+            services: vec![
+                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(sound),
+            ],
+            collab: false,
+            ..options()
+        },
+        &[OutputConfig::new("HEADLESS-1", width, height)],
+    )
+    .expect("session")
+}
+
+/// Run frames, taking in what the services report, until `done` holds.
+#[track_caller]
+fn until_settled(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
+    for _ in 0..2000 {
+        session.settle_services();
+        session.step(Duration::from_millis(1)).expect("step");
+        if done(session) {
+            return;
+        }
+    }
+    panic!(
+        "condition not reached; the session says: {:?}; the shell refused: {:?}",
+        session.accessible_labels(),
+        session.shell_refusals()
+    );
+}
+
+/// A press on the dock's launcher calls the desk's own `show-surface`: the launcher comes up.
+#[test]
+fn a_press_on_the_docks_launcher_shows_the_launcher() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
     until(&mut session, |session| {
-        session.shell_control("Follow").is_some()
+        session.shell_control("Launcher").is_some()
+    });
+    press(&mut session, "Launcher");
+    until(&mut session, |session| desk(session).here == "launcher");
+}
+
+/// Press the control named `name` once the bar stands still: what the services report while
+/// the session starts (the workspace, who is here) adds controls beside it and moves it, and a
+/// person presses the control where they see it at rest.
+fn press_at_rest(session: &mut Session, name: &str) {
+    until_settled(session, |session| {
+        let before = (
+            session.shell_control(name),
+            session.shell_work().map(|w| w.turns),
+        );
+        session.settle_services();
+        session.step(Duration::from_millis(1)).expect("step");
+        let after = (
+            session.shell_control(name),
+            session.shell_work().map(|w| w.turns),
+        );
+        before.0.is_some() && before == after
+    });
+    press(session, name);
+}
+
+/// The person's appearance mode, as the session publishes their settings.
+fn appearance_mode(session: &Session) -> serde_json::Value {
+    session
+        .read("settings:settings.appearance")
+        .map(|section| section["mode"].clone())
+        .unwrap_or_default()
+}
+
+/// The bar's quick settings open the panel over the desk, and its Dark mode tile runs the
+/// appearance settings' own published action: the published mode turns from what it was to the
+/// other, as Settings and an agent turn it.
+fn dark_mode_from_quick_settings_at(width: i32, height: i32) {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_devices(width, height);
+    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    press_at_rest(&mut session, "Quick settings");
+    until_settled(&mut session, |session| here(session) == "quick-settings");
+    until_settled(&mut session, |session| says(session, "Dark mode"));
+    until_settled(&mut session, |session| says(session, "Volume"));
+    let dark = serde_json::json!("dark");
+    let was_dark = appearance_mode(&session) == dark;
+    let name = |dark: bool| {
+        format!(
+            "shell-quick-settings-{width}-{}",
+            if dark { "dark" } else { "light" }
+        )
+    };
+    keep(&mut session, &name(was_dark));
+    press_at_rest(&mut session, "Dark mode");
+    until_settled(&mut session, |session| {
+        (appearance_mode(session) == dark) != was_dark
     });
     assert!(
-        session.shell_control("Message").is_some(),
-        "the menu offers a message: {:?}",
-        session.accessible_labels()
+        session.shell_refusals().is_empty(),
+        "the tile's press reached the settings: {:?}",
+        session.shell_refusals()
     );
+    for _ in 0..20 {
+        session.settle_services();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    keep(&mut session, &name(!was_dark));
+}
+
+#[test]
+fn quick_settings_dark_mode_changes_the_published_appearance() {
+    dark_mode_from_quick_settings_at(WIDTH, HEIGHT);
+}
+
+#[test]
+fn quick_settings_dark_mode_changes_the_published_appearance_on_a_phone() {
+    dark_mode_from_quick_settings_at(390, 844);
+}
+
+/// The volume slider shows the sound's published volume, and pressing its track runs the
+/// sound's own `set-volume`: the published volume follows.
+#[test]
+fn quick_settings_volume_slider_sets_the_published_volume() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_devices(WIDTH, HEIGHT);
+    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    let volume = |session: &Session| {
+        session
+            .read("sound")
+            .and_then(|sound| sound["volume"].as_f64())
+            .unwrap_or_default()
+    };
     assert!(
-        session.shell_control("What they are working on").is_some(),
-        "the menu offers what they are on: {:?}",
-        session.accessible_labels()
+        (volume(&session) - 0.4).abs() < 0.01,
+        "the card starts at 40%"
     );
-    keep(&mut session, "shell-person-menu");
+    press_at_rest(&mut session, "Quick settings");
+    until_settled(&mut session, |session| {
+        session.shell_control("Volume").is_some()
+    });
+    // Press the track near its end.
+    let (x, y, w, h) = session.shell_control("Volume").unwrap();
+    let (x, y) = (x + w * 0.9, y + h / 2.0);
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x, y })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed,
+            })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    until_settled(&mut session, |session| volume(session) > 0.7);
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the slider's change reached the sound: {:?}",
+        session.shell_refusals()
+    );
+}
+
+// ---- each press of the shell's reaches the session ------------------------------------------
+//
+// Every call of the session's actions the shell makes (`session.focus(window(w))`) is an
+// invocation on the session's door: each test below presses the shell's own view and reads the
+// session's state, so a call the door cannot run fails here.
+
+/// Bring the desk's surface `surface` up, as the bar's own buttons do.
+fn show(session: &mut Session, surface: &str) {
+    session
+        .invoke(
+            DESK_RESOURCE,
+            "show-surface",
+            &serde_json::Map::from_iter([(
+                "surface".to_owned(),
+                serde_json::Value::String(surface.to_owned()),
+            )]),
+        )
+        .unwrap();
+    until(session, |session| here(session) == surface);
+}
+
+/// Type `text` (lower-case letters) on the keyboard, a key at a time.
+fn type_text(session: &mut Session, text: &str) {
+    const ROWS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
+    for letter in text.chars() {
+        let keycode = ROWS
+            .iter()
+            .find_map(|(row, first)| {
+                row.chars()
+                    .position(|c| c == letter)
+                    .map(|at| first + u32::try_from(at).unwrap())
+            })
+            .unwrap_or_else(|| panic!("no key types {letter:?}"));
+        for pressed in [true, false] {
+            session
+                .compositor()
+                .input(InputEvent::Key { keycode, pressed })
+                .unwrap();
+            session.step(Duration::from_millis(1)).unwrap();
+        }
+    }
+}
+
+/// Where the tab `tab` stands: its workspace's id and its strip's name, while it is open.
+fn tab_place(session: &Session, tab: u64) -> Option<(u64, String)> {
+    session.handle().read(|tree| {
+        tree.workspaces.iter().find_map(|workspace| {
+            workspace.strips.iter().find_map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .any(|group| group.tabs.iter().any(|t| t.id == tab))
+                    .then(|| (workspace.id.0, strip.name.clone()))
+            })
+        })
+    })
+}
+
+/// The tab `tab` is the window in front, as the desk publishes it.
+fn in_front(session: &Session, tab: u64) -> bool {
+    desk(session)
+        .windows
+        .iter()
+        .any(|window| window.focused && window.key == tab.to_string())
+}
+
+/// Name the strip in front `first`, and add a strip `second` beside it holding a window of
+/// `app`, its tab's id.
+fn second_strip(session: &mut Session, first: &str, second: &str, app: &str) -> u64 {
+    let handle = session.handle().clone();
+    let mut tree = handle.read(Clone::clone);
+    let tab = handle.mint_id();
+    let group = handle.mint_id();
+    let strip = tilo_desktop_model::StripId(handle.mint_id());
+    let workspace = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == tree.active)
+        .expect("a workspace is in front");
+    workspace.strips[0].name = first.to_owned();
+    let mut added = tilo_desktop_model::Strip::new(strip, second);
+    added.window_groups.push(tilo_desktop_model::WindowGroup {
+        id: group,
+        tabs: vec![tilo_desktop_model::Tab {
+            id: tab,
+            title: app.to_owned(),
+            tile: tilo_desktop_model::TileContent::LocalApp {
+                app_id: app.to_owned(),
+                label: app.to_owned(),
+                note: String::new(),
+            },
+            app_title: None,
+        }],
+        active_tab: tab,
+        width: tilo_desktop_model::WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    workspace.strips.push(added);
+    handle.replace_tree(tree);
+    session.step(Duration::from_millis(1)).unwrap();
+    tab
+}
+
+/// Open the overview's menu of its (only, or first) window, and wait for `item` in it.
+fn window_menu(session: &mut Session, item: &str) {
+    until(session, |session| {
+        session.shell_control("This window").is_some()
+    });
+    press(session, "This window");
+    until(session, |session| session.shell_control(item).is_some());
+}
+
+/// The launcher's row of a window goes to it: `focus` on the window's own resource.
+#[test]
+fn a_press_on_a_launcher_row_brings_its_window_front() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    open_window(&mut session, "so.tilo.notes");
+    open_window(&mut session, "so.tilo.mail");
+    until(&mut session, |session| desk(session).windows.len() == 2);
+    // The window not in front is the one to go to.
+    let behind = desk(&session)
+        .windows
+        .into_iter()
+        .find(|w| !w.focused)
+        .expect("one window is behind the other");
+    let tab: u64 = behind.key.parse().unwrap();
+    show(&mut session, "launcher");
+    until(&mut session, |session| {
+        session.shell_control(&behind.title).is_some()
+    });
+    press(&mut session, &behind.title);
+    until(&mut session, |session| in_front(session, tab));
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// The launcher's door to the overview shows it: `show-surface` on the desk.
+#[test]
+fn a_press_on_a_launcher_door_shows_that_surface() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    show(&mut session, "launcher");
+    until(&mut session, |session| {
+        session.shell_control("Workspaces").is_some()
+    });
+    press(&mut session, "Workspaces");
+    until(&mut session, |session| here(session) == "workspaces");
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// What the launcher holds no window for, Search everywhere hands the desk's search: it opens
+/// with what was typed.
+#[test]
+fn searching_everywhere_from_the_launcher_opens_the_desks_search_with_the_query() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    show(&mut session, "launcher");
+    until(&mut session, |session| {
+        session.shell_control("Query").is_some()
+    });
+    press(&mut session, "Query");
+    type_text(&mut session, "quarterly");
+    let button = "Search everywhere for quarterly";
+    until(&mut session, |session| {
+        session.shell_control(button).is_some()
+    });
+    press(&mut session, button);
+    until(&mut session, |session| {
+        session.resources().iter().any(|resource| {
+            resource.id.as_str() == "desktop:desk"
+                && resource.children.iter().any(|child| {
+                    child.id.as_str() == tilo_desktop::desk_verbs::SEARCH_RESOURCE
+                        && child.label == "quarterly"
+                })
+        })
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// A window's Close in the overview closes it: `close` on the window's own resource.
+#[test]
+fn closing_a_window_from_the_overview_takes_it_off_the_desk() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    let notes = open_window(&mut session, "so.tilo.notes");
+    until(&mut session, |session| desk(session).windows.len() == 1);
+    show(&mut session, "overview");
+    window_menu(&mut session, "Close");
+    press(&mut session, "Close");
+    until(&mut session, |session| tab_place(session, notes).is_none());
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// A window carried to another strip from the overview stands on it: the chrome's
+/// `move-tab-to-strip`.
+#[test]
+fn moving_a_window_to_a_strip_from_the_overview_carries_it_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    let notes = open_window(&mut session, "so.tilo.notes");
+    let mail = second_strip(&mut session, "Main", "Research", "so.tilo.mail");
+    until(&mut session, |session| desk(session).windows.len() == 2);
+    show(&mut session, "overview");
+    // The first window's menu offers the other window's strip, whichever window it is.
+    until(&mut session, |session| {
+        session.shell_control("This window").is_some()
+    });
+    press(&mut session, "This window");
+    until(&mut session, |session| {
+        ["Move to Main", "Move to Research"]
+            .iter()
+            .any(|item| session.shell_control(item).is_some())
+    });
+    let (item, strip) = if session.shell_control("Move to Research").is_some() {
+        ("Move to Research", "Research")
+    } else {
+        ("Move to Main", "Main")
+    };
+    press(&mut session, item);
+    until(&mut session, |session| {
+        [notes, mail]
+            .iter()
+            .all(|tab| tab_place(session, *tab).is_some_and(|(_, on)| on == strip))
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// A window carried to another workspace from the overview is in it: the chrome's `move-tab`.
+#[test]
+fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    let first = desk(&session);
+    let first_key = first
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.current)
+        .unwrap()
+        .key
+        .clone();
+    session
+        .invoke(
+            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            "new-workspace",
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+    until(&mut session, |session| desk(session).workspaces.len() == 2);
+    let second = desk(&session)
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.current)
+        .unwrap()
+        .clone();
+    session
+        .invoke(
+            DESK_RESOURCE,
+            "switch-workspace",
+            &serde_json::Map::from_iter([(
+                "workspace".to_owned(),
+                serde_json::Value::String(first_key),
+            )]),
+        )
+        .unwrap();
+    until(&mut session, |session| {
+        desk(session).workspace == first.workspace
+    });
+    let notes = open_window(&mut session, "so.tilo.notes");
+    until(&mut session, |session| desk(session).windows.len() == 1);
+    show(&mut session, "overview");
+    let item = format!("Move to {}", second.name);
+    window_menu(&mut session, &item);
+    press(&mut session, &item);
+    until(&mut session, |session| {
+        tab_place(session, notes).is_some_and(|(workspace, _)| workspace.to_string() == second.key)
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// The centre's Clear all empties it: the desk's `clear-notices`.
+#[test]
+fn a_press_on_the_centres_clear_all_empties_the_desks_notices() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    for (title, body) in [
+        ("Backup finished", "12 GB safe"),
+        ("Update ready", "Restart"),
+    ] {
+        session.notices().post(
+            tilo_desktop_surface::notifications::Notification::new(title, body)
+                .with_app_name("Settings"),
+        );
+    }
+    until(&mut session, |session| desk(session).notices.len() == 2);
+    show(&mut session, "centre");
+    until(&mut session, |session| {
+        session.shell_control("Clear all").is_some()
+    });
+    press(&mut session, "Clear all");
+    until(&mut session, |session| desk(session).notices.is_empty());
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// A workspace named in the workspaces surface is made and in front: the chrome's
+/// `new-workspace` with its name.
+#[test]
+fn creating_a_named_workspace_from_the_workspaces_surface_makes_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    show(&mut session, "workspaces");
+    until(&mut session, |session| {
+        session.shell_control("Name").is_some()
+    });
+    press(&mut session, "Name");
+    type_text(&mut session, "studio");
+    press(&mut session, "Create");
+    until(&mut session, |session| {
+        desk(session)
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.name == "studio")
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
 }

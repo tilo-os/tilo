@@ -1,0 +1,1853 @@
+{
+  "resources": [
+    {
+      "kind": "sound",
+      "label": "Sound",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "set-volume",
+          "label": "Volume",
+          "description": "Set the volume.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "level",
+              "required": true,
+              "type": "float"
+            }
+          ]
+        },
+        {
+          "id": "volume-up",
+          "label": "Louder",
+          "description": "Turn the volume up by a step.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "volume-down",
+          "label": "Quieter",
+          "description": "Turn the volume down by a step.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "set-muted",
+          "label": "Mute or unmute the sound",
+          "description": "Mute or unmute the sound.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "muted",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "toggle-muted",
+          "label": "Mute or unmute",
+          "description": "Unmute the sound when it is muted, and mute it when it is not.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "route-output",
+          "label": "Play sound through an output",
+          "description": "Play sound through an output.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "node",
+              "required": true,
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "select-input",
+          "label": "Record sound from an input",
+          "description": "Record sound from an input.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "node",
+              "required": true,
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "set-input-muted",
+          "label": "Mute or unmute the microphone",
+          "description": "Mute or unmute the microphone.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "muted",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "toggle-input-muted",
+          "label": "Mute or unmute the microphone",
+          "description": "Unmute the microphone when it is muted, and mute it when it is not.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "set-input-volume",
+          "label": "Input level",
+          "description": "Set the microphone's level.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "level",
+              "required": true,
+              "type": "float"
+            }
+          ]
+        },
+        {
+          "id": "route-stream",
+          "label": "Route an application",
+          "description": "Play (or record) one application's stream through an output (or input), or release it to follow the default.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "stream",
+              "required": true,
+              "type": "int"
+            },
+            {
+              "name": "device",
+              "required": false,
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "set-stream-volume",
+          "label": "Application volume",
+          "description": "Set one application's volume.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "stream",
+              "required": true,
+              "type": "int"
+            },
+            {
+              "name": "level",
+              "required": true,
+              "type": "float"
+            }
+          ]
+        },
+        {
+          "id": "set-stream-muted",
+          "label": "Mute an application",
+          "description": "Mute or unmute one application.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "stream",
+              "required": true,
+              "type": "int"
+            },
+            {
+              "name": "muted",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-profile",
+          "label": "Audio device profile",
+          "description": "Use another profile of a sound card (high fidelity, a headset's microphone).",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "device",
+              "required": true,
+              "type": "int"
+            },
+            {
+              "name": "profile",
+              "required": true,
+              "type": "int"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "output",
+          "stored": "value",
+          "type": {
+            "option": "int"
+          },
+          "readonly": true
+        },
+        {
+          "path": "volume",
+          "stored": "value",
+          "type": {
+            "option": "float"
+          },
+          "readonly": true
+        },
+        {
+          "path": "muted",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "input",
+          "stored": "value",
+          "type": {
+            "option": "int"
+          },
+          "readonly": true
+        },
+        {
+          "path": "input-volume",
+          "stored": "value",
+          "type": {
+            "option": "float"
+          },
+          "readonly": true
+        },
+        {
+          "path": "input-muted",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "outputs",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Device"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "inputs",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Device"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "streams",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Stream"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "uses",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Use"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "hardware",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Card"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Card",
+          "doc": "One sound card (a codec or a Bluetooth transport) and its profiles.",
+          "fields": [
+            {
+              "name": "node",
+              "type": "int"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "profile",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "profiles",
+              "type": {
+                "list": {
+                  "named": "Profile"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Device",
+          "doc": "One output or input.",
+          "fields": [
+            {
+              "name": "node",
+              "type": "int"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "chosen",
+              "type": "bool"
+            },
+            {
+              "name": "volume",
+              "type": {
+                "option": "float"
+              }
+            },
+            {
+              "name": "muted",
+              "type": "bool"
+            },
+            {
+              "name": "channels",
+              "type": "int"
+            },
+            {
+              "name": "codec",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Profile",
+          "doc": "One profile a sound card offers.",
+          "fields": [
+            {
+              "name": "index",
+              "type": "int"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "available",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Stream",
+          "doc": "One application's stream: what it plays or records, how loud, and where.",
+          "fields": [
+            {
+              "name": "node",
+              "type": "int"
+            },
+            {
+              "name": "app",
+              "type": "text"
+            },
+            {
+              "name": "media",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "playback",
+              "type": "bool"
+            },
+            {
+              "name": "target",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "volume",
+              "type": {
+                "option": "float"
+              }
+            },
+            {
+              "name": "muted",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Use",
+          "doc": "One application using the camera or the microphone right now: the stream `PipeWire` names, the process and executable behind it, what the bar calls the application, and what it uses.",
+          "fields": [
+            {
+              "name": "client-id",
+              "type": "int"
+            },
+            {
+              "name": "pid",
+              "type": "int"
+            },
+            {
+              "name": "app-id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "binary",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": {
+                "named": "UseKind"
+              }
+            }
+          ]
+        },
+        {
+          "name": "UseKind",
+          "doc": "What an application is using the camera or the microphone for.",
+          "cases": [
+            {
+              "name": "microphone",
+              "label": "Microphone"
+            },
+            {
+              "name": "camera",
+              "label": "Camera"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "network",
+      "label": "Network",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "set-wifi",
+          "label": "Turn Wi-Fi on or off",
+          "description": "Turn Wi-Fi on or off.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "toggle-wifi",
+          "label": "Wi-Fi",
+          "description": "Turn Wi-Fi off when it is on, and on when it is off.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "scan-wifi",
+          "label": "Look again for Wi-Fi networks in reach",
+          "description": "Look again for Wi-Fi networks in reach.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "join-wifi",
+          "label": "Join a Wi-Fi network: one this device knows, or an open one",
+          "description": "Join a Wi-Fi network: one this device knows, or an open one.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "network",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "connect-wifi",
+          "label": "Join a protected Wi-Fi network with its password",
+          "description": "Join a protected Wi-Fi network with its password.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "network",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "password",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "connect-hidden-wifi",
+          "label": "Join a Wi-Fi network that does not broadcast its name",
+          "description": "Join a Wi-Fi network that does not broadcast its name.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "network",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "password",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "connect-enterprise-wifi",
+          "label": "Join an enterprise (802.1X) Wi-Fi network with the identity and the",
+          "description": "Join an enterprise (802.1X) Wi-Fi network with the identity and the organization's certificates, and connect.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "profile",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "ssid",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "identity",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "anonymous_identity",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "ca_certificate",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "method",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "inner_auth",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "client_certificate",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "private_key",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "name": "password",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "disconnect-wifi",
+          "label": "Leave the Wi-Fi network this device is connected to",
+          "description": "Leave the Wi-Fi network this device is connected to.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "network",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "forget-network",
+          "label": "Forget a saved network: this device no longer joins it by itself",
+          "description": "Forget a saved network: this device no longer joins it by itself.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-network-autoconnect",
+          "label": "Join a saved network by itself when it is in reach, or stop",
+          "description": "Join a saved network by itself when it is in reach, or stop.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "on",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-network-proxy",
+          "label": "Send a saved network's traffic through a proxy, or straight out",
+          "description": "Send a saved network's traffic through a proxy, or straight out.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "profile",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "server",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-wired",
+          "label": "Connect or disconnect the wired network",
+          "description": "Connect or disconnect the wired network.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-mobile-data",
+          "label": "Turn mobile data on or off",
+          "description": "Turn mobile data on or off.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-mobile-apn",
+          "label": "Type the access point name mobile data connects through",
+          "description": "Type the access point name mobile data connects through.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "apn",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "set-mobile-roaming",
+          "label": "Let mobile data connect on another operator's network, or keep it to",
+          "description": "Let mobile data connect on another operator's network, or keep it to this one.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-airplane-mode",
+          "label": "Turn airplane mode on or off: every wireless radio goes off with it",
+          "description": "Turn airplane mode on or off: every wireless radio goes off with it.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "toggle-airplane-mode",
+          "label": "Airplane mode",
+          "description": "Turn airplane mode off when it is on, and on when it is off.",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "wifi",
+          "stored": "value",
+          "type": {
+            "named": "Wifi"
+          },
+          "readonly": true
+        },
+        {
+          "path": "wired",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Wired"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "mobile",
+          "stored": "value",
+          "type": {
+            "named": "Mobile"
+          },
+          "readonly": true
+        },
+        {
+          "path": "airplane-mode",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "connectivity",
+          "stored": "value",
+          "type": {
+            "named": "Connectivity"
+          },
+          "readonly": true
+        },
+        {
+          "path": "link",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Link"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "saved",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SavedNetwork"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Connectivity",
+          "doc": "What `NetworkManager` found when it checked the internet.",
+          "cases": [
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            },
+            {
+              "name": "offline",
+              "label": "Offline"
+            },
+            {
+              "name": "portal",
+              "label": "Portal"
+            },
+            {
+              "name": "limited",
+              "label": "Limited"
+            },
+            {
+              "name": "full",
+              "label": "Full"
+            }
+          ]
+        },
+        {
+          "name": "Link",
+          "doc": "The connection this machine's traffic leaves on.",
+          "fields": [
+            {
+              "name": "kind",
+              "type": {
+                "named": "LinkKind"
+              }
+            },
+            {
+              "name": "name",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "signal",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "LinkKind",
+          "doc": "What kind of connection it is.",
+          "cases": [
+            {
+              "name": "offline",
+              "label": "Offline"
+            },
+            {
+              "name": "wired",
+              "label": "Wired"
+            },
+            {
+              "name": "wifi",
+              "label": "Wifi"
+            }
+          ]
+        },
+        {
+          "name": "Metered",
+          "doc": "Whether a connection counts as metered for the things that pay for it.",
+          "cases": [
+            {
+              "name": "automatic",
+              "label": "Automatic"
+            },
+            {
+              "name": "metered",
+              "label": "Metered"
+            },
+            {
+              "name": "unmetered",
+              "label": "Unmetered"
+            }
+          ]
+        },
+        {
+          "name": "Mobile",
+          "doc": "Mobile data.",
+          "fields": [
+            {
+              "name": "available",
+              "type": "bool"
+            },
+            {
+              "name": "on",
+              "type": "bool"
+            },
+            {
+              "name": "profile",
+              "type": {
+                "option": {
+                  "named": "MobileProfile"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "MobileProfile",
+          "doc": "The mobile data profile: what the operator's network is reached with.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "apn",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "roaming",
+              "type": "bool"
+            },
+            {
+              "name": "metered",
+              "type": {
+                "named": "Metered"
+              }
+            },
+            {
+              "name": "autoconnect",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "SavedKind",
+          "doc": "What kind of connection a saved network is.",
+          "cases": [
+            {
+              "name": "wifi",
+              "label": "Wifi"
+            },
+            {
+              "name": "wired",
+              "label": "Wired"
+            },
+            {
+              "name": "mobile",
+              "label": "Mobile"
+            },
+            {
+              "name": "other",
+              "label": "Other"
+            }
+          ]
+        },
+        {
+          "name": "SavedNetwork",
+          "doc": "A network this device keeps: what it joins by itself and how it is set up.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": {
+                "named": "SavedKind"
+              }
+            },
+            {
+              "name": "autoconnect",
+              "type": "bool"
+            },
+            {
+              "name": "last-used",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "priority",
+              "type": "int"
+            },
+            {
+              "name": "metered",
+              "type": {
+                "named": "Metered"
+              }
+            },
+            {
+              "name": "proxy",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "hidden",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Wifi",
+          "doc": "Wi-Fi.",
+          "fields": [
+            {
+              "name": "available",
+              "type": "bool"
+            },
+            {
+              "name": "on",
+              "type": "bool"
+            },
+            {
+              "name": "hardware-blocked",
+              "type": "bool"
+            },
+            {
+              "name": "networks",
+              "type": {
+                "list": {
+                  "named": "WifiNetwork"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "WifiNetwork",
+          "doc": "One Wi-Fi network in reach.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "signal",
+              "type": "int"
+            },
+            {
+              "name": "secure",
+              "type": "bool"
+            },
+            {
+              "name": "known",
+              "type": "bool"
+            },
+            {
+              "name": "connected",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Wired",
+          "doc": "The wired link.",
+          "fields": [
+            {
+              "name": "connected",
+              "type": "bool"
+            },
+            {
+              "name": "device",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "speed",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "ipv4",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "bluetooth",
+      "label": "Bluetooth",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "set-bluetooth",
+          "label": "Turn Bluetooth on or off",
+          "description": "Turn Bluetooth on or off.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "toggle-bluetooth",
+          "label": "Bluetooth",
+          "description": "Turn Bluetooth off when it is on, and on when it is off.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "connect",
+          "label": "Connect a paired accessory",
+          "description": "Connect a paired accessory.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "address",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "disconnect",
+          "label": "Disconnect an accessory",
+          "description": "Disconnect an accessory.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "address",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "scan",
+          "label": "Look for accessories in reach, or stop looking",
+          "description": "Look for accessories in reach, or stop looking.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "pair",
+          "label": "Pair a device in reach: `BlueZ` bonds with it, trusting it and",
+          "description": "Pair a device in reach: `BlueZ` bonds with it, trusting it and connecting it. What the device asks to compare is a question the person answers.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "address",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "forget",
+          "label": "Forget a device: its bond, its keys and its trust go, so it must be",
+          "description": "Forget a device: its bond, its keys and its trust go, so it must be paired again from scratch.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "address",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "available",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "on",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "accessories",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Accessory"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "nearby",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Nearby"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "discovering",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Accessory",
+          "doc": "One paired Bluetooth accessory.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "address",
+              "type": "text"
+            },
+            {
+              "name": "battery",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "connected",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Nearby",
+          "doc": "A Bluetooth device in reach that is not paired.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "address",
+              "type": "text"
+            },
+            {
+              "name": "signal",
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "battery",
+      "label": "Battery",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "set-charge-limit",
+          "label": "Set the charge limit",
+          "description": "Stop charging at `percent`, where the pack's driver offers a limit.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "percent",
+              "required": true,
+              "type": "int"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "present",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "percentage",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "state",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "on_battery",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "minutes_left",
+          "stored": "value",
+          "type": {
+            "option": "int"
+          },
+          "readonly": true
+        }
+      ]
+    },
+    {
+      "kind": "power",
+      "label": "Power",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "set-power-mode",
+          "label": "Power mode",
+          "description": "Choose the power mode.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "mode",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "lock",
+          "label": "Lock the screen: unlocking asks for the password",
+          "description": "Lock the screen: unlocking asks for the password.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "switch-user",
+          "label": "Leave this session running and let someone else sign in",
+          "description": "Leave this session running and let someone else sign in.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "suspend",
+          "label": "Put the device to sleep",
+          "description": "Put the device to sleep.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "restart",
+          "label": "Restart the device",
+          "description": "Restart the device.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        },
+        {
+          "id": "power-off",
+          "label": "Turn the device off",
+          "description": "Turn the device off.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        },
+        {
+          "id": "log-out",
+          "label": "Log out of this session",
+          "description": "Log out of this session.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "modes",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "PowerMode"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "mode",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "PowerMode"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "user-switching",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "pending",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "problem",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "PowerMode",
+          "doc": "A power mode.",
+          "cases": [
+            {
+              "name": "saver",
+              "label": "Saver"
+            },
+            {
+              "name": "balanced",
+              "label": "Balanced"
+            },
+            {
+              "name": "performance",
+              "label": "Performance"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "displays",
+      "label": "Displays",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "next-mode",
+          "label": "Use the displays together in the next arrangement",
+          "description": "Use the displays together in the next arrangement",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "set-mode",
+          "label": "Use the displays together this way",
+          "description": "Use the displays together this way",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "mode",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "open-sheet",
+          "label": "Bring up the display sheet",
+          "description": "Bring up the display sheet Where the layouts and the wireless displays are chosen.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "close-sheet",
+          "label": "Take the display sheet down",
+          "description": "Take the display sheet down",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "brightness-up",
+          "label": "Make the display brighter",
+          "description": "Make the display brighter The display the person works on, or with `all` every display that can be dimmed, each keeping its share of the brightest one.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "all",
+              "required": false,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "brightness-down",
+          "label": "Make the display dimmer",
+          "description": "Make the display dimmer The display the person works on, or with `all` every display that can be dimmed, each keeping its share of the brightest one.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "all",
+              "required": false,
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-brightness",
+          "label": "Set the brightness",
+          "description": "Set the brightness The display the person works on, or the first one that can be dimmed.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "level",
+              "required": true,
+              "type": "float"
+            }
+          ]
+        },
+        {
+          "id": "set-display-brightness",
+          "label": "Set one display's brightness",
+          "description": "Set one display's brightness",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "level",
+              "required": true,
+              "type": "float"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "displays",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Display"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "focused",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "level",
+          "stored": "value",
+          "type": {
+            "option": "float"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Display",
+          "doc": "One display the session shows.",
+          "fields": [
+            {
+              "name": "connector",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "brightness",
+              "type": {
+                "option": "float"
+              }
+            },
+            {
+              "name": "backlight",
+              "type": "bool"
+            },
+            {
+              "name": "colour",
+              "type": {
+                "named": "DisplayCapabilities"
+              }
+            }
+          ]
+        },
+        {
+          "name": "DisplayCapabilities",
+          "doc": "What the compositor can deliver to one output.",
+          "fields": [
+            {
+              "name": "max_luminance_nits",
+              "type": "float"
+            },
+            {
+              "name": "supports_pq_output",
+              "type": "bool"
+            },
+            {
+              "name": "supports_hlg_output",
+              "type": "bool"
+            },
+            {
+              "name": "bt2020_gamut",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "desk",
+      "label": "Desk",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "switch-workspace",
+          "label": "Bring a workspace of this device to the front",
+          "description": "Bring a workspace of this device to the front",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "workspace",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "answer-ask",
+          "label": "Answer",
+          "description": "Answer the question waiting on the person's avatar",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "put-off-ask",
+          "label": "Ask me later",
+          "description": "Put the question waiting on the person's avatar off for now",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "open-tray-item",
+          "label": "Open",
+          "description": "Open or close the running application's tray item `key`: its window, or its menu when the item is one",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "invitations",
+          "label": "The invitations this device's person made into a workspace that can still be",
+          "description": "The invitations this device's person made into a workspace that can still be redeemed, in the words the workspace's host lists them by",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "workspace",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "cancel-invitation",
+          "label": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",
+          "description": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "invite",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "workspace",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "show-surface",
+          "label": "Show the surface `surface` over the desk's windows, or close it when it is up",
+          "description": "Show the surface `surface` over the desk's windows, or close it when it is up.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "surface",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "close-surface",
+          "label": "Close the surface `surface`, when it is the one up",
+          "description": "Close the surface `surface`, when it is the one up.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "surface",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "clear-notices",
+          "label": "Clear the notification centre, which Undo puts back",
+          "description": "Clear the notification centre, which Undo puts back.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "dismiss-notice",
+          "label": "Dismiss the notice `notice` of the centre, by its id",
+          "description": "Dismiss the notice `notice` of the centre, by its id.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "notice",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "act-on-notice",
+          "label": "Run one of the choices the notice `notice` offers, by the key its sender gave it",
+          "description": "Run one of the choices the notice `notice` offers, by the key its sender gave it.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "notice",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "action",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "walk-switcher",
+          "label": "Open the window switcher, or walk it `steps` windows on: Alt+Tab's press",
+          "description": "Open the window switcher, or walk it `steps` windows on: Alt+Tab's press.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "steps",
+              "required": false,
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "commit-switcher",
+          "label": "Go to the window the switcher's walk reached, and close the switcher",
+          "description": "Go to the window the switcher's walk reached, and close the switcher.",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "here",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        }
+      ]
+    }
+  ]
+}

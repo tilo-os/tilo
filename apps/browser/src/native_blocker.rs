@@ -284,6 +284,7 @@ fn send_initial(engine: &SharedEngine, rules: String, then: Option<WebViewComman
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// This test module's test `name` as libtest names it in whichever
     /// crate compiles the module in: its path without the crate's name.
@@ -337,7 +338,7 @@ mod tests {
         assert!(
             std::process::Command::new(&host)
                 .arg("--warm")
-                .status()
+                .status_locked()
                 .unwrap()
                 .success()
         );
@@ -407,7 +408,7 @@ mod tests {
                     "--nocapture",
                 ])
                 .env("TILO_TEST_PRIVATE_ROOT", &root)
-                .status()
+                .status_locked()
                 .unwrap();
             let remained = root.exists();
             if remained {
@@ -551,7 +552,7 @@ mod tests {
             .env("TILO_TEST_FILTER_RESTART_CHILD", "1")
             .env("TILO_BROWSER_APP_ROOT", root.path())
             .env("TILO_BROWSER_FILTER_ENDPOINT", endpoint)
-            .output()
+            .output_locked()
             .unwrap();
         server.join().unwrap();
         assert!(

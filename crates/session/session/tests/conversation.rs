@@ -43,7 +43,7 @@ fn session(runs: &Arc<AgentRuns>) -> Session {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell_bar: true,
+            shell: Some(tilo_surface_host::shell_part::ShellLayer::Bar),
             collab: false,
             wake: LoopWake::default(),
             agent_runs: Some(Arc::clone(runs)),
@@ -338,6 +338,49 @@ fn pressing_a_reference_places_its_resource_on_the_canvas() {
         .strip_of(place.id)
         .expect("it stands in a strip of the record");
     assert!(strip.canvas.is_some(), "it stands on the canvas");
+    let (who, verb) = session
+        .arrangement()
+        .borrow_mut()
+        .last_step()
+        .expect("it is a step of the record's history");
+    assert_eq!((who.as_str(), verb.as_str()), (PERSON, "place"));
+}
+
+/// A run placed on the canvas is a place like any other: the arrangement's `place` action names
+/// the run's resource, and the place is the shell's, through the run's one view, the
+/// conversation. (The shell's canvas draws that place as the conversation:
+/// `tilolang-tilo`'s `shell_record::a_placed_run_stands_on_the_canvas_as_its_conversation`.)
+#[test]
+fn a_run_placed_on_the_canvas_is_the_shells_conversation_place() {
+    let _settled = ui::motion::testing::settled();
+    let runs = Arc::new(AgentRuns::new(None));
+    let mut session = session(&runs);
+    until(&mut session, |_| !runs.front().is_empty());
+    let run = ask(&mut session, "Tidy the launch notes");
+    the_agent_finds_the_launch_notes(&runs, &run);
+    until(&mut session, |session| desk(session).run_entries.len() == 4);
+    let resource = wire::run(&run);
+
+    session
+        .invoke(
+            "shell:arrangement",
+            "place",
+            &arguments(json!({ "resource": resource, "x": 40, "y": 40 })),
+        )
+        .expect("the arranging action runs");
+    let placed = |session: &Session| {
+        session
+            .arrangement()
+            .borrow()
+            .strips()
+            .places()
+            .find(|place| place.record == resource)
+            .cloned()
+    };
+    until(&mut session, |session| placed(session).is_some());
+    let place = placed(&session).unwrap();
+    assert_eq!(place.shows, "so.tilo.shell", "the shell shows a run");
+    assert_eq!(place.view, "conversation", "through its conversation");
     let (who, verb) = session
         .arrangement()
         .borrow_mut()

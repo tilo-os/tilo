@@ -34,6 +34,17 @@ view conversation(r: Run) {
     }
 }
 
+/// The run a place shows, when its record is one (`agent-run:<key>`, as the session publishes
+/// a run): the canvas draws it as its conversation. `.none` for any other record.
+fn placed_run(record: Text) -> Option<Run> {
+    let d = root Desk
+    let prefix = "agent-run:"
+    if record.find(prefix) == 0 {
+        let key = record.slice(prefix.len(), record.len())
+        d.runs.find(r -> r.key == key)
+    } else { .none }
+}
+
 /// Words in the conversation: the person's to the agent, or the agent's between its steps,
 /// under who said them.
 view said(r: Run, e: RunEntry) {
@@ -82,7 +93,7 @@ view program_step(d: Desk, r: Run, e: RunEntry) {
 view reference(r: Run, x: EntryRef) {
     let a = arrangement
     ui.ListRow(if x.label == "" { x.resource } else { x.label }, secondary: .some(type_label(x.type_kind)), icon: .file) {
-        on activate: place(a, x.resource, beside_x(a, r), beside_y(a, r))
+        on activate: session.place(workspace: .none, row: .none, strip: .none, place: .none, resource: x.resource, view: .none, x: .some(beside_x(a, r)), y: .some(beside_y(a, r)), width: .none, height: .none)
     }
 }
 

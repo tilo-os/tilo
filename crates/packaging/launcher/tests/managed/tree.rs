@@ -27,6 +27,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 // This test authority consumes exactly one claim and validates the immutable
 // binding. The process proof still comes only from actual launcher/kernel
@@ -484,7 +485,7 @@ fn qualify_tree(owned_stop: bool) {
         Command::new("/bin/sleep")
             .arg("60")
             .stdin(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .unwrap(),
     );
     let unrelated_pidfd = PinnedProcess::capture(unrelated.0.id());

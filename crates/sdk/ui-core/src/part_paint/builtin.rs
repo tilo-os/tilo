@@ -12,13 +12,17 @@
 //!   rim (`edge_highlight`).
 //! * **Block** is flat colour, square to the border: no translucency, no
 //!   light, no hairline of its own.
+//! * **Liquid** is a lens: what lies below bent along the rounded edge as
+//!   a convex lens bends it (`refraction` across a `band`), straight in the
+//!   flat middle, optionally softened (`blur`) and fringed (`dispersion`),
+//!   with a thin specular rim lit from `light_angle` (`edge_highlight`).
 //!
 //! Each draws the four surface parts (window ground, floating panel, bar
 //! body and control face) and leaves the rest to the toolkit.
 
 use std::sync::{Arc, LazyLock};
 
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape, Size};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape, Size, Vec2};
 use vello::peniko::Color;
 
 use super::{
@@ -36,6 +40,8 @@ pub const BLOCK: &str = "block";
 pub const PIXELATED: &str = "pixelated";
 /// The name a document gives the Shader set.
 pub const SHADER: &str = "shader";
+/// The name a document gives the Liquid set.
+pub const LIQUID: &str = "liquid";
 
 /// Cell band a document may state for the Pixelated set, logical pixels.
 pub const CELL_ADMITTED: std::ops::RangeInclusive<f32> = 1.0..=64.0;
@@ -63,6 +69,17 @@ pub const REFRACTION_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=32.0;
 /// Edge highlight and specular band: past half they read as a second
 /// surface, not light on this one.
 pub const LIGHT_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.5;
+/// The Liquid set's `band`: how far in from the rim the bend reaches,
+/// logical pixels.
+pub const BAND_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=64.0;
+/// The band a theme is built at: past 48 a bar or a button is all rim.
+pub const BAND_USABLE: std::ops::RangeInclusive<f32> = 0.0..=48.0;
+/// The Liquid set's `light_angle`: the direction the light comes from,
+/// degrees counter-clockwise from the right (90 from above).
+pub const LIGHT_ANGLE_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=360.0;
+/// The Liquid set's `dispersion`: red and blue set apart by up to this
+/// fraction of the bend. Past half the fringe is a rainbow, not glass.
+pub const DISPERSION_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.5;
 
 static DEFAULT_SET: LazyLock<PainterSet> =
     LazyLock::new(|| PainterSet::new(DEFAULT, Arc::new(Stock { light: false })));
@@ -73,6 +90,8 @@ static PIXELATED_SET: LazyLock<PainterSet> =
     LazyLock::new(|| PainterSet::new(PIXELATED, Arc::new(Pixelated)));
 static SHADER_SET: LazyLock<PainterSet> =
     LazyLock::new(|| PainterSet::new(SHADER, Arc::new(Shader)));
+static LIQUID_SET: LazyLock<PainterSet> =
+    LazyLock::new(|| PainterSet::new(LIQUID, Arc::new(Liquid)));
 
 /// The Default set.
 #[must_use]
@@ -104,6 +123,12 @@ pub fn shader_set() -> &'static PainterSet {
     &SHADER_SET
 }
 
+/// The Liquid set.
+#[must_use]
+pub fn liquid_set() -> &'static PainterSet {
+    &LIQUID_SET
+}
+
 /// The built-in set `name` a document may name without installing anything.
 #[must_use]
 pub fn builtin(name: &str) -> Option<&'static PainterSet> {
@@ -113,6 +138,7 @@ pub fn builtin(name: &str) -> Option<&'static PainterSet> {
         BLOCK => Some(block_set()),
         PIXELATED => Some(pixelated_set()),
         SHADER => Some(shader_set()),
+        LIQUID => Some(liquid_set()),
         _ => None,
     }
 }
@@ -178,7 +204,10 @@ impl PartPainter for Stock {
         match part {
             Part::WindowGround | Part::FloatingPanel | Part::BarBody => {
                 let blur = tokens.param("blur", 0.0);
-                if tokens.backdrop && translucent(tokens) && blur > 0.0 {
+                // A window's ground stays its frosted fill: only floating
+                // chrome and bars blur what lies below.
+                let sampled = tokens.backdrop && part != Part::WindowGround;
+                if sampled && translucent(tokens) && blur > 0.0 {
                     // The backdrop, the sheen on it, held in the band by the
                     // toolkit; the ground at its tint; the rim over all.
                     scene.fill(
@@ -187,8 +216,7 @@ impl PartPainter for Stock {
                             blur,
                             lens: Lens {
                                 refraction: light.refraction,
-                                sampling: Sampling::Smooth,
-                                cell: 0.0,
+                                ..Lens::default()
                             },
                             fallback: tokens.fill,
                             glaze: sheen(&body, light).into_iter().collect(),
@@ -295,15 +323,17 @@ impl PartPainter for Pixelated {
         let mut scene = PartScene::new();
         match part {
             Part::WindowGround | Part::FloatingPanel | Part::BarBody => {
-                if tokens.backdrop {
+                // A window's ground stays its fill: only floating chrome and
+                // bars show what lies below as cells.
+                if tokens.backdrop && part != Part::WindowGround {
                     scene.fill(
                         path.clone(),
                         Brush::Backdrop {
                             blur: softening,
                             lens: Lens {
-                                refraction: 0.0,
                                 sampling: Sampling::Blocky,
                                 cell,
+                                ..Lens::default()
                             },
                             fallback: tokens.fill,
                             glaze: Vec::new(),
@@ -379,6 +409,268 @@ impl PartPainter for Shader {
             ParamSpec::new(scale, Some(1.0), SHADER_SCALE_ADMITTED),
             ParamSpec::new(phase, Some(0.0), SHADER_PHASE_ADMITTED),
         ]
+    }
+}
+
+/// Liquid: a lens of glass over what lies below. A window, a panel and a
+/// bar that show the backdrop show it bent along their rounded edge as a
+/// convex lens bends it: within `band` of the rim each pixel shows what
+/// lies up to `refraction` further in along the outline's normal (all of it
+/// at the rim, easing to none at the band's inner side), red and blue set
+/// apart by `dispersion`; the flat middle shows what lies below straight,
+/// softened by `blur` (none by default). A window's ground is glass too:
+/// what lies below a window shows through it the same way. The bend is the
+/// backdrop pass's
+/// (`crate::backdrop`), evaluated with the blur, so a settled surface draws
+/// nothing new. The ground lies over it at `tint`, and every body and rest
+/// face carries a thin specular rim lit from `light_angle`: at
+/// `edge_highlight` where it faces the light, faintly on the far side where
+/// light leaves the glass. Where there is no backdrop pass the part is its
+/// fill under the rim.
+struct Liquid;
+
+impl PartPainter for Liquid {
+    fn paint(
+        &self,
+        part: Part,
+        size: Size,
+        state: PartState,
+        _progress: f32,
+        tokens: &PartTokens,
+    ) -> Option<PaintedPart> {
+        let body = body(size, tokens);
+        let path = body.to_path(0.1);
+        let tint = tokens.param("tint", 0.1).clamp(0.0, 1.0);
+        let rim = SpecularRim {
+            strength: tokens.param("edge_highlight", 0.45),
+            light_angle: tokens.param("light_angle", 135.0),
+            catch: tokens.light,
+        };
+        let mut scene = PartScene::new();
+        match part {
+            Part::WindowGround | Part::FloatingPanel | Part::BarBody => {
+                if tokens.backdrop {
+                    scene.fill(
+                        path.clone(),
+                        Brush::Backdrop {
+                            blur: tokens.param("blur", 0.0),
+                            lens: liquid_lens(tokens),
+                            fallback: tokens.fill,
+                            glaze: Vec::new(),
+                        },
+                    );
+                    scene.fill(path, Brush::Solid(tokens.fill.with_alpha(tint)));
+                } else {
+                    scene.fill(path, Brush::Solid(tokens.fill));
+                }
+                scene.ops.extend(rim.ops(&body));
+            }
+            Part::ControlFace => {
+                // As Glass's: the rest face lets the window ground through
+                // at the tint and catches the light; a face carrying state
+                // stays opaque, its ink measured on it.
+                let rest = state.now == States::REST;
+                let fill = if rest {
+                    tokens.fill.with_alpha(tokens.fill.components[3] * tint)
+                } else {
+                    tokens.fill
+                };
+                if fill.components[3] > 0.0 {
+                    scene.fill(path, Brush::Solid(fill));
+                    if rest {
+                        scene.ops.extend(rim.ops(&body));
+                    }
+                }
+            }
+            _ => return None,
+        }
+        Some(PaintedPart::new(scene))
+    }
+
+    /// `tint` is required, so every Liquid role states it and reads as
+    /// translucent to the legibility audit; the rest have stock values.
+    fn params(&self) -> Vec<ParamSpec> {
+        vec![
+            ParamSpec::new("tint", None, TINT_ADMITTED),
+            ParamSpec::new("refraction", Some(12.0), REFRACTION_ADMITTED),
+            ParamSpec::new("band", Some(18.0), BAND_ADMITTED).usable_within(BAND_USABLE),
+            ParamSpec::new("blur", Some(0.0), BLUR_ADMITTED).usable_within(BLUR_USABLE),
+            ParamSpec::new("dispersion", Some(0.0), DISPERSION_ADMITTED),
+            ParamSpec::new("edge_highlight", Some(0.45), LIGHT_ADMITTED),
+            ParamSpec::new("light_angle", Some(135.0), LIGHT_ANGLE_ADMITTED),
+        ]
+    }
+}
+
+/// The lens a Liquid body asks the backdrop pass for. A stated band of `0`
+/// is a band too thin to bend anything, not the lens's own default.
+fn liquid_lens(tokens: &PartTokens) -> Lens {
+    Lens {
+        refraction: tokens.param("refraction", 12.0),
+        band: tokens.param("band", 18.0).max(f32::MIN_POSITIVE),
+        dispersion: tokens.param("dispersion", 0.0),
+        ..Lens::default()
+    }
+}
+
+/// A thin bright edge just inside a body's outline, lit from one side:
+/// each stretch of the rim is as bright as its outward normal faces the
+/// light ([`rim_light`]).
+#[derive(Clone, Copy)]
+struct SpecularRim {
+    /// Opacity of the light where the rim faces it squarely.
+    strength: f32,
+    /// The direction the light comes from, degrees counter-clockwise from
+    /// the right (90 from above).
+    light_angle: f32,
+    /// The light the surface catches, from the theme's tokens.
+    catch: Color,
+}
+
+/// The rim's width, logical pixels: one and a half, so it reads as an edge
+/// catching light at any scale and never as a border.
+const RIM_WIDTH: f64 = 1.5;
+
+/// Arcs each rounded corner of the rim is drawn in: enough that the light
+/// turns smoothly round the corner.
+const RIM_CORNER_STEPS: u32 = 4;
+
+/// How bright the rim is where its outward `normal` points, lit from
+/// `toward_light` (unit vectors in part coordinates, y down): fully where
+/// it faces the light, nothing side on, and a third as much where it faces
+/// away, where light that entered the glass leaves it.
+#[must_use]
+pub(crate) fn rim_light(normal: Vec2, toward_light: Vec2) -> f32 {
+    let facing = normal.dot(toward_light);
+    let lit = facing.max(0.0).powi(2);
+    let through = (-facing).max(0.0).powi(2) / 3.0;
+    crate::num::f32_of_f64((lit + through).clamp(0.0, 1.0))
+}
+
+impl SpecularRim {
+    /// The unit vector toward the light, in part coordinates (y down).
+    fn toward_light(self) -> Vec2 {
+        let angle = f64::from(self.light_angle).to_radians();
+        Vec2::new(angle.cos(), -angle.sin())
+    }
+
+    /// The light's colour where the rim's outward normal is `normal`.
+    fn at(self, normal: Vec2) -> Color {
+        self.catch
+            .with_alpha(self.strength.clamp(0.0, 1.0) * rim_light(normal, self.toward_light()))
+    }
+
+    /// The rim of `body` as fills, one per straight edge and a few per
+    /// corner, each lit for its own normal: fills that meet edge to edge,
+    /// never strokes, whose caps would overlap and light the joins twice.
+    /// Nothing at `0` strength or on a body too small to have a rim.
+    fn ops(self, body: &RoundedRect) -> Vec<Op> {
+        use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+        let rect = body.rect();
+        if self.strength <= 0.0
+            || rect.width() <= 2.0 * RIM_WIDTH
+            || rect.height() <= 2.0 * RIM_WIDTH
+        {
+            return Vec::new();
+        }
+        let radius = body
+            .radii()
+            .top_left
+            .min(rect.width() / 2.0)
+            .min(rect.height() / 2.0)
+            .max(0.0);
+        let width = RIM_WIDTH;
+        let inner_radius = (radius - width).max(0.0);
+        let mut ops = Vec::new();
+        let solid = |path: BezPath, normal: Vec2| Op::Fill {
+            path,
+            brush: Brush::Solid(self.at(normal)),
+            brush_transform: Affine::IDENTITY,
+        };
+        // The straight edges, between the corners.
+        let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
+        let edges = [
+            (
+                Rect::new(x0 + radius, y0, x1 - radius, y0 + width),
+                Vec2::new(0.0, -1.0),
+            ),
+            (
+                Rect::new(x1 - width, y0 + radius, x1, y1 - radius),
+                Vec2::new(1.0, 0.0),
+            ),
+            (
+                Rect::new(x0 + radius, y1 - width, x1 - radius, y1),
+                Vec2::new(0.0, 1.0),
+            ),
+            (
+                Rect::new(x0, y0 + radius, x0 + width, y1 - radius),
+                Vec2::new(-1.0, 0.0),
+            ),
+        ];
+        for (strip, normal) in edges {
+            if strip.width() > 0.0 && strip.height() > 0.0 {
+                ops.push(solid(strip.to_path(0.1), normal));
+            }
+        }
+        // The corners: the centre of each corner's arc and the angle (y
+        // down, from +x) it starts at; each sweeps a quarter turn.
+        let corners = [
+            (Point::new(x1 - radius, y0 + radius), -FRAC_PI_2),
+            (Point::new(x1 - radius, y1 - radius), 0.0),
+            (Point::new(x0 + radius, y1 - radius), FRAC_PI_2),
+            (Point::new(x0 + radius, y0 + radius), PI),
+        ];
+        let step = FRAC_PI_2 / f64::from(RIM_CORNER_STEPS);
+        for (centre, start) in corners {
+            if radius <= 0.0 {
+                // A square corner: the rim's corner square, lit for the
+                // diagonal it faces.
+                let outward = Vec2::from_angle(start + FRAC_PI_4);
+                let square = Rect::from_center_size(
+                    centre + Vec2::new(-outward.x.signum(), -outward.y.signum()) * (width / 2.0),
+                    (width, width),
+                );
+                ops.push(solid(square.to_path(0.1), outward));
+                continue;
+            }
+            for index in 0..RIM_CORNER_STEPS {
+                let from = start + step * f64::from(index);
+                let to = from + step;
+                let mut piece = BezPath::new();
+                piece.move_to(centre + Vec2::from_angle(from) * radius);
+                vello::kurbo::Arc::new(centre, (radius, radius), from, step, 0.0)
+                    .to_cubic_beziers(0.1, |p1, p2, p| piece.curve_to(p1, p2, p));
+                if inner_radius > 0.0 {
+                    piece.line_to(centre + Vec2::from_angle(to) * inner_radius);
+                    vello::kurbo::Arc::new(centre, (inner_radius, inner_radius), to, -step, 0.0)
+                        .to_cubic_beziers(0.1, |p1, p2, p| piece.curve_to(p1, p2, p));
+                } else {
+                    piece.line_to(centre);
+                }
+                piece.close_path();
+                // The light turns with the normal across the arc: a
+                // gradient from one end's light to the other's.
+                ops.push(Op::Fill {
+                    path: piece,
+                    brush: Brush::Linear {
+                        start: centre + Vec2::from_angle(from) * radius,
+                        end: centre + Vec2::from_angle(to) * radius,
+                        stops: vec![
+                            Stop {
+                                offset: 0.0,
+                                color: self.at(Vec2::from_angle(from)),
+                            },
+                            Stop {
+                                offset: 1.0,
+                                color: self.at(Vec2::from_angle(to)),
+                            },
+                        ],
+                    },
+                    brush_transform: Affine::IDENTITY,
+                });
+            }
+        }
+        ops
     }
 }
 

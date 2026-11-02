@@ -746,6 +746,38 @@ mod tests {
         assert!(face.height(&mut text, &Theme::dark().with_text_scale(2.0), 400.0, 0.0) > height);
     }
 
+    /// The zone centres its button by the button's auto margins, and a button with no count
+    /// leaves its margins to whoever places it: the layout settles, the button centred.
+    #[test]
+    fn a_zone_with_a_button_settles_with_the_button_centred_under_its_text() {
+        let zone = DropZone::new("picture", "Drop a picture")
+            .with_action(Button::new("picture-choose", "Choose"));
+        let mut harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(zone),
+            (320, 568),
+            Theme::light(),
+        );
+        assert_eq!(harness.take_skip_report(), None, "the layout settles");
+        fn find<'a>(
+            node: &'a crate::headless::InspectionNode,
+            name: &str,
+        ) -> Option<&'a crate::headless::InspectionNode> {
+            if node.widget == name {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| find(child, name))
+        }
+        let inspection = harness.inspection();
+        let zone = find(&inspection.root, "DropZone").expect("the zone").rect;
+        let button = find(&inspection.root, "Button").expect("its button").rect;
+        let (zone_mid, button_mid) = (zone[0] + zone[2] / 2.0, button[0] + button[2] / 2.0);
+        assert!(
+            (zone_mid - button_mid).abs() <= 1.0,
+            "the button {button:?} is centred in the zone {zone:?}"
+        );
+    }
+
     #[test]
     fn dropped_files_reach_the_callback() {
         let got = Rc::new(RefCell::new(Vec::new()));

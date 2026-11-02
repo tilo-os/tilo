@@ -86,10 +86,12 @@ impl Described for TextInput {
             value.name.clone()
         };
         let edits = value.clone();
+        // The id first: the field's `change` verb is published under the control it names,
+        // and a verb named before the id would answer to no control there is.
         let mut input = Self::from_state(&value.state)
+            .with_id(key)
             .with_presence_path(value.path.clone())
             .on_change_view(move |text| edits.edited(Value::Text(text.to_owned())))
-            .with_id(key)
             .with_accessible_name(&name)
             .with_placeholder(&placeholder)
             .with_change(change)

@@ -271,9 +271,10 @@ fn ring_len(_: usize) -> usize {
 mod tests {
     use super::*;
     use std::process::Command;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn sleeper(seconds: &str) -> Child {
-        Command::new("sleep").arg(seconds).spawn().unwrap()
+        Command::new("sleep").arg(seconds).spawn_locked().unwrap()
     }
 
     #[cfg(target_os = "linux")]

@@ -39,6 +39,24 @@ pub(crate) type DeskKey = (
 /// The kind of the desk's resource: the origin kind a shell's type holds.
 pub(crate) const DESK_KIND: &str = "session.desk";
 
+/// The desk as a view of another language reaches it: its verbs ([`DeskEffect`]), which the
+/// shell's views run as typed calls (`device.show_surface(device.desk, "quick-settings")`),
+/// each through the desk's door as a script's or an agent's runs. The rest of what the desk
+/// holds reaches the shell as the shell's own record (`root Desk`), so this names only the
+/// surface that is up.
+#[must_use]
+pub fn surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<DeskSurface, DeskEffect>("desk", "Desk")
+}
+
+/// The desk's reading as [`surface`] publishes it: a slice of [`DeskReading`], by its keys.
+#[derive(tilo_resource::JsonSchema)]
+struct DeskSurface {
+    /// The surface up over the desk's windows (`none`, `centre`, `quick-settings`, …).
+    #[allow(dead_code, reason = "read by the schema it describes, never in Rust")]
+    here: String,
+}
+
 /// What the desk offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.session.desk")]
@@ -77,7 +95,7 @@ pub(crate) enum DeskEffect {
     /// Show the surface `surface` over the desk's windows, or close it when it is up.
     ShowSurface {
         #[param(
-            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `workspaces`, `composer` or `conversation`"
+            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
         )]
         surface: String,
     },
@@ -195,6 +213,7 @@ fn windows(tree: &DesktopTree) -> Vec<shell_part::WindowReading> {
                     origin_app: tab.app_title.clone().unwrap_or(app),
                     icon: String::new(),
                     strip: strip.name.trim().to_owned(),
+                    strip_key: strip.id.0.to_string(),
                     workspace: workspace.name.clone(),
                     recency: 0,
                     focused,
@@ -766,13 +785,15 @@ impl Desk {
     }
 }
 
+/// The desk's resource, named `label`: what it publishes, and what the session's package
+/// describes of it ([`crate::session_package`]).
+pub(crate) fn desk_spec(label: String) -> ResourceSpec {
+    offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label))
+}
+
 impl Service for Desk {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![offer::<DeskEffect>(ResourceSpec::new(
-            DESK_RESOURCE,
-            DESK_KIND,
-            self.person.clone(),
-        ))]
+        vec![desk_spec(self.person.clone())]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
@@ -816,7 +837,7 @@ impl Service for Desk {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::ClearNotices) {
-            self.notices.clear_history();
+            self.notices.clear_all();
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::WalkSwitcher { steps } = &effect {
@@ -868,42 +889,5 @@ impl Service for Desk {
             })
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
-    }
-}
-
-/// The desk's action and its argument, by the names the shell's origin invokes them by: one
-/// spelling of each, checked against the derived vocabulary.
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_surface_host::shell_part::{DESK_ACTIONS, SWITCH_WORKSPACE, WORKSPACE_ARG};
-
-    #[test]
-    fn the_shell_invokes_the_desk_by_the_names_it_offers() {
-        let specs = DeskEffect::specs();
-        let switch = specs
-            .iter()
-            .find(|spec| spec.id == SWITCH_WORKSPACE)
-            .expect("the desk offers switch-workspace");
-        assert!(
-            switch
-                .params()
-                .iter()
-                .any(|param| param.name == WORKSPACE_ARG),
-            "switch-workspace takes {WORKSPACE_ARG}"
-        );
-    }
-
-    /// The bar names the desk's own actions by the ids the desk publishes them under.
-    #[test]
-    fn the_bars_desk_actions_are_the_desks_own() {
-        let declared = DeskEffect::declarations();
-        for (id, resource) in DESK_ACTIONS {
-            assert_eq!(*resource, DESK_RESOURCE, "{id} is not the desk's");
-            assert!(
-                declared.iter().any(|decl| decl.id == *id),
-                "the desk publishes no {id}"
-            );
-        }
     }
 }

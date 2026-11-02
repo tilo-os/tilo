@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::time::Duration;
 
 use git2::{Repository, Signature};
@@ -64,7 +65,7 @@ fn start_server_with_tls(root: &Path, tls: bool) -> (Server, String) {
     }
     let mut server = Server(
         command
-            .spawn()
+            .spawn_locked()
             .expect("Python 3 is required for Git HTTP tests"),
     );
     let ready = root.join("ready.json");
@@ -134,7 +135,7 @@ fn isolated_credentials(test: &str) -> bool {
         .env("XDG_CONFIG_HOME", home.path())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", home.path().join(".gitconfig"))
-        .output()
+        .output_locked()
         .expect("run isolated Git transport contract");
     assert!(
         result.status.success(),
@@ -180,7 +181,9 @@ fn authenticated_client(root: &Path, url: &str, password: &str) -> Repository {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let output = command.output().expect("Git writes fixture configuration");
+    let output = command
+        .output_locked()
+        .expect("Git writes fixture configuration");
     assert!(
         output.status.success(),
         "{}",

@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(unix)]
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn progress_fraction_handles_full_width_counters_and_empty_totals() {
@@ -40,7 +42,7 @@ fn relay_reaps_child_before_returning_progress_read_error() {
     let work = tempfile::tempdir().unwrap();
     let mut child = Command::new("sh")
         .args(["-c", "sleep 0.05"])
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let result = relay_helper_progress(
         &mut child,
@@ -69,7 +71,10 @@ fn relay_preserves_detailed_terminal_failure_on_nonzero_exit() {
             + "\n",
     )
     .unwrap();
-    let mut child = Command::new("sh").args(["-c", "exit 1"]).spawn().unwrap();
+    let mut child = Command::new("sh")
+        .args(["-c", "exit 1"])
+        .spawn_locked()
+        .unwrap();
     let mut events = Vec::new();
     relay_helper_progress(
         &mut child,

@@ -173,6 +173,64 @@ pub(crate) fn desk(
     (desktop, policy, asks)
 }
 
+/// The policy placing the desk's windows: the desktop's strips, or the wells of the shell
+/// drawing the whole screen.
+pub(crate) enum DeskPolicy {
+    Strips(StripPolicy),
+    Wells(tilo_surface_host::WellPolicy),
+}
+
+impl DeskPolicy {
+    /// The shell drawing the whole screen places the windows in its wells; otherwise the
+    /// desktop's strips do.
+    pub(crate) fn for_shell(
+        shell: Option<tilo_surface_host::shell_part::ShellLayer>,
+        desktop: &DesktopHost,
+        strips: StripPolicy,
+    ) -> Self {
+        if shell == Some(tilo_surface_host::shell_part::ShellLayer::Screen) {
+            Self::Wells(desktop.well_policy())
+        } else {
+            Self::Strips(strips)
+        }
+    }
+
+    /// Tell `observer` the process of each window the desktop gives a place.
+    pub(crate) fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
+        match self {
+            Self::Strips(policy) => policy.set_window_mapped(observer),
+            Self::Wells(policy) => policy.set_window_mapped(observer),
+        }
+    }
+
+    /// Follow the windows the compositor opens and closes with `observer`.
+    pub(crate) fn observe_windows(
+        &mut self,
+        observer: std::sync::Arc<dyn tilo_surface_host::WindowObserver>,
+    ) {
+        match self {
+            Self::Strips(policy) => policy.observe_windows(observer),
+            Self::Wells(policy) => policy.observe_windows(observer),
+        }
+    }
+
+    /// The wells the shell's views report to, when they place the windows.
+    pub(crate) fn wells(&self) -> Option<ui::widget::Wells> {
+        match self {
+            Self::Strips(_) => None,
+            Self::Wells(policy) => Some(policy.wells()),
+        }
+    }
+
+    /// The policy, as the compositor runs with it.
+    pub(crate) fn boxed(self) -> Box<dyn tilo_compositor::WindowPolicy> {
+        match self {
+            Self::Strips(policy) => Box::new(policy),
+            Self::Wells(policy) => Box::new(policy),
+        }
+    }
+}
+
 /// What the desk's policy sends the bars' reveal: the pointer wherever it
 /// goes, presses, and fingers on the screen, which the chrome follows beyond
 /// where it draws.

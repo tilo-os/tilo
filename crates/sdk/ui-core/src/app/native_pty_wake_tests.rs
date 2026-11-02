@@ -3,6 +3,7 @@ use automerge::AutoCommit;
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
 use std::sync::{Arc, Mutex, mpsc};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const TYPE: &str = "test.native-pty";
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -79,7 +80,7 @@ impl PtyRoot {
                 Ok(())
             });
         }
-        let child = command.spawn().unwrap();
+        let child = command.spawn_locked().unwrap();
         let mut input = writer.try_clone().unwrap();
         let wake = crate::WakeHandle::new();
         let (sender, chunks) = mpsc::channel();

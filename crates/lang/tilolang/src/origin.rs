@@ -65,59 +65,14 @@ const fn people(name: &'static str, ty: &'static str, doc: &'static str) -> Orig
 }
 
 /// The capabilities an action may hand an outside effect to with `outside(capability, ...)`:
-/// `post`, the development log, and each origin's own.
+/// `post`, the development log, and each origin's own. The session takes none: a shell calls
+/// its actions as an app's (`use so.tilo.session as session`).
 pub const CAPABILITIES: &[(&str, &str)] = &[
     ("post", "Posts a payload; the development sink logs it."),
     (
         "smtp.send",
         "Sends a message from a mail account of the workspace's settings: (account, to, cc, \
          subject, body, the Message-ID it answers, the References it continues).",
-    ),
-    (
-        "session.switch_workspace",
-        "Brings a workspace of this device's desk to the front: the `key` of its \
-         `session.workspace`.",
-    ),
-    (
-        "session.act",
-        "Asks the session for one of the desktop's own actions that take nothing (the \
-         `desktop:chrome` resource's: `tilo-menu`, `quick-settings`, `show-strips`, \
-         `overview`, `new-workspace`, `join-workspace`, `workspace-settings`; the \
-         `session:desk` resource's: `answer-ask`, `put-off-ask`), by its id.",
-    ),
-    (
-        "session.arrange",
-        "Arranges the person's own desk: one of the arranging actions the session publishes on \
-         `shell:arrangement` (`open-into`, `move-place`, `resize-strip`, `close-place`, \
-         `pin-place`), by its id, with its arguments as one line of JSON: `move-place \
-         {\"place\":3,\"row\":7}`.",
-    ),
-    (
-        "session.run",
-        "Asks the session to run one of its own actions, by address: the resource and the \
-         action as the door publishes them (a window's `focus` on `desktop:tab:7`, the \
-         chrome's `move-tab-to-strip`, the desk's `show-surface`), then each argument as \
-         `(name, value)` with the name the action's own field has.",
-    ),
-    (
-        "session.notify",
-        "The same as `session.run`, for the notification centre's actions on the desk: \
-         `clear-notices`, `dismiss-notice` and `act-on-notice`.",
-    ),
-    (
-        "session.launch",
-        "Opens an app, or goes to what a dock item stands for: the item's `key` — an app id, \
-         or a resource's reference.",
-    ),
-    (
-        "session.set",
-        "Sets one of the device's settings the shell's Quick Settings shows, by the setting's \
-         key and the value: `(key, value)`.",
-    ),
-    (
-        "session.tray",
-        "Opens or closes a running application's tray item, by its key: its window, or its \
-         menu when the item is one.",
     ),
 ];
 
@@ -691,54 +646,6 @@ pub const KINDS: &[OriginKind] = &[
                 "state",
                 "Text",
                 "`running`, `waiting` (for the person) or `done`.",
-            ),
-        ],
-    },
-    OriginKind {
-        name: "session.control",
-        doc: "A device control the person's shell shows in Quick Settings: sound, brightness, \
-              the network, Bluetooth, the power, the theme and the do-not-disturb state. The \
-              session writes what the device says; the person changes it, as the system's own \
-              panel does.",
-        derived: true,
-        fields: &[
-            field(
-                "key",
-                "Text",
-                "Which control: `volume`, `brightness`, `network`, `bluetooth`, `wifi`, \
-                 `power`, `theme`, `quiet`.",
-            ),
-            field(
-                "label",
-                "Text",
-                "What it is called, in the person's language.",
-            ),
-            field("icon", "Text", "Its glyph, by the platform icon's name."),
-            field(
-                "on",
-                "Bool",
-                "Whether it is on: Bluetooth, Wi-Fi, do-not-disturb.",
-            ),
-            field(
-                "value",
-                "Int",
-                "Its level, 0 to 100 (sound, brightness); 0 when it has none.",
-            ),
-            field(
-                "detail",
-                "Text",
-                "What it stands at in words: the network's name, the theme's name, the \
-                 battery's charge.",
-            ),
-            field(
-                "available",
-                "Bool",
-                "Whether the device has it, or it can be changed now.",
-            ),
-            field(
-                "has_level",
-                "Bool",
-                "Whether it is a level the person sets (sound, brightness).",
             ),
         ],
     },

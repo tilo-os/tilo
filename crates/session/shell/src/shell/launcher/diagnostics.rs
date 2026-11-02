@@ -69,6 +69,7 @@ pub(crate) fn freeze_retained(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     #[expect(
@@ -100,11 +101,11 @@ mod tests {
             command.env(field, "old");
         }
         Options([true, false, true, false]).apply(&mut command);
-        let output = command.output().unwrap();
+        let output = command.output_locked().unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"1::1::retained");
         Options([false; 4]).apply(&mut command);
-        let output = command.output().unwrap();
+        let output = command.output_locked().unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"::::retained");
     }

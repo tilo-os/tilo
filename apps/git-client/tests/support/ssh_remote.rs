@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_test_env::SpawnUnderEnvLock as _;
+use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 use russh::keys::agent::client::AgentClient;
 use russh::keys::{PrivateKey, PublicKey};
@@ -148,7 +150,7 @@ impl server::Handler for GitServer {
             #[cfg(windows)]
             command.creation_flags(0x0800_0000);
             let mut child = command
-                .spawn()
+                .spawn_locked()
                 .expect("Git is required for the SSH fixture");
             let mut stdin = child.stdin.take().unwrap();
             let mut stdout = child.stdout.take().unwrap();
@@ -230,7 +232,7 @@ pub(super) fn verify_transport() {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000);
     }
-    let result = command.output();
+    let result = command.output_locked();
     let _ = stop_tx.send(());
     worker.join().unwrap();
     let result = result.unwrap();

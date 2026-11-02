@@ -101,7 +101,9 @@ fn history_direction(target: &str) -> Result<HistoryDirection, String> {
 
 /// Where a window goes: another strip of its workspace, another workspace,
 /// or another display. Exactly one of them names the place.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, tilo_resource::JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub struct Destination {
     /// The strip of the window's workspace to carry the window to.

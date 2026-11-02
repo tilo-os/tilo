@@ -95,6 +95,12 @@ impl SessionOrigin {
 /// binds. The change comes back as the resource's next reading.
 pub(super) struct PlaceInvoker {
     pub(super) link: Rc<SessionLink>,
+    /// The resource each of the session's loose actions is published on, by the action's id
+    /// (`session.show_surface(...)` goes to the desk).
+    pub(super) session: BTreeMap<String, String>,
+    /// The session's loose actions as its description declares them, by id: a parameter
+    /// published as a field of another is sent nested under it.
+    pub(super) verbs: BTreeMap<String, ui::tilo_actions::surface::VerbSurface>,
 }
 
 impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
@@ -113,7 +119,9 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                 let subject_id = subject.id_string();
                 let mut arguments = BTreeMap::new();
                 for (name, value) in args {
-                    if matches!(value, Value::Ref(r) if r.target.id_string() == subject_id) {
+                    if matches!(value, Value::Ref(r) if r.target.id_string() == subject_id)
+                        || matches!(value, Value::Opt(None))
+                    {
                         continue;
                     }
                     arguments.insert(name.clone(), argument_text(value));
@@ -124,6 +132,13 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     arguments,
                 }
             }
+            Invocation::Action {
+                app, action, args, ..
+            } if app == super::SESSION_APP && self.session.contains_key(action) => Ask {
+                resource: self.session[action].clone(),
+                action: action.clone(),
+                arguments: session_arguments(self.verbs.get(action), args),
+            },
             Invocation::Action { name, .. } => {
                 return Invoked::Failed(format!(
                     "`{name}` names no resource of its app to be sent to"
@@ -149,10 +164,50 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                 }
             }
         };
-        self.link.asked.borrow_mut().push_back(ask);
-        self.link.handed.set(self.link.handed.get().wrapping_add(1));
+        self.link.ask(ask);
         Invoked::Done(Value::Unit)
     }
+}
+
+/// The arguments of a call of one of the session's loose actions, `verb` as its description
+/// declares it: each left-out one dropped, and those of a parameter published as a field of
+/// another nested back under that parameter, as its JSON.
+fn session_arguments(
+    verb: Option<&ui::tilo_actions::surface::VerbSurface>,
+    args: &[(String, Value)],
+) -> BTreeMap<String, String> {
+    let given = args
+        .iter()
+        .filter(|(_, value)| !matches!(value, Value::Opt(None)));
+    let Some(verb) = verb.filter(|verb| verb.params.iter().any(|param| param.within.is_some()))
+    else {
+        return given
+            .map(|(name, value)| (name.clone(), argument_text(value)))
+            .collect();
+    };
+    let json = given
+        .map(|(name, value)| {
+            let text = argument_text(value);
+            let json = match value {
+                Value::Text(_) => serde_json::Value::String(text),
+                Value::Opt(Some(inner)) if matches!(**inner, Value::Text(_)) => {
+                    serde_json::Value::String(text)
+                }
+                _ => serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
+            };
+            (name.clone(), json)
+        })
+        .collect();
+    ui::tilo_actions::surface::nest_arguments(verb, json)
+        .into_iter()
+        .map(|(name, value)| {
+            let text = match value {
+                serde_json::Value::String(text) => text,
+                other => other.to_string(),
+            };
+            (name, text)
+        })
+        .collect()
 }
 
 /// An argument as the session's door takes it from the shell: a text as it is, anything else
@@ -161,6 +216,7 @@ fn argument_text(value: &Value) -> String {
     match value {
         Value::Text(text) => text.clone(),
         Value::Ref(r) => r.target.id_string(),
+        Value::Opt(Some(value)) => argument_text(value),
         other => tilolang_tilo::runtime::value::to_json(other)
             .map_or_else(|_| String::new(), |json| json.to_string()),
     }

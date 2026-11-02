@@ -975,6 +975,7 @@ mod factory_tests {
 mod tests {
     use super::*;
     use std::{cell::RefCell, rc::Rc, sync::atomic::Ordering};
+    use tilo_test_env::SpawnUnderEnvLock as _;
     #[derive(Default)]
     struct State {
         reads: Vec<(u64, u32)>,
@@ -1301,7 +1302,7 @@ mod tests {
             let output = std::process::Command::new(&self.program)
                 .arg(&self.image)
                 .args(arguments)
-                .output()?;
+                .output_locked()?;
             if !output.status.success() {
                 return Err(io::Error::other(
                     String::from_utf8_lossy(&output.stderr).into_owned(),

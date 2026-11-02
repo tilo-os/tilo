@@ -479,6 +479,7 @@ struct Pending {
 pub fn examine(tree: &mut WorkspaceTree) -> bool {
     #[cfg(test)]
     EXAMINE_PASSES.with(|passes| passes.set(passes.get().saturating_add(1)));
+    WAITS_ON_DISK.with(|waits| waits.set(false));
     let released = release_brought_over(tree);
     let installing = start_requested_installs(tree);
     let reread = reread_missing_apps(tree);
@@ -513,9 +514,14 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         // it; wait until this device has admitted it.
         if !item.local {
             match prepare_hosted_record(tree, &item) {
-                Ok(true) => {}
-                Ok(false) => {
+                Ok(HostedRecord::Ready) => {}
+                Ok(HostedRecord::Unadmitted) => {
                     tracing::debug!(tab = ?item.tab, app = %item.app_id, "governed window waits for its record");
+                    continue;
+                }
+                Ok(HostedRecord::OnItsWay) => {
+                    tracing::debug!(tab = ?item.tab, app = %item.app_id, "governed window waits for its record to reach the disk");
+                    WAITS_ON_DISK.with(|waits| waits.set(true));
                     continue;
                 }
                 Err(refusal) => {
@@ -669,11 +675,42 @@ pub(crate) fn set_hosted_record_reader(reader: Box<HostedRecordReader>) {
     let _ = HOSTED_RECORDS.set(reader);
 }
 
+/// Where a governed room's window stands with the record it opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostedRecord {
+    /// Kept here and on the disk: the window may open.
+    Ready,
+    /// The tree binds no record to the window yet, or this device has not
+    /// admitted it. Either arrives as the room's news, which wakes the loop.
+    Unadmitted,
+    /// Admitted, and on its way to the disk through a store's own thread,
+    /// which wakes nobody when it is done: the loop looks again soon.
+    OnItsWay,
+}
+
+thread_local! {
+    /// Whether the last [`examine`] left a window waiting for a store to
+    /// open its record or for the record to reach the disk
+    /// ([`HostedRecord::OnItsWay`]).
+    static WAITS_ON_DISK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a window the last [`examine`] left pending waits for a store's
+/// own thread, which announces nothing, so the frame loop must come back
+/// for it. Every other wait ends with news that wakes the loop: its
+/// workspace's authority and its record arrive from the room, a launch's
+/// window maps, and a launch that never shows one ends at its deadline
+/// ([`launcher::next_placement_expiry`]).
+pub(crate) fn waits_on_disk() -> bool {
+    WAITS_ON_DISK.with(std::cell::Cell::get)
+}
+
 /// Point `item`'s window at the record its governed room's owner created for
 /// the tab: keep that record in this device's profile of the app and name it
-/// in the saved view of the instance the tab launches as. `Ok(false)`
-/// while this device has not admitted the record yet.
-fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, String> {
+/// in the saved view of the instance the tab launches as. Not
+/// [`HostedRecord::Ready`] while this device has not admitted the record, or
+/// while the record is still on its way to the disk.
+fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<HostedRecord, String> {
     use crate::shell::record_hydration::{RecordAddress, keep, landing, reopen_on};
     let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
@@ -683,7 +720,7 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
         // A route: a window shared with a personal room may show its app's
         // own record of the room, which travels under the empty one.
         let Some(record) = ui::record::RecordId::from_route(&record) else {
-            return Ok(false);
+            return Ok(HostedRecord::Unadmitted);
         };
         record
     } else {
@@ -696,7 +733,7 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
             ui::record::RecordKind::new("primary"),
         );
         if !checkout.id.is_package_primary() {
-            return Ok(false);
+            return Ok(HostedRecord::Unadmitted);
         }
         checkout.id
     };
@@ -704,13 +741,13 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
         return Err("This workspace's records are not reachable here".to_string());
     };
     let Ok(bytes) = reader(room, &item.app_id, &record) else {
-        return Ok(false);
+        return Ok(HostedRecord::Unadmitted);
     };
     if record.is_package_primary() {
         // The native SDK opens this existing admitted document through its
         // normal broker/channel. Never copy it into a minted-record profile
         // or turn a peer window into a new primary document.
-        return Ok(true);
+        return Ok(HostedRecord::Ready);
     }
     let Some(data_home) = ::launcher::appdir::host_data_home() else {
         return Err("This workspace's records are not reachable here".to_string());
@@ -723,16 +760,20 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
     // Kept on an earlier pass and still reaching the disk: the app reads
     // it from there, and keeping it again would wait for the same write.
     if landing(&address)? {
-        return Ok(false);
+        return Ok(HostedRecord::OnItsWay);
     }
     // Its profile's store opens the record on its own thread first.
     let Some(kept) = keep(&address, &data_home, &bytes)? else {
-        return Ok(false);
+        return Ok(HostedRecord::OnItsWay);
     };
     if !reopen_on(&address, &data_home, item.tab, Some(&kept)) {
-        return Ok(false);
+        return Ok(HostedRecord::OnItsWay);
     }
-    Ok(!landing(&address)?)
+    Ok(if landing(&address)? {
+        HostedRecord::OnItsWay
+    } else {
+        HostedRecord::Ready
+    })
 }
 
 /// Whether any peer window is still waiting to be examined: an unanswered

@@ -126,6 +126,7 @@ impl Lifeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SpawnUnderEnvLock as _;
     use std::process::Stdio;
     use std::sync::mpsc;
     use std::thread;
@@ -137,7 +138,7 @@ mod tests {
             .script()
             .command()
             .stdin(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .expect("the stand-in starts");
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
@@ -176,7 +177,11 @@ mod tests {
         drop(stand_in);
 
         let (sender, ended) = mpsc::channel();
-        let mut child = script.command().stdin(Stdio::null()).spawn().unwrap();
+        let mut child = script
+            .command()
+            .stdin(Stdio::null())
+            .spawn_locked()
+            .unwrap();
         thread::spawn(move || {
             let _ = child.wait();
             let _ = sender.send(());

@@ -321,6 +321,11 @@ pub struct Hosted {
     /// How an app on this device runs one of its actions on another of the
     /// person's devices: what the collaboration plane reaches them through.
     pub own_device: Option<std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>>,
+    /// This device's rooms, whose owner is the canonical copy of what the
+    /// apps record in them: an app's write in a room the owner commits is
+    /// committed there before anyone hears of it, and leaves for the room's
+    /// peers from there. `None` when the session holds no rooms.
+    pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
@@ -355,16 +360,33 @@ pub fn serve(
 ) -> std::io::Result<BrokerHandle> {
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
+    let publisher = owner_publisher(hosted.engine.clone());
     let services = host_services(link, launches, fabric, hosted);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
         Some(membership),
-        PeerPublisher::disabled(),
+        publisher,
         None,
         services,
         channels,
         std::sync::Arc::new(FanoutState::new()),
     )
+}
+
+/// Where the broker's writes go beyond this device's own apps: into the
+/// engine's owner, which publishes what it committed to each room's peers.
+/// A session that holds no rooms keeps its apps' writes among them.
+pub(crate) fn owner_publisher(
+    engine: Option<std::sync::Arc<crate::engine::Engine>>,
+) -> std::sync::Arc<PeerPublisher> {
+    engine.map_or_else(PeerPublisher::disabled, |engine| {
+        PeerPublisher::with_optional_owner_commit(
+            None,
+            std::sync::Arc::new(tilo_action_broker::owner_commits::NativeOwnerCommits::new(
+                engine,
+            )),
+        )
+    })
 }
 
 /// A saved shortcut change on its way to the desk, answered once the session's
@@ -514,6 +536,7 @@ fn host_services(
         agent_runs,
         sealed,
         own_device,
+        engine: _,
         record_content,
         action_offload,
     } = hosted;
@@ -825,6 +848,7 @@ mod tests {
                 keys: None,
             },
             own_device: None,
+            engine: None,
             record_content: None,
             action_offload: None,
         }

@@ -198,6 +198,14 @@ pub struct Theme {
     pub rim_alpha: f64,
     /// Hover opacity
     pub hover_alpha: f64,
+    /// The document this theme was made from, as JSON: every role the
+    /// studio does not edit (each surface's finish, its border and depth,
+    /// the reading face, the motion curve) comes from it, so a theme keeps
+    /// its look through the studio. None for a theme made before it was
+    /// kept, which takes the stock roles.
+    #[model(readonly)]
+    #[model(default = None)]
+    pub origin: Option<String>,
 }
 
 impl Theme {
@@ -246,6 +254,42 @@ impl Theme {
             rim_span: f64::from(document.material.selector.rim_span),
             rim_alpha: f64::from(document.material.selector.rim_alpha),
             hover_alpha: f64::from(document.material.selector.hover_alpha),
+            origin: serde_json::to_string(document).ok(),
+        }
+    }
+
+    /// The document this theme was made from, where it was kept and still
+    /// reads.
+    fn origin(&self) -> Option<ThemeDocument> {
+        serde_json::from_str(self.origin.as_deref()?).ok()
+    }
+
+    /// The floating finish: the origin's as it is while the blur and tint
+    /// are its own, else its painter with the edited blur and tint (the
+    /// stock frosted or solid surface where that painter cannot take them).
+    fn floating(&self, origin: Option<&ui::tokens::Finish>) -> ui::tokens::Finish {
+        let (blur, tint) = (narrow(self.blur), narrow(self.tint_opacity));
+        if let Some(origin) = origin {
+            if origin.blur().to_bits() == blur.to_bits()
+                && origin.tint().to_bits() == tint.to_bits()
+            {
+                return origin.clone();
+            }
+            let mut params: Vec<(String, f32)> = origin
+                .params()
+                .iter()
+                .filter(|param| !matches!(param.name.as_str(), "blur" | "tint"))
+                .map(|param| (param.name.clone(), param.value))
+                .collect();
+            params.extend([("blur".to_owned(), blur), ("tint".to_owned(), tint)]);
+            if let Ok(edited) = ui::tokens::Finish::new(origin.set().clone(), params) {
+                return edited.with_shader(origin.shader().clone());
+            }
+        }
+        if blur > 0.0 {
+            ui::tokens::Finish::frosted(blur, tint, 1.0)
+        } else {
+            ui::tokens::Finish::solid()
         }
     }
 
@@ -275,6 +319,8 @@ impl Theme {
     /// The theme document this theme is, under `id`.
     #[must_use]
     pub fn document(&self, id: &str) -> ThemeDocument {
+        let origin = self.origin();
+        let origin = origin.as_ref();
         ThemeDocument {
             schema_version: THEME_SCHEMA_VERSION,
             id: id.to_owned(),
@@ -296,29 +342,29 @@ impl Theme {
             ),
             shape: ThemeShape {
                 window_radius: narrow(self.window_radius),
-                border: ui::tokens::Border::STOCK,
+                border: origin.map_or(ui::tokens::Border::STOCK, |origin| origin.shape.border),
             },
             density: ThemeDensity {
                 spacing: narrow(self.density),
             },
             type_: ThemeType {
                 face: self.face.clone(),
-                reading: ThemeType::default_reading(),
+                reading: origin.map_or_else(ThemeType::default_reading, |origin| {
+                    origin.type_.reading.clone()
+                }),
                 base_size: narrow(self.base_size),
                 distinct_letters: self.distinct_letters,
-                contrast: ThemeType::STOCK_CONTRAST,
-                weights: ui::theme::ThemeWeights::STOCK,
+                contrast: origin.map_or(ThemeType::STOCK_CONTRAST, |origin| origin.type_.contrast),
+                weights: origin.map_or(ui::theme::ThemeWeights::STOCK, |origin| {
+                    origin.type_.weights
+                }),
             },
             motion: ThemeMotion {
                 character: narrow(self.motion),
-                ..ThemeMotion::STOCK
+                ..origin.map_or(ThemeMotion::STOCK, |origin| origin.motion)
             },
             material: ThemeMaterial {
-                floating: if self.blur > 0.0 {
-                    ui::tokens::Finish::frosted(narrow(self.blur), narrow(self.tint_opacity), 1.0)
-                } else {
-                    ui::tokens::Finish::solid()
-                },
+                floating: self.floating(origin.map(|origin| &origin.material.floating)),
                 selector: SelectorFinish {
                     strip: if self.frosted_strip {
                         StripMaterial::Floating
@@ -329,10 +375,10 @@ impl Theme {
                     rim_alpha: narrow(self.rim_alpha),
                     hover_alpha: narrow(self.hover_alpha),
                 },
-                ..ThemeMaterial::stock()
+                ..origin.map_or_else(ThemeMaterial::stock, |origin| origin.material.clone())
             },
-            depth: ui::tokens::Depth::STOCK,
-            response: None,
+            depth: origin.map_or(ui::tokens::Depth::STOCK, |origin| origin.depth),
+            response: origin.and_then(|origin| origin.response),
         }
     }
 
@@ -642,6 +688,34 @@ mod tests {
             assert_eq!(theme.document(preset.id()), document);
             assert_eq!(theme.findings(preset.id()), Vec::<String>::new());
         }
+    }
+
+    #[test]
+    fn editing_a_finished_theme_keeps_its_look() {
+        let document = Preset::LiquidGlass.document();
+        let mut theme = Theme::from_document(&document);
+        theme.tint_opacity = 0.2;
+        theme.density = 1.1;
+        let edited = theme.document("mine");
+        let floating = &edited.material.floating;
+        assert_eq!(floating.painter(), document.material.floating.painter());
+        assert!((floating.tint() - 0.2).abs() < 1e-6);
+        assert_eq!(
+            floating.param("refraction"),
+            document.material.floating.param("refraction")
+        );
+        assert_eq!(edited.material.window, document.material.window);
+        assert_eq!(edited.depth, document.depth);
+        assert_eq!(edited.shape.border, document.shape.border);
+        // A theme kept before its origin was keeps the stock roles.
+        let older = Theme {
+            origin: None,
+            ..Theme::from_document(&document)
+        };
+        assert_eq!(
+            older.document("mine").material.window,
+            ThemeMaterial::stock().window
+        );
     }
 
     #[test]

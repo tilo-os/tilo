@@ -7583,6 +7583,8 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
 )]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// presence.md: a device's name never leaves it. A member's pointer and
     /// what they say beside it carry the name they give themselves, not
@@ -7879,7 +7881,7 @@ mod tests {
         assert!(
             std::process::Command::new("mkfifo")
                 .arg(&registry)
-                .status()
+                .status_locked()
                 .expect("mkfifo")
                 .success()
         );

@@ -332,6 +332,8 @@ pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     || Theme::preset(Preset::Block),
     || Theme::preset(Preset::BlockLight),
     || Theme::preset(Preset::Pixelated),
+    || Theme::preset(Preset::LiquidGlass),
+    || Theme::preset(Preset::LiquidGlassLight),
 ];
 
 /// Polled by [`crate::app::App`] once per frame and reconciled against the
@@ -793,7 +795,7 @@ impl Theme {
     ///
     /// Exists so a check can be run against *all* of them rather than against
     /// whichever two someone remembered.
-    pub const ALL: [&'static str; 12] = [
+    pub const ALL: [&'static str; 14] = [
         Preset::Dark.name(),
         Preset::DarkCool.name(),
         Preset::DarkGraphite.name(),
@@ -806,6 +808,8 @@ impl Theme {
         Preset::Block.name(),
         Preset::BlockLight.name(),
         Preset::Pixelated.name(),
+        Preset::LiquidGlass.name(),
+        Preset::LiquidGlassLight.name(),
     ];
 
     /// A shipped theme by id or name, loosely ([`Preset::find`]), so the

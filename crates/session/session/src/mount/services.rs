@@ -228,6 +228,7 @@ pub(crate) fn start_action_plane(
             agent_runs: Some(agent_runs),
             sealed,
             own_device,
+            engine: sync.and_then(crate::sync::Client::engine).cloned(),
             record_content: content,
             action_offload,
         },

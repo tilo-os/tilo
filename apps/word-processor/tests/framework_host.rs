@@ -2,6 +2,7 @@
 //! record storage, permissions, per-author undo and History mode, driven the
 //! way a person drives the editor — by typing into it.
 
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::framework::testing::TestApp;
 use ui::permissions::Role;
 use word_processor::framework::{Document, WordProcessorApp};
@@ -557,7 +558,7 @@ fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() 
             ])
             .env(CHILD, "1")
             .env("TILO_SVC_COLLAB_FD", "-1")
-            .output()
+            .output_locked()
             .unwrap();
         assert!(
             output.status.success(),

@@ -1,19 +1,26 @@
 //! One view under each surface finish, as PNGs to look at: a real widget
-//! view (buttons, switches) and the surface roles over a busy desktop
-//! (window ground, bar, floating panel, control faces at rest, hovered and
-//! pressed), so a finish's backdrop pass and the theme's response show.
+//! view (buttons, switches) and the surface roles, with text on them, over
+//! three desktops (window ground, bar, floating panel, control faces at
+//! rest, hovered and pressed), so a finish's backdrop pass, the legible
+//! range it holds what shows through in, and the theme's response show.
 //!
 //! `cargo run -p tilo-ui --example theme-looks -- OUT_DIR [THEME.json ...]`
 //!
-//! Without theme files it shoots the shipped Block, Glass and Pixelated
-//! presets; each file given is a theme document shot under its own id. Run
-//! it on a software adapter (lavapipe) where the GPU is not to be touched.
+//! Without theme files it shoots the shipped Block, Glass, Pixelated,
+//! Liquid Glass and Liquid Glass light presets; each file given is a theme document shot under its
+//! own id. Run it on a software adapter (lavapipe) where the GPU is not to
+//! be touched.
+//!
+//! The desks: a bright, photo-like wallpaper of colour; a white page of
+//! dark text; a dark page of light text. Text runs under every rim, so a
+//! lens's bend shows as bent lines.
 
 use std::path::{Path, PathBuf};
 
 use tilo_ui::backdrop::{BackdropFrame, BackdropRecording, fill_role, layer_scene};
 use tilo_ui::chrome::{SelectionState, selection_tier_on};
 use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::{Preset, Theme, ThemeDocument};
 use tilo_ui::tokens::SurfaceRole;
 use tilo_ui::widget::{Button, ButtonRole, Column, Row, Toggle};
@@ -31,7 +38,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut themes: Vec<(String, Theme)> = Vec::new();
     let files: Vec<PathBuf> = args.map(PathBuf::from).collect();
     if files.is_empty() {
-        for preset in [Preset::Block, Preset::Glass, Preset::Pixelated] {
+        for preset in [
+            Preset::Block,
+            Preset::Glass,
+            Preset::Pixelated,
+            Preset::LiquidGlass,
+            Preset::LiquidGlassLight,
+        ] {
             themes.push((preset.id().to_owned(), Theme::preset(preset)));
         }
     }
@@ -53,9 +66,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let view = out.join(format!("{id}-view.png"));
         let mut widget = view_of();
         tilo_ui::launch::render_widget_png(widget.as_mut(), (420, 220), theme.clone(), &view)?;
-        let desk = out.join(format!("{id}-desk.png"));
-        shoot_desk(&theme, &desk);
-        println!("{}\n{}", view.display(), desk.display());
+        println!("{}", view.display());
+        for (name, below) in [
+            ("bright", Below::Bright),
+            ("white-page", Below::WhitePage),
+            ("dark-page", Below::DarkPage),
+        ] {
+            let desk = out.join(format!("{id}-desk-{name}.png"));
+            shoot_desk(&theme, below, &desk);
+            println!("{}", desk.display());
+        }
     }
     Ok(())
 }
@@ -83,10 +103,31 @@ fn view_of() -> Box<dyn tilo_ui::widget::Widget> {
     )
 }
 
-/// The surface roles over a busy desktop, with the backdrop pass.
-fn shoot_desk(theme: &Theme, out: &Path) {
+/// What a desk shows below its surfaces.
+#[derive(Clone, Copy)]
+enum Below {
+    /// Bright colour, as a photo is.
+    Bright,
+    /// A white page of dark text.
+    WhitePage,
+    /// A dark page of light text.
+    DarkPage,
+}
+
+/// The surface roles over `below`, with the backdrop pass, and text on the
+/// window and the panel in the theme's inks.
+fn shoot_desk(theme: &Theme, below: Below, out: &Path) {
     let (width, height) = DESK;
-    let mut scene = wallpaper(width, height);
+    let mut scene = match below {
+        Below::Bright => wallpaper(width, height),
+        Below::WhitePage => page(width, height, Color::WHITE, Color::from_rgb8(24, 24, 28)),
+        Below::DarkPage => page(
+            width,
+            height,
+            Color::from_rgb8(14, 16, 22),
+            Color::from_rgb8(236, 236, 240),
+        ),
+    };
     let recording = BackdropRecording::begin();
     layer_scene(&scene, 0);
     let colors = &theme.tokens.colors;
@@ -139,21 +180,59 @@ fn shoot_desk(theme: &Theme, out: &Path) {
         f64::from(theme.tokens.radii.panel),
         theme,
     );
+    let mut text = TextRenderer::new();
+    let mut ink = |words: &str, size: f32, colour: Color, at: (f64, f64)| {
+        text.draw_text(&mut scene, words, size, colour, Affine::translate(at), None);
+    };
+    ink("Wednesday 10:42", 14.0, colors.text_primary, (16.0, 8.0));
+    ink("Window title", 16.0, colors.text_primary, (64.0, 66.0));
+    ink(
+        "Text on the window ground",
+        14.0,
+        colors.text_primary,
+        (64.0, 150.0),
+    );
+    ink(
+        "and its secondary ink",
+        14.0,
+        colors.text_dim,
+        (64.0, 172.0),
+    );
+    ink("Panel heading", 17.0, colors.text_primary, (324.0, 184.0));
+    for (row, line) in [
+        "Primary text on the floating panel",
+        "Secondary text reads over anything",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let colour = if row == 0 {
+            colors.text_primary
+        } else {
+            colors.text_dim
+        };
+        #[allow(clippy::cast_precision_loss, reason = "two rows")]
+        let y = 222.0 + row as f64 * 26.0;
+        ink(line, 15.0, colour, (324.0, y));
+    }
     let frame = BackdropFrame::from_single_scene(recording.finish());
     let mut renderer = OffscreenRenderer::new(width, height);
     renderer.set_backdrop(Some(std::sync::Arc::new(frame)));
     renderer.render_png(&scene, Color::BLACK, out);
 }
 
-/// Stripes and discs in strong colours: what a finish shows of what lies
-/// below it is plain against them.
+/// Stripes and discs in strong colours over a bright sky: what a finish
+/// shows of what lies below it is plain against them.
 fn wallpaper(width: u32, height: u32) -> Scene {
     let mut scene = Scene::new();
     let (w, h) = (f64::from(width), f64::from(height));
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        Color::from_rgb8(24, 40, 72),
+        &vello::peniko::Gradient::new_linear((0.0, 0.0), (0.0, h)).with_stops([
+            Color::from_rgb8(150, 200, 250),
+            Color::from_rgb8(250, 236, 210),
+        ]),
         None,
         &Rect::new(0.0, 0.0, w, h),
     );
@@ -185,6 +264,33 @@ fn wallpaper(width: u32, height: u32) -> Scene {
             colour.with_alpha(0.9),
             None,
             &Circle::new(centre, 46.0),
+        );
+    }
+    scene
+}
+
+/// A page of `paper` across the desk, lines of `ink` text on it end to end,
+/// so every surface's rim crosses them.
+fn page(width: u32, height: u32, paper: Color, ink: Color) -> Scene {
+    let mut scene = Scene::new();
+    let mut text = TextRenderer::new();
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        paper,
+        None,
+        &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+    );
+    let line =
+        "The lens bends the lines below along its rim, and the text on the glass stays legible.";
+    for row in 0..height / 20 {
+        text.draw_text(
+            &mut scene,
+            line,
+            14.0,
+            ink,
+            Affine::translate((6.0, f64::from(row).mul_add(20.0, 2.0))),
+            None,
         );
     }
     scene

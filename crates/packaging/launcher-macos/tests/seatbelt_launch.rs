@@ -12,6 +12,7 @@ use std::os::fd::AsRawFd as _;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use launcher::capabilities::CapabilityPlan;
 use launcher::netgate::{EgressDecision, EgressPolicy};
@@ -35,7 +36,9 @@ struct Fixture {
 }
 
 fn run_ok(cmd: &mut Command) {
-    let out = cmd.output().unwrap_or_else(|e| panic!("{cmd:?}: {e}"));
+    let out = cmd
+        .output_locked()
+        .unwrap_or_else(|e| panic!("{cmd:?}: {e}"));
     assert!(
         out.status.success(),
         "{cmd:?}: {}",

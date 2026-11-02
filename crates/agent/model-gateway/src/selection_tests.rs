@@ -7,6 +7,7 @@ use std::net::TcpListener;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct TemporaryConfig(PathBuf);
 
@@ -219,7 +220,7 @@ fn run_case(test: &str, case: &str) -> Outcome {
         .env("XDG_CONFIG_HOME", &temp.0)
         .env("SELECTION_TEST_CASE", case)
         .env("SELECTION_TEST_ENDPOINT", endpoint)
-        .output()
+        .output_locked()
         .unwrap();
     stop.store(true, Ordering::Release);
     peer.join().unwrap();

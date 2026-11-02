@@ -597,6 +597,10 @@ pub struct TextInput {
     /// The single-line band of the latest layout; a wrapping chrome'd field
     /// is never shorter.
     band_height: f64,
+    /// The field's own width, where nothing else sets it (a row that wraps, a
+    /// run that hugs its items): the theme's `field_min_width`, grown with
+    /// the text. Layout measures a field at this, so none is laid out 0 wide.
+    own_width: f32,
     /// A plain field inside a toolkit document view keeps the document's own
     /// text inset instead of the zero inset of a plain app field.
     document_inset: bool,
@@ -908,6 +912,7 @@ impl TextInput {
             min_lines: 0,
             field_pad_x: f64::from(crate::tokens::Spacing::BASE.s3),
             band_height: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            own_width: crate::tokens::Metrics::BASE.field_min_width,
             document_inset: false,
             on_submit: None,
             submit_action: None,
@@ -4393,6 +4398,7 @@ impl TextInput {
             self.themed_role_size = Some(role_size);
             self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
+        self.own_width = Self::own_width_in(theme);
         let pad = f64::from(theme.padding_standard);
         let band = self.band_in(theme);
         if (pad - self.field_pad_x).abs() > f64::EPSILON || (band - self.band_height).abs() > 0.01 {
@@ -4400,6 +4406,13 @@ impl TextInput {
             self.band_height = band;
             self.layout_dirty |= self.multiline;
         }
+    }
+
+    /// The width a field stands at where nothing else sets it: the theme's
+    /// `field_min_width`, grown with the text it holds.
+    #[must_use]
+    pub fn own_width_in(theme: &Theme) -> f32 {
+        theme.tokens.metrics.field_min_width * crate::tokens::Metrics::text_growth(theme.text_scale)
     }
 
     /// The least height of a wrapping chrome'd field: one band, or
@@ -5912,6 +5925,17 @@ impl Widget for TextInput {
                 width: Dimension::percent(1.0),
                 height,
             },
+            // A field with the show/hide control is a node with a child, which
+            // layout does not measure: its own width is its least one instead
+            // (a leaf field is measured at it, see `measure`).
+            min_size: Size {
+                width: if self.has_reveal_control() {
+                    Dimension::length(self.own_width)
+                } else {
+                    Dimension::auto()
+                },
+                height: Dimension::auto(),
+            },
             // A single-line field is its band tall, never squashed to
             // nothing when what is above or below it outgrows a column.
             flex_shrink: if self.multiline { 1.0 } else { 0.0 },
@@ -5940,8 +5964,9 @@ impl Widget for TextInput {
         self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
-    /// Single-line keeps its fixed row height from `build_layout` (ZERO
-    /// here). Embedded callers use `apply_layout_external` and never reach this.
+    /// Single-line keeps its fixed row height from `build_layout` (0 here)
+    /// and measures at its own width where it is given none. Embedded callers
+    /// use `apply_layout_external` and never reach this.
     fn measure(
         &mut self,
         known: taffy::Size<Option<f32>>,
@@ -5967,7 +5992,13 @@ impl Widget for TextInput {
                 );
             }
             self.layout_dirty = false;
-            return taffy::Size::ZERO;
+            // Its height is the band `build_layout` set. Its width is the room
+            // it is given; where nothing gives it room (a row that wraps, a run
+            // that hugs its items) it stands at its own width, never at 0.
+            return taffy::Size {
+                width: known.width.unwrap_or(self.own_width),
+                height: 0.0,
+            };
         }
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(w) => w,

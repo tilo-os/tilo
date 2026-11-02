@@ -27,6 +27,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use agent_provider_config::local::{HardwareSnapshot, RuntimeDecision, select_runtime_for_model};
 use agent_provider_config::protocol::ModelResponse;
@@ -168,7 +169,7 @@ impl ProcessSupervisor for ExtractedImageSupervisor {
             .current_dir(inside(&self.working_dir))
             .env_clear()
             .stdin(Stdio::null())
-            .spawn()?;
+            .spawn_locked()?;
         self.children.insert(handle.id.clone(), child);
         let client = tilo_net::http::blocking_client()
             .no_proxy()
@@ -210,7 +211,7 @@ fn unpack_layer(blob: &Path, rootfs: &Path) {
         .arg("-dc")
         .arg(blob)
         .stdout(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut archive = tar::Archive::new(gunzip.stdout.take().unwrap());
     for entry in archive.entries().unwrap() {
@@ -242,7 +243,7 @@ fn unpack_layer(blob: &Path, rootfs: &Path) {
 }
 
 fn tar(args: &[&str]) {
-    let status = Command::new("tar").args(args).status().unwrap();
+    let status = Command::new("tar").args(args).status_locked().unwrap();
     assert!(status.success(), "tar {args:?}: {status}");
 }
 
@@ -311,7 +312,7 @@ fn developer_catalog(
         .arg("--trust-out")
         .arg(work.join("keys.json"))
         .arg("--developer-offline")
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success(), "the catalog compiler refused the source");
     VerifiedCatalog::load_developer_offline(&work.join("catalog.json"), &work.join("keys.json"))
@@ -346,7 +347,7 @@ fn gateway(work: &Path, url: &str, model: &str) -> (Child, PathBuf) {
         .env("XDG_CONFIG_HOME", work.join("config"))
         .env("XDG_RUNTIME_DIR", work)
         .stdin(Stdio::null())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     (child, socket)
 }

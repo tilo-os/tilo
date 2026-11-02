@@ -223,11 +223,17 @@ impl Service for RecordService {
     }
 
     fn resources(&self) -> Vec<ResourceSpec> {
+        // Each record is its package's, as an app's connection says of what it publishes: what
+        // places it on the canvas shows it through that app.
         let mut out: Vec<ResourceSpec> = self
             .publications
             .trees()
             .values()
-            .map(|tree| (**tree).clone())
+            .map(|tree| {
+                let mut tree = (**tree).clone();
+                kept_by_its_app(&mut tree);
+                tree
+            })
             .collect();
         for package in self.host.packages() {
             let resource = publish_package(&package.meta, &self.planner);
@@ -284,6 +290,23 @@ impl Service for RecordService {
 
     fn settle(&mut self) {
         self.publications.settle(&self.host, &self.planner);
+    }
+}
+
+/// Name the app that keeps `resource` and each of its children, by its published id
+/// (`tl:<app>:<id>`), where it names none yet.
+fn kept_by_its_app(resource: &mut ResourceSpec) {
+    if resource.app_id.is_none()
+        && let Some((app, _)) = resource
+            .id
+            .as_str()
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+    {
+        resource.app_id = Some(app.to_owned());
+    }
+    for child in &mut resource.children {
+        kept_by_its_app(child);
     }
 }
 

@@ -15,7 +15,10 @@
 //! percentile frame time over `TILO_UI_MATERIAL_FRAMES` frames (default
 //! 120): building the scene, the backdrop blur and the render, GPU completion
 //! and readback included. `first` is the shot's frame, the one that paints
-//! every part before the toolkit's cache holds it.
+//! every part before the toolkit's cache holds it. `idle` is the same frame
+//! again and again; `moving` drags the window a few pixels each frame over
+//! the still wallpaper, as a person moving it does. `reused` counts the
+//! regions the backdrop pass showed from the sample it kept.
 
 use std::time::{Duration, Instant};
 
@@ -80,6 +83,25 @@ fn wallpaper(scene: &mut Scene) {
     }
 }
 
+/// A label at `at`, moved as `by` moves what it sits on.
+fn label_by(
+    scene: &mut Scene,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    by: Affine,
+    at: Point,
+    s: &str,
+) {
+    text.draw_style(
+        scene,
+        s,
+        theme.text_primary,
+        Affine::translate((at.x, at.y)).then_translate(by.translation()),
+        None,
+        &theme.text(TextRole::Label),
+    );
+}
+
 fn label(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme, at: Point, s: &str) {
     text.draw_style(
         scene,
@@ -93,7 +115,7 @@ fn label(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme, at: Point, s
 
 /// One frame of the composition in `theme`, with what its translucent
 /// surfaces need from the backdrop pass.
-fn frame(theme: &Theme, text: &mut TextRenderer) -> (Scene, BackdropFrame) {
+fn frame(theme: &Theme, text: &mut TextRenderer, shift: f64) -> (Scene, BackdropFrame) {
     let mut scene = Scene::new();
     let recording = BackdropRecording::begin();
     layer_scene(&scene, 0);
@@ -113,28 +135,28 @@ fn frame(theme: &Theme, text: &mut TextRenderer) -> (Scene, BackdropFrame) {
     }
     label(&mut scene, text, theme, Point::new(16.0, 10.0), "Workspace");
     label(&mut scene, text, theme, Point::new(760.0, 10.0), "14:32");
-    window(&mut scene, text, theme);
+    window(&mut scene, text, theme, Affine::translate((shift, 0.0)));
     floating(&mut scene, text, theme);
     let backdrop = BackdropFrame::from_single_scene(recording.finish());
     (scene, backdrop)
 }
 
-/// A window: its ground, a sidebar, controls.
-fn window(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme) {
+/// A window placed by `at`: its ground, a sidebar, controls.
+fn window(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme, at: Affine) {
     let window = Rect::new(80.0, 80.0, 1080.0, 900.0);
-    let on_window = paint_surface(scene, Affine::IDENTITY, window, SurfaceLevel::Window, theme);
+    let on_window = paint_surface(scene, at, window, SurfaceLevel::Window, theme);
     let radius = f64::from(theme.tokens.radii.tile);
     let content = window.inset(-0.0);
     tilo_ui::surface::region(
         scene,
-        Affine::IDENTITY,
+        at,
         Rect::new(content.x0 + 240.0, content.y0, content.x1, content.y1),
         tilo_ui::surface::Region::Content,
         &on_window,
     );
     tilo_ui::surface::region(
         scene,
-        Affine::IDENTITY,
+        at,
         Rect::new(
             content.x0,
             content.y0 + radius,
@@ -146,41 +168,38 @@ fn window(scene: &mut Scene, text: &mut TextRenderer, theme: &Theme) {
     );
     for (i, name) in (0u8..).zip(["Inbox", "Drafts", "Sent", "Archive"]) {
         let y = 120.0 + 36.0 * f64::from(i);
-        label(scene, text, &on_window, Point::new(104.0, y), name);
+        label_by(scene, text, &on_window, at, Point::new(104.0, y), name);
     }
     for (i, name) in (0u8..).zip(["Reply", "Forward", "Archive", "Delete"]) {
         let x = 360.0 + 150.0 * f64::from(i);
         let face = Rect::new(x, 110.0, x + 132.0, 142.0);
-        paint_surface(
+        paint_surface(scene, at, face, SurfaceLevel::Raised, &on_window);
+        label_by(
             scene,
-            Affine::IDENTITY,
-            face,
-            SurfaceLevel::Raised,
+            text,
             &on_window,
+            at,
+            Point::new(x + 18.0, 118.0),
+            name,
         );
-        label(scene, text, &on_window, Point::new(x + 18.0, 118.0), name);
     }
     let field = Rect::new(360.0, 170.0, 1040.0, 206.0);
-    paint_surface(
-        scene,
-        Affine::IDENTITY,
-        field,
-        SurfaceLevel::Raised,
-        &on_window,
-    );
-    label(
+    paint_surface(scene, at, field, SurfaceLevel::Raised, &on_window);
+    label_by(
         scene,
         text,
         &on_window,
+        at,
         Point::new(376.0, 180.0),
         "Search mail",
     );
     for i in 0..12 {
         let y = 240.0 + 52.0 * f64::from(i);
-        label(
+        label_by(
             scene,
             text,
             &on_window,
+            at,
             Point::new(360.0, y),
             "A message whose subject runs on for a while to show body text",
         );
@@ -298,7 +317,7 @@ pub fn run(args: &[String]) {
         let base = theme.tokens.colors.surfaces.base;
         // The shot.
         let started = Instant::now();
-        let (scene, backdrop) = frame(&theme, &mut text);
+        let (scene, backdrop) = frame(&theme, &mut text, 0.0);
         let regions = backdrop.regions.len();
         renderer.set_backdrop(Some(std::sync::Arc::new(backdrop)));
         let slug: String = name
@@ -308,21 +327,36 @@ pub fn run(args: &[String]) {
         let _pixels = renderer.render(&scene, base);
         let first = started.elapsed();
         renderer.render_png(&scene, base, format!("{out}/material-{slug}.png"));
-        // The timing: every frame built and rendered from scratch.
-        let mut samples = Vec::with_capacity(frames);
-        for _ in 0..frames {
-            let started = Instant::now();
-            let (scene, backdrop) = frame(&theme, &mut text);
-            renderer.set_backdrop(Some(std::sync::Arc::new(backdrop)));
-            let _pixels = renderer.render(&scene, base);
-            samples.push(started.elapsed());
-        }
-        samples.sort_unstable();
+        // The timing: every frame built and rendered from scratch. The parts
+        // are settled, so after the shot each one is replayed from the
+        // toolkit's cache: `drawn anew` counts any that were not.
+        let held = tilo_ui::part_paint::cached_parts();
+        let mut time = |text: &mut TextRenderer, shift: &dyn Fn(usize) -> f64| {
+            let mut samples = Vec::with_capacity(frames);
+            let mut reused = 0;
+            for index in 0..frames {
+                let started = Instant::now();
+                let (scene, backdrop) = frame(&theme, text, shift(index));
+                renderer.set_backdrop(Some(std::sync::Arc::new(backdrop)));
+                let _pixels = renderer.render(&scene, base);
+                samples.push(started.elapsed());
+                reused = renderer.backdrop_stats().reused.saturating_add(reused);
+            }
+            samples.sort_unstable();
+            (samples, reused)
+        };
+        let (idle, idle_reused) = time(&mut text, &|_| 0.0);
+        let drawn_anew = tilo_ui::part_paint::cached_parts().saturating_sub(held);
+        #[allow(clippy::cast_precision_loss, reason = "a frame index")]
+        let (moving, moving_reused) = time(&mut text, &|index| (index % 60) as f64 * 3.0 + 3.0);
+        let ms = |samples: &[Duration], p: f64| percentile(samples, p).as_secs_f64() * 1000.0;
         println!(
-            "{name:<12} regions {regions}  first {:>6.2} ms  median {:>6.2} ms  p95 {:>6.2} ms  ({frames} frames, {WIDTH}x{HEIGHT})",
+            "{name:<18} regions {regions}  first {:>6.2} ms  idle median {:>6.2} p95 {:>6.2} ms reused {idle_reused}  moving median {:>6.2} p95 {:>6.2} ms reused {moving_reused}  drawn anew {drawn_anew}  ({frames} frames, {WIDTH}x{HEIGHT})",
             first.as_secs_f64() * 1000.0,
-            percentile(&samples, 0.5).as_secs_f64() * 1000.0,
-            percentile(&samples, 0.95).as_secs_f64() * 1000.0,
+            ms(&idle, 0.5),
+            ms(&idle, 0.95),
+            ms(&moving, 0.5),
+            ms(&moving, 0.95),
         );
     }
 }

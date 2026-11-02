@@ -14,6 +14,7 @@ use tilo_action_broker::services::{
 use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::RoomId;
 use tilo_identity_host::broker::WorkspaceMembership;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
 /// exact path.
@@ -218,7 +219,7 @@ pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
         .stdout(std::fs::File::create(&log).unwrap())
-        .status()
+        .status_locked()
         .unwrap();
     let stdout = std::fs::read_to_string(&log).unwrap();
     assert!(status.success(), "{stdout}");

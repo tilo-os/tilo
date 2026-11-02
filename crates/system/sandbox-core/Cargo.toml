@@ -31,6 +31,7 @@ landlock.workspace = true
 seccompiler.workspace = true
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 tempfile.workspace = true
 
 [lints]

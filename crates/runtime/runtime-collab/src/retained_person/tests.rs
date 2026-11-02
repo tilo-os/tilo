@@ -10,6 +10,7 @@ use std::{
     },
     process::{Child, Command},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
 };
@@ -70,7 +71,7 @@ impl PeerFixture {
         process_binding::arm(&stream).unwrap();
         stream.write_all(&process_binding::MAGIC).unwrap();
         stream.write_all(&[61; 32]).unwrap();
-        let child = command.spawn().unwrap();
+        let child = command.spawn_locked().unwrap();
         drop(child_stream);
         let peer = process_binding::receive(&stream, &[61; 32], 1000).unwrap();
         assert_eq!(peer.pid(), child.id());

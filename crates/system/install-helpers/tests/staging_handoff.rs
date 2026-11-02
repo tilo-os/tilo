@@ -21,6 +21,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
 use tilo_install_helpers::staging_handoff::{
@@ -971,7 +972,7 @@ fn native_reclaim_record_publishes_private_migration_for_every_policy() {
                     "--sector-size",
                     "512",
                 ])
-                .output()
+                .output_locked()
                 .unwrap()
         };
         let result = invoke();
@@ -1286,7 +1287,7 @@ fn native_retained_command(command: &str, args: &[&str], input: &[u8]) -> Output
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     if let Err(error) = child.stdin.take().unwrap().write_all(input) {
         // A bounded parser may refuse before consuming the complete payload.

@@ -12,6 +12,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn runtime_binary() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-runtime")
@@ -77,7 +78,9 @@ fn a_tilo_login_relays_to_the_agent_door_and_starts_no_runtime() {
             .unwrap();
         request
     });
-    let mut client = connect_in_login(&runtime_dir, &home).spawn().unwrap();
+    let mut client = connect_in_login(&runtime_dir, &home)
+        .spawn_locked()
+        .unwrap();
     writeln!(
         client.stdin.take().unwrap(),
         "{}",
@@ -109,7 +112,7 @@ fn a_tilo_login_without_a_door_fails_and_starts_no_runtime() {
     private_dir(&home);
     let output = connect_in_login(&runtime_dir, &home)
         .stdin(Stdio::null())
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -124,7 +127,7 @@ fn a_tilo_login_without_a_door_fails_and_starts_no_runtime() {
 fn standalone_is_rejected_outside_connect() {
     let output = Command::new(runtime_binary())
         .args(["--standalone", "--daemon", "--profile", "/nonexistent/tilo"])
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--standalone"));
@@ -153,7 +156,7 @@ fn a_login_that_lost_its_desktop_name_still_relays_to_its_door() {
             .unwrap();
     });
     let mut client = connect_in_stripped_login(&runtime_dir, &home)
-        .spawn()
+        .spawn_locked()
         .unwrap();
     writeln!(
         client.stdin.take().unwrap(),
@@ -186,7 +189,7 @@ fn a_login_without_its_desktop_name_or_door_fails_and_starts_no_runtime() {
     let _admin = UnixListener::bind(runtime_dir.join("tilo-session/admin-control.sock")).unwrap();
     let output = connect_in_stripped_login(&runtime_dir, &home)
         .stdin(Stdio::null())
-        .output()
+        .output_locked()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);

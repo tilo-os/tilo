@@ -756,3 +756,71 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_workspace
         .saturating_sub(before);
     assert!(filled <= 2, "the change checked {filled} items");
 }
+
+/// A list filtered by a set's member and more, of conversations the person's device has just
+/// written: the inbox of a mailbox seeded a moment ago.
+const JUST_WRITTEN: &str = r#"app so.tilo.inbox "Inbox"
+
+type Thread {
+    title: Text (title)
+    unread: Bool
+    boxes: Set<Text>
+
+    search {
+        filter "Inbox" = boxes.contains("inbox") and unread
+    }
+}
+
+type Mail {
+    threads: Collection<Thread>
+}
+
+root Mail
+
+default view main for Mail
+
+view main(m: Mail) {
+    page {
+        for t in m.threads.matching("is:inbox") {
+            text(t.title)
+        }
+    }
+}
+
+scenario "a morning's mail" {
+    let m = root Mail
+    let launch = m.threads.insert(Thread(title: "Launch plan", unread: true))
+    launch.boxes.add("inbox")
+    let lease = m.threads.insert(Thread(title: "Lease renewal", unread: false))
+    lease.boxes.add("inbox")
+    let invoice = m.threads.insert(Thread(title: "Invoice", unread: true))
+    invoice.boxes.add("archive")
+}
+"#;
+
+/// The conversations a person's device has just written are in the list a filter of a set's
+/// member and another conjunct shows, before the index holds them as well as after: the run
+/// of the member is as long as the writes leave it, not as the index counted it, which left
+/// a just-seeded inbox empty.
+#[test]
+fn a_filtered_list_shows_what_was_just_written_before_and_after_it_is_indexed() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(JUST_WRITTEN, "")]);
+    let scenario = packages[0].meta.scenarios[0].action.clone();
+    ada.host.root_of(INBOX_APP).unwrap();
+    ada.commit();
+    ada.host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+        .unwrap();
+    assert_eq!(
+        texts(ada.view(INBOX_APP).tree()),
+        ["Launch plan"],
+        "written and not yet indexed"
+    );
+    ada.commit();
+    assert_eq!(
+        texts(ada.view(INBOX_APP).tree()),
+        ["Launch plan"],
+        "indexed"
+    );
+}

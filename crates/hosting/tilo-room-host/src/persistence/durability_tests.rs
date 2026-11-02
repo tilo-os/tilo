@@ -14,6 +14,7 @@ use crate::transport::Envelope;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::Path;
 use std::sync::Arc;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tokio::sync::Semaphore;
 
 const WORKSPACE: u64 = 7;
@@ -212,7 +213,7 @@ fn a_killed_writer_loses_no_acknowledged_edit() {
         .env(KILLED_WRITER_ROOT, dir.path())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut acked = Vec::new();
     for line in BufReader::new(child.stdout.take().unwrap()).lines() {

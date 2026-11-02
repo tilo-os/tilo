@@ -56,7 +56,7 @@ fn run_mounted_child(child_env: &str) -> bool {
             .arg(std::env::current_exe().unwrap())
             .args(["--exact", SELECTOR, "--nocapture"])
             .env(child_env, &marker)
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let deadline = tilo_test_env::hang_deadline();
         loop {

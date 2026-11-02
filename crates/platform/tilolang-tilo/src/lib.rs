@@ -28,6 +28,7 @@ pub mod members;
 pub mod meta;
 pub mod names;
 pub mod origin;
+pub mod platform_apps;
 pub mod publish;
 pub mod reading;
 pub mod reads;

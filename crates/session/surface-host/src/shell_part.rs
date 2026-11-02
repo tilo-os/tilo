@@ -8,8 +8,9 @@
 //!
 //! What the views read of the session comes in as resources whose origin is the session
 //! (`type Desk (origin: session.desk)`): [`SessionOrigin`] writes what the session publishes on
-//! its door (the `session:desk` resource's reading) into them, and carries the shell's outside
-//! effects (`outside("session.act", ...)`) back to the door as invocations. A shell view never
+//! its door (the `session:desk` resource's reading) into them. The views call the session's
+//! actions as an app's (`use so.tilo.session as session`, then `session.show_surface(surface:
+//! "launcher")`), each an invocation on its door ([`PlaceInvoker`]). A shell view never
 //! reaches the session another way.
 //!
 //! The part works only when something changed: a press, a reading of the session's that moved,
@@ -29,6 +30,7 @@ use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
+use tilolang_tilo::platform_apps::platform_packages;
 use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::{Delivery, NameHost, Principal, ResourceRef, Value};
@@ -41,34 +43,9 @@ use crate::{Placement, WidgetHost};
 pub const ORIGIN: &str = "session";
 /// The resource the session publishes its desk as, whose reading [`SessionOrigin`] writes.
 pub const DESK_RESOURCE: &str = "session:desk";
-/// Its action that brings a workspace to the front, by key.
-pub const SWITCH_WORKSPACE: &str = "switch-workspace";
-/// The argument of [`SWITCH_WORKSPACE`] naming the workspace.
-pub const WORKSPACE_ARG: &str = "workspace";
-/// The desk's action that opens or closes a running application's tray item, by its key.
-pub const OPEN_TRAY_ITEM: &str = "open-tray-item";
-/// The argument of [`OPEN_TRAY_ITEM`] naming the tray item.
-pub const TRAY_KEY_ARG: &str = "key";
-/// The resource the notification centre's actions are published on.
-pub const NOTIFICATIONS_RESOURCE: &str = "quick-settings.panel";
-
-/// The resource whose argument-less actions `session.act` names.
+/// The resource the session's chrome actions are published on.
 pub const CHROME_RESOURCE: &str = "desktop:chrome";
-
-/// The capability that switches workspace: its payload is the workspace's key.
-const CAP_SWITCH: &str = "session.switch_workspace";
-/// The capability that runs one of the desktop's own argument-less actions, by id.
-const CAP_ACT: &str = "session.act";
-/// The capability that runs one of the desktop's own actions that take arguments.
-const CAP_RUN: &str = "session.run";
-/// The capability that runs one of the notification centre's actions: the same ask as
-/// [`CAP_RUN`], on the panel's resource.
-const CAP_NOTIFY: &str = "session.notify";
-/// The capability that arranges the person's desk: its payload is the published action id and
-/// its arguments, as one line of JSON (`move-place {"place":3,"row":7}`). One capability keeps
-/// the seam small while the arranging actions are a closed set the session publishes.
-const CAP_ARRANGE: &str = "session.arrange";
-/// The resource the person's arrangement is published on, whose actions `session.arrange` names.
+/// The resource the person's arrangement is published on.
 pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";
 
 /// The shell's own record: the package's named root `shell` (`root shell: Shell`), reached in
@@ -83,10 +60,6 @@ const SHELL_FILES: &[(&str, &str)] = &[
     (
         "arrangement.tl",
         include_str!("../../../../apps/tl/shell/arrangement.tl"),
-    ),
-    (
-        "arranging.tl",
-        include_str!("../../../../apps/tl/shell/arranging.tl"),
     ),
     (
         "canvas.tl",
@@ -138,6 +111,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/presets.tl"),
     ),
     (
+        "quick.tl",
+        include_str!("../../../../apps/tl/shell/quick.tl"),
+    ),
+    (
         "rooms.tl",
         include_str!("../../../../apps/tl/shell/rooms.tl"),
     ),
@@ -156,10 +133,6 @@ const SHELL_FILES: &[(&str, &str)] = &[
     (
         "switcher.tl",
         include_str!("../../../../apps/tl/shell/switcher.tl"),
-    ),
-    (
-        "system.tl",
-        include_str!("../../../../apps/tl/shell/system.tl"),
     ),
     (
         "traditional.tl",
@@ -189,6 +162,45 @@ const SHELL_USES: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// What the session publishes, described as the package `so.tilo.session`
+/// (`tilo_session::session_package`): the shell calls the session's actions through it.
+const SESSION_DESCRIPTION: &str = include_str!("../../../../apps/tl/session/surface.toml");
+
+/// The package id of the session's description.
+pub const SESSION_APP: &str = "so.tilo.session";
+
+/// The session's package: its resources' types and actions, which the shell's views call as
+/// any package's (`session.show_surface(surface: "launcher")`).
+///
+/// # Errors
+/// The description does not read.
+pub fn session_package() -> Result<tilolang_tilo::tilolang::PackageMeta, String> {
+    tilolang_tilo::catalogue::described(SESSION_APP, "Session", SESSION_DESCRIPTION)
+}
+
+/// The resource each of the session's loose actions is published on, by the action's id.
+fn session_addresses() -> BTreeMap<String, String> {
+    tilolang_tilo::catalogue::addresses(SESSION_DESCRIPTION).unwrap_or_else(|error| {
+        tracing::error!(%error, "the session's description gives no addresses");
+        BTreeMap::new()
+    })
+}
+
+/// The session's loose actions as its description declares them, by id.
+fn session_verbs() -> BTreeMap<String, ui::tilo_actions::surface::VerbSurface> {
+    match tilolang_tilo::catalogue::parse_surfaces(SESSION_DESCRIPTION) {
+        Ok(surfaces) => surfaces
+            .into_iter()
+            .flat_map(|surface| surface.verbs)
+            .map(|verb| (verb.id.clone(), verb))
+            .collect(),
+        Err(error) => {
+            tracing::error!(%error, "the session's description does not read");
+            BTreeMap::new()
+        }
+    }
+}
+
 /// The shell package's ids lock, as it ships.
 #[must_use]
 pub const fn shell_ids() -> &'static str {
@@ -210,6 +222,41 @@ pub fn bar_layer() -> RootView {
     }
 }
 
+/// The shell's whole screen: the `screen` view over the person's arrangement (the package's
+/// `arrangement` root), which stands the desk's bar, dock and surfaces around the places as the
+/// preset the person picked lays them out. Each place an app's window shows in is a well, and
+/// the window stands where that well does.
+#[must_use]
+pub fn screen_layer() -> RootView {
+    RootView {
+        root: Some("arrangement".to_owned()),
+        view: Some("screen".to_owned()),
+    }
+}
+
+/// What a shell part stands as on its display.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShellLayer {
+    /// The bar's band over the windows ([`bar_layer`]): the rest of the display is the
+    /// desktop's, and the part covers it only while a menu or a surface of the desk's is up.
+    #[default]
+    Bar,
+    /// The whole display, under the windows ([`screen_layer`]): the shell draws the desk, and
+    /// every window stands in the well its place leaves it.
+    Screen,
+}
+
+impl ShellLayer {
+    /// The root and view the part shows.
+    #[must_use]
+    pub fn root_view(self) -> RootView {
+        match self {
+            Self::Bar => bar_layer(),
+            Self::Screen => screen_layer(),
+        }
+    }
+}
+
 /// The shell package and the packages it uses, compiled, the shell last: what a shell's instance
 /// loads, in order. `None` when a package does not compile, which every build of the shell is
 /// checked against, so a test that fails to compile here fails loudly.
@@ -217,6 +264,7 @@ pub fn bar_layer() -> RootView {
 /// # Errors
 /// The packages' diagnostics, rendered with their file names.
 pub fn compile_shell() -> Result<Vec<Compiled>, String> {
+    let session = session_package()?;
     let mut out: Vec<Compiled> = Vec::new();
     for (dir, source, ids) in SHELL_USES {
         let lock = tilolang_tilo::tilolang::IdsLock::parse(ids).map_err(|e| e.to_string())?;
@@ -239,8 +287,12 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
             .iter()
             .map(|(path, text)| (format!("apps/tl/shell/{path}"), (*text).to_owned())),
     );
-    let imports: Vec<tilolang_tilo::tilolang::PackageMeta> =
-        out.iter().map(|c| c.meta.clone()).collect();
+    let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> = out
+        .iter()
+        .map(|c| c.meta.clone())
+        .chain([session])
+        .collect();
+    imports.extend(platform_packages()?);
     let shell = tilolang_tilo::tilolang::compile_package_source(&source, &lock, &imports).map_err(
         |diagnostics| {
             diagnostics
@@ -253,17 +305,6 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
     out.push(shell);
     Ok(out)
 }
-/// The capability that opens a running application's tray item, by its key: the desk's own
-/// `open_tray_item` action answers it.
-const CAP_TRAY: &str = "session.tray";
-
-/// The bar's own `session.act` ids that are the desk's resource's, not the chrome's: the
-/// question on the person's avatar is answered and put off where the desk reads it.
-pub const DESK_ACTIONS: &[(&str, &str)] = &[
-    ("answer-ask", DESK_RESOURCE),
-    ("put-off-ask", DESK_RESOURCE),
-];
-
 /// How often the instance and its window may answer each other in one frame before the frame
 /// is drawn as it is: a press, the action it ran, the change it committed, the effect settled.
 const EXCHANGES: usize = 8;
@@ -300,6 +341,8 @@ pub struct WindowReading {
     pub origin_app: String,
     pub icon: String,
     pub strip: String,
+    /// Its strip's id, as moving a window there names the strip.
+    pub strip_key: String,
     pub workspace: String,
     /// How recently it was in front: lower is more recent.
     pub recency: i64,
@@ -712,7 +755,9 @@ pub struct SessionLink {
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
     served: Cell<u64>,
-    answers: RefCell<BTreeMap<Ask, Result<(), String>>>,
+    /// What the door refused of what the shell asked, in its words: each refusal, kept for
+    /// whoever asks ([`SessionLink::refused`]), never a quiet drop.
+    refused: RefCell<Vec<String>>,
 }
 
 impl SessionLink {
@@ -748,8 +793,8 @@ impl SessionLink {
         true
     }
 
-    /// Run what the shell asked through `invoke` (the session's door), keeping each answer
-    /// for the effect that asked. Whether anything ran.
+    /// Run what the shell asked through `invoke` (the session's door), keeping each refusal.
+    /// Whether anything ran.
     pub fn serve(&self, mut invoke: impl FnMut(&Ask) -> Result<(), String>) -> bool {
         let asked: Vec<Ask> = self.asked.borrow_mut().drain(..).collect();
         self.served
@@ -758,10 +803,25 @@ impl SessionLink {
             let answer = invoke(ask);
             if let Err(why) = &answer {
                 tracing::warn!(?ask, why, "the session refused what the shell asked");
+                self.refused
+                    .borrow_mut()
+                    .push(format!("{} on {}: {why}", ask.action, ask.resource));
             }
-            self.answers.borrow_mut().insert(ask.clone(), answer);
         }
         !asked.is_empty()
+    }
+
+    /// What the door refused of what the shell asked since the session started, in its words.
+    #[must_use]
+    pub fn refused(&self) -> Vec<String> {
+        self.refused.borrow().clone()
+    }
+
+    /// The shell asks `ask` of the session's door: run on the session's next turn
+    /// ([`Self::serve`]).
+    pub fn ask(&self, ask: Ask) {
+        self.asked.borrow_mut().push_back(ask);
+        self.handed.set(self.handed.get().wrapping_add(1));
     }
 
     /// Whether the shell asked something the session has not run yet.
@@ -806,107 +866,6 @@ impl SessionLink {
     }
 }
 
-/// The ask an outside effect of `capability` with `payload` is, or why it is none.
-fn ask_of(capability: &str, payload: &Json) -> Result<Ask, String> {
-    // `session.run` and `session.notify` carry a tuple; every other effect a text.
-    if matches!(capability, CAP_RUN | CAP_NOTIFY) {
-        return run_ask(payload, capability);
-    }
-    let Json::String(word) = payload else {
-        return Err(format!("{capability} takes a text, not {payload}"));
-    };
-    match capability {
-        CAP_SWITCH => Ok(Ask {
-            resource: DESK_RESOURCE.to_owned(),
-            action: SWITCH_WORKSPACE.to_owned(),
-            arguments: BTreeMap::from([(WORKSPACE_ARG.to_owned(), word.clone())]),
-        }),
-        CAP_TRAY => Ok(Ask {
-            resource: DESK_RESOURCE.to_owned(),
-            action: OPEN_TRAY_ITEM.to_owned(),
-            arguments: BTreeMap::from([(TRAY_KEY_ARG.to_owned(), word.clone())]),
-        }),
-        CAP_ACT => {
-            // The desktop's own argument-less actions are the chrome's; the desk's few (the
-            // question on the person's avatar) are the resource the bar reads it from.
-            let resource = DESK_ACTIONS
-                .iter()
-                .find(|(id, _)| id == word)
-                .map_or(CHROME_RESOURCE, |(_, resource)| resource);
-            Ok(Ask {
-                resource: (*resource).to_owned(),
-                action: word.clone(),
-                arguments: BTreeMap::new(),
-            })
-        }
-        CAP_ARRANGE => {
-            // `<action id> {json arguments}`, or just the id for an action that takes none.
-            let (action, rest) = word
-                .split_once(' ')
-                .map_or_else(|| (word.trim(), ""), |(a, rest)| (a.trim(), rest.trim()));
-            if action.is_empty() {
-                return Err("session.arrange takes an action id".to_owned());
-            }
-            let given: BTreeMap<String, Json> = if rest.is_empty() {
-                BTreeMap::new()
-            } else {
-                serde_json::from_str(rest).map_err(|error| format!("session.arrange: {error}"))?
-            };
-            let arguments = given
-                .into_iter()
-                .map(|(name, value)| {
-                    let text = match value {
-                        Json::String(text) => text,
-                        other => other.to_string(),
-                    };
-                    (name, text)
-                })
-                .collect();
-            Ok(Ask {
-                resource: ARRANGEMENT_RESOURCE.to_owned(),
-                action: action.to_owned(),
-                arguments,
-            })
-        }
-        other => Err(format!("the session takes no outside effect `{other}`")),
-    }
-}
-
-/// The ask `session.run` carries: `(resource, action, (argument, value)…)`. The shell names the
-/// session's own resource and action, as the door publishes them (a window's `focus` on
-/// `desktop:tab:7`, the chrome's `move-tab-to-strip`), and each argument by the name the
-/// action's own fields have. `session.notify` is the same, on the notification centre.
-fn run_ask(payload: &Json, capability: &str) -> Result<Ask, String> {
-    let Json::Array(items) = payload else {
-        return Err(format!(
-            "{capability} takes (resource, action, (argument, value)…), not {payload}"
-        ));
-    };
-    let (Some(Json::String(resource)), Some(Json::String(action))) = (items.first(), items.get(1))
-    else {
-        return Err(format!("{capability} names its resource and action first"));
-    };
-    let mut arguments = BTreeMap::new();
-    for argument in items.iter().skip(2) {
-        let Json::Array(pair) = argument else {
-            return Err(format!(
-                "{capability} takes each argument as (name, value), not {argument}"
-            ));
-        };
-        let (Some(Json::String(name)), Some(value)) = (pair.first(), pair.get(1)) else {
-            return Err(format!(
-                "{capability} takes each argument as (name, value), not {argument}"
-            ));
-        };
-        arguments.insert(name.clone(), value_as_text(value));
-    }
-    Ok(Ask {
-        resource: resource.clone(),
-        action: action.clone(),
-        arguments,
-    })
-}
-
 /// What the origin last wrote of an item kept by key (a workspace, a task).
 struct Kept<T> {
     at: ResourceRef,
@@ -933,8 +892,6 @@ pub struct SessionOrigin {
     runs: BTreeMap<String, Kept<RunReading>>,
     run_entries: BTreeMap<String, Kept<RunEntryReading>>,
     entry_refs: BTreeMap<String, Kept<EntryRefReading>>,
-    /// Effects handed to the session and not answered yet.
-    in_flight: BTreeSet<Ask>,
 }
 
 impl SessionOrigin {
@@ -959,13 +916,7 @@ impl SessionOrigin {
             runs: BTreeMap::new(),
             run_entries: BTreeMap::new(),
             entry_refs: BTreeMap::new(),
-            in_flight: BTreeSet::new(),
         }
-    }
-
-    fn answered(&self) -> bool {
-        let answers = self.link.answers.borrow();
-        self.in_flight.iter().any(|ask| answers.contains_key(ask))
     }
 
     /// The writes that bring the package's resources from what was written to `reading`.
@@ -1178,6 +1129,7 @@ impl SessionOrigin {
                         ("origin_app", text(&w.origin_app)),
                         ("icon", text(&w.icon)),
                         ("strip", text(&w.strip)),
+                        ("strip_key", text(&w.strip_key)),
                         ("workspace", text(&w.workspace)),
                         ("recency", Value::Int(w.recency)),
                         ("focused", Value::Bool(w.focused)),
@@ -1745,36 +1697,25 @@ impl SessionOrigin {
     }
 }
 
-/// `value` as the door's arguments take it: text as text, a number or a flag as its text.
-fn value_as_text(value: &Json) -> String {
-    match value {
-        Json::String(text) => text.clone(),
-        other => other.to_string(),
-    }
-}
-
 impl Origin for SessionOrigin {
     fn name(&self) -> &str {
         ORIGIN
     }
 
-    fn serves(&self, capability: &str) -> bool {
-        capability
-            .split_once('.')
-            .is_some_and(|(origin, _)| origin == ORIGIN)
+    /// The shell calls the session's actions as an app's (`session.show_surface(...)`), each an
+    /// invocation on its door ([`PlaceInvoker`]); no outside effect is the session's.
+    fn serves(&self, _capability: &str) -> bool {
+        false
     }
 
     fn due(&self) -> bool {
-        self.link.fresh.get()
-            || self.link.arrangement_fresh.get()
-            || self.link.readings_fresh.get()
-            || self.answered()
+        self.link.fresh.get() || self.link.arrangement_fresh.get() || self.link.readings_fresh.get()
     }
 
     fn poll(&mut self, cx: &OriginCx<'_>) -> Polled {
         let mut polled = Polled {
             wrote: false,
-            settle: self.answered(),
+            settle: false,
         };
         let wrote_arrangement = self.poll_arrangement(cx);
         polled.wrote |= wrote_arrangement;
@@ -1842,25 +1783,10 @@ impl Origin for SessionOrigin {
         polled
     }
 
-    fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery {
-        let ask = match ask_of(capability, payload) {
-            Ok(ask) => ask,
-            Err(why) => return Delivery::Rejected(why),
-        };
-        if let Some(answer) = self.link.answers.borrow_mut().remove(&ask) {
-            self.in_flight.remove(&ask);
-            return match answer {
-                Ok(()) => Delivery::Delivered,
-                Err(why) => Delivery::Rejected(why),
-            };
-        }
-        if self.in_flight.insert(ask.clone()) {
-            self.link.asked.borrow_mut().push_back(ask);
-            self.link.handed.set(self.link.handed.get().wrapping_add(1));
-        }
-        // Answered by the session's next turn ([`SessionLink::serve`]), which the poll that
-        // takes the answer in settles.
-        Delivery::Pending
+    fn deliver(&mut self, capability: &str, _payload: &Json) -> Delivery {
+        Delivery::Rejected(format!(
+            "the session takes no outside effect `{capability}`"
+        ))
     }
 }
 
@@ -1874,6 +1800,20 @@ struct ShellPlatform {
 
 impl Platform for ShellPlatform {
     fn load(&self, host: &Host) -> u64 {
+        // The device's and Settings' packages first: the shell's views read their resources
+        // (`device.sound`) from the readings the session publishes, and pressing their actions
+        // asks the session, as a place's composed view does.
+        match platform_packages() {
+            Ok(packages) => {
+                for meta in packages {
+                    let app = meta.app.clone();
+                    if let Err(error) = host.runtime().load_foreign(meta) {
+                        tracing::error!(app, %error, "a platform package did not load");
+                    }
+                }
+            }
+            Err(why) => tracing::error!(why, "the platform's packages do not read"),
+        }
         // The packages the shell uses are other apps' here: their records are the ones their
         // apps keep, read through the session ([`SessionLink::follow_places`]), and what their
         // views change goes to those records' doors ([`PlaceInvoker`]). The shell's record
@@ -1881,6 +1821,15 @@ impl Platform for ShellPlatform {
         let Some((shell, uses)) = self.packages.split_last() else {
             return 0;
         };
+        // The session's own package is a description: its actions run at the session's door.
+        match session_package() {
+            Ok(session) => {
+                if let Err(error) = host.runtime().load_foreign(session) {
+                    tracing::error!(%error, "the session's package did not load");
+                }
+            }
+            Err(error) => tracing::error!(%error, "the session's description does not read"),
+        }
         for compiled in uses {
             if let Err(error) = host.load_foreign_package(&compiled.wasm, &compiled.meta) {
                 tracing::error!(app = compiled.meta.app, %error, "a package the shell uses did not load");
@@ -1891,6 +1840,8 @@ impl Platform for ShellPlatform {
         }
         host.runtime().set_invoker(PlaceInvoker {
             link: Rc::clone(&self.link),
+            session: session_addresses(),
+            verbs: session_verbs(),
         });
         0
     }
@@ -2019,6 +1970,9 @@ pub struct ShellPart {
     /// The shell's record's heads the instance was last brought up to date with: a commit any
     /// part of the shell made reaches this one by them, so every display shows one shell.
     seen_heads: Vec<String>,
+    /// What the part stands as: the bar's band over the windows, or the whole display under
+    /// them.
+    layer: ShellLayer,
 }
 
 /// A shell part's identity: the package it runs, the person it is for, and the record the
@@ -2048,9 +2002,13 @@ impl ShellPart {
     /// The views' wells ([`ui::widget::Wells`]) report to `wells`, the handle the window policy
     /// placing the windows they stand for shares (`crate::WellPolicy`); `None` for a part with
     /// no windows of its own (the bar).
+    ///
+    /// `layer` says what the part is: the bar's band over the windows, or the whole display
+    /// under them, which shows the person's arrangement and puts each window in its well.
     #[must_use]
     pub fn new(
         identity: ShellIdentity<'_>,
+        layer: ShellLayer,
         band: u32,
         scale: f64,
         waker: Waker,
@@ -2080,8 +2038,9 @@ impl ShellPart {
                 index_dir: None,
                 record_loader: None,
                 sink: None,
-                // The bar's band shows the bar, not whatever root the package lists first.
-                root: bar_layer(),
+                // The bar's band shows the bar and the screen the desk, not whatever root the
+                // package lists first.
+                root: layer.root_view(),
             },
             Rc::new(ShellPlatform {
                 packages: Rc::new(packages),
@@ -2099,7 +2058,13 @@ impl ShellPart {
             instance.sync(Some(&record));
         }
         let window = AppWindow::part(Box::new(window_end));
-        let mut widgets = WidgetHost::new(Box::new(window), placement, false);
+        // The whole screen lies under the windows, which stand in its wells; the bar rides over
+        // them.
+        let mut widgets = WidgetHost::new(
+            Box::new(window),
+            placement,
+            matches!(layer, ShellLayer::Screen),
+        );
         widgets.install_wells(wells);
         let mut part = Self {
             widgets,
@@ -2122,6 +2087,7 @@ impl ShellPart {
                 dock_bottom: false,
             },
             seen_heads: Vec::new(),
+            layer,
         };
         if seed {
             part.seed();
@@ -2205,11 +2171,12 @@ impl ShellPart {
             return;
         }
         let band = self.band.min(output_height);
-        // A menu of the part's, or a surface of the desk's, takes the whole output; else the
-        // part stands in the band at each edge the chrome rides, so a change draws only what
-        // shows there.
-        let at_top = !self.cover && edges.bar_at_top();
-        let at_bottom = !self.cover && edges.dock_at_bottom();
+        // The screen, a menu of the part's or a surface of the desk's takes the whole output;
+        // else the part stands in the band at each edge the chrome rides, so a change draws
+        // only what shows there.
+        let whole = self.cover || self.layer == ShellLayer::Screen;
+        let at_top = !whole && edges.bar_at_top();
+        let at_bottom = !whole && edges.dock_at_bottom();
         let height = match (at_top, at_bottom) {
             (true, false) | (false, true) => band,
             _ => output_height.max(band),
@@ -2282,6 +2249,14 @@ impl ShellPart {
                     rect.height(),
                 )
             })
+    }
+
+    /// Draw the shell with `theme`, the person's as their appearance settings make it: a
+    /// change of mode (dark mode in the quick settings, a theme chosen in Settings) redraws
+    /// the bar and every surface over the desk in it.
+    pub fn set_theme(&mut self, theme: ui::Theme) {
+        self.widgets.set_theme(theme);
+        self.again = true;
     }
 
     /// The edges the shell's chrome stands on, as the session read them from the shell's
@@ -2536,7 +2511,11 @@ impl ShellPart {
         let Some(window) = self.window() else {
             return;
         };
-        for (kind, text) in window.take_notices() {
+        let notices = window.take_notices();
+        // A window that refused what the view sent shows the platform's error state: that
+        // is the shell refusing to show itself, heard once.
+        let failed = window.failed().map(str::to_owned);
+        for (kind, text) in notices {
             match kind {
                 tilo_render_protocol::patch::NoticeKind::Error => {
                     tracing::warn!(text, "the shell refused what was asked of it");
@@ -2546,6 +2525,11 @@ impl ShellPart {
                     tracing::info!(text, "the shell says");
                 }
             }
+        }
+        if let Some(why) = failed
+            && !self.refusals.contains(&why)
+        {
+            self.refusals.push(why);
         }
     }
 
@@ -2642,6 +2626,12 @@ impl SurfaceHost for ShellPart {
             return Vec::new();
         }
         self.widgets.layers()
+    }
+
+    /// The whole screen lies under the windows, which stand in its wells; the bar rides over
+    /// them.
+    fn below_windows(&self) -> bool {
+        self.widgets.below_windows()
     }
 
     fn claim_key(&mut self, key: &HostKey, locked: bool, _inhibited: bool) -> KeyClaim {
@@ -2786,13 +2776,13 @@ impl SurfaceHost for ShellPart {
 
 impl ShellPart {
     /// Ask the session for the desk action `action` with `arguments`: what a key of the part's
-    /// own asks, as a press of the views asks through an outside effect.
+    /// own asks, as a press of the views asks through the session's door.
     fn ask(&self, action: &str, arguments: &[(&str, &str)]) {
         let arguments = arguments
             .iter()
             .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
             .collect();
-        self.origin.borrow().link.asked.borrow_mut().push_back(Ask {
+        self.origin.borrow().link.ask(Ask {
             resource: DESK_RESOURCE.to_owned(),
             action: action.to_owned(),
             arguments,

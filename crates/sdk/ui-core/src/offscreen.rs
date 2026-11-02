@@ -766,6 +766,8 @@ pub struct OffscreenRenderer {
     backdrop: Option<Arc<crate::backdrop::BackdropFrame>>,
     /// Built with the first frame that has a backdrop.
     backdrop_blur: Option<crate::backdrop::BackdropBlur>,
+    /// What the backdrop pass did for the last render.
+    backdrop_stats: crate::backdrop::BackdropStats,
     /// Scratch space for scroll copies within the target.
     copy_scratch: crate::scroll_copy::CopyScratch,
 }
@@ -1348,6 +1350,7 @@ impl OffscreenRenderer {
             target_valid: false,
             backdrop: None,
             backdrop_blur: None,
+            backdrop_stats: crate::backdrop::BackdropStats::default(),
             copy_scratch: crate::scroll_copy::CopyScratch::default(),
         })
     }
@@ -1357,6 +1360,14 @@ impl OffscreenRenderer {
     /// `FrameBuilder::take_backdrop`). `None` draws them opaque.
     pub fn set_backdrop(&mut self, backdrop: Option<Arc<crate::backdrop::BackdropFrame>>) {
         self.backdrop = backdrop;
+    }
+
+    /// What the backdrop pass did for the last render: how many regions
+    /// it substituted, and how many of those it showed from the sample it
+    /// kept.
+    #[must_use]
+    pub fn backdrop_stats(&self) -> crate::backdrop::BackdropStats {
+        self.backdrop_stats
     }
 
     #[allow(
@@ -1444,8 +1455,10 @@ impl OffscreenRenderer {
         // every other `OffscreenRenderer` through the whole render + readback.
         let (device, queue) = self.device_queue();
 
+        self.backdrop_stats = crate::backdrop::BackdropStats::default();
         if let Some(backdrop) = self.backdrop.as_deref().filter(|frame| !frame.is_empty()) {
-            self.backdrop_blur
+            self.backdrop_stats = self
+                .backdrop_blur
                 .get_or_insert_with(|| crate::backdrop::BackdropBlur::new(&device))
                 .prepare(
                     &device,

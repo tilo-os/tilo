@@ -104,6 +104,7 @@ trap '__ush_runs_pre' DEBUG
 mod tests {
     use super::*;
     use base64::Engine as _;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn keys_are_letters_and_digits_of_a_fair_length() {
@@ -136,7 +137,7 @@ mod tests {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .spawn()
+            .spawn_locked()
             .and_then(|mut child| {
                 use std::io::Write as _;
                 child.stdin.take().unwrap().write_all(

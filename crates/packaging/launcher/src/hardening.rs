@@ -207,6 +207,8 @@ pub fn for_package(package_id: &str) -> RuntimeHardening {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(target_os = "linux", target_endian = "little"))]
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn the_session_starts_the_compositor_and_its_services_without_huge_pages() {
@@ -312,7 +314,7 @@ mod tests {
             ])
             .env(ENGINE_THREAD_PROBE, "1")
             .env("GLIBC_TUNABLES", tunables)
-            .output()
+            .output_locked()
             .expect("run the thread probe");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(

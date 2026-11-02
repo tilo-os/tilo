@@ -229,6 +229,7 @@ fn configure_host_launch_session(cmd: &mut Command) {
 mod tests {
     use super::*;
     use crate::run::{LaunchMode, RunError, RunOptions};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// A perfectly valid package manifest — the refusal being tested has
     /// to come from the launch *mode*, not from anything wrong with the
@@ -385,7 +386,7 @@ mod tests {
         let mut command = Command::new("/bin/sleep");
         command.arg("30");
         configure_host_launch_session(&mut command);
-        let child = ReapChild(command.spawn().expect("spawn grouped host child"));
+        let child = ReapChild(command.spawn_locked().expect("spawn grouped host child"));
         let pid = i32::try_from(child.0.id()).expect("child pid fits i32");
         // SAFETY: querying the session of our own still-running bounded child
         // is read-only. `sleep 30` keeps the PID valid through the assertion.

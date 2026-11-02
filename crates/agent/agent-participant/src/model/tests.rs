@@ -14,6 +14,7 @@ use tilo_model_gateway::host_backend::protocol::{
     ToolCall, Usage,
 };
 use tilo_model_gateway::openai::Target as ApiTarget;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn a_task_names_an_app_by_the_word_for_its_records() {
@@ -398,7 +399,7 @@ fn host_planner_resolves_environment_hints() {
         if let Some(preset) = preset {
             child.env(crate::profile::PRESET_ENV, preset);
         }
-        let output = child.output().unwrap();
+        let output = child.output_locked().unwrap();
         assert!(output.status.success(), "{output:?}");
         let (_, body) = sent.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         let body: serde_json::Value = serde_json::from_str(&body).unwrap();

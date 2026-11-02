@@ -272,6 +272,50 @@ impl<'a> NodeSource<'a> {
     }
 }
 
+/// The value a view gave the control `node` as its `name` rather than bound it to
+/// (`ui.Slider(value: level)` over a device's reading): the control shows it, and what the
+/// person does with it goes to the event the view handles, never back into the value.
+fn shown_value(
+    node: &UiNode,
+    description: &Description,
+    reconciler: &mut Reconciler,
+    name: &str,
+) -> Option<BoundValue> {
+    fn shown<T>(state: ui::LocalState<T>) -> Bound<T> {
+        Bound {
+            state,
+            edits: None,
+            name: String::new(),
+            path: Vec::new(),
+        }
+    }
+    let given = node.props.get(name)?;
+    let key = &node.key;
+    Some(match (&description.binding(name)?.ty, given) {
+        (Type::Float, Value::Float(number)) => {
+            let state = reconciler.number_state(key);
+            reconciler.set_number(key, *number);
+            BoundValue::Float(shown(state))
+        }
+        (Type::Int, Value::Int(number)) => {
+            let state = reconciler.count_state(key);
+            reconciler.set_count(key, *number);
+            BoundValue::Int(shown(state))
+        }
+        (Type::Bool, Value::Bool(flag)) => {
+            let state = reconciler.flag_state(key);
+            reconciler.set_flag(key, *flag);
+            BoundValue::Bool(shown(state))
+        }
+        (Type::Text, Value::Text(text)) => {
+            let state = reconciler.text_state(key);
+            reconciler.set_text(key, text);
+            BoundValue::Text(shown(state))
+        }
+        _ => return None,
+    })
+}
+
 /// `value` as a value of the description's `ty`.
 fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
     Some(match (ty, value) {
@@ -359,7 +403,9 @@ impl Source for NodeSource<'_> {
     }
 
     fn binding(&mut self, name: &str) -> Option<BoundValue> {
-        let binding = self.node.binding.as_ref()?;
+        let Some(binding) = self.node.binding.as_ref() else {
+            return shown_value(self.node, self.description, self.reconciler, name);
+        };
         let named = match self.node.props.get("bind") {
             Some(Value::Text(bound)) => bound == name,
             _ => self.description.bindings.len() == 1,

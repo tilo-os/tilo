@@ -650,6 +650,36 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             Some(param) => quote!(::core::option::Option::Some(#param)),
         };
         let params: Vec<Tokens> = params.collect();
+        // Each parameter's surface type, when its Rust type describes one: a record or enum its
+        // wire type (an object) says nothing of.
+        let typed: Vec<Tokens> = fields
+            .iter()
+            .filter(|(_, _, described)| {
+                described.flag != Flag::Flatten && described.flag != Flag::Secret
+            })
+            .map(|(field, ty, described)| {
+                let param = described.name.clone().unwrap_or_else(|| field.to_string());
+                quote! {{
+                    #[allow(unused_imports, reason = "one of the two applies")]
+                    use #krate::__private::{DescribedParam as _, UndescribedParam as _};
+                    if let ::core::option::Option::Some(ty) =
+                        (&#krate::__private::ParamOf::<#ty>::new()).field_type_of()
+                    {
+                        types.push((#param, ty));
+                    }
+                }}
+            })
+            .collect();
+        let param_types_fn = if typed.is_empty() {
+            quote!(#krate::effect::no_param_types)
+        } else {
+            quote!(|| {
+                let mut types: ::std::vec::Vec<(&'static str, #krate::surface::FieldTypeOf)> =
+                    ::std::vec::Vec::new();
+                #(#typed)*
+                types
+            })
+        };
         let keywords = &options.keywords;
         let icon = crate::optional_str(options.icon.as_deref());
         let params_fn = if params.is_empty() {
@@ -670,6 +700,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 icon: #icon,
                 description: #description,
                 params: #params_fn,
+                param_types: #param_types_fn,
                 kind: #krate::__private::OperationKind::#kind,
                 row: #row,
                 answers: #answers,

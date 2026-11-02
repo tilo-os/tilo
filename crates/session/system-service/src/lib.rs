@@ -248,6 +248,14 @@ fn look(jobs: &Jobs<dyn System, Landed>) {
     });
 }
 
+/// The power resource as a view of another language reads and changes it: its
+/// reading ([`Power`]) as its fields and its actions ([`PowerAction`]) as its
+/// verbs.
+#[must_use]
+pub fn power_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Power, PowerAction>(POWER, "Power")
+}
+
 /// The `power` resource reading `power`.
 #[must_use]
 pub fn power_resource(power: &Power) -> ResourceSpec {

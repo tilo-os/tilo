@@ -818,12 +818,16 @@ impl Widget for HeaderRow {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        for (child, &node) in self.parts.children.iter_mut().zip(&self.parts.nodes) {
-            let path = ctx.path;
-            child.handle_event(event, &mut ctx.reborrow(path, node));
-            if *ctx.handled {
-                return;
-            }
+        // A part holding the pointer (its menu open) owns the input: the header's own
+        // disclosure does not take a press meant for the menu.
+        let held = self
+            .parts
+            .children
+            .iter()
+            .any(|child| crate::widget::holds_pointer(child.as_ref()));
+        crate::widget::route_to_children(&mut self.parts.children, &self.parts.nodes, event, ctx);
+        if *ctx.handled || held {
+            return;
         }
         let rect = self.parts.rect;
         let action = self.action_rect();
@@ -1446,19 +1450,15 @@ impl Widget for Section {
             );
             return;
         }
-        for (child, &node) in self
-            .parts
-            .children
-            .iter_mut()
-            .zip(&self.parts.nodes)
-            .take(shown)
-        {
-            let path = ctx.path;
-            child.handle_event(event, &mut ctx.reborrow(path, node));
-            if *ctx.handled {
-                break;
-            }
-        }
+        let shown = shown
+            .min(self.parts.nodes.len())
+            .min(self.parts.children.len());
+        crate::widget::route_to_children(
+            &mut self.parts.children[..shown],
+            &self.parts.nodes[..shown],
+            event,
+            ctx,
+        );
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

@@ -1,4 +1,5 @@
 use super::*;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 #[allow(
@@ -296,7 +297,7 @@ fn private_engines_own_and_remove_their_disposable_roots() {
             .env_remove(runtime::HOST_OVERRIDE_ENV)
             .env(runtime::RUNTIME_DIR_ENV, fixture.path())
             .env("TILO_TEST_PRIVATE_ROOT", &root)
-            .status()
+            .status_locked()
             .unwrap();
         assert!(result.success());
         assert!(!root.exists());
@@ -328,7 +329,7 @@ fn private_engines_own_and_remove_their_disposable_roots() {
             ])
             .env("TILO_TEST_PRIVATE_HOST", &host)
             .env("TILO_TEST_PRIVATE_ROOT", &root)
-            .status()
+            .status_locked()
             .unwrap();
         assert!(result.success());
         assert!(!root.exists(), "root must be absent when the child exits");
@@ -1338,7 +1339,9 @@ fn poisoned_tab_state_never_panics_or_poisons_routes() {
     }
     // phase: poisoned_supervisor_slot_can_still_reap_its_child
     {
-        let child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let child = std::process::Command::new("/usr/bin/true")
+            .spawn_locked()
+            .unwrap();
         let slot = Mutex::new(Some(child));
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = slot.lock().unwrap();
@@ -1847,7 +1850,7 @@ fn a_second_process_browses_through_the_first_processs_host() {
             ])
             .env("TILO_TEST_SHARED_HOST", &host)
             .env("TILO_TEST_SHARED_PROFILE", &profile)
-            .spawn()
+            .spawn_locked()
             .unwrap()
     };
     // phase: the_owner_process_outlives_its_clients

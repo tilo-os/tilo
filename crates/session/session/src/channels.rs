@@ -253,6 +253,16 @@ impl ChannelLink {
         }
     }
 
+    /// Send this device's owner's outgoing custody of `room` to the room's
+    /// peers: what the owner committed leaves this device on the plane's
+    /// session with the room's host, as every other change of the room does.
+    pub(crate) fn publish_custody(&self, room: RoomId) {
+        let outgoing = self.outgoing.lock_recover().clone();
+        if let Some(outgoing) = outgoing {
+            let _ = outgoing.send(Outgoing::PublishCustody(workspace_topic_id(room)));
+        }
+    }
+
     /// Tell the plane which devices workspace `ws` admits; `false` when the plane
     /// is gone, and the roster is told again when a later pass finds it
     /// changed.

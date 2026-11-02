@@ -20,6 +20,8 @@ use tilo_relay_protocol::{
     Envelope,
     voice::{CallOperation, VoiceGrant},
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
+use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 use call::carrier;
 
@@ -77,7 +79,7 @@ fn ensure_moq_library(repository: &std::path::Path) {
         let status = std::process::Command::new(program)
             .args(args)
             .current_dir(&builder)
-            .status()
+            .status_locked()
             .unwrap_or_else(|error| {
                 panic!("running {program} to build media-moq-library.mjs: {error}")
             });
@@ -277,7 +279,7 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
         .arg(driver)
         .arg(url)
         .kill_on_drop(true)
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut tick = tokio::time::interval(Duration::from_millis(20));
     let mut timestamp = 0_u64;

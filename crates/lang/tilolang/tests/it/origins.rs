@@ -56,6 +56,34 @@ fn an_outside_effect_goes_to_a_capability_the_platform_has() {
     assert_eq!(codes(unknown), ["E022"]);
 }
 
+/// The session takes no outside effect: its actions are called as an app's
+/// (`session.focus(window)`), so a string naming one of them is no capability.
+#[test]
+fn the_session_takes_no_outside_effect() {
+    for capability in [
+        "session.run",
+        "session.act",
+        "session.notify",
+        "session.arrange",
+    ] {
+        let src = format!(
+            "type D {{\n    to: Text\n}}\naction go(d: D) {{\n    outside(\"{capability}\", d.to)\n}}"
+        );
+        assert_eq!(codes(&src), ["E022"], "{capability}");
+    }
+}
+
+/// An outside effect is queued on the action's resource: an action that takes none is refused
+/// where it is written, not trapped at its first press.
+#[test]
+fn an_outside_effect_needs_a_resource_to_queue_on() {
+    let none = "action go(key: Text) {\n    outside(\"post\", key)\n}";
+    assert_eq!(codes(none), ["E047"]);
+    let some =
+        "type D {\n    to: Text\n}\naction go(d: D, key: Text) {\n    outside(\"post\", key)\n}";
+    assert!(codes(some).is_empty(), "{:?}", codes(some));
+}
+
 #[test]
 fn a_named_filter_tests_a_set_holding_a_value() {
     let src = "type T {\n    boxes: Set<Text>\n    search {\n        filter \"Inbox\" = boxes.contains(\"inbox\")\n    }\n}";

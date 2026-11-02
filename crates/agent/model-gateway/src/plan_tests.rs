@@ -7,6 +7,7 @@ use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const OUTPUT: &str = r#"{"choices":[{"message":{"role":"assistant","content":"nothing-fits"},"finish_reason":"stop"}]}"#;
 const ANTHROPIC_OUTPUT: &str = r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"nothing-fits"}],"stop_reason":"end_turn"}"#;
@@ -547,7 +548,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         .env("XDG_CONFIG_HOME", &temp.0)
         .env("PLAN_TEST_CASE", case)
         .env("PLAN_TEST_ENDPOINT", endpoint)
-        .output()
+        .output_locked()
         .unwrap();
     stop.store(true, Ordering::Release);
     let requests = peer.join().unwrap();

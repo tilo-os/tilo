@@ -317,6 +317,7 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
                     required: published.required,
                     schema: published.schema.as_deref().cloned().unwrap_or(Json::Null),
                     ty: field_type_of_type(meta, &param.ty, types),
+                    within: None,
                 }
             })
             .collect(),
@@ -342,12 +343,14 @@ fn edit_verbs() -> Vec<VerbSurface> {
                 required: true,
                 schema: json!({"type": "string"}),
                 ty: FieldType::Text,
+                within: None,
             },
             ParamSurface {
                 name: "value".to_owned(),
                 required: true,
                 schema: value,
                 ty,
+                within: None,
             },
         ],
         writes: vec![RECORD_UNIT.to_owned()],
@@ -507,6 +510,7 @@ pub fn host_surface() -> Surface {
                 required: true,
                 schema: json!({"type": "integer"}),
                 ty: FieldType::Int,
+                within: None,
             }],
         )],
         fields: Vec::new(),

@@ -28,6 +28,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
@@ -282,7 +283,7 @@ fn updating_every_app_overlaps_downloads_and_reuses_connections() {
     let started = Instant::now();
     let update = std::process::Command::new(tilo_test_env::package_binary!("app"))
         .arg("update")
-        .output()
+        .output_locked()
         .unwrap();
     let elapsed = started.elapsed();
     assert!(

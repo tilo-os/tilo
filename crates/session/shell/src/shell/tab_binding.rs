@@ -389,12 +389,30 @@ pub fn open_app_process(
     Some(tab_id)
 }
 
+/// Whether a tab asks to be drawn by the session as an app that runs as its
+/// own process: whether [`reopen_app_tabs_as_processes`] has anything to do.
+/// Reads only, so a caller takes the tree for writing only when it does.
+pub fn has_app_tabs_to_reopen(tree: &WorkspaceTree) -> bool {
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .any(|tab| {
+            matches!(&tab.tile, TileContent::AppPlaceholder { kind, .. }
+                if own_process_package(kind).is_some())
+        })
+}
+
 /// Turn every tab of a packaged first-party app that asks to be drawn by
 /// the session (a tree saved while the session drew those apps itself, or a
 /// tab a peer that draws its apps itself opened) into the app's own window
 /// to open here: this device's own tabs reopen as saved windows do, a
 /// peer's as its other windows do (`peer_windows::examine` launches both and
-/// binds the window into the tab). Whether anything changed.
+/// binds the window into the tab). A tab in no device's namespace (salt
+/// `0`, minted by a tree from before trees had one) is this device's own:
+/// only this device's state holds it. Whether anything changed.
 pub fn reopen_app_tabs_as_processes(tree: &mut WorkspaceTree) -> bool {
     let local = tree.local_salt();
     let mut changed = false;
@@ -409,7 +427,7 @@ pub fn reopen_app_tabs_as_processes(tree: &mut WorkspaceTree) -> bool {
                         continue;
                     };
                     let label = label.clone();
-                    tab.tile = if crate::shell::state::peer_salt_of(tab.id) == local {
+                    tab.tile = if in_own_namespace(tab.id, local) {
                         TileContent::LocalApp {
                             app_id,
                             label,
@@ -1074,9 +1092,15 @@ pub fn may_rename_tab(tree: &WorkspaceTree, tab_id: TabId) -> bool {
                 TileContent::HostedWindow { .. } => true,
                 _ => false,
             };
-            let salt = crate::shell::state::peer_salt_of(tab.id);
-            host_window && (salt == 0 || salt == tree.local_salt())
+            host_window && in_own_namespace(tab.id, tree.local_salt())
         })
+}
+
+/// Whether `tab` was minted by this device (salt `local`) or by a tree with
+/// no namespace (salt `0`), which only this device's own state holds.
+fn in_own_namespace(tab: TabId, local: u16) -> bool {
+    let salt = crate::shell::state::peer_salt_of(tab);
+    salt == 0 || salt == local
 }
 
 /// A person names host window `tab_id` `name` ([`Tab::rename`]); a blank

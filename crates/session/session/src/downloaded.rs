@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tilo_app_launch::downloaded::{self, ObservedWindow, WindowArtwork};
 use tilo_compositor::{IconArtwork, WindowIcon, WindowInfo};
 use tilo_service::Service;
-use tilo_surface_host::{StripPolicy, WindowObserver};
+use tilo_surface_host::WindowObserver;
 
 use crate::Options;
 
@@ -61,7 +61,7 @@ fn artwork(icon: Option<&Arc<WindowIcon>>) -> Option<WindowArtwork> {
 /// cannot start is said so in the log and the session carries on without
 /// one: no program is offered, and the apps it already has are still the
 /// machine's own entries.
-pub fn install(options: &mut Options, policy: &mut StripPolicy) {
+pub fn install(options: &mut Options, policy: &mut crate::desk::DeskPolicy) {
     let registry = match downloaded::Downloaded::start(Some(options.wake.handle())) {
         Ok(registry) => registry,
         Err(error) => {

@@ -137,6 +137,13 @@ pub fn battery_resource() -> ResourceSpec {
     offer::<BatteryAction>(ResourceSpec::new(BATTERY, BATTERY_KIND, "Battery"))
 }
 
+/// The battery as a view of another language reads and changes it: its reading
+/// ([`crate::Battery`]) as its fields and its actions as its verbs.
+#[must_use]
+pub fn battery_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<crate::Battery, BatteryAction>("battery", "Battery")
+}
+
 impl Service for SessionPower {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![sleep_resource(), battery_resource()]

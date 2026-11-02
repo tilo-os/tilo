@@ -590,6 +590,8 @@ pub struct EffectRow {
     pub icon: Option<&'static str>,
     pub description: &'static str,
     pub params: fn() -> Vec<ActionParam>,
+    /// The surface types of the parameters whose types describe one, by name.
+    pub param_types: fn() -> Vec<(&'static str, crate::surface::FieldTypeOf)>,
     pub kind: OperationKind,
     pub row: bool,
     pub answers: Answers,
@@ -652,6 +654,13 @@ pub fn no_params() -> Vec<ActionParam> {
     Vec::new()
 }
 
+/// The parameter types of an effect whose parameters describe none.
+#[doc(hidden)]
+#[must_use]
+pub fn no_param_types() -> Vec<(&'static str, crate::surface::FieldTypeOf)> {
+    Vec::new()
+}
+
 /// The declaration of one effect: what callers see of it.
 #[derive(Clone, Debug)]
 #[allow(
@@ -668,6 +677,11 @@ pub struct EffectDecl {
     pub icon: Option<&'static str>,
     pub description: &'static str,
     pub params: Vec<ActionParam>,
+    /// The surface type of each parameter whose Rust type describes one
+    /// ([`JsonSchema`](crate::JsonSchema)), by name: a record or enum a
+    /// parameter's wire type ([`ParamType::Object`](tilo_actions::ParamType))
+    /// says nothing of, which a package of another language names.
+    pub param_types: Vec<(&'static str, crate::surface::FieldTypeOf)>,
     /// `View` for an effect that only changes what its caller sees, else
     /// `Effect`.
     pub kind: OperationKind,
@@ -795,6 +809,7 @@ impl EffectDecl {
             icon: row.icon,
             description: row.description,
             params: (row.params)(),
+            param_types: (row.param_types)(),
             kind: row.kind,
             row: row.row,
             answers: row.answers,

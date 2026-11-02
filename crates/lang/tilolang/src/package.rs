@@ -393,6 +393,7 @@ fn build_meta(
         .map(|(name, key)| crate::meta::NamedRootMeta {
             name: name.clone(),
             ty: type_id(key),
+            published: None,
         })
         .collect();
     let views_meta = |views: &[(crate::types::TypeKey, String)]| -> Vec<DefaultViewMeta> {

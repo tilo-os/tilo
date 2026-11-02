@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -174,7 +175,7 @@ impl Env {
         c.env("XDG_DATA_HOME", self.xdg_data());
         c.env("HOME", self.home.path());
         c.args(args);
-        let out = c.output().expect("spawn tilo-install");
+        let out = c.output_locked().expect("spawn tilo-install");
         (
             out.status.success(),
             String::from_utf8_lossy(&out.stdout).to_string(),

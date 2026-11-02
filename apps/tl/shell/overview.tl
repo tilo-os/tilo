@@ -1,7 +1,7 @@
 /// The overview: what the desk holds, to search and move things in, over the windows it
 /// covers. It reads the desk the session publishes (`session.desk`, and its windows through
-/// `session.window`), never a copy, and every choice it offers is an action the session runs
-/// (`session.run`), so the arrangement stays the session's: each change is attributed and
+/// `session.window`), never a copy, and every choice it offers is an action the session publishes
+/// (`so.tilo.session`), so the arrangement stays the session's: each change is attributed and
 /// undoable.
 ///
 /// The picture is the desk's: each strip top to bottom, the strip's windows left to right in
@@ -9,7 +9,7 @@
 /// view lays out its place, names it and marks who else is on it, and it is a surface of the
 /// desk: the desk's bar stays above it, so it holds no sidebar of its own.
 view overview(d: Desk) {
-    lens query: Text = ""
+    lens query: Text = d.spotlight
     let windows = d.windows.sort_by(w -> w.recency)
     let here = windows.filter(w -> w.workspace == d.workspace)
     let elsewhere = windows.filter(w -> w.workspace != d.workspace).matching(query)
@@ -19,14 +19,14 @@ view overview(d: Desk) {
             ui.Text(d.workspace, role: .caption, secondary: true)
             spacer
             ui.Button("New workspace", icon: .plus, size: .small) {
-                on press: new_workspace(d)
+                on press: session.new_workspace(workspace: .none, name: .none)
             }
             ui.Button("Join a workspace", icon: .users, size: .small) {
-                on press: join_workspace(d)
+                on press: session.join_workspace()
             }
         }
         ui.TextInput(value: query, placeholder: "Search windows across your workspaces") {
-            on submit: submit_search(query)
+            on submit: session.search(query: .some(query))
         }
         rooms_here(d)
         if query == "" {
@@ -45,7 +45,7 @@ view rooms_here(d: Desk) {
         row(gap: .related, align: .center, wrap: true) {
             for r in d.rooms.sort_by(r -> r.name) {
                 ui.Chip(r.name, icon: if r.current { .layers } else { .folder }, selected: .some(r.current)) {
-                    on press: switch_to_key(r.key, r.current)
+                    on press: device.switch_workspace(device.desk, workspace: r.key)
                 }
             }
             if not d.people.is_empty() {
@@ -84,7 +84,7 @@ view window_place(d: Desk, w: Win) {
             }
             window_menu(d, w)
         }
-        on activate: focus_window(w)
+        on activate: session.focus(window(w))
     }
 }
 
@@ -93,25 +93,22 @@ view window_place(d: Desk, w: Win) {
 view window_menu(d: Desk, w: Win) {
     ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
         ui.MenuItem("Go there", icon: .arrow_right) {
-            on choose: focus_window(w)
+            on choose: session.focus(window(w))
         }
-        for s in strip_names(d, w.workspace) {
-            if s != w.strip {
-                ui.MenuItem("Move to {s}", icon: .arrow_right) {
-                    on choose: move_to_strip(w, s)
+        for s in strip_keys(d, w.workspace) {
+            if s != w.strip_key {
+                ui.MenuItem("Move to {strip_name(d, s)}", icon: .arrow_right) {
+                    on choose: session.move_tab(tab: w.key, strip: .some(s), workspace: .none, display: .none)
                 }
             }
         }
         for r in d.rooms.filter(r -> r.name != w.workspace) {
             ui.MenuItem("Move to {r.name}", icon: .layers) {
-                on choose: move_to_room(w, r.name)
+                on choose: session.move_tab(tab: w.key, strip: .none, workspace: .some(r.key), display: .none)
             }
         }
-        ui.MenuItem("Ask an agent…", icon: .bot) {
-            on choose: ask_about(w)
-        }
         ui.MenuItem("Close", icon: .x, destructive: true) {
-            on choose: close_window(w)
+            on choose: session.close_tab(window(w))
         }
     }
 }
@@ -136,14 +133,14 @@ view window_line(d: Desk, w: Win) {
         trailing: {
             ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
                 ui.MenuItem("Go there", icon: .arrow_right) {
-                    on choose: focus_window(w)
+                    on choose: session.focus(window(w))
                 }
                 ui.MenuItem("Move here", icon: .arrow_down) {
-                    on choose: move_to_room(w, d.workspace)
+                    on choose: session.move_tab(tab: w.key, strip: .none, workspace: .some(current_room(d)), display: .none)
                 }
             }
         }
-        on activate: focus_window(w)
+        on activate: session.focus(window(w))
     }
 }
 
@@ -153,7 +150,24 @@ fn window_strips(windows: List<Win>) -> List<Text> {
     return in_order.group(s -> s).map(p -> p.key)
 }
 
-/// The names of the strips of `workspace`, as the desk's windows name them.
-fn strip_names(d: Desk, workspace: Text) -> List<Text> {
-    return window_strips(d.windows.filter(w -> w.workspace == workspace))
+/// The ids of the strips of `workspace`, most recent first, as the desk's windows name them.
+fn strip_keys(d: Desk, workspace: Text) -> List<Text> {
+    let in_order = d.windows.filter(w -> w.workspace == workspace).sort_by(w -> w.recency).map(w -> w.strip_key).filter(s -> s != "")
+    return in_order.group(s -> s).map(p -> p.key)
+}
+
+/// The name of the strip `key`, as its windows name it.
+fn strip_name(d: Desk, key: Text) -> Text {
+    if let w = d.windows.filter(w -> w.strip_key == key).first() {
+        return w.strip
+    }
+    return ""
+}
+
+/// The id of the workspace in front.
+fn current_room(d: Desk) -> Text {
+    if let r = d.rooms.filter(r -> r.current).first() {
+        return r.key
+    }
+    return ""
 }

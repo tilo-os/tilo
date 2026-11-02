@@ -46,6 +46,7 @@ fn verb_of(decl: &Declaration, types: &mut TypeSet) -> VerbSurface {
                     required: param.required,
                     schema,
                     ty,
+                    within: None,
                 }
             })
             .collect(),
@@ -121,6 +122,110 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
         verbs,
         fields,
         types: types.into_types(),
+    }
+}
+
+/// The surface of a resource a service publishes outside any record (the
+/// sound, the network, the battery): its fields are its reading `R`, as the
+/// service serialises it, each read-only since only the service's effects
+/// change it, and its verbs are the effects `E` it offers on it. What a
+/// view of another language reads and presses of it, typed as the service
+/// declares it.
+#[must_use]
+pub fn reading_surface<R: crate::JsonSchema, E: crate::Effect>(kind: &str, label: &str) -> Surface {
+    let mut types = TypeSet::new();
+    let root = R::field_type(&mut types);
+    let mut declared = types.into_types();
+    // The reading's own record is the resource itself: its fields are the
+    // resource's, and only the records it holds stay named types.
+    let own = match &root {
+        FieldType::Named(name) => declared
+            .iter()
+            .position(|ty| ty.name == *name && !ty.is_enum())
+            .map(|at| declared.remove(at)),
+        _ => None,
+    };
+    let fields = own
+        .map(|own| {
+            own.fields
+                .into_iter()
+                .map(|field| FieldSurface {
+                    path: field.name,
+                    owner: String::new(),
+                    title: field.title,
+                    stored: "value".to_owned(),
+                    ty: field.ty,
+                    readonly: true,
+                    unit: false,
+                    label: false,
+                    ops: None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Surface {
+        kind: kind.to_owned(),
+        label: label.to_owned(),
+        version: 1,
+        person: false,
+        verbs: E::declarations().iter().map(effect_verb).collect(),
+        fields,
+        types: declared,
+    }
+}
+
+/// An effect's declaration as a verb of the surface: its id, words and
+/// parameters, each typed by its schema.
+fn effect_verb(decl: &crate::EffectDecl) -> VerbSurface {
+    VerbSurface {
+        id: decl.id.to_owned(),
+        label: decl.label.to_owned(),
+        description: (!decl.description.is_empty()).then(|| decl.description.to_owned()),
+        kind: decl.action_kind,
+        destructive: decl.risk == tilo_actions::RiskLevel::Destructive,
+        incoming_message: false,
+        params: decl
+            .params
+            .iter()
+            .map(|param| {
+                let schema = param
+                    .schema
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let ty = match FieldType::from_schema(&schema) {
+                    FieldType::Any => param_type(param.ty),
+                    ty => ty,
+                };
+                ParamSurface {
+                    name: param.name.to_string(),
+                    required: param.required,
+                    schema,
+                    ty: if param.nullable {
+                        FieldType::Option(Box::new(ty))
+                    } else {
+                        ty
+                    },
+                    within: None,
+                }
+            })
+            .collect(),
+        writes: vec!["record".to_owned()],
+        field: None,
+    }
+}
+
+/// The surface's type of a parameter declared only by its wire type.
+fn param_type(ty: tilo_actions::ParamType) -> FieldType {
+    use tilo_actions::ParamType;
+    match ty {
+        ParamType::Text | ParamType::Secret => FieldType::Text,
+        ParamType::Integer => FieldType::Int,
+        ParamType::Number => FieldType::Float,
+        ParamType::Boolean => FieldType::Bool,
+        ParamType::DateTime => FieldType::Time,
+        ParamType::Resource => FieldType::Resource(String::new()),
+        ParamType::Object | ParamType::Array => FieldType::Any,
     }
 }
 
