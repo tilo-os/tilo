@@ -248,6 +248,9 @@ pub(crate) struct Loop {
     /// What the connections ask of the session's own doors, answered on the
     /// loop's pass.
     doors: Arc<SessionDoors>,
+    /// The control protocol's door, which a program inside an app this session
+    /// started is served at, as that app.
+    control: Arc<crate::test_control::Door>,
     /// The workspace governance this device holds: where an agent's admission
     /// is written, so it is a member everywhere the workspace is, not only on
     /// this desk.
@@ -275,6 +278,7 @@ pub(crate) fn mount_named(
     questions: Option<Questions>,
     doors: Arc<SessionDoors>,
     engine: Option<Arc<crate::engine::Engine>>,
+    control: Arc<crate::test_control::Door>,
 ) -> Option<Mounted> {
     let path = options.agent_door.as_deref()?;
     match mount(
@@ -286,6 +290,7 @@ pub(crate) fn mount_named(
         &options.admit_repl,
         doors,
         engine,
+        control,
     ) {
         Ok(mounted) => Some(mounted),
         Err(error) => {
@@ -311,6 +316,7 @@ pub(crate) fn mount(
     admits: &[PathBuf],
     doors: Arc<SessionDoors>,
     engine: Option<Arc<crate::engine::Engine>>,
+    control: Arc<crate::test_control::Door>,
 ) -> io::Result<Mounted> {
     let listener = bind_private(path)?;
     listener.set_nonblocking(true)?;
@@ -361,6 +367,7 @@ pub(crate) fn mount(
         person_session: std::collections::HashSet::new(),
         doors,
         engine,
+        control,
     };
     Ok(Mounted { door })
 }
@@ -423,21 +430,21 @@ impl Loop {
     /// Serve one connection of this account on its own thread: nothing it
     /// asks for runs before the person admits it.
     fn serve(&self, stream: UnixStream, pid: u32) {
-        let Some(broker) = self.broker.clone() else {
-            refuse(stream, &PeerRefusal::Unavailable);
-            return;
-        };
-        let requests = self.requests.clone();
+        let broker = self.broker.clone();
         let session = Arc::clone(&self.doors);
+        let requests = self.requests.clone();
         let launches = Arc::clone(&self.launches);
         let wake = Arc::clone(&self.wake);
+        let control = Arc::clone(&self.control);
         let connections = Arc::clone(&self.connections);
         connections.fetch_add(1, Ordering::Relaxed);
         let served = Arc::clone(&connections);
         let spawned = std::thread::Builder::new()
             .name("tilo-agent-door".into())
             .spawn(move || {
-                serve_connection(stream, pid, broker, session, &requests, &launches, &wake);
+                serve_connection(
+                    stream, pid, broker, session, &requests, &launches, &wake, &control,
+                );
                 served.fetch_sub(1, Ordering::Relaxed);
                 // A question for a client that is gone is withdrawn on the
                 // next pass.
@@ -928,13 +935,17 @@ fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
     let _ = stream.write_all(format!("{reply}\n").as_bytes());
 }
 
+/// What a control client outside an app this session started is told.
+const CONTROL_IN_APP_ONLY: &str = "The control protocol is served here to a program running inside \
+     an app this session started, as that app; this program runs in no such app.";
+
 /// Tell a control client it is served nothing here, in the control
 /// protocol's own framing, then let it go.
-fn refuse_control(mut stream: UnixStream) {
+fn refuse_control(mut stream: UnixStream, message: &str) {
     use std::io::Write as _;
     let reply = serde_json::json!({"err": {
         "code": "not_allowed",
-        "message": "This desktop's agent door does not serve programs inside apps.",
+        "message": message,
     }});
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
     let _ = stream.write_all(format!("{reply}\n").as_bytes());
@@ -1398,11 +1409,12 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
 fn serve_connection(
     stream: UnixStream,
     pid: u32,
-    broker: Arc<AppBrokerState>,
+    broker: Option<Arc<AppBrokerState>>,
     session: Arc<SessionDoors>,
     requests: &Sender<Request>,
     launches: &Launches,
     wake: &Wake,
+    control: &crate::test_control::Door,
 ) {
     let mut stream = stream;
     let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
@@ -1413,10 +1425,31 @@ fn serve_connection(
         }
     };
     if tilo_runtime::session_door::is_control_request(&first) {
-        tracing::info!(pid, "agent door: a program asked in the control protocol");
-        refuse_control(stream);
+        // Only a program inside an app this session started drives the
+        // control protocol: it acts as that app, in the workspace the app was
+        // started into, and the broker's permissions decide for it.
+        let Some(app) = launches.app_of_descendant(pid) else {
+            tracing::info!(
+                pid,
+                "agent door: a control connection is outside this session's apps"
+            );
+            refuse_control(stream, CONTROL_IN_APP_ONLY);
+            return;
+        };
+        let Some(workspace) = launches.workspace_of(pid, &app) else {
+            tracing::info!(pid, %app, "agent door: a control connection's app is not running");
+            refuse_control(stream, CONTROL_IN_APP_ONLY);
+            return;
+        };
+        tracing::info!(pid, %app, %workspace, "agent door: a program in an app asked in the control protocol");
+        let first = String::from_utf8_lossy(&first).into_owned();
+        crate::test_control::serve_app(stream, first, app_name(&app), workspace, control);
         return;
     }
+    let Some(broker) = broker else {
+        refuse(stream, &PeerRefusal::Unavailable);
+        return;
+    };
     let facts = facts_of(pid, launches);
     let runs = std::sync::Arc::clone(&session.runs);
     let tasks = Arc::new(TaskHosts::new(&session.person, runs));
@@ -1424,7 +1457,7 @@ fn serve_connection(
     let ended = tilo_runtime::session_door::serve_after(
         stream,
         Some(first),
-        || Ok(Host::new(Some(broker), session)),
+        || Ok(Host::new(Some(broker), Arc::clone(&session))),
         Some(tasks as Arc<dyn tilo_runtime::mcp::TaskHosts>),
         |hello, connected| {
             let consent = ask(requests, wake, facts, hello, connected);

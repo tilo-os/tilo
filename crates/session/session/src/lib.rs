@@ -780,9 +780,10 @@ pub struct Session {
     /// The plane the apps it runs read and invoke its services on, while it
     /// serves one.
     action_plane: Option<Plane>,
-    /// The control sockets `tilo-control` drives this session over, when it
-    /// serves any: the development one, and the device admin's own.
-    control: Option<test_control::Control>,
+    /// The control door `tilo-control` drives this session over: the
+    /// development and the device admin's sockets, when the launcher names
+    /// them, and the one a program inside an app reaches.
+    control: test_control::Control,
     /// The shortcuts the person saved, started by their triggers.
     automation: automation::Automation,
     /// The runtime the shortcuts' runs execute on, which the apps' broker
@@ -1517,21 +1518,23 @@ impl Session {
             std::sync::Arc::clone(&run_programs),
             &options.person,
         ));
-        let door = agent_door::mount_named(
-            &options,
-            questions.clone(),
-            std::sync::Arc::clone(&session_doors),
-            engine.as_ref().map(std::sync::Arc::clone),
-        );
-        // The control sockets `tilo-control` reaches, when the session was
-        // started with one: the development socket and the device admin's,
-        // both answered over the broker this session's plane starts.
+        // The control door `tilo-control` reaches: the development socket and
+        // the device admin's, both answered over the broker this session's
+        // plane starts. It exists whether or not a socket opens, because a
+        // program inside an app this session started is served at it too.
         let control = test_control::Control::open(
             &options,
             std::sync::Arc::new(agent_door::Host::new(
                 action_plane.as_ref().and_then(Plane::agent_broker),
                 std::sync::Arc::clone(&session_doors),
             )),
+        );
+        let door = agent_door::mount_named(
+            &options,
+            questions.clone(),
+            std::sync::Arc::clone(&session_doors),
+            engine.as_ref().map(std::sync::Arc::clone),
+            control.door(),
         );
         let agent_door = door.map(|door| {
             door.serve(
