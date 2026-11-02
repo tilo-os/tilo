@@ -112,6 +112,7 @@ mod search_ask;
 pub mod seeded_apps;
 pub mod session_package;
 mod setup;
+mod shared_displays;
 mod sheets;
 pub mod shell;
 mod shortcut_guide;
@@ -743,6 +744,9 @@ pub struct Session {
     /// Settings' Identify answers: which screen is which, said on the
     /// screens.
     numbers: display_identify::Numbers,
+    /// The person's screens across their devices, as this session offers its
+    /// own and publishes what every device shows.
+    published_displays: shared_displays::Publisher,
     /// The question about a display change, and the answers it takes.
     confirmation: display_confirm::Confirmation,
     /// The display sheet: where the desktop appears, and the wireless
@@ -1160,6 +1164,7 @@ impl Session {
         // Settings' Identify answers: the session reads the request each pass
         // and the bar says each display's number and name on it.
         let numbers = display_identify::Numbers::default();
+        let published_displays = shared_displays::Publisher::default();
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
@@ -1711,6 +1716,7 @@ impl Session {
             readout_place,
             readout,
             numbers,
+            published_displays,
             confirmation: display_confirm::Confirmation::default(),
             display_sheet: display_sheet::DisplaySheet::new(
                 display_seat,
@@ -1823,6 +1829,13 @@ impl Session {
             self.compositor.display_snapshot(),
             &self.compositor.outputs(),
         );
+        // Where this device's screens stand reaches the person's other
+        // devices, and what every device shows is published for the shared
+        // arrangement the display sheet and Settings show.
+        if let Some(fabric) = &self.shared.fabric {
+            self.published_displays
+                .follow(fabric, self.compositor.display_snapshot());
+        }
         self.displays
             .follow(&mut self.compositor, night_light, turned)
     }

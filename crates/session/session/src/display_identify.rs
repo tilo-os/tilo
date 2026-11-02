@@ -72,10 +72,7 @@ impl Numbers {
 /// Each display the session shows something on, with the number and name
 /// Settings gives it: the numbers and names come from the compositor's own
 /// snapshot, so the canvas tile and the physical screen say the same thing.
-fn labels_of(
-    snapshot: Option<&DisplayHardwareSnapshot>,
-    outputs: &[OutputInfo],
-) -> Vec<Label> {
+fn labels_of(snapshot: Option<&DisplayHardwareSnapshot>, outputs: &[OutputInfo]) -> Vec<Label> {
     let Some(snapshot) = snapshot else {
         return Vec::new();
     };

@@ -130,9 +130,10 @@ impl DisplayIdentify {
     #[must_use]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.is_up(now)
-            && self
-                .fade_from
-                .is_some_and(|from| self.gone(now).is_some_and(|gone| from < gone && now >= from))
+            && self.fade_from.is_some_and(|from| {
+                self.gone(now)
+                    .is_some_and(|gone| from < gone && now >= from)
+            })
     }
 
     /// When the cards next need a frame without input.
@@ -194,12 +195,7 @@ impl DisplayIdentify {
         };
         let fade_from = Transient::exit_starts(Transient::CONFIRMATION, gone, motion);
         self.fade_from = Some(fade_from);
-        let alpha = Transient::opacity(
-            Transient::CONFIRMATION,
-            (entered, gone),
-            now,
-            motion,
-        );
+        let alpha = Transient::opacity(Transient::CONFIRMATION, (entered, gone), now, motion);
         if alpha <= 0.0 {
             self.cards.clear();
             return;
@@ -359,10 +355,7 @@ mod tests {
     }
 
     fn displays() -> Vec<(String, Rect)> {
-        vec![
-            ("eDP-1".to_owned(), LEFT),
-            ("DP-2".to_owned(), RIGHT),
-        ]
+        vec![("eDP-1".to_owned(), LEFT), ("DP-2".to_owned(), RIGHT)]
     }
 
     /// Paint the cards as one frame does and hand back what stood on screen.
@@ -370,13 +363,7 @@ mod tests {
         let theme = Theme::dark();
         let mut text = TextRenderer::default();
         let mut scene = Scene::new();
-        identify.draw(
-            &displays(),
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-        );
+        identify.draw(&displays(), &mut scene, Affine::IDENTITY, &mut text, &theme);
         identify.cards().to_vec()
     }
 
@@ -397,7 +384,10 @@ mod tests {
         let cards = painted(&mut identify);
         assert_eq!(cards.len(), 2, "one card per display: {cards:?}");
         let builtin = &cards[0];
-        assert_eq!((builtin.number, builtin.name.as_str()), (1, "Built-in display"));
+        assert_eq!(
+            (builtin.number, builtin.name.as_str()),
+            (1, "Built-in display")
+        );
         assert!(
             LEFT.contains(builtin.rect.center()),
             "the card stands on its own display: {:?}",
@@ -482,7 +472,10 @@ mod tests {
         let node = identify
             .accessibility(t0)
             .expect("the cards are announced while they stand");
-        assert_eq!(node.value.as_deref(), Some("1 Built-in display, 2 Dell U2724DE"));
+        assert_eq!(
+            node.value.as_deref(),
+            Some("1 Built-in display, 2 Dell U2724DE")
+        );
         assert!(identify.accessibility(ms(t0, 3_000)).is_none());
     }
 }

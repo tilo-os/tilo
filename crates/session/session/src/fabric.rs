@@ -134,17 +134,39 @@ impl SessionFabric {
             // what this device says of itself, whether or not anything
             // changed since the last announcement.
             PersonalFabricPayload::Request => self.announce(),
+            // Where one of the person's devices says its outputs stand, and
+            // what their hardware says: the fabric admits both for the exact
+            // revision the device's own record carries, and the shared
+            // arrangement reads them from there.
+            PersonalFabricPayload::DisplayConnectors { stamp, outputs } => {
+                let taken = self.runtime.lock_recover().observe_display_connectors(
+                    peer,
+                    stamp,
+                    outputs.clone(),
+                );
+                if let Err(error) = taken {
+                    tracing::debug!(%error, %peer, "a device's outputs are not taken as they stand");
+                }
+            }
+            PersonalFabricPayload::DisplayOutputs { stamp, outputs } => {
+                let taken = self.runtime.lock_recover().observe_display_outputs(
+                    peer,
+                    stamp,
+                    outputs.clone(),
+                );
+                if let Err(error) = taken {
+                    tracing::debug!(%error, %peer, "a device's output facts are not taken");
+                }
+            }
             // What the person's devices carry for each other beyond the
-            // fabric state this session keeps — file bytes, records, screen
-            // observations — belongs to the shell's runtime; this session
-            // routes none of it and drops it rather than half-handling it.
+            // fabric state this session keeps — file bytes, records — belongs
+            // to the shell's runtime; this session routes none of it and
+            // drops it rather than half-handling it.
             PersonalFabricPayload::NearbyTransfer(_)
             | PersonalFabricPayload::Document { .. }
             | PersonalFabricPayload::RecordContentWant { .. }
             | PersonalFabricPayload::RecordContentPiece { .. }
-            | PersonalFabricPayload::RecordContentLacks { .. }
-            | PersonalFabricPayload::DisplayConnectors { .. }
-            | PersonalFabricPayload::DisplayOutputs { .. } => {}
+            | PersonalFabricPayload::RecordContentLacks { .. } => {}
         }
     }
 
@@ -160,6 +182,28 @@ impl SessionFabric {
         if let Ok(snapshot) = runtime.own_snapshot() {
             self.publish(None, PersonalFabricPayload::Snapshot(snapshot));
         }
+        drop(runtime);
+        self.announce_display();
+    }
+
+    /// Tell the person's other devices where this device's displays stand
+    /// and what their hardware says, on the revision its record announced.
+    fn announce_display(&self) {
+        let display = self.runtime.lock_recover().local_display();
+        let Some((stamp, connectors, outputs)) = display else {
+            return;
+        };
+        self.publish(
+            None,
+            PersonalFabricPayload::DisplayConnectors {
+                stamp: stamp.clone(),
+                outputs: connectors,
+            },
+        );
+        self.publish(
+            None,
+            PersonalFabricPayload::DisplayOutputs { stamp, outputs },
+        );
     }
 
     /// Announce this device's record now, clearing that it has news.
@@ -169,6 +213,8 @@ impl SessionFabric {
         if let Ok(snapshot) = runtime.own_snapshot() {
             self.publish(None, PersonalFabricPayload::Snapshot(snapshot));
         }
+        drop(runtime);
+        self.announce_display();
     }
 
     /// The actions addressed to this device since the last call, for the
@@ -279,6 +325,30 @@ impl FabricLink for SessionFabric {
         if let Err(error) = taken {
             tracing::debug!(%error, "this device's session is not said to the others");
         }
+    }
+
+    fn share_display(
+        &self,
+        rect: tilo_network_actor::fabric::DisplayRect,
+        scale_milli: u16,
+        connectors: Vec<tilo_network_actor::fabric::DisplayConnectorPlacement>,
+        outputs: Vec<tilo_network_actor::fabric::DisplayOutputObservation>,
+    ) -> bool {
+        let taken = self
+            .runtime
+            .lock_recover()
+            .set_display(rect, scale_milli, connectors, outputs);
+        match taken {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::debug!(%error, "this device's displays are not shared");
+                false
+            }
+        }
+    }
+
+    fn person_displays(&self) -> Vec<settings_store::person_displays::PersonDevice> {
+        self.runtime.lock_recover().person_devices()
     }
 }
 
