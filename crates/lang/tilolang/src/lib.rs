@@ -52,6 +52,7 @@ pub mod identifier;
 pub mod ids;
 pub mod ir;
 pub mod lexer;
+pub mod messages;
 pub mod meta;
 pub mod natural;
 pub mod origin;
