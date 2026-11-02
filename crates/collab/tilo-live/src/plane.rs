@@ -113,6 +113,9 @@ pub(crate) struct Shared {
     pub(crate) join: Join,
     incoming: Producer,
     opener: Mutex<Opener>,
+    /// The keys `publish` seals under: the join's, until the channel's epoch
+    /// moves ([`Plane::set_keys`]).
+    keys: Mutex<ChannelContentKeys>,
     roster: Mutex<Roster>,
     published: Mutex<std::collections::BTreeMap<String, moq_net::track::Producer>>,
     /// This device's broadcast, kept for as long as the plane lives: dropping
@@ -163,6 +166,7 @@ impl Shared {
         };
         Ok(Arc::new(Self {
             opener: Mutex::new(Opener::new(join.keys.clone(), join.roster.clone())),
+            keys: Mutex::new(join.keys.clone()),
             roster: Mutex::new(join.roster.clone()),
             join: join.clone(),
             incoming: incoming.clone(),
@@ -336,8 +340,9 @@ impl Plane {
             return Err(PlaneError::Ended);
         }
         let name = live::track(track);
+        let keys = self.shared.keys.lock_recover().clone();
         let sealer = Sealer::new(
-            &self.shared.join.keys,
+            &keys,
             self.shared.join.device,
             stream(track),
             TrackName::new(&self.shared.join.scope, name.as_str()),
@@ -393,6 +398,7 @@ impl Plane {
     /// Seal and open under `keys` from now on: a channel whose epoch moved.
     pub fn set_keys(&self, keys: ChannelContentKeys) {
         let roster = self.shared.roster.lock_recover().clone();
+        *self.shared.keys.lock_recover() = keys.clone();
         *self.shared.opener.lock_recover() = Opener::new(keys, roster);
     }
 

@@ -388,3 +388,51 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
     });
     assert_eq!(plane::TRACKS.len(), 3);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plane_seals_under_the_keys_it_now_holds() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+
+    // `a` is sealed under the channel's first keys, `b` under the ones the
+    // channel moved to.
+    let first = keys();
+    let next = keys();
+    let a = Plane::join(
+        &native::Iroh::new(a_endpoint, addr(&relay_endpoint)),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), first),
+    )
+    .await
+    .unwrap();
+    let b = Plane::join(
+        &native::Iroh::new(b_endpoint, addr(&relay_endpoint)),
+        &grant_for(&b_cert),
+        join(b_key, roster, next.clone()),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+
+    // Once the channel's epoch moves, what `a` publishes is sealed under the
+    // keys it now holds, not the ones it joined with.
+    a.set_keys(next);
+    let mut sequence = 1;
+    wait_until(
+        "the re-keyed object opens on the member at the new keys",
+        || {
+            a.publish(Track::Presence, sequence, b"epoch=moved")
+                .unwrap();
+            sequence = sequence.saturating_add(1);
+            heard(&b, Track::Presence)
+                .iter()
+                .any(|object| object.body == b"epoch=moved" && object.sender == a_key)
+        },
+    );
+}
