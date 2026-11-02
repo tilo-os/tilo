@@ -68,6 +68,7 @@ mod tablet;
 mod text_input;
 mod toplevel_icon;
 mod touch;
+mod typing;
 mod window_frame;
 mod x11_windows;
 mod xdnd;
@@ -806,6 +807,38 @@ impl Compositor {
     /// whether the text is remembered; `None` when no field takes text now.
     pub fn insert_active_text(&mut self, text: &str) -> Option<bool> {
         self.data.state.insert_active_text(text)
+    }
+
+    /// Type `ch` as the person's keyboard would on this seat's layout: the
+    /// key that types it, with the modifiers it needs held. Answers whether
+    /// a key of the layout types it; a character the layout has no key for
+    /// is written as text instead ([`Self::insert_active_text`]).
+    ///
+    /// # Errors
+    /// The input funnel refused one of the events.
+    pub fn type_char(&mut self, ch: char) -> Result<bool, Error> {
+        let Some(stroke) = self.data.state.stroke_for(ch) else {
+            return Ok(false);
+        };
+        for modifier in &stroke.modifiers {
+            self.input(InputEvent::Key {
+                keycode: modifier.key,
+                pressed: true,
+            })?;
+        }
+        for pressed in [true, false] {
+            self.input(InputEvent::Key {
+                keycode: stroke.key,
+                pressed,
+            })?;
+        }
+        for modifier in stroke.modifiers.iter().rev() {
+            self.input(InputEvent::Key {
+                keycode: modifier.key,
+                pressed: false,
+            })?;
+        }
+        Ok(true)
     }
 
     /// Flash every output: a visual alert for what a person who cannot hear

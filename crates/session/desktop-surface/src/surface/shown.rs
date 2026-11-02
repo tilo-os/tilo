@@ -3,7 +3,31 @@
 use ui::kurbo::Rect;
 use ui::widget::{GroupRow, Widget as _};
 
-use super::TabId;
+use super::{DesktopHandle, TabId};
+
+impl DesktopHandle {
+    /// Where each window of the shown strip draws its active tab, in the
+    /// surface's coordinates, as of the last layout. Hidden tabs and other
+    /// strips are absent.
+    pub fn shown_tabs(&self) -> Vec<(TabId, Rect)> {
+        self.shared.borrow().shown_tabs.content()
+    }
+
+    /// The top of the shown windows' content, in the surface's coordinates,
+    /// as of the last layout: where the transients pinned into the display's
+    /// top-right corner start, below the windows' bars. Zero with no window.
+    pub fn content_top(&self) -> f64 {
+        self.shared.borrow().shown_tabs.content_top()
+    }
+
+    /// Where the whole window of `tab` stands — its bar, and the tab's
+    /// content in it — in the surface's coordinates, as of the last layout:
+    /// where a menu for it hangs from.
+    #[must_use]
+    pub fn window_rect(&self, tab: TabId) -> Option<Rect> {
+        self.shared.borrow().shown_tabs.window_rect(tab)
+    }
+}
 
 /// Where a window of the shown strip stands, and the bounds of the tab it
 /// shows.

@@ -90,23 +90,24 @@ def _parse_sample(text: str) -> dict:
 
 
 def compositor_pid(procs: dict) -> int | None:
-    """The compositor among the slot user's processes: the `shell` with no `shell` above it.
+    """The compositor among the slot user's processes: the `tilo-session` with no other
+    above it.
 
-    Every other process named `shell` was started by the compositor from its own binary
-    (the public shader-seed renderer, `--shader-seed-render`), so it has the compositor
-    as an ancestor; the busiest `shell` could be such a child. Two roots would be two
-    compositors, and which of them is the idle desktop cannot be said."""
+    A process started by the compositor from its own binary (the shell's public
+    shader-seed renderer, `--shader-seed-render`) has the compositor as an ancestor; the
+    busiest one could be such a child. Two roots would be two compositors, and which of
+    them is the idle desktop cannot be said."""
     def has_shell_ancestor(pid):
         seen = {pid}
         pid = procs[pid]["ppid"]
         while pid in procs and pid not in seen:
-            if procs[pid]["comm"] == "shell":
+            if procs[pid]["comm"] == "tilo-session":
                 return True
             seen.add(pid)
             pid = procs[pid]["ppid"]
         return False
 
-    roots = sorted(pid for pid, p in procs.items() if p["comm"] == "shell" and not has_shell_ancestor(pid))
+    roots = sorted(pid for pid, p in procs.items() if p["comm"] == "tilo-session" and not has_shell_ancestor(pid))
     if len(roots) > 1:
         raise core.Unobservable(f"{len(roots)} compositor processes of the slot user (pids {roots})")
     return roots[0] if roots else None
@@ -772,7 +773,7 @@ def _budget_problems(m, budgets, prefix, software=False):
     frames stay gated, and a rasteriser that runs with no frame painted fails."""
     problems = []
     if m["shell_cpu_pct"] is None:
-        raise core.Unobservable("no `shell` process of the slot user found")
+        raise core.Unobservable("no `tilo-session` process of the slot user found")
     raster = (m["shell_gpu_driver_cpu_pct"] or 0.0) if software else 0.0
     own = round(m["shell_cpu_pct"] - raster, 2)
     if own > budgets[f"{prefix}_shell_cpu_pct"]:
@@ -997,7 +998,7 @@ def mem(ctx, res):
             timeline = heap_timeline(ctx)
             problems.append(f"{over} ({describe_shell_parts(report)}"
                             + (f"; heap in use/free MiB over time: {timeline}" if timeline else "") + ")")
-    big = [p for p in m["procs"] if p["comm"] != "shell" and (p["anon_rss_mb"] or 0) > b["process_anon_mb"]]
+    big = [p for p in m["procs"] if p["comm"] != "tilo-session" and (p["anon_rss_mb"] or 0) > b["process_anon_mb"]]
     if big:
         problems.append("over the per-process anonymous RSS budget: " +
                         ", ".join(f"{p['comm']} ({p['app'] or 'session'}) {p['anon_rss_mb']} MB"
@@ -1467,7 +1468,7 @@ while [ $i -lt 1500 ]; do
   i=$((i + 1)); t=$(now)
   [ -n "$um" ] || { systemctl is-active -q "user@$uid.service" && um=$t; }
   [ -n "$sess" ] || { pgrep -u "$uid" -f '^/bin/bash /usr/libexec/tilo-session' >/dev/null && sess=$t; }
-  [ -n "$shell" ] || { pgrep -u "$uid" -x shell >/dev/null && shell=$t; }
+  [ -n "$shell" ] || { pgrep -u "$uid" -x tilo-session >/dev/null && shell=$t; }
   [ -n "$frame" ] || frame=$(sed -n 's/^FRAME-LIFECYCLE serial=1 event=render-retired .* monotonic_us=\([0-9]*\).*/\1/p' "$log" 2>/dev/null | head -1)
   if [ -z "$usable" ] && [ -S "$ctl" ] && timeout 3 tilo-control --socket "$ctl" state-dump >/dev/null 2>&1; then usable=$(now); fi
   [ -n "$um" ] && [ -n "$sess" ] && [ -n "$shell" ] && [ -n "$usable" ] \
@@ -1483,11 +1484,11 @@ loginctl terminate-user __USER__ 2>&1 || true
 i=0
 while [ $i -lt 300 ]; do
   i=$((i + 1))
-  ! pgrep -u __USER__ -x shell >/dev/null && ls /run/user/$(id -u greetd)/tilo-console/*.sock >/dev/null 2>&1 && break
+  ! pgrep -u __USER__ -x tilo-session >/dev/null && ls /run/user/$(id -u greetd)/tilo-console/*.sock >/dev/null 2>&1 && break
   sleep 0.2
 done
 sleep 3
-echo "SIGNED-OUT shell=$(pgrep -u __USER__ -x shell | head -1)"
+echo "SIGNED-OUT shell=$(pgrep -u __USER__ -x tilo-session | head -1)"
 """
 SIGNIN_LINE = re.compile(r"^SIGNIN (.*)$", re.M)
 

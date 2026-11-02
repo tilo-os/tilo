@@ -110,6 +110,10 @@ kind = "userspace"
 scope = "session"
 packages = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "osk"]
 bins = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "osk"]
+# A dev image's session is the desktop `tilo-vm shot|input|control` and the
+# capture harnesses drive: it opens the test-control socket
+# `$TILO_TEST_CONTROL` names at the path the session wrapper gives it.
+dev_features = ["tilo-session/dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-session", to = "/usr/bin/tilo-session", mode = "0755" },

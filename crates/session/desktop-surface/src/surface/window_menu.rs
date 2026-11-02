@@ -32,7 +32,23 @@ use tilo_desktop_model::{
 use crate::i18n::{t, t_args};
 use crate::navigation::{ChromeEffect, DeskEffect, Destination, RouteIds, Verb, WidthPreset};
 
-use super::Shared;
+use super::{DesktopHandle, Shared};
+
+impl DesktopHandle {
+    /// The windows whose bar was asked for its menu since the last call — a
+    /// secondary click — in the order they asked.
+    pub fn take_tab_menus(&self) -> Vec<TabId> {
+        std::mem::take(&mut self.shared.borrow_mut().menus)
+    }
+}
+
+/// The tabs whose bar asked for its menu, in the row's window order.
+pub(super) fn take_asked_menus(row: &mut ui::widget::GroupRow) -> Vec<TabId> {
+    row.groups
+        .iter_mut()
+        .filter_map(|group| group.take_tab_context_menu().map(|(tab, _)| tab))
+        .collect()
+}
 
 pub const REVEAL: &str = "window-reveal";
 pub const FULLSCREEN: &str = "window-fullscreen";

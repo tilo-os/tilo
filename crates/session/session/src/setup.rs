@@ -254,6 +254,19 @@ impl Published for Setup {
             .collect()
     }
 
+    /// Setup's controls by name, so a tool that goes through the first
+    /// login — `tilo-vmd`'s `--identity device` — presses the page the
+    /// person sees, never a guessed point.
+    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        self.serve();
+        Published::controls(self.widgets_mut())
+    }
+
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        self.serve();
+        Published::press(self.widgets_mut(), name)
+    }
+
     fn offered(&self) -> bool {
         self.up()
     }

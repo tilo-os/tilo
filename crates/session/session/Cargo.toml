@@ -33,6 +33,11 @@ harness = false
 # build, so a `--release --features dev-session` never carries it: the marker
 # is the entire content of the feature.
 dev-session = []
+# Lets a release binary of a dev image open the test-control socket
+# `$TILO_TEST_CONTROL` names, which `tilo-vm` and the capture harnesses drive a
+# desktop through. A production image never builds it (tools/policy/
+# check_dev_overrides_contract.py).
+dev-overrides = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The surface apps' sockets are handed to their children as descriptors.

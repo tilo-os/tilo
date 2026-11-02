@@ -396,7 +396,7 @@ def switch_locale(vm: TiloVm, lang: str) -> None:
     session's PAM login inherits from systemd) and restart the slot's session in it."""
     vm.vm_cmd("ssh", "--", f"localectl set-locale LANG={lang} && systemctl daemon-reload", timeout=60)
     vm.restart_session()
-    got =vm.root_exec(f"tr '\\0' '\\n' < /proc/$(pgrep -u $(id -u tds-{vm.slot}) -x shell | head -1)/environ "
+    got =vm.root_exec(f"tr '\\0' '\\n' < /proc/$(pgrep -u $(id -u tds-{vm.slot}) -x tilo-session | head -1)/environ "
                        "| grep -E '^(LANG|LC_ALL|LC_MESSAGES)='", timeout=60)
     if lang not in got:
         raise VmError(f"the restarted compositor runs with {got.strip() or 'no LANG'}, not LANG={lang}")

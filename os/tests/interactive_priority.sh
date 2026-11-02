@@ -92,7 +92,7 @@ else
   case " $controllers " in *' io '*) ok 'io controller delegated to the user manager' ;;
     *) bad "io not delegated: $controllers" ;; esac
   # The compositor's session scope, set by the compositor at startup.
-  shell_pid=$(pgrep -xo shell || true)
+  shell_pid=$(pgrep -xo tilo-session || true)
   if [ -n "$shell_pid" ]; then
     scope=$(sed -n 's#.*/\(session-[0-9]*\.scope\)$#\1#p' "/proc/$shell_pid/cgroup")
     prop --system "$scope" CPUWeight 1000

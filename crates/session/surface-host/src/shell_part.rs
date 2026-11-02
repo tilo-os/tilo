@@ -2651,6 +2651,14 @@ impl crate::Published for ShellPart {
     fn accessible_labels(&mut self) -> Vec<String> {
         crate::Published::accessible_labels(&mut self.widgets)
     }
+
+    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        crate::Published::controls(&mut self.widgets)
+    }
+
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        crate::Published::press(&mut self.widgets, name)
+    }
 }
 
 /// The keysym of Tab, as the layout reports it: Alt+Tab and Alt+Shift+Tab walk the switcher.

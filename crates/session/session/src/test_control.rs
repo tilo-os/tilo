@@ -1,45 +1,71 @@
 //! The development test-control socket: `tilo-control` drives a session it was started for
-//! (`tilo-session --test-control PATH`, honoured by development builds only) over the
-//! protocol it speaks to the shell's (`shell::shell::test_control`): one JSON request per line,
-//! tagged by `op`, and one answer per line, `{"ok": {"frame": N}}` or
+//! (`tilo-session --test-control PATH`, or `$TILO_TEST_CONTROL`, honoured by development builds
+//! only) over the protocol it speaks to the shell's (`shell::shell::test_control`): one JSON
+//! request per line, tagged by `op`, and one answer per line, `{"ok": {"frame": N}}` or
 //! `{"err": {"code": .., "message": ..}}`.
 //!
-//! The session answers `snapshot` (`tilo-control snapshot PATH`): a PNG of every display, each at
-//! its place in the layout, as the portal's screenshot of the screen takes it
-//! ([`crate::capture::picture`]); and `provision_test_identity`
-//! (`tilo-control raw '{"op":"provision_test_identity"}'`), which mints the throwaway identity a
-//! development session opens its desk with instead of first-use setup, as the shell's does for a
-//! dev image; and `click_at` (`tilo-control click-at X Y`), a click of the primary button there,
-//! which a development run presses the screen's own controls with (the shell's preset switch).
-//! Every other request is answered `unsupported`.
+//! What it answers, as the tools that drive a desktop need it:
+//!
+//! - `snapshot` (`tilo-control snapshot PATH`): a PNG of every display, each at its place in the
+//!   layout, as the portal's screenshot of the screen takes it ([`crate::capture::picture`]);
+//! - `provision_test_identity` (`tilo-control raw '{"op":"provision_test_identity"}'`), which
+//!   mints the throwaway identity a development session opens its desk with instead of first-use
+//!   setup, as the shell's does for a dev image;
+//! - `list_targets` and `click_named`: every control the session's hosted surfaces show, by the
+//!   name they go by (a tab's pill, a place's switch, `onboarding.begin.button`), and a press of
+//!   one of them through the same action route an assistive technology activates it with — never
+//!   a point aimed at;
+//! - the pointer: `pointer_move`, `pointer_button` (left, right or middle) and `click_at`;
+//! - `drag`: a press at one place, interpolated motion, and the release at another, which is how
+//!   a tab moves into another group or onto another strip;
+//! - the keyboard: `key`, `key_down`/`key_up` (a held modifier across a keystroke) and `key`'s
+//!   `modifiers` mask, and `type`, each character typed by the key the seat's layout puts it on,
+//!   or written as text where the layout has no key for it;
+//! - `state_dump` and `windows`: the desk as it is now, and one row per open window.
 //!
 //! Each connection is read on a thread of its own; what it asks is answered on the loop's pass,
 //! the only place that may touch the compositor, and the loop is woken for it.
 
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use serde_json::{Value as Json, json};
-use tilo_compositor::Compositor;
+use tilo_compositor::{Compositor, InputEvent};
+use tilo_desktop::overlays::{Overlays, Slot};
+use tilo_desktop_model::DesktopTree;
+use tilo_desktop_surface::DesktopHandle;
 use tilo_service::Wake;
+use tilo_surface_host::Doors;
 
-/// The variable `tilo-control` reads the test-control socket's path from, which the session
-/// prints with the path it opened.
+use crate::engine::Engine;
+
+/// The variable `tilo-control` reads the test-control socket's path from: what a development
+/// session binds the socket at when its command line names none, and what it prints with the
+/// path it opened.
 pub const ENV: &str = "TILO_TEST_CONTROL";
 
-/// Whether this build opens the test-control socket a command line names: development builds
-/// only. A release build leaves the flag without effect, so nothing it ships drives a session
-/// as the person through a socket.
-pub const OPENED_BY_THIS_BUILD: bool = cfg!(debug_assertions);
+/// Whether this build opens the test-control socket it is given: development builds, and the
+/// dev image's, whose binaries are release ones built with `dev-overrides`. A production build
+/// leaves the flag without effect, so nothing it ships drives a session as the person through a
+/// socket.
+pub const OPENED_BY_THIS_BUILD: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
 
-/// Where the socket `--test-control` names is opened, given whether this build opens one
-/// (`opens`, [`OPENED_BY_THIS_BUILD`]) and the path the flag named: `None` in a build that
-/// opens none, whatever was named.
+/// Where the socket is opened, given whether this build opens one (`opens`,
+/// [`OPENED_BY_THIS_BUILD`]) and the path the command line named: `None` in a build that opens
+/// none, whatever was named; the named path, else `$TILO_TEST_CONTROL`'s.
 #[must_use]
 pub fn path(opens: bool, named: Option<&str>) -> Option<PathBuf> {
-    named.filter(|_| opens).map(PathBuf::from)
+    if !opens {
+        return None;
+    }
+    named
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os(ENV).map(PathBuf::from))
+        .filter(|path| !path.as_os_str().is_empty())
 }
 
 /// The socket at `path`, when one is named, opened; `None`, saying why, when
@@ -55,10 +81,21 @@ pub(crate) fn open_named(path: Option<&Path>, wake: Wake) -> Option<TestControl>
     }
 }
 
+/// What the session is, for the answers that read it: the doors every hosted surface's actions
+/// go through, the desk's tree, what stands over it, the workspaces this computer holds, and
+/// whether the person locked the screen.
+pub(crate) struct Desk<'a> {
+    pub(crate) doors: &'a Doors,
+    pub(crate) handle: &'a DesktopHandle,
+    pub(crate) overlays: &'a Overlays,
+    pub(crate) engine: Option<&'a Engine>,
+    pub(crate) locked: bool,
+}
+
 /// Answer what `control`, when there is one, was asked since the last pass.
-pub(crate) fn serve(control: Option<&TestControl>, compositor: &mut Compositor) {
+pub(crate) fn serve(control: Option<&TestControl>, compositor: &mut Compositor, desk: Desk<'_>) {
     if let Some(control) = control {
-        control.serve(compositor);
+        control.serve(compositor, &desk);
     }
 }
 
@@ -75,6 +112,9 @@ pub(crate) struct TestControl {
     asks: Sender<Asked>,
     asked: Receiver<Asked>,
     wake: Wake,
+    /// The keys a `key_down` holds, so `key_up` releases them and `modifiers` knows what to
+    /// press and release to reach the mask it names.
+    held: RefCell<BTreeSet<u32>>,
 }
 
 impl TestControl {
@@ -93,14 +133,15 @@ impl TestControl {
             asks,
             asked,
             wake,
+            held: RefCell::new(BTreeSet::new()),
         })
     }
 
     /// Take the connections waiting and answer what was asked since the last pass.
-    pub(crate) fn serve(&self, compositor: &mut Compositor) {
+    pub(crate) fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
         self.accept();
         while let Ok(Asked { request, answer }) = self.asked.try_recv() {
-            let _ = answer.send(answered(&request, compositor).to_string());
+            let _ = answer.send(answered(&request, compositor, desk, &self.held).to_string());
         }
     }
 
@@ -167,10 +208,26 @@ fn serve_connection(stream: UnixStream, asks: &Sender<Asked>, wake: &Wake) {
 }
 
 /// The answer to `request`, run against `compositor`.
-fn answered(request: &str, compositor: &mut Compositor) -> Json {
+fn answered(
+    request: &str,
+    compositor: &mut Compositor,
+    desk: &Desk<'_>,
+    held: &RefCell<BTreeSet<u32>>,
+) -> Json {
     let request: Json = match serde_json::from_str(request) {
         Ok(request) => request,
         Err(error) => return refusal("parse_error", &error.to_string()),
+    };
+    let number = |name: &str| request.get(name).and_then(Json::as_f64);
+    let button = |name: &str| match request.get(name).and_then(Json::as_str) {
+        None => Ok(BUTTON_LEFT),
+        Some("left") => Ok(BUTTON_LEFT),
+        Some("right") => Ok(BUTTON_RIGHT),
+        Some("middle") => Ok(BUTTON_MIDDLE),
+        Some(other) => Err(refusal(
+            "parse_error",
+            &format!("`{name}` is `left`, `right` or `middle`, not `{other}`"),
+        )),
     };
     match request.get("op").and_then(Json::as_str) {
         Some("snapshot") => {
@@ -185,43 +242,422 @@ fn answered(request: &str, compositor: &mut Compositor) -> Json {
         }
         Some("provision_test_identity") => provision_test_identity(),
         Some("click_at") => {
-            let at = |name: &str| request.get(name).and_then(Json::as_f64);
-            match (at("x"), at("y")) {
-                (Some(x), Some(y)) => match click_at(compositor, x, y) {
-                    Ok(()) => json!({"ok": {}}),
-                    Err(error) => refusal("input_failed", &error),
-                },
-                _ => refusal("parse_error", "`click_at` takes `x` and `y`"),
+            let (Some(x), Some(y)) = (number("x"), number("y")) else {
+                return refusal("parse_error", "`click_at` takes `x` and `y`");
+            };
+            let button = match button("button") {
+                Ok(button) => button,
+                Err(refusal) => return refusal,
+            };
+            if let Err(error) = compositor.input(InputEvent::PointerMotion { x, y }) {
+                return refusal("input_failed", &error.to_string());
+            }
+            tap(compositor, button)
+        }
+        Some("pointer_move") => {
+            let (Some(x), Some(y)) = (number("x"), number("y")) else {
+                return refusal("parse_error", "`pointer_move` takes `x` and `y`");
+            };
+            answer(compositor.input(InputEvent::PointerMotion { x, y }))
+        }
+        Some("pointer_button") => {
+            let Some(pressed) = request.get("pressed").and_then(Json::as_bool) else {
+                return refusal("parse_error", "`pointer_button` takes `pressed`");
+            };
+            let button = match button("button") {
+                Ok(button) => button,
+                Err(refusal) => return refusal,
+            };
+            answer(compositor.input(InputEvent::PointerButton { button, pressed }))
+        }
+        Some("drag") => {
+            let (Some(x_from), Some(y_from), Some(x_to), Some(y_to)) = (
+                number("x_from"),
+                number("y_from"),
+                number("x_to"),
+                number("y_to"),
+            ) else {
+                return refusal(
+                    "parse_error",
+                    "`drag` takes `x_from`, `y_from`, `x_to` and `y_to`",
+                );
+            };
+            let steps = request
+                .get("steps")
+                .and_then(Json::as_u64)
+                .unwrap_or(8)
+                .clamp(1, 1_000);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a drag's steps are clamped to a thousand"
+            )]
+            let steps = steps as u32;
+            let button = match button("button") {
+                Ok(button) => button,
+                Err(refusal) => return refusal,
+            };
+            match drag(compositor, button, (x_from, y_from), (x_to, y_to), steps) {
+                Ok(()) => json!({"ok": {}}),
+                Err(error) => refusal("input_failed", &error),
             }
         }
+        Some("scroll") => {
+            let dx = number("dx").unwrap_or(0.0);
+            let dy = number("dy").unwrap_or(0.0);
+            // A notch up is the old wire's positive `dy`; the compositor speaks the protocol's
+            // axis, which counts down as positive.
+            answer(compositor.input(InputEvent::PointerAxis {
+                horizontal: -dx,
+                vertical: -dy,
+            }))
+        }
+        Some("key") => match key_code(&request, compositor) {
+            Some(code) => {
+                for pressed in [true, false] {
+                    if let Err(error) = compositor.input(InputEvent::Key {
+                        keycode: code,
+                        pressed,
+                    }) {
+                        return refusal("input_failed", &error.to_string());
+                    }
+                }
+                json!({"ok": {}})
+            }
+            None => refusal(
+                "parse_error",
+                "`key` takes a named key or one character the keyboard types",
+            ),
+        },
+        Some("key_down") => match key_code(&request, compositor) {
+            Some(code) => {
+                if let Err(error) = compositor.input(InputEvent::Key {
+                    keycode: code,
+                    pressed: true,
+                }) {
+                    return refusal("input_failed", &error.to_string());
+                }
+                held.borrow_mut().insert(code);
+                json!({"ok": {}})
+            }
+            None => refusal("parse_error", "`key_down` takes a named key"),
+        },
+        Some("key_up") => match key_code(&request, compositor) {
+            Some(code) => {
+                if let Err(error) = compositor.input(InputEvent::Key {
+                    keycode: code,
+                    pressed: false,
+                }) {
+                    return refusal("input_failed", &error.to_string());
+                }
+                held.borrow_mut().remove(&code);
+                json!({"ok": {}})
+            }
+            None => refusal("parse_error", "`key_up` takes a named key"),
+        },
+        Some("modifiers") => {
+            let wanted = [
+                (KEY_CTRL, request.get("ctrl").and_then(Json::as_bool)),
+                (KEY_SHIFT, request.get("shift").and_then(Json::as_bool)),
+                (KEY_ALT, request.get("alt").and_then(Json::as_bool)),
+                (KEY_SUPER, request.get("logo").and_then(Json::as_bool)),
+            ];
+            for (code, pressed) in wanted {
+                let pressed = pressed.unwrap_or(false);
+                let was = held.borrow().contains(&code);
+                if pressed == was {
+                    continue;
+                }
+                if let Err(error) = compositor.input(InputEvent::Key {
+                    keycode: code,
+                    pressed,
+                }) {
+                    return refusal("input_failed", &error.to_string());
+                }
+                if pressed {
+                    held.borrow_mut().insert(code);
+                } else {
+                    held.borrow_mut().remove(&code);
+                }
+            }
+            json!({"ok": {}})
+        }
+        Some("type") => {
+            let Some(text) = request.get("text").and_then(Json::as_str) else {
+                return refusal("parse_error", "`type` takes `text`");
+            };
+            match type_text(compositor, text) {
+                Ok(()) => json!({"ok": {}}),
+                Err(error) => refusal("input_failed", &error),
+            }
+        }
+        Some("list_targets") => {
+            let targets: Vec<Json> = desk
+                .doors
+                .controls()
+                .into_iter()
+                .map(|(name, (x, y, w, h))| json!({"name": name, "rect": [x, y, w, h]}))
+                .collect();
+            json!({"targets": targets})
+        }
+        Some("click_named") => {
+            let Some(name) = request.get("name").and_then(Json::as_str) else {
+                return refusal("parse_error", "`click_named` takes `name`");
+            };
+            match desk.doors.press(name) {
+                Ok(()) => json!({"ok": {}}),
+                Err(error) => refusal("unknown_target", &error),
+            }
+        }
+        Some("state_dump") => desk.handle.read(|tree| state_dump(tree, desk)),
+        Some("windows") => desk
+            .handle
+            .read(|tree| json!({"answer": {"windows": window_rows(tree)}})),
         Some(op) => refusal(
             "unsupported",
             &format!(
-                "this session's test control answers `snapshot`, `click_at` and \
-                 `provision_test_identity`, not `{op}`"
+                "this session's test control answers `snapshot`, `click_at`, `click_named`, \
+                 `drag`, `key`, `key_down`, `key_up`, `list_targets`, `modifiers`, \
+                 `pointer_button`, `pointer_move`, `provision_test_identity`, `scroll`, \
+                 `state_dump`, `type` and `windows`, not `{op}`"
             ),
         ),
         None => refusal("parse_error", "a request names its `op`"),
     }
 }
 
-/// A press and release of the primary button at `(x, y)`, logical pixels of the layout, as the
-/// person clicks there: what a development run drives the screen's own controls with.
-fn click_at(compositor: &mut Compositor, x: f64, y: f64) -> Result<(), String> {
-    use tilo_compositor::InputEvent;
-    const BTN_LEFT: u32 = 0x110;
-    compositor
-        .input(InputEvent::PointerMotion { x, y })
-        .map_err(|error| error.to_string())?;
+/// The evdev codes the pointer's buttons go by.
+const BUTTON_LEFT: u32 = 0x110;
+const BUTTON_RIGHT: u32 = 0x111;
+const BUTTON_MIDDLE: u32 = 0x112;
+
+/// The evdev codes of the keys a `modifiers` request holds.
+const KEY_CTRL: u32 = 29;
+const KEY_SHIFT: u32 = 42;
+const KEY_ALT: u32 = 56;
+const KEY_SUPER: u32 = 125;
+
+/// `ok` when the input took `result`, its refusal otherwise.
+fn answer(result: Result<(), tilo_compositor::Error>) -> Json {
+    match result {
+        Ok(()) => json!({"ok": {}}),
+        Err(error) => refusal("input_failed", &error.to_string()),
+    }
+}
+
+/// One place of a drag: `from` to `to`, `at` of the way.
+fn drag_step(from: (f64, f64), to: (f64, f64), at: f64) -> (f64, f64) {
+    (from.0 + (to.0 - from.0) * at, from.1 + (to.1 - from.1) * at)
+}
+
+/// Press and release `button` where the pointer is, as the person clicks there.
+fn tap(compositor: &mut Compositor, button: u32) -> Json {
     for pressed in [true, false] {
+        if let Err(error) = compositor.input(InputEvent::PointerButton { button, pressed }) {
+            return refusal("input_failed", &error.to_string());
+        }
+    }
+    json!({"ok": {}})
+}
+
+/// A press at `from`, `steps` motions spread evenly to `to`, and the release there: the gesture
+/// that moves a tab into another group, or a file into a window.
+fn drag(
+    compositor: &mut Compositor,
+    button: u32,
+    from: (f64, f64),
+    to: (f64, f64),
+    steps: u32,
+) -> Result<(), String> {
+    // The press lands where the pointer is, so it is taken to where the gesture starts.
+    compositor
+        .input(InputEvent::PointerMotion {
+            x: from.0,
+            y: from.1,
+        })
+        .map_err(|error| error.to_string())?;
+    compositor
+        .input(InputEvent::PointerButton {
+            button,
+            pressed: true,
+        })
+        .map_err(|error| error.to_string())?;
+    for step in 1..=steps {
+        let at = f64::from(step) / f64::from(steps);
+        let (x, y) = drag_step(from, to, at);
         compositor
-            .input(InputEvent::PointerButton {
-                button: BTN_LEFT,
-                pressed,
-            })
+            .input(InputEvent::PointerMotion { x, y })
             .map_err(|error| error.to_string())?;
     }
+    compositor
+        .input(InputEvent::PointerButton {
+            button,
+            pressed: false,
+        })
+        .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// The evdev code a request's `key` means: a named key's, or, for one character, the key this
+/// seat's layout puts it on.
+fn key_code(request: &Json, compositor: &mut Compositor) -> Option<u32> {
+    let key = request.get("key").and_then(Json::as_str)?;
+    if let Some(code) = named_key(key) {
+        return Some(code);
+    }
+    let mut chars = key.chars();
+    let (first, rest) = (chars.next()?, chars.next());
+    if rest.is_some() {
+        return None;
+    }
+    let keysym = xkeysym::Keysym::from_char(first);
+    compositor.keycode_for_keysym(keysym.raw())
+}
+
+/// The evdev code a named key stands on every keyboard.
+fn named_key(name: &str) -> Option<u32> {
+    Some(match name {
+        "Enter" => 28,
+        "Escape" => 1,
+        "Tab" => 15,
+        "ArrowLeft" => 105,
+        "ArrowRight" => 106,
+        "ArrowUp" => 103,
+        "ArrowDown" => 108,
+        "Backspace" => 14,
+        "Delete" => 111,
+        "Home" => 102,
+        "End" => 107,
+        "PageUp" => 104,
+        "PageDown" => 109,
+        "F1" => 59,
+        "F4" => 62,
+        "PrintScreen" => 99,
+        "Space" => 57,
+        "Shift" => 42,
+        "Control" => 29,
+        "Alt" => 56,
+        "Super" => 125,
+        "AudioVolumeUp" => 115,
+        "AudioVolumeDown" => 114,
+        "AudioVolumeMute" => 113,
+        "MicrophoneVolumeMute" => 248,
+        "BrightnessUp" => 225,
+        "BrightnessDown" => 224,
+        "MediaPlayPause" => 164,
+        "MediaTrackNext" => 163,
+        "MediaTrackPrevious" => 165,
+        _ => return None,
+    })
+}
+
+/// Type `text` as the keyboard attached to the machine would: each character by the key this
+/// seat's layout puts it on, or, where the layout has no key for it, written as text into the
+/// field that takes it.
+fn type_text(compositor: &mut Compositor, text: &str) -> Result<(), String> {
+    for ch in text.chars() {
+        let typed = compositor
+            .type_char(ch)
+            .map_err(|error| error.to_string())?;
+        if !typed {
+            compositor.insert_active_text(&ch.to_string());
+        }
+    }
+    Ok(())
+}
+
+/// The desk as it is now: its tree without its history, the workspaces this computer holds, what
+/// stands over it, and whether the screen is locked — the shape the tools that drive a desktop
+/// read.
+fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
+    let held: BTreeSet<String> = desk
+        .engine
+        .map(|engine| {
+            engine
+                .workspaces()
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let held_workspaces: Vec<Json> = tree
+        .workspaces
+        .iter()
+        .filter(|workspace| held.contains(&workspace.room().to_string()))
+        .map(|workspace| {
+            json!({
+                "workspace": workspace.id.0,
+                "room": workspace.room().to_string(),
+            })
+        })
+        .collect();
+    let mut open = serde_json::Map::new();
+    for slot in Slot::ALL {
+        open.insert(slot.as_str().to_owned(), desk.overlays.is_open(slot).into());
+    }
+    let tree = tilo_desktop_model::history::without_history(|| serde_json::to_value(tree))
+        .unwrap_or(Json::Null);
+    json!({"state": {
+        "workspace_tree": tree,
+        "held_workspaces": held_workspaces,
+        "chrome": {
+            "session_locked": desk.locked,
+            "in_transition": false,
+            "overlays": open,
+        },
+        "peers": Json::Null,
+        "sharing": Json::Null,
+    }})
+}
+
+/// One row per tab of `tree` — where it is, which app shows it, and whether it is the tab in
+/// front of the active workspace's active strip and group. A workspace or strip without a name
+/// is named by its id; `kind` is the tile's variant and `app_id` the app it names, if any.
+fn window_rows(tree: &DesktopTree) -> Vec<Json> {
+    fn named(name: &str, id: u64) -> Json {
+        if name.is_empty() {
+            id.into()
+        } else {
+            name.into()
+        }
+    }
+    let mut rows = Vec::new();
+    for workspace in &tree.workspaces {
+        let workspace_active = workspace.id == tree.active;
+        let active_strip = tree.active_strip.get(&workspace.id);
+        for strip in &workspace.strips {
+            let strip_active = workspace_active && active_strip == Some(&strip.id);
+            let active_group = tree.active_group.get(&strip.id);
+            for group in &strip.window_groups {
+                let group_active = strip_active && active_group == Some(&group.id);
+                for tab in &group.tabs {
+                    let (kind, app_id) = tile_kind(&tab.tile);
+                    rows.push(json!({
+                        "workspace": named(&workspace.name, workspace.id.0),
+                        "strip": named(&strip.name, strip.id.0),
+                        "group": group.id,
+                        "tab": tab.id,
+                        "kind": kind,
+                        "app_id": app_id,
+                        "title": tab.title,
+                        "active": group_active && group.active_tab == tab.id,
+                    }));
+                }
+            }
+        }
+    }
+    rows
+}
+
+/// A tile's variant name and the `app_id` it carries, as its JSON spells them.
+fn tile_kind(tile: &tilo_desktop_model::TileContent) -> (String, Json) {
+    match serde_json::to_value(tile).unwrap_or_default() {
+        Json::String(kind) => (kind, Json::Null),
+        Json::Object(variant) => variant.into_iter().next().map_or_else(
+            || (String::new(), Json::Null),
+            |(kind, body)| (kind, body.get("app_id").cloned().unwrap_or_default()),
+        ),
+        _ => (String::new(), Json::Null),
+    }
 }
 
 /// Write a PNG of every display, each at its place in the layout, to `path`.
@@ -281,7 +717,17 @@ mod tests {
             Some(PathBuf::from("/run/user/1000/control.sock"))
         );
         assert_eq!(path(false, Some("/run/user/1000/control.sock")), None);
-        assert_eq!(path(true, None), None);
-        assert_eq!(OPENED_BY_THIS_BUILD, cfg!(debug_assertions));
+        assert_eq!(
+            OPENED_BY_THIS_BUILD,
+            cfg!(any(debug_assertions, feature = "dev-overrides"))
+        );
+    }
+
+    #[test]
+    fn a_named_key_and_a_character_are_told_apart() {
+        assert_eq!(named_key("Enter"), Some(28));
+        assert_eq!(named_key("Super"), Some(125));
+        assert_eq!(named_key("enter"), None);
+        assert_eq!(named_key("a"), None);
     }
 }

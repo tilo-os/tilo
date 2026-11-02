@@ -48,6 +48,21 @@ pub trait Published {
     /// The labels of its accessibility tree, in reading order.
     fn accessible_labels(&mut self) -> Vec<String>;
 
+    /// The controls it shows by name, each with where it stands, logical
+    /// `(x, y, w, h)` of the desktop: what a test or a tool presses by name.
+    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        Vec::new()
+    }
+
+    /// Press the control `name` it shows: the same route a person's click or
+    /// an assistive technology's activation takes, never a point aimed at.
+    ///
+    /// # Errors
+    /// It shows no control by that name, or the control refused.
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        Err(format!("no control named {name}"))
+    }
+
     /// Where what it publishes stands: equal revisions publish the same.
     /// `None` when it cannot tell, and is read again every time.
     fn revision(&self) -> Option<u64> {
@@ -228,5 +243,35 @@ impl Doors {
             .into_iter()
             .flat_map(|(_, surface)| surface.borrow_mut().accessible_labels())
             .collect()
+    }
+
+    /// Every control the offered surfaces show by name, in name order: what
+    /// a test or a tool lists and then presses. A name two surfaces show is
+    /// the earlier surface's, which is the one in front of it.
+    #[must_use]
+    pub fn controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
+        let mut shown: std::collections::BTreeMap<String, (f64, f64, f64, f64)> =
+            std::collections::BTreeMap::new();
+        for (_, surface) in self.offered() {
+            for (name, rect) in surface.borrow_mut().controls() {
+                shown.entry(name).or_insert(rect);
+            }
+        }
+        shown.into_iter().collect()
+    }
+
+    /// Press the control `name` on the surface showing it, as an assistive
+    /// technology activates it.
+    ///
+    /// # Errors
+    /// No offered surface shows it, or the surface refused the press.
+    pub fn press(&self, name: &str) -> Result<(), String> {
+        for (_, surface) in self.offered() {
+            let mut surface = surface.borrow_mut();
+            if surface.controls().iter().any(|(shown, _)| shown == name) {
+                return surface.press(name);
+            }
+        }
+        Err(format!("no control named {name}"))
     }
 }

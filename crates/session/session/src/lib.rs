@@ -2199,6 +2199,7 @@ impl Session {
                 );
             }
             self.shared.follow_gestures();
+            self.shared.follow_tab_menus();
             let ran = self.shared.run_invocations(self.compositor.locked());
             let commands = std::mem::take(&mut *self.shared.commands.borrow_mut());
             let commanded = !commands.is_empty();
@@ -2654,7 +2655,18 @@ impl Session {
         self.shared.overview.step(&self.shared, now);
         self.compositor.render()?;
         // What `tilo-control` asks of the frame just drawn.
-        test_control::serve(self.test_control.as_ref(), &mut self.compositor);
+        let locked = self.compositor.locked();
+        test_control::serve(
+            self.test_control.as_ref(),
+            &mut self.compositor,
+            test_control::Desk {
+                doors: &self.shared.doors,
+                handle: &self.shared.handle,
+                overlays: &self.shared.overlays,
+                engine: self.shared.engine.as_deref(),
+                locked,
+            },
+        );
         // A live projection is sent the desktop as the pass just drew it.
         let video = self.display_sheet.video_stream();
         self.projection_video

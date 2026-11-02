@@ -4,7 +4,7 @@ The compositor loads the device key, which makes it non-dumpable: no other proce
 the store included, can read its `/proc/<pid>/exe`. It proves on each bus connection
 that it holds the device key instead (`so.tilo.Secrets1.CallerChallenge`/`ProveCaller`,
 docs/identity-security.md, "Callers the store cannot examine"), and the store then
-answers it as `binary:/usr/bin/shell`. `crates/system/secret-service/tests/identity_custody.rs`
+answers it as `binary:/usr/bin/tilo-session`. `crates/system/secret-service/tests/identity_custody.rs`
 proves that protocol with the production client code; these checks prove it with the
 real compositor on the installed image.
 
@@ -40,7 +40,7 @@ from .resources import SIGN_OUT, dev_account, sign_in
 
 AREA = "secrets"
 
-COMPOSITOR_APP = "binary:/usr/bin/shell"
+COMPOSITOR_APP = "binary:/usr/bin/tilo-session"
 # An app whose manifest declares the secrets portal, so its bus proxy lets it ask.
 PORTAL_APP = "so.tilo.passwords"
 MLS_UNAVAILABLE = "MLS collaboration unavailable"
@@ -52,7 +52,7 @@ SECRET_LEN = 32
 # As root: the uid's compositor, and what a process of that user sees of its executable.
 # The exit status of `ls` is what matters: 0 would mean the kernel shows the link.
 DUMPABLE = r"""
-pid=$(pgrep -u __UID__ -x shell | head -1)
+pid=$(pgrep -u __UID__ -x tilo-session | head -1)
 [ -n "$pid" ] || { echo "NO-COMPOSITOR"; exit 0; }
 echo "PID=$pid"
 out=$(runuser -u "$(id -nu __UID__)" -- ls -l "/proc/$pid/exe" 2>&1); echo "LS-EXIT=$?"
@@ -401,7 +401,7 @@ def identity_record(ctx, user: str) -> dict:
 def person_identity_in_the_store(ctx, res):
     user, secret = dev_account()
     uid = int(ctx.vm.root_exec(f"id -u {shlex.quote(user)}").split()[0])
-    if "PID=" not in ctx.vm.root_exec(f"pgrep -u {uid} -x shell | sed 's/^/PID=/' | head -1"):
+    if "PID=" not in ctx.vm.root_exec(f"pgrep -u {uid} -x tilo-session | sed 's/^/PID=/' | head -1"):
         steps = sign_in(ctx, user, secret, "C02")
         res.metrics["sign_in"] = steps
         if "control_s" not in steps:

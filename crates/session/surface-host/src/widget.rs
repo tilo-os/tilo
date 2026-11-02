@@ -239,6 +239,19 @@ impl WidgetHost {
         self.owed = true;
     }
 
+    /// A rectangle of the tree's physical pixels, as the desktop's logical
+    /// `(x, y, w, h)`.
+    fn logical(&self, rect: vello::kurbo::Rect) -> (f64, f64, f64, f64) {
+        let (ox, oy) = self.placement.origin;
+        let scale = self.placement.scale;
+        (
+            f64::from(ox) + rect.x0 / scale,
+            f64::from(oy) + rect.y0 / scale,
+            rect.width() / scale,
+            rect.height() / scale,
+        )
+    }
+
     /// A logical point of the desktop in the tree's physical pixels.
     fn local(&self, x: f64, y: f64) -> (f64, f64) {
         let (ox, oy) = self.placement.origin;
@@ -291,6 +304,50 @@ impl crate::Published for WidgetHost {
             })
             .filter(|words| !words.is_empty())
             .collect()
+    }
+
+    /// The tree's controls: the widgets addressed by a target (a place's
+    /// switch, a tab's pill, an onboarding step) and the elements it names
+    /// in its accessibility tree, each where it stands on the desktop.
+    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        let mut shown: std::collections::BTreeMap<String, (f64, f64, f64, f64)> =
+            std::collections::BTreeMap::new();
+        for (name, rect) in self.host.targets() {
+            shown.insert(name, self.logical(rect));
+        }
+        for (_, node) in self.host.a11y_nodes() {
+            let (Some(name), Some(bounds)) = (node.label(), node.bounds()) else {
+                continue;
+            };
+            shown.entry(name.to_owned()).or_insert_with(|| {
+                self.logical(vello::kurbo::Rect::new(
+                    bounds.x0, bounds.y0, bounds.x1, bounds.y1,
+                ))
+            });
+        }
+        shown.into_iter().collect()
+    }
+
+    /// The name `controls` showed, pressed: a widget addressed by its own
+    /// name or test id, else an element of the accessibility tree — a chip, a
+    /// window bar's pill — activated as assistive technology activates it.
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        match self.host.perform_named(name, &ui::a11y::Action::Activate) {
+            Ok(()) => {}
+            Err(named) => {
+                let node = self
+                    .host
+                    .a11y_nodes()
+                    .into_iter()
+                    .find(|(_, node)| node.label() == Some(name))
+                    .map(|(node, _)| node)
+                    .ok_or(named)?;
+                self.host
+                    .perform_a11y_action(node, &ui::a11y::Action::Activate)?;
+            }
+        }
+        self.owed = true;
+        Ok(())
     }
 }
 

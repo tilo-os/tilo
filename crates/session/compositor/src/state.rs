@@ -1326,6 +1326,22 @@ impl State {
         Some((rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
     }
 
+    /// The keys that type `ch` on the active layout, as the keymap itself
+    /// says: what a synthesised keystroke for that character must press.
+    pub(crate) fn stroke_for(&mut self, ch: char) -> Option<crate::typing::Stroke> {
+        let keyboard = self.seat.get_keyboard()?;
+        keyboard.with_xkb_state(self, |context| {
+            let xkb = context.xkb().lock().ok()?;
+            let layout = xkb.active_layout().0;
+            // Safety: the keymap reference never outlives the `Xkb` it
+            // borrows from, which the lock holds for this scan.
+            let keymap = unsafe { xkb.keymap() };
+            // Every key a real keyboard sends arrives as an evdev code in
+            // this range; a keymap also binds codes no keyboard sends.
+            crate::typing::stroke_for(keymap, layout, ch, |code| (1..=255).contains(&code))
+        })
+    }
+
     /// The evdev code of a key of the active layout that produces
     /// `keysym`; `None` when the layout cannot type it.
     #[expect(

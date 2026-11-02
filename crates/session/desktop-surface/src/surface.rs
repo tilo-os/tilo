@@ -176,6 +176,8 @@ struct Shared {
     /// The windows waiting for the person ([`DesktopHandle::ask_attention`]),
     /// until each has their focus.
     asking: std::collections::BTreeSet<TabId>,
+    /// The bars the person asked a menu of (a secondary press), waiting for the host.
+    menus: Vec<TabId>,
     /// Its person opens windows and tabs here ([`DesktopHandle::set_opens`]):
     /// the windows offer a new tab.
     opens: bool,
@@ -308,28 +310,6 @@ impl DesktopHandle {
     #[must_use]
     pub fn withholds(&self, app_id: &str) -> bool {
         self.shared.borrow().withheld.contains(app_id)
-    }
-
-    /// Where each window of the shown strip draws its active tab, in the
-    /// surface's coordinates, as of the last layout. Hidden tabs and other
-    /// strips are absent.
-    pub fn shown_tabs(&self) -> Vec<(TabId, Rect)> {
-        self.shared.borrow().shown_tabs.content()
-    }
-
-    /// The top of the shown windows' content, in the surface's coordinates,
-    /// as of the last layout: where the transients pinned into the display's
-    /// top-right corner start, below the windows' bars. Zero with no window.
-    pub fn content_top(&self) -> f64 {
-        self.shared.borrow().shown_tabs.content_top()
-    }
-
-    /// Where the whole window of `tab` stands — its bar, and the tab's
-    /// content in it — in the surface's coordinates, as of the last layout:
-    /// where a menu for it hangs from.
-    #[must_use]
-    pub fn window_rect(&self, tab: TabId) -> Option<Rect> {
-        self.shared.borrow().shown_tabs.window_rect(tab)
     }
 
     /// The shown strip, the area it is drawn in (surface coordinates) and
@@ -860,6 +840,7 @@ impl DesktopSurface {
             search_open: false,
             host_actions: Vec::new(),
             host_choices: Vec::new(),
+            menus: Vec::new(),
             search_host: None,
             search_choices: Vec::new(),
             search_asks: Vec::new(),
@@ -1493,6 +1474,7 @@ impl DesktopSurface {
         {
             shared.search_request = Some(request);
         }
+        shared.menus.extend(window_menu::take_asked_menus(row));
         if changed {
             shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
             shared.changed();

@@ -23,8 +23,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tilo_compositor::OutputConfig;
+use tilo_compositor::{KeyRepeat, OutputConfig};
+use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE};
+use tilo_desktop_model::{
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+};
 use tilo_service::Service as _;
+use tilo_session::mount::shell::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::ShellLayer;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -162,11 +167,7 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
     );
 
     // What the socket does not answer, it says so.
-    let refused = ask(
-        &mut session,
-        &socket,
-        &json!({"op": "drag", "x1": 1, "y1": 1, "x2": 2, "y2": 2}),
-    );
+    let refused = ask(&mut session, &socket, &json!({"op": "nonsense"}));
     assert_eq!(refused["err"]["code"], "unsupported", "{refused}");
 }
 
@@ -388,5 +389,317 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     assert!(
         written(&shot, title) > 20,
         "the frame's title is drawn where it is laid out, {title:?}"
+    );
+}
+
+/// A window on the desk: one tab of an app, named by its title.
+fn window(id: u64, title: &str, app: &str) -> Tab {
+    Tab {
+        id,
+        title: title.into(),
+        tile: TileContent::LocalApp {
+            app_id: app.into(),
+            label: title.into(),
+            note: String::new(),
+        },
+        app_title: None,
+    }
+}
+
+/// A desk of one strip holding `windows`, each in a group of its own, the last in front.
+fn desk(windows: &[(u64, &str)]) -> DesktopTree {
+    let groups: Vec<WindowGroup> = windows
+        .iter()
+        .enumerate()
+        .map(|(at, (id, title))| WindowGroup {
+            id: 100 + u64::try_from(at).unwrap_or(u64::MAX),
+            active_tab: *id,
+            tabs: vec![window(*id, title, "so.tilo.notes")],
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        })
+        .collect();
+    let front = groups.last().expect("a window").id;
+    let mut workspace = Workspace::new(WorkspaceId(1), "Work");
+    workspace.strips = vec![Strip {
+        id: StripId(2),
+        name: "Main".into(),
+        window_groups: groups,
+    }];
+    let mut tree = DesktopTree {
+        active: workspace.id,
+        workspaces: vec![workspace],
+        ..Default::default()
+    };
+    tree.active_strip.insert(WorkspaceId(1), StripId(2));
+    tree.active_group.insert(StripId(2), front);
+    tree
+}
+
+/// A desk of one window holding `tabs`, the last of them in front.
+fn tabbed(tabs: &[(u64, &str)]) -> DesktopTree {
+    let front = tabs.last().map(|(id, _)| *id).expect("a tab");
+    let group = WindowGroup {
+        id: 100,
+        active_tab: front,
+        tabs: tabs
+            .iter()
+            .map(|(id, title)| window(*id, title, "so.tilo.notes"))
+            .collect(),
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    };
+    let mut workspace = Workspace::new(WorkspaceId(1), "Work");
+    workspace.strips = vec![Strip {
+        id: StripId(2),
+        name: "Main".into(),
+        window_groups: vec![group],
+    }];
+    let mut tree = DesktopTree {
+        active: workspace.id,
+        workspaces: vec![workspace],
+        ..Default::default()
+    };
+    tree.active_strip.insert(WorkspaceId(1), StripId(2));
+    tree.active_group.insert(StripId(2), 100);
+    tree
+}
+
+/// The tab the window `group` shows.
+fn active_tab(session: &Session, group: u64) -> Option<u64> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .find(|candidate| candidate.id == group)
+            .map(|candidate| candidate.active_tab)
+    })
+}
+
+/// A headless session that shows `tree` and answers on the test-control `socket`.
+fn session_showing(tree: DesktopTree, socket: &Path) -> Session {
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            collab: false,
+            test_control: Some(socket.to_path_buf()),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    session.handle().replace_tree(tree);
+    session
+        .desktop()
+        .with_widgets(tilo_surface_host::WidgetHost::relayout);
+    session.step(Duration::from_millis(1)).expect("step");
+    session
+}
+
+/// Every group of the desk's first strip, with the tabs it holds, in order.
+fn groups(session: &Session) -> Vec<(u64, Vec<u64>)> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .first()
+            .and_then(|workspace| workspace.strips.first())
+            .map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .map(|group| (group.id, group.tabs.iter().map(|tab| tab.id).collect()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// Where the control `name` stands, as `list_targets` reports it, in logical coordinates.
+fn target_rect(answer: &Value, name: &str) -> Option<(f64, f64, f64, f64)> {
+    let rect = answer["targets"]
+        .as_array()?
+        .iter()
+        .find(|target| target["name"] == name)?
+        .get("rect")?
+        .as_array()?;
+    Some((
+        rect.first()?.as_f64()?,
+        rect.get(1)?.as_f64()?,
+        rect.get(2)?.as_f64()?,
+        rect.get(3)?.as_f64()?,
+    ))
+}
+
+/// The middle of a rectangle.
+fn center((x, y, width, height): (f64, f64, f64, f64)) -> (f64, f64) {
+    (x + width / 2.0, y + height / 2.0)
+}
+
+/// The open search, as the desk publishes it.
+fn search(session: &Session) -> Option<tilo_actions::ResourceSpec> {
+    fn find(
+        resources: &[tilo_actions::ResourceSpec],
+        id: &str,
+    ) -> Option<tilo_actions::ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource.clone())
+            } else {
+                find(&resource.children, id)
+            }
+        })
+    }
+    find(&session.resources(), SEARCH_RESOURCE)
+}
+
+/// Letters typed through the socket land in the field the desk is listening through: the open
+/// search's query, not the window behind it.
+#[test]
+fn text_typed_through_the_socket_reaches_the_open_search() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let mut session = session_showing(desk(&[(20, "Alpha")]), &socket);
+    // A step of a headless session can take longer than a repeat waits; the text is typed once.
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session
+        .invoke(DESK_RESOURCE, "search", &serde_json::Map::new())
+        .expect("the search opens");
+    assert!(
+        reached(&mut session, |session| search(session).is_some()),
+        "the search shows: {:?}",
+        session.accessible_labels()
+    );
+
+    let typed = ask(&mut session, &socket, &json!({"op": "type", "text": "cal"}));
+    assert_eq!(typed, json!({"ok": {}}), "the text is typed");
+    assert!(
+        reached(&mut session, |session| search(session)
+            .is_some_and(|search| search.label == "cal")),
+        "the query reads what was typed: {:?}",
+        search(&session).map(|search| search.label)
+    );
+}
+
+/// A tab dragged through the socket from one window's bar to another's is the other window's,
+/// as the person's own drag makes it.
+#[test]
+fn a_drag_through_the_socket_moves_a_tab_into_another_group() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let mut session = session_showing(desk(&[(20, "Alpha"), (21, "Beta")]), &socket);
+    let targets = ask(&mut session, &socket, &json!({"op": "list_targets"}));
+    let beta = target_rect(&targets, "Beta")
+        .unwrap_or_else(|| panic!("the Beta pill stands somewhere: {targets}"));
+    let (from_x, from_y) = center(beta);
+    // The other window stands to the left, past the display's edge: the part of
+    // its bar that shows still takes the drop.
+    let dragged = ask(
+        &mut session,
+        &socket,
+        &json!({
+            "op": "drag",
+            "x_from": from_x,
+            "y_from": from_y,
+            "x_to": 100.0,
+            "y_to": from_y,
+        }),
+    );
+    assert_eq!(dragged, json!({"ok": {}}), "the drag is taken");
+    assert!(
+        reached(&mut session, |session| groups(session)
+            .iter()
+            .any(|(_, tabs)| tabs.contains(&20) && tabs.contains(&21))),
+        "the dragged tab shares the other window's group: {:?}",
+        groups(&session)
+    );
+}
+
+/// A secondary click through the socket on a window's bar opens the window's menu, as the
+/// person's own right click does.
+#[test]
+fn a_secondary_click_through_the_socket_opens_the_window_menu() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let mut session = session_showing(desk(&[(20, "Alpha")]), &socket);
+    let targets = ask(&mut session, &socket, &json!({"op": "list_targets"}));
+    let notes = target_rect(&targets, "Alpha")
+        .unwrap_or_else(|| panic!("the Alpha pill stands somewhere: {targets}"));
+    let (x, y) = center(notes);
+    assert_eq!(
+        ask(
+            &mut session,
+            &socket,
+            &json!({"op": "pointer_move", "x": x, "y": y})
+        ),
+        json!({"ok": {}}),
+        "the pointer stands on the pill"
+    );
+    assert_eq!(
+        ask(
+            &mut session,
+            &socket,
+            &json!({"op": "pointer_button", "button": "right", "pressed": true})
+        ),
+        json!({"ok": {}}),
+        "the right button goes down"
+    );
+    assert_eq!(
+        ask(
+            &mut session,
+            &socket,
+            &json!({"op": "pointer_button", "button": "right", "pressed": false})
+        ),
+        json!({"ok": {}}),
+        "and comes back up"
+    );
+    assert!(
+        reached(&mut session, |session| session
+            .read(WINDOW_MENU)
+            .is_some_and(|menu| menu["tab"] == json!("20"))),
+        "the window's menu stands open: {:?}",
+        session.read(WINDOW_MENU)
+    );
+}
+
+/// A control invoked by the name the semantic tree gives it acts, without a point being aimed
+/// at it: the other tab's pill brings that tab to the front.
+#[test]
+fn a_named_control_is_invoked_through_the_socket() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let mut session = session_showing(tabbed(&[(20, "Alpha"), (21, "Beta")]), &socket);
+    assert_eq!(
+        active_tab(&session, 100),
+        Some(21),
+        "the last tab is in front"
+    );
+    let targets = ask(&mut session, &socket, &json!({"op": "list_targets"}));
+    assert!(
+        target_rect(&targets, "Alpha").is_some(),
+        "the pill is named: {targets}"
+    );
+    assert_eq!(
+        ask(
+            &mut session,
+            &socket,
+            &json!({"op": "click_named", "name": "Alpha"})
+        ),
+        json!({"ok": {}}),
+        "the pill is pressed by its name"
+    );
+    assert!(
+        reached(&mut session, |session| active_tab(session, 100) == Some(20)),
+        "the tab it names is the one in front: {:?}",
+        active_tab(&session, 100)
     );
 }

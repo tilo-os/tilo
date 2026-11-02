@@ -303,6 +303,12 @@ impl DesktopHost {
         std::mem::take(&mut self.desk.borrow_mut().gestures)
     }
 
+    /// The windows whose bar asked for its menu since the last call, oldest
+    /// first: a secondary click on a bar.
+    pub fn take_tab_menus(&self) -> Vec<u64> {
+        self.desk.borrow().policy.handle().take_tab_menus()
+    }
+
     /// What the desktop asked to open since the last call, oldest first:
     /// the apps the session plans and starts.
     pub fn take_launches(&self) -> Vec<String> {
@@ -349,6 +355,14 @@ impl crate::Published for DesktopHost {
 
     fn accessible_labels(&mut self) -> Vec<String> {
         crate::Published::accessible_labels(&mut self.desk.borrow_mut().host)
+    }
+
+    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        crate::Published::controls(&mut self.desk.borrow_mut().host)
+    }
+
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        crate::Published::press(&mut self.desk.borrow_mut().host, name)
     }
 }
 

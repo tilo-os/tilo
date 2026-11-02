@@ -29,7 +29,7 @@ use xkeysym::key as keysyms;
 use crate::Shared;
 use crate::displays;
 use crate::mount::services::answered;
-use crate::mount::shell::OVERLAYS;
+use crate::mount::shell::{OVERLAYS, WINDOW_MENU};
 /// One published action to invoke, with its arguments.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Invocation {
@@ -758,6 +758,16 @@ impl Shared {
                     Invocation::new(CHROME_RESOURCE, "overview").with("open", open)
                 }
             });
+        }
+    }
+
+    /// What a secondary click on a window's bar asked, as the window menu's
+    /// own published action: that window's menu up.
+    pub(crate) fn follow_tab_menus(&self) {
+        let tabs = self.desktop.take_tab_menus();
+        let mut invocations = self.invocations.borrow_mut();
+        for tab in tabs {
+            invocations.push(Invocation::new(WINDOW_MENU, "open").with("tab", tab.to_string()));
         }
     }
 
