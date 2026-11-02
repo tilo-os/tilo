@@ -1618,7 +1618,13 @@ fn scan_gpu(
             ));
             continue;
         };
-        let scale = config.scales.get(&name).copied().unwrap_or(1.0);
+        // The person's scale for this connector, else the one its panel's
+        // density argues for: a monitor nobody has arranged yet comes up
+        // readable instead of at 100% with tiny text.
+        let (width, height) = mode.size();
+        let scale = config.scales.get(&name).copied().unwrap_or_else(|| {
+            crate::output::panel_scale((u32::from(width), u32::from(height)), info.size())
+        });
         let lit = light(
             gpu,
             renderers,
