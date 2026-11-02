@@ -942,7 +942,7 @@ def what_the_agent_sees(door: Door, title: str) -> str:
 def session(socket_path: str, runtime: Path, args: argparse.Namespace,
             scratch: Path | None) -> list[TaskRun]:
     """Admit the agent on this desktop, run the task, and take the agent back
-    out when the desktop is a person's."""
+    out afterwards."""
     conn = Connection(socket_path, timeout=60)
     door: Door | None = None
     try:

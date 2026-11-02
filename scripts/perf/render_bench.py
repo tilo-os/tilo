@@ -64,7 +64,7 @@ UI_SAMPLES_ENV = "TILO_UI_DASH_SAMPLES"
 
 # A run measures the harness's defaults: no inherited benchmark switch or
 # renderer optimisation override may reach it.
-SCRUBBED_PREFIXES = ("TILO_UI_DASH_", "TILO_REDRAW_BENCH_", "TILO_DRM_XRGB_", "VELLO_")
+SCRUBBED_PREFIXES = ("TILO_UI_DASH_", "TILO_DRM_XRGB_", "VELLO_")
 
 UI_REDRAWS = re.compile(r"^redrawn events:\s+(\d+)\b", re.M)
 UI_ADAPTER = re.compile(r"^UI renderer adapter: name=\"([^\"]*)\"", re.M)

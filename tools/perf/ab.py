@@ -390,12 +390,12 @@ def run_hosting(ctx: RunContext) -> list[record.Record]:
 def run_agent(ctx: RunContext) -> list[record.Record]:
     records = ctx.dir / "records.jsonl"
     call(["bash", "tools/with-test-environment.sh", sys.executable, "scripts/perf/agent_rtt.py",
-          "--spawn", ctx.bins["shell"], "--samples", "1000", "--warmup", "100",
+          "--spawn", ctx.bins["session"], "--samples", "1000", "--warmup", "100",
           "--transport", "test-control socket, headless, release + dev-overrides, thin LTO",
           "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "compositor.log"],
          ctx.dir / "bench.log", ctx.repo)
     call(["bash", "tools/with-test-environment.sh", sys.executable, "scripts/perf/agent_task.py",
-          "--spawn", ctx.bins["shell"], "--mcp", ctx.bins["tilo-runtime-mcp"],
+          "--spawn", ctx.bins["session"], "--mcp", ctx.bins["tilo-runtime-mcp"],
           "--repetitions", "30", "--warmup", "3",
           "--transport", "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO",
           "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "task-session.log",
@@ -433,7 +433,7 @@ def run_fs(ctx: RunContext) -> list[record.Record]:
 # The session and the agent task's client, as tools/ci/perf-scheduled.sh builds
 # them: tilo-runtime's dev-overrides turn on the throwaway identity a
 # development login opens its desk with, which the task's spawned session mints.
-RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "tilo-session", "--bin", "tilo-session",
+RELEASE_SESSION = ("cargo", "build", "--locked", "--release", "-p", "tilo-session", "--bin", "tilo-session",
                  "-p", "tilo-runtime", "--bin", "tilo-runtime-mcp", "--features", "dev-overrides")
 
 
@@ -471,8 +471,8 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
                                 ("cargo", "build", "--locked", "-p", "tilo-relay", "--example",
                                  "keystroke_writes"),
                                 "target/debug/examples/keystroke_writes")}),
-    Group("agent", "release", "lavapipe", (RELEASE_SHELL,),
-          {"shell": "target/release/tilo-session", "tilo-runtime-mcp": "target/release/tilo-runtime-mcp"},
+    Group("agent", "release", "lavapipe", (RELEASE_SESSION,),
+          {"session": "target/release/tilo-session", "tilo-runtime-mcp": "target/release/tilo-runtime-mcp"},
           {}, {}, run_agent),
     Group("render", "release", "lavapipe",
           (("cargo", "build", "--locked", "--release", "-p", "ui-examples", "--example", "ui-perf"),
