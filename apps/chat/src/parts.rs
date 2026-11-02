@@ -48,7 +48,7 @@ pub const PART_TEXT_BYTES: usize = 1024 * 1024;
 /// The chain the chat's message parts belong to.
 #[must_use]
 pub fn chain() -> RecordId {
-    RecordId::derived("messages", &RecordId::room_default())
+    RecordId::derived("messages", &RecordId::workspace_default())
 }
 
 /// Part `index` of the chat's messages.
@@ -145,7 +145,7 @@ mod tests {
         assert_eq!(part_index(&first), Some(0));
         assert_eq!(part_index(&part(41)), Some(41));
         assert_eq!(part_index(&chain()), None);
-        assert_eq!(part_index(&RecordId::room_default().part(3)), None);
+        assert_eq!(part_index(&RecordId::workspace_default().part(3)), None);
         assert_eq!(
             neighbour_wire::record_sync(first.as_str()),
             neighbour_wire::RecordSync::Part {

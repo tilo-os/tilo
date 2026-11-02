@@ -32,7 +32,7 @@ use tilo_action_policy::{Role, share::is_of_share};
 use tilo_actions::ResourceSpec;
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
-use tilo_desktop::desktop_actions::{DESK_RESOURCE, WINDOW_KIND, tab_resource_id};
+use tilo_desktop::desk_verbs::{DESK_RESOURCE, WINDOW_KIND, tab_resource_id};
 use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
     DesktopTree, GroupId, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
@@ -77,7 +77,7 @@ fn room() -> RoomId {
 fn desk(tile: TileContent, tab: u64) -> DesktopTree {
     let room = room();
     let id = WorkspaceId::of_room(room);
-    let mut workspace = Workspace::in_room(id, room, "Desk");
+    let mut workspace = Workspace::in_workspace(id, room, "Desk");
     let mut strip = Strip::new(StripId::from(1), "Main");
     strip.window_groups.push(WindowGroup {
         id: GroupId::from(1_u64),

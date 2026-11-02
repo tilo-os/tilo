@@ -30,13 +30,10 @@ use tilo_desktop_model::{
     DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace,
 };
 use tilo_desktop_surface::crashed_app::Closed;
-use tilo_desktop_surface::navigation::{Command, Route, RouteIds, active_route};
+use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, RouteIds, active_route};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::kurbo::Rect;
 use ui::widget::TileHost;
-
-/// The generation the policy's own commands carry.
-const GENERATION: &str = "window-policy";
 
 /// The launch id a window's tab is opened under.
 const LAUNCH_PREFIX: &str = "window:";
@@ -386,11 +383,12 @@ impl DesktopPolicy {
         // The tab this opens is named by its launch id; the title it shows
         // and the launch Reopen asks for come from the maps the tile source
         // reads.
-        let launch = Command::Launch {
-            generation: GENERATION.into(),
+        let launch = ChromeEffect::OpenApp {
             app: format!("{CRASHED_PREFIX}{asked}"),
+            beside: None,
+            background: None,
         };
-        self.handle.dispatch(&launch, GENERATION)
+        self.handle.dispatch(launch)
     }
 
     /// The host's side of the surface, for everything else it shows.
@@ -483,32 +481,27 @@ impl DesktopPolicy {
         let launch = format!("{LAUNCH_PREFIX}{id}");
         let beside = self
             .take_place(window.app_id.as_deref().unwrap_or_default())
-            .map(|place| Command::TabOpenBeside {
-                generation: GENERATION.into(),
+            .map(|place| ChromeEffect::OpenApp {
                 app: launch.clone(),
-                beside: Route::from_ids(place.beside),
-                background: place.background,
+                beside: Some(place.beside.tab.to_string()),
+                background: Some(place.background),
             });
         self.arriving.borrow_mut().insert(id, window);
         let placed = match beside {
             // The tab it was asked to open beside may be gone by now: it
             // lands as any launch does then.
-            Some(command) => self.handle.dispatch(&command, GENERATION).or_else(|_| {
-                self.handle.dispatch(
-                    &Command::Launch {
-                        generation: GENERATION.into(),
-                        app: launch,
-                    },
-                    GENERATION,
-                )
-            }),
-            None => self.handle.dispatch(
-                &Command::Launch {
-                    generation: GENERATION.into(),
+            Some(verb) => self.handle.dispatch(verb).or_else(|_| {
+                self.handle.dispatch(ChromeEffect::OpenApp {
                     app: launch,
-                },
-                GENERATION,
-            ),
+                    beside: None,
+                    background: None,
+                })
+            }),
+            None => self.handle.dispatch(ChromeEffect::OpenApp {
+                app: launch,
+                beside: None,
+                background: None,
+            }),
         };
         placed.inspect_err(|_| {
             self.arriving.borrow_mut().remove(&id);
@@ -534,20 +527,16 @@ impl DesktopPolicy {
         let Some(beside) = self.handle.read(|tree| route_of(tree, tab)) else {
             return false;
         };
-        let command = Command::Close {
-            generation: GENERATION.into(),
-            route: Route::from_ids(beside),
+        let command = DeskEffect::CloseTab {
+            tab: beside.tab.to_string(),
         };
-        self.handle.dispatch(&command, GENERATION).is_ok()
+        self.handle.dispatch(command).is_ok()
     }
 
     /// Put the shown workspace's most recently closed tab back where it was,
     /// as an app's reopen asks.
     pub fn reopen_closed(&mut self) -> bool {
-        let command = Command::Reopen {
-            generation: GENERATION.into(),
-        };
-        self.handle.dispatch(&command, GENERATION).is_ok()
+        self.handle.dispatch(ChromeEffect::ReopenClosed).is_ok()
     }
 
     /// Step the group in front on by one tab, as an app's own tab chord asks
@@ -590,11 +579,10 @@ impl DesktopPolicy {
         let Some(target) = target else {
             return false;
         };
-        let command = Command::Select {
-            generation: GENERATION.into(),
-            route: Route::from_ids(target),
+        let command = DeskEffect::Focus {
+            tab: target.tab.to_string(),
         };
-        self.handle.dispatch(&command, GENERATION).is_ok()
+        self.handle.dispatch(command).is_ok()
     }
 
     /// Hold a tab for the next window of `app`, right after `anchor` (the tab
@@ -618,13 +606,12 @@ impl DesktopPolicy {
                 HELD_PREFIX
             }
         );
-        let command = Command::TabOpenBeside {
-            generation: GENERATION.into(),
+        let command = ChromeEffect::OpenApp {
             app: launch,
-            beside: Route::from_ids(beside),
-            background,
+            beside: Some(beside.tab.to_string()),
+            background: Some(background),
         };
-        if self.handle.dispatch(&command, GENERATION).is_err() {
+        if self.handle.dispatch(command).is_err() {
             return false;
         }
         // The desktop makes the tab on its next pass: the place is asked for

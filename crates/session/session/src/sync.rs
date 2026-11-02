@@ -42,11 +42,12 @@ use tilo_device_fabric::DeviceId;
 use tilo_device_fabric::runtime::FabricRuntime;
 use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_network_actor::{
-    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RosterDevice, WorkspaceControlRoute,
-    WorkspaceId, native_ingress, workspace_topic_id,
+    HostIdentity, NetCmd, NetEvent, PersonalFabricPayload, RecordContentDelivery, RosterDevice,
+    WorkspaceControlRoute, WorkspaceId, native_ingress, workspace_topic_id,
 };
 
 use crate::channels::ChannelLink;
+use crate::content;
 use crate::device_actions::DeviceActions;
 use crate::engine::Engine;
 
@@ -200,6 +201,9 @@ struct Workspace {
     id: String,
     /// Everyone heard here, in the order they arrived.
     peers: Vec<Peer>,
+    /// The devices a record's content of this workspace reaches this one
+    /// from: those heard on its topic, and its hosts.
+    content: content::Topology,
 }
 
 impl Workspace {
@@ -488,6 +492,9 @@ pub(crate) enum Outgoing {
         ws: WorkspaceId,
         msg: Box<NeighbourMsg>,
     },
+    /// Send one piece of a record's content to the device of the workspace
+    /// that asked for it, and nothing else.
+    Content(RecordContentDelivery),
     /// Send one window's stream on the topic of the workspace it is shared in,
     /// to the members that asked to view it and no one else.
     PublishSurfaceTo {
@@ -601,6 +608,10 @@ pub struct Client {
     /// member's messages to what the workspace grants them: `None` until the
     /// session hands it over ([`Self::attach_desk`]).
     desk: RefCell<Option<DesktopHandle>>,
+    /// The records' content this session keeps and asks the workspaces for:
+    /// `None` until the session hands its plane over
+    /// ([`Self::attach_content`]).
+    content: RefCell<Option<Arc<content::Plane>>>,
     /// The certificates each of the person's other devices was heard with,
     /// by its publisher.
     siblings: RefCell<std::collections::BTreeMap<EndpointId, Vec<tilo_user_identity::DeviceCert>>>,
@@ -775,6 +786,7 @@ impl Client {
             link,
             user,
             desk: RefCell::new(None),
+            content: RefCell::new(None),
             siblings: RefCell::new(std::collections::BTreeMap::new()),
             personal: RefCell::new(Vec::new()),
             endpoint,
@@ -895,6 +907,7 @@ impl Client {
                         ws: *ws,
                         id: id.clone(),
                         peers: Vec::new(),
+                        content: content::Topology::default(),
                     });
                     joined.push((*ws, id.clone()));
                 }
@@ -992,10 +1005,122 @@ impl Client {
         if self.keep_surface(&event) {
             return;
         }
+        // What a workspace's members say about a record's content is the
+        // records' own plane's to take, and the devices it can be handed over
+        // from follow them.
+        self.follow_content_sources(&event);
+        if self.keep_content(&event) {
+            return;
+        }
         self.plane.borrow_mut().apply(event);
         self.note_reachability();
         self.show_here();
         self.show_waves();
+    }
+
+    /// Hand the records' content plane its place on this client: the
+    /// workspaces' topics are the records' routes, and what it asks for and
+    /// answers there travels with this device's own messages. A session takes
+    /// part in the plane of the client it was given ([`Self::attach_desk`]).
+    pub(crate) fn attach_content(&self, content: Arc<content::Plane>) {
+        content.bind(self.outgoing.clone(), self.publisher());
+        self.content.replace(Some(content));
+    }
+
+    /// Keep what reached here of the devices a workspace's content can be
+    /// handed over from: those that said anything on its topic, the hosts
+    /// that serve it and the members they report, and those that left. A
+    /// record's content follows them ([`content::Plane::sources_changed`]).
+    fn follow_content_sources(&self, event: &NetEvent) {
+        let Some(content) = self.content.borrow().clone() else {
+            return;
+        };
+        let (ws, changed) = match event {
+            NetEvent::Msg { ws, peer, .. } => (
+                *ws,
+                self.content_devices(*ws, |devices| devices.heard(*peer)),
+            ),
+            NetEvent::HostReady { ws, peer } => (
+                *ws,
+                self.content_devices(*ws, |devices| devices.host(*peer)),
+            ),
+            NetEvent::HostMember {
+                ws,
+                host,
+                device,
+                active,
+            } => {
+                let (host, device, active) = (*host, *device, *active);
+                (
+                    *ws,
+                    self.content_devices(*ws, |devices| {
+                        let served = devices.host(host);
+                        let member = if active {
+                            devices.heard(device)
+                        } else {
+                            devices.left(device)
+                        };
+                        served || member
+                    }),
+                )
+            }
+            NetEvent::PeerLeft { ws, peer, .. } => (
+                *ws,
+                self.content_devices(*ws, |devices| devices.left(*peer)),
+            ),
+            _ => return,
+        };
+        if !changed {
+            return;
+        }
+        let sources = self
+            .plane
+            .borrow()
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.ws == ws)
+            .map(|workspace| workspace.content.sources(self.publisher()))
+            .unwrap_or_default();
+        content.sources_changed(ws, sources);
+    }
+
+    /// Apply `change` to the devices this session reaches in the workspace on
+    /// `ws`; whether that was news.
+    fn content_devices(
+        &self,
+        ws: WorkspaceId,
+        change: impl FnOnce(&mut content::Topology) -> bool,
+    ) -> bool {
+        self.plane
+            .borrow_mut()
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.ws == ws)
+            .is_some_and(|workspace| change(&mut workspace.content))
+    }
+
+    /// Hand `event` to the content plane when it is one of a record's content
+    /// messages; whether it was, in which case nothing else here takes it.
+    /// Every such message reached here through the workspace's policy, which
+    /// admitted the device that sent it.
+    fn keep_content(&self, event: &NetEvent) -> bool {
+        let Some(content) = self.content.borrow().clone() else {
+            return false;
+        };
+        let NetEvent::Msg { ws, peer, msg, .. } = event else {
+            return false;
+        };
+        let workspace = self
+            .plane
+            .borrow()
+            .workspaces
+            .iter()
+            .find(|held| held.ws == *ws)
+            .map(|held| held.id.clone());
+        let Some(workspace) = workspace else {
+            return false;
+        };
+        content.heard(*ws, &workspace, *peer, msg)
     }
 
     /// Keep `event`'s message for the shares if it is one of a window's
@@ -1610,6 +1735,7 @@ impl Client {
                 link: None,
                 user: None,
                 desk: RefCell::new(None),
+                content: RefCell::new(None),
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
                 personal: RefCell::new(Vec::new()),
                 endpoint: EndpointAddr::new(publisher),
@@ -1872,6 +1998,10 @@ async fn carry_out(
         Outgoing::Publish { ws, msg } => {
             plane.send(NetCmd::Publish { ws, msg: *msg }).await.is_ok()
         }
+        Outgoing::Content(delivery) => plane
+            .send(NetCmd::PublishRecordContent(delivery))
+            .await
+            .is_ok(),
         Outgoing::PublishSurfaceTo { ws, msg, viewers } => plane
             .send(NetCmd::PublishSurfaceTo {
                 ws,

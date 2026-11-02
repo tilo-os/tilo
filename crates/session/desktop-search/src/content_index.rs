@@ -1,7 +1,7 @@
 //! The session's persistent search index of what apps hold.
 //!
 //! A running app publishes its search entries over its certified broker
-//! route ([`ui::search::index_publication`]): per app, workspace room and
+//! route ([`ui::search::index_publication`]): per app, workspace workspace and
 //! record, keyed by the stable resource id a hit opens. This index applies
 //! each change as it arrives and keeps the entries after the app closes, so
 //! the app's content is findable whether or not it runs
@@ -18,7 +18,7 @@
 //! locked is not deleting.
 //!
 //! On disk, under `$XDG_STATE_HOME/tilo/search/app-content/`, each slot
-//! (app, room, record) is one private file rewritten when that slot
+//! (app, workspace, record) is one private file rewritten when that slot
 //! changes, and the apps' last lock reports are another.
 
 use std::collections::{BTreeMap, HashMap};
@@ -31,23 +31,23 @@ use tilo_lock::MutexRecover as _;
 use ui::search::index_publication::{IndexDelta, IndexEntry, MAX_ENTRIES};
 
 /// Where one app's entries were published from: its app id, the workspace
-/// room and the record, a window's record standing for every window of the
+/// workspace and the record, a window's record standing for every window of the
 /// app playing the same roles ([`record_slot`]).
 #[derive(
     Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub struct SlotKey {
     pub app: String,
-    pub room: String,
+    pub workspace: String,
     pub record: String,
 }
 
 impl SlotKey {
-    /// The slot an app's publication from `record` in `room` fills.
-    pub fn new(app: &str, room: &str, record: &str) -> Self {
+    /// The slot an app's publication from `record` in `workspace` fills.
+    pub fn new(app: &str, workspace: &str, record: &str) -> Self {
         Self {
             app: app.to_owned(),
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             record: record_slot(record),
         }
     }
@@ -55,7 +55,7 @@ impl SlotKey {
 
 /// The slot a record's entries are kept under. A window's own record
 /// (`tab:<id>`, or one derived from it) names the window, not anything the
-/// person keeps: every window of an app in a room publishes the same
+/// person keeps: every window of an app in a workspace publishes the same
 /// entries, so all of them fill one slot (`tab:*`) instead of one per
 /// window ever opened.
 pub fn record_slot(record_id: &str) -> String {
@@ -126,7 +126,7 @@ impl Inner {
                     .is_none_or(|action| action.action == "open");
                 if opens && (!entry.secret || unlocked) {
                     by_resource
-                        .entry((slot.room.as_str(), entry.resource.as_str()))
+                        .entry((slot.workspace.as_str(), entry.resource.as_str()))
                         .or_default()
                         .push((slot.app.as_str(), entry.title.as_str()));
                 }
@@ -139,7 +139,7 @@ impl Inner {
     }
 }
 
-/// What each resource is called now, by workspace room and resource id,
+/// What each resource is called now, by workspace workspace and resource id,
 /// with the app that published it.
 struct Titles<'a> {
     by_resource: HashMap<(&'a str, &'a str), Vec<(&'a str, &'a str)>>,
@@ -150,13 +150,13 @@ struct Titles<'a> {
 
 impl Titles<'_> {
     /// What the resource `reference` (a reference in rich text) names in
-    /// `room` is called now.
-    fn of(&self, room: &str, reference: &str) -> Option<&str> {
+    /// `workspace` is called now.
+    fn of(&self, workspace: &str, reference: &str) -> Option<&str> {
         let (app, resource) = referent(reference)?;
         let app = self.earlier.current(&app).to_owned();
         let resource = self.earlier.current_resource(&resource).unwrap_or(resource);
         self.by_resource
-            .get(&(room, resource.as_str()))?
+            .get(&(workspace, resource.as_str()))?
             .iter()
             .find(|(published_by, _)| names_app(&app, &resource, published_by))
             .map(|(_, title)| *title)
@@ -252,10 +252,16 @@ impl AppContentIndex {
         }
     }
 
-    /// Apply one change `app` published in `room` from `record`.
-    pub fn publish(&self, room: &str, app: &str, record: &str, delta: &[u8]) -> Result<(), String> {
+    /// Apply one change `app` published in `workspace` from `record`.
+    pub fn publish(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        delta: &[u8],
+    ) -> Result<(), String> {
         let delta = IndexDelta::decode(delta)?;
-        self.apply(&SlotKey::new(app, room, record), delta);
+        self.apply(&SlotKey::new(app, workspace, record), delta);
         Ok(())
     }
 
@@ -315,7 +321,7 @@ impl AppContentIndex {
                     referenced: entry
                         .references
                         .iter()
-                        .filter_map(|reference| titles.of(&slot.room, reference))
+                        .filter_map(|reference| titles.of(&slot.workspace, reference))
                         .map(str::to_owned)
                         .collect(),
                 };
@@ -330,14 +336,14 @@ impl AppContentIndex {
         contents
     }
 
-    /// The title `room`'s apps published for the resource `resource`: the
+    /// The title `workspace`'s apps published for the resource `resource`: the
     /// entry that opens it, as a search would find it.
-    pub fn title(&self, room: &str, resource: &str) -> Option<String> {
+    pub fn title(&self, workspace: &str, resource: &str) -> Option<String> {
         let inner = self.inner.lock_recover();
         inner
             .slots
             .iter()
-            .filter(|(slot, _)| slot.room == room)
+            .filter(|(slot, _)| slot.workspace == workspace)
             .flat_map(|(slot, entries)| {
                 let unlocked = inner.unlocked(&slot.app);
                 entries
@@ -348,14 +354,14 @@ impl AppContentIndex {
             .map(|entry| entry.title.clone())
     }
 
-    /// Every resource `room`'s apps published an entry opening, with the
+    /// Every resource `workspace`'s apps published an entry opening, with the
     /// app, once each.
-    pub fn resources(&self, room: &str) -> Vec<(String, String)> {
+    pub fn resources(&self, workspace: &str) -> Vec<(String, String)> {
         let inner = self.inner.lock_recover();
         let mut resources: Vec<(String, String)> = inner
             .slots
             .iter()
-            .filter(|(slot, _)| slot.room == room)
+            .filter(|(slot, _)| slot.workspace == workspace)
             .flat_map(|(slot, entries)| {
                 let unlocked = inner.unlocked(&slot.app);
                 entries
@@ -370,15 +376,15 @@ impl AppContentIndex {
         resources
     }
 
-    /// Every resource `room`'s apps published an entry opening, with the
+    /// Every resource `workspace`'s apps published an entry opening, with the
     /// app and the title that entry gives it, once each: what a person picks
     /// an existing resource from.
-    pub fn titled(&self, room: &str) -> Vec<(String, String, String)> {
+    pub fn titled(&self, workspace: &str) -> Vec<(String, String, String)> {
         let inner = self.inner.lock_recover();
         let mut titled: Vec<(String, String, String)> = inner
             .slots
             .iter()
-            .filter(|(slot, _)| slot.room == room)
+            .filter(|(slot, _)| slot.workspace == workspace)
             .flat_map(|(slot, entries)| {
                 let unlocked = inner.unlocked(&slot.app);
                 entries
@@ -399,14 +405,18 @@ impl AppContentIndex {
         titled
     }
 
-    /// The entries of `room` whose text refers to the resource `resource`
+    /// The entries of `workspace` whose text refers to the resource `resource`
     /// of `app` (its backlinks), in any app: what refers to it, wherever
     /// it was written.
-    pub fn backlinks(&self, room: &str, app: &str, resource: &str) -> Vec<IndexedEntry> {
+    pub fn backlinks(&self, workspace: &str, app: &str, resource: &str) -> Vec<IndexedEntry> {
         let inner = self.inner.lock_recover();
         let titles = inner.titles();
         let mut out = Vec::new();
-        for (slot, entries) in inner.slots.iter().filter(|(slot, _)| slot.room == room) {
+        for (slot, entries) in inner
+            .slots
+            .iter()
+            .filter(|(slot, _)| slot.workspace == workspace)
+        {
             let unlocked = inner.unlocked(&slot.app);
             for entry in entries.values().filter(|entry| !entry.secret || unlocked) {
                 let refers = entry.references.iter().any(|reference| {
@@ -421,7 +431,7 @@ impl AppContentIndex {
                         referenced: entry
                             .references
                             .iter()
-                            .filter_map(|reference| titles.of(room, reference))
+                            .filter_map(|reference| titles.of(workspace, reference))
                             .map(str::to_owned)
                             .collect(),
                     });
@@ -561,7 +571,7 @@ impl Write {
 /// build (the standard hasher promises no such thing).
 fn fnv1a(key: &SlotKey) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for part in [&key.app, &key.room, &key.record] {
+    for part in [&key.app, &key.workspace, &key.record] {
         for byte in part.bytes().chain(std::iter::once(0x1f)) {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0100_0000_01b3);
@@ -638,7 +648,7 @@ mod tests {
     use super::*;
     use ui::search::index_publication::{IndexAction, IndexWeight};
 
-    const ROOM: &str = "6f1c3c43-2a59-4d36-9d0e-0b6a3b1f7e21";
+    const WORKSPACE: &str = "6f1c3c43-2a59-4d36-9d0e-0b6a3b1f7e21";
 
     fn entry(key: &str, title: &str) -> IndexEntry {
         IndexEntry {
@@ -673,16 +683,16 @@ mod tests {
         assert_eq!(record_slot("tab:0"), "tab:0");
         assert_eq!(record_slot("notes:7f3e"), "notes:7f3e");
         assert_eq!(
-            SlotKey::new("so.tilo.notes", ROOM, "tab:0001"),
-            SlotKey::new("so.tilo.notes", ROOM, "tab:00ff")
+            SlotKey::new("so.tilo.notes", WORKSPACE, "tab:0001"),
+            SlotKey::new("so.tilo.notes", WORKSPACE, "tab:00ff")
         );
     }
 
     #[test]
-    fn a_resource_is_named_by_the_title_its_app_published_in_its_room() {
+    fn a_resource_is_named_by_the_title_its_app_published_in_its_workspace() {
         let index = AppContentIndex::in_memory();
         index.apply(
-            &SlotKey::new("so.tilo.tasks", ROOM, ""),
+            &SlotKey::new("so.tilo.tasks", WORKSPACE, ""),
             IndexDelta {
                 reset: true,
                 upsert: vec![entry("tasks.tracker/issues/1", "Prepare release notes")],
@@ -690,18 +700,21 @@ mod tests {
             },
         );
         assert_eq!(
-            index.title(ROOM, "tasks.tracker/issues/1").as_deref(),
+            index.title(WORKSPACE, "tasks.tracker/issues/1").as_deref(),
             Some("Prepare release notes")
         );
-        assert_eq!(index.title("another-room", "tasks.tracker/issues/1"), None);
-        assert_eq!(index.title(ROOM, "tasks.tracker/issues/2"), None);
+        assert_eq!(
+            index.title("another-workspace", "tasks.tracker/issues/1"),
+            None
+        );
+        assert_eq!(index.title(WORKSPACE, "tasks.tracker/issues/2"), None);
     }
 
     #[test]
-    fn each_resource_is_listed_once_by_its_title_in_its_room() {
+    fn each_resource_is_listed_once_by_its_title_in_its_workspace() {
         let index = AppContentIndex::in_memory();
         index.apply(
-            &SlotKey::new("so.tilo.notes", ROOM, ""),
+            &SlotKey::new("so.tilo.notes", WORKSPACE, ""),
             IndexDelta {
                 reset: true,
                 upsert: vec![
@@ -719,7 +732,7 @@ mod tests {
             },
         );
         index.apply(
-            &SlotKey::new("so.tilo.notes", "another-room", ""),
+            &SlotKey::new("so.tilo.notes", "another-workspace", ""),
             IndexDelta {
                 reset: true,
                 upsert: vec![entry("notes.notebook/pages/b", "Elsewhere")],
@@ -727,7 +740,7 @@ mod tests {
             },
         );
         assert_eq!(
-            index.titled(ROOM),
+            index.titled(WORKSPACE),
             [(
                 "so.tilo.notes".to_owned(),
                 "notes.notebook/pages/a".to_owned(),
@@ -739,7 +752,7 @@ mod tests {
     #[test]
     fn publications_update_and_remove_entries_by_key() {
         let index = AppContentIndex::in_memory();
-        let key = SlotKey::new("so.tilo.notes", ROOM, "tab:0001");
+        let key = SlotKey::new("so.tilo.notes", WORKSPACE, "tab:0001");
         index.apply(
             &key,
             IndexDelta {
@@ -781,7 +794,7 @@ mod tests {
     #[test]
     fn secrets_are_found_only_while_unlocked_and_a_locked_publication_keeps_them() {
         let index = AppContentIndex::in_memory();
-        let key = SlotKey::new("so.tilo.passwords", ROOM, "tab:0001");
+        let key = SlotKey::new("so.tilo.passwords", WORKSPACE, "tab:0001");
         let login = IndexEntry {
             secret: true,
             fields: vec![("github.com".into(), IndexWeight::Identity)],
@@ -825,7 +838,7 @@ mod tests {
     fn an_app_that_never_said_unlocked_keeps_its_secrets_hidden() {
         let index = AppContentIndex::in_memory();
         index.apply(
-            &SlotKey::new("so.tilo.passwords", ROOM, "tab:0001"),
+            &SlotKey::new("so.tilo.passwords", WORKSPACE, "tab:0001"),
             IndexDelta {
                 reset: true,
                 upsert: vec![IndexEntry {
@@ -842,7 +855,7 @@ mod tests {
     #[test]
     fn the_index_survives_a_restart_from_its_files() {
         let dir = tempfile::tempdir().unwrap();
-        let key = SlotKey::new("so.tilo.notes", ROOM, "notes:main");
+        let key = SlotKey::new("so.tilo.notes", WORKSPACE, "notes:main");
         {
             let index = AppContentIndex::persistent(dir.path().to_path_buf());
             index.apply(
@@ -874,7 +887,7 @@ mod tests {
         // An entry an app published before it read references for each person may hold the
         // title a reference was written with, which this person may not be allowed to read.
         let dir = tempfile::tempdir().unwrap();
-        let key = SlotKey::new("so.tilo.tilolang", ROOM, "");
+        let key = SlotKey::new("so.tilo.tilolang", WORKSPACE, "");
         let old = serde_json::json!({
             "key": key,
             "entries": [entry("tl:so.tilo.lang.board:p1", "The notes are in Acquisition plan")],

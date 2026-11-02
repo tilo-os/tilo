@@ -1,7 +1,7 @@
 //! A window one member shares with a workspace whose layout is personal.
 //!
 //! In a personal workspace each member's windows stay on their device
-//! ([`crate::projection::RoomLayout::Personal`]). A member who wants the
+//! ([`crate::projection::WorkspaceLayout::Personal`]). A member who wants the
 //! others to see one of them shares it, and the share is the workspace's
 //! resource share ([`tilo_action_policy::share`]) of the window's own node,
 //! `workspace › <app> › window › <tab>`: grants the workspace's governor writes into
@@ -117,11 +117,11 @@ pub fn window_of_share_id(share: &str) -> Option<(TabId, bool)> {
     (tab_key(tab) == key).then_some((tab, shows))
 }
 
-/// The node of the window `tab` of `app_id` in `room`: what a share of it
+/// The node of the window `tab` of `app_id` in `workspace`: what a share of it
 /// grants on.
 #[must_use]
-pub fn window_node(room: &str, app_id: &str, tab: TabId) -> TreePath {
-    TreePath::workspace(room)
+pub fn window_node(workspace: &str, app_id: &str, tab: TabId) -> TreePath {
+    TreePath::workspace(workspace)
         .app(app_id)
         .kind(WINDOW_KIND)
         .resource(tab_key(tab))
@@ -167,20 +167,20 @@ pub struct WindowShows {
 /// named by the window's own node.
 #[must_use]
 pub fn shows_node(
-    room: &str,
+    workspace: &str,
     app_id: &str,
     tab: TabId,
     kind: &str,
     shows: &WindowShows,
 ) -> TreePath {
-    let at = TreePath::workspace(room).app(app_id).kind(kind);
+    let at = TreePath::workspace(workspace).app(app_id).kind(kind);
     match (&shows.item, shows.record.is_empty()) {
         // An item of the app's own record: its id is unique, so any
         // record of the kind is it.
         (Some(item), true) => at.any(Level::Resource).item(item.as_str()),
         (Some(item), false) => at.resource(shows.record.as_str()).item(item.as_str()),
         (None, false) => at.resource(shows.record.as_str()),
-        (None, true) => window_node(room, app_id, tab),
+        (None, true) => window_node(workspace, app_id, tab),
     }
 }
 
@@ -241,8 +241,8 @@ pub struct WindowShare {
 /// tab, each hosted on the device whose salt its tab carries (`owners`,
 /// [`device_salts`] of the workspace's document). A share counts when it is a
 /// share of one window's node under that window's share id, given by a
-/// person, allowing the room to see it; a window no device of the room
-/// minted is nobody's to show.
+/// person, allowing the workspace to see it; a window no device of the
+/// workspace minted is nobody's to show.
 #[must_use]
 pub fn window_shares(
     policy: &WorkspacePolicy,
@@ -335,19 +335,25 @@ mod tests {
 
     use crate::ids::compose_id;
 
-    const ROOM: &str = "6f1d2c3b-4a59-4e8d-9c7b-1a2b3c4d5e6f";
+    const WORKSPACE: &str = "6f1d2c3b-4a59-4e8d-9c7b-1a2b3c4d5e6f";
 
     #[test]
     fn a_window_share_names_its_window_its_sharer_and_its_host_while_it_lasts() {
         let tab = (0x0A51_u64 << 48) | 4;
-        let node = window_node(ROOM, "so.tilo.notes", tab);
+        let node = window_node(WORKSPACE, "so.tilo.notes", tab);
         assert_eq!(
             window_of_node(&node),
             Some(("so.tilo.notes".to_owned(), tab))
         );
-        let mut policy = WorkspacePolicy::new(ROOM, "owner".to_owned());
-        let grants = share_grants(ROOM, "ana", &window_share_id(tab), &node, ShareAccess::View)
-            .expect("a window is one resource of the room");
+        let mut policy = WorkspacePolicy::new(WORKSPACE, "owner".to_owned());
+        let grants = share_grants(
+            WORKSPACE,
+            "ana",
+            &window_share_id(tab),
+            &node,
+            ShareAccess::View,
+        )
+        .expect("a window is one resource of the workspace");
         let owners = BTreeMap::from([(0x0A51, "aa".to_owned())]);
         assert!(window_shares(&policy, &owners, 1).is_empty());
         policy.grants.extend(grants.clone());
@@ -365,7 +371,7 @@ mod tests {
         );
         assert!(
             window_shares(&policy, &BTreeMap::new(), 1).is_empty(),
-            "a window no device of the room minted is nobody's to show"
+            "a window no device of the workspace minted is nobody's to show"
         );
 
         // A share that ended by its time is no share.
@@ -377,12 +383,12 @@ mod tests {
         assert!(window_shares(&policy, &owners, 10).is_empty());
 
         // A share of a record is no window's.
-        let record = TreePath::workspace(ROOM)
+        let record = TreePath::workspace(WORKSPACE)
             .app("so.tilo.notes")
             .kind("notes.notebook")
             .resource(tab_key(tab));
         policy.grants = share_grants(
-            ROOM,
+            WORKSPACE,
             "ana",
             &window_share_id(tab),
             &record,
@@ -413,17 +419,17 @@ mod tests {
 
         let owners = BTreeMap::from([(0x0A51, "aa".to_owned())]);
         let share = |shows: &WindowShows, kind: &str| {
-            let mut policy = WorkspacePolicy::new(ROOM, "owner".to_owned());
+            let mut policy = WorkspacePolicy::new(WORKSPACE, "owner".to_owned());
             for (id, node) in [
-                (window_share_id(tab), window_node(ROOM, app, tab)),
+                (window_share_id(tab), window_node(WORKSPACE, app, tab)),
                 (
                     window_shows_share_id(tab),
-                    shows_node(ROOM, app, tab, kind, shows),
+                    shows_node(WORKSPACE, app, tab, kind, shows),
                 ),
             ] {
                 policy.grants.extend(
-                    share_grants(ROOM, "ana", &id, &node, ShareAccess::View)
-                        .expect("one resource of the room"),
+                    share_grants(WORKSPACE, "ana", &id, &node, ShareAccess::View)
+                        .expect("one resource of the workspace"),
                 );
             }
             window_shares(&policy, &owners, 1)
@@ -452,13 +458,13 @@ mod tests {
         }
 
         // A window with nothing shown beside it is an outside window's.
-        let mut policy = WorkspacePolicy::new(ROOM, "owner".to_owned());
+        let mut policy = WorkspacePolicy::new(WORKSPACE, "owner".to_owned());
         policy.grants.extend(
             share_grants(
-                ROOM,
+                WORKSPACE,
                 "ana",
                 &window_share_id(tab),
-                &window_node(ROOM, app, tab),
+                &window_node(WORKSPACE, app, tab),
                 ShareAccess::View,
             )
             .expect("a window"),
@@ -468,10 +474,10 @@ mod tests {
         // What another person shares under the window's id is not what it shows.
         policy.grants.extend(
             share_grants(
-                ROOM,
+                WORKSPACE,
                 "bo",
                 &window_shows_share_id(tab),
-                &TreePath::workspace(ROOM)
+                &TreePath::workspace(WORKSPACE)
                     .app(app)
                     .kind("notes.notebook")
                     .resource("r"),
@@ -483,7 +489,7 @@ mod tests {
         // Nor is a node of another app.
         assert_eq!(
             shows_of_node(
-                &TreePath::workspace(ROOM)
+                &TreePath::workspace(WORKSPACE)
                     .app("so.tilo.chat")
                     .kind("k")
                     .resource("r"),
@@ -502,7 +508,7 @@ mod tests {
     const GROUP: u64 = compose_id(ANA, 6);
     const STRIP: u64 = compose_id(ANA, 7);
 
-    /// A workspace in [`ROOM`] holding one group of two windows, both shared
+    /// A workspace in [`WORKSPACE`] holding one group of two windows, both shared
     /// with the workspace — the first with the note it shows beside its own share
     /// — and the workspace's devices, as its document lists them.
     fn shared_windows() -> (Workspace, BTreeMap<u16, String>) {
@@ -520,9 +526,9 @@ mod tests {
             },
             app_title: None,
         };
-        let mut workspace = Workspace::in_room(
+        let mut workspace = Workspace::in_workspace(
             WorkspaceId(1),
-            RoomId::parse(ROOM).expect("a room id"),
+            RoomId::parse(WORKSPACE).expect("a room id"),
             "Team",
         );
         workspace.strips = vec![Strip {
@@ -538,20 +544,23 @@ mod tests {
             }],
         }];
         for (id, node) in [
-            (window_share_id(NOTES), window_node(ROOM, APP, NOTES)),
+            (window_share_id(NOTES), window_node(WORKSPACE, APP, NOTES)),
             (
                 window_shows_share_id(NOTES),
-                TreePath::workspace(ROOM)
+                TreePath::workspace(WORKSPACE)
                     .app(APP)
                     .kind("notes.notebook")
                     .any(Level::Resource)
                     .item("notes.page/pages/7"),
             ),
-            (window_share_id(TERMINAL), window_node(ROOM, APP, TERMINAL)),
+            (
+                window_share_id(TERMINAL),
+                window_node(WORKSPACE, APP, TERMINAL),
+            ),
         ] {
             workspace.policy.grants.extend(
-                share_grants(ROOM, "ana", &id, &node, ShareAccess::View)
-                    .expect("one resource of the room"),
+                share_grants(WORKSPACE, "ana", &id, &node, ShareAccess::View)
+                    .expect("one resource of the workspace"),
             );
         }
         (workspace, BTreeMap::from([(ANA, "aa".to_owned())]))
@@ -572,7 +581,7 @@ mod tests {
         assert_eq!(
             shared(&workspace),
             [NOTES, TERMINAL],
-            "both windows are shared with the room"
+            "both windows are shared with the workspace"
         );
         assert_eq!(
             window_shares(&workspace.policy, &owners, 1)[&NOTES].shows,
@@ -605,7 +614,7 @@ mod tests {
         assert_eq!(
             shared(&workspace),
             [TERMINAL],
-            "the share of the closed window ended, and the room still shows the other"
+            "the share of the closed window ended, and the workspace still shows the other"
         );
 
         // The window reopens where it was without the share that went: a

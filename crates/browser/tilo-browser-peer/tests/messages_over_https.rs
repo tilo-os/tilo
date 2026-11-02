@@ -1,6 +1,6 @@
 //! Messages on the web: two people's Messages windows, each lent the
 //! page's messaging service (`tilo_messaging::room`) over its own HTTPS
-//! session with the host that governs their room, send to each other and
+//! session with the host that governs their workspace, send to each other and
 //! see what arrives without asking again. The governor, the HTTPS door and
 //! Messages are the real ones; only the window is headless.
 
@@ -36,16 +36,16 @@ use tilo_relay_protocol::rooms::private::{PrivateCall, PrivateOperation};
 use tilo_relay_protocol::rooms::{JoinReply, Room, RoomRole, RoomsReply, RoomsRequest};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use support::{TestHost, enrol, start_room_host};
+use support::{TestHost, enrol, start_workspace_host};
 
 /// The Contacts person each window writes to.
 const PERSON: &str = "00000000-0000-4000-8000-0000000000aa";
 
-/// A page's door: its HTTPS session with the room's host.
+/// A page's door: its HTTPS session with the workspace's host.
 struct SessionDoor {
     client: Arc<dyn HttpClient>,
     session: String,
-    room: String,
+    workspace: String,
     runtime: tokio::runtime::Handle,
 }
 
@@ -53,7 +53,7 @@ impl PrivateDoor for SessionDoor {
     fn ask(&self, operation: PrivateOperation) -> PrivateAnswer {
         let (client, session) = (self.client.clone(), self.session.clone());
         let call = PrivateCall {
-            room: self.room.clone(),
+            room: self.workspace.clone(),
             operation,
         };
         // The window polls its work off the host's runtime; the request runs on it.
@@ -70,7 +70,7 @@ impl PrivateDoor for SessionDoor {
     }
 }
 
-/// Enter the room's workspace on `link`, as a page does once it joined.
+/// Enter the workspace on `link`, as a page does once it joined.
 async fn subscribe(link: &mut HttpsLink, workspace_id: u64) {
     link.send(tilo_relay_protocol::Envelope::Subscribe { workspace_id })
         .unwrap();
@@ -89,10 +89,10 @@ async fn subscribe(link: &mut HttpsLink, workspace_id: u64) {
     .await;
 }
 
-fn room(reply: RoomsReply) -> Room {
+fn workspace(reply: RoomsReply) -> Room {
     match reply {
-        RoomsReply::Room(room) => room,
-        other => panic!("expected a room, got {other:?}"),
+        RoomsReply::Room(workspace) => workspace,
+        other => panic!("expected a workspace, got {other:?}"),
     }
 }
 
@@ -147,7 +147,7 @@ fn window(person: &str, other: &str, door: SessionDoor) -> (TestApp<MessagesShel
         "recipient": other,
         "association": "tilo",
         "scope": scope,
-        "revision": "room-member",
+        "revision": "workspace-member",
     })
     .to_string();
     // Messages' own review of who the person is on Tilo.
@@ -196,7 +196,7 @@ fn two_people_message_each_other_through_their_pages_sessions() {
     let page = enrol(&alice, "alice-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let (doors, people, test_host) = runtime.block_on(async {
-        let test_host = start_room_host(&alice, &host, state.path(), false).await;
+        let test_host = start_workspace_host(&alice, &host, state.path(), false).await;
         let TestHost { web, .. } = &test_host;
         let https: Arc<dyn HttpClient> =
             support::https::DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
@@ -214,14 +214,14 @@ fn two_people_message_each_other_through_their_pages_sessions() {
             let owner = &owner;
             async move { carrier::rooms(owner.client().as_ref(), owner.session(), &request).await }
         };
-        let created = room(
+        let created = workspace(
             ask(RoomsRequest::Create {
                 name: "Messages".into(),
             })
             .await
             .unwrap(),
         );
-        room(
+        workspace(
             ask(RoomsRequest::Enter {
                 room: created.room.clone(),
             })
@@ -266,7 +266,7 @@ fn two_people_message_each_other_through_their_pages_sessions() {
             .unwrap(),
             JoinReply::Waiting
         );
-        room(
+        workspace(
             ask(RoomsRequest::Admit {
                 room: created.room.clone(),
                 request_id: [2; 32],
@@ -280,7 +280,7 @@ fn two_people_message_each_other_through_their_pages_sessions() {
         let door = |link: &HttpsLink| SessionDoor {
             client: link.client().clone(),
             session: link.session().to_owned(),
-            room: created.room.clone(),
+            workspace: created.room.clone(),
             runtime: tokio::runtime::Handle::current(),
         };
         (

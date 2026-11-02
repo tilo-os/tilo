@@ -1,14 +1,14 @@
-//! The room an app is launched into.
+//! The workspace an app is launched into.
 //!
-//! A workspace is a collaboration room: its id is the cluster id every
+//! A workspace is a collaboration workspace: its id is the cluster id every
 //! change an app makes is addressed to, and what the person granted apps in
 //! it is what the launcher lets them reach. Both travel with the launch —
 //! the id as `--workspace-id`, the grants as a JSON file under the per-user
 //! runtime directory that the launcher reads and the app never sees
-//! ([`Room::write_grants`]).
+//! ([`Workspace::write_grants`]).
 //!
-//! An app launched with no room gets the manifest's sandbox and nothing
-//! else; that is the safe default, so a room is only ever passed when the
+//! An app launched with no workspace gets the manifest's sandbox and nothing
+//! else; that is the safe default, so a workspace is only ever passed when the
 //! desktop knows which workspace the launch belongs to.
 
 use std::io::Write as _;
@@ -16,21 +16,20 @@ use std::path::{Path, PathBuf};
 
 use collab_types::caps::LaunchGrants;
 
-/// One workspace's room, as a launch into it needs it.
+/// One workspace, as a launch into it needs it.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Room {
-    /// The room's id: the workspace's, or empty for a launch outside any
-    /// workspace.
+pub struct Workspace {
+    /// The workspace's id, or empty for a launch outside any workspace.
     pub id: String,
-    /// What the person granted apps in this room.
+    /// What the person granted apps in this workspace.
     pub grants: LaunchGrants,
     /// Where the session keeps a launch's private files, under the per-user
     /// runtime directory.
     pub directory: PathBuf,
 }
 
-impl Room {
-    /// A room with no grants: an app gets exactly what its manifest
+impl Workspace {
+    /// A workspace with no grants: an app gets exactly what its manifest
     /// declares.
     #[must_use]
     pub fn new(id: impl Into<String>, directory: impl Into<PathBuf>) -> Self {
@@ -41,14 +40,14 @@ impl Room {
         }
     }
 
-    /// The room apps are launched into by default: `room`'s id, the
+    /// The workspace apps are launched into by default: `workspace`'s id, the
     /// launcher's capability directory under `runtime`.
     #[must_use]
     pub fn under(runtime: &Path, id: impl Into<String>) -> Self {
         Self::new(id, runtime.join("tilo").join("capabilities"))
     }
 
-    /// Whether a launch into this room names a workspace at all.
+    /// Whether a launch into this workspace names a workspace at all.
     #[must_use]
     pub fn is_workspace(&self) -> bool {
         !self.id.is_empty()
@@ -74,8 +73,8 @@ impl Room {
                 format!("refusing to write a capability file for app {app:?}"),
             ));
         }
-        // Only what this room's grants hand this app: a capability naming a
-        // person, a room or another app never reaches this app's file
+        // Only what this workspace's grants hand this app: a capability naming a
+        // person, a workspace or another app never reaches this app's file
         // ([`LaunchGrants::for_app`]).
         let grants = self.grants.for_app(app);
         if grants.is_empty() {
@@ -115,8 +114,8 @@ mod tests {
     use super::*;
     use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
-    fn granted(room: &Room, app: &str, path: &str) -> LaunchGrants {
-        let mut grants = room.grants.clone();
+    fn granted(workspace: &Workspace, app: &str, path: &str) -> LaunchGrants {
+        let mut grants = workspace.grants.clone();
         grants.sandbox.push(CapOverride::grant(
             Subject::app(app),
             Scope::FsPath(path.into()),
@@ -128,17 +127,17 @@ mod tests {
     #[test]
     fn a_launch_writes_the_grants_the_launcher_reads_and_names_nothing_else() {
         let directory = tempfile::tempdir().expect("a directory");
-        let mut room = Room::under(directory.path(), "room-7");
-        assert_eq!(room.id, "room-7");
-        assert!(room.is_workspace());
+        let mut workspace = Workspace::under(directory.path(), "workspace-7");
+        assert_eq!(workspace.id, "workspace-7");
+        assert!(workspace.is_workspace());
         assert_eq!(
-            room.write_grants("so.tilo.notes").expect("written"),
+            workspace.write_grants("so.tilo.notes").expect("written"),
             None,
             "nothing granted, no capability file and no flag"
         );
 
-        room.grants = granted(&room, "so.tilo.notes", "/home/you/notes");
-        let path = room
+        workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
+        let path = workspace
             .write_grants("so.tilo.notes")
             .expect("written")
             .expect("a capability file");
@@ -146,7 +145,7 @@ mod tests {
         let read: LaunchGrants =
             serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
         assert_eq!(
-            read, room.grants,
+            read, workspace.grants,
             "the launcher reads back what was granted"
         );
         let mode = {
@@ -162,10 +161,10 @@ mod tests {
     #[test]
     fn a_launch_reads_back_only_what_this_app_was_granted() {
         let directory = tempfile::tempdir().expect("a directory");
-        let mut room = Room::under(directory.path(), "room-7");
-        room.grants = granted(&room, "so.tilo.notes", "/home/you/notes");
-        room.grants = {
-            let mut grants = room.grants.clone();
+        let mut workspace = Workspace::under(directory.path(), "workspace-7");
+        workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
+        workspace.grants = {
+            let mut grants = workspace.grants.clone();
             grants.sandbox.push(CapOverride::grant(
                 Subject::app("so.tilo.mail"),
                 Scope::FsPath("/home/you/mail".into()),
@@ -174,7 +173,7 @@ mod tests {
             grants.authors.push("so.tilo.notes".into());
             grants
         };
-        let path = room
+        let path = workspace
             .write_grants("so.tilo.notes")
             .expect("written")
             .expect("a capability file");
@@ -182,27 +181,27 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
         assert_eq!(
             read,
-            room.grants.for_app("so.tilo.notes"),
-            "the launcher reads what was granted to this app, not the room's other grants"
+            workspace.grants.for_app("so.tilo.notes"),
+            "the launcher reads what was granted to this app, not the workspace's other grants"
         );
         assert_eq!(read.sandbox.len(), 1);
         assert_eq!(read.authors, vec!["so.tilo.notes".to_string()]);
     }
 
     #[test]
-    fn a_room_refuses_a_launch_whose_app_id_could_leave_its_directory() {
+    fn a_workspace_refuses_a_launch_whose_app_id_could_leave_its_directory() {
         let directory = tempfile::tempdir().expect("a directory");
-        let mut room = Room::under(directory.path(), "room");
-        room.grants = granted(&room, "so.tilo.notes", "/home/you/notes");
+        let mut workspace = Workspace::under(directory.path(), "workspace");
+        workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
         for app in ["", "../escape", "so.tilo/notes"] {
             assert!(
-                room.write_grants(app).is_err(),
+                workspace.write_grants(app).is_err(),
                 "{app:?} must not name a path"
             );
         }
         assert!(
-            !Room::under(directory.path(), "").is_workspace(),
-            "a launch outside a workspace names no room"
+            !Workspace::under(directory.path(), "").is_workspace(),
+            "a launch outside a workspace names no workspace"
         );
     }
 }

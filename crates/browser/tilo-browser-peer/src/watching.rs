@@ -1,13 +1,14 @@
 //! Which records' channel keys a watching page asks the host for.
 //!
-//! A page that only watches a public room ([`crate::session::PeerConfig::watching`])
-//! is no member of the room's channels: it never asks for access over a
-//! channel, which would be a write the room refuses it. It takes a record's
-//! content keys from the room's node over HTTPS instead, when a sealed
+//! A page that only watches a public workspace
+//! ([`crate::session::PeerConfig::watching`]) is no member of the workspace's
+//! channels: it never asks for access over a channel, which would be a write
+//! the workspace refuses it. It takes a record's
+//! content keys from the workspace's node over HTTPS instead, when a sealed
 //! document of the record arrives that its keys cannot open, or when the page
 //! opens the record. One request per record is in flight at a time, and a
 //! refused record is asked for again only after [`RETRY_MS`], so a private
-//! room's stream of sealed documents costs one refusal per interval, not one
+//! workspace's stream of sealed documents costs one refusal per interval, not one
 //! per document.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,7 +33,7 @@ impl WatchedKeys {
     }
 
     /// The wanted records to ask for at `now_ms`, now marked in flight:
-    /// only those the room holds a seat for this page in (`seated`), as the
+    /// only those the workspace holds a seat for this page in (`seated`), as the
     /// node hands keys to a seated spectator only.
     pub(crate) fn due(
         &mut self,
@@ -74,7 +75,7 @@ mod tests {
     fn route(record: &str) -> DocumentRoute {
         DocumentRoute {
             app_id: "so.tilo.chat".into(),
-            cluster_id: "room".into(),
+            cluster_id: "workspace".into(),
             record: record.into(),
         }
     }

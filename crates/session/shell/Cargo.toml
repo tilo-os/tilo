@@ -109,7 +109,6 @@ tilo-desktop = { path = "../desktop" }
 tilo-wallpapers = { version = "0.1.0", path = "../../platform/tilo-wallpapers" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
-tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 bounded-command = { path = "../../system/bounded-command" }
@@ -374,6 +373,9 @@ runtime-fs = { path = "../../runtime/runtime-fs" }
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 # The app identity service: broker, registry, device fleet, provisioning.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+# The device's certificate authority the broker admits a join with, shared
+# with the session that replaces this one.
+tilo-identity-authority = { path = "../identity-authority" }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
 # `tilo-launcher` binary to build the actual bwrap + seccomp + Landlock

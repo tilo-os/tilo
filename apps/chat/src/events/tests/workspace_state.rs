@@ -932,7 +932,7 @@ fn a_read_receipt_the_door_refused_is_not_sent_again_until_the_person_reads_furt
             action: crate::resource::Chat::MARK_READ.id.into(),
             item: None,
             reason: "That didn't run. It isn't available to you here.".into(),
-            by_room: false,
+            by_workspace: false,
         }));
     for _ in 0..3 {
         app.mark_active_read(&doc);

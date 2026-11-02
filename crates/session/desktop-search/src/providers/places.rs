@@ -27,8 +27,8 @@ const LISTED: usize = 6;
 pub struct Place {
     /// The app showing it.
     pub app: String,
-    /// The room of the workspace it was in.
-    pub room: String,
+    /// The workspace it was in.
+    pub workspace: String,
     /// The window it was in, while that window lasts.
     pub tab: u64,
     /// What the window bar showed: the document, the page, the folder.
@@ -59,7 +59,7 @@ impl Place {
     /// names.
     fn same_as(&self, other: &Self) -> bool {
         self.app == other.app
-            && self.room == other.room
+            && self.workspace == other.workspace
             && self.device == other.device
             && self.names() == other.names()
     }
@@ -68,7 +68,7 @@ impl Place {
         format!(
             "{}\u{1f}{}\u{1f}{}\u{1f}{}",
             self.app,
-            self.room,
+            self.workspace,
             self.device.as_deref().unwrap_or_default(),
             self.names()
         )
@@ -110,18 +110,18 @@ pub struct Continue {
     /// workspace holds it, since rows of two workspaces otherwise read
     /// alike.
     home: String,
-    /// The name the desk gives each workspace, by room: what a place
+    /// The name the desk gives each workspace, by workspace: what a place
     /// elsewhere says.
     names: Vec<(String, String)>,
     app_name: Box<dyn Fn(&str) -> String>,
 }
 
 impl Continue {
-    /// The places of `recent` in `room`, with `open_tabs` the windows still
+    /// The places of `recent` in `workspace`, with `open_tabs` the windows still
     /// open and `app_name` an app's name as people know it.
     pub fn new(
         recent: &RecentPlaces,
-        room: &str,
+        workspace: &str,
         open_tabs: Vec<u64>,
         app_name: impl Fn(&str) -> String + 'static,
     ) -> Self {
@@ -129,11 +129,11 @@ impl Continue {
             places: recent
                 .places()
                 .iter()
-                .filter(|place| place.room == room)
+                .filter(|place| place.workspace == workspace)
                 .cloned()
                 .collect(),
             open_tabs,
-            home: room.to_owned(),
+            home: workspace.to_owned(),
             names: Vec::new(),
             app_name: Box::new(app_name),
         }
@@ -141,7 +141,7 @@ impl Continue {
 
     /// The places of every workspace of `recent`, each naming the workspace
     /// it is in where that is not `home` ("in Lounge"), which the desk
-    /// gives as `(room, name)` pairs.
+    /// gives as `(workspace, name)` pairs.
     pub fn everywhere(
         recent: &RecentPlaces,
         home: &str,
@@ -161,7 +161,7 @@ impl Continue {
     fn hit(&self, place: &Place, score: i32) -> Hit {
         let target = match (&place.anchor, &place.device) {
             (Some(anchor), _) if !anchor.is_empty() => Target::Invoke(Box::new(
-                InvokeTarget::open(&place.app, &place.room, anchor),
+                InvokeTarget::open(&place.app, &place.workspace, anchor),
             )),
             (_, None) if self.open_tabs.contains(&place.tab) => Target::Window {
                 tab: place.tab,
@@ -172,12 +172,12 @@ impl Continue {
             },
         };
         let mut facts = vec![(self.app_name)(&place.app)];
-        if place.room != self.home {
+        if place.workspace != self.home {
             facts.push(
                 match self
                     .names
                     .iter()
-                    .find(|(room, _)| *room == place.room)
+                    .find(|(workspace, _)| *workspace == place.workspace)
                     .map(|(_, name)| name)
                 {
                     Some(name) => crate::i18n::t_args(
@@ -256,7 +256,7 @@ mod tests {
     fn place(label: &str, anchor: Option<&str>, at: u64) -> Place {
         Place {
             app: "so.tilo.notes".into(),
-            room: "room".into(),
+            workspace: "workspace".into(),
             tab: 4,
             label: label.into(),
             value: String::new(),
@@ -289,7 +289,7 @@ mod tests {
         away.device = Some("Laptop".into());
         away.tab = 9;
         recent.record(away);
-        let shown = Continue::new(&recent, "room", vec![4], |_| "Notes".into());
+        let shown = Continue::new(&recent, "workspace", vec![4], |_| "Notes".into());
         let hits = shown.query("");
         assert_eq!(hits.len(), 3);
         assert_eq!(

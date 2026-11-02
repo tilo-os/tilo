@@ -1,6 +1,6 @@
 // The acceptance cases of a native window on the browser desktop, driven
 // headlessly by scripts/perf/native_stream_qualification.mjs after its timed
-// run, on the same host, governed room and desktop. Every case is judged, and
+// run, on the same host, governed workspace and desktop. Every case is judged, and
 // one that breaks fails the run with the rest of its correctness; a case the
 // harness cannot drive (a window that never comes on screen to click, a page
 // with no live session to drop) makes the run invalid, never a pass.
@@ -297,7 +297,8 @@ async function settledBox(page, prefix, before, ms) {
   }, ms, 100);
 }
 
-/** Admit everyone waiting to join the owner's room until `stop()` resolves; resolves to how many. */
+/** Admit everyone waiting to join the owner's workspace until `stop()` resolves; resolves to
+ * how many. */
 async function admitWhile(owner, done) {
   let admitted = 0, finished = false;
   done.finally(() => { finished = true; }).catch(() => {});
@@ -315,7 +316,7 @@ async function admitWhile(owner, done) {
 /**
  * The cases, in order. `ctx`: `main` the timed run's page (its window W1
  * focused by the run's clicks), `w1` its session (`{source, session, stop, log}`),
- * `browser`, `pagesOrigin`, `viewport`, `room`, `live` (the page's live state
+ * `browser`, `pagesOrigin`, `viewport`, `workspace`, `live` (the page's live state
  * expression), `openPage(name, params, {block, context})`, `startSession(name,
  * options)` and `readSent(log)`. Resolves to `{cases, children}`: each case's
  * findings and `failures`, and the extra sessions to stop.
@@ -447,7 +448,7 @@ export async function runAcceptance(ctx) {
   // The other members: a second device of the owner on a network where
   // WebTransport never becomes ready, then a second person, a viewer ----------------
   // They come while the first page is idle (its window still): a device
-  // joining the room is let in by one already in it, and on SwiftShader a
+  // joining the workspace is let in by one already in it, and on SwiftShader a
   // busy desktop holds up every other page's. A browser that drives one
   // window (Safari's driver) is one member: these cases are Chrome's.
   const fallback = open('fallback');
@@ -460,7 +461,7 @@ export async function runAcceptance(ctx) {
     const invitation = await main.evaluate(`globalThis.peer.createInvitation({role: 'viewer', expiresIn: 3600})`);
     // One after the other: a desktop gives its GPU device a minute to present
     // its first frame, and two mounting at once on SwiftShader miss it.
-    const other = await ctx.openPage('fallback', {room: ctx.room, label: 'Owner on HTTPS'}, {block: true});
+    const other = await ctx.openPage('fallback', {workspace: ctx.workspace, label: 'Owner on HTTPS'}, {block: true});
     const viewerPage = ctx.openPage('viewer', {invite: invitation, label: 'Viewer'}, {context: true});
     const admitted = admitWhile(main, viewerPage);
     const watcher = await viewerPage;

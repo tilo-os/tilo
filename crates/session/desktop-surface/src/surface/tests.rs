@@ -1,7 +1,7 @@
 //! The desktop surface: layout, chrome and input, driven through its real model.
 
 use super::*;
-use crate::navigation::Route;
+use crate::navigation::{ChromeEffect, DeskEffect, Route};
 use ui::widget::TileContent;
 use ui::winit::dpi::PhysicalPosition;
 
@@ -92,13 +92,9 @@ fn a_window_someone_else_holds_is_not_closed_and_the_desktop_says_why() {
     let tab: TabId = route.tab.parse().unwrap();
     assert!(handle.set_holders(HashMap::from([(tab, held_by("Ben"))])));
     let refusal = handle
-        .dispatch(
-            &Command::Close {
-                generation: "g".into(),
-                route: route.clone(),
-            },
-            "g",
-        )
+        .dispatch(DeskEffect::CloseTab {
+            tab: route.tab.clone(),
+        })
         .unwrap_err();
     assert!(refusal.contains("Ben"), "{refusal}");
     let revision = handle.revision();
@@ -118,13 +114,7 @@ fn a_window_someone_else_holds_is_not_closed_and_the_desktop_says_why() {
     let offered = handle.read(|tree| search::offered_commands(tree, &|_| false));
     assert!(offered.iter().any(|id| id == "desktop.close-window"));
     handle
-        .dispatch(
-            &Command::Close {
-                generation: "g".into(),
-                route,
-            },
-            "g",
-        )
+        .dispatch(DeskEffect::CloseTab { tab: route.tab })
         .unwrap();
 }
 
@@ -548,13 +538,9 @@ fn selects_apply_in_the_frame_they_wake() {
     for target in [0, 2, 1, 2] {
         let route = entries[target].route.clone();
         handle
-            .dispatch(
-                &Command::Select {
-                    generation: "g".into(),
-                    route: route.clone(),
-                },
-                "g",
-            )
+            .dispatch(DeskEffect::Focus {
+                tab: route.tab.clone(),
+            })
             .unwrap();
         frame.relayout();
         assert_eq!(
@@ -626,13 +612,9 @@ fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
             (0, "the first"),
         ] {
             handle
-                .dispatch(
-                    &Command::Select {
-                        generation: "g".into(),
-                        route: entries[target].route.clone(),
-                    },
-                    "g",
-                )
+                .dispatch(DeskEffect::Focus {
+                    tab: entries[target].route.tab.clone(),
+                })
                 .unwrap();
             for _ in 0..40 {
                 frame.relayout();
@@ -694,14 +676,10 @@ fn a_maximized_window_takes_the_bottom_band_and_gives_it_back() {
     let route = handle.snapshot("g", vec![]).entries[0].route.clone();
     for maximized in [true, false] {
         handle
-            .dispatch(
-                &Command::Maximize {
-                    generation: "g".into(),
-                    route: route.clone(),
-                    maximized,
-                },
-                "g",
-            )
+            .dispatch(ChromeEffect::Maximize {
+                group: route.group.clone(),
+                on: maximized,
+            })
             .unwrap();
         for _ in 0..40 {
             frame.relayout();
@@ -731,13 +709,7 @@ fn closing_a_window_keeps_every_frame_settling() {
     }
     let route = handle.snapshot("g", vec![]).entries[0].route.clone();
     handle
-        .dispatch(
-            &Command::Close {
-                generation: "g".into(),
-                route,
-            },
-            "g",
-        )
+        .dispatch(DeskEffect::CloseTab { tab: route.tab })
         .unwrap();
     // Forty frames of a 60 Hz display, on the clock the close animates by.
     let mut at = ui::time::now();
@@ -972,13 +944,7 @@ fn notification_navigation_shows_expired_real_banners_in_the_center() {
     notifications.present(shown, &[id], false);
     assert!(notifications.expire(expires));
     handle
-        .dispatch(
-            &Command::NotificationCenter {
-                generation: "g".into(),
-                open: true,
-            },
-            "g",
-        )
+        .dispatch(ChromeEffect::Notifications { open: true })
         .unwrap();
     let state = AutoCommit::new();
     surface.update(&state, &ui::automerge::ROOT);
@@ -993,13 +959,7 @@ fn notification_navigation_shows_expired_real_banners_in_the_center() {
     );
     assert_eq!(notifications.log().history()[0].id, id);
     handle
-        .dispatch(
-            &Command::NotificationCenter {
-                generation: "g".into(),
-                open: false,
-            },
-            "g",
-        )
+        .dispatch(ChromeEffect::Notifications { open: false })
         .unwrap();
     surface.update(&state, &ui::automerge::ROOT);
     assert!(
@@ -1461,7 +1421,7 @@ fn host_actions_no_longer_offered_are_reported_for_withdrawal() {
     );
 }
 
-fn room_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::WindowGroup {
+fn workspace_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::WindowGroup {
     tilo_desktop_model::WindowGroup {
         id: group,
         tabs: vec![Tab {
@@ -1505,7 +1465,7 @@ fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
     for (group, tab, title) in windows {
         incoming.workspaces[0].strips[0]
             .window_groups
-            .push(room_window(group, tab, title));
+            .push(workspace_window(group, tab, title));
     }
     handle.replace_shared_tree(incoming, &[]);
     let kim = ui::widget::TabHolder {
@@ -1609,7 +1569,7 @@ fn only_windows_others_open_in_a_known_strip_are_arrivals() {
     for (group, tab) in [(9_100_100, own), (9_100_200, theirs)] {
         after.workspaces[0].strips[0]
             .window_groups
-            .push(room_window(group, tab, "Notes"));
+            .push(workspace_window(group, tab, "Notes"));
     }
     assert_eq!(
         arrivals::opened_elsewhere(&before, &after, &[own]),
@@ -1629,19 +1589,18 @@ fn opening_an_app_finds_the_window_a_desktop_arriving_meanwhile_brings() {
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
     frame.relayout();
-    let room = handle.read(Clone::clone);
-    let mut before = room.clone();
+    let workspace = handle.read(Clone::clone);
+    let mut before = workspace.clone();
     before.workspaces[0].strips[0].window_groups.truncate(1);
     handle.replace_tree(before);
     frame.relayout();
     assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
-    let open: Command = serde_json::from_value(
-        serde_json::json!({"kind":"open","generation":"g","app":"so.tilo.app1"}),
-    )
-    .unwrap();
-    handle.dispatch(&open, "g").unwrap();
+    let open = ChromeEffect::ShowApp {
+        app: "so.tilo.app1".into(),
+    };
+    handle.dispatch(open).unwrap();
     // The workspace's desktop, with its window of the app, lands first.
-    handle.replace_tree(room);
+    handle.replace_tree(workspace);
     for _ in 0..3 {
         frame.relayout();
     }
@@ -1668,14 +1627,12 @@ fn a_window_takes_the_name_the_person_gives_it_and_gives_it_back() {
         name: &str,
     ) {
         handle
-            .dispatch(
-                &Command::Rename {
-                    generation: "g".into(),
-                    route: route.clone(),
-                    name: name.into(),
-                },
-                "g",
-            )
+            .dispatch(ChromeEffect::Rename {
+                group: Some(route.group.clone()),
+                strip: None,
+                workspace: None,
+                name: name.into(),
+            })
             .unwrap();
         for _ in 0..4 {
             frame.relayout();
@@ -1723,14 +1680,12 @@ fn a_window_takes_the_name_the_person_gives_it_and_gives_it_back() {
     assert_eq!(label(&handle), "App1");
     // A name longer than a tab could ever show is refused, and nothing moves.
     let refusal = handle
-        .dispatch(
-            &Command::Rename {
-                generation: "g".into(),
-                route,
-                name: "x".repeat(navigation::MAX_NAME_CHARS + 1),
-            },
-            "g",
-        )
+        .dispatch(ChromeEffect::Rename {
+            group: Some(route.group),
+            strip: None,
+            workspace: None,
+            name: "x".repeat(navigation::MAX_NAME_CHARS + 1),
+        })
         .unwrap_err();
     assert!(refusal.contains("too long"), "{refusal}");
 }
@@ -1821,14 +1776,10 @@ fn a_window_dragged_out_of_its_strip_moves_to_the_strip_below_it() {
         (workspace.id, first)
     });
     handle
-        .dispatch(
-            &Command::Strip {
-                generation: "g".into(),
-                workspace: workspace.0.to_string(),
-                strip: first.0.to_string(),
-            },
-            "g",
-        )
+        .dispatch(ChromeEffect::ShowStrip {
+            workspace: workspace.0.to_string(),
+            strip: first.0.to_string(),
+        })
         .unwrap();
     for _ in 0..4 {
         frame.relayout();

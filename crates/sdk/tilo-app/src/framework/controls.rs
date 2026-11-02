@@ -85,16 +85,16 @@ thread_local! {
 }
 
 /// A view opened a record of `P` beside the app's own, in the person's
-/// room: a surface report lists its surface too, marked as the person's.
+/// workspace: a surface report lists its surface too, marked as the person's.
 pub(crate) fn opened<P: Resource>() {
     record_opened::<P>(true);
 }
 
-/// The app opened records of `P` beside its own in the room it lives in
+/// The app opened records of `P` beside its own in the workspace it lives in
 /// (the parts of a chain): a surface report lists their surface too, so
 /// every member decides a change to them against it as against the app's
 /// own record.
-pub(crate) fn opened_in_room<P: Resource>() {
+pub(crate) fn opened_in_workspace<P: Resource>() {
     record_opened::<P>(false);
 }
 

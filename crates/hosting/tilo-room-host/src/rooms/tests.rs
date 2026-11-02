@@ -357,7 +357,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
 /// window opens: it names the default id, or members refuse it.
 #[cfg(feature = "agents")]
 #[tokio::test]
-async fn a_seeded_room_default_record_names_the_default_id() {
+async fn a_seeded_workspace_default_record_names_the_default_id() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(scratch.path(), &key, &cert).await;
@@ -368,7 +368,9 @@ async fn a_seeded_room_default_record_names_the_default_id() {
     // a room record (Scratchpad, Notes) seeds its package primary instead.
     let app = "so.tilo.sheets";
     assert!(!catalogue.get(app).unwrap().keeps_workspace_record());
-    let record = ui::record::RecordId::room_default().as_str().to_owned();
+    let record = ui::record::RecordId::workspace_default()
+        .as_str()
+        .to_owned();
     assert!(
         rooms
             .prepare_application(&created.room, &cert, &catalogue, app, &record)
@@ -385,7 +387,7 @@ async fn a_seeded_room_default_record_names_the_default_id() {
     assert_eq!(
         ui::record::identity(&doc),
         Some(ui::record::RecordCheckout::new(
-            ui::record::RecordId::room_default(),
+            ui::record::RecordId::workspace_default(),
             kind
         ))
     );
@@ -881,7 +883,7 @@ async fn assert_canonical_chat_preparation(
 
 /// The room's copy of `record` of `app`, when it has one.
 #[cfg(feature = "agents")]
-async fn room_record(
+async fn workspace_record(
     rooms: &Rooms,
     room: &str,
     (app, record): (&str, &str),
@@ -905,7 +907,7 @@ async fn governor_authors_a_room_record_no_factory_makes() {
     let rooms = relay.rooms();
     let created = rooms.create("Shared desktop").await.unwrap();
     let room = created.room.as_str();
-    let read = || room_record(rooms, room, DESKTOP);
+    let read = || workspace_record(rooms, room, DESKTOP);
     let text = |doc: &automerge::AutoCommit| {
         doc.get(ROOT, "desktop")
             .unwrap()
@@ -1881,7 +1883,7 @@ fn write_windows(
     windows: &[tilo_desktop_model::Strip],
 ) {
     let room = tilo_desktop_model::RoomId::parse(room).unwrap();
-    let mut workspace = tilo_desktop_model::Workspace::in_room(
+    let mut workspace = tilo_desktop_model::Workspace::in_workspace(
         tilo_desktop_model::WorkspaceId::of_room(room),
         room,
         "Room",
@@ -2203,7 +2205,10 @@ async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
     let created = rooms.create("Lounge").await.unwrap();
     let room = created.room.clone();
     rooms
-        .set_layout(&room, tilo_desktop_model::projection::RoomLayout::Personal)
+        .set_layout(
+            &room,
+            tilo_desktop_model::projection::WorkspaceLayout::Personal,
+        )
         .await
         .unwrap();
     assert!(rooms.is_public(&room));
@@ -2265,7 +2270,10 @@ async fn the_governors_own_windows_pass_the_door_of_a_personal_room() {
     let rooms = relay.rooms().clone();
     let room = rooms.create("Lounge").await.unwrap().room;
     rooms
-        .set_layout(&room, tilo_desktop_model::projection::RoomLayout::Personal)
+        .set_layout(
+            &room,
+            tilo_desktop_model::projection::WorkspaceLayout::Personal,
+        )
         .await
         .unwrap();
     let (a, a_salt) = admitted_member(&rooms, &room, &key, &cert, 3).await;
@@ -2437,7 +2445,10 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
                     .unwrap();
             }
             Withdrawal::LayoutTurnedPersonal => rooms
-                .set_layout(&room, tilo_desktop_model::projection::RoomLayout::Personal)
+                .set_layout(
+                    &room,
+                    tilo_desktop_model::projection::WorkspaceLayout::Personal,
+                )
                 .await
                 .unwrap(),
         }
@@ -2551,7 +2562,7 @@ async fn a_listed_room_refuses_members_windows_after_a_restart() {
         let governed = state.lock().await;
         assert_eq!(
             governed.peer().governance().workspace_layout(),
-            tilo_desktop_model::projection::RoomLayout::Personal,
+            tilo_desktop_model::projection::WorkspaceLayout::Personal,
             "every member's device reads that the room is personal"
         );
     }
@@ -2581,13 +2592,13 @@ async fn a_listed_room_refuses_members_windows_after_a_restart() {
 )]
 #[tokio::test]
 async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
-    use tilo_desktop_model::projection::RoomLayout;
+    use tilo_desktop_model::projection::WorkspaceLayout;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
     let rooms = relay.rooms().clone();
     let room = rooms.create("Lounge").await.unwrap().room;
-    assert_eq!(rooms.layout(&room), RoomLayout::Shared, "invite-only");
+    assert_eq!(rooms.layout(&room), WorkspaceLayout::Shared, "invite-only");
     let (a, a_salt) = admitted_member(&rooms, &room, &key, &cert, 3).await;
     let body = terminals_opened(&rooms, &room, &a, a_salt).await;
     rooms
@@ -2596,10 +2607,16 @@ async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
         .unwrap();
     assert_eq!(titles_shared(&rooms, &room).await.len(), 2);
 
-    rooms.set_layout(&room, RoomLayout::Personal).await.unwrap();
+    rooms
+        .set_layout(&room, WorkspaceLayout::Personal)
+        .await
+        .unwrap();
     assert!(titles_shared(&rooms, &room).await.is_empty());
 
-    rooms.set_layout(&room, RoomLayout::Shared).await.unwrap();
+    rooms
+        .set_layout(&room, WorkspaceLayout::Shared)
+        .await
+        .unwrap();
     assert!(!rooms.is_public(&room));
     // A's device publishes its windows again, now that the room shares them.
     let body = terminals_opened(&rooms, &room, &a, a_salt).await;
@@ -2630,7 +2647,7 @@ async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
     let rooms = relay.rooms().clone();
     assert_eq!(
         rooms.layout(&room),
-        RoomLayout::Shared,
+        WorkspaceLayout::Shared,
         "the governor's choice, not the listing's default"
     );
     assert_eq!(titles_shared(&rooms, &room).await.len(), 2);
@@ -2886,7 +2903,10 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
 
     // A change that is not an arrival: the next arrival starts over.
     rooms
-        .set_layout(&room, tilo_desktop_model::projection::RoomLayout::Personal)
+        .set_layout(
+            &room,
+            tilo_desktop_model::projection::WorkspaceLayout::Personal,
+        )
         .await
         .unwrap();
     let (late, late_cert) = guest_device();
@@ -2912,5 +2932,63 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
         );
     }
     drop(rooms);
+    relay.shutdown().await;
+}
+
+/// A device of a workspace asks the host, over the devices' own plane, whether
+/// it would run a piece of work; the host answers as one of the workspace's
+/// member devices, with what it knows of itself.
+#[tokio::test]
+async fn a_member_device_asks_the_host_whether_it_would_run_work() {
+    use neighbour_wire::offer::{Decline, Route, Work};
+    use tilo_peer_state::actions::{ActionPlane, OFFER_DEADLINE};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
+    let created = rooms.create("Demo").await.unwrap();
+    let (member_key, member_cert) = guest_device();
+    door_join(rooms, &cert, &created.room, (&member_key, &member_cert), 9).await;
+
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&member_key.to_bytes()))
+        .bind()
+        .await
+        .unwrap();
+    let plane = ActionPlane::new(
+        member_key.clone(),
+        Arc::new(tilo_actions::remote::TestHost::new()),
+    );
+    let choice = tokio::time::timeout(
+        Duration::from_secs(20),
+        plane.offers(
+            &endpoint,
+            [relay.node_addr()],
+            &created.room,
+            &Route::new("so.tilo.notes", "notes.root", "insert"),
+            &Work::none(),
+            OFFER_DEADLINE,
+        ),
+    )
+    .await
+    .expect("the round finishes")
+    .expect("the round completes");
+
+    // The host answered as itself: it holds the workspace, and it runs no app
+    // actions on this plane, so it claims none.
+    assert_eq!(choice.considered.len(), 1, "the host was asked: {choice}");
+    assert_eq!(
+        choice.considered[0].device, cert.device_public_key,
+        "the answer came from the host's own device: {choice}"
+    );
+    assert_eq!(
+        choice.considered[0].verdict,
+        Err(Decline::AppNotInstalled),
+        "the host answered with what it knows of itself, not as away: {choice}"
+    );
+    assert!(choice.is_local(), "nothing runs there: {choice}");
+
+    endpoint.close().await;
     relay.shutdown().await;
 }

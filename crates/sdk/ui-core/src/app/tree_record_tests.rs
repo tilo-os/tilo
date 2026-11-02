@@ -10,7 +10,7 @@ use automerge::{ROOT, transaction::Transactable as _};
 fn a_record_of_an_open_records_tree_syncs_on_its_own_route_from_a_snapshot() {
     let mut fixture = RoutedOwners::new();
     let base =
-        crate::record::RecordId::derived("messages", &crate::record::RecordId::room_default());
+        crate::record::RecordId::derived("messages", &crate::record::RecordId::workspace_default());
     let part = crate::record::RecordCheckout::new(
         base.part(0),
         crate::record::RecordKind::new("test.part"),
@@ -96,7 +96,7 @@ fn a_record_held_for_a_tree_never_holds_back_the_published_surface() {
         std::thread::yield_now();
     }
     let base =
-        crate::record::RecordId::derived("messages", &crate::record::RecordId::room_default());
+        crate::record::RecordId::derived("messages", &crate::record::RecordId::workspace_default());
     let part = crate::record::RecordCheckout::new(
         base.part(1),
         crate::record::RecordKind::new("test.part"),

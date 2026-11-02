@@ -25,7 +25,7 @@ fn workspace_a_peer_changed() -> (TestTree, u64) {
                 Access::Read,
             ),
         )
-        .expect("the owner grants in their own room");
+        .expect("the owner grants in their own workspace");
     }
     if let Some(workspace) = tree
         .desktop
@@ -55,7 +55,7 @@ fn shown(summary: &wire::Summary) -> Vec<String> {
 }
 
 #[test]
-fn marking_the_summary_viewed_moves_what_is_new_and_leaves_the_room_alone() {
+fn marking_the_summary_viewed_moves_what_is_new_and_leaves_the_workspace_alone() {
     let (mut tree, workspace) = workspace_a_peer_changed();
     let heads = tree.doc.get_heads();
     let mut pane = pane();
@@ -87,7 +87,7 @@ fn marking_the_summary_viewed_moves_what_is_new_and_leaves_the_room_alone() {
 /// summary and unread count; it writes nothing to the workspace the other could
 /// receive.
 #[test]
-fn two_people_in_one_room_each_see_their_own_whats_new() {
+fn two_people_in_one_workspace_each_see_their_own_whats_new() {
     let (mut mine, workspace) = workspace_a_peer_changed();
     let mut theirs = mine.clone();
     theirs
@@ -116,7 +116,10 @@ fn two_people_in_one_room_each_see_their_own_whats_new() {
 
     // Whatever my device has that theirs lacks reaches theirs.
     let sent = mine.export_changes_since(&theirs.doc.get_heads());
-    assert!(sent.is_empty(), "marking viewed sends the room nothing");
+    assert!(
+        sent.is_empty(),
+        "marking viewed sends the workspace nothing"
+    );
     theirs.apply_changes(&sent).unwrap();
     their_pane.refresh(&mut theirs);
     assert_eq!(

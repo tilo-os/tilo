@@ -20,18 +20,19 @@ impl WorkspaceId {
         self.0
     }
 
-    /// The id of the workspace that is `room`, the same on every device: the
-    /// room's transport shard, which Activity, the relay and custody already
-    /// derive from it (`tilo_workspace_join::room_workspace_id`, pinned to
-    /// the same value by the shell's tests). A new workspace takes it; one
+    /// The local id of the workspace with `identity`, the same on every device:
+    /// the workspace's transport shard, which Activity, the relay and custody
+    /// already derive from it (`tilo_workspace_join::room_workspace_id`, pinned
+    /// to the same value by the shell's tests). A new workspace takes it; one
     /// stored before keeps the id it has.
     #[must_use]
-    pub fn of_room(room: RoomId) -> Self {
+    pub fn of_room(identity: RoomId) -> Self {
         // Encoded on the stack, as the transport derivation does.
         let mut canonical = [0u8; 36];
         let hash = blake3::derive_key(
             "tilo-room-transport-v1",
-            room.as_uuid()
+            identity
+                .as_uuid()
                 .hyphenated()
                 .encode_lower(&mut canonical)
                 .as_bytes(),
@@ -43,11 +44,10 @@ impl WorkspaceId {
     }
 }
 
-/// Durable, globally-unique identity of a workspace as a collaboration
-/// workspace. Unlike [`WorkspaceId`] (a local counter) it is minted once as a
-/// random v4 uuid and carried rather than recomputed, so machines that
-/// have never met still agree on it. [`Self::nil`] is the unminted
-/// sentinel.
+/// Durable, globally-unique identity of a collaboration workspace. Unlike
+/// [`WorkspaceId`] (a local counter) it is minted once as a random v4 uuid and
+/// carried rather than recomputed, so machines that have never met still agree
+/// on it. [`Self::nil`] is the unminted sentinel.
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
@@ -316,13 +316,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_rooms_workspace_id_is_its_transport_shard() {
+    fn a_workspaces_id_is_its_transport_shard() {
         // The same literal `tilo_workspace_join::room_workspace_id` is pinned
-        // to: every device and the relay derive the same workspace from a room.
-        let room = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap();
-        assert_eq!(WorkspaceId::of_room(room).raw(), 3_029_697_355_180_468_570);
+        // to: every device and the relay derive the same id for a workspace.
+        let identity = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap();
+        assert_eq!(
+            WorkspaceId::of_room(identity).raw(),
+            3_029_697_355_180_468_570
+        );
         let other = RoomId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a12").unwrap();
-        assert_ne!(WorkspaceId::of_room(other), WorkspaceId::of_room(room));
+        assert_ne!(WorkspaceId::of_room(other), WorkspaceId::of_room(identity));
     }
 
     #[test]

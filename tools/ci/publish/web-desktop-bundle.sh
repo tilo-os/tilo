@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # The browser desktop bundle (crates/browser/tilo-web-desktop, release, split into modules) that
-# the room service's and the web entry's images serve and the browser end-to-end checks drive.
+# the web entry's image serves and the browser end-to-end checks drive.
 # Built in two checks of their own: `wasm` compiles the modules, keyed by what that compile reads
 # and not by commit, so a change to the pages alone takes the last one; `bundle` assembles the
 # pages around them for this commit (the bundle records it). The image contexts take the bundle
-# as an output instead of each compiling every app to wasm again, and it builds beside the room
-# service's native binaries rather than after them.
+# as an output instead of each compiling every app to wasm again, and it builds beside the
+# relay's native binaries rather than after them.
 # usage: web-desktop-bundle.sh wasm OUT | web-desktop-bundle.sh bundle OUT WASM_DIR
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"

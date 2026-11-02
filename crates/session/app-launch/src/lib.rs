@@ -2,7 +2,7 @@
 //!
 //! A desktop surface asks for an app by name — a launch string — and this
 //! crate turns that name into a process: what to run, with which arguments,
-//! in which environment, and in whose room. A launch is one of
+//! in which environment, and in whose workspace. A launch is one of
 //!
 //! - a Tilo package id (`so.tilo.notes`), which starts through
 //!   `tilo-launcher` in the package's sandbox ([`plan`]);
@@ -20,8 +20,8 @@
 //! carrying a document or a link always starts the app's own command line,
 //! which hands it to the process it already runs.
 //!
-//! Everything the session knows that the plan needs — the room and what was
-//! granted in it ([`Room`]), the displays and the person's session variables
+//! Everything the session knows that the plan needs — the workspace and what was
+//! granted in it ([`Workspace`]), the displays and the person's session variables
 //! ([`env`]) — is passed in as data, so a plan is assertable without a
 //! process appearing. [`spawner`] is the part that does start something, and
 //! reports how it ended so a crash can be told from a normal exit.
@@ -37,14 +37,14 @@ pub mod env;
 pub mod instance;
 pub mod launch;
 pub mod plan;
-pub mod room;
 pub mod routing;
 pub mod spawner;
+pub mod workspace;
 
 pub use doors::{Connects, Doors, HeldDoor, Routed, StartAlone, WindowConnections};
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows, package_identities};
 pub use launch::{Launch, Open};
 pub use plan::{Kind, PlanContext, PlanError, Planned};
-pub use room::Room;
 pub use spawner::{Cause, End, Event, Spawner, Started};
+pub use workspace::Workspace;

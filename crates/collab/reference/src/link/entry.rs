@@ -3,7 +3,7 @@
 use super::{HostOrigin, LinkError, encode};
 
 /// An entry base (`https://app.example/`, `https://machine.example:8443/open/`).
-/// Every link under it names its workspace: no entry stands for a room.
+/// Every link under it names its workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebEntry {
     base: String,

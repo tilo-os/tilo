@@ -10,7 +10,7 @@
 //! It is published beside the app's resource with its field edits and verbs,
 //! so the palette, agents and scripts change it through the same door. Only
 //! the person whose record it is changes it (or software acting for them),
-//! whatever their role in the room the app shows, and every change is
+//! whatever their role in the workspace the app shows, and every change is
 //! recorded in the record's own history: a person record's document history,
 //! the settings document's log of who changed which setting.
 
@@ -127,7 +127,7 @@ impl<P: Resource> Held<P> {
 
     /// The record as it is published: its field edits and verbs carried out
     /// through [`RECORD_ACTION_TYPE`], open to the person whatever their
-    /// role in the room; nothing to change where it is read only.
+    /// role in the workspace; nothing to change where it is read only.
     pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
         self.sync();
         // Reading it again changes no revision — the state stays the last
@@ -183,7 +183,7 @@ pub(crate) fn route(
 /// The document action `spec` carried out on the record `record`.
 pub(crate) fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_actions::ActionSpec {
     let mut spec = route_operation(spec, RECORD_ACTION_TYPE, record);
-    // The room's roles do not reach a record of the person's own: the host
+    // The workspace's roles do not reach a record of the person's own: the host
     // lets only its person change it. It keeps its kind, so a change Undo
     // takes back still runs at once and offers Undo.
     spec.type_mut().contract.set_own_record();
@@ -530,11 +530,11 @@ impl<'a> Records<'a> {
         self
     }
 
-    /// The record `P` that every app of the room opens and this app keeps
+    /// The record `P` that every app of the workspace opens and this app keeps
     /// (`collab_types::WORKSPACE_RECORDS`; the workspace's emoji are
     /// Chat's): opened with the window, so the app's surface lists it and
     /// every member's change to it is decided against that surface.
-    pub fn workspace<P: Resource>(&mut self) -> &mut Self {
+    pub fn shared_workspace<P: Resource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {
             return self;
         };

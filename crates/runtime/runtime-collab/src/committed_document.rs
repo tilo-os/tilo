@@ -8,6 +8,8 @@ pub struct ConnectionSnapshot {
     pub device: [u8; 32],
     pub agent: Option<String>,
     pub app_id: String,
+    /// This workspace's id. Its JSON name, and the name every other crate
+    /// that builds or reads a snapshot uses, is `room`: kept as it was.
     pub room: String,
     pub document: String,
 }
@@ -154,8 +156,8 @@ pub enum Request {
     /// Original authenticated principal and exact channel route; no caller claims.
     ConnectionSnapshot,
     /// The caller reads no more on this channel: give up its place in the
-    /// broker's byte budget queue (after a [`Reply::Busy`]), and the room it
-    /// was granted, so reads behind it are served. Answered
+    /// broker's byte budget queue (after a [`Reply::Busy`]), and the place
+    /// it was granted, so reads behind it are served. Answered
     /// [`Reply::Cancelled`]; an active capture is untouched.
     Leave,
     /// How this channel's writes travel: answered [`Reply::Writes`].
@@ -208,9 +210,9 @@ pub enum Reply {
     },
     ConnectionSnapshot(ConnectionSnapshot),
     /// The record reaches a device only once it asks
-    /// (`neighbour_wire::record_sync`), and the room's hosts sent
-    /// everything they hold of it without it, or no host of the room is
-    /// connected: not readable, and not on its way either. Like
+    /// (`neighbour_wire::record_sync`), and the workspace's hosts sent
+    /// everything they hold of it without it, or no host of the workspace
+    /// is connected: not readable, and not on its way either. Like
     /// [`Self::Unavailable`] an [`Request::Await`] for `None` holds until
     /// that changes (a host connects, the record arrives).
     Absent,
@@ -220,10 +222,10 @@ pub enum Reply {
     /// read's turn has come, and the next Open captures. A caller that
     /// stops reading on the channel sends [`Request::Leave`].
     Busy,
-    /// The answer to [`Request::Writes`]. `sealed`: the record's room seals
-    /// every write under its channel's keys, so the app encrypts each one
-    /// and a write it cannot encrypt is refused, never sent as written.
-    /// Otherwise the room's owner commits the writes as they are.
+    /// The answer to [`Request::Writes`]. `sealed`: the record's workspace
+    /// seals every write under its channel's keys, so the app encrypts each
+    /// one and a write it cannot encrypt is refused, never sent as written.
+    /// Otherwise the workspace's owner commits the writes as they are.
     Writes {
         sealed: bool,
     },
@@ -392,7 +394,7 @@ mod tests {
             device: [2; 32],
             agent: Some("agent".into()),
             app_id: "notes".into(),
-            room: "room".into(),
+            room: "workspace".into(),
             document: "document".into(),
         };
         let reply = Reply::ConnectionSnapshot(snapshot.clone());
@@ -404,7 +406,7 @@ mod tests {
                 1 => invalid.device = [0; 32],
                 2 => invalid.agent = Some(String::new()),
                 3 => invalid.document = "x".repeat(4097),
-                _ => invalid.room = "bad\nroom".into(),
+                _ => invalid.room = "bad\nworkspace".into(),
             }
             assert!(Reply::ConnectionSnapshot(invalid).encode().is_err());
         }
@@ -417,7 +419,7 @@ mod tests {
     fn initialization_wire_bounds_and_first_creation_receipt_are_explicit() {
         let workspace = CreationWorkspace {
             id: "7851d1ef-c4fa-4d23-aa65-5ad85f80a6af".into(),
-            name: "Owner room".into(),
+            name: "Owner's workspace".into(),
         };
         let reply = Reply::Created {
             receipt: CreationReceipt {

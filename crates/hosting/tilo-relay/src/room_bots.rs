@@ -338,10 +338,12 @@ where
 /// keeps one per room (chat), else the room's default record, which every
 /// member's first window of the app opens.
 #[must_use]
-pub fn room_record(catalogue: &tilo_agent_participant::AppCatalogue, app: &str) -> String {
+pub fn workspace_record(catalogue: &tilo_agent_participant::AppCatalogue, app: &str) -> String {
     match catalogue.get(app) {
         Some(definition) if !definition.keeps_workspace_record() => {
-            ui::record::RecordId::room_default().as_str().to_owned()
+            ui::record::RecordId::workspace_default()
+                .as_str()
+                .to_owned()
         }
         _ => String::new(),
     }

@@ -109,6 +109,7 @@ struct Harness {
     tr: TextRenderer,
     doc: AutoCommit,
     chrome: shell::shell::chrome_state::Chrome,
+    size: (f32, f32),
 }
 
 impl Harness {
@@ -155,7 +156,32 @@ impl Harness {
             tr: TextRenderer::new(),
             doc: AutoCommit::new(),
             chrome,
+            size: (width, height),
         }
+    }
+
+    /// One frame as the compositor makes it: the host's update, which
+    /// services the apps it hosts (the overview, the bar), the layout it
+    /// owes once something came up or went away, then the draw.
+    fn frame(&mut self) {
+        let _ = self.root.update(&self.doc, &automerge::ROOT);
+        if host_of(self).structure_dirty() {
+            let (width, height) = self.size;
+            let Layout { taffy, child_node } = lay_out(&mut *self.root, width, height);
+            self.taffy = taffy;
+            self.root_node = child_node;
+        }
+        self.root
+            .apply_layout(&self.taffy, self.root_node, Point::ORIGIN);
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::default();
+        self.root.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.tr,
+            &self.theme,
+            &presence,
+        );
     }
 
     /// No taffy rebuild — that would discard animation state.
@@ -291,23 +317,13 @@ fn e2e_open_close_overview() {
     // first draw after the target changes, so `needs_animation_frame()`
     // reads `false` until that draw runs — without this priming draw the
     // loop below exits immediately and captures the pre-fade desktop.
-    clock.step(|| {
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        h.root
-            .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
-    });
+    clock.step(|| h.frame());
 
     // Re-draw on the frame clock until the crossfade settles: the tick
     // functions advance on draw, each draw one frame later.
     while clock.step(|| h.root.needs_animation_frame()) {
         clock.assert_within_motion("the overview to open");
-        clock.step(|| {
-            let mut scene = Scene::new();
-            let presence = PresenceCtx::default();
-            h.root
-                .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
-        });
+        clock.step(|| h.frame());
     }
 
     clock.step(|| {
@@ -323,21 +339,11 @@ fn e2e_open_close_overview() {
         "Escape should close the overview overlay"
     );
 
-    clock.step(|| {
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        h.root
-            .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
-    });
+    clock.step(|| h.frame());
 
     while clock.step(|| h.root.needs_animation_frame()) {
         clock.assert_within_motion("the overview to close");
-        clock.step(|| {
-            let mut scene = Scene::new();
-            let presence = PresenceCtx::default();
-            h.root
-                .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
-        });
+        clock.step(|| h.frame());
     }
     clock.step(|| {
         h.draw_to(

@@ -113,7 +113,7 @@ mod tests {
 
     const APP: &str = "so.tilo.chat";
     const PERSON: &str = "4f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
-    const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
     fn page() -> Rc<dyn DurableStore> {
         Rc::new(durable_store::MemoryStore::new())
@@ -178,9 +178,10 @@ mod tests {
     /// A window of the page's desktop, prepared as the desktop prepares it.
     fn window(store: &Rc<dyn DurableStore>, instance: u64) -> HostContext {
         let records = RecordOwners::with_store(Rc::clone(store))
-            .open(APP, ROOM)
+            .open(APP, WORKSPACE)
             .unwrap();
-        let views = Rc::new(InstanceViewStore::with_store(Rc::clone(store), "D", ROOM).unwrap());
+        let views =
+            Rc::new(InstanceViewStore::with_store(Rc::clone(store), "D", WORKSPACE).unwrap());
         HostContext::prepare(
             &CHAT,
             HostContextInputs {

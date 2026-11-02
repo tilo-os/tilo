@@ -6,14 +6,14 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "The collab client without the toolkit: what a process that commits to a Tilo room links, and the toolkit (`ui::collaboration`) builds on."
+description = "The collab client without the toolkit: what a process that commits to a Tilo workspace links, and the toolkit (`ui::collaboration`) builds on."
 
 [features]
 default = []
 # The local session runtime: the identity the launcher bound, read through
 # the identity client.
 local-daemons = ["dep:runtime-portal", "dep:runtime-identity"]
-# A native launch: the manager joins its room on the connection the launcher
+# A native launch: the manager joins its workspace on the connection the launcher
 # (or the shell, for a window it opened) handed the process.
 native = ["local-daemons"]
 # The collaboration manager's built-in transport: the collaboration wire's

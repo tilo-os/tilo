@@ -107,7 +107,7 @@ fn recent_resource_reveals_and_forgets_without_changing_files() {
             "Recent navigation and device history do not mutate shared files"
         );
     }
-    app.leave_room();
+    app.leave_workspace();
     for action in ["reveal", "forget-recent"] {
         assert!(app.call_on(&row, action, serde_json::json!({})).is_err());
     }

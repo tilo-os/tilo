@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tilo_actions::remote::{
     ActionHostError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, NODE_PERMITS_ACTION,
     NODE_RESOURCE_PREFIX, Pending, ReceiptStatus, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, pending,
-    workspace_provider_room,
+    provider_workspace,
 };
 
 use super::super::AppBrokerState;
@@ -21,7 +21,7 @@ use crate::services::WorkspaceNodeAsk;
 
 /// The workspace and node `request` asks of, when it is a node ask.
 pub(super) fn node_ask(request: &InvokeRequest) -> Option<(&str, &str)> {
-    let workspace = workspace_provider_room(&request.target.provider)?;
+    let workspace = provider_workspace(&request.target.provider)?;
     let node = request
         .target
         .address
@@ -71,7 +71,7 @@ impl AppBrokerState {
             let (workspace, node) = node_ask(request).ok_or(ActionHostError::UnknownAction)?;
             let ask = ask_of(request)?;
             if !super::own_device::is_person_here(caller, origin)
-                || caller.room() != Some(workspace)
+                || caller.workspace() != Some(workspace)
             {
                 return Err(ActionHostError::NotPermitted);
             }

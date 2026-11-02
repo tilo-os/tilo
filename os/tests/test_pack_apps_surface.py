@@ -1,8 +1,8 @@
 """An image app built from source ships its public surface, as a release one does.
 
-The shell decides a room's writes of an app against the surface its package
+The shell decides a workspace's writes of an app against the surface its package
 ships and names it in the app's own writes. An image package without it
-holds every room write naming one, so the image's packing must stage it.
+holds every workspace write naming one, so the image's packing must stage it.
 """
 import os
 from pathlib import Path

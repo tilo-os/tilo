@@ -78,13 +78,11 @@ impl Desk {
 
     fn launch(&mut self, app: &str) {
         self.handle
-            .dispatch(
-                &navigation::Command::Launch {
-                    generation: "g".into(),
-                    app: app.into(),
-                },
-                "g",
-            )
+            .dispatch(navigation::ChromeEffect::OpenApp {
+                app: app.into(),
+                beside: None,
+                background: None,
+            })
             .unwrap();
         self.frames(60);
     }

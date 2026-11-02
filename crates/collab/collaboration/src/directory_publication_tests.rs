@@ -7,11 +7,11 @@
 fn a_directory_published_before_the_primary_route_joins_is_sent_once_it_joins() {
     let broker = FakeBroker::default();
     let (fd, captures, thread) = stand_up_fake_broker(broker);
-    let room = Uuid::new_v4();
-    let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.files", room);
+    let workspace = Uuid::new_v4();
+    let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.files", workspace);
     let hello = || CollabRequest::Hello {
         app_id: "so.tilo.files".into(),
-        cluster_id: room,
+        cluster_id: workspace,
         record: Some("tab:0000000000000259".into()),
         record_kind: None,
         handle: None,

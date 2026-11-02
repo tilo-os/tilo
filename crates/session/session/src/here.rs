@@ -99,7 +99,7 @@ impl Shared {
                         .collect();
                     WorkspaceHere {
                         id: workspace.id.0,
-                        room,
+                        workspace: room,
                         name: workspace.name.clone(),
                         active: workspace.id == tree.active,
                         people,

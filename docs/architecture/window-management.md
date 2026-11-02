@@ -254,7 +254,7 @@ A window closing left of the view is the one case where the pan's number
 changes with nothing on screen moving: the canvas before the view shrinks
 by the closed slot and the pan follows it, so the windows shown stay put
 instead of sliding a whole window's width out of view. A tree changed
-elsewhere (a peer's edit, the room's echo of a close) is applied to the
+elsewhere (a peer's edit, the workspace's echo of a close) is applied to the
 live strip in place, through the same removal, insertion and reorder, so
 it moves the strip no differently than the person doing it here.
 Pinned by `group_row.rs`'s `after_releasing_a_resize_no_window_moves`

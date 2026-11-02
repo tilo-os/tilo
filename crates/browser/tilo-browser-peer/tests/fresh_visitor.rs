@@ -1,10 +1,10 @@
 //! Visitors who arrive one after another in a Lounge whose host governs it
-//! and takes part in its channels. The first visitor's page opens the room's
+//! and takes part in its channels. The first visitor's page opens the workspace's
 //! records, so the host opens their channels; a visitor who comes
-//! later is handed the room's whole history under those channels and must
+//! later is handed the workspace's whole history under those channels and must
 //! find nothing in it written in the clear: the host writes nothing to a
-//! room whose records are sealed channels, not even the empty shared
-//! desktop a room whose channels it takes no part in starts with.
+//! workspace whose records are sealed channels, not even the empty shared
+//! desktop a workspace whose channels it takes no part in starts with.
 
 #![allow(
     clippy::unwrap_used,
@@ -18,7 +18,7 @@
 mod call;
 mod support;
 
-// This binary re-execs as the automerge worker (the host's rooms use it).
+// This binary re-execs as the automerge worker (the host's workspaces use it).
 tilo_automerge_isolate::test_worker!();
 
 use std::time::Duration;
@@ -30,7 +30,7 @@ use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::DeviceCapabilities;
 
-use support::{TestHost, door, enrol, ready, redeem, start_peer, start_room_host, wait_for};
+use support::{TestHost, door, enrol, ready, redeem, start_peer, start_workspace_host, wait_for};
 
 /// Gather what `page` delivers: the welcome notes it opened and the
 /// documents it refused.
@@ -58,7 +58,7 @@ async fn a_later_visitor_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     );
     let alice_laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let hosted = start_room_host(&alice, &host, state.path(), false).await;
+    let hosted = start_workspace_host(&alice, &host, state.path(), false).await;
     let https = Host::Https(hosted.https());
     let relay = &hosted.relay;
 
@@ -101,7 +101,7 @@ async fn a_later_visitor_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     }
     let [carol, dave] = [&pages[0], &pages[1]];
 
-    // Carol writes the room's welcome note; it goes out sealed once the
+    // Carol writes the workspace's welcome note; it goes out sealed once the
     // host admitted her to its channel.
     let note = b"welcome to the lounge".to_vec();
     carol
@@ -114,8 +114,8 @@ async fn a_later_visitor_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     .await
     .expect("the host keeps the note");
 
-    // Dave, admitted to the room's channels after they were opened, reads
-    // it, and refuses nothing the room's history holds.
+    // Dave, admitted to the workspace's channels after they were opened, reads
+    // it, and refuses nothing the workspace's history holds.
     let (mut notes, mut refused) = (Vec::new(), Vec::new());
     let read = tokio::time::timeout(Duration::from_secs(90), async {
         loop {
@@ -139,7 +139,7 @@ async fn a_later_visitor_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     }
     assert!(
         refused.is_empty(),
-        "a visitor refused documents of the room: {refused:?}"
+        "a visitor refused documents of the workspace: {refused:?}"
     );
 
     for page in pages {

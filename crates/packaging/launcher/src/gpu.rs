@@ -59,7 +59,7 @@ pub const CAPABILITY: &str = "gpu";
 
 /// Whether `manifest`'s app opens the GPU itself.
 ///
-/// A toolkit app does not: the render service of its room draws its frames
+/// A toolkit app does not: the render service of its workspace draws its frames
 /// (`tilo-render-service`), so its sandbox has no GPU node, no loader pin and
 /// no shader-cache seed, and the launcher spends nothing preparing them.
 /// Apps that do (a web engine, video, games, 3D, ML) declare `gpu`.
@@ -67,7 +67,7 @@ pub const CAPABILITY: &str = "gpu";
 /// A permission, decided like `io-uring` (`crate::seccomp::syscall_grants`):
 /// the signed manifest is the ceiling (an app that does not declare `gpu`
 /// never gets it); an app the image ships (`image_shipped`) is granted what
-/// it declares; any other app only what the room's capabilities name
+/// it declares; any other app only what the workspace's capabilities name
 /// (`Scope::Device("gpu")`), which the person gives through the permission
 /// prompt.
 pub fn granted(

@@ -176,7 +176,11 @@ def main():
     status = browser.returncode
     quiesce()
     browser.wait()  # Record the root's completion after waitpid reaped it.
-    if stopping or status == 0:
+    if status is None or status == 0:
+        # `status` is read before any close request is acted on, so a request
+        # that lands while the root's own exit is being recorded describes a
+        # browser that had already ended on its own: it must not turn that
+        # ending into a success its caller would never hear about.
         return 0
     # The browser ended on its own and badly; say how for whoever reads why.
     print(f'owned browser exited on its own with status {status}', file=sys.stderr, flush=True)

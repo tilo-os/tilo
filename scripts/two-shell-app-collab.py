@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Two Tilo sessions, one shared workspace, real apps collaborating.
 
-`two-session-collab-demo.py` proves the two sessions become one room and
-that the room's own state replicates. It never starts an app, so it says
+`two-session-collab-demo.py` proves the two sessions become one workspace and
+that the workspace's own state replicates. It never starts an app, so it says
 nothing about whether the things a person actually uses collaborate.
 
 This one starts two real compositors, joins the second to the first's
@@ -155,7 +155,7 @@ class Session:
             # Without a writable key path the compositor refuses to run
             # peer sync at all ("peer sync stays off rather than syncing an
             # unsalted id space"), and the two sessions never become one
-            # room however the invite goes.
+            # workspace however the invite goes.
             TILO_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
             TILO_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
             TILO_TEST_CONTROL=self.sock,
@@ -377,13 +377,13 @@ class Session:
 
     # -- apps --------------------------------------------------------
 
-    def launch_app(self, app: str, peer_id: str, room: str,
+    def launch_app(self, app: str, peer_id: str, workspace_id: str,
                    doc: str | None, log_dir: str) -> subprocess.Popen:
         """Start a real app process against this session's own broker.
 
         The app is addressed exactly as the launcher addresses one:
         `TILO_PACKAGE_ID` is the routing identity the broker keys document
-        traffic on, `TILO_WORKSPACE_ID` is the room. `QUICK_APP_ID` is this
+        traffic on, `TILO_WORKSPACE_ID` is the workspace id. `QUICK_APP_ID` is this
         window's own identity — it drives the Automerge actor, so two
         windows are two distinguishable authors.
         """
@@ -394,9 +394,8 @@ class Session:
             QUICK_COLLAB_SOCK=self.collab_json_sock,
             TILO_PACKAGE_ID=spec["package"],
             QUICK_APP_ID=peer_id,
-            TILO_WORKSPACE_ID=room,
-            RUST_LOG="tilo.state=debug",
-            RUST_LOG="warn",
+            TILO_WORKSPACE_ID=workspace_id,
+            RUST_LOG="warn,tilo.state=debug",
         )
         argv = [os.path.join(REPO, "target", "debug", spec["bin"])]
         if spec["needs_doc"]:
@@ -541,7 +540,7 @@ def main() -> int:
                     break
                 time.sleep(0.5)
             claim("the peer joined", joined, True)
-            claim("both sessions are in one room",
+            claim("both sessions are in one workspace",
                   peer.active_workspace()["room"], host.active_workspace()["room"])
 
             # Dismiss the invite panel now, while the chrome still has
@@ -556,18 +555,18 @@ def main() -> int:
                 up = [k for k, v in overlays.items() if v is True]
                 claim(f"{s.name} has no overlay covering its windows", up, [])
 
-        room = host.active_workspace()["room"]
-        note(f"room = {room}")
+        workspace_id = host.active_workspace()["room"]
+        note(f"workspace id = {workspace_id}")
 
         step("3", f"launch a real {args.app} into each session")
         if args.one_shell:
-            host.launch_app(args.app, "alice", room, doc, out)
+            host.launch_app(args.app, "alice", workspace_id, doc, out)
             time.sleep(20)
-            host.launch_app(args.app, "bob", room, doc, out)
+            host.launch_app(args.app, "bob", workspace_id, doc, out)
             targets = [(host, "alice"), (host, "bob")]
         else:
-            host.launch_app(args.app, "alice", room, doc, out)
-            peer.launch_app(args.app, "bob", room, doc, out)
+            host.launch_app(args.app, "alice", workspace_id, doc, out)
+            peer.launch_app(args.app, "bob", workspace_id, doc, out)
             targets = [(host, "alice"), (peer, "bob")]
         for s in sessions:
             painted = s.wait_for_app_frame()
@@ -587,7 +586,7 @@ def main() -> int:
                     f.write("Second document.\n")
             for s, who in targets:
                 s.place_next_in_new_group(APPS[second]["package"])
-                s.launch_app(second, f"{who}-2", room, second_doc, out)
+                s.launch_app(second, f"{who}-2", workspace_id, second_doc, out)
             for s, _ in targets:
                 claim(f"{s.name} has two windows painting",
                       s.wait_for_painted(2, 180.0), True)
@@ -699,8 +698,8 @@ def main() -> int:
                 claim("one peer, not one per app", len(users), 1)
                 claim("the peer is named, not a session handle",
                       not users[0].startswith("p0"), True)
-                claim("the peer's cursor is in the room both sessions share",
-                      seen[0]["room"], room)
+                claim("the peer's cursor is in the workspace both sessions share",
+                      seen[0]["room"], workspace_id)
                 moved = abs(seen[-1]["x"] - seen[0]["x"]) > 50
                 claim("the peer's cursor crossed between the two windows",
                       moved, True)

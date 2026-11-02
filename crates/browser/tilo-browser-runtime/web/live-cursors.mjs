@@ -1,9 +1,9 @@
-// Other members' pointers over a mounted surface, from a room's live layer
+// Other members' pointers over a mounted surface, from a workspace's live layer
 // (`peer.live`). Local pointer moves over the surface are published as the
 // presence `pointer`, relative to what is under it (`anchor`, the runtime's
 // `pointer_anchor`): a point in the window showing a record, or over the
 // empty desktop, beside the nearest window. Members' windows differ in size,
-// each scrolls a strip on their own, and in a room whose layout is personal
+// each scrolls a strip on their own, and in a workspace whose layout is personal
 // every member's strips are their own: a point in one page's surface pixels,
 // or in its strip, would land somewhere else on every other page, or nowhere.
 // Remote pointers are handed to the runtime as they came (`setPointers`),
@@ -14,7 +14,7 @@
 //
 // Frames are requested only while a remote pointer may still be moving (a
 // frame arrived within the interpolation and extrapolation window), or a
-// chat or reaction beside it is still animating, so an idle room costs no
+// chat or reaction beside it is still animating, so an idle workspace costs no
 // animation frames. A timer takes a pointer whose publisher went silent off
 // screen even when no frame arrives to notice it.
 
@@ -26,7 +26,7 @@ export const SETTLE_MS = 250;
  * A pointer whose publisher sent nothing for this long is no longer shown.
  * A present member restates its presence every keepalive, so a silence past
  * one keepalive and a second means it left (its page closed, its link
- * dropped) before the room noticed, or it hid its page.
+ * dropped) before the workspace noticed, or it hid its page.
  */
 export const POINTER_STALE_MS = PRESENCE_KEEPALIVE_MS + 1000;
 
@@ -117,7 +117,7 @@ export function createLiveCursors({
       const pointer = {publisher: remote.publisher, pointer: remote.pointer};
       const {participant} = remote;
       // The member's own name and kind, for a runtime that does not know
-      // them yet; it names and colours each one as the room does.
+      // them yet; it names and colours each one as the workspace does.
       if (participant?.label) pointer.name = participant.label;
       if (participant?.kind === 'agent') {
         pointer.agent = true;

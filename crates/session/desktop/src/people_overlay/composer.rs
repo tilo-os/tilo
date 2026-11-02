@@ -45,7 +45,7 @@ pub(super) enum Keyed {
 /// What one frame of the message box shows.
 pub(super) struct ComposerModel<'a> {
     pub host: Rect,
-    /// The peek's card, which the box stands under (or over, without room).
+    /// The peek's card, which the box stands under (or over, without workspace).
     pub peek: Rect,
     /// How open the peek is: the box arrives with it, a little behind.
     pub opening: f64,

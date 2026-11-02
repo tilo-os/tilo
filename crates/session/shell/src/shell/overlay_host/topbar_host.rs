@@ -180,12 +180,12 @@ impl ShellOverlayHost {
         let apps = chrome.borrow().hosted_inputs.in_process().cloned();
         let mounted = match apps {
             Some(apps) => {
-                let room = ::launcher::appdir::PERSONAL_ROOM;
+                let room = ::launcher::appdir::PERSONAL_WORKSPACE;
                 let component = apps.borrow_mut().mount(
                     tilo_topbar::definition(),
                     room,
                     TOPBAR_INSTANCE,
-                    ui::record::RecordId::room_default(),
+                    ui::record::RecordId::workspace_default(),
                     |context| context.lend(BarService { link }),
                 );
                 component.and_then(|component| {

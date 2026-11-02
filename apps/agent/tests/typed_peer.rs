@@ -175,7 +175,7 @@ pub fn spawn_with_agent_grants(
     ) else {
         unreachable!("person key creates a person principal")
     };
-    let mut workspace = shell::shell::state::Workspace::in_room(
+    let mut workspace = shell::shell::state::Workspace::in_workspace(
         shell::shell::state::WorkspaceId(1),
         shell::shell::state::RoomId::parse(&TEST_WORKSPACE.to_string()).unwrap(),
         "Agent integration workspace",

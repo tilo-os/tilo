@@ -79,7 +79,7 @@ fn validate_enrollment(
     let join = intent.verified_join();
     let grant = join.grant();
     if intent.workspace() != workspace
-        || record.workspace_host != *join.room_authority()
+        || record.workspace_host != *join.workspace_authority()
         || record.workspace_id != grant.workspace_id
         || (record.device != *intent.local_device()
             && !crate::owner::renewal::renews(&record.device, intent.local_device()))

@@ -30,6 +30,10 @@ pub mod local_socket;
 pub mod origin_connector;
 pub mod pending_connection;
 pub mod process_binding;
+/// The gate that holds a child until the host that started it has recorded
+/// its launch, so it can never reach the broker before it is attested.
+#[cfg(unix)]
+pub mod registration_gate;
 #[cfg(unix)]
 pub mod request_rendezvous;
 pub mod retained_replacement;

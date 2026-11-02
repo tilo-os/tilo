@@ -581,11 +581,11 @@ impl HostContext {
         validate_identity(&author.0).map_err(LaunchError::Restore)?;
         let (profile, package, workspace) = records
             .canonical_namespace()
-            .ok_or(LaunchError::BindingMismatch)?;
+            .ok_or_else(|| mismatch("the record store names no namespace"))?;
         if package != definition.app_id()
             || !views.matches_namespace(&profile, &device_id, &workspace)
         {
-            return Err(LaunchError::BindingMismatch);
+            return Err(mismatch("the record store and the views are kept apart"));
         }
         for required in &definition.required {
             if !permissions.borrow().check(required) {
@@ -599,7 +599,7 @@ impl HostContext {
                     definition.record_kind.clone(),
                 );
                 if RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id) {
-                    return Err(LaunchError::BindingMismatch);
+                    return Err(mismatch("a new record id that does not read back"));
                 }
                 let reservation = records
                     .reserve_record(&checkout)
@@ -608,7 +608,7 @@ impl HostContext {
             }
             LaunchTarget::PrimaryNew => {
                 if new_record_id.is_some() {
-                    return Err(LaunchError::BindingMismatch);
+                    return Err(mismatch("a package primary given another id"));
                 }
                 let checkout = RecordCheckout::new(
                     RecordId::package_primary(),
@@ -624,7 +624,7 @@ impl HostContext {
                     || !checkout.id.is_package_primary()
                         && RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
                 {
-                    return Err(LaunchError::BindingMismatch);
+                    return Err(mismatch("a record of another kind, or a malformed id"));
                 }
                 // A record opening off the frame is taken in by the component that shows
                 // before it ([`HostContext::record_opening`]), not here.
@@ -1192,23 +1192,27 @@ impl ApplicationDefinition {
         restore: RestoreInput,
     ) -> Result<AppComponent, LaunchError> {
         if context.app_id != self.app_id || context.record.kind != self.record_kind {
-            return Err(LaunchError::BindingMismatch);
+            return Err(mismatch("a context of another app or record kind"));
         }
         if matches!(target, LaunchTarget::New) && context.record.id.is_package_primary()
             || matches!(target, LaunchTarget::PrimaryNew) && !context.record.id.is_package_primary()
         {
-            return Err(LaunchError::BindingMismatch);
+            return Err(mismatch(
+                "a target and record that disagree on the package primary",
+            ));
         }
         match &target {
             LaunchTarget::New | LaunchTarget::PrimaryNew if context.reservation.is_none() => {
-                return Err(LaunchError::BindingMismatch);
+                return Err(mismatch("a new record with nothing reserved"));
             }
             LaunchTarget::Record { checkout, .. }
                 if context.reservation.is_some()
                     || checkout.id != context.record.id
                     || checkout.kind != context.record.kind =>
             {
-                return Err(LaunchError::BindingMismatch);
+                return Err(mismatch(
+                    "an existing record with a reservation, or another record",
+                ));
             }
             _ => {}
         }
@@ -1240,7 +1244,9 @@ impl ApplicationDefinition {
             if !Rc::ptr_eq(&construction, &component.context.construction)
                 || !(records.is_ready(&record.id) || records.is_opening(&record.id))
             {
-                return Err(LaunchError::BindingMismatch);
+                return Err(mismatch(
+                    "a component of another construction, or its record neither open nor opening",
+                ));
             }
             // A component shown before its record restores nothing of it: the component built
             // once the record is had restores the saved view.
@@ -2341,6 +2347,13 @@ impl ApplicationCatalog {
 // The tuple owns both captures before either Drop begins. Rust's field cleanup
 // drops the registry even if the root panics, then propagates the original unwind.
 // The caller keeps its closed-scope guard alive throughout this cleanup.
+/// A launch refused because its parts are bound to different things, with
+/// the check that refused it named in the log.
+fn mismatch(why: &'static str) -> LaunchError {
+    tracing::warn!(why, "application binding does not match");
+    LaunchError::BindingMismatch
+}
+
 fn drop_component_owned<R, C>(root: R, registry: C) {
     drop((root, registry));
 }

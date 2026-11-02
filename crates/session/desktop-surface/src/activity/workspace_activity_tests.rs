@@ -8,7 +8,7 @@ mod workspace_activity {
     };
     use tilo_desktop_model::{DesktopTree, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
-    fn causal_room() -> ActivitySnapshot {
+    fn causal_workspace() -> ActivitySnapshot {
         let mut desktop = DesktopTree {
             workspaces: vec![tilo_desktop_model::Workspace::new(
                 tilo_desktop_model::WorkspaceId(1),
@@ -20,7 +20,7 @@ mod workspace_activity {
         desktop.workspaces[0]
             .strips
             .push(tilo_desktop_model::Strip::new(StripId(1), "Main"));
-        let room = desktop.active_workspace().unwrap().room();
+        let workspace = desktop.active_workspace().unwrap().room();
         let strip = &mut desktop.workspaces[0].strips[0];
         strip.id = StripId::from((7 << 48) | 1);
         strip.window_groups.push(WindowGroup {
@@ -32,7 +32,7 @@ mod workspace_activity {
             focus_history: Vec::new(),
         });
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "room", room.to_string()).unwrap();
+        doc.put(ROOT, "room", workspace.to_string()).unwrap();
         doc.put(ROOT, "name", "Design").unwrap();
         for (n, title) in [(3, "Plan"), (4, "Review")] {
             strip.window_groups[0].tabs.push(Tab {
@@ -45,15 +45,15 @@ mod workspace_activity {
                 },
                 app_title: None,
             });
-            let mut layout = tilo_desktop_model::Workspace::in_room(
+            let mut layout = tilo_desktop_model::Workspace::in_workspace(
                 tilo_desktop_model::WorkspaceId(1),
-                room,
+                workspace,
                 "Design",
             );
             layout.strips = vec![strip.clone()];
             tilo_desktop_model::shared_record::device::write(
                 &mut doc,
-                room,
+                workspace,
                 &layout,
                 &tilo_desktop_model::shared_record::device::Writer {
                     person: Some("ada"),
@@ -72,7 +72,7 @@ mod workspace_activity {
     // commits and the same private playback/keyboard controller.
     #[test]
     fn replay_materializes_real_causal_layouts() {
-        let mut tree = causal_room();
+        let mut tree = causal_workspace();
         let records = RecordStore::in_memory();
         let record = ui::record::RecordCheckout::new(
             RecordId::for_file("review.note"),
@@ -123,7 +123,7 @@ mod workspace_activity {
         let ada = ui::permissions::UserId("ada".into());
         presence.names.insert(ada.clone(), "Ada".into());
         presence.set_pointer(
-            &ui::presence::PresenceKey::desktop_pointer("design-room"),
+            &ui::presence::PresenceKey::desktop_pointer("design-workspace"),
             ada,
             (420., 260.),
         );
@@ -148,7 +148,7 @@ mod workspace_activity {
 
     #[test]
     fn historical_topology_does_not_claim_current_geometry_is_historical() {
-        let mut tree = causal_room();
+        let mut tree = causal_workspace();
         tree.resync_activity_cache().unwrap();
         assert_eq!(
             tree.workspaces[0].strips[0].window_groups[0].width,
@@ -163,10 +163,10 @@ mod workspace_activity {
                 true
             }
         }
-        let mut tree = causal_room();
+        let mut tree = causal_workspace();
         // Layout/setup commits are omitted from the feed; rename the workspace so
         // there is a Change row to select and attempt restore against.
-        // `causal_room` is a workspace projection doc (not a desktop_doc workspaces
+        // `causal_workspace` is a workspace projection doc (not a desktop_doc workspaces
         // list), so write the name on the workspace document directly.
         tree.workspaces[0].name = "Design studio".into();
         tree.doc.put(ROOT, "name", "Design studio").unwrap();
@@ -194,9 +194,9 @@ mod workspace_activity {
     }
 
     #[test]
-    fn malformed_historical_room_is_not_a_valid_replay_checkpoint() {
-        let mut tree = causal_room();
-        let room = tree.active_workspace().unwrap().room();
+    fn malformed_historical_workspace_is_not_a_valid_replay_checkpoint() {
+        let mut tree = causal_workspace();
+        let workspace = tree.active_workspace().unwrap().room();
         tree.doc.delete(ROOT, "room").unwrap();
         let broken = tree
             .doc
@@ -205,7 +205,7 @@ mod workspace_activity {
         let mut bytes = [0; 16];
         bytes.copy_from_slice(&broken.0[..16]);
         let broken_id = HistoryEntryId::from_bytes(bytes);
-        tree.doc.put(ROOT, "room", room.to_string()).unwrap();
+        tree.doc.put(ROOT, "room", workspace.to_string()).unwrap();
         tree.doc.commit_with(CommitOptions::default().with_time(7));
         let mut pane = WorkspaceActivityPane::new();
         pane.refresh(&mut tree);

@@ -22,7 +22,7 @@ const MAX_PHASE_CHARS: usize = 128;
 #[derive(Clone, Debug, PartialEq)]
 pub struct JobEntry {
     pub app: String,
-    pub room: String,
+    pub workspace: String,
     /// The invocation's id at the host.
     pub invocation: String,
     /// The action that started it, as people read it ("Export PDF").
@@ -165,7 +165,7 @@ impl Source for Jobs {
                     icon: Some(ui::icons::Icon::X),
                     target: Target::Cancel {
                         app: job.app.clone(),
-                        room: job.room.clone(),
+                        workspace: job.workspace.clone(),
                         invocation: job.invocation.clone(),
                     },
                 });
@@ -182,7 +182,7 @@ mod tests {
     fn job(update: InvocationUpdate) -> JobEntry {
         JobEntry {
             app: "so.tilo.video-editor".into(),
-            room: "room".into(),
+            workspace: "workspace".into(),
             invocation: "inv-1".into(),
             label: "Export video".into(),
             app_name: "Video Editor".into(),
@@ -212,7 +212,7 @@ mod tests {
             hits[1].target,
             Target::Cancel {
                 app: "so.tilo.video-editor".into(),
-                room: "room".into(),
+                workspace: "workspace".into(),
                 invocation: "inv-1".into()
             }
         );

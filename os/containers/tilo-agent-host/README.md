@@ -68,7 +68,7 @@ Stdio alternative on the host (same profile volume):
 }
 ```
 
-Join a room when you have an invite:
+Join a workspace when you have an invite:
 
 ```sh
 podman compose exec tilo-mcp \

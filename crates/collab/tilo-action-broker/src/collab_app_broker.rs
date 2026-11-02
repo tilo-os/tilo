@@ -3475,6 +3475,9 @@ pub struct AppBrokerState {
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
     /// Broker-owned governed membership surface per native workspace.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
+    /// The workspace's governance surface per native workspace: the changes to
+    /// its people, published under the provider clients name.
+    workspace_governance_peers: Mutex<HashMap<String, u64>>,
     /// Opens waiting for a workspace's membership actions to be published, each
     /// told after the next refresh of the membership surfaces whether they
     /// are ([`Self::await_membership_surface`]).
@@ -3620,6 +3623,7 @@ impl AppBrokerState {
         clear!(self.private_drafts);
         clear!(self.stable_invocation_subscribers);
         clear!(self.workspace_membership_peers);
+        clear!(self.workspace_governance_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
         clear!(self.task_subscribers);
@@ -4232,6 +4236,7 @@ impl AppBrokerState {
                 local_report_receipts: Mutex::default(),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
+                workspace_governance_peers: Mutex::new(HashMap::new()),
                 membership_surface_waiters: Mutex::new(Vec::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 live_views: live_views::LiveViews::default(),
@@ -6118,11 +6123,31 @@ impl AppBrokerState {
             });
         let untrusted = offered.1.contract.carries_untrusted_content();
         // Admitted: an offloadable action may now run on a better-placed
-        // device, which the turn asks the route about.
+        // device, which the turn asks the route about. The device that runs it
+        // is sent this invocation, so it answers the invocation the person
+        // made rather than a second one of its own.
         let offload = self.offload_request(
             (&offered.0.route.cluster_id, &offered.0.app_id),
             &offered.1,
-            argument,
+            tilo_actions::remote::InvokeRequest {
+                invocation,
+                target: tilo_actions::remote::application_action_target(
+                    &offered.0.route.cluster_id,
+                    &offered.0.app_id,
+                    offered.1.resource.clone(),
+                    offered.1.action.clone(),
+                ),
+                argument: tilo_actions::remote::InvokeArgument::from_slot(argument),
+                context: context.clone(),
+                // A device that runs it answers for the confirmation the
+                // person gave here, so a confirmed action is not run there
+                // unconfirmed.
+                confirmation: original_request.and_then(|request| request.confirmation.clone()),
+                revision: revision.map(str::to_owned),
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            },
         );
         // What it was admitted to reach caps what its effect asks for: its
         // own reach, narrowed by what it continues unless the person
@@ -7402,15 +7427,41 @@ impl AppBrokerState {
         self.fanout.upgrade().map_or(u64::MAX, |t| t.next_peer_id())
     }
 
-    /// A peer id for one of the broker's own services, which runs on the
-    /// broker thread's runtime and is started again with it.
     fn next_service_peer_id(&self) -> u64 {
-        let peer_id = self.next_peer_id();
+        // A fanout allocates unique ids. Without one — before the first
+        // connection, and on a broker tests drive directly — the placeholder
+        // would be handed out again, and a workspace's second service would
+        // replace its first in every registry. Take the next id no surface
+        // holds instead.
+        let candidate = self.next_peer_id();
+        let peer_id = if candidate == u64::MAX {
+            match self.surfaces.lock() {
+                Ok(surfaces) if surfaces.contains_key(&candidate) => (1..candidate)
+                    .rev()
+                    .find(|id| !surfaces.contains_key(id))
+                    .unwrap_or(candidate),
+                _ => candidate,
+            }
+        } else {
+            candidate
+        };
         match self.service_peers.lock() {
             Ok(mut peers) => peers.push(peer_id),
             Err(poisoned) => poisoned.into_inner().push(peer_id),
         }
         peer_id
+    }
+
+    /// The registry of one of a workspace's surfaces: the membership this
+    /// device writes, or its people's governance.
+    fn workspace_surface_peers(
+        &self,
+        surface: workspace_memberships::Surface,
+    ) -> &Mutex<HashMap<String, u64>> {
+        match surface {
+            workspace_memberships::Surface::Membership => &self.workspace_membership_peers,
+            workspace_memberships::Surface::Governance => &self.workspace_governance_peers,
+        }
     }
 
     /// Withdraw the services a broker thread that unwound had started, as
@@ -10672,9 +10723,9 @@ async fn authenticate_launcher_handoff(
         });
     }
 
-    // Every host records a launch before it releases the launcher's
-    // registration gate (`launcher::registration_gate`), so the record exists
-    // before the launcher can connect, and one look decides. A direct
+    // Every host records a launch before it releases the child's
+    // registration gate (`runtime_portal::registration_gate`), so the record
+    // exists before the child can connect, and one look decides. A direct
     // tilo-launcher command never obtains a record and is refused at once
     // instead of becoming a way around admin/admission checks.
     let launch = services

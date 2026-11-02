@@ -70,7 +70,7 @@ use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, RevocationList, issue_device_cert,
 };
 
-use support::{Device, ROOM as WORKSPACE, enrol, ready, start_peer, workspace};
+use support::{Device, WORKSPACE, enrol, ready, start_peer, workspace};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";

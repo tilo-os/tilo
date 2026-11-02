@@ -40,7 +40,7 @@ pub(crate) fn next_id() -> u64 {
 }
 
 fn empty_workspace(id: WorkspaceId, name: &str, strips: Vec<Strip>) -> Workspace {
-    let mut workspace = Workspace::in_room(id, RoomId::new(), name);
+    let mut workspace = Workspace::in_workspace(id, RoomId::new(), name);
     workspace.strips = strips;
     workspace
 }
@@ -152,13 +152,13 @@ impl TestTree {
         tree
     }
 
-    pub fn commit_room_change(&mut self) {
+    pub fn commit_workspace_change(&mut self) {
         let _ = tilo_resource::history::commit_stamped(&mut self.doc);
     }
 
     pub fn seed_doc_from_cache(&mut self) {
         tilo_desktop_model::desktop_doc::seed(&mut self.doc, &self.desktop);
-        self.commit_room_change();
+        self.commit_workspace_change();
     }
 
     pub fn resync_cache_from_doc(&mut self) {
@@ -176,10 +176,10 @@ impl TestTree {
         let ws_id = WorkspaceId(next_id());
         let strip_id = StripId(next_id());
         let workspace = empty_workspace(ws_id, name, vec![Strip::new(strip_id, "Main")]);
-        let room = workspace.room();
+        let workspace_id = workspace.room();
         self.desktop.active_strip.insert(ws_id, strip_id);
         self.desktop.workspaces.push(workspace);
-        tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, ws_id, name, room);
+        tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, ws_id, name, workspace_id);
         ws_id
     }
 
@@ -201,7 +201,7 @@ impl TestTree {
 
     fn doc_insert_sandbox(&mut self, workspace_id: WorkspaceId, cap: &CapOverride) {
         if tilo_desktop_model::desktop_doc::insert_sandbox(&mut self.doc, workspace_id, cap) {
-            self.commit_room_change();
+            self.commit_workspace_change();
         }
     }
 
@@ -255,7 +255,7 @@ impl TestTree {
             return false;
         }
         if tilo_desktop_model::desktop_doc::revoke_sandbox(&mut self.doc, workspace_id, cap_id) {
-            self.commit_room_change();
+            self.commit_workspace_change();
         }
         true
     }
@@ -270,7 +270,7 @@ impl TestTree {
         }
         for id in &adopted {
             if tilo_desktop_model::desktop_doc::set_owner(&mut self.doc, *id, user.as_str()) {
-                self.commit_room_change();
+                self.commit_workspace_change();
             }
             let caps = self
                 .desktop
@@ -329,7 +329,7 @@ impl TestTree {
             workspace_id,
             &receipt,
         ) {
-            self.commit_room_change();
+            self.commit_workspace_change();
         }
         true
     }
@@ -361,7 +361,7 @@ impl ActivityTree for TestTree {
         &mut self.doc
     }
     fn commit_activity_change(&mut self) {
-        self.commit_room_change();
+        self.commit_workspace_change();
     }
     fn resync_activity_cache(&mut self) -> Result<(), String> {
         self.resync_cache_from_doc();

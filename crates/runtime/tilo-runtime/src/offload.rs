@@ -2,7 +2,14 @@
 //! ([`tilo_actions::offload::ActionOffload`]) a host hands its broker as
 //! `HostServices::action_offload`.
 //!
-//! The route is configured by the device's home-peer registry, the
+//! A host installs one of two routes. A session of the device's own, with the
+//! workspace's other devices at hand, installs the offer round
+//! ([`offer_offload`]): it asks them whether they would run the job sooner and
+//! sends the invocation to the device that wins. A host of a person's
+//! workspace — the desktop session and the standalone runtime — installs the
+//! route below, over its home relay.
+//!
+//! That route is configured by the device's home-peer registry, the
 //! person's always-on relays this device enrolled: the one that retains the
 //! invoking workspace places its compute jobs. The registry is read again for
 //! every offloadable invocation (from memory while the file is unchanged),
@@ -23,7 +30,7 @@
 //! device's trust reads: a revoked relay gets no route, and one revoked
 //! while the route is up tears it down.
 //!
-//! The route reads and keeps only the workspaces' own document media, in the
+//! Both routes read and keep only the workspaces' own document media, in the
 //! same content store the apps' blob socket serves, through the invoking
 //! app's scope in its workspace, so the inputs it may send are exactly what the
 //! invoking workspace's apps could read, and the outputs are read back by the
@@ -38,18 +45,28 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
-use tilo_actions::offload::ActionOffload;
+use neighbour_wire::offer::{MAX_WORK_INPUTS, Route, Work};
+use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloaded};
+use tilo_actions::remote::InvokeRequest;
+use tilo_actions::{InvocationId, Offload};
 use tilo_identity_host::device_fleet::{DeviceFleet, DeviceFleetStore};
 use tilo_lock::MutexRecover as _;
+use tilo_peer_state::offload::{OffloadPeers, RanAway};
 use tilo_relay::HomePeerRegistration;
 use tilo_relay::offload::{
-    DeviceOffload, DeviceOffloadConfig, DeviceRevocations, OffloadIdentity, RoomMedia, RoomOffload,
+    DeviceOffload, DeviceOffloadConfig, DeviceRevocations, OffloadIdentity, RoomOffload,
     RoomPlacements, RoomRelays, SessionMedia, home_relay, room_relays,
 };
 use tilo_user_identity::RevocationList;
+
+// A host that keeps the workspaces' content itself implements the media a
+// route binds its inputs from in the same scope the apps' own content is
+// addressed in, and hands it to [`offer_offload`] beside the peers it asks.
+pub use runtime_fs::blobs::BlobScope;
+pub use tilo_relay::offload::{BindError, MediaFuture, RoomMedia};
 
 /// Set to `off` (or `0`, `false`, `no`) to keep every offloadable action on
 /// this device even when a home relay could place it elsewhere.
@@ -130,6 +147,302 @@ fn action_offload_over(
         ),
     }
     Some(Arc::new(offload))
+}
+
+/// The route for offloadable invocations on this device over the offer round:
+/// it asks the workspace's other devices whether they would run the job
+/// sooner, through `peers` — a host's device plane, which asks as this device
+/// and runs the invocation on the device that wins — and keeps the answer's
+/// content where the invoking app reads its output.
+///
+/// The round is weighed with what this device can measure: the inputs' bytes
+/// in `media`, through the invoking app's scope in its workspace, exactly as
+/// the app would read them, and how long the same transform last took here.
+/// Every input must be here, or the job runs here: content this device does
+/// not hold is nothing it can weigh moving. `None` — every offloadable action
+/// runs here, exactly as without offload — when offload is turned off.
+#[must_use]
+pub fn offer_offload(
+    media: Arc<dyn RoomMedia>,
+    peers: Arc<dyn OffloadPeers>,
+) -> Option<Arc<dyn ActionOffload>> {
+    if disabled(std::env::var(OFFLOAD_ENV).ok().as_deref()) {
+        tracing::info!("offloadable actions run on this device: offload is turned off");
+        return None;
+    }
+    Some(Arc::new(OfferOffload {
+        media,
+        peers,
+        ran: Mutex::default(),
+        running: Mutex::default(),
+        away: Mutex::default(),
+    }))
+}
+
+/// Local runs awaited at once before the oldest are forgotten: an invocation
+/// that expires never reports its run.
+const MAX_LOCAL_RUNS: usize = 64;
+
+/// How long one transform last took where it was asked, over how many input
+/// bytes: what moving a job's inputs has to beat.
+#[derive(Clone, Copy)]
+struct Run {
+    elapsed: Duration,
+    input_bytes: u64,
+}
+
+impl Run {
+    /// This run's wall time scaled to `input_bytes` of input, in whole
+    /// milliseconds: the transforms offloaded are batch work whose cost grows
+    /// with what they read.
+    fn ms(self, input_bytes: u64) -> u64 {
+        let millis = self.elapsed.as_millis();
+        let scaled = if self.input_bytes == 0 {
+            millis
+        } else {
+            millis
+                .saturating_mul(u128::from(input_bytes))
+                .div_ceil(u128::from(self.input_bytes))
+        };
+        u64::try_from(scaled).unwrap_or(u64::MAX)
+    }
+}
+
+/// Offloadable invocations of this device's workspaces, run where the offer
+/// round picks.
+struct OfferOffload {
+    media: Arc<dyn RoomMedia>,
+    peers: Arc<dyn OffloadPeers>,
+    /// How long each transform last took where it was asked, by
+    /// `package:entrypoint`.
+    ran: Mutex<HashMap<String, Run>>,
+    /// Input bytes of the invocations handed to the app to run here, by
+    /// workspace and inputs, until the door reports that run.
+    running: Mutex<HashMap<(String, Vec<String>), u64>>,
+    /// The invocations this device sent to another device, and where: one that
+    /// comes back is not sent away again.
+    away: Mutex<HashMap<InvocationId, [u8; 32]>>,
+}
+
+impl OfferOffload {
+    /// Where `request` runs: on the device the round picks, or here, with why.
+    async fn place(&self, request: OffloadRequest, invocation: Option<InvokeRequest>) -> Offloaded {
+        let started = Instant::now();
+        // Only a route handed the invocation can send it to another device:
+        // without it there is no request to send, so the app runs this one.
+        let Some(invocation) = invocation else {
+            return Offloaded::RunHere {
+                reason: "the invocation was not handed to the route".into(),
+            };
+        };
+        let scope = match BlobScope::new(request.workspace.clone(), request.app_id.clone()) {
+            Ok(scope) => scope,
+            Err(error) => {
+                return Offloaded::RunHere {
+                    reason: format!("the workspace's content is not addressable: {error}"),
+                };
+            }
+        };
+        let (work, input_bytes) = match self.work(&request, &scope).await {
+            Ok(work) => work,
+            Err(reason) => {
+                tracing::info!(app = %request.offload.app, %reason, "offloadable action runs here");
+                return Offloaded::RunHere { reason };
+            }
+        };
+        let reason = match self
+            .away(&request, &scope, &work, invocation, started)
+            .await
+        {
+            Ok(ran) => return ran,
+            Err(reason) => reason,
+        };
+        {
+            let mut running = self.running.lock_recover();
+            // A local run the door never reports (it failed) is forgotten
+            // rather than kept forever.
+            if running.len() >= MAX_LOCAL_RUNS {
+                running.clear();
+            }
+            running.insert(
+                (request.workspace.clone(), request.inputs.clone()),
+                input_bytes,
+            );
+        }
+        tracing::info!(
+            app = %request.offload.app,
+            entrypoint = %request.offload.entrypoint,
+            %reason,
+            "offloadable action runs here"
+        );
+        Offloaded::RunHere { reason }
+    }
+
+    /// What the round is asked: `request`'s inputs as this device's store
+    /// measures them, each distinct digest once, and how long the same
+    /// transform last took here, scaled to their bytes.
+    async fn work(
+        &self,
+        request: &OffloadRequest,
+        scope: &BlobScope,
+    ) -> Result<(Work, u64), String> {
+        let mut inputs = Vec::with_capacity(request.inputs.len().min(MAX_WORK_INPUTS));
+        let mut input_bytes = 0_u64;
+        for (index, hex) in request.inputs.iter().enumerate() {
+            let mut digest = [0; 32];
+            hex::decode_to_slice(hex, &mut digest)
+                .map_err(|_| format!("input {index} is not a content hash"))?;
+            if inputs.iter().any(|(named, _)| *named == digest) {
+                continue;
+            }
+            let bytes = self
+                .media
+                .len(scope, digest)
+                .await
+                .map_err(|error| format!("input {index}: {error}"))?;
+            input_bytes = input_bytes.saturating_add(bytes);
+            if inputs.len() < MAX_WORK_INPUTS {
+                inputs.push((digest, bytes));
+            }
+        }
+        let local_wall_ms = self
+            .ran
+            .lock_recover()
+            .get(&transform(&request.offload))
+            .map(|ran| ran.ms(input_bytes));
+        Ok((
+            Work {
+                inputs,
+                input_bytes,
+                local_wall_ms,
+            },
+            input_bytes,
+        ))
+    }
+
+    /// Ask the round and run the invocation on the device that wins it, or say
+    /// why this device runs it instead.
+    async fn away(
+        &self,
+        request: &OffloadRequest,
+        scope: &BlobScope,
+        work: &Work,
+        invocation: InvokeRequest,
+        started: Instant,
+    ) -> Result<Offloaded, String> {
+        let sent_to = self
+            .away
+            .lock_recover()
+            .get(&invocation.invocation)
+            .copied();
+        if let Some(device) = sent_to {
+            let mut short = hex::encode(device);
+            short.truncate(8);
+            return Err(format!(
+                "the invocation is already running on the device {short} sent it to"
+            ));
+        }
+        let route = Route::new(
+            request.app_id.clone(),
+            request.address.resource.clone(),
+            request.address.action.clone(),
+        );
+        let choice = self
+            .peers
+            .ask(&request.workspace, &route, work)
+            .await
+            .ok_or("the offer round was abandoned before it finished")?;
+        let Some(worker) = choice.worker else {
+            return Err(choice.to_string());
+        };
+        self.away
+            .lock_recover()
+            .insert(invocation.invocation, worker);
+        let ran = self
+            .peers
+            .run(&request.workspace, worker, invocation.clone())
+            .await;
+        self.away.lock_recover().remove(&invocation.invocation);
+        let ran: RanAway = match ran {
+            Some(ran) => ran.map_err(|reason| {
+                let mut short = hex::encode(worker);
+                short.truncate(8);
+                format!("{short} did not run it: {reason}")
+            })?,
+            None => return Err("the device that won the round did not answer".into()),
+        };
+        self.keep(scope, &ran).await?;
+        Ok(Offloaded::Ran {
+            output: ran.output,
+            device: hex::encode(worker),
+            elapsed: started.elapsed(),
+        })
+    }
+
+    /// Keep what the device that ran the invocation produced as this
+    /// workspace's app content, in the order it named: the app that invoked the
+    /// action here reads its output by the addresses a local run returns, and
+    /// bytes that are not what the device named never become that output.
+    async fn keep(&self, scope: &BlobScope, ran: &RanAway) -> Result<(), String> {
+        let mut produced = ran.outputs.iter();
+        for address in &ran.output.resources {
+            let Some(named) = tilo_actions::content_hash(address) else {
+                continue;
+            };
+            let Some(bytes) = produced.next() else {
+                return Err("the answer names more content than the device sent".into());
+            };
+            let kept = self
+                .media
+                .keep(scope, bytes.clone())
+                .await
+                .map_err(|error| format!("the answer was not kept here: {error}"))?;
+            if hex::encode(kept) != named {
+                return Err("the answer's bytes are not the content it names".into());
+            }
+        }
+        if produced.next().is_some() {
+            return Err("the answer's content is not what it names".into());
+        }
+        Ok(())
+    }
+}
+
+impl ActionOffload for OfferOffload {
+    fn offload(&self, request: OffloadRequest) -> OffloadFuture<'_> {
+        Box::pin(self.place(request, None))
+    }
+
+    fn offload_invocation(
+        &self,
+        request: OffloadRequest,
+        invocation: InvokeRequest,
+    ) -> OffloadFuture<'_> {
+        Box::pin(self.place(request, Some(invocation)))
+    }
+
+    fn ran_here(&self, request: &OffloadRequest, elapsed: Duration) {
+        let Some(input_bytes) = self
+            .running
+            .lock_recover()
+            .remove(&(request.workspace.clone(), request.inputs.clone()))
+        else {
+            return;
+        };
+        self.ran.lock_recover().insert(
+            transform(&request.offload),
+            Run {
+                elapsed,
+                input_bytes,
+            },
+        );
+    }
+}
+
+/// The transform `offload` declares, as placement knows it:
+/// `package:entrypoint`, which is what an action's cost belongs to.
+fn transform(offload: &Offload) -> String {
+    format!("{}:{}", offload.app, offload.entrypoint)
 }
 
 /// Whether `value` of [`OFFLOAD_ENV`] turns offload off.
@@ -400,6 +713,9 @@ fn read_registry(path: &Path) -> io::Result<Vec<HomePeerRegistration>> {
     })
 }
 
+#[cfg(test)]
+#[path = "offload_offer_tests.rs"]
+mod offer_tests;
 #[cfg(test)]
 #[path = "offload_tests.rs"]
 mod tests;

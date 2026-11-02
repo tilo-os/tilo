@@ -11,7 +11,7 @@
 //!
 //! The peek's message box talks to the person privately, in Chat's own
 //! conversation with them: it is open while their peek is (`ui::person_chat`,
-//! the room governor's private door), its last lines show above the box,
+//! the workspace governor's private door), its last lines show above the box,
 //! and a message is sent by Chat's `send-direct-message`, which the page
 //! runs ([`OwnAsk`]), the one way a direct message goes.
 //!
@@ -73,11 +73,11 @@ struct Lane {
     name: String,
     /// Their public key, which names the conversation.
     key: String,
-    /// The open, until the room answers it.
+    /// The open, until the workspace answers it.
     opening: Option<ui::person_chat::Pending<ui::person_chat::Conversation>>,
-    /// The open lane, once the room answered.
+    /// The open lane, once the workspace answered.
     token: Option<uuid::Uuid>,
-    /// The room would not open it.
+    /// The workspace would not open it.
     failed: bool,
 }
 
@@ -303,7 +303,7 @@ impl PagePeople {
                 }
             }
         }
-        // The room ended the lane (a member left, a certificate lapsed).
+        // The workspace ended the lane (a member left, a certificate lapsed).
         if let Some(lane) = self.lane.as_mut()
             && let Some(token) = lane.token
             && ui::person_chat::subscription_token(&lane.key) != Some(token)
@@ -437,7 +437,7 @@ impl PagePeople {
     }
 
     /// While following: bring forward the window of what they are in, each
-    /// time that changes; where no window here shows it (a room whose
+    /// time that changes; where no window here shows it (a workspace whose
     /// layout is each person's own), `open_app` shows their app here.
     /// Returns whether anything was brought forward.
     pub(super) fn track(
@@ -795,11 +795,11 @@ impl ui::widget::Widget for PagePeople {
     }
 }
 
-/// Someone is here whom the room's last list of people did not have, or
+/// Someone is here whom the workspace's last list of people did not have, or
 /// who goes by another name now than that list says (they renamed
-/// themselves, which the room keeps): ask for it again, so Chat's direct
+/// themselves, which the workspace keeps): ask for it again, so Chat's direct
 /// conversations list them, by the name they go by, also once they left.
-/// The native host hears of new members from the room itself; a page sees
+/// The native host hears of new members from the workspace itself; a page sees
 /// them here.
 fn refresh_contacts(persons: &[(String, String)], rows: &[RosterRow]) {
     let contacts = ui::person_chat::contacts_snapshot();
@@ -824,7 +824,7 @@ fn refresh_contacts(persons: &[(String, String)], rows: &[RosterRow]) {
 }
 
 /// Whether the name a person goes by here (`live`, numbered when someone
-/// else here goes by it too: "Ada (2)") is another than the one the room's
+/// else here goes by it too: "Ada (2)") is another than the one the workspace's
 /// list has for them (`listed`).
 fn renamed(listed: &str, live: &str) -> bool {
     let live = live.trim();
@@ -924,7 +924,7 @@ mod tests {
     use tilo_desktop::here::{Screen, ScreenWindow};
     use tilo_desktop_model::IdMinter;
 
-    /// A person who renamed themself has the room's list asked again; a
+    /// A person who renamed themself has the workspace's list asked again; a
     /// namesake's number or the same name in other letters is no rename.
     #[test]
     fn a_rename_is_told_from_a_namesakes_number() {

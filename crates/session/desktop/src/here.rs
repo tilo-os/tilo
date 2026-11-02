@@ -1290,7 +1290,7 @@ mod tests {
             maximized: false,
             focus_history: Vec::new(),
         });
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+        let mut workspace = Workspace::new(WorkspaceId(1), "Design");
         workspace.strips = vec![main];
         let mut tree = DesktopTree {
             active: workspace.id,
@@ -1373,7 +1373,7 @@ mod tests {
     /// bar, the People list's and the windows' all wear their workspace colour
     /// from the first frame it is known, and none before.
     #[test]
-    fn a_face_is_neutral_until_the_room_knows_whose_it_is() {
+    fn a_face_is_neutral_until_the_workspace_knows_whose_it_is() {
         use ui::ColorCompat as _;
         let me = LiveMember {
             user: Some("me-root".into()),
@@ -1804,7 +1804,7 @@ mod tests {
         let mut tree = DesktopTree::default();
         let workspace = tilo_desktop_model::WorkspaceId::default();
         tree.workspaces
-            .push(tilo_desktop_model::Workspace::new(workspace, "Room"));
+            .push(tilo_desktop_model::Workspace::new(workspace, "Design"));
         tree.active = workspace;
         let people = vec![Person {
             id: "bot".into(),

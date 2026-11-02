@@ -367,8 +367,8 @@ impl CollabClient {
     /// The session's published resources: what its services read and the
     /// actions that change them, opened on this connection the first time
     /// one is used. No channel is joined for them — they are the device's,
-    /// not a room's — so an app reads the sound, the displays or the
-    /// settings whether or not it holds a room.
+    /// not a workspace's — so an app reads the sound, the displays or the
+    /// settings whether or not it holds a workspace.
     #[must_use]
     pub fn services(&self) -> ServicesHandle {
         ServicesHandle {

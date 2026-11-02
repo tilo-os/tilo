@@ -190,7 +190,7 @@ mod tests {
             "HOME" => Some("/home/you".into()),
             // Not on the allowlist: it describes the session's own
             // confinement, not the person.
-            "TILO_WORKSPACE_ID" => Some("someone-elses-room".into()),
+            "TILO_WORKSPACE_ID" => Some("someone-elses-workspace".into()),
             _ => None,
         })
     }
@@ -232,7 +232,7 @@ mod tests {
         }
         assert!(
             !variables.contains_key("TILO_WORKSPACE_ID"),
-            "a room is chosen per launch, never inherited"
+            "a workspace is chosen per launch, never inherited"
         );
     }
 

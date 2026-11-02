@@ -3149,7 +3149,7 @@ mod two_sessions {
         };
         let strip = StripId(77);
         let ws_id = WorkspaceId(7);
-        let mut ws = Workspace::in_room(ws_id, room, "Desk");
+        let mut ws = Workspace::in_workspace(ws_id, room, "Desk");
         ws.strips = vec![Strip {
             id: strip,
             name: "Main".into(),

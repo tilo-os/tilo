@@ -44,11 +44,15 @@ impl ShellDriver {
             let room = workspace.room();
             let room_text = room.to_string();
             let mut doc = automerge::AutoCommit::new();
-            let _ = doc.put(automerge::ROOT, projection::ROOM_ID_KEY, room_text.as_str());
             let _ = doc.put(
                 automerge::ROOT,
-                projection::ROOM_LAYOUT_KEY,
-                projection::RoomLayout::Personal.id(),
+                projection::WORKSPACE_ID_KEY,
+                room_text.as_str(),
+            );
+            let _ = doc.put(
+                automerge::ROOT,
+                projection::WORKSPACE_LAYOUT_KEY,
+                projection::WorkspaceLayout::Personal.id(),
             );
             if let Ok(identities) = doc.put_object(
                 automerge::ROOT,
@@ -62,7 +66,7 @@ impl ShellDriver {
                 record: String::new(),
                 item: Some("agenda".into()),
             };
-            let mut policy = projection::room_policy_of(&doc, &room_text);
+            let mut policy = projection::workspace_policy_of(&doc, &room_text);
             for (id, node) in [
                 (
                     window_shows_share_id(tab),
@@ -80,7 +84,7 @@ impl ShellDriver {
                     policy.grants.extend(grants);
                 }
             }
-            let _ = projection::project_room_policy(&mut doc, &policy);
+            let _ = projection::project_workspace_policy(&mut doc, &policy);
             doc.commit();
             let _ = tree.project_room_document_for_test(room, &doc);
             // Notes opened here for the tab.

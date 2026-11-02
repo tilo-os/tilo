@@ -1,5 +1,5 @@
-//! Identifiers inside free text: links, email addresses, mentions and room
-//! aliases found in a run of prose.
+//! Identifiers inside free text: links, email addresses, mentions and
+//! workspace aliases found in a run of prose.
 //!
 //! The shaping path runs this over every [`TextKind::Prose`] run, so a link
 //! in a chat message, an address in a mail body or a handle in a note is set
@@ -26,8 +26,8 @@ pub enum Detected {
     Email,
     /// A handle: `@ilya`, `@ilya:example.org`.
     Mention,
-    /// A room address: `#general:example.org`.
-    RoomAlias,
+    /// A workspace's alias: `#channel:server` (`#general:example.org`).
+    WorkspaceAlias,
 }
 
 impl Detected {
@@ -37,7 +37,7 @@ impl Detected {
     pub const fn kind(self) -> TextKind {
         match self {
             Self::Url => TextKind::Url,
-            Self::Email | Self::Mention | Self::RoomAlias => TextKind::Identifier,
+            Self::Email | Self::Mention | Self::WorkspaceAlias => TextKind::Identifier,
         }
     }
 }
@@ -240,7 +240,8 @@ fn classify(word: &str, base: usize, out: &mut Vec<DetectedSpan>) {
             return;
         }
     }
-    // A handle or a room alias: `@name`, `@name:server.org`, `#room:server.org`.
+    // A handle or a workspace alias: `@name`, `@name:server.org`,
+    // `#general:server.org`.
     if let Some(first) = word.chars().next()
         && (first == '@' || first == '#')
     {
@@ -271,7 +272,7 @@ fn classify(word: &str, base: usize, out: &mut Vec<DetectedSpan>) {
                 what: if first == '@' {
                     Detected::Mention
                 } else {
-                    Detected::RoomAlias
+                    Detected::WorkspaceAlias
                 },
             });
         }
@@ -322,8 +323,8 @@ fn classify(word: &str, base: usize, out: &mut Vec<DetectedSpan>) {
     }
 }
 
-/// Every link, email address, mention and room alias in `text`, in order,
-/// as byte ranges on character boundaries.
+/// Every link, email address, mention and workspace alias in `text`, in
+/// order, as byte ranges on character boundaries.
 #[must_use]
 pub fn identifier_spans(text: &str) -> Vec<DetectedSpan> {
     let mut out = Vec::new();
@@ -412,9 +413,9 @@ mod tests {
             ]
         );
         assert_eq!(
-            found("link:tilo://room/0OIl, mailto:ilya@example.org"),
+            found("link:tilo://share/0OIl, mailto:ilya@example.org"),
             [
-                ("tilo://room/0OIl", Detected::Url),
+                ("tilo://share/0OIl", Detected::Url),
                 ("mailto:ilya@example.org", Detected::Url),
             ]
         );
@@ -425,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn emails_mentions_and_rooms() {
+    fn emails_mentions_and_workspaces() {
         assert_eq!(
             found(
                 "Mail Ilya.l1@example.org, ping @ilya_l1 or @Il1:matrix.org in #general:tilo.so."
@@ -434,7 +435,7 @@ mod tests {
                 ("Ilya.l1@example.org", Detected::Email),
                 ("@ilya_l1", Detected::Mention),
                 ("@Il1:matrix.org", Detected::Mention),
-                ("#general:tilo.so", Detected::RoomAlias),
+                ("#general:tilo.so", Detected::WorkspaceAlias),
             ]
         );
         assert_eq!(found("“@lena”"), [("@lena", Detected::Mention)]);
@@ -474,6 +475,6 @@ mod tests {
         assert_eq!(Detected::Url.kind(), TextKind::Url);
         assert_eq!(Detected::Email.kind(), TextKind::Identifier);
         assert_eq!(Detected::Mention.kind(), TextKind::Identifier);
-        assert_eq!(Detected::RoomAlias.kind(), TextKind::Identifier);
+        assert_eq!(Detected::WorkspaceAlias.kind(), TextKind::Identifier);
     }
 }

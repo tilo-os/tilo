@@ -46,6 +46,7 @@ fn verb_of(decl: &Declaration, types: &mut TypeSet) -> VerbSurface {
                     required: param.required,
                     schema,
                     ty,
+                    within: None,
                 }
             })
             .collect(),
@@ -205,6 +206,7 @@ fn effect_verb(decl: &crate::EffectDecl) -> VerbSurface {
                     } else {
                         ty
                     },
+                    within: None,
                 }
             })
             .collect(),

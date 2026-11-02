@@ -362,7 +362,7 @@ mod tests {
         let invocation = InvocationId::new();
         let invoke = InvokeRequest {
             invocation,
-            target: RemoteActionTarget::room_governance("workspace", "invitation.list"),
+            target: RemoteActionTarget::workspace_governance("workspace", "invitation.list"),
             argument: InvokeArgument::None,
             context: None,
             confirmation: None,

@@ -22,7 +22,7 @@ impl Shared {
                 .workspaces
                 .iter()
                 .map(|workspace| {
-                    tilo_agent_runs::RoomFacts::new(
+                    tilo_agent_runs::WorkspaceFacts::new(
                         &workspace.room().to_string(),
                         workspace
                             .agent_members_at(now)

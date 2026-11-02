@@ -286,9 +286,9 @@ pub fn reserved_action_ids() -> Vec<String> {
     ids
 }
 
-/// The window's arrival: the app's view, shown once the room's holdings
+/// The window's arrival: the app's view, shown once the workspace's holdings
 /// arrived ([`super::app`]'s `build_root`).
-type RoomArrival = ui_core::widget::ArrivingView;
+type WorkspaceArrival = ui_core::widget::ArrivingView;
 
 /// The app's view in `content`, once it shows: `content` itself, or the
 /// view standing in the window's arrival once that arrived. The arrival
@@ -297,7 +297,7 @@ type RoomArrival = ui_core::widget::ArrivingView;
 fn app_view_in(content: &dyn Widget) -> Option<&dyn Widget> {
     let Some(arrival) = content
         .as_any()
-        .and_then(|any| any.downcast_ref::<RoomArrival>())
+        .and_then(|any| any.downcast_ref::<WorkspaceArrival>())
     else {
         return Some(content);
     };
@@ -313,8 +313,8 @@ fn app_view_in(content: &dyn Widget) -> Option<&dyn Widget> {
 fn with_app_view_mut<R>(content: &mut Element, visit: impl FnOnce(&mut dyn Widget) -> R) -> R {
     let arrived = content
         .as_any_mut()
-        .and_then(|any| any.downcast_mut::<RoomArrival>())
-        .and_then(RoomArrival::answer_mut)
+        .and_then(|any| any.downcast_mut::<WorkspaceArrival>())
+        .and_then(WorkspaceArrival::answer_mut)
         .and_then(|answer| answer.as_any_mut()?.downcast_mut::<super::switch::Switch>());
     match arrived {
         Some(switch) => visit(switch.part_mut()),
@@ -343,7 +343,7 @@ impl ResourceRoot {
         let Some(arrival) = self
             .content
             .as_any_mut()
-            .and_then(|any| any.downcast_mut::<RoomArrival>())
+            .and_then(|any| any.downcast_mut::<WorkspaceArrival>())
         else {
             return;
         };
@@ -2454,11 +2454,11 @@ impl RootApp for ResourceRoot {
         self.saved.set(status);
     }
 
-    // The room refused what this record sent, and the record withdrew it:
+    // The workspace refused what this record sent, and the record withdrew it:
     // the view shows the stored state again, and the action reads as
     // refused, as one this device refused does.
     fn record_refused(&mut self, refusal: &ui_core::record::RecordRefusal) {
-        self.dispatch.refuse_by_room(refusal);
+        self.dispatch.refuse_by_workspace(refusal);
         self.typed.represent();
     }
 

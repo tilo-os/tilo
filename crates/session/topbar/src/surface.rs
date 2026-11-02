@@ -31,8 +31,8 @@ use ui::vello::kurbo::{Affine, Point, Rect};
 use ui::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
 use ui::winit::event::{ElementState, WindowEvent};
 
-use crate::link::{Ask, BarFeed, BarPlace, Command, Link, MediaCommand, Placement, Shown};
-use crate::resource::{TopBar, TopBarEffect};
+use crate::link::{Ask, BarFeed, BarPlace, Command, Link, Placement, Shown};
+use crate::resource::{BarEffect, TopBar};
 
 /// A menu or card a bar asked to open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -531,69 +531,21 @@ impl TopBarSurface {
         Ok((found, rect))
     }
 
-    /// The workspace named `workspace` (its key, its name or its place
-    /// counting from 1).
-    fn workspace_key(&self, workspace: &str) -> Result<String, String> {
-        let workspace = workspace.trim();
-        let feed = self.source.feed.borrow();
-        let workspaces = &feed.tree.workspaces;
-        let by_place = workspace
-            .parse::<usize>()
-            .ok()
-            .and_then(|place| place.checked_sub(1))
-            .and_then(|index| workspaces.get(index));
-        workspaces
-            .iter()
-            .find(|candidate| {
-                candidate.id.0.to_string() == workspace
-                    || candidate.name.eq_ignore_ascii_case(workspace)
-            })
-            .or(by_place)
-            .map(|found| found.id.0.to_string())
-            .ok_or_else(|| format!("no workspace `{workspace}` is on this desktop"))
-    }
-
-    fn answer(&mut self, effect: TopBarEffect) -> Result<(), String> {
+    fn answer(&mut self, effect: BarEffect) -> Result<(), String> {
         let snapshot = self.source.snapshot();
         let ask = match effect {
-            TopBarEffect::SwitchWorkspace { workspace } => {
-                Ask::WorkspaceMenu(WorkspaceMenuChoice::Switch(self.workspace_key(&workspace)?))
-            }
-            TopBarEffect::NextWorkspace => Ask::Chrome(ChromeIntent::SwitchWorkspace(1)),
-            TopBarEffect::PreviousWorkspace => Ask::Chrome(ChromeIntent::SwitchWorkspace(-1)),
-            TopBarEffect::ShowStrips => Ask::Chrome(ChromeIntent::ShowStrips),
-            TopBarEffect::Overview => Ask::Chrome(ChromeIntent::ToggleOverview),
-            TopBarEffect::QuickSettings => Ask::Chrome(ChromeIntent::ShowQuickSettings),
-            TopBarEffect::Notifications => Ask::Notifications,
-            TopBarEffect::People => Ask::Chrome(ChromeIntent::ToggleCollaborators),
-            TopBarEffect::Activity => Ask::Chrome(ChromeIntent::ShowActivity(None)),
-            TopBarEffect::Invite => {
+            BarEffect::Invite => {
                 if snapshot.invite != tilo_desktop::chrome::Invite::Offered {
                     return Err("you may not invite anyone here".into());
                 }
                 Ask::Chrome(ChromeIntent::Invite)
             }
-            TopBarEffect::Profile => {
+            BarEffect::Profile => {
                 self.open_popover(Popover::Profile);
                 self.hand_over();
                 return Ok(());
             }
-            TopBarEffect::WorkspaceMenu => {
-                self.source.anchor.set(Rect::ZERO);
-                self.open_popover(Popover::WorkspaceMenu);
-                self.hand_over();
-                return Ok(());
-            }
-            TopBarEffect::RenameWorkspace { name } => {
-                let name = name.trim();
-                if name.is_empty() {
-                    return Err("a workspace needs a name".into());
-                }
-                Ask::Chrome(ChromeIntent::RenameWorkspace {
-                    name: name.to_owned(),
-                })
-            }
-            TopBarEffect::ActivateTrayItem { item } => {
+            BarEffect::ActivateTrayItem { item } => {
                 let (item, rect) = self.tray_item(&item)?;
                 let at = rect.center();
                 Ask::Chrome(ChromeIntent::AppTray {
@@ -604,16 +556,13 @@ impl TopBarSurface {
                     },
                 })
             }
-            TopBarEffect::PlayPause => Ask::Media(MediaCommand::PlayPause),
-            TopBarEffect::NextTrack => Ask::Media(MediaCommand::Next),
-            TopBarEffect::PreviousTrack => Ask::Media(MediaCommand::Previous),
-            TopBarEffect::Continue => {
+            BarEffect::Continue => {
                 if self.source.continuity_offer().is_none() {
                     return Err("no other device offers a tab to continue".into());
                 }
                 Ask::Chrome(ChromeIntent::AcceptContinuity)
             }
-            TopBarEffect::Focus => {
+            BarEffect::FocusBar => {
                 self.take_command(&Command::Focus);
                 self.hand_over();
                 return Ok(());
@@ -934,7 +883,7 @@ impl Widget for TopBarSurface {
     }
 }
 
-impl ResourceSurface<TopBar, TopBarEffect> for TopBarSurface {
+impl ResourceSurface<TopBar, BarEffect> for TopBarSurface {
     fn present(&mut self, _state: &Rc<TopBar>) {}
 
     fn attach(&mut self, _cx: SurfaceCx<TopBar>) {}
@@ -952,39 +901,32 @@ impl ResourceSurface<TopBar, TopBarEffect> for TopBarSurface {
         }
     }
 
-    fn effect(&mut self, effect: TopBarEffect, _cx: &mut EffectCx<TopBar, Self>) -> EffectAnswer {
+    fn effect(&mut self, effect: BarEffect, _cx: &mut EffectCx<TopBar, Self>) -> EffectAnswer {
         self.catch_up();
         self.answer(effect)?;
         self.dirty = true;
         Ok(Effected::done())
     }
 
-    /// The workspaces on this desktop, each switched to through
-    /// [`TopBarEffect::SwitchWorkspace`], and the running applications'
-    /// tray items, each pressed through [`TopBarEffect::ActivateTrayItem`]:
-    /// what an agent reads to find what to act on.
+    /// The running applications' tray items, each pressed through
+    /// [`BarEffect::ActivateTrayItem`]: what an agent reads to find what to
+    /// act on. The workspaces and the desktop's other verbs are the
+    /// resources published by the session and the desktop themselves.
     fn live_rows(&self) -> Vec<LiveRow> {
         let feed = self.source.feed.borrow();
-        let workspaces = feed.tree.workspaces.iter().map(|workspace| {
-            let key = workspace.id.0.to_string();
-            LiveRow::new(
-                format!("desktop.workspace/{key}"),
-                "desktop.workspace",
-                workspace.name.clone(),
-            )
-            .effect(&TopBarEffect::SwitchWorkspace { workspace: key })
-        });
-        let tray = feed.app_tray.iter().map(|item| {
-            LiveRow::new(
-                format!("desktop.tray-item/{}", item.key),
-                "desktop.tray-item",
-                item.title.clone(),
-            )
-            .effect(&TopBarEffect::ActivateTrayItem {
-                item: item.key.clone(),
+        feed.app_tray
+            .iter()
+            .map(|item| {
+                LiveRow::new(
+                    format!("desktop.tray-item/{}", item.key),
+                    "desktop.tray-item",
+                    item.title.clone(),
+                )
+                .effect(&BarEffect::ActivateTrayItem {
+                    item: item.key.clone(),
+                })
             })
-        });
-        workspaces.chain(tray).collect()
+            .collect()
     }
 }
 
@@ -1002,28 +944,15 @@ mod tests {
     }
 
     #[test]
-    fn actions_reach_the_desktop_as_what_the_bar_asks() {
+    fn the_bars_own_verbs_reach_the_desktop_as_what_the_bar_asks() {
         let mut surface = hosted("bar");
-        surface
-            .answer(TopBarEffect::SwitchWorkspace {
-                workspace: "home".into(),
-            })
-            .unwrap();
-        surface.answer(TopBarEffect::QuickSettings).unwrap();
-        surface.answer(TopBarEffect::Notifications).unwrap();
-        surface.answer(TopBarEffect::PlayPause).unwrap();
-        surface.answer(TopBarEffect::NextWorkspace).unwrap();
-        let home = surface.workspace_key("Home").unwrap();
+        surface.answer(BarEffect::Invite).unwrap();
         assert_eq!(
             surface.link.take_asks(),
-            [
-                Ask::WorkspaceMenu(WorkspaceMenuChoice::Switch(home)),
-                Ask::Chrome(ChromeIntent::ShowQuickSettings),
-                Ask::Notifications,
-                Ask::Media(MediaCommand::PlayPause),
-                Ask::Chrome(ChromeIntent::SwitchWorkspace(1)),
-            ]
+            [Ask::Chrome(ChromeIntent::Invite)]
         );
+        surface.answer(BarEffect::Profile).unwrap();
+        assert!(surface.profile.is_open(), "the card opens here");
     }
 
     #[test]
@@ -1031,36 +960,20 @@ mod tests {
         let mut surface = hosted("bar");
         assert!(
             surface
-                .answer(TopBarEffect::SwitchWorkspace {
-                    workspace: "nowhere".into()
-                })
-                .is_err()
-        );
-        assert!(
-            surface
-                .answer(TopBarEffect::ActivateTrayItem {
+                .answer(BarEffect::ActivateTrayItem {
                     item: "missing".into()
                 })
                 .is_err()
         );
-        assert!(surface.answer(TopBarEffect::Continue).is_err());
-        assert!(
-            surface
-                .answer(TopBarEffect::RenameWorkspace { name: " ".into() })
-                .is_err()
-        );
+        assert!(surface.answer(BarEffect::Continue).is_err());
         assert!(surface.link.take_asks().is_empty());
     }
 
     #[test]
-    fn the_menus_open_one_at_a_time_and_say_so() {
+    fn the_card_closes_one_at_a_time_and_says_so() {
         let mut surface = hosted("bar");
-        surface.answer(TopBarEffect::WorkspaceMenu).unwrap();
-        assert!(surface.menu.is_open());
-        assert_eq!(surface.link.take_asks(), [Ask::Opened]);
-        surface.answer(TopBarEffect::Profile).unwrap();
+        surface.answer(BarEffect::Profile).unwrap();
         assert!(surface.profile.is_open());
-        assert!(!surface.menu.is_open(), "one at a time");
         surface.link.command(Command::ClosePopovers);
         surface.catch_up();
         assert!(!surface.popover_open());

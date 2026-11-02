@@ -5,7 +5,7 @@ use std::path::Path;
 /// the wire form the host reads them by.
 #[test]
 fn a_chain_part_and_an_on_demand_record_are_record_ids() {
-    let chat = RecordId::room_default();
+    let chat = RecordId::workspace_default();
     let part = chat.part(12);
     assert_eq!(part.as_str(), format!("derived:part.12@{}", chat.as_str()));
     assert_eq!(RecordId::parse(part.as_str()), Some(part.clone()));
@@ -22,7 +22,7 @@ fn a_chain_part_and_an_on_demand_record_are_record_ids() {
 /// refused.
 #[test]
 fn a_child_record_names_its_parent_and_its_own_id() {
-    let chat = RecordId::room_default();
+    let chat = RecordId::workspace_default();
     let channel = chat.child("c_design").unwrap();
     assert_eq!(
         channel.as_str(),
@@ -97,7 +97,7 @@ fn two_creators_of_one_record_make_one_identical_genesis() {
 #[test]
 fn a_part_stored_after_the_window_opened_is_held_and_opens() {
     let workspace = uuid::Uuid::new_v4().to_string();
-    let chain = RecordId::derived("messages", &RecordId::room_default());
+    let chain = RecordId::derived("messages", &RecordId::workspace_default());
     let part = RecordCheckout::new(chain.part(0), RecordKind::new("test.chain-part"));
     let key = StorageKey::record(
         "so.tilo.test-chain",
@@ -858,7 +858,7 @@ fn workspaces_hold_references_and_discover_metadata_only() {
 
         let open_workspace = |workspace: &str| {
             ::collaboration::record::save::open_stored(
-                ::collaboration::record::save::room_document(&documents, package, workspace)
+                ::collaboration::record::save::workspace_document(&documents, package, workspace)
                     .expect("workspace index"),
             )
         };

@@ -344,7 +344,7 @@ mod tests {
     use super::*;
     use tilo_desktop_model::{Collaborator, DesktopTree, Workspace, WorkspaceId};
 
-    fn room(people: &[(&str, &str)]) -> DesktopTree {
+    fn desk(people: &[(&str, &str)]) -> DesktopTree {
         let mut workspace = Workspace::new(WorkspaceId(1), "Hacked");
         workspace.collaborators = people
             .iter()
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn invite_stays_in_the_bar_and_invites_in_one_step() {
         for people in [&[][..], &[("ada", "Ada Lovelace")][..]] {
-            let tree = room(people);
+            let tree = desk(people);
             let (mut bar, chrome) = bar_over(&tree, true);
             let invite = bar.invite_rect();
             assert!(!invite.is_zero_area(), "with {} here", people.len());
@@ -398,7 +398,7 @@ mod tests {
                 "inviting does not open the list"
             );
         }
-        let (bar, _) = bar_over(&room(&[]), false);
+        let (bar, _) = bar_over(&desk(&[]), false);
         assert!(
             bar.invite_rect().is_zero_area(),
             "nobody is offered an invite the host would refuse"
@@ -409,7 +409,7 @@ mod tests {
     /// it.
     #[test]
     fn spectators_never_replace_the_invite() {
-        let tree = room(&[]);
+        let tree = desk(&[]);
         let chrome = FixtureChrome::new(tree.clone());
         chrome.borrow_mut().can_invite = true;
         chrome.borrow_mut().watching = 1;
@@ -428,7 +428,7 @@ mod tests {
     /// pointer, and the bar names it so to a reader.
     #[test]
     fn the_people_button_opens_everyone_beside_faces_that_open_cards() {
-        let tree = room(&[("ada", "Ada Lovelace")]);
+        let tree = desk(&[("ada", "Ada Lovelace")]);
         let (mut bar, chrome) = bar_over(&tree, true);
         let button = bar.people_button_rect();
         assert!(!button.is_zero_area(), "shown beside one face");
@@ -459,7 +459,7 @@ mod tests {
             "a reader finds it by its name"
         );
 
-        let (bar, _) = bar_over(&room(&[]), true);
+        let (bar, _) = bar_over(&desk(&[]), true);
         assert!(
             bar.people_button_rect().is_zero_area(),
             "nobody else here: nothing to show"
@@ -470,7 +470,7 @@ mod tests {
     /// opens everyone.
     #[test]
     fn a_face_opens_that_person() {
-        let tree = room(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
+        let tree = desk(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
         let (mut bar, chrome) = bar_over(&tree, true);
         let bo = bar.face_rects[1];
         assert!(press(&mut bar, bo.center()));
@@ -486,7 +486,7 @@ mod tests {
             .iter()
             .map(|(a, b)| (a.as_str(), b.as_str()))
             .collect();
-        let (mut bar, chrome) = bar_over(&room(&crowd), true);
+        let (mut bar, chrome) = bar_over(&desk(&crowd), true);
         assert!(bar.collaborator_overflow() > 0, "crowded: a +N badge");
         let badge_x = bar.face_rects.last().unwrap().x1 + 4.0;
         let stack_y = bar.avatar_stack_rect.center().y;
@@ -502,7 +502,7 @@ mod tests {
     /// kept for an activity.
     #[test]
     fn a_wave_is_worded_beside_the_faces_on_a_laptop_wide_bar() {
-        let tree = room(&[("gd", "Gentle Dolphin")]);
+        let tree = desk(&[("gd", "Gentle Dolphin")]);
         let (mut bar, chrome) = bar_over(&tree, true);
         super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
         let quiet = bar.people_left_x;
@@ -536,7 +536,7 @@ mod tests {
     /// web and on the desktop alike, from nothing unread on.
     #[test]
     fn the_faces_stay_put_as_unread_notifications_arrive() {
-        let tree = room(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
+        let tree = desk(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
         for web in [true, false] {
             let (mut bar, chrome) = bar_over(&tree, true);
             chrome.borrow_mut().notifications_only = web;

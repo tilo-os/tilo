@@ -1,6 +1,6 @@
 //! Hosting the person's workspaces on their home relay as well as on the
-//! device that governs them: per workspace, the relay is one of the room's
-//! hosts or it is not, as the room's governor records its hosts. It is
+//! device that governs them: per workspace, the relay is one of the workspace's
+//! hosts or it is not, as the workspace's governor records its hosts. It is
 //! answered under the host's provider, which a caller names without reading
 //! a catalogue, for the person at this device.
 
@@ -15,7 +15,7 @@ pub const RESOURCE: &str = "home-relay";
 /// The workspaces this device governs, each with whether the home relay
 /// hosts it too, as a [`HomeRelayHosting`].
 pub const WORKSPACES: &str = "workspaces";
-/// Have the home relay host workspace `room` as well (`on`), or no
+/// Have the home relay host workspace `workspace` as well (`on`), or no
 /// longer.
 pub const SET: &str = "set";
 
@@ -45,8 +45,9 @@ pub struct HomeRelayHosting {
 /// One workspace this device governs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedWorkspace {
-    /// Its room's id.
-    pub room: String,
+    /// Its workspace's id.
+    #[serde(rename = "workspace", alias = "room")]
+    pub workspace: String,
     /// Its name.
     pub name: String,
     /// Whether the home relay is one of its hosts.

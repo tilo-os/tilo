@@ -6,7 +6,7 @@
 //!
 //! The bar draws what the desktop lends it (its workspaces, status and
 //! people, and where each display's bar goes, [`link`]) and publishes what
-//! can be done from it as its actions ([`TopBarEffect`]). The shell mounts
+//! only the bar itself can do as its actions ([`BarEffect`]). The shell mounts
 //! it in its own process over a feed of what it knows; on its own, in a
 //! capture or a test, it shows a fixed desktop ([`fixture`]).
 
@@ -18,7 +18,7 @@ pub mod surface;
 
 pub use link::{Ask, BarFeed, BarPlace, BarService, Command, Link, MediaCommand, Placement, Shown};
 pub use prepare::prepare;
-pub use resource::{TopBar, TopBarApp, TopBarEffect};
+pub use resource::{BarEffect, TopBar, TopBarApp};
 pub use surface::TopBarSurface;
 
 /// The bar's package id.

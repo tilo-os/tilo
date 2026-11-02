@@ -25,30 +25,33 @@ use std::{
 };
 
 /// A native construction holding the creation capture of one named record
-/// (`store.catalog` in a new room), as the record store opens it.
+/// (`store.catalog` in a new workspace), as the record store opens it.
 pub struct Fixture {
     construction: NativeConstruction,
     _sender: tokio::sync::mpsc::Sender<QueuedSdkCommand>,
     /// The capture.
     pub read: CommittedDocument,
-    /// The room the capture names.
-    pub room: String,
+    /// The workspace the capture names.
+    pub workspace: String,
     /// The record it is of.
     pub checkout: RecordCheckout,
     receiver: Option<tokio::sync::mpsc::Receiver<QueuedSdkCommand>>,
 }
 
 /// The construction with a capture that has (`receipt`) or lacks its creation receipt, for
-/// this room or another (`wrong_room`), holding an unknown field.
-pub async fn fixture(receipt: bool, wrong_room: bool) -> Fixture {
-    fixture_graph(receipt, wrong_room, true).await
+/// this workspace or another (`wrong_workspace`), holding an unknown field.
+pub async fn fixture(receipt: bool, wrong_workspace: bool) -> Fixture {
+    fixture_graph(receipt, wrong_workspace, true).await
 }
 
 /// [`fixture`], with the unknown field only when `with_unknown`.
-pub async fn fixture_graph(receipt: bool, wrong_room: bool, with_unknown: bool) -> Fixture {
-    let room_id = uuid::Uuid::new_v4();
-    let room = room_id.to_string();
-    let checkout = RecordCheckout::new(RecordId::room_default(), RecordKind::new("store.catalog"));
+pub async fn fixture_graph(receipt: bool, wrong_workspace: bool, with_unknown: bool) -> Fixture {
+    let workspace_id = uuid::Uuid::new_v4();
+    let workspace = workspace_id.to_string();
+    let checkout = RecordCheckout::new(
+        RecordId::workspace_default(),
+        RecordKind::new("store.catalog"),
+    );
     let mut document = AutoCommit::new();
     if with_unknown {
         document
@@ -69,12 +72,12 @@ pub async fn fixture_graph(receipt: bool, wrong_room: bool, with_unknown: bool) 
             receipt: CreationReceipt {
                 token: [7; 16],
                 workspace: CreationWorkspace {
-                    id: if wrong_room {
+                    id: if wrong_workspace {
                         uuid::Uuid::new_v4().to_string()
                     } else {
-                        room.clone()
+                        workspace.clone()
                     },
-                    name: "Actual owner room".into(),
+                    name: "Actual owner workspace".into(),
                 },
             },
             chunk,
@@ -93,13 +96,13 @@ pub async fn fixture_graph(receipt: bool, wrong_room: bool, with_unknown: bool) 
         .await
         .unwrap();
     let bridge_state = BridgeState::new();
-    let route = RouteSpec::record("so.tilo.store", room_id, checkout.id.as_str());
+    let route = RouteSpec::record("so.tilo.store", workspace_id, checkout.id.as_str());
     bridge_state
         .document_reads
         .stage_for_test(&route.channel_id(), read.clone());
     let (sender, receiver) = tokio::sync::mpsc::channel(4);
     let bridge = InitialReadBridge {
-        route: RouteSpec::app("so.tilo.store", room_id),
+        route: RouteSpec::app("so.tilo.store", workspace_id),
         commands: sender.downgrade(),
         state: bridge_state,
     };
@@ -117,7 +120,7 @@ pub async fn fixture_graph(receipt: bool, wrong_room: bool, with_unknown: bool) 
         construction: NativeConstruction { state, previous },
         _sender: sender,
         read,
-        room,
+        workspace,
         checkout,
         receiver: Some(receiver),
     }

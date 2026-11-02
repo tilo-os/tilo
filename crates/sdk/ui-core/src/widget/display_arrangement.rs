@@ -1548,7 +1548,7 @@ mod tests {
                     .into_iter()
                     .find(|decl| decl.id == "move-display")
                     .expect("moving a display is an effect")
-                    .spec("test.display");
+                    .spec::<TestEffect>("test.display");
                 let resource = ui::tilo_actions::ResourceSpec::new(
                     "settings.root",
                     "settings.root",

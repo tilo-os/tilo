@@ -2,8 +2,8 @@
  * The picture a person shows beside their name.
  *
  * It is part of their profile (`root-identity.mjs` `publishProfile`): the
- * hosts of their rooms keep it signed by their root, beside their name, so
- * each of their devices and everyone in those rooms shows the same one.
+ * hosts of their workspaces keep it signed by their root, beside their name, so
+ * each of their devices and everyone in those workspaces shows the same one.
  * Chosen here from an image file, cropped to its centre square and scaled
  * to `PHOTO_SIDE` pixels, it travels as a small `data:` URL. The host's
  * answer to `/here` says when each person last changed their profile

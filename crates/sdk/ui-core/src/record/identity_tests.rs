@@ -348,7 +348,7 @@ fn a_record_has_one_route_and_the_custody_key_is_none() {
     assert_eq!(primary.route(), "");
     assert_eq!(RecordId::from_route(""), Some(primary.clone()));
     assert_eq!(RecordId::from_route(primary.as_str()), None);
-    let window = RecordId::room_default();
+    let window = RecordId::workspace_default();
     assert_eq!(window.route(), window.as_str());
     assert_eq!(RecordId::from_route(window.route()), Some(window));
 }

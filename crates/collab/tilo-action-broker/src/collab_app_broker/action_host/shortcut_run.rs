@@ -448,7 +448,7 @@ impl AppBrokerState {
         let admission = if let Some(admission) = admission {
             admission
         } else {
-            if caller.room() != Some(workspace) {
+            if caller.workspace() != Some(workspace) {
                 return Err(ActionHostError::NotPermitted);
             }
             request = InvokeRequest {

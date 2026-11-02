@@ -178,7 +178,7 @@ fn a_person_at_a_foreign_device_is_asked_on_one_of_their_own() {
     let asked = own_devices.asked_about();
     assert_eq!(asked.len(), 1, "one question names one invocation");
     assert_eq!(
-        asked[0].room, fixture.workspace,
+        asked[0].workspace, fixture.workspace,
         "about the workspace it runs in"
     );
     assert_eq!(

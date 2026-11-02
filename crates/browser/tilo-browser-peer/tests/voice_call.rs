@@ -1,4 +1,4 @@
-//! A call in a room the host governs, between the room's owner on a native
+//! A call in a workspace the host governs, between the workspace's owner on a native
 //! iroh device and an invited person in a browser session: both get their
 //! grants from the host, hear each other over its `moq-lite` voice carrier,
 //! and lose their voice when the owner denies it or ends the call.
@@ -36,16 +36,16 @@ use call::{GovernedCall, browser, carrier, granted, hears, native, operate, unti
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_invited_browser_and_the_owners_device_talk_in_a_governed_call() {
-    // Alice starts a call on her chat's voice channel; only the room's
+    // Alice starts a call on her chat's voice channel; only the workspace's
     // owner may. Bob, a different person, redeems her invitation with his
     // browser's device (over iroh: pages have no redemption route yet).
-    let room = GovernedCall::start().await;
-    let (bob, page) = room.invite("bob-browser").await;
-    let alice_link = &room.owner;
-    let started = &room.call;
+    let workspace = GovernedCall::start().await;
+    let (bob, page) = workspace.invite("bob-browser").await;
+    let alice_link = &workspace.owner;
+    let started = &workspace.call;
     alice_link
         .send(Envelope::VoiceJoin {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: started.call,
             participation: None,
         })
@@ -56,9 +56,9 @@ async fn an_invited_browser_and_the_owners_device_talk_in_a_governed_call() {
 
     // Bob's browser joins over HTTPS; as a guest it may not end the call.
     let mut page_link = HttpsLink::connect(
-        room.https(),
+        workspace.https(),
         &page.cert,
-        room.host.cert.device_public_key,
+        workspace.host.cert.device_public_key,
         &RevocationList::new(),
         &page.key,
     )
@@ -67,7 +67,7 @@ async fn an_invited_browser_and_the_owners_device_talk_in_a_governed_call() {
     assert!(page_link.voice(), "the host advertises calls");
     page_link
         .send(Envelope::Subscribe {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
         })
         .unwrap();
     browser(&mut page_link, |envelope| match envelope {
@@ -78,7 +78,7 @@ async fn an_invited_browser_and_the_owners_device_talk_in_a_governed_call() {
     .await;
     page_link
         .send(Envelope::VoiceCall {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             request: [2; 16],
             operation: CallOperation::End {
                 call: started.call,
@@ -94,7 +94,7 @@ async fn an_invited_browser_and_the_owners_device_talk_in_a_governed_call() {
     assert!(intruder.is_err(), "a guest cannot end the call");
     page_link
         .send(Envelope::VoiceJoin {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: started.call,
             participation: None,
         })
@@ -144,7 +144,7 @@ async fn an_invited_browser_and_the_owners_device_talk_in_a_governed_call() {
     // the carrier that published.
     let muted = operate(
         alice_link,
-        room.workspace_id,
+        workspace.workspace_id,
         3,
         CallOperation::SetDenial {
             call: started.call,
@@ -199,7 +199,7 @@ async fn an_invited_browser_and_the_owners_device_talk_in_a_governed_call() {
     // Alice ends the call: Bob is told and his carrier is closed.
     operate(
         alice_link,
-        room.workspace_id,
+        workspace.workspace_id,
         4,
         CallOperation::End {
             call: started.call,
@@ -221,7 +221,7 @@ async fn an_invited_browser_and_the_owners_device_talk_in_a_governed_call() {
     .await;
     page_link
         .send(Envelope::VoiceJoin {
-            workspace_id: room.workspace_id,
+            workspace_id: workspace.workspace_id,
             call: started.call,
             participation: None,
         })
@@ -233,5 +233,5 @@ async fn an_invited_browser_and_the_owners_device_talk_in_a_governed_call() {
     })
     .await;
     assert!(refused.contains("ended"), "{refused}");
-    room.shutdown().await;
+    workspace.shutdown().await;
 }

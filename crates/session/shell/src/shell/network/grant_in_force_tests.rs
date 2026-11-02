@@ -164,7 +164,7 @@ fn holds(tree: &WorkspaceTreeHandle, room: RoomId, id: &str) -> (bool, bool) {
         .find(|workspace| workspace.room() == room)
         .is_some_and(|workspace| held(&workspace.policy.grants));
     let document = tree.room_docs.get(&room).is_some_and(|doc| {
-        held(&tilo_desktop_model::projection::room_policy_of(doc, &room.to_string()).grants)
+        held(&tilo_desktop_model::projection::workspace_policy_of(doc, &room.to_string()).grants)
     });
     drop(tree);
     (workspace, document)

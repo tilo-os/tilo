@@ -40,7 +40,12 @@ pub struct NowPlaying {
 }
 
 /// A session another device hands this one, at the point it stopped.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// The session that received it publishes it beside the person's devices, so
+/// the card offers exactly the hand-off a reading names and continuing it
+/// here names the same one back.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct MediaOffer {
     /// The handoff's request, 32 hex digits: the card names it when it asks
     /// to continue it here.

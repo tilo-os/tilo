@@ -609,8 +609,11 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
                     tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
-                let mut workspace =
-                    tilo_desktop_model::Workspace::in_room(before.id, workspace_id, before.name);
+                let mut workspace = tilo_desktop_model::Workspace::in_workspace(
+                    before.id,
+                    workspace_id,
+                    before.name,
+                );
                 workspace.strips = before.strips;
                 workspace.policy = before.policy;
                 workspace.policy.rehome(workspace_id.to_string());
@@ -675,8 +678,11 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
                     tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
-                let mut workspace =
-                    tilo_desktop_model::Workspace::in_room(before.id, workspace_id, before.name);
+                let mut workspace = tilo_desktop_model::Workspace::in_workspace(
+                    before.id,
+                    workspace_id,
+                    before.name,
+                );
                 workspace.strips = before.strips;
                 workspace.policy = before.policy;
                 workspace.policy.rehome(workspace_id.to_string());
@@ -715,8 +721,11 @@ async fn certified_person_context_refuses_other_workspaces_and_expired_original_
                     tilo_desktop_model::RoomId::parse(&env.route.cluster_id).unwrap();
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
-                let mut workspace =
-                    tilo_desktop_model::Workspace::in_room(before.id, workspace_id, before.name);
+                let mut workspace = tilo_desktop_model::Workspace::in_workspace(
+                    before.id,
+                    workspace_id,
+                    before.name,
+                );
                 workspace.strips = before.strips;
                 workspace.policy = before.policy;
                 workspace.policy.rehome(workspace_id.to_string());

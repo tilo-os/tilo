@@ -128,7 +128,7 @@ impl Call {
                 ),
             },
             None => self.reference.action_target(
-                &room()?,
+                &workspace()?,
                 &self.app,
                 self.record.as_deref(),
                 &self.action,
@@ -145,17 +145,17 @@ pub(crate) const OPEN: &str = tilo_actions::remote::APPLICATION_OPEN_ACTION;
 pub const LEAD: ChipLead = ui_core::widget::REFERENCE_LEAD;
 
 /// The workspace this window is in, or why nothing opens from it.
-pub fn room() -> Result<String, String> {
+pub fn workspace() -> Result<String, String> {
     // A window hosted among others in one process (the browser) is in the
     // workspace its host put it in, not the process's.
-    if let Some(room) = ui_core::window_toolbar::workspace() {
-        return Ok(room);
+    if let Some(workspace) = ui_core::window_toolbar::workspace() {
+        return Ok(workspace);
     }
-    let room = ui_core::collaboration::local_cluster_id();
-    if room.is_nil() {
+    let workspace = ui_core::collaboration::local_cluster_id();
+    if workspace.is_nil() {
         Err("This window is in no workspace".into())
     } else {
-        Ok(room.to_string())
+        Ok(workspace.to_string())
     }
 }
 
@@ -187,7 +187,7 @@ impl Opener {
         record: Option<&str>,
         reference: &ResourceRef,
     ) -> Result<(), String> {
-        let target = reference.open_target(&room()?, app, record);
+        let target = reference.open_target(&workspace()?, app, record);
         self.invoke(target, InvokeArgument::None);
         Ok(())
     }

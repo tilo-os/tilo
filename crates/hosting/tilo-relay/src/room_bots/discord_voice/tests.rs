@@ -282,7 +282,7 @@ async fn bridged_room(rooms: &Rooms, cert: &DeviceCert) -> (String, String) {
             cert,
             &catalogue,
             CHAT,
-            &room_record(&catalogue, CHAT),
+            &workspace_record(&catalogue, CHAT),
             |doc| {
                 chat::demo::apply_as(
                     doc,
@@ -314,7 +314,7 @@ async fn bridged_room(rooms: &Rooms, cert: &DeviceCert) -> (String, String) {
             cert,
             &catalogue,
             discord::APP,
-            &room_record(&catalogue, discord::APP),
+            &workspace_record(&catalogue, discord::APP),
             move |doc| {
                 let current = ::discord::Guild::read_fields(doc, &automerge::ROOT)
                     .map_err(|error| error.to_string())?;
@@ -434,7 +434,7 @@ async fn the_bridge_carries_a_voice_channel_both_ways_while_anyone_is_in_it() {
             &cert,
             &catalogue,
             CHAT,
-            &room_record(&catalogue, CHAT),
+            &workspace_record(&catalogue, CHAT),
             |doc| {
                 chat::demo::apply_as(
                     doc,
@@ -684,7 +684,7 @@ async fn a_voice_channel_discord_refuses_is_said_in_the_guild_record() {
     let problem = || {
         let (rooms, room) = (&rooms, &room);
         async move {
-            let record = room_record(&AppCatalogue::native(), discord::APP);
+            let record = workspace_record(&AppCatalogue::native(), discord::APP);
             let saved = rooms
                 .record_document(room, discord::APP, &record)
                 .await

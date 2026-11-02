@@ -66,7 +66,7 @@ use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
     CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer, Confirmation,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
-    RemoteActionMessage, pending, workspace_provider, workspace_provider_room,
+    RemoteActionMessage, pending, provider_workspace, workspace_provider,
 };
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
@@ -1484,14 +1484,14 @@ impl Worker {
                 .map(|route| CatalogueProvider {
                     provider: record_provider(route),
                     app_id: route.app_id.clone(),
-                    room: cluster_id.clone(),
+                    workspace: cluster_id.clone(),
                     record_id: route.record.clone(),
                     browsable: true,
                 })
                 .chain(std::iter::once(CatalogueProvider {
                     provider: own_provider,
                     app_id: String::new(),
-                    room: cluster_id.clone(),
+                    workspace: cluster_id.clone(),
                     record_id: String::new(),
                     browsable: false,
                 }))
@@ -1620,7 +1620,7 @@ impl Worker {
             |installation| link.is_some_and(|link| link.bot_personas(workspace_id, installation)),
             |hash| link.and_then(|link| link.content_blob(workspace_id, hash)),
         )?;
-        if workspace_provider_room(&request.target.provider).is_some() {
+        if provider_workspace(&request.target.provider).is_some() {
             return Err(ActionHostError::Refused {
                 reason: "an appearance is shown only on a record's own actions".into(),
             });
@@ -1667,7 +1667,7 @@ impl Worker {
         let workspace = state.workspace.clone();
         let target = &request.target;
         let owner = self.serves_as_owner(caller);
-        if let Some(workspace) = workspace_provider_room(&target.provider) {
+        if let Some(workspace) = provider_workspace(&target.provider) {
             if !owner
                 || tilo_relay_protocol::room_workspace_id(workspace).ok() != Some(workspace_id)
             {

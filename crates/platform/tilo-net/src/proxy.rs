@@ -108,7 +108,7 @@ pub enum ProxyFailure {
     /// the proxy lately; `Retry-After` says when to try again.
     RateLimited,
     /// `over-budget`: the proxy relayed as much as it allows this visitor,
-    /// or everyone in its room together, for now (a day, by default);
+    /// or everyone in its workspace together, for now (a day, by default);
     /// `Retry-After` says when the budget turns over. A media element shows
     /// people this one, so the page can say why playback stopped.
     OverBudget,

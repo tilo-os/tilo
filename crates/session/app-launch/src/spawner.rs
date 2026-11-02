@@ -197,7 +197,7 @@ impl Spawner {
             .map(|(started, _)| started)
     }
 
-    /// [`Self::start`] with the window door `door` of the app's room, which
+    /// [`Self::start`] with the window door `door` of the app's workspace, which
     /// the app is handed with its release so it opens the app's later
     /// windows itself.
     ///

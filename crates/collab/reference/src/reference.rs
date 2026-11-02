@@ -139,50 +139,53 @@ impl ResourceRef {
     }
 
     /// The one action that opens this reference: its resource's `open`
-    /// view in `app`, in workspace `room`, on `record` (`None`: the app's
-    /// own record of the workspace). The host launches the app on the record
+    /// view in `app`, in the workspace, on `record` (`None`: the app's own
+    /// record of the workspace). The host launches the app on the record
     /// when no window shows it, and admits the open as the person who asked
     /// under their grants, as it admits any action; a search hit, a chip and
     /// an agent all open things this way.
     #[must_use]
     pub fn open_target(
         &self,
-        room: &str,
+        workspace: &str,
         app: &str,
         record: Option<&str>,
     ) -> tilo_actions::remote::RemoteActionTarget {
         self.action_target(
-            room,
+            workspace,
             app,
             record,
             tilo_actions::remote::APPLICATION_OPEN_ACTION,
         )
     }
 
-    /// The published `action` of this reference's resource in `app`, in
-    /// workspace `room`, on `record` (`None`: the app's own record of the
+    /// The published `action` of this reference's resource in `app`, in the
+    /// workspace, on `record` (`None`: the app's own record of the
     /// workspace): the target an app calls another app's action on, which
     /// the host delivers to the app showing the record, launching it first
     /// when none does.
     #[must_use]
     pub fn action_target(
         &self,
-        room: &str,
+        workspace: &str,
         app: &str,
         record: Option<&str>,
         action: &str,
     ) -> tilo_actions::remote::RemoteActionTarget {
         match record {
             Some(record) => tilo_actions::remote::application_record_target(
-                room,
+                workspace,
                 app,
                 record,
                 self.id.clone(),
                 action,
             ),
-            None => {
-                tilo_actions::remote::application_action_target(room, app, self.id.clone(), action)
-            }
+            None => tilo_actions::remote::application_action_target(
+                workspace,
+                app,
+                self.id.clone(),
+                action,
+            ),
         }
     }
 }
@@ -284,10 +287,10 @@ mod tests {
     #[test]
     fn a_reference_opens_through_its_apps_open_on_its_record() {
         let page = ResourceRef::whole("notes.page", "notes.page:1", "Plan");
-        let target = page.open_target("room-1", "so.tilo.notes", Some("uuid:7"));
+        let target = page.open_target("ws-1", "so.tilo.notes", Some("uuid:7"));
         assert_eq!(
             tilo_actions::remote::application_provider(&target.provider),
-            Some(("room-1", "so.tilo.notes"))
+            Some(("ws-1", "so.tilo.notes"))
         );
         assert_eq!(
             tilo_actions::remote::application_provider_record(&target.provider),
@@ -297,7 +300,7 @@ mod tests {
             target.address,
             tilo_actions::ActionAddress::new("notes.page:1", "open")
         );
-        let target = page.open_target("room-1", "so.tilo.notes", None);
+        let target = page.open_target("ws-1", "so.tilo.notes", None);
         assert_eq!(
             tilo_actions::remote::application_provider_record(&target.provider),
             None

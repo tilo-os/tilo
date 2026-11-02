@@ -18,5 +18,5 @@ trust_policy = { kind = "allow_matching_user" }
 # home-peer status proves every configured workspace is complete.
 
 # `allow_matching_user` hosts open an owner workspace when it first subscribes.
-# Any other room is held here because its governor made this relay one of
-# the room's hosts; nothing in this file names rooms.
+# Any other workspace is held here because its governor made this relay one of
+# the workspace's hosts; nothing in this file names workspaces.

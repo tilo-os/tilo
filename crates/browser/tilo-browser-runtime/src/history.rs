@@ -3,7 +3,7 @@
 //!
 //! The desktop's own history is the desk's document
 //! (`tilo_desktop_model::desktop_doc`), the same one native keeps: in a
-//! certified room the room's replicated copy, every peer's changes in it;
+//! certified workspace the workspace's replicated copy, every peer's changes in it;
 //! otherwise this profile's own. The records the windows show carry their
 //! own histories, read from detached copies of the open documents.
 //!
@@ -121,12 +121,16 @@ fn activity_pane(desktop: &crate::desktop::Shared) -> ActivityPaneCode {
 struct PageActivityHost {
     author: String,
     store: Rc<dyn DurableStore>,
-    room: String,
+    workspace: String,
 }
 
 impl PageActivityHost {
     fn key(&self, what: &str) -> StorageKey {
-        StorageKey::record(crate::desktop::DESKTOP_PACKAGE, self.room.clone(), what)
+        StorageKey::record(
+            crate::desktop::DESKTOP_PACKAGE,
+            self.workspace.clone(),
+            what,
+        )
     }
 
     fn load<T: serde::de::DeserializeOwned + Default>(&self, what: &str) -> T {
@@ -206,7 +210,7 @@ pub(crate) fn person_of(
 
 impl PageHistory {
     pub fn new(
-        room: &str,
+        workspace: &str,
         peer: Option<u32>,
         author: String,
         store: Rc<dyn DurableStore>,
@@ -222,16 +226,16 @@ impl PageHistory {
             host: Rc::new(PageActivityHost {
                 author,
                 store,
-                room: room.to_owned(),
+                workspace: workspace.to_owned(),
             }),
             authors: BTreeMap::new(),
             person_of,
         }
     }
 
-    /// The room's replicated copy of the desk's document when the page has
+    /// The workspace's replicated copy of the desk's document when the page has
     /// one, else this profile's own, as the desk's own document either way:
-    /// a room whose desktop older peers still write entry by entry reads as
+    /// a workspace whose desktop older peers still write entry by entry reads as
     /// the one document, with the author and time of every change it made.
     fn desk_document(&self) -> AutoCommit {
         let document = self

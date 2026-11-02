@@ -1,5 +1,5 @@
 /**
- * A browser participant in a call the host governs (tilo-relay `rooms::voice`).
+ * A browser participant in a call the host governs (tilo-relay `workspaces::voice`).
  *
  * The page's peer session holds the participation (tilo-browser-peer
  * `voice`): it joins, beats and rejoins after reconnects, and hands on each
@@ -449,7 +449,7 @@ export function createVoiceCall({
     if (state.phase === 'idle' || state.phase === 'ended' || next.call !== state.call) return;
     grant = next;
     clearGrantDeadline();
-    // Back after the room took the carrier away: audio again, as wanted.
+    // Back after the workspace took the carrier away: audio again, as wanted.
     if (!audioSession && !audioStarting) void startAudio();
     const canPublish = next.directions.publish;
     if (!canPublish && !state.muted) void audioSession?.setMuted(true);
@@ -497,7 +497,7 @@ export function createVoiceCall({
     grantTimer = setTimer(look, GRANT_LOOK_MS);
   }
 
-  /** The room took the carrier's admission away (revoked it, or refused
+  /** The workspace took the carrier's admission away (revoked it, or refused
    * its token): nothing is sent or played on it any more. The session
    * still holds the participation and joins afresh when the host forgot it
    * (a page that stood still past its lifetime, a token renewed meanwhile),

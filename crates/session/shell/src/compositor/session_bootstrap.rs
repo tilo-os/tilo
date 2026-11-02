@@ -555,7 +555,7 @@ mod tests {
                 route
             };
             let request = tilo_actions::offload::OffloadRequest {
-                room: room.clone(),
+                workspace: room.clone(),
                 app_id: "so.tilo.photos".into(),
                 address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
                 offload: tilo_actions::Offload {

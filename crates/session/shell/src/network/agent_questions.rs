@@ -224,7 +224,7 @@ pub(crate) fn request_for_foreign(
 ) -> AppActionConsentRequest {
     AppActionConsentRequest {
         handle: format!("foreign-question:{}", hex::encode(question.id)),
-        workspace: question.room.clone(),
+        workspace: question.workspace.clone(),
         person: person.to_owned(),
         app_id: question.device_label.clone(),
         target_app: String::new(),

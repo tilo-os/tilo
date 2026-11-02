@@ -29,11 +29,12 @@ async fn named_genesis_install_requires_ack_and_cannot_replace_late_changes() {
         let mut fixture = fixture(true, false).await;
         let directory = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(directory.path().to_owned());
-        let store = owners.open("so.tilo.store", &fixture.room).unwrap();
+        let store = owners.open("so.tilo.store", &fixture.workspace).unwrap();
         store.try_open_record(&fixture.checkout).unwrap();
-        let initialization = take_initialization("so.tilo.store", &fixture.room, &fixture.checkout)
-            .unwrap()
-            .unwrap();
+        let initialization =
+            take_initialization("so.tilo.store", &fixture.workspace, &fixture.checkout)
+                .unwrap()
+                .unwrap();
         assert_original_scope(&fixture, &store, &initialization);
         assert!(fixture.nothing_queued());
         let ack = fixture.acknowledge_initialization(accept);
@@ -100,7 +101,7 @@ async fn named_genesis_install_requires_ack_and_cannot_replace_late_changes() {
             );
         }
         assert!(
-            take_initialization("so.tilo.store", &fixture.room, &fixture.checkout)
+            take_initialization("so.tilo.store", &fixture.workspace, &fixture.checkout)
                 .unwrap()
                 .is_none()
         );
@@ -119,7 +120,7 @@ fn assert_original_scope(
         RecordCheckout::new(fixture.checkout.id.clone(), RecordKind::new("wrong.kind"));
     let wrong_record = RecordCheckout::new(RecordId::minted(), fixture.checkout.kind.clone());
     for checkout in [&wrong_kind, &wrong_record] {
-        assert!(validate(initialization, &original, checkout, &fixture.room).is_err());
+        assert!(validate(initialization, &original, checkout, &fixture.workspace).is_err());
     }
     assert!(
         validate(
@@ -133,7 +134,15 @@ fn assert_original_scope(
     let mut changed = original;
     changed.put(ROOT, "changed_heads", true).unwrap();
     changed.commit();
-    assert!(validate(initialization, &changed, &fixture.checkout, &fixture.room).is_err());
+    assert!(
+        validate(
+            initialization,
+            &changed,
+            &fixture.checkout,
+            &fixture.workspace
+        )
+        .is_err()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -141,7 +150,7 @@ async fn named_original_empty_creation_admits_before_initialization() {
     let fixture = fixture_graph(true, false, false).await;
     let directory = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(directory.path().to_owned());
-    let store = owners.open("so.tilo.store", &fixture.room).unwrap();
+    let store = owners.open("so.tilo.store", &fixture.workspace).unwrap();
     store.try_open_record(&fixture.checkout).unwrap();
     assert!(store.admission_route(&fixture.checkout).is_ok());
     assert!(store.route(&fixture.checkout).is_err());
@@ -152,7 +161,7 @@ async fn named_original_creation_admits_exact_graph_but_not_ready_identity() {
     let fixture = fixture(true, false).await;
     let directory = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(directory.path().to_owned());
-    let store = owners.open("so.tilo.store", &fixture.room).unwrap();
+    let store = owners.open("so.tilo.store", &fixture.workspace).unwrap();
     store.try_open_record(&fixture.checkout).unwrap();
     store.try_open_record(&fixture.checkout).unwrap();
     assert!(
@@ -181,7 +190,7 @@ async fn named_original_creation_admits_exact_graph_but_not_ready_identity() {
         })
         .unwrap();
     assert!(
-        take_initialization("so.tilo.store", &fixture.room, &fixture.checkout)
+        take_initialization("so.tilo.store", &fixture.workspace, &fixture.checkout)
             .unwrap()
             .is_some()
     );
@@ -199,7 +208,7 @@ async fn named_identityless_restore_and_wrong_workspace_refuse_without_cache_ins
         let fixture = fixture(receipt, wrong_workspace).await;
         let directory = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(directory.path().to_owned());
-        let store = owners.open("so.tilo.store", &fixture.room).unwrap();
+        let store = owners.open("so.tilo.store", &fixture.workspace).unwrap();
         assert!(store.try_open_record(&fixture.checkout).is_err());
         assert!(store.open_records().is_empty());
         assert!(store.admission_route(&fixture.checkout).is_err());
@@ -211,7 +220,7 @@ async fn named_creation_does_not_adopt_modified_or_foreign_local_cache() {
     let fixture = fixture(true, false).await;
     let directory = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(directory.path().to_owned());
-    let store = owners.open("so.tilo.store", &fixture.room).unwrap();
+    let store = owners.open("so.tilo.store", &fixture.workspace).unwrap();
     store.try_open_record(&fixture.checkout).unwrap();
     store
         .with(&fixture.checkout.id, |doc| {
@@ -224,7 +233,7 @@ async fn named_creation_does_not_adopt_modified_or_foreign_local_cache() {
     let other_directory = tempfile::tempdir().unwrap();
     let mut other_owners = RecordOwners::new(other_directory.path().to_owned());
     let foreign = other_owners
-        .open_person("so.tilo.store", &fixture.room)
+        .open_person("so.tilo.store", &fixture.workspace)
         .unwrap();
     let wrong_kind =
         RecordCheckout::new(fixture.checkout.id.clone(), RecordKind::new("other.kind"));
@@ -233,7 +242,7 @@ async fn named_creation_does_not_adopt_modified_or_foreign_local_cache() {
     drop(foreign);
     drop(other_owners);
     let mut restored = RecordOwners::new(other_directory.path().to_owned());
-    let restored = restored.open("so.tilo.store", &fixture.room).unwrap();
+    let restored = restored.open("so.tilo.store", &fixture.workspace).unwrap();
     assert!(restored.try_open_record(&fixture.checkout).is_err());
     assert!(restored.open_records().is_empty());
     assert!(restored.admission_route(&fixture.checkout).is_err());
@@ -244,13 +253,14 @@ async fn named_original_receipt_survives_same_graph_refresh_but_never_masks_new_
     let fixture = fixture(true, false).await;
     let directory = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(directory.path().to_owned());
-    let store = owners.open("so.tilo.store", &fixture.room).unwrap();
+    let store = owners.open("so.tilo.store", &fixture.workspace).unwrap();
     store.try_open_record(&fixture.checkout).unwrap();
-    let initialization = take_initialization("so.tilo.store", &fixture.room, &fixture.checkout)
-        .unwrap()
-        .unwrap();
+    let initialization =
+        take_initialization("so.tilo.store", &fixture.workspace, &fixture.checkout)
+            .unwrap()
+            .unwrap();
     assert!(
-        take_initialization("so.tilo.store", &fixture.room, &fixture.checkout)
+        take_initialization("so.tilo.store", &fixture.workspace, &fixture.checkout)
             .unwrap()
             .is_none(),
         "construction custody remains one-shot"

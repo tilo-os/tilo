@@ -98,6 +98,9 @@ pub(super) struct PlaceInvoker {
     /// The resource each of the session's loose actions is published on, by the action's id
     /// (`session.show_surface(...)` goes to the desk).
     pub(super) session: BTreeMap<String, String>,
+    /// The session's loose actions as its description declares them, by id: a parameter
+    /// published as a field of another is sent nested under it.
+    pub(super) verbs: BTreeMap<String, ui::tilo_actions::surface::VerbSurface>,
 }
 
 impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
@@ -134,11 +137,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
             } if app == super::SESSION_APP && self.session.contains_key(action) => Ask {
                 resource: self.session[action].clone(),
                 action: action.clone(),
-                arguments: args
-                    .iter()
-                    .filter(|(_, value)| !matches!(value, Value::Opt(None)))
-                    .map(|(name, value)| (name.clone(), argument_text(value)))
-                    .collect(),
+                arguments: session_arguments(self.verbs.get(action), args),
             },
             Invocation::Action { name, .. } => {
                 return Invoked::Failed(format!(
@@ -168,6 +167,47 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
         self.link.ask(ask);
         Invoked::Done(Value::Unit)
     }
+}
+
+/// The arguments of a call of one of the session's loose actions, `verb` as its description
+/// declares it: each left-out one dropped, and those of a parameter published as a field of
+/// another nested back under that parameter, as its JSON.
+fn session_arguments(
+    verb: Option<&ui::tilo_actions::surface::VerbSurface>,
+    args: &[(String, Value)],
+) -> BTreeMap<String, String> {
+    let given = args
+        .iter()
+        .filter(|(_, value)| !matches!(value, Value::Opt(None)));
+    let Some(verb) = verb.filter(|verb| verb.params.iter().any(|param| param.within.is_some()))
+    else {
+        return given
+            .map(|(name, value)| (name.clone(), argument_text(value)))
+            .collect();
+    };
+    let json = given
+        .map(|(name, value)| {
+            let text = argument_text(value);
+            let json = match value {
+                Value::Text(_) => serde_json::Value::String(text),
+                Value::Opt(Some(inner)) if matches!(**inner, Value::Text(_)) => {
+                    serde_json::Value::String(text)
+                }
+                _ => serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
+            };
+            (name.clone(), json)
+        })
+        .collect();
+    ui::tilo_actions::surface::nest_arguments(verb, json)
+        .into_iter()
+        .map(|(name, value)| {
+            let text = match value {
+                serde_json::Value::String(text) => text,
+                other => other.to_string(),
+            };
+            (name, text)
+        })
+        .collect()
 }
 
 /// An argument as the session's door takes it from the shell: a text as it is, anything else

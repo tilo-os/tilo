@@ -570,7 +570,12 @@ impl Widget for EmbeddedApp {
             };
             // What the host's accessibility walk reads of the app.
             let _ = self.app.refresh_semantic_tree();
-            let next = again || self.region.redraw.replace(false);
+            // A frame drawn while the app's widgets still move (a menu
+            // fading out) asks for the next: what moves runs to rest, and
+            // what the app says it shows is never a pose it left.
+            let next = again
+                || self.region.redraw.replace(false)
+                || self.app.surface_moving(crate::time::now());
             self.wants_frame.set(next);
             self.moving.set(next);
             self.painted_focus = self.focused;
@@ -1858,6 +1863,76 @@ mod wake_deadline_tests {
         let _ = tile.app_mut();
         let _ = Widget::next_wake_deadline(&tile);
         assert!(asks.get() > settled);
+    }
+
+    /// A leaf that moves for its next `frames` draws, asking for nothing
+    /// else: a menu fading out.
+    struct Fading {
+        frames: Rc<Cell<usize>>,
+        rect: KurboRect,
+    }
+
+    impl Widget for Fading {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.widget_leaf(taffy::Style::default(), node_map, self)
+        }
+        crate::rect_geometry!();
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+            self.frames.set(self.frames.get().saturating_sub(1));
+        }
+        fn name(&self) -> &'static str {
+            "Fading"
+        }
+        fn needs_animation_frame(&self) -> bool {
+            self.frames.get() > 0
+        }
+        fn needs_redraw(&self) -> bool {
+            self.frames.get() > 0
+        }
+    }
+
+    /// An app whose widgets still move after a frame is drawn again until
+    /// they rest, and says it moves only while they do.
+    #[test]
+    fn an_embedded_app_is_drawn_until_its_widgets_rest() {
+        let frames = Rc::new(Cell::new(0));
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(Fading {
+                frames: Rc::clone(&frames),
+                rect: KurboRect::ZERO,
+            }),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        layout(&mut tile, &theme);
+        let mut opening = 0;
+        while opening < 10 && (opening == 0 || Widget::needs_animation_frame(&tile)) {
+            let _ = paint(&mut tile, &theme);
+            opening += 1;
+        }
+        assert!(!Widget::needs_animation_frame(&tile), "it opens at rest");
+        frames.set(3);
+        tile.wants_frame.set(true);
+        let mut drawn = 0;
+        while drawn < 10 && (drawn == 0 || Widget::needs_animation_frame(&tile)) {
+            let _ = paint(&mut tile, &theme);
+            drawn += 1;
+        }
+        assert_eq!(frames.get(), 0, "the motion ran to its end");
+        assert!(!Widget::needs_animation_frame(&tile), "and the app rests");
     }
 }
 

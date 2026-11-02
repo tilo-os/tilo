@@ -392,7 +392,7 @@ impl ResourceApp for Discord {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = "Discord";
     // A workspace bridges one server, so its guild record is the workspace's own.
-    const ROOM_RECORD: bool = true;
+    const WORKSPACE_RECORD: bool = true;
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
         Some(&CATALOG)

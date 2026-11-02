@@ -139,7 +139,7 @@ fn a_record_in_a_room_with_other_members_offers_reactions_while_they_are_away() 
     assert_eq!(
         reactions(),
         None,
-        "alone in one's own room, nothing is offered"
+        "alone in one's own workspace, nothing is offered"
     );
 
     // Ada owns the room and is away; the person is an Editor in it.

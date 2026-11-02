@@ -11,10 +11,10 @@ pub fn hello_payload() -> &'static Path {
     built_once(&PAYLOAD, "hello", "2024")
 }
 
-/// A payload root holding `bin/roomtest`, the in-tree `roomtest` fixture.
-pub fn roomtest_payload() -> &'static Path {
+/// A payload root holding `bin/workspacetest`, the in-tree `workspacetest` fixture.
+pub fn workspacetest_payload() -> &'static Path {
     static PAYLOAD: OnceLock<PathBuf> = OnceLock::new();
-    built_once(&PAYLOAD, "roomtest", "2021")
+    built_once(&PAYLOAD, "workspacetest", "2021")
 }
 
 /// Actual finite headless worker for signed capture-pipeline qualification.
@@ -37,7 +37,7 @@ fn built_once(cell: &'static OnceLock<PathBuf>, name: &str, edition: &str) -> &'
 }
 
 /// Launch options that touch nothing of the invoking user's: no identity is
-/// brokered and the per-room app directories live under `data_home`.
+/// brokered and the per-workspace app directories live under `data_home`.
 pub fn isolated_options(data_home: &Path) -> RunOptions {
     RunOptions {
         identity: IdentitySource::None,

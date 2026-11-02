@@ -67,7 +67,7 @@ fn forget(room: RoomId, app: &str) {
         .visible
         .into_iter()
         .map(|indexed| indexed.slot)
-        .filter(|slot| slot.app == app && slot.room == room)
+        .filter(|slot| slot.app == app && slot.workspace == room)
         .collect();
     for slot in slots {
         index.apply(

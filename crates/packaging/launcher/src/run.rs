@@ -55,7 +55,7 @@ pub enum RunError {
     },
     #[error(
         "refusing to launch `{0}`: neither XDG_DATA_HOME nor HOME is set, so there is no \
-         user data directory to put this app's per-room state in."
+         user data directory to put this app's per-workspace state in."
     )]
     NoDataHome(String),
     #[error(transparent)]
@@ -275,7 +275,7 @@ pub struct RunOptions {
     /// the launcher to create a broker capability and is never bound into
     /// the sandbox.
     pub identity: IdentitySource,
-    /// Host data home holding the per-room app directories; `None` resolves
+    /// Host data home holding the per-workspace app directories; `None` resolves
     /// `$XDG_DATA_HOME`, else `$HOME/.local/share`.
     pub data_home: Option<PathBuf>,
     /// Host path of the session's bounded, non-secret human identity
@@ -633,7 +633,7 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
         .map(load_capability_file)
         .unwrap_or_default();
     let mut plan = CapabilityPlan::for_app(&app_id, &grants.sandbox, Some(unix_now()));
-    // An app the room's grants make an author changes it; a workspace launch
+    // An app the workspace's grants make an author changes it; a workspace launch
     // of any other app is a viewer. Treating missing or malformed policy as
     // authorship made every failure permissive.
     if grants.authors(&app_id) {
@@ -694,7 +694,7 @@ fn resolve_app_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<PathBuf
         package: manifest.package_id.clone(),
         path: crate::appdir::host_app_dir(
             &data_home,
-            &crate::appdir::room_slug(opts.workspace_id.as_deref()),
+            &crate::appdir::workspace_slug(opts.workspace_id.as_deref()),
             &manifest.package_id,
         ),
         source,
@@ -702,7 +702,7 @@ fn resolve_app_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<PathBuf
 }
 
 /// Resolve/create the directory the person's own records of this app are
-/// kept in: one for every room it is launched into.
+/// kept in: one for every workspace it is launched into.
 fn resolve_person_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<PathBuf, RunError> {
     let data_home = opts
         .data_home
@@ -718,7 +718,7 @@ fn resolve_person_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<Path
     })
 }
 
-/// The room's app directory and the person directory a launch binds.
+/// The workspace's app directory and the person directory a launch binds.
 fn resolve_launch_dirs(
     manifest: &ManifestView,
     opts: &RunOptions,
@@ -1934,7 +1934,7 @@ fn splice_minimal_libs(
 }
 
 /// Workspace id, spliced before the entrypoint token so the child learns
-/// which room it was opened into. Absent when the launch has no session.
+/// which workspace it was opened into. Absent when the launch has no session.
 /// Shared by `run_with` and `run_with_captured`.
 fn splice_workspace_id_bind(argv: &mut Vec<String>, opts: &RunOptions) -> Result<(), RunError> {
     if let Some(workspace_id) = opts.workspace_id.as_deref() {
@@ -1962,7 +1962,7 @@ fn splice_tool_context(argv: &mut Vec<String>) -> Result<(), RunError> {
 
 /// App directory: bound read-write at a fixed sandbox path, HOME/XDG vars
 /// pointed inside it. Spliced here (not in `build_bwrap_argv`) since the
-/// room is a launch property, not the package's.
+/// workspace is a launch property, not the package's.
 fn splice_app_dir(
     argv: &mut Vec<String>,
     app_dir: &Path,
@@ -1981,7 +1981,7 @@ fn splice_app_dir(
         );
     }
     crate::sandbox::push_user_data(argv, capabilities);
-    // And where the room's shared mounts are, on the same terms: a
+    // And where the workspace's shared mounts are, on the same terms: a
     // workspace the app cannot read is not one it should be told about.
     if let Some(roots) = crate::sandbox::push_workspace_roots(argv, capabilities) {
         tracing::debug!(
@@ -2051,7 +2051,7 @@ fn splice_system_authority(
     Ok((Some(plan), guard))
 }
 
-/// Mount Files' live room-governance identity directory read-only. The
+/// Mount Files' live workspace-governance identity directory read-only. The
 /// projection is package-scoped and must remain visible across atomic host
 /// replacement, so the containing directory—not one inode—is bound.
 fn splice_trusted_identities(
@@ -2093,7 +2093,7 @@ fn splice_retained_files(
 /// [`tilo_documents::SANDBOX_DIR`]. The view is empty at launch and fills as
 /// the person chooses; nothing else of the documents filesystem, and no
 /// other app's view, is reachable. Answers whether it was bound: a launch
-/// outside a room, or a session whose shell serves no documents, binds
+/// outside a workspace, or a session whose shell serves no documents, binds
 /// nothing.
 fn splice_documents(
     argv: &mut Vec<String>,
@@ -2117,14 +2117,14 @@ fn splice_documents(
     Ok(true)
 }
 
-/// The host folder that is `package_id`'s view in `room` under the
+/// The host folder that is `package_id`'s view in `workspace` under the
 /// documents filesystem mounted at `mountpoint`, when it is being served.
 fn documents_view(
     mountpoint: Option<&Path>,
     package_id: &str,
-    room: Option<&str>,
+    workspace: Option<&str>,
 ) -> Option<PathBuf> {
-    let key = tilo_documents::AppKey::new(room?, package_id)?;
+    let key = tilo_documents::AppKey::new(workspace?, package_id)?;
     let view = tilo_documents::app_view(mountpoint?, &key);
     view.is_dir().then_some(view)
 }
@@ -2248,7 +2248,7 @@ fn splice_gpu(
     opts: &RunOptions,
     gpu_granted: bool,
 ) -> Result<(Option<crate::gpu::GpuSelection>, Option<PathBuf>), RunError> {
-    // An app without `gpu` draws through its room's render service: no
+    // An app without `gpu` draws through its workspace's render service: no
     // device node, no loader pin, no shader-cache seed, and none of the ICD
     // probing they cost.
     if !gpu_granted {
@@ -3307,7 +3307,7 @@ fn prepare_launch_host(
     let runtime_arg = runtime.as_ref().map(|(p, v)| (p.as_path(), v.as_str()));
     preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
     tilo_startup_metrics::handoff_mark("loader-preflight-done");
-    // The app's one writable directory, for the room it's opened into.
+    // The app's one writable directory, for the workspace it's opened into.
     let (app_dir, person_dir) = if let Some(io) = retained_io {
         io.launch_dirs()?
     } else if let Some(target) = target_projection {
@@ -3316,7 +3316,7 @@ fn prepare_launch_host(
         (
             crate::appdir::prepare_host_app_dir(
                 services.data_home(),
-                Some(&services.binding().room),
+                Some(&services.binding().workspace),
                 &services.binding().app,
             )?,
             crate::appdir::prepare_host_person_dir(services.data_home(), &services.binding().app)?,
@@ -3427,7 +3427,7 @@ pub(crate) fn run_with_context(
             crate::system_stats::image_shipped(payload_root),
         ),
     )?;
-    // Whether the app opens the GPU itself, or its room's render service
+    // Whether the app opens the GPU itself, or its workspace's render service
     // draws it.
     let gpu_granted = crate::gpu::granted(
         manifest,
@@ -4330,7 +4330,7 @@ fn run_with_capture_spawn<T>(
             crate::system_stats::image_shipped(payload_root),
         ),
     )?;
-    // Whether the app opens the GPU itself, or its room's render service
+    // Whether the app opens the GPU itself, or its workspace's render service
     // draws it.
     let gpu_granted = crate::gpu::granted(
         manifest,
@@ -5341,26 +5341,26 @@ mod app_dir_tests {
         )
     }
 
-    fn opts_in(room: Option<&str>) -> RunOptions {
+    fn opts_in(workspace: Option<&str>) -> RunOptions {
         RunOptions {
-            workspace_id: room.map(str::to_string),
+            workspace_id: workspace.map(str::to_string),
             identity: IdentitySource::None,
             ..RunOptions::default()
         }
     }
 
-    fn opts_at(data_home: &Path, room: Option<&str>) -> RunOptions {
+    fn opts_at(data_home: &Path, workspace: Option<&str>) -> RunOptions {
         RunOptions {
             data_home: Some(data_home.to_path_buf()),
-            ..opts_in(room)
+            ..opts_in(workspace)
         }
     }
 
     #[test]
-    fn the_app_directory_is_resolved_per_room_and_never_from_the_manifest() {
+    fn the_app_directory_is_resolved_per_workspace_and_never_from_the_manifest() {
         {
             let m = manifest("so.tilo.fixture");
-            let workspace = resolve_capabilities(&m, &opts_in(Some("room-a")));
+            let workspace = resolve_capabilities(&m, &opts_in(Some("workspace-a")));
             assert_eq!(
                 workspace.participation,
                 crate::capabilities::Participation::ReadOnly
@@ -5387,7 +5387,7 @@ mod app_dir_tests {
                 &m,
                 &RunOptions {
                     capabilities_path: Some(file),
-                    ..opts_in(Some("room-a"))
+                    ..opts_in(Some("workspace-a"))
                 },
             );
             assert_eq!(
@@ -5395,15 +5395,17 @@ mod app_dir_tests {
                 crate::capabilities::Participation::Author
             );
         }
-        // Phase `the_launch_resolves_one_directory_per_room`.
+        // Phase `the_launch_resolves_one_directory_per_workspace`.
         // The launch path resolves the directory rather than the manifest
-        // naming it — the room launched into decides which one.
+        // naming it — the workspace launched into decides which one.
         {
             let data = tempfile::tempdir().expect("tempdir");
 
             let m = manifest("so.tilo.fixture");
-            let a = resolve_app_dir(&m, &opts_at(data.path(), Some("room-a"))).expect("room a");
-            let b = resolve_app_dir(&m, &opts_at(data.path(), Some("room-b"))).expect("room b");
+            let a = resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-a")))
+                .expect("workspace a");
+            let b = resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-b")))
+                .expect("workspace b");
             let personal = resolve_app_dir(&m, &opts_at(data.path(), None)).expect("personal");
 
             assert!(a.is_dir() && b.is_dir() && personal.is_dir());
@@ -5411,28 +5413,30 @@ mod app_dir_tests {
             assert_ne!(a, personal);
             assert!(
                 !a.starts_with(&b) && !b.starts_with(&a),
-                "neither room may contain the other: {a:?} {b:?}"
+                "neither workspace may contain the other: {a:?} {b:?}"
             );
             for dir in [&a, &b, &personal] {
                 assert!(
                     dir.starts_with(data.path().join("tilo-rooms")),
-                    "{dir:?} is outside the rooms tree"
+                    "{dir:?} is outside the workspaces tree"
                 );
             }
         }
-        // Phase `the_persons_records_are_one_directory_for_every_room`.
-        // The person's own records are the same records whichever room the
-        // app is opened in, and in none of the rooms' directories.
+        // Phase `the_persons_records_are_one_directory_for_every_workspace`.
+        // The person's own records are the same records whichever workspace the
+        // app is opened in, and in none of the workspaces' directories.
         {
             let data = tempfile::tempdir().expect("tempdir");
             let m = manifest("so.tilo.fixture");
-            let a = resolve_person_dir(&m, &opts_at(data.path(), Some("room-a"))).expect("room a");
+            let a = resolve_person_dir(&m, &opts_at(data.path(), Some("workspace-a")))
+                .expect("workspace a");
             let personal = resolve_person_dir(&m, &opts_at(data.path(), None)).expect("personal");
             assert!(a.is_dir());
             assert_eq!(a, personal);
             assert!(a.starts_with(data.path().join("tilo-person")));
-            let room = resolve_app_dir(&m, &opts_at(data.path(), Some("room-a"))).expect("room");
-            assert!(!a.starts_with(&room) && !room.starts_with(&a));
+            let workspace =
+                resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-a"))).expect("workspace");
+            assert!(!a.starts_with(&workspace) && !workspace.starts_with(&a));
             let other = resolve_person_dir(&manifest("so.tilo.other"), &opts_at(data.path(), None))
                 .expect("another app");
             assert_ne!(a, other, "an app keeps only its own records of the person");
@@ -5777,14 +5781,14 @@ bin = \"store\"
 ",
         );
         let policy = AppActionAuthorityProjection::project(
-            &tilo_action_policy::WorkspacePolicy::new("room-a", "person-a"),
+            &tilo_action_policy::WorkspacePolicy::new("workspace-a", "person-a"),
             &manifest.package_id,
             "person-a",
             false,
         );
         std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
         let opts = RunOptions {
-            workspace_id: Some("room-a".into()),
+            workspace_id: Some("workspace-a".into()),
             action_authority_host_path: Some(path),
             ..RunOptions::default()
         };
@@ -5804,9 +5808,9 @@ bin = \"store\"
                 "store"
             ]
         );
-        for room in [None, Some("room-b".into())] {
+        for workspace in [None, Some("workspace-b".into())] {
             let mut wrong = opts.clone();
-            wrong.workspace_id = room;
+            wrong.workspace_id = workspace;
             assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &wrong).is_err());
         }
         let mut wrong_app = policy;
@@ -5974,7 +5978,7 @@ mod mesa_seed_software_tests {
 mod render_service_launch_tests {
     use super::*;
 
-    /// An app that draws through its room's render service: no GPU node, no
+    /// An app that draws through its workspace's render service: no GPU node, no
     /// loader pin, no shader-cache seed, and none of the probing they cost,
     /// even with a render node and a session seed to hand out.
     #[test]
@@ -6061,7 +6065,7 @@ collab = "required@1"
         let missing_runtime = root.path().join("missing-runtime");
         let options = RunOptions {
             runtime_root: Some(missing_runtime.clone()),
-            workspace_id: Some("preflight-room".into()),
+            workspace_id: Some("preflight-workspace".into()),
             identity: IdentitySource::None,
             ..RunOptions::default()
         };
@@ -6171,35 +6175,43 @@ mod retained_files_tests {
         assert_eq!(argv, ["settings"]);
     }
 
-    /// An app launched into a room is bound its own view of the documents
+    /// An app launched into a workspace is bound its own view of the documents
     /// chosen for it, at the one sandbox path, and nothing else of the
     /// documents filesystem; Landlock lets it read and write there as each
     /// choice allows, never execute.
     #[test]
     fn an_app_is_bound_only_its_own_view_of_the_documents_chosen_for_it() {
         let mount = tempfile::tempdir().unwrap();
-        let own = mount.path().join("room-7").join("so.tilo.pdf-viewer");
+        let own = mount.path().join("workspace-7").join("so.tilo.pdf-viewer");
         std::fs::create_dir_all(&own).unwrap();
-        std::fs::create_dir_all(mount.path().join("room-7").join("so.tilo.files")).unwrap();
+        std::fs::create_dir_all(mount.path().join("workspace-7").join("so.tilo.files")).unwrap();
         assert_eq!(
-            documents_view(Some(mount.path()), "so.tilo.pdf-viewer", Some("room-7")),
+            documents_view(
+                Some(mount.path()),
+                "so.tilo.pdf-viewer",
+                Some("workspace-7")
+            ),
             Some(own)
         );
-        for (mountpoint, app, room) in [
-            (None, "so.tilo.pdf-viewer", Some("room-7")),
+        for (mountpoint, app, workspace) in [
+            (None, "so.tilo.pdf-viewer", Some("workspace-7")),
             (Some(mount.path()), "so.tilo.pdf-viewer", None),
-            (Some(mount.path()), "so.tilo.pdf-viewer", Some("room-8")),
-            (Some(mount.path()), "..", Some("room-7")),
+            (
+                Some(mount.path()),
+                "so.tilo.pdf-viewer",
+                Some("workspace-8"),
+            ),
+            (Some(mount.path()), "..", Some("workspace-7")),
             (
                 Some(mount.path()),
                 "so.tilo.files/../so.tilo.pdf-viewer",
-                Some("room-7"),
+                Some("workspace-7"),
             ),
         ] {
             assert_eq!(
-                documents_view(mountpoint, app, room),
+                documents_view(mountpoint, app, workspace),
                 None,
-                "{app} in {room:?}"
+                "{app} in {workspace:?}"
             );
         }
 

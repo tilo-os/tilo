@@ -116,7 +116,7 @@ test('a hidden page neither posts nor reads; a member\'s name reaches the runtim
   layer.presence('bot', {participant: {kind: 'agent', label: 'Scribe', activity: 'Summarising'}, focus: {app: 'x', record: 'y'}});
   const last = h.calls.filter(([kind]) => kind === 'people').at(-1)[1];
   assert.deepEqual(last.members, [{publisher: 'bot', kind: 'agent', label: 'Scribe', focus: {app: 'x', record: 'y'}, activity: 'Summarising', place: null, wave: null, layout: null, following: null}]);
-  // A person's focus reaches the runtime too: in a room whose layout is
+  // A person's focus reaches the runtime too: in a workspace whose layout is
   // personal no window here is theirs, and the app they focus is all that
   // says where they are ("In Chat").
   layer.join('ann');

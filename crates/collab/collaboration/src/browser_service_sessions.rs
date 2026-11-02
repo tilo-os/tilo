@@ -4,7 +4,7 @@
 //!
 //! A window takes its client as it is built ([`Client::capture`]) and uses it
 //! whenever it needs the session: while its route is still joining, once
-//! the session admitted it, or in a room whose record this device's own
+//! the session admitted it, or in a workspace whose record this device's own
 //! channel serves. What the session answers is the session's decision on
 //! that route, taken per request; the client only carries the request there.
 use super::native_initial::{InitialReadBridge, service_capture_bridge};

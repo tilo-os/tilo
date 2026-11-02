@@ -1,5 +1,5 @@
 //! What the desktop's session asks of the page for its windows: showing
-//! what an open named in the window it opened, and asking the room about
+//! what an open named in the window it opened, and asking the workspace about
 //! nodes of its tree (what a share grants, what the person may change).
 
 use super::{Desktop, Mount};
@@ -9,10 +9,10 @@ pub(super) struct Asks {
     /// What the windows it opened are to show, each until it is shown or
     /// gives up waiting for its window.
     reveals: std::cell::RefCell<Vec<(tilo_desktop_surface::session::Reveal, ui::time::Instant)>>,
-    /// The peer replicating the room, through whose rooms door the windows'
-    /// asks of nodes of the room's tree go.
+    /// The peer replicating the workspace, through whose workspaces door the windows'
+    /// asks of nodes of the workspace's tree go.
     peer: Option<u32>,
-    /// Nodes the room answered whether this person may change, waiting to
+    /// Nodes the workspace answered whether this person may change, waiting to
     /// reach the mounts' permissions.
     permitted: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>,
 }
@@ -26,18 +26,18 @@ impl Asks {
         }
     }
 
-    /// The peer replicating the room, if the page has one.
+    /// The peer replicating the workspace, if the page has one.
     pub(super) fn peer(&self) -> Option<u32> {
         self.peer
     }
 }
 
 impl Desktop {
-    /// Ask the room what the windows asked of nodes of its tree: whether
+    /// Ask the workspace what the windows asked of nodes of its tree: whether
     /// they may change one, or to grant (or take back) what a share of it
-    /// gives. The room decides each, as it decides every write the grant
+    /// gives. The workspace decides each, as it decides every write the grant
     /// then covers.
-    pub(super) fn ask_room_of_nodes(&self) {
+    pub(super) fn ask_host_of_nodes(&self) {
         let permitted = std::mem::take(
             &mut *self
                 .asks
@@ -52,7 +52,7 @@ impl Desktop {
         }
         for ask in self.openings.take_node_asks() {
             let Some(peer) = self.asks.peer else {
-                ask.answer(Err("This page shares through no room".into()));
+                ask.answer(Err("This page shares through no workspace".into()));
                 continue;
             };
             let node = ask.node.clone();
@@ -62,11 +62,11 @@ impl Desktop {
             let permitted = std::sync::Arc::clone(&self.asks.permitted);
             let woken = std::sync::Arc::clone(&self.shared.woken);
             let asked_node = node.clone();
-            let sent = crate::replication::rooms_then(
+            let sent = crate::replication::host_then(
                 peer,
-                |room| node_request(room, node, action),
+                |workspace| node_request(workspace, node, action),
                 Box::new(move |reply| {
-                    // What the room permits beyond the person's role (an
+                    // What the workspace permits beyond the person's role (an
                     // item shared with them to edit) reaches their windows.
                     if let Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) = &reply {
                         permitted
@@ -96,28 +96,34 @@ impl Desktop {
     }
 }
 
-/// The rooms request asking room `room` `action` of `node`.
+/// The workspaces request asking workspace `workspace` `action` of `node`.
 fn node_request(
-    room: &str,
+    workspace: &str,
     node: String,
     action: tilo_desktop_surface::session::NodeAction,
 ) -> tilo_relay_protocol::rooms::RoomsRequest {
     use tilo_desktop_surface::session::NodeAction;
     use tilo_relay_protocol::rooms::RoomsRequest;
-    let room = room.to_owned();
+    let workspace = workspace.to_owned();
     match action {
         NodeAction::Share { share, access } => RoomsRequest::Share {
-            room,
+            room: workspace,
             share,
             node,
             access,
         },
-        NodeAction::Unshare { share } => RoomsRequest::Unshare { room, share },
-        NodeAction::Permits => RoomsRequest::Permits { room, node },
+        NodeAction::Unshare { share } => RoomsRequest::Unshare {
+            room: workspace,
+            share,
+        },
+        NodeAction::Permits => RoomsRequest::Permits {
+            room: workspace,
+            node,
+        },
     }
 }
 
-/// A node ask's output from the room's reply.
+/// A node ask's output from the workspace's reply.
 fn node_answer(
     reply: Result<tilo_relay_protocol::rooms::RoomsReply, String>,
 ) -> Result<serde_json::Value, String> {
@@ -126,7 +132,7 @@ fn node_answer(
         RoomsReply::Permits(may) => Ok(serde_json::json!({ "undoable": may })),
         RoomsReply::Shared(count) => Ok(serde_json::json!({ "grants": count })),
         RoomsReply::Refused(reason) => Err(reason),
-        other => Err(format!("the room answered something else: {other:?}")),
+        other => Err(format!("the workspace answered something else: {other:?}")),
     }
 }
 

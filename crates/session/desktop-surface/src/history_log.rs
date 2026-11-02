@@ -125,7 +125,7 @@ impl WorkspaceRename {
     ) -> Option<crate::notifications::Notification> {
         (self.author != me).then(|| {
             let title = crate::i18n::t_args(
-                "room-notice-renamed",
+                "workspace-notice-renamed",
                 &[
                     ("name", name_of(&self.author).into()),
                     ("workspace", self.name.clone().into()),

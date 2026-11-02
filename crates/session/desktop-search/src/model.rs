@@ -35,11 +35,11 @@ pub enum Target {
         uri: String,
         fallback: Option<String>,
     },
-    /// Ask a running invocation of `app` in `room` to stop: a job's own
+    /// Ask a running invocation of `app` in `workspace` to stop: a job's own
     /// cancel row ([`crate::providers::jobs`]).
     Cancel {
         app: String,
-        room: String,
+        workspace: String,
         invocation: String,
     },
     /// Search `source` from now on, or stop: the person's own choice, kept
@@ -111,13 +111,13 @@ impl std::fmt::Debug for ActionTarget {
 
 /// An action an app publishes through the session's action host, run there
 /// by its address: inert data, no closure. The host routes it to the app in
-/// `room`, launching the app first when it is closed.
+/// `workspace`, launching the app first when it is closed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InvokeTarget {
     /// The app publishing the action.
     pub app: String,
-    /// The room (workspace) the app publishes it in.
-    pub room: String,
+    /// The workspace the app publishes it in.
+    pub workspace: String,
     pub address: ActionAddress,
     /// What the row carries or collected, by parameter name: the anchor an
     /// `open` shows, the one line typed for a prompted action. Empty for
@@ -129,12 +129,12 @@ pub struct InvokeTarget {
 }
 
 impl InvokeTarget {
-    /// `app`'s `open` at `anchor`, in `room`: the item an anchor names, the
+    /// `app`'s `open` at `anchor`, in `workspace`: the item an anchor names, the
     /// app launched first when it is closed.
     #[must_use]
     pub fn open(
         app: impl Into<String>,
-        room: impl Into<String>,
+        workspace: impl Into<String>,
         anchor: impl Into<String>,
     ) -> Self {
         let anchor = anchor.into();
@@ -145,7 +145,7 @@ impl InvokeTarget {
         );
         Self {
             app: app.into(),
-            room: room.into(),
+            workspace: workspace.into(),
             address: ActionAddress::new(anchor, OPEN_ACTION),
             arguments,
             descriptor: None,
@@ -153,17 +153,17 @@ impl InvokeTarget {
     }
 
     /// The action `action` of resource `resource` that `app` publishes in
-    /// `room`, run with no arguments.
+    /// `workspace`, run with no arguments.
     #[must_use]
     pub fn action(
         app: impl Into<String>,
-        room: impl Into<String>,
+        workspace: impl Into<String>,
         resource: impl Into<String>,
         action: impl Into<String>,
     ) -> Self {
         Self {
             app: app.into(),
-            room: room.into(),
+            workspace: workspace.into(),
             address: ActionAddress::new(resource, action),
             arguments: serde_json::Map::new(),
             descriptor: None,

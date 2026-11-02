@@ -314,7 +314,7 @@ fn managed_descriptors_are_bound_and_consumed_once() {
     use std::os::unix::net::UnixStream;
     let root = tempfile::tempdir().unwrap();
     let binding = ManagedBinding {
-        room: uuid::Uuid::new_v4().to_string(),
+        workspace: uuid::Uuid::new_v4().to_string(),
         app: WORKSPACE_AGENT_PACKAGE_ID.into(),
         agent: "agent-1".into(),
         scope: ManagedLaunchScope::Task {
@@ -476,7 +476,7 @@ impl ManagedLaunchAuthority for CurrentAuthority {
 }
 fn binding() -> ManagedBinding {
     ManagedBinding {
-        room: uuid::Uuid::new_v4().to_string(),
+        workspace: uuid::Uuid::new_v4().to_string(),
         app: WORKSPACE_AGENT_PACKAGE_ID.into(),
         agent: "agent-1".into(),
         scope: ManagedLaunchScope::Task {
@@ -523,7 +523,7 @@ fn managed_agent_argv_uses_its_actual_package_not_the_document_default() {
         [
             "--task-runs",
             "--workspace",
-            &binding.room,
+            &binding.workspace,
             "--app",
             WORKSPACE_AGENT_PACKAGE_ID,
             "--agent-id",

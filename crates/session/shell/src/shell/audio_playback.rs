@@ -1,8 +1,11 @@
-//! One-shot `PipeWire` registry custody. The same observed connection is handed
-//! to `GStreamer`; no path reconnect or display-row authority substitutes for it.
-use super::{AtomicU64, Ordering};
-use media::AudioGraph;
+//! The system's audio output as an app's sound is played on it: one-shot
+//! `PipeWire` registry custody whose observed connection is handed to
+//! `GStreamer`; no path reconnect or display-row authority substitutes for it.
 use std::os::fd::OwnedFd;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use media::AudioGraph;
+use media::pw_stream::{ObservedPlayback, PlaybackConfig, PlaybackSource, PlaybackStream};
 
 // Cancellation cannot join a blocking native registry call. Retain its permit
 // until the actual one-second observer exits, including detached preparations.
@@ -24,45 +27,56 @@ impl Drop for Permit {
     }
 }
 
-pub(super) struct Observed {
-    pub cookie: u32,
-    /// The devices a person picks from. The session's echo-cancellation
-    /// nodes are not among them.
-    pub graph: AudioGraph,
-    /// The echo-cancelled microphone (`id`, `serial`), when the session runs
-    /// one.
-    pub echo_cancel: Option<(u32, u32)>,
-    pub socket: OwnedFd,
+struct Observed {
+    cookie: u32,
+    /// The devices a person picks from.
+    graph: AudioGraph,
+    socket: OwnedFd,
 }
-impl Observed {
-    /// The node a call captures from for source `node`/`serial`: the
-    /// echo-cancelled microphone when `node` is the default microphone and
-    /// the session runs one (it follows the default microphone), otherwise
-    /// the source itself.
-    pub fn call_capture_node(&self, node: u32, serial: u32) -> (u32, u32) {
-        let default = self
+
+/// Open an output stream for `app` on the system's default sink, playing
+/// `source` into it.
+pub(crate) async fn prepare_playback(
+    app: String,
+    source: Box<dyn PlaybackSource>,
+) -> Result<Box<dyn PlaybackStream>, String> {
+    tokio::task::spawn_blocking(move || {
+        let observed = observe()?;
+        let sink = observed
             .graph
-            .sources
+            .sinks
             .iter()
-            .any(|entry| entry.id == node && entry.serial == serial && entry.is_default);
-        match self.echo_cancel {
-            Some(echo) if default => echo,
-            _ => (node, serial),
-        }
-    }
-    pub fn contains(&self, cookie: u32, node: u32, serial: u32, input: bool) -> bool {
-        self.cookie == cookie
-            && (if input {
-                &self.graph.sources
-            } else {
-                &self.graph.sinks
+            .find(|sink| sink.is_default)
+            .or_else(|| {
+                (observed.graph.sinks.len() == 1)
+                    .then(|| observed.graph.sinks.first())
+                    .flatten()
             })
-            .iter()
-            .any(|entry| entry.id == node && entry.serial == serial)
-    }
+            .ok_or("No observed system audio output is available")?;
+        let config = PlaybackConfig {
+            node_name: format!("tilo-app-output-{app}"),
+            description: app,
+            rate: runtime_collab::audio_output::RATE,
+            channels: runtime_collab::audio_output::CHANNELS,
+            latency_frames: 480,
+            target_serial: Some(sink.serial),
+        };
+        media::pw_stream::open_observed_playback(
+            &config,
+            source,
+            ObservedPlayback {
+                cookie: observed.cookie,
+                serial: sink.serial,
+                socket: observed.socket,
+            },
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Audio output preparation worker stopped".to_string())?
 }
 #[cfg(not(target_os = "linux"))]
-pub(super) fn observe() -> Result<Observed, String> {
+fn observe() -> Result<Observed, String> {
     Err("native PipeWire observation requires Linux".into())
 }
 #[cfg(target_os = "linux")]
@@ -70,7 +84,7 @@ pub(super) fn observe() -> Result<Observed, String> {
     clippy::too_many_lines,
     reason = "one blocking PipeWire registry round trip whose callbacks share local state"
 )]
-pub(super) fn observe() -> Result<Observed, String> {
+fn observe() -> Result<Observed, String> {
     use pipewire as pw;
     use pw::types::ObjectType;
     use std::{
@@ -101,7 +115,6 @@ pub(super) fn observe() -> Result<Observed, String> {
         BTreeMap::<u32, (bool, media::AudioDevice)>::new(),
     ));
     let defaults = Rc::new(RefCell::new((None::<String>, None::<String>)));
-    let echo_cancel = Rc::new(Cell::new(None::<(u32, u32)>));
     let metadata = Rc::new(RefCell::new(Vec::<(
         pw::metadata::Metadata,
         pw::metadata::MetadataListener,
@@ -137,7 +150,6 @@ pub(super) fn observe() -> Result<Observed, String> {
             let registry = registry.clone();
             let metadata = metadata.clone();
             let defaults = defaults.clone();
-            let echo_cancel = echo_cancel.clone();
             move |global| {
                 let Some(props) = global.props.as_ref() else {
                     return;
@@ -164,9 +176,11 @@ pub(super) fn observe() -> Result<Observed, String> {
                                 Some("default.audio.sink") => false,
                                 _ => return 0,
                             };
+                            // A default-named node publishes its name as JSON.
                             let name = value
                                 .filter(|value| value.len() <= 1024)
                                 .and_then(|value| {
+                                    // optional-decode: anything else names no default
                                     serde_json::from_str::<serde_json::Value>(value).ok()
                                 })
                                 .and_then(|value| {
@@ -196,9 +210,13 @@ pub(super) fn observe() -> Result<Observed, String> {
                     Some("Audio/Sink") => false,
                     _ => return,
                 };
+                // A node whose serial is not a number is not the one to pick.
                 let Some(serial) = props
                     .get("object.serial")
-                    .and_then(|value| value.parse::<u32>().ok())
+                    .and_then(|value| {
+                        // optional-decode: such a node is simply not named here
+                        value.parse::<u32>().ok()
+                    })
                     .filter(|serial| *serial != 0)
                 else {
                     return;
@@ -210,9 +228,6 @@ pub(super) fn observe() -> Result<Observed, String> {
                     return;
                 };
                 if name.starts_with(media::audio::ECHO_CANCEL_NODE_PREFIX) {
-                    if input && name == media::audio::ECHO_CANCEL_SOURCE_NAME {
-                        echo_cancel.set(Some((global.id, serial)));
-                    }
                     return;
                 }
                 let label = props.get("node.description").unwrap_or(name);
@@ -316,7 +331,6 @@ pub(super) fn observe() -> Result<Observed, String> {
     Ok(Observed {
         cookie,
         graph,
-        echo_cancel: echo_cancel.get(),
         socket,
     })
 }

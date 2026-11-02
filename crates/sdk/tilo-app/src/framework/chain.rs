@@ -1,12 +1,12 @@
 //! Records an app keeps beside its own as a chain of parts: what grows
 //! without end — a chat's messages, a log — kept as numbered records of
-//! another resource type ([`RecordId::part`]) in the room the app's record
+//! another resource type ([`RecordId::part`]) in the workspace the app's record
 //! lives in.
 //!
 //! One record cannot hold everything such an app ever wrote: a record's
 //! snapshot has a size limit, and a newcomer would be sent all of it. A
 //! chain keeps it in parts. The part with the highest number a device holds
-//! is the chain's head; a room's host replays a joining device the head
+//! is the chain's head; a workspace's host replays a joining device the head
 //! only, and an earlier part reaches a device when it opens it
 //! ([`Chain::hold`]). Two writers that start the same new part start the
 //! same record (each part's genesis is the same everywhere), so their
@@ -22,11 +22,11 @@
 //!   items with theirs, each carried out on the part [`Chained::part_for`]
 //!   names when it is invoked. The palette, agents, scripts and the app's
 //!   own surface reach the parts through it, checked against the
-//!   participant's roles in the room like the app's own actions (the parts
+//!   participant's roles in the workspace like the app's own actions (the parts
 //!   carry the app record's grants), attributed to whoever invokes them and
 //!   written into the part's history.
 //! - **Held where the app is.** The parts are records of the app's own
-//!   store, so whatever syncs the app's records — the browser's room, an
+//!   store, so whatever syncs the app's records — the browser's workspace, an
 //!   attached view — syncs them on their own routes.
 //! - **Read as they change.** [`Chain::parts`] is every part the window
 //!   holds, oldest first, followed change by change; [`Chain::revision`]
@@ -39,10 +39,10 @@
 //! undone with the app's own: they are recorded in the part's history, and
 //! the chain publishes the history verbs (`undo`, `redo`, `restore`,
 //! `checkpoint`) naming the part they change, so a person, an agent or the
-//! room's moderation takes back steps in a part through the same door.
+//! workspace's moderation takes back steps in a part through the same door.
 //!
 //! A part opened in the app's store by anyone — a peer's merged into an
-//! attached view, one this device asked the room for — is held from the
+//! attached view, one this device asked the workspace for — is held from the
 //! next read on.
 
 use std::any::Any;
@@ -65,12 +65,12 @@ use super::record::RecordDoor;
 pub(crate) const CHAIN_ACTION_TYPE: &str = "tilo.app.chain-action";
 
 /// Where an earlier part a window asked for ([`Chain::hold`]) stands until
-/// what the room has of it is read here.
+/// what the workspace has of it is read here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PartArrival {
-    /// Asked for; what the room has of it is on its way.
+    /// Asked for; what the workspace has of it is on its way.
     Arriving,
-    /// The room's hosts sent everything they hold, and none of it was this
+    /// The workspace's hosts sent everything they hold, and none of it was this
     /// part, or no host is connected to ask: nothing more comes until that
     /// changes (a host connects, someone who has it shares it).
     Unavailable,
@@ -138,15 +138,15 @@ enum Opened {
     Held,
     /// Started from its genesis here: nothing of it was on this device.
     Started,
-    /// Asked of the room, through which the store reads records; not open
+    /// Asked of the workspace, through which the store reads records; not open
     /// until it arrives.
     Asked,
 }
 
 /// What a window holds a chain with: the store of the app's records, who
-/// edits, and what they may do in the room.
+/// edits, and what they may do in the workspace.
 #[derive(Clone)]
-pub(crate) struct RoomRecords {
+pub(crate) struct WorkspaceRecords {
     pub(crate) store: RecordStore,
     pub(crate) me: String,
     pub(crate) permissions: Option<LivePermissions>,
@@ -160,13 +160,13 @@ type Base<P> = Rc<dyn Fn() -> Rc<<<P as Chained>::Base as Resource>::State>>;
 /// A chain held for a window: its parts, read as they change. See the
 /// [module docs](self).
 pub(crate) struct ChainState<P: Chained> {
-    room: RoomRecords,
+    workspace: WorkspaceRecords,
     base: Base<P>,
     id: String,
     kind: RecordKind,
     parts: RefCell<BTreeMap<u64, Live<P>>>,
     /// Earlier parts asked for ([`Self::hold`]) that are not read here
-    /// yet: held from their genesis, or not open at all while the room
+    /// yet: held from their genesis, or not open at all while the workspace
     /// sends them.
     waiting: RefCell<BTreeMap<u64, PartArrival>>,
     /// What a part holds before anything was written to it: what the chain
@@ -180,8 +180,8 @@ pub(crate) struct ChainState<P: Chained> {
 }
 
 impl<P: Chained> ChainState<P> {
-    /// Hold the chain in `room`, with its head when this device has one.
-    pub(crate) fn open(room: RoomRecords, base: Base<P>) -> Option<Self> {
+    /// Hold the chain in `workspace`, with its head when this device has one.
+    pub(crate) fn open(workspace: WorkspaceRecords, base: Base<P>) -> Option<Self> {
         let mut doc = ui_core::automerge::AutoCommit::new();
         P::initialize(&mut doc)
             .map_err(|error| tracing::warn!(kind = P::KIND, %error, "chain part has no genesis"))
@@ -192,7 +192,7 @@ impl<P: Chained> ChainState<P> {
             .state()
             .clone();
         let state = Self {
-            room,
+            workspace,
             base,
             id: ui_core::record::chain_resource_id(&P::chain()),
             kind: RecordKind::new(P::KIND),
@@ -245,7 +245,7 @@ impl<P: Chained> ChainState<P> {
         let mut moved = false;
         for (index, live) in self.parts.borrow().iter() {
             match self
-                .room
+                .workspace
                 .store
                 .read(&P::chain().part(*index), |doc| live.sync(doc))
             {
@@ -265,7 +265,7 @@ impl<P: Chained> ChainState<P> {
         // device asked for and received) is held at once.
         let opened: Vec<u64> = {
             let parts = self.parts.borrow();
-            self.room
+            self.workspace
                 .store
                 .open_parts(&P::chain())
                 .into_iter()
@@ -286,7 +286,7 @@ impl<P: Chained> ChainState<P> {
     }
 
     /// Whether to look for a newer head and at the parts waited for now:
-    /// the store was told a record arrived or what the room said of one
+    /// the store was told a record arrived or what the workspace said of one
     /// ([`RecordStore::note_kept`], [`RecordStore::announce`],
     /// [`RecordStore::note_workspace_answered`]), each of which wakes the window.
     /// Not while a frame reads the store (a view's sync): opening a part
@@ -294,11 +294,12 @@ impl<P: Chained> ChainState<P> {
     /// where the window takes up what it was sent, and the view's sync reads
     /// the part it opened.
     fn due(&self) -> bool {
-        self.room.store.takes_writes() && self.looked.get() != Some(self.room.store.kept_revision())
+        self.workspace.store.takes_writes()
+            && self.looked.get() != Some(self.workspace.store.kept_revision())
     }
 
     /// Open every part waited for that arrived since, and mark unavailable
-    /// those the room said it has no more of. Whether any changed.
+    /// those the workspace said it has no more of. Whether any changed.
     fn follow_waiting(&self) -> bool {
         let waiting: Vec<(u64, PartArrival)> = self
             .waiting
@@ -311,7 +312,7 @@ impl<P: Chained> ChainState<P> {
             let held = self.parts.borrow().contains_key(&index);
             if !held {
                 match self.open_or_start(index) {
-                    // Here now, with what the room sent of it.
+                    // Here now, with what the workspace sent of it.
                     Ok(Opened::Held | Opened::Started) => {
                         self.waiting.borrow_mut().remove(&index);
                         moved = true;
@@ -323,7 +324,11 @@ impl<P: Chained> ChainState<P> {
                     }
                 }
             }
-            let now = if self.room.store.workspace_answered(&P::chain().part(index)) {
+            let now = if self
+                .workspace
+                .store
+                .workspace_answered(&P::chain().part(index))
+            {
                 PartArrival::Unavailable
             } else {
                 PartArrival::Arriving
@@ -339,14 +344,19 @@ impl<P: Chained> ChainState<P> {
     /// Open every part newer than the head that this device holds. Whether
     /// one was.
     fn look(&self) -> bool {
-        self.looked.set(Some(self.room.store.kept_revision()));
+        self.looked.set(Some(self.workspace.store.kept_revision()));
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when
         // someone reads back to them.
-        let kept = self.room.store.held_parts(&P::chain()).last().copied();
+        let kept = self.workspace.store.held_parts(&P::chain()).last().copied();
         // A part a peer started is the same record here (each part's genesis
         // is the same everywhere): started here, it syncs on its route.
-        let started = self.room.store.announced_parts(&P::chain()).last().copied();
+        let started = self
+            .workspace
+            .store
+            .announced_parts(&P::chain())
+            .last()
+            .copied();
         let Some(newest) = kept.max(started) else {
             return false;
         };
@@ -367,7 +377,7 @@ impl<P: Chained> ChainState<P> {
                         .insert(newest, PartArrival::Arriving);
                     Ok(())
                 }
-                Opened::Asked => Err("the part is on its way from the room".into()),
+                Opened::Asked => Err("the part is on its way from the workspace".into()),
             })
         };
         opened
@@ -384,8 +394,8 @@ impl<P: Chained> ChainState<P> {
             return Ok(());
         }
         let checkout = self.checkout(index);
-        if !self.room.store.is_ready(&checkout.id) {
-            self.room
+        if !self.workspace.store.is_ready(&checkout.id) {
+            self.workspace
                 .store
                 .try_open_record(&checkout)
                 .map_err(|error| error.to_string())?;
@@ -394,12 +404,12 @@ impl<P: Chained> ChainState<P> {
     }
 
     /// Hold part `index`: read it from this device, or, when this device
-    /// has none of it, ask the room for it. A store that reads records
-    /// through the room (a native app's) asks for it as it opens it; any
+    /// has none of it, ask the workspace for it. A store that reads records
+    /// through the workspace (a native app's) asks for it as it opens it; any
     /// other starts it from its genesis (the same change on every device),
-    /// so it is open here and the room's record sync asks the room for its
+    /// so it is open here and the workspace's record sync asks the workspace for its
     /// history, which merges in as it arrives. It is waited for until then
-    /// ([`Self::waiting`]); its arrival, or the room saying it has none of
+    /// ([`Self::waiting`]); its arrival, or the workspace saying it has none of
     /// it, wakes the window ([`RecordStore::wake_on_arrival`]).
     pub(crate) fn hold(&self, index: u64) -> Result<(), String> {
         match self.open_or_start(index)? {
@@ -436,20 +446,20 @@ impl<P: Chained> ChainState<P> {
     fn start(&self, index: u64) -> Result<(), String> {
         match self.open_or_start(index)? {
             Opened::Held | Opened::Started => Ok(()),
-            Opened::Asked => Err("the part is on its way from the room".into()),
+            Opened::Asked => Err("the part is on its way from the workspace".into()),
         }
     }
 
     /// Hold part `index`, kept on this device or started from its genesis,
-    /// or ask the room for it where the store reads records through it.
+    /// or ask the workspace for it where the store reads records through it.
     fn open_or_start(&self, index: u64) -> Result<Opened, String> {
         if self.parts.borrow().contains_key(&index) {
             return Ok(Opened::Held);
         }
         let checkout = self.checkout(index);
         let mut opened = Opened::Held;
-        if !self.room.store.is_ready(&checkout.id) {
-            match self.room.store.try_open_record(&checkout) {
+        if !self.workspace.store.is_ready(&checkout.id) {
+            match self.workspace.store.try_open_record(&checkout) {
                 Ok(_) => {}
                 Err(RecordOpenError::Arriving) => return Ok(Opened::Asked),
                 // Nothing of it on this device, or a store that keeps no
@@ -472,18 +482,18 @@ impl<P: Chained> ChainState<P> {
         let initialize = |doc: &mut ui_core::automerge::AutoCommit| {
             P::initialize(doc).map_err(|error| error.to_string())
         };
-        match self.room.store.reserve_record(checkout) {
+        match self.workspace.store.reserve_record(checkout) {
             Ok(mut reservation) => reservation
                 .initialize(initialize)
                 .map_err(|error| error.to_string()),
             // A store that keeps no canonical records (a test's) creates it
             // the way it creates every record.
             Err(RecordOpenError::IdentityMismatch) => {
-                self.room
+                self.workspace
                     .store
                     .create_record(checkout)
                     .map_err(|error| error.to_string())?;
-                self.room
+                self.workspace
                     .store
                     .with(&checkout.id, |doc| {
                         initialize(doc)?;
@@ -502,24 +512,24 @@ impl<P: Chained> ChainState<P> {
         // it is read, as the app's record is when it opens: once, as the
         // same housekeeping change on every device.
         let older = self
-            .room
+            .workspace
             .store
             .read(&part, tilo_resource::evolution::needs_migrate::<P>)
             .ok_or("the part is not open here")?;
         if older {
             // Not while a frame reads the store: the part is held at the
             // next refresh, as a part this device asked for is.
-            if !self.room.store.takes_writes() {
+            if !self.workspace.store.takes_writes() {
                 return Err("the part is migrated once the store takes writes".into());
             }
-            self.room
+            self.workspace
                 .store
                 .with(&part, tilo_resource::evolution::migrate::<P>)
                 .ok_or("the part is not open here")?
                 .map_err(|error| error.to_string())?;
         }
         let reader = self
-            .room
+            .workspace
             .store
             .read(&part, Reader::<P>::read)
             .ok_or("the part is not open here")?
@@ -531,7 +541,7 @@ impl<P: Chained> ChainState<P> {
 
     /// Apply `action`, invoked by `invoker`, to the part it changes: read
     /// against the app's record ([`Chained::prepare`]), checked against
-    /// what they may do in the room, attributed to them and written into
+    /// what they may do in the workspace, attributed to them and written into
     /// the part's history. The part it was applied to.
     ///
     /// # Errors
@@ -559,7 +569,7 @@ impl<P: Chained> ChainState<P> {
         let place = P::place(&action, &base);
         drop(base);
         let index = P::part_for(&action, &self.parts()).map_err(ActionError::Refused)?;
-        if let Some(permissions) = &self.room.permissions {
+        if let Some(permissions) = &self.workspace.permissions {
             // Decided where the chain publishes the action, as the door
             // decides it: a grant on the app, the parts' kind or the verb
             // covers it.
@@ -567,7 +577,7 @@ impl<P: Chained> ChainState<P> {
             let node = if let Some(verb) = verb_of::<P>(&action) {
                 tilo_actions::action_node(
                     &TreePath::root(),
-                    self.room.app_id,
+                    self.workspace.app_id,
                     P::KIND,
                     &self.id,
                     need.field.as_deref(),
@@ -577,7 +587,7 @@ impl<P: Chained> ChainState<P> {
                 // A field edit, at the field it changes, as the published
                 // `field-edit`: a grant on that action covers it too.
                 TreePath::root()
-                    .app(self.room.app_id)
+                    .app(self.workspace.app_id)
                     .kind(P::KIND)
                     .resource(self.id.clone())
                     .field(need.field.as_deref().unwrap_or_default())
@@ -603,7 +613,7 @@ impl<P: Chained> ChainState<P> {
             }
             Opened::Asked => {
                 return Err(ActionError::Refused(
-                    "the part is on its way from the room".into(),
+                    "the part is on its way from the workspace".into(),
                 ));
             }
         }
@@ -639,11 +649,11 @@ impl<P: Chained> ChainState<P> {
         edit: &PartEdit,
         invoker: &ActionInvoker,
     ) -> Result<serde_json::Value, ActionError> {
-        if let Some(permissions) = &self.room.permissions
+        if let Some(permissions) = &self.workspace.permissions
             && !permissions.check(&PermissionScope::Action {
                 node: tilo_actions::action_node(
                     &TreePath::root(),
-                    self.room.app_id,
+                    self.workspace.app_id,
                     P::KIND,
                     &self.id,
                     None,
@@ -667,7 +677,7 @@ impl<P: Chained> ChainState<P> {
             None,
         )?;
         let now = self
-            .room
+            .workspace
             .store
             .with(&P::chain().part(edit.part), |doc| {
                 super::history::version_name(&doc.get_heads())
@@ -689,7 +699,7 @@ impl<P: Chained> ChainState<P> {
         place: Option<String>,
     ) -> Result<Vec<String>, ActionError> {
         let mut context = ActionContext::for_resource(&self.id, P::KIND, P::LABEL)
-            .with_app(self.room.app_id, self.room.app_title)
+            .with_app(self.workspace.app_id, self.workspace.app_title)
             .with_invoker(invoker.clone())
             .with_change(action.change_kind());
         if let Some(place) = place.filter(|place| !place.trim().is_empty()) {
@@ -700,7 +710,7 @@ impl<P: Chained> ChainState<P> {
         }
         let id = P::chain().part(index);
         let created = self
-            .room
+            .workspace
             .store
             .with_history(&id, |doc, history| {
                 let before = doc.get_heads();
@@ -722,7 +732,7 @@ impl<P: Chained> ChainState<P> {
                 applied
             })
             .ok_or_else(|| ActionError::Refused("the part is not open here".into()))??;
-        if let Err(error) = self.room.store.schedule_committed_history(&id) {
+        if let Err(error) = self.workspace.store.schedule_committed_history(&id) {
             tracing::error!(%error, "an edited part could not be saved");
         }
         self.refresh();
@@ -732,7 +742,7 @@ impl<P: Chained> ChainState<P> {
 
     /// The chain as it is published: the head's actions and every held
     /// part's items, each carried out through [`CHAIN_ACTION_TYPE`] on the
-    /// part it changes; checked against the participant's roles in the room
+    /// part it changes; checked against the participant's roles in the workspace
     /// as the app's own actions are.
     pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
         let revision = (self.revision(), ui_core::i18n::I18nManager::revision());
@@ -793,7 +803,7 @@ fn verb_of<P: Chained>(action: &P::Action) -> Option<String> {
 /// the chain `chain`, each keeping the need it declares. An item's views
 /// and the app's other effects on it stay as the part publishes them,
 /// answered by the app's window: an item of a part opens at the address a
-/// room's host knows it by. The chain itself offers only document actions;
+/// workspace's host knows it by. The chain itself offers only document actions;
 /// the app's own record offers its effects.
 fn route(resource: tilo_actions::ResourceSpec, chain: &str) -> tilo_actions::ResourceSpec {
     route_at(resource, chain, false)
@@ -943,7 +953,7 @@ impl<P: Chained> Chain<P> {
     }
 
     /// Hold the earlier part `index` too: read it from this device, or ask
-    /// the room for it when this device has none of it. Its history merges
+    /// the workspace for it when this device has none of it. Its history merges
     /// in as it arrives ([`Self::revision`] moves, the window is woken);
     /// [`Self::waiting`] says where it stands until then.
     ///
@@ -976,7 +986,7 @@ impl<P: Chained> Chain<P> {
     /// As the door refuses it: the person may not, the app's record or the
     /// part refused it.
     pub fn apply(&self, action: &P::Action) -> Result<u64, ActionError> {
-        let me = self.dispatch.me().unwrap_or(&self.state.room.me);
+        let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
         self.state.apply_as(action, &ActionInvoker::actor(me))
     }
 
@@ -1003,7 +1013,7 @@ impl<P: Chained> Chain<P> {
     /// As the door refuses it: the person may not change the part's history,
     /// the part is not here, or they have no step in it to take back.
     pub fn undo_in(&self, index: u64) -> Result<(), ActionError> {
-        let me = self.dispatch.me().unwrap_or(&self.state.room.me);
+        let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
         let edit = PartEdit {
             part: index,
             edit: super::history::HistoryEdit::Undo {
@@ -1023,7 +1033,7 @@ impl<P: Chained> Chain<P> {
                 action: edit.verb().to_owned(),
                 item: None,
                 reason: error.to_string(),
-                by_room: false,
+                by_workspace: false,
             }));
         }
         undone
@@ -1072,7 +1082,7 @@ impl<P: Chained> Chain<P> {
         self.state.start(index)?;
         let id = P::chain().part(index);
         self.state
-            .room
+            .workspace
             .store
             .with_history(&id, |doc, history| {
                 let root = ui_core::automerge::ROOT;
@@ -1094,7 +1104,7 @@ impl<P: Chained> Chain<P> {
                 written
             })
             .ok_or("the part is not open here")??;
-        if let Err(error) = self.state.room.store.schedule_committed_history(&id) {
+        if let Err(error) = self.state.workspace.store.schedule_committed_history(&id) {
             tracing::error!(%error, "a created part could not be saved");
         }
         self.state.refresh();
@@ -1107,7 +1117,7 @@ impl<P: Chained> Chain<P> {
     /// later pass (an event, a settle pass).
     #[must_use]
     pub fn takes_changes(&self) -> bool {
-        self.state.room.store.takes_writes()
+        self.state.workspace.store.takes_writes()
     }
 
     /// The chain's dispatcher: what it submits goes through the host's door
@@ -1133,7 +1143,7 @@ impl<P: Chained> Chain<P> {
     }
 
     /// [`Self::detached`], held in `store`: one device's records of the
-    /// app in a room, for a test of what reaches that device's store from
+    /// app in a workspace, for a test of what reaches that device's store from
     /// another one.
     #[must_use]
     pub fn detached_in(
@@ -1142,14 +1152,14 @@ impl<P: Chained> Chain<P> {
         me: &str,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Self> {
-        let room = RoomRecords {
+        let workspace = WorkspaceRecords {
             store,
             me: me.to_owned(),
             permissions: None,
             app_id,
             app_title: app_id,
         };
-        let state = Rc::new(ChainState::<P>::open(room, Rc::new(base))?);
+        let state = Rc::new(ChainState::<P>::open(workspace, Rc::new(base))?);
         let dispatch = detached_dispatch(app_id, &state, me);
         Some(Self { state, dispatch })
     }
@@ -1160,7 +1170,7 @@ impl<P: Chained> Chain<P> {
     pub fn as_reader(&self, me: &str) -> Self {
         Self {
             state: Rc::clone(&self.state),
-            dispatch: detached_dispatch(self.state.room.app_id, &self.state, me),
+            dispatch: detached_dispatch(self.state.workspace.app_id, &self.state, me),
         }
     }
 
@@ -1169,7 +1179,7 @@ impl<P: Chained> Chain<P> {
     #[must_use]
     pub fn part_bytes(&self, index: u64) -> Option<Vec<u8>> {
         self.state
-            .room
+            .workspace
             .store
             .read(&P::chain().part(index), |doc| doc.clone().save())
     }
@@ -1197,7 +1207,7 @@ fn detached_dispatch<P: Chained>(
 ) -> Dispatcher<P> {
     let applying = Rc::downgrade(state);
     let invoker = ActionInvoker::actor(me);
-    Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_room_record::<P>(
+    Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_workspace_record::<P>(
         state.id(),
         false,
         move |action| {
@@ -1220,16 +1230,16 @@ pub(crate) struct Chains {
 }
 
 impl Chains {
-    /// The chain of `P`, opened in `room` on first use.
+    /// The chain of `P`, opened in `workspace` on first use.
     pub(crate) fn open<P: Chained>(
         &self,
-        room: Option<&RoomRecords>,
+        workspace: Option<&WorkspaceRecords>,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Rc<ChainState<P>>> {
         if let Some(held) = self.held.borrow().get(P::KIND) {
             return Rc::clone(held).downcast::<ChainState<P>>().ok();
         }
-        let state = Rc::new(ChainState::<P>::open(room?.clone(), Rc::new(base))?);
+        let state = Rc::new(ChainState::<P>::open(workspace?.clone(), Rc::new(base))?);
         self.held
             .borrow_mut()
             .insert(P::KIND, Rc::clone(&state) as Rc<dyn Any>);
@@ -1239,11 +1249,11 @@ impl Chains {
         Some(state)
     }
 
-    /// The children of `C` the parent lists, held in `room` on first use:
+    /// The children of `C` the parent lists, held in `workspace` on first use:
     /// published and answered beside the chains, through the same door.
     pub(crate) fn open_children<C: super::children::ChildRecord>(
         &self,
-        room: Option<&RoomRecords>,
+        workspace: Option<&WorkspaceRecords>,
         parent: impl Fn() -> Rc<<C::Parent as Resource>::State> + 'static,
     ) -> Option<Rc<super::children::ChildrenState<C>>> {
         let key = ui_core::record::children_resource_id(&C::parent_record(), C::KIND);
@@ -1253,7 +1263,7 @@ impl Chains {
                 .ok();
         }
         let state = Rc::new(super::children::ChildrenState::<C>::open(
-            room?.clone(),
+            workspace?.clone(),
             Rc::new(parent),
         )?);
         self.children

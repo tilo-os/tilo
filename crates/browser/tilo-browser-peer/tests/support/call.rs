@@ -1,5 +1,5 @@
-//! A room its host governs, with a call on a chat's voice channel: Alice
-//! owns the room from her laptop (a native iroh device) and starts the call;
+//! A workspace its host governs, with a call on a chat's voice channel: Alice
+//! owns the workspace from her laptop (a native iroh device) and starts the call;
 //! people she invites take part from browser sessions. Included with
 //! voice test binaries; call binaries re-exec as the automerge worker.
 
@@ -32,7 +32,7 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, CallState, Directions, VoiceGrant};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
-use crate::support::{Device, TestHost, enrol, start_room_host, wait_for};
+use crate::support::{Device, TestHost, enrol, start_workspace_host, wait_for};
 
 pub const CHAT: &str = "so.tilo.chat";
 pub const BOTH: Directions = Directions {
@@ -148,18 +148,23 @@ pub fn granted(envelope: Envelope) -> Option<VoiceGrant> {
     }
 }
 
-/// Admit `device`, one of the relay's own person's, to `room` as its
+/// Admit `device`, one of the relay's own person's, to `workspace` as its
 /// owner's.
-pub async fn enter(relay: &Relay, device: &DeviceCert, room: &str) {
-    relay.rooms().unwrap().enter(room, device).await.unwrap();
+pub async fn enter(relay: &Relay, device: &DeviceCert, workspace: &str) {
+    relay
+        .rooms()
+        .unwrap()
+        .enter(workspace, device)
+        .await
+        .unwrap();
 }
 
-/// An Editor's invitation to `room` for `person` only, which the relay
-/// issues for the room's owner `issuer`.
+/// An Editor's invitation to `workspace` for `person` only, which the relay
+/// issues for the workspace's owner `issuer`.
 pub async fn issue(
     relay: &Relay,
     issuer: &DeviceCert,
-    room: &str,
+    workspace: &str,
     person: &SigningKey,
 ) -> IssuedInvitation {
     let person = person.verifying_key().to_bytes();
@@ -167,7 +172,7 @@ pub async fn issue(
         .rooms()
         .unwrap()
         .issue(
-            room,
+            workspace,
             issuer,
             IssueInvitationRequest {
                 request_id: person,
@@ -184,16 +189,16 @@ pub async fn issue(
         .unwrap()
 }
 
-/// Invite `person` to `room` as an editor, for the room's owner `issuer`,
+/// Invite `person` to `workspace` as an editor, for the workspace's owner `issuer`,
 /// and redeem the invitation with their device `page`.
 pub async fn invite(
     relay: &Relay,
     issuer: &DeviceCert,
-    room: &str,
+    workspace: &str,
     person: &SigningKey,
     page: &Device,
 ) {
-    let invitation = issue(relay, issuer, room, person).await;
+    let invitation = issue(relay, issuer, workspace, person).await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -221,9 +226,9 @@ pub struct GovernedCall {
     pub laptop: Device,
     pub relay: Relay,
     pub web: WebHandle,
-    pub room: String,
+    pub cluster_id: String,
     pub workspace_id: u64,
-    /// Alice's laptop's session with the room.
+    /// Alice's laptop's session with the workspace.
     pub owner: RelayClient,
     /// The chat's voice channel the call is on.
     pub channel: String,
@@ -268,13 +273,13 @@ pub async fn operate(
     .await
 }
 
-/// Create the room's chat record with a voice channel from `device`'s
+/// Create the workspace's chat record with a voice channel from `device`'s
 /// replica, over its own relay session, which the caller keeps open: local
 /// publication never creates a record.
 pub async fn create_voice_channel(
     address: iroh::EndpointAddr,
     workspace_id: u64,
-    room: &str,
+    workspace: &str,
     host: &DeviceCert,
     device: &Device,
 ) -> (RelayCoeditSession, String) {
@@ -293,14 +298,14 @@ pub async fn create_voice_channel(
     )
     .unwrap();
     let mut peer = StatePeer::new(
-        room,
+        workspace,
         host.clone(),
         vec![host.clone()],
         RevocationList::new(),
         SystemTime::now(),
     )
     .unwrap();
-    tilo_test_env::within("the replica learns the room", async {
+    tilo_test_env::within("the replica learns the workspace", async {
         while peer
             .permissions(device.cert.device_public_key, SystemTime::now())
             .is_err()
@@ -323,7 +328,7 @@ pub async fn create_voice_channel(
         .channel_rows()
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
-        .expect("a room's chat opens with a voice channel")
+        .expect("a workspace's chat opens with a voice channel")
         .id;
     let message = peer
         .publication_mut()
@@ -347,21 +352,28 @@ pub async fn create_voice_channel(
 }
 
 impl GovernedCall {
-    /// Alice's governed room with an active call on its chat's voice
+    /// Alice's governed workspace with an active call on its chat's voice
     /// channel, which nobody has joined yet.
     pub async fn start() -> Self {
         let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
         let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
         let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
         let state = tempfile::tempdir().unwrap();
-        let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
+        let TestHost { relay, web } =
+            start_workspace_host(&alice, &host, state.path(), false).await;
         let address = relay.node_addr();
-        let room = relay.rooms().unwrap().create("Standup").await.unwrap();
-        enter(&relay, &laptop.cert, &room.room).await;
+        let workspace = relay.rooms().unwrap().create("Standup").await.unwrap();
+        enter(&relay, &laptop.cert, &workspace.room).await;
 
-        // Alice's chat gets a voice channel; the room's governor learns it.
-        let (owner, channel) =
-            create_voice_channel(address, room.workspace_id, &room.room, &host.cert, &laptop).await;
+        // Alice's chat gets a voice channel; the workspace's governor learns it.
+        let (owner, channel) = create_voice_channel(
+            address,
+            workspace.workspace_id,
+            &workspace.room,
+            &host.cert,
+            &laptop,
+        )
+        .await;
         let owner = owner.into_client();
         let call = wait_for("the governor to bind the call", || {
             let owner = &owner;
@@ -369,7 +381,7 @@ impl GovernedCall {
             async move {
                 operate(
                     owner,
-                    room.workspace_id,
+                    workspace.workspace_id,
                     1,
                     CallOperation::Start {
                         app_id: CHAT.into(),
@@ -390,8 +402,8 @@ impl GovernedCall {
             laptop,
             relay,
             web,
-            room: room.room,
-            workspace_id: room.workspace_id,
+            cluster_id: workspace.room,
+            workspace_id: workspace.workspace_id,
             owner,
             channel,
             call,
@@ -399,12 +411,19 @@ impl GovernedCall {
         }
     }
 
-    /// A browser device of a new person Alice invited to the room, which
+    /// A browser device of a new person Alice invited to the workspace, which
     /// redeemed the invitation.
     pub async fn invite(&self, label: &str) -> (SigningKey, Device) {
         let person = SigningKey::generate(&mut UnwrapErr(SysRng));
         let page = enrol(&person, label, DeviceCapabilities::member());
-        invite(&self.relay, &self.laptop.cert, &self.room, &person, &page).await;
+        invite(
+            &self.relay,
+            &self.laptop.cert,
+            &self.cluster_id,
+            &person,
+            &page,
+        )
+        .await;
         (person, page)
     }
 

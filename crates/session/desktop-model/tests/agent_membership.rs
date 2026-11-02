@@ -11,7 +11,7 @@ use tilo_desktop_model::*;
 /// The clock these fixtures run at, Unix seconds.
 const NOW: u64 = 1_800_000_000;
 
-fn room() -> Workspace {
+fn workspace() -> Workspace {
     let mut ws = Workspace::new(WorkspaceId(1), "Demo");
     ws.set_owner("ada");
     ws
@@ -30,24 +30,24 @@ fn agent_grant(ws: &Workspace, id: &str, node: TreePath) -> Grant {
 }
 
 #[test]
-fn only_a_live_room_grant_makes_an_agent_a_member() {
-    // Phase `a_room_with_no_grant_has_no_agents`.
+fn only_a_live_workspace_grant_makes_an_agent_a_member() {
+    // The workspace has no grant yet.
     // The floor, and the one that matters most: a workspace nobody has
     // admitted an agent to has no agents in it.
     {
-        assert!(room().agent_members_at(NOW).is_empty());
+        assert!(workspace().agent_members_at(NOW).is_empty());
     }
-    // Phase `a_room_grant_admits_the_agent_and_a_revoke_removes_it`.
+    // A grant admits the agent and a revoke removes it.
     {
-        let mut ws = room();
+        let mut ws = workspace();
         let grant = agent_grant(&ws, "scribe-member", ws.node());
         ws.govern_as_at("ada", Change::Grant(grant), NOW)
-            .expect("the owner may grant in the room");
+            .expect("the owner may grant in the workspace");
 
         assert_eq!(
             ws.agent_members_at(NOW),
             vec![("scribe".to_string(), KindSet::READ_UNDOABLE)],
-            "the kinds of the room grant are what the agent may do",
+            "the kinds of the workspace grant are what the agent may do",
         );
 
         ws.govern_as_at("ada", Change::Revoke(GrantId::new("scribe-member")), NOW)
@@ -62,7 +62,7 @@ fn only_a_live_room_grant_makes_an_agent_a_member() {
     // member — the same rule that keeps a person who was shared one file out
     // of the roster.
     {
-        let mut ws = room();
+        let mut ws = workspace();
         let grant = agent_grant(&ws, "scribe-app", ws.node().app("so.tilo.word-processor"));
         ws.govern_as_at("ada", Change::Grant(grant), NOW)
             .expect("owner grants");
@@ -74,7 +74,7 @@ fn only_a_live_room_grant_makes_an_agent_a_member() {
     // Phase `an_expired_grant_admits_nobody`.
     // An expired grant is not a quieter membership, it is none.
     {
-        let mut ws = room();
+        let mut ws = workspace();
         let grant =
             agent_grant(&ws, "scribe-expired", ws.node()).with_lifetime(Lifetime::Until(1_000));
         ws.govern_as_at("ada", Change::Grant(grant), NOW)
@@ -84,18 +84,18 @@ fn only_a_live_room_grant_makes_an_agent_a_member() {
 }
 
 #[test]
-fn a_grant_on_another_room_is_not_membership_here() {
-    let mut ws = room();
+fn a_grant_on_another_workspace_is_not_membership_here() {
+    let mut ws = workspace();
     let here = agent_grant(&ws, "member", ws.node());
     ws.grant(Grant {
         subject: Subject::agent("member"),
         ..here
     });
     ws.grant(Grant {
-        id: GrantId::new("other-room"),
-        subject: Subject::agent("other-room"),
-        node: TreePath::workspace("a-different-durable-room"),
-        ..agent_grant(&ws, "other-room", ws.node())
+        id: GrantId::new("other-workspace"),
+        subject: Subject::agent("other-workspace"),
+        node: TreePath::workspace("a-different-durable-workspace"),
+        ..agent_grant(&ws, "other-workspace", ws.node())
     });
     assert_eq!(
         ws.agent_members_at(NOW),
@@ -105,12 +105,12 @@ fn a_grant_on_another_room_is_not_membership_here() {
 
 #[test]
 fn the_people_roster_is_the_owner_and_the_members() {
-    let mut ws = room();
+    let mut ws = workspace();
     ws.admit("member", Role::Viewer);
     ws.grant(Grant::new(
         "elsewhere",
         Subject::person("not-a-member-here"),
-        TreePath::workspace("other-room"),
+        TreePath::workspace("other-workspace"),
         KindSet::ALL,
         Answer::Allow,
         Subject::person("ada"),
@@ -127,7 +127,7 @@ fn the_people_roster_is_the_owner_and_the_members() {
 fn membership_is_replicated_and_people_and_agents_stay_separate() {
     // Phase `a_members_role_decides_what_they_may_do`.
     {
-        let mut ws = room();
+        let mut ws = workspace();
         ws.admit("remote-editor", Role::Editor);
         assert_eq!(ws.role_of("remote-editor"), Some(Role::Editor));
         assert_eq!(
@@ -154,7 +154,7 @@ fn membership_is_replicated_and_people_and_agents_stay_separate() {
     // in the agent list, and an agent must never arrive in the roster —
     // that second one is the OS claiming a person is present when none is.
     {
-        let mut ws = room();
+        let mut ws = workspace();
         ws.govern_as_at(
             "ada",
             Change::AddMember {

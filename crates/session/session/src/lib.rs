@@ -42,6 +42,7 @@ mod capture_studio;
 mod channels;
 mod chrome;
 mod config;
+mod content;
 pub mod controller_nav;
 pub mod controllers;
 mod controls;
@@ -125,7 +126,7 @@ use std::time::{Duration, Instant};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
 use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::desktop_actions::{CHROME_RESOURCE, DESK_RESOURCE};
+use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{
     DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
 };
@@ -154,6 +155,7 @@ pub use launches::Launches;
 pub use lists::{AppLists, Lists};
 pub use mount::vpn::KillSwitch;
 pub use mount::wake::{Seams as WakeSeams, WakeInterfaces};
+pub use notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
 pub use options::{ActionPlane, Machine, Options, QuickSettings, no_session_actions};
 use options::{open_engine, start_collaboration};
 pub use records::Records;
@@ -188,7 +190,8 @@ pub use os_actions::SessionAction;
 
 pub use tilo_onboarding_host::view::OnboardingView;
 
-/// The generation the session's own desktop commands carry.
+/// The generation the session's own desktop snapshots carry: a snapshot of
+/// an older one is stale.
 const GENERATION: &str = "session";
 
 /// How many times the session starts its lock screen for one lock before it
@@ -272,8 +275,9 @@ struct Shared {
     /// them.
     panel_power: mount::panel_power::PanelPower,
     /// The session another of the person's devices handed this one, as the
-    /// now-playing card shows it, until they continue it here.
-    handoff: std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>,
+    /// now-playing card shows it, until they continue it here: published
+    /// beside the person's devices.
+    handoff: Rc<std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>>,
     /// The services' revision and the speaker group session the panel last
     /// took what plays from: its reading carries the players' covers, so it
     /// is read only when one of the services published something or the
@@ -282,7 +286,8 @@ struct Shared {
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
     /// What plays, as the desk's music widget shows it: written from the
-    /// device's reading every frame it is pumped.
+    /// machine's reading every pass, the same one the bar and the lock screen
+    /// show.
     music: tilo_desktop::desk_widgets::DeskMusic,
     /// The power menu, workspace settings, and the questions the session
     /// asks for apps and services, by their seats.
@@ -346,6 +351,10 @@ struct Shared {
     /// This device's rooms: what every workspace of the desk shows, and what
     /// a join takes in.
     engine: Option<std::sync::Arc<engine::Engine>>,
+    /// The engine revision the desk's copy of each workspace's people was
+    /// last taken from: what nothing new of a workspace's governance has
+    /// passed since.
+    membership_fed: Cell<Option<u64>>,
     /// This device's channels of those rooms' sealed records, and the devices
     /// each room admits: kept for as long as the session runs.
     _channels: Option<channels::Channels>,
@@ -440,6 +449,9 @@ impl Shared {
 
     /// Carry out what the desktop asked since the last frame.
     fn follow_asks(&self) {
+        // A press on one of the person's devices is one of the session's own
+        // verbs: the queue it lands in is carried out here, with the asks.
+        self.carry_out_presses();
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
         for ask in asks {
             match ask {
@@ -554,21 +566,6 @@ impl Shared {
             ),
             LEAVE_WORKSPACE => self.leave_workspace(),
             choice => identity::answered(choice),
-        }
-    }
-
-    /// Open what the person chose on a scheduled notification, in the
-    /// workspace that scheduled it: the app that takes its scheme.
-    fn open_notifications(&self) {
-        for (room, uri) in self.notifications.borrow().take_opened() {
-            self.search.perform(
-                &room,
-                tilo_desktop_search::Target::Open {
-                    uri,
-                    fallback: None,
-                },
-                &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
-            );
         }
     }
 
@@ -767,7 +764,7 @@ impl Shared {
             app: app.to_owned(),
             open,
         };
-        let room = apps.room_named(&room.to_string());
+        let room = apps.workspace_named(&room.to_string());
         if let Err(error) = apps.start(&launch, &room) {
             tracing::debug!(%error, %app, "an app is not opened from the history");
         }
@@ -878,7 +875,7 @@ impl Shared {
                 invocations.push(Invocation::new(QUICK_SETTINGS, "paste"));
             }
             ShortcutAction::Search => {
-                invocations.push(Invocation::new(DESK_RESOURCE, "open-search"));
+                invocations.push(Invocation::new(DESK_RESOURCE, "search"));
             }
             ShortcutAction::TabMenu => {
                 invocations.push(Invocation::new(mount::shell::WINDOW_MENU, "open"));
@@ -1267,14 +1264,7 @@ impl Session {
             std::sync::Arc::clone(&options.launches),
         ));
         let settling = Rc::clone(&window_doors);
-        // The shell drawing the whole screen places the windows in its wells; otherwise the
-        // desktop's strips do.
-        let mut policy = if options.shell == Some(tilo_surface_host::shell_part::ShellLayer::Screen)
-        {
-            desk::DeskPolicy::Wells(desktop.well_policy())
-        } else {
-            desk::DeskPolicy::Strips(strips)
-        };
+        let mut policy = desk::DeskPolicy::for_shell(options.shell, &desktop, strips);
         let wells = policy.wells();
         policy.set_window_mapped(Rc::new(move |pid| settling.window_mapped(pid)));
         if let Some(launch) = &options.launch {
@@ -1322,6 +1312,18 @@ impl Session {
             .ok()
         });
         let sync = start_collaboration(&options, media, engine.clone());
+        // The content the workspaces' records reference: kept beside their
+        // records under this session's state, and asked of the workspace's
+        // other devices on the topic the records travel.
+        let record_content = content::Plane::open(options.state.as_deref());
+        if let Some(sync) = &sync {
+            sync.attach_content(std::sync::Arc::clone(&record_content));
+            // What this session says when another of the person's devices
+            // offers it work: the inputs its own content already keeps.
+            if let Some(actions) = sync.device_actions() {
+                actions.attach_content(std::sync::Arc::clone(&record_content));
+            }
+        }
         // What other members send here is the workspaces' to admit: their
         // policies are read from the desk this session shows.
         if let Some(sync) = &sync {
@@ -1411,13 +1413,7 @@ impl Session {
             &emoji.link(),
             &overlays,
         )));
-        // The shell's whole screen draws its own bar: the desktop's steps aside, and still
-        // answers its chords.
-        if options.shell == Some(tilo_surface_host::shell_part::ShellLayer::Screen) {
-            compositor.add_host(Box::new(shell::Aside(Held(Rc::clone(&chrome)))));
-        } else {
-            compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
-        }
+        compositor.add_host(shell::bar_under(options.shell, Held(Rc::clone(&chrome))));
         doors.add(Rc::clone(&chrome) as tilo_surface_host::Shared);
 
         // The desk as the session publishes it, and the shell's bar over the
@@ -1441,6 +1437,7 @@ impl Session {
             notices: notices.clone(),
             overlays: Rc::clone(&desk_overlays),
             tray: tray.clone(),
+            engine: engine.clone(),
         };
         let desk_service = desk();
         let shell = options.shell.and_then(|layer| {
@@ -1574,6 +1571,7 @@ impl Session {
                     broker: std::sync::Arc::clone(&channels_broker),
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
+                content: Some(record_content),
             },
         )?;
         // The agent door: a program of this login asks here to work in a
@@ -1723,7 +1721,7 @@ impl Session {
             devices: mount::devices::Devices::default(),
             displays: mount::displays::Displays::default(),
             panel_power: mount::panel_power::PanelPower::default(),
-            handoff: std::cell::RefCell::new(None),
+            handoff: Rc::new(std::cell::RefCell::new(None)),
             media_fed: std::cell::Cell::new(None),
             waking: mount::wake::Wake::new(&options.wake_seams),
             music,
@@ -1764,6 +1762,7 @@ impl Session {
             notice_fed: RefCell::new(None),
             sync,
             engine,
+            membership_fed: Cell::new(None),
             _channels: channels,
             personal,
             clipboard: Rc::new(mount::clipboard::Clipboard::new()),
@@ -1791,10 +1790,9 @@ impl Session {
         shared
             .services
             .borrow_mut()
-            .add(Box::new(mount::clipboard::Served::new(
-                Rc::clone(&shared.clipboard),
-                Rc::clone(&shared.commands),
-            )));
+            .add(Box::new(mount::clipboard::Served::new(Rc::clone(
+                &shared.clipboard,
+            ))));
         // What people said to this person is personal too: the centre
         // publishes its rows itself, as a reading only a granted caller
         // reads, and the dismiss and act verbs the panel invokes.
@@ -1815,6 +1813,8 @@ impl Session {
                     fabric,
                     Rc::clone(&shared.readings),
                     Rc::clone(&shared.devices.chosen),
+                    Rc::clone(&shared.handoff),
+                    Rc::clone(&shared.devices.pressed),
                 )));
         }
         // The broker decides a granted reading when the app asks, which is
@@ -2743,6 +2743,12 @@ impl Session {
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
         match command {
             SessionCommand::Lock => self.lock_by_person(),
+            SessionCommand::OpenPowerMenu => {
+                if let Some(power) = &self.shared.power {
+                    power.presentation().open(false);
+                }
+                Ok(())
+            }
             SessionCommand::Displays { mode } => {
                 let changes = displays::arrange(mode, &self.compositor.outputs());
                 // A refused arrangement leaves the displays as they were.
@@ -2942,6 +2948,9 @@ impl Session {
         let video = self.display_sheet.video_stream();
         self.projection_video
             .follow(&mut self.compositor, video.as_ref());
+        // A call shares the same pass: it takes the frame when it wants one,
+        // and a locked desktop hands it nothing.
+        crate::calls::share_screen(&mut self.compositor);
         self.follow_shell()?;
         self.follow_slot_views()?;
         self.settle()?;

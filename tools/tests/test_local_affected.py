@@ -117,6 +117,33 @@ class JobTests(unittest.TestCase):
             self.assertEqual((first.name, first.prefix, second), ("local", None, None))
 
 
+class CheckOnlyTests(unittest.TestCase):
+    """An architecture that is not linted type-checks every target Clippy lints.
+
+    A test target whose Cargo.toml lists `required-features` is not an
+    `--all-targets` target without them: without the packages' test features
+    the check would silently skip it, and a break in it would be seen only on
+    the architectures Clippy runs on.
+    """
+
+    def test_the_check_applies_the_packages_test_features(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bin_dir = Path(directory)
+            cargo = bin_dir / "cargo"
+            cargo.write_text(
+                "#!/bin/sh\npython3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' \"$@\"\n")
+            cargo.chmod(0o755)
+            root = SCRIPT.parents[2]
+            result = subprocess.run(
+                ["bash", str(root / "tools/ci/lint-affected.sh"), "--check-only", "--", "-p", "shell"],
+                capture_output=True, text=True, check=True,
+                env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+            argv = json.loads(result.stdout)
+            self.assertEqual(argv[:3], ["check", "--locked", "--all-targets"])
+            self.assertIn("--features", argv)
+            self.assertIn("shell/hosted-test-control", argv[argv.index("--features") + 1])
+
+
 class HelpTests(unittest.TestCase):
     def test_help_runs_nothing(self):
         result = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True)

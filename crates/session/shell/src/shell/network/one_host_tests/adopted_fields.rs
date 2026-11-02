@@ -170,7 +170,7 @@ fn a_sandbox_capability_taken_back_stays_taken_back_across_the_rooms_next_commit
         "the capability taken back is not granted again"
     );
     hosted.until_the_room_carries("the room to take the capability back", |document| {
-        !tilo_desktop_model::projection::room_sandbox_of(document)
+        !tilo_desktop_model::projection::workspace_sandbox_of(document)
             .iter()
             .any(|held| held.id == "document")
     });

@@ -91,7 +91,7 @@ floating 0.32; its accent is light with a dark label) keep the contract.
 
 **Workspace temperature.** Each workspace derives the neutral hue (never
 more chroma) from its wallpaper, so switching workspaces feels like entering
-a different room. A grey wallpaper keeps the stock temperature.
+a different workspace. A grey wallpaper keeps the stock temperature.
 
 **Your colour.** The local person's presence colour is what collaborators
 see their cursor in; by default it is also their accent. Until they choose
@@ -198,7 +198,7 @@ the font catalog.
   (`docs/typography.md`, Text kinds).
 - **Confusable letters.** Prose and labels keep the face's character. Names
   people must not mistake — usernames, handles, email addresses, invite
-  codes, room names, other people's file names — get a distinct I and l,
+  codes, workspace names, other people's file names — get a distinct I and l,
   also when they appear inside a message, note or mail, where the toolkit
   finds them itself. Codes and secrets (TOTP and recovery codes, revealed
   passwords, keys, hashes, IDs) and links add the slashed zero. Permission
@@ -366,11 +366,10 @@ literals.
 
 ## Emoji and mentions
 
-A text field offers both by default, from the toolkit: `:name:` becomes the
-emoji the catalogue names, `@name` becomes a person or an agent in the room.
-The catalogue belongs to `ui`, so an app never links one to have emoji; a
-workspace with custom emoji adds to the toolkit's catalogue rather than
-replacing it.
+A text field offers both by default, from the toolkit: `:name:` becomes the emoji the catalogue
+names, `@name` becomes a person or an agent in the workspace. The catalogue belongs to `ui`, so an
+app never links one to have emoji; a workspace with custom emoji adds to the toolkit's catalogue
+rather than replacing it.
 
 Opting out is a property of the field, not of the app: a search field, a
 password, a code editor, a terminal, a hex view and a URL are plain (UTF-8

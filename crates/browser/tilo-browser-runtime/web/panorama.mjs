@@ -25,7 +25,7 @@ function intersects(a,b) { return a[0]<b[0]+b[2]&&b[0]<a[0]+a[2]&&a[1]<b[1]+b[3]
 
 /** Host adapter. Call present synchronously from the mount's presentation
  * notification; expose only handle on the public mount. The layer must be
- * the mount's authenticated room live layer, never a caller-supplied roster.
+ * the mount's authenticated workspace live layer, never a caller-supplied roster.
  */
 export function createPresentedSource({audience,app,canvas,layer,valid,now=()=>performance.now(),makeCanvas=makeSurface}) {
   sourceCanvases.add(canvas);

@@ -435,21 +435,16 @@ fn sidebar(ui: &Ui) -> Element {
     // "New theme" opens a draft of a preset, and Delete removes the row's
     // theme: both the studio's own effects, so the section header's button,
     // the Delete key, the palette and an agent run the same two.
-    if let Some(new_theme) = ui
-        .actions
-        .effect_binding(crate::effects::ThemesEffect::DUPLICATE_THEME.map(|_: String| {
-            NEW_THEME_BASE.to_owned()
-        }))
-    {
+    if let Some(new_theme) = ui.actions.effect_binding(
+        crate::effects::ThemesEffect::DUPLICATE_THEME.map(|_: String| NEW_THEME_BASE.to_owned()),
+    ) {
         list = list.section_action(NEW_THEME, new_theme);
     }
     // A row is a written theme, so deleting it always has something to delete.
-    if let Some(delete) =
-        ui.actions
-            .effect_binding(crate::effects::ThemesEffect::DELETE_THEME.try_map(
-                |id: String| Some((id.strip_prefix(THEME)?.to_owned(), true)),
-            ))
-    {
+    if let Some(delete) = ui.actions.effect_binding(
+        crate::effects::ThemesEffect::DELETE_THEME
+            .try_map(|id: String| Some((id.strip_prefix(THEME)?.to_owned(), true))),
+    ) {
         list = list.on_delete_action(delete);
     }
     list.into_widget()
@@ -1007,7 +1002,7 @@ mod tests {
                 action: ui::tilo_resource::GROUP.to_owned(),
                 item: None,
                 reason: reason.clone(),
-                by_room: false,
+                by_workspace: false,
             },
             &notice,
         );

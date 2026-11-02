@@ -626,7 +626,7 @@ impl<'a> InvocationProvenance<'a> {
 /// Perform the operation `address` names, attributed to
 /// `provenance.actor`. Resolve, bind, decode through the app's own registry,
 /// then [`dispatch_by`](crate::executor::dispatch_by) honouring the action's locus. The actor is the
-/// caller's Automerge actor bytes, so the room's history names who asked;
+/// caller's Automerge actor bytes, so the workspace's history names who asked;
 /// `provenance.ambient` carries the task or run the call belongs to. The
 /// resource's concrete action label and address remain authoritative; app,
 /// purpose, group, and facets of the ambient context fill only fields the

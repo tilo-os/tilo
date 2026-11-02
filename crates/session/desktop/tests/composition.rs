@@ -258,13 +258,13 @@ fn grouped_application_overlay_is_drawn_once_for_the_active_tab_only() {
 }
 
 #[test]
-fn replacing_the_room_requires_fresh_component_contexts() {
+fn replacing_the_workspace_requires_fresh_component_contexts() {
     let mut tree = tree();
     let mut surface = DesktopSurface::build(&tree, &mut Unavailable, SurfaceChrome::default());
-    // The workspace under the same id is another room now: another identity,
-    // as a migration that joins a slot to its room makes one.
+    // The workspace under the same id is another workspace now: another identity,
+    // as a migration that joins a slot to its workspace makes one.
     let before = tree.workspaces[0].clone();
-    let mut replaced = tilo_desktop_model::Workspace::in_room(
+    let mut replaced = tilo_desktop_model::Workspace::in_workspace(
         before.id,
         tilo_desktop_model::RoomId::new(),
         before.name.clone(),

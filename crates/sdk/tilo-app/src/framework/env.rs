@@ -174,7 +174,7 @@ impl<R: Resource> RecordEnv<R> {
         if self.is_past() {
             return Vec::new();
         }
-        let Some(store) = self.storage.room_store() else {
+        let Some(store) = self.storage.workspace_store() else {
             return Vec::new();
         };
         let kind = ui_core::record::RecordKind::new(R::KIND);
@@ -239,7 +239,7 @@ impl<R: Resource> RecordEnv<R> {
         let state = self.storage.chain::<P>(move || live.get())?;
         let applying = Rc::downgrade(&state);
         let me = self.dispatch.me()?.to_owned();
-        let dispatch = self.dispatch.for_room_record::<P>(
+        let dispatch = self.dispatch.for_workspace_record::<P>(
             state.id(),
             self.dispatch.is_past(),
             move |action| {
@@ -308,15 +308,15 @@ impl<R: Resource> RecordEnv<R> {
         self.saves.clone()
     }
 
-    /// The room (workspace) the window keeps its records in: what an app keys what it keeps on
-    /// this device for the room by (a cache, an index). `None` in a past version and where the
+    /// The workspace the window keeps its records in: what an app keys what it keeps on
+    /// this device for the workspace by (a cache, an index). `None` in a past version and where the
     /// window keeps no records in a workspace.
-    pub fn room(&self) -> Option<String> {
+    pub fn workspace(&self) -> Option<String> {
         if self.is_past() {
             return None;
         }
         self.storage
-            .room_store()
+            .workspace_store()
             .map(ui_core::record::RecordStore::home)
     }
 
@@ -468,13 +468,16 @@ impl<R: Resource> RecordEnv<R> {
         self.storage.person::<P>()
     }
 
-    /// The record `P` that `owner` keeps in the window's room and every app
-    /// of the room opens (`collab_types::WORKSPACE_RECORDS`): the
+    /// The record `P` that `owner` keeps in the window's workspace and every app
+    /// of the workspace opens (`collab_types::WORKSPACE_RECORDS`): the
     /// workspace's emoji, which are Chat's. Changes to it are decided by the
-    /// room's grants on `owner`'s resource. `None` where the host keeps no
+    /// workspace's grants on `owner`'s resource. `None` where the host keeps no
     /// such records (a view of a past version) or it cannot be opened.
-    pub fn workspace<P: Resource>(&self, owner: &'static str) -> Option<super::WorkspaceRecord<P>> {
-        self.storage.workspace::<P>(owner)
+    pub fn shared_workspace<P: Resource>(
+        &self,
+        owner: &'static str,
+    ) -> Option<super::WorkspaceRecord<P>> {
+        self.storage.shared_workspace::<P>(owner)
     }
 
     /// The person's record `P` that one app keeps for all of theirs — their

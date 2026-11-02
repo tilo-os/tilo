@@ -36,7 +36,7 @@ use crate::i18n::{t, t_args};
 const VISIBLE_ROWS: usize = 8;
 /// A face in a row.
 const FACE: f64 = 40.0;
-/// Room the trailing controls take: Wave (an icon button) and Follow.
+/// Workspace the trailing controls take: Wave (an icon button) and Follow.
 const TRAILING_GAP: f64 = 4.0;
 
 /// What a pointer press or a key on the open roster means to the shell.
@@ -2001,7 +2001,8 @@ fn rows_of(
                     .agent_role_at(&participant.id, now)
                     .or_else(|| workspace.agent_role_at(&participant.name, now))
             });
-            let is_bot = workspace.is_some_and(|workspace| is_room_bot(workspace, participant));
+            let is_bot =
+                workspace.is_some_and(|workspace| is_workspace_bot(workspace, participant));
             let is_agent = is_bot || agent_role.is_some() || has_agent_marker(participant);
             let (red, green, blue) = colors
                 .get(&participant.id)
@@ -2076,7 +2077,7 @@ fn has_agent_marker(participant: &Collaborator) -> bool {
 
 /// Whether `participant` is one of `workspace`'s bots, as the workspace's
 /// governance names them.
-fn is_room_bot(workspace: &tilo_desktop_model::Workspace, participant: &Collaborator) -> bool {
+fn is_workspace_bot(workspace: &tilo_desktop_model::Workspace, participant: &Collaborator) -> bool {
     workspace.bots.iter().any(|bot| bot.is(&participant.id))
 }
 
@@ -2092,7 +2093,7 @@ pub fn collaborator_is_agent(
 ) -> bool {
     has_agent_marker(participant)
         || workspace.is_some_and(|workspace| {
-            is_room_bot(workspace, participant)
+            is_workspace_bot(workspace, participant)
                 || workspace.agent_role_at(&participant.id, now).is_some()
                 || workspace.agent_role_at(&participant.name, now).is_some()
         })
@@ -2376,7 +2377,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rooms_bot_is_tagged_as_a_bot_never_as_a_person() {
+    fn a_workspaces_bot_is_tagged_as_a_bot_never_as_a_person() {
         use tilo_desktop_model::{Workspace, WorkspaceBot, WorkspaceId};
 
         let device = "ab".repeat(32);

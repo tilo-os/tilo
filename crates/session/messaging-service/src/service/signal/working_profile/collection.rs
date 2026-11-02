@@ -20,8 +20,8 @@ impl RamDirectory {
         ram_backing(&self.root)?;
         let mut directory = self.root.try_clone()?;
         for part in [
-            launcher::appdir::ROOMS_DIR,
-            launcher::appdir::PERSONAL_ROOM,
+            launcher::appdir::WORKSPACES_DIR,
+            launcher::appdir::PERSONAL_WORKSPACE,
             SERVICE_PACKAGE,
         ] {
             directory = open_directory(&directory, &component(OsStr::new(part))?)?;
@@ -141,8 +141,8 @@ mod tests {
     }
     fn package(ram: &RamDirectory) -> PathBuf {
         ram.source()
-            .join(launcher::appdir::ROOMS_DIR)
-            .join(launcher::appdir::PERSONAL_ROOM)
+            .join(launcher::appdir::WORKSPACES_DIR)
+            .join(launcher::appdir::PERSONAL_WORKSPACE)
             .join(SERVICE_PACKAGE)
     }
     #[test]

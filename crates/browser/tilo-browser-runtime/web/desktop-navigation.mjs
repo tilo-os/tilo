@@ -1,17 +1,16 @@
-// DesktopNavigationV1 for one mount. Ported from PR 541's
-// desktop-navigation.mjs without its launch placeholders and command-ticket
-// correlation: the runtime admits every command synchronously, and a close
-// settles once its route is gone from a published snapshot.
+// DesktopNavigationV1 for one mount. A command is a verb of the desktop's
+// published vocabularies: its effect id and arguments, the same ones a
+// chord, an agent or a script names. The runtime admits every verb
+// synchronously, refusing one that names something the desktop no longer
+// holds; a close settles once its tab is gone from a published snapshot.
 /** Mount-owned projection: no DOM lookup, transport mutation or polling timer. */
 export function createDesktopNavigation({snapshot,revision,dispatch,active}) {
- const sameRoute=(a,b)=>a?.workspace===b?.workspace&&a?.strip===b?.strip&&a?.group===b?.group&&a?.tab===b?.tab;
- const routeKey=route=>JSON.stringify([route?.workspace,route?.strip,route?.group,route?.tab]);
  let closed=false,serial=revision(),value=JSON.parse(snapshot());
  const listeners=new Set(),pendingCloses=new Map();
  function check(){if(closed)throw Error('Desktop navigation disposed');if(!active())throw Error('Desktop navigation unavailable');}
  function settleCloses(){
   for(const [key,pending] of pendingCloses){
-   if(value.entries?.some(entry=>sameRoute(entry.route,pending.route)))continue;
+   if(value.entries?.some(entry=>entry.route?.tab===pending.tab))continue;
    pendingCloses.delete(key);pending.resolve();
   }
  }
@@ -26,20 +25,20 @@ export function createDesktopNavigation({snapshot,revision,dispatch,active}) {
   // host's status reports: read the current state, not the last report's.
   getSnapshot(){check();refresh();return value;},
   subscribe(listener){check();listeners.add(listener);return()=>listeners.delete(listener);},
-  dispatch(command){
+  dispatch(verb){
    try{
     check();
-    if(command?.generation!==value.generation)throw Error('Stale desktop surface');
+    const args=verb?.args??{};
     // JSON carries a non-finite number as null; refuse it with the runtime's own reason.
-    if(command.kind==='pan'&&!Number.isFinite(command.offset))throw Error('Invalid pan offset');
-    if(command.kind==='close'){
-     const key=routeKey(command.route),existing=pendingCloses.get(key);if(existing)return existing.promise;
+    if(verb.effect==='pan'&&!Number.isFinite(args.offset))throw Error('Invalid pan offset');
+    if(verb.effect==='close-tab'){
+     const key=args.tab,existing=pendingCloses.get(key);if(existing)return existing.promise;
      let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});
-     dispatch(JSON.stringify(command));
-     pendingCloses.set(key,{route:{...command.route},promise,resolve,reject});
+     dispatch(JSON.stringify(verb));
+     pendingCloses.set(key,{tab:key,promise,resolve,reject});
      refresh();return promise;
     }
-    dispatch(JSON.stringify(command));refresh();return Promise.resolve();
+    dispatch(JSON.stringify(verb));refresh();return Promise.resolve();
    }catch(error){return Promise.reject(error);}
   },
  };

@@ -7,7 +7,7 @@
  * - `refused`: the host turned this browser away at its door, and the page
  *   comes again as a new device of the person (`workspaces.mjs`);
  * - `offline`: the browser itself is offline;
- * - `busy`: the host has no room for the page now.
+ * - `busy`: the host has no workspace for the page now.
  *
  * Between tries the page waits with exponential backoff and jitter
  * (`backoffDelay`), paused while the tab is hidden or the browser offline
@@ -30,7 +30,7 @@ const shape = start => ({
 
 /** How long to wait before try `attempt` (0 for the first wait): exponential
  * from `start.firstMs` (by default [`BACKOFF`]), ±`jitter`, never past
- * `capMs`. The wait is random so a room full of pages that lost one host do
+ * `capMs`. The wait is random so a workspace full of pages that lost one host do
  * not all come back in the same tick. */
 export function backoffDelay(attempt, random = Math.random, start = BACKOFF) {
   const {firstMs, factor, capMs, jitter} = shape(start);

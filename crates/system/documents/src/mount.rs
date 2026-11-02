@@ -1,11 +1,11 @@
 //! The documents table served as a filesystem, for the session shell.
 //!
-//! Layout under the mount point: `<room>/<app>/<token>/<name>[/…]`. The
-//! launcher binds one app's `<room>/<app>` at [`crate::SANDBOX_DIR`], so an
-//! app reaches only its own documents. The room and app levels answer any
-//! valid name with an empty folder (the launcher binds an app's view before
-//! anything is chosen) and list nothing; an app's view lists its tokens; a
-//! token holds the chosen file or folder.
+//! Layout under the mount point: `<workspace>/<app>/<token>/<name>[/…]`.
+//! The launcher binds one app's `<workspace>/<app>` at
+//! [`crate::SANDBOX_DIR`], so an app reaches only its own documents. The
+//! workspace and app levels answer any valid name with an empty folder (the
+//! launcher binds an app's view before anything is chosen) and list nothing;
+//! an app's view lists its tokens; a token holds the chosen file or folder.
 //!
 //! Every operation looks its document up in the table again, so taking a
 //! document back is immediate, and reaches the host only through
@@ -33,7 +33,7 @@ use rustix::fs::{AtFlags, Mode, OFlags};
 use rustix::io::Errno;
 
 use crate::host::{self, Target};
-use crate::{AppKey, Documents, Kind, is_app, is_room};
+use crate::{AppKey, Documents, Kind, is_app, is_workspace};
 
 /// How long the kernel may keep an answer: short, so a document taken
 /// back stops showing within a second even where nothing re-asks.
@@ -119,7 +119,7 @@ fn clear_stale_mount(at: &Path) -> io::Result<()> {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Node {
     Root,
-    Room(String),
+    Workspace(String),
     App(AppKey),
     Token(AppKey, String),
     /// A path in a document: its first component is the document's name.
@@ -273,13 +273,13 @@ impl DocumentsFs {
     fn child(&self, parent: &Node, name: &OsStr) -> io::Result<Node> {
         let text = name.to_str();
         let node = match parent {
-            Node::Root => Node::Room(
-                text.filter(|room| is_room(room))
+            Node::Root => Node::Workspace(
+                text.filter(|workspace| is_workspace(workspace))
                     .ok_or_else(|| errno(Errno::NOENT))?
                     .to_owned(),
             ),
-            Node::Room(room) => Node::App(
-                text.and_then(|app| AppKey::new(room, app).filter(|_| is_app(app)))
+            Node::Workspace(workspace) => Node::App(
+                text.and_then(|app| AppKey::new(workspace, app).filter(|_| is_app(app)))
                     .ok_or_else(|| errno(Errno::NOENT))?,
             ),
             Node::App(key) => {
@@ -350,7 +350,7 @@ impl DocumentsFs {
 
     fn attr(&self, ino: u64, node: &Node) -> io::Result<FileAttr> {
         match node {
-            Node::Root | Node::Room(_) | Node::App(_) => Ok(self.dir_attr(ino, 0o500)),
+            Node::Root | Node::Workspace(_) | Node::App(_) => Ok(self.dir_attr(ino, 0o500)),
             Node::Token(key, token) => {
                 let document = self
                     .documents
@@ -374,9 +374,9 @@ impl DocumentsFs {
     /// The entries of a folder node, without `.` and `..`.
     fn list(&self, node: &Node) -> io::Result<Vec<(OsString, FileType)>> {
         match node {
-            // Rooms and apps are entered by name, never listed: an app sees
-            // only its own view, and nothing here names another.
-            Node::Root | Node::Room(_) => Ok(Vec::new()),
+            // Workspaces and apps are entered by name, never listed: an app
+            // sees only its own view, and nothing here names another.
+            Node::Root | Node::Workspace(_) => Ok(Vec::new()),
             Node::App(key) => Ok(self
                 .documents
                 .tokens(key)
@@ -946,7 +946,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         std::fs::write(home.path().join("report.pdf"), b"%PDF").unwrap();
         std::fs::write(home.path().join("secret.txt"), b"secret").unwrap();
-        let key = AppKey::new("room-1", "so.tilo.pdf-viewer").unwrap();
+        let key = AppKey::new("workspace-1", "so.tilo.pdf-viewer").unwrap();
         let view = crate::app_view(mounted.path(), &key);
         assert_eq!(
             std::fs::read_dir(&view).unwrap().count(),
@@ -974,7 +974,7 @@ mod tests {
             .collect();
         assert_eq!(listed, vec![OsString::from("report.pdf")]);
 
-        let other = AppKey::new("room-1", "so.tilo.files").unwrap();
+        let other = AppKey::new("workspace-1", "so.tilo.files").unwrap();
         assert!(
             std::fs::read(in_view(&mounted, &other, &given)).is_err(),
             "another app's view does not have it"
@@ -990,7 +990,7 @@ mod tests {
             return;
         };
         let home = tempfile::tempdir().unwrap();
-        let key = AppKey::new("room-1", "so.tilo.logs").unwrap();
+        let key = AppKey::new("workspace-1", "so.tilo.logs").unwrap();
         let given = documents
             .grant(&key, &home.path().join("export.log"), Kind::Save)
             .unwrap();
@@ -1054,7 +1054,7 @@ mod tests {
         std::fs::create_dir_all(folder.join("2026")).unwrap();
         std::fs::write(folder.join("2026/a.tar"), b"a").unwrap();
         std::fs::write(home.path().join("secret.txt"), b"secret").unwrap();
-        let key = AppKey::new("room-1", "so.tilo.backups").unwrap();
+        let key = AppKey::new("workspace-1", "so.tilo.backups").unwrap();
         let given = documents
             .grant(&key, &folder, Kind::Folder { write: true })
             .unwrap();

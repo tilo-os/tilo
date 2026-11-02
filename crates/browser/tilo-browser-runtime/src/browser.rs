@@ -200,7 +200,7 @@ struct Config {
     apps: Option<Vec<String>>,
     profile: String,
     device: String,
-    room: String,
+    workspace: String,
     /// Who edits; the local identity's person (a certified peer's user)
     /// when absent.
     #[serde(default)]
@@ -214,7 +214,7 @@ struct Config {
     new_document: bool,
     #[serde(default)]
     mac: bool,
-    /// A started certified peer (`WasmPeer.id`) whose room this mount's
+    /// A started certified peer (`WasmPeer.id`) whose workspace this mount's
     /// records and desktop replicate through.
     #[serde(default)]
     peer: Option<u32>,
@@ -232,7 +232,7 @@ struct Config {
     /// The name a desktop seeded for this mount gives its workspace.
     #[serde(default)]
     workspace_name: Option<String>,
-    /// The host of the room shown (`example.org`), which the bar names
+    /// The host of the workspace shown (`example.org`), which the bar names
     /// beside the workspace; absent on the person's own desktop.
     #[serde(default)]
     host: Option<String>,
@@ -415,7 +415,7 @@ struct Mount {
     checkout: Option<RecordCheckout>,
     /// The single application's id; `None` for the desktop.
     app: Option<&'static str>,
-    /// The room's members' pointers the page last handed over, each
+    /// The workspace's members' pointers the page last handed over, each
     /// relative to what it is over; placed again after every frame.
     remote_pointers: Vec<pointers::RemotePointer>,
     desktop: Option<Desktop>,
@@ -448,7 +448,7 @@ struct Mount {
     /// The window each loader draws for ([`crate::page_content`]).
     image_owners: crate::page_content::ImageOwners,
     /// Content-addressed image requests whose bytes the page does not hold
-    /// yet, by loader and URL: asked of the room, handed to the page once
+    /// yet, by loader and URL: asked of the workspace, handed to the page once
     /// they are here.
     blob_waiting: RefCell<Vec<(usize, String)>>,
     /// The image requests the page is decoding, by loader and URL. Dropping
@@ -513,20 +513,20 @@ struct Desktop {
     openings: tilo_desktop_surface::session::Openings,
     /// What the session asked of the page for its windows, still open.
     asks: session_asks::Asks,
-    /// Mentions of this person in the room's records, and what was told.
+    /// Mentions of this person in the workspace's records, and what was told.
     mentions: RefCell<mention_notices::Mentions>,
     /// What this person may do here, which decides what the session opens
     /// as the workspace broker decides it on a native desktop.
     permissions: SharedPermissions,
     /// The workspace the session serves.
-    room: String,
+    workspace: String,
 }
 
 impl Desktop {
-    /// Who the windows ask the session as: this page's person, in its room.
+    /// Who the windows ask the session as: this page's person, in its workspace.
     fn caller(&self) -> tilo_actions::remote::Caller {
         tilo_actions::remote::Caller::local_person(self.author.clone())
-            .in_workspace(self.room.clone())
+            .in_workspace(self.workspace.clone())
     }
 
     /// Serve every action client a window makes on this thread from the
@@ -538,13 +538,12 @@ impl Desktop {
     /// Open the apps the windows asked for since the last frame. Whether
     /// any were asked.
     fn open_requested_apps(&self) -> bool {
-        self.ask_room_of_nodes();
+        self.ask_host_of_nodes();
         self.ask_app_actions();
         let permissions = self.permissions.borrow();
-        self.openings
-            .open(&self.handle, &self.generation, |app, existing| {
-                crate::desktop::may_open(&permissions, app, existing)
-            })
+        self.openings.open(&self.handle, |app, existing| {
+            crate::desktop::may_open(&permissions, app, existing)
+        })
     }
 
     /// Ask the session, as this person, for the app actions they chose in
@@ -556,7 +555,7 @@ impl Desktop {
             let request = InvokeRequest {
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::application_action_target(
-                    &self.room,
+                    &self.workspace,
                     asked.app_id,
                     asked.resource,
                     asked.action,
@@ -575,7 +574,7 @@ impl Desktop {
     }
 
     /// Tell this person, in a banner that retires to the notification
-    /// centre, about something someone else did in the room.
+    /// centre, about something someone else did in the workspace.
     fn notify(&self, title: &str) {
         self.post(tilo_desktop_surface::notifications::Notification::new(
             title, "",
@@ -594,15 +593,15 @@ impl Desktop {
         let arrivals = self.here.borrow_mut().take_arrivals(crate::shell::now_ms());
         for name in arrivals {
             self.notify(&tilo_desktop_surface::i18n::t_args(
-                "room-notice-joined",
+                "workspace-notice-joined",
                 &[("name", name.into())],
             ));
         }
     }
 
-    /// Notices for what other people did to the room's desktop since the
+    /// Notices for what other people did to the workspace's desktop since the
     /// last frame: the workspace renamed by someone else.
-    fn post_room_notices(&self) {
+    fn post_workspace_notices(&self) {
         let renames = std::mem::take(&mut *self.shared.renames.borrow_mut());
         for rename in renames {
             if let Some(notice) = rename.notice_for(&self.author, |user| self.person_name(user)) {
@@ -620,10 +619,10 @@ impl Desktop {
     }
 
     /// Tell the surface who holds each window this page's person may not
-    /// close or move, on a desktop shared through a room. Whether that
+    /// close or move, on a desktop shared through a workspace. Whether that
     /// changed anything.
-    fn refresh_holders(&self, in_room: bool) -> bool {
-        let holders = if in_room {
+    fn refresh_holders(&self, in_workspace: bool) -> bool {
+        let holders = if in_workspace {
             let here = self.here.borrow();
             let mut people = self.people.borrow_mut();
             let mut person = |user: &str| match here.person(user) {
@@ -639,19 +638,20 @@ impl Desktop {
                 }),
             };
             self.handle.read(|tree| {
-                let room = tree
+                let workspace = tree
                     .workspaces
                     .first()
                     .map(|workspace| workspace.name.clone())
                     .unwrap_or_default();
-                self.shared.holders(tree, &self.author, &room, &mut person)
+                self.shared
+                    .holders(tree, &self.author, &workspace, &mut person)
             })
         } else {
             HashMap::new()
         };
-        // Someone the room lets only look (its spectator) opens nothing in
+        // Someone the workspace lets only look (its spectator) opens nothing in
         // it, so no window offers them a new tab.
-        let opens = !in_room
+        let opens = !in_workspace
             || self
                 .shared
                 .standing
@@ -663,7 +663,7 @@ impl Desktop {
 }
 
 impl Mount {
-    /// Send the room what an input just committed. An app applies the
+    /// Send the workspace what an input just committed. An app applies the
     /// action a key or a click invokes while handling it (a message sent
     /// with Enter is in its record at once), so the others get it now,
     /// without waiting for the frame that lays it out and draws it here.
@@ -727,7 +727,7 @@ impl Mount {
         self.save_desktop();
     }
 
-    /// Keep the room's desktop in the profile after anything moved it.
+    /// Keep the workspace's desktop in the profile after anything moved it.
     fn save_desktop(&self) {
         if let Some(desktop) = &self.desktop
             && let Err(error) = desktop.persistence.save(&desktop.handle)
@@ -903,7 +903,7 @@ pub fn provide_startup_font(name: String, bytes: Vec<u8>, sha256: String) {
 }
 
 /// Mount an application on `canvas`. `config` is JSON (`app`, `profile`,
-/// `device`, `room`, `author`, `instance`, optional `record`, `mac`); its
+/// `device`, `workspace`, `author`, `instance`, optional `record`, `mac`); its
 /// startup fonts are those handed over by [`provide_startup_font`] since the
 /// last mount; `hydrated` holds the namespace's stored rows. Statuses arrive
 /// on `status` as JSON text.
@@ -1079,7 +1079,7 @@ fn desktop_inputs(
     permissions: SharedPermissions,
 ) -> Result<crate::desktop::Inputs, JsValue> {
     let views = Rc::new(
-        InstanceViewStore::with_store(Rc::clone(dyn_store), &config.device, &config.room)
+        InstanceViewStore::with_store(Rc::clone(dyn_store), &config.device, &config.workspace)
             .map_err(error)?,
     );
     Ok(crate::desktop::Inputs {
@@ -1092,7 +1092,7 @@ fn desktop_inputs(
             .peer
             .and_then(crate::replication::device_of)
             .unwrap_or_else(|| config.device.clone()),
-        room: config.room.clone(),
+        workspace: config.workspace.clone(),
         author: config.author(),
         permissions,
         models: config.models()?,
@@ -1128,7 +1128,7 @@ fn present_desktop(
     let here = tilo_desktop::here::Here::default();
     let people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>> = Rc::default();
     surface.set_history_source(Box::new(crate::history::PageHistory::new(
-        &config.room,
+        &config.workspace,
         config.peer,
         config.author(),
         Rc::clone(&dyn_history_store),
@@ -1137,7 +1137,7 @@ fn present_desktop(
         crate::history::person_of(&here, &people, config.author()),
     )));
     let (session, openings) =
-        tilo_desktop_surface::session::serve(config.room.clone(), Arc::clone(&shared.woken));
+        tilo_desktop_surface::session::serve(config.workspace.clone(), Arc::clone(&shared.woken));
     surface.serve_activity(openings.activity());
     surface.set_notifications(persistence.notifications.clone());
     if let Some(inbox) = crate::host_services::notification_inbox() {
@@ -1146,7 +1146,7 @@ fn present_desktop(
     DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
     let generation = format!("mount-{id}");
     let requests = crate::shell::HostRequests::default();
-    let room = crate::shell::Room {
+    let authorship = crate::shell::Authorship {
         authors: Rc::clone(&shared.authors),
         author: config.author(),
     };
@@ -1167,7 +1167,7 @@ fn present_desktop(
         crate::shell::ChromeSources {
             here: Rc::clone(&here),
             shared: shared.clone(),
-            room,
+            authorship,
             notifications: persistence.notifications.clone(),
             wake: Arc::new(move || {
                 let _ = wake.send_event(id);
@@ -1193,11 +1193,11 @@ fn present_desktop(
             openings,
             asks: session_asks::Asks::new(config.peer),
             mentions: RefCell::new(mention_notices::Mentions::new(
-                &config.room,
+                &config.workspace,
                 &config.author(),
             )),
             permissions: opening_permissions,
-            room: config.room.clone(),
+            workspace: config.workspace.clone(),
         }),
     })
 }
@@ -1214,7 +1214,7 @@ fn present_component(
     let owners = RecordOwners::with_store(Rc::clone(dyn_store));
     let record = owners
         .clone()
-        .open(definition.app_id(), &config.room)
+        .open(definition.app_id(), &config.workspace)
         .map_err(error)?;
     let stores = Rc::new(RefCell::new(vec![record.clone()]));
     // The instance's default record, named by the host so a reload opens the
@@ -1258,7 +1258,7 @@ fn present_component(
         None => definition.unsaved_target(&record).map_err(error)?,
     };
     let views = Rc::new(
-        InstanceViewStore::with_store(Rc::clone(dyn_store), &config.device, &config.room)
+        InstanceViewStore::with_store(Rc::clone(dyn_store), &config.device, &config.workspace)
             .map_err(error)?,
     );
     let restore = views
@@ -1281,7 +1281,12 @@ fn present_component(
     .map_err(error)?;
     context.provide_models(config.models()?);
     context.provide_content(crate::page_content());
-    context.provide_workspace_records(in_page(&owners, &stores, &config.room, config.author()));
+    context.provide_workspace_records(in_page(
+        &owners,
+        &stores,
+        &config.workspace,
+        config.author(),
+    ));
     crate::person_records::provide(&mut context, dyn_store).map_err(error)?;
     config.lend_provider_admin(&mut context)?;
     crate::app_loans::lend(&mut context);
@@ -1345,16 +1350,16 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let definition = definition(config.app.as_deref())?;
     let profile = crate::storage::load(&config.profile, &config.device, &hydrated)?;
     // Through a peer kept in no profile (a watching page's), the mount keeps
-    // its records where the peer keeps what the room delivers: in the page.
+    // its records where the peer keeps what the workspace delivers: in the page.
     let store = config
         .peer
         .and_then(crate::replication::page_store)
         .unwrap_or(profile);
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
-    // In a room, the page's apps may only read until the room says what
-    // its person may do there (`Room::follow_standing`): a change they make
-    // before that the room may refuse, and a write queued under a role the
-    // page only assumed would be refused at the door once the room's answer
+    // In a workspace, the page's apps may only read until the workspace says what
+    // its person may do there (`Joined::follow_standing`): a change they make
+    // before that the workspace may refuse, and a write queued under a role the
+    // page only assumed would be refused at the door once the workspace's answer
     // arrives, over the window, though the person never asked for it.
     let assumed = if config.peer.is_some() {
         collab_types::role::Role::Viewer
@@ -1443,7 +1448,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         // desktop; this page's desktop is that session.
         frame.set_session_door(
             ui::RemoteActions::with_host(desktop.session.clone(), desktop.caller()),
-            Some(desktop.room.clone()),
+            Some(desktop.workspace.clone()),
         );
     }
     frame.set_input_scale(dpr).map_err(error)?;
@@ -1483,7 +1488,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             },
         );
         if !attached {
-            return Err(error("the peer has no replicated room"));
+            return Err(error("the peer has no replicated workspace"));
         }
     }
     let window_ms = config
@@ -2151,7 +2156,7 @@ impl Mount {
             desktop
                 .handle
                 .set_viewport_width(f64::from(viewport.logical_size().0));
-            desktop.post_room_notices();
+            desktop.post_workspace_notices();
             desktop.tell_mentions();
             desktop.refresh_holders(self.peer.is_some())
         });
@@ -2492,7 +2497,7 @@ impl Mount {
         )
     }
 
-    /// Add the focus presence and the place in the room to a status where
+    /// Add the focus presence and the place in the workspace to a status where
     /// they differ from what the page was last told.
     fn add_presence_changes(&self, value: &mut serde_json::Value) {
         let Some(object) = value.as_object_mut() else {
@@ -2570,7 +2575,7 @@ impl Mount {
     /// nothing out is not built: it is the last one. Nor is that of a frame
     /// that only moved laid-out content, a content-only change: the gate's
     /// deadline delivers it as it then is. Neither changes the focus
-    /// presence or the place in the room either.
+    /// presence or the place in the workspace either.
     fn publish_frame(&mut self, id: u64, change: FrameChange, presented: bool) {
         // What did not run is said over the window; the log says which
         // invocation it was, which the window's words leave out.
@@ -2914,7 +2919,7 @@ pub fn asset_requests(id: u64) -> Result<String, JsValue> {
         }
         let mut requests = Vec::new();
         for (loader, url) in wanted {
-            // Content the page lacks is asked of the room; the request waits
+            // Content the page lacks is asked of the workspace; the request waits
             // here until it has arrived.
             if !crate::page_content::image_ready(&m.image_owners, loader, &url) {
                 m.blob_waiting.borrow_mut().push((loader, url));
@@ -2933,7 +2938,7 @@ pub fn asset_requests(id: u64) -> Result<String, JsValue> {
             }));
             tickets.insert((loader, url), ticket);
         }
-        // What the page asked for goes to the room now, not on the next
+        // What the page asked for goes to the workspace now, not on the next
         // frame an idle page may never draw.
         if !m.blob_waiting.borrow().is_empty()
             && let Some(peer) = m.peer

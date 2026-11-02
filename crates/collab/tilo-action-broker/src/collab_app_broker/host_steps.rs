@@ -66,7 +66,7 @@ pub(super) fn is_local_host_caller(
         return false;
     };
     !original.presentation.is_empty()
-        && caller.room() == Some(original.workspace.as_str())
+        && caller.workspace() == Some(original.workspace.as_str())
         && original
             .admitted
             .certificate
@@ -157,7 +157,7 @@ impl AppBrokerState {
         if !is_local_host_caller(caller, origin) {
             return Err(abandon(ActionHostError::UnknownAction));
         }
-        let Some(workspace_id) = caller.room() else {
+        let Some(workspace_id) = caller.workspace() else {
             return Err(abandon(ActionHostError::NotPermitted));
         };
         let address = &request.target.address;
@@ -441,7 +441,7 @@ pub(crate) mod signed_test_support {
                 tilo_identity_host::provisioning::IdentityStorage::Files,
             )
             .expect("provision the production receipt signer");
-            let mut workspace = Workspace::in_room(
+            let mut workspace = Workspace::in_workspace(
                 WorkspaceId(9),
                 tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::WORKSPACE)
                     .unwrap(),
@@ -976,7 +976,7 @@ mod identity_admin_tests {
             publishers.providers.iter().any(|provider| {
                 provider.provider == identity_admin::PROVIDER
                     && provider.app_id == "so.tilo.settings"
-                    && provider.room == workspace
+                    && provider.workspace == workspace
                     && provider.browsable
             }),
             "{:?}",

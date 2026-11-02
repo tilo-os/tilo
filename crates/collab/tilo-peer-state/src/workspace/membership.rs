@@ -151,8 +151,8 @@ pub fn authorize(
     {
         return Err(MembershipRefusal::NotMembership);
     }
-    let held = tilo_desktop_model::projection::room_policy_of(at, workspace);
-    let wanted = tilo_desktop_model::projection::room_policy_of(after, workspace);
+    let held = tilo_desktop_model::projection::workspace_policy_of(at, workspace);
+    let wanted = tilo_desktop_model::projection::workspace_policy_of(after, workspace);
     let stages = stages(at, batch)?;
     let actor = hex::encode(person);
     let bound = roles::foreign_device_bound();
@@ -177,7 +177,7 @@ pub fn authorize(
     let mut previous_document = at.clone();
     let mut previous = held.clone();
     for stage in &stages {
-        let stage_policy = tilo_desktop_model::projection::room_policy_of(stage, workspace);
+        let stage_policy = tilo_desktop_model::projection::workspace_policy_of(stage, workspace);
         let admitted = redemptions(
             workspace,
             &previous,
@@ -401,11 +401,11 @@ fn settings(
     held: &WorkspacePolicy,
     (actor, authority, cx): Writer<'_>,
 ) -> Result<(), MembershipRefusal> {
-    use tilo_desktop_model::projection::{ROOM_NAME_KEY, RoomLayout, room_layout};
+    use tilo_desktop_model::projection::{WORKSPACE_NAME_KEY, WorkspaceLayout, workspace_layout};
     let parts = |doc: &AutoCommit| {
         super::settings_of(Some(doc))
             .into_iter()
-            .partition::<Vec<_>, _>(|(key, _)| key == ROOM_NAME_KEY)
+            .partition::<Vec<_>, _>(|(key, _)| key == WORKSPACE_NAME_KEY)
     };
     let (held_name, held_presets) = parts(at);
     let (name, presets) = parts(after);
@@ -416,12 +416,12 @@ fn settings(
         let governs = held
             .active_role(actor)
             .is_some_and(|role| role >= Role::Moderator);
-        if !(governs || settles) || room_layout(at) == RoomLayout::Personal {
+        if !(governs || settles) || workspace_layout(at) == WorkspaceLayout::Personal {
             return Err(MembershipRefusal::Refused(format!(
                 "renaming workspace {workspace} is not the writer's"
             )));
         }
-        let named = match automerge::ReadDoc::get(after, automerge::ROOT, ROOM_NAME_KEY) {
+        let named = match automerge::ReadDoc::get(after, automerge::ROOT, WORKSPACE_NAME_KEY) {
             Ok(Some((automerge::Value::Scalar(value), _))) => match value.as_ref() {
                 automerge::ScalarValue::Str(name) => Some(name.to_string()),
                 _ => None,

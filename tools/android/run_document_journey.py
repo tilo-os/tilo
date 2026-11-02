@@ -106,8 +106,8 @@ def main():
                     if answer.get('granted') != identifier:
                         raise RuntimeError('fixture grant was not issued: ' + identifier)
                     grants.append(identifier)
-                room = journey.workspace()['room']
-                private = profile / 'data/tilo-rooms' / room / package
+                workspace = journey.workspace()['room']
+                private = profile / 'data/tilo-rooms' / workspace / package
                 if cold:
                     # Fixture input is authored before launch, not inferred from
                     # ContentResolver's answer or a private runtime shortcut.

@@ -9,7 +9,7 @@ use crate::services::{LaunchPlace, NativeTaskActionRequirement};
 use std::sync::{Arc, atomic::Ordering};
 use tilo_actions::remote::{
     Caller, InvokeArgument, InvokeRequest, RemoteActionTarget, application_provider, pending,
-    workspace_provider_room,
+    provider_workspace,
 };
 
 /// Invocation-scoped injection at the actual durable/effect boundary.
@@ -512,7 +512,7 @@ impl AppBrokerState {
         caller: &LocalCaller,
         invocation: tilo_actions::InvocationId,
     ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, String> {
-        if workspace_provider_room(target.provider) != Some(run.cluster_id.as_str())
+        if provider_workspace(target.provider) != Some(run.cluster_id.as_str())
             || target.action != "open"
         {
             return Ok(None);
@@ -574,7 +574,7 @@ impl AppBrokerState {
     ) -> Result<NativeLaunch, String> {
         let run = self.task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)?;
         let target = reask.target;
-        let bootstrap = workspace_provider_room(target.provider)
+        let bootstrap = provider_workspace(target.provider)
             .is_some_and(|workspace| workspace == run.cluster_id)
             && target.action == "open"
             && target.resource.starts_with("app.");

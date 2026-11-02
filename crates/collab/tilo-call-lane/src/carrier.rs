@@ -26,7 +26,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use iroh::endpoint::{
     ConnectOptions, ConnectingError, Connection, ConnectionError, QuicTransportConfig, ReadError,
-    ReadToEndError, SendDatagramError, VarInt, WriteError,
+    ReadToEndError, SendDatagramError, SendStream, VarInt, WriteError,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
@@ -57,14 +57,23 @@ const RECEIVE_BUFFER: usize = 256 * 1024;
 /// rest of the session's links.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Streams a lane's connection accepts at once: a picture stream per source
+/// and layer of the call's other side, each with the room to start over, and
+/// the control streams either side opens.
+const MAX_UNI_STREAMS: u32 = 64;
+const MAX_BI_STREAMS: u32 = 8;
+
 /// The QUIC transport a lane's connections use: the session's idle timeout,
-/// and a receive buffer sized for a call's datagrams.
+/// a receive buffer sized for a call's datagrams, and room for the picture
+/// streams of a call.
 #[must_use]
 pub fn transport_config() -> QuicTransportConfig {
     let idle = u32::try_from(IDLE_TIMEOUT.as_millis()).unwrap_or(u32::MAX);
     QuicTransportConfig::builder()
         .max_idle_timeout(Some(VarInt::from_u32(idle).into()))
         .datagram_receive_buffer_size(Some(RECEIVE_BUFFER))
+        .max_concurrent_uni_streams(VarInt::from_u32(MAX_UNI_STREAMS))
+        .max_concurrent_bidi_streams(VarInt::from_u32(MAX_BI_STREAMS))
         .build()
 }
 
@@ -87,6 +96,17 @@ pub struct Hello {
 }
 
 impl Hello {
+    /// Whether this is a hello for the same call: the two devices agree on
+    /// the workspace, the channel and the call. The lane differs by design:
+    /// one device's call has one connection per lane, and the accepting side
+    /// answers whichever one was dialled.
+    #[must_use]
+    fn same_call(&self, other: &Self) -> bool {
+        self.workspace == other.workspace
+            && self.channel == other.channel
+            && self.call == other.call
+    }
+
     fn encode(&self) -> Result<Vec<u8>, String> {
         postcard::to_stdvec(self).map_err(|error| format!("the hello does not encode: {error}"))
     }
@@ -113,7 +133,10 @@ pub enum Failed {
 ///
 /// Clone it to hand one to the session endpoint's [`iroh::protocol::Router`]
 /// under [`ALPN`] (it is the accepting [`ProtocolHandler`]) and to keep
-/// dialing with; every clone accepts and dials for the same call.
+/// dialing with; every clone accepts and dials for the same call. The hello
+/// it holds names the lane it dials, and the accepting side answers whichever
+/// of the call's lanes was dialled, so one device's call has a connection per
+/// lane and one handler for all of them.
 #[derive(Clone)]
 pub struct Calls(Arc<Inner>);
 
@@ -217,22 +240,29 @@ impl Calls {
         }
         let theirs = recv.read_to_end(MAX_HELLO_BYTES).await.map_err(reading)?;
         let theirs = Hello::decode(&theirs).map_err(Failed::Ended)?;
+        if !theirs.same_call(&self.0.hello) {
+            let reason = "the device asked for another call";
+            connection.close(REFUSED.into(), reason.as_bytes());
+            return Err(Failed::Refused(reason.to_owned()));
+        }
+        let lane = theirs.lane;
         if !dialling {
             // The dialer reads this on the stream it opened: it learns whether
             // it reached the call it meant to, and is closed if it did not.
-            send.write_all(&self.0.hello.encode().map_err(Failed::Ended)?)
+            // The lane is the one it dialled, so both sides know which of the
+            // call's lanes this connection carries.
+            let reply = Hello {
+                lane,
+                ..self.0.hello.clone()
+            };
+            send.write_all(&reply.encode().map_err(Failed::Ended)?)
                 .await
                 .map_err(writing)?;
             send.finish().map_err(ended)?;
         }
-        if theirs != self.0.hello {
-            let reason = "the device asked for another call or lane";
-            connection.close(REFUSED.into(), reason.as_bytes());
-            return Err(Failed::Refused(reason.to_owned()));
-        }
         Ok(Peer {
             connection: connection.clone(),
-            hello: self.0.hello.clone(),
+            lane,
             remote,
         })
     }
@@ -265,7 +295,7 @@ impl ProtocolHandler for Calls {
 #[derive(Clone)]
 pub struct Peer {
     connection: Connection,
-    hello: Hello,
+    lane: Lane,
     remote: [u8; 32],
 }
 
@@ -280,7 +310,31 @@ impl Peer {
     /// Which of the call's lanes this connection carries.
     #[must_use]
     pub const fn lane(&self) -> Lane {
-        self.hello.lane
+        self.lane
+    }
+
+    /// The connection this lane runs on: what a lane's pictures are read
+    /// from and written to.
+    #[must_use]
+    pub(crate) fn connection(&self) -> Connection {
+        self.connection.clone()
+    }
+
+    /// Open the stream a picture of `source` at a layer is written to, with
+    /// `priority` deciding what waits behind what: a stage before a grid.
+    /// `None` when the connection ended or the other side is not reading
+    /// pictures.
+    pub(crate) async fn open_pictures(&self, priority: i32) -> Option<SendStream> {
+        let stream = self.connection.open_uni().await.ok()?;
+        stream.set_priority(priority).ok()?;
+        Some(stream)
+    }
+
+    /// Open a control stream, which carries what this device shows of the
+    /// other and what it asks to start over.
+    pub(crate) async fn open_control(&self) -> Option<SendStream> {
+        let (send, _recv) = self.connection.open_bi().await.ok()?;
+        Some(send)
     }
 
     /// Send one datagram.
@@ -325,7 +379,7 @@ impl std::fmt::Debug for Peer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Peer")
             .field("remote", &self.remote)
-            .field("lane", &self.hello.lane)
+            .field("lane", &self.lane)
             .finish_non_exhaustive()
     }
 }

@@ -593,7 +593,7 @@ mod tests {
         let handle = WorkspaceTreeHandle::default();
         let bump = |handle: &WorkspaceTreeHandle| {
             let mut tree = handle.write();
-            tree.desktop.room_epoch = tree.desktop.room_epoch.wrapping_add(1);
+            tree.desktop.workspace_epoch = tree.desktop.workspace_epoch.wrapping_add(1);
         };
         let mine = WorkspaceTreeHandle::writes_on_this_thread();
         let generation = handle.generation();
@@ -643,7 +643,7 @@ mod tests {
             let handle = handle.clone();
             std::thread::spawn(move || {
                 let mut guard = handle.write();
-                guard.desktop.room_epoch = guard.desktop.room_epoch.wrapping_add(1);
+                guard.desktop.workspace_epoch = guard.desktop.workspace_epoch.wrapping_add(1);
                 held_tx.send(()).unwrap();
                 let _ = release.recv();
                 drop(guard);

@@ -12,7 +12,7 @@ for me."
 For each of about 8 mails, the agent:
 
 1. Finds the mail. Search covers mail fetched over IMAP, not only mail held in
-   the room.
+   the workspace.
 2. Reads the mail and lists its attachments.
 3. Turns the CV attachment into workspace content and reads it through the PDF
    viewer: text per page, plus page images when the model has vision.
@@ -62,7 +62,8 @@ What breaks:
 5. **The agent can't open things or arrange windows by id:**
    - The window and layout actions (`tab.*`, `group.*`, `strip.*`) act on the
      focused window and aren't in the broker catalogue the agent uses.
-   - `DesktopCommand` is id-addressed but is only served to room governors.
+   - `DesktopCommand` is id-addressed but is not in the catalogue the agent
+     invokes.
    - The workspace `open` takes a hash or an action, but not a resource or a
      URL, and doesn't say which window it opened.
 6. **web-search `fetch` refuses PDFs** and other non-text bodies.

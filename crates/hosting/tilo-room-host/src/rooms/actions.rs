@@ -1,7 +1,7 @@
 //! The rooms this relay governs, as their own governance actions.
 //!
 //! A room's administration is its public surface like any app's: provider
-//! [`ROOM_GOVERNANCE_PROVIDER`] (`tilo.workspace`) publishes it on the
+//! [`WORKSPACE_GOVERNANCE_PROVIDER`] (`tilo.workspace`) publishes it on the
 //! room's governance resource (`workspace.permissions:<room>`), so an agent,
 //! a script, the palette or a screen reader invites, lists and cancels
 //! invitations, admits and declines join requests, sets roles, restricts and
@@ -52,8 +52,8 @@ use tilo_action_policy::roles::{self, governance};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider,
     CatalogueQuery, CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, ROOM_GOVERNANCE_KIND,
-    ROOM_GOVERNANCE_PROVIDER, RemoteActionMessage, room_governance_resource,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage,
+    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
@@ -521,8 +521,8 @@ struct Publisher {
 
 /// A room's own governance.
 const GOVERNANCE: Publisher = Publisher {
-    provider: ROOM_GOVERNANCE_PROVIDER,
-    kind: ROOM_GOVERNANCE_KIND,
+    provider: WORKSPACE_GOVERNANCE_PROVIDER,
+    kind: WORKSPACE_GOVERNANCE_KIND,
 };
 
 impl Publisher {
@@ -532,7 +532,7 @@ impl Publisher {
         CatalogueProvider {
             provider: self.provider.into(),
             app_id: self.provider.into(),
-            room: room.to_owned(),
+            workspace: room.to_owned(),
             record_id: String::new(),
             browsable: false,
         }
@@ -929,14 +929,14 @@ impl Rooms {
                 .is_none_or(|wanted| wanted == provider)
         };
         let mut offer = Offer::default();
-        if wants(ROOM_GOVERNANCE_PROVIDER)
+        if wants(WORKSPACE_GOVERNANCE_PROVIDER)
             && let Some(workspace_id) = workspace_id
             && let Some((governed, device)) = self.governed_by(workspace_id, caller).await
         {
             let room = governed.lock().await;
             offer.generation = room.record.generation;
             let now = tilo_clock::unix_now_ns();
-            let resource = room_governance_resource(room.room());
+            let resource = workspace_governance_resource(room.room());
             let owner = device.user_public_key == self.inner.host.cert.user_public_key;
             let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
             let rows: Vec<CatalogueRow> = VERBS
@@ -967,7 +967,7 @@ impl Rooms {
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
         match (request.target.provider.as_str(), workspace_id) {
-            (ROOM_GOVERNANCE_PROVIDER, Some(workspace_id)) => {
+            (WORKSPACE_GOVERNANCE_PROVIDER, Some(workspace_id)) => {
                 self.governance_invoke(workspace_id, caller, request).await
             }
             (HOST_ACTIONS_PROVIDER, _) => {
@@ -1002,7 +1002,7 @@ impl Rooms {
         let room = {
             let room = governed.lock().await;
             // Unknown and forbidden are the same answer.
-            if address.resource != room_governance_resource(room.room())
+            if address.resource != workspace_governance_resource(room.room())
                 || !self.permits(
                     &device,
                     Some(&room),
@@ -1563,10 +1563,10 @@ impl ActionHost for InWorkspace {
 }
 
 /// The providers a relay that governs rooms answers itself.
-const PROVIDERS: [&str; 2] = [ROOM_GOVERNANCE_PROVIDER, HOST_ACTIONS_PROVIDER];
+const PROVIDERS: [&str; 2] = [WORKSPACE_GOVERNANCE_PROVIDER, HOST_ACTIONS_PROVIDER];
 
 /// What a relay that governs rooms answers remote actions addressed to it
-/// with: the rooms' governance (provider [`ROOM_GOVERNANCE_PROVIDER`]), the
+/// with: the rooms' governance (provider [`WORKSPACE_GOVERNANCE_PROVIDER`]), the
 /// host's own operations ([`HOST_ACTIONS_PROVIDER`]), and the app-serving plane its
 /// embedder supplied for everything else.
 pub(crate) struct GovernedPlane {

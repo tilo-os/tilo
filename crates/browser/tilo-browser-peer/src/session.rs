@@ -9,7 +9,7 @@
 //!   sent as an `Envelope::Commit`. It stays outstanding until the host
 //!   answers `Committed` with its order; the local replica already shows it.
 //! - **Reconnect replays.** After any disconnect the task reconnects with
-//!   backoff, re-subscribes every joined room (the host replays retained
+//!   backoff, re-subscribes every joined workspace (the host replays retained
 //!   checkpoints and this device's queue), rejoins the live plane and resends
 //!   the whole outbox in order. Re-applying a document change is idempotent.
 //! - **Fail closed.** An expired certificate, or a host that keeps refusing
@@ -54,8 +54,8 @@ const MAX_HELD_DOCUMENTS: usize = 4096;
 /// to be unreachable. A refusal that says why decides at once.
 const REFUSALS_BEFORE_FAILING: u32 = 3;
 /// The host does not admit this device's person (`not-admitted`): it never
-/// knew them, forgot them (its state was reset, or it pruned them) or a room
-/// took them out. The page joins again where the room's door lets it.
+/// knew them, forgot them (its state was reset, or it pruned them) or a workspace
+/// took them out. The page joins again where the workspace's door lets it.
 const NOT_ADMITTED: (&str, &str) = (
     "not-admitted",
     "This workspace’s host no longer has you as a member.",
@@ -115,7 +115,7 @@ fn refusal(error: &LinkError) -> Refusal {
         ),
     }
 }
-/// How long a connected session waits for the host to admit its rooms before
+/// How long a connected session waits for the host to admit its workspaces before
 /// it reports `admission-timeout`. Checked on the keep-alive tick.
 const ADMISSION_TIMEOUT_MS: u64 = 30_000;
 /// Failures kept at once; the oldest goes first.
@@ -146,15 +146,15 @@ pub struct PeerConfig {
     pub host_cert: DeviceCert,
     /// Root-signed revocations this device knows about.
     pub revocations: RevocationList,
-    /// This page only watches the rooms it joins: a public room's
+    /// This page only watches the workspaces it joins: a public workspace's
     /// spectator. It writes nothing: no document, live frame, action,
     /// compaction or presence of its own, no live join, and no channel
     /// governance, so it never asks a channel for access; it only asks the
-    /// room for content its records reference. It takes the
-    /// content keys of the records it opens from the room's node over
+    /// workspace for content its records reference. It takes the
+    /// content keys of the records it opens from the workspace's node over
     /// HTTPS instead ([`tilo_relay_client::https::channel_keys`]).
     pub watching: bool,
-    /// The page keeps this session beside the room in front, only to
+    /// The page keeps this session beside the workspace in front, only to
     /// deliver for it (problem reports to the page's home workspace): the
     /// host counts nobody online by it, so it takes no seat and shows no
     /// face there ([`tilo_relay_protocol::web::SessionFinish::background`]).
@@ -205,7 +205,7 @@ pub enum FailureSubject {
     Session,
     /// The page's durable store (`retry-saving`).
     Storage,
-    /// Admission of the joined rooms (`refresh-checkpoint`).
+    /// Admission of the joined workspaces (`refresh-checkpoint`).
     Admission,
     /// One desktop surface's renderer (`retry-desktop`).
     Surface(String),
@@ -272,7 +272,7 @@ pub struct PeerStatus {
     pub next_attempt_at_ms: Option<u64>,
     /// Last envelope from the host (ms since the epoch).
     pub last_contact_at_ms: Option<u64>,
-    /// Joined rooms and whether the host answered `Ready`.
+    /// Joined workspaces and whether the host answered `Ready`.
     pub rooms: BTreeMap<u64, bool>,
     /// Per-route status.
     pub routes: BTreeMap<DocumentRoute, RouteStatus>,
@@ -284,15 +284,15 @@ pub struct PeerStatus {
     pub device: [u8; 32],
     /// Bumped on every change.
     pub generation: u64,
-    /// This page's channel state, one line per room, certificate and
+    /// This page's channel state, one line per workspace, certificate and
     /// route, for diagnostics.
     pub channels: String,
-    /// The joined rooms whose layout is personal, as their governance says:
+    /// The joined workspaces whose layout is personal, as their governance says:
     /// the page keeps its strips and windows to itself there.
     pub personal_rooms: BTreeSet<String>,
-    /// The members each joined room's governance lists, by room, by person
-    /// id: what someone no longer among them made on the room's desktop is
-    /// released ([`tilo_desktop_model::ownership::released`]).
+    /// The members each joined workspace's governance lists, by workspace, by
+    /// person id: what someone no longer among them made on the workspace's
+    /// desktop is released ([`tilo_desktop_model::ownership::released`]).
     pub room_members: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -304,9 +304,9 @@ pub enum PeerEvent {
     Document(Box<OpenedDocument>),
     /// A document that failed verification and was dropped.
     DocumentRejected(String),
-    /// The host admitted a room subscription.
+    /// The host admitted a workspace subscription.
     Ready {
-        /// The room's workspace.
+        /// The workspace id.
         workspace_id: u64,
     },
     /// A commit became durable on the host.
@@ -332,7 +332,7 @@ pub enum PeerEvent {
     /// A live frame another member published, opened with its record's
     /// channel keys.
     Live {
-        /// The room's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// Host-stamped publisher.
         from: [u8; 32],
@@ -340,33 +340,33 @@ pub enum PeerEvent {
         frame: Vec<u8>,
     },
     /// A remote-action frame (`tilo_actions::remote::RemoteActionFrame`
-    /// bytes) another device of the room addressed to this one: a request
+    /// bytes) another device of the workspace addressed to this one: a request
     /// to answer, or the answer to one this device sent.
     RemoteAction {
-        /// The room's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// Host-stamped sending device.
         from: [u8; 32],
         /// Opaque frame.
         frame: Vec<u8>,
     },
-    /// A piece of content a room's records reference, sent to this device
+    /// A piece of content a workspace's records reference, sent to this device
     /// alone by a member that keeps it (the host's own device included),
     /// in answer to [`PeerHandle::want_content`].
     RecordContent {
-        /// The room's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// Host-stamped sending device.
         from: [u8; 32],
         /// A `NeighbourMsg::RecordContentPiece`, postcard-encoded.
         frame: Vec<u8>,
     },
-    /// A member asked the room on its presence for content a record
+    /// A member asked the workspace on its presence for content a record
     /// references: answer with [`PeerHandle::send_content`] when this page
-    /// keeps it. The room's host asks this way for a copy of what members
+    /// keeps it. The workspace's host asks this way for a copy of what members
     /// post, so a visitor's file stays after they leave.
     ContentWanted {
-        /// The room's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// Host-stamped publishing device.
         from: [u8; 32],
@@ -375,7 +375,7 @@ pub enum PeerEvent {
     },
     /// The host could not deliver a remote-action frame this device sent.
     RemoteActionUndeliverable {
-        /// The room's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// The addressed device.
         to: [u8; 32],
@@ -384,7 +384,7 @@ pub enum PeerEvent {
     },
     /// Live membership changed.
     LiveMember {
-        /// The room's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// The member.
         device: [u8; 32],
@@ -407,19 +407,19 @@ pub enum PeerEvent {
     /// ([`PeerHandle::open_record`]) as [`PeerEvent::Document`]s, before
     /// this event; its changes keep arriving from now on.
     RecordOpened {
-        /// The room's workspace.
+        /// The workspace id.
         workspace_id: u64,
         /// The record.
         route: DocumentRoute,
         /// How many frames the host sent.
         frames: u32,
     },
-    /// The room's governance changed whether it shares its members' layout
+    /// The workspace's governance changed whether it shares its members' layout
     /// ([`PeerStatus::personal_rooms`]): in a personal one the page keeps
-    /// its strips and windows to itself and sends the room no desktop.
+    /// its strips and windows to itself and sends the workspace no desktop.
     RoomLayout {
-        /// The room (its cluster id).
-        room: String,
+        /// The workspace (its cluster id).
+        workspace: String,
         /// Each member's layout is their own.
         personal: bool,
     },
@@ -474,7 +474,7 @@ fn addressed(envelope: Envelope) -> Option<PeerEvent> {
 
 enum Command {
     Join(u64),
-    /// Join the room (its UUID) of this device's person, named as given,
+    /// Join the workspace (its UUID) of this device's person, named as given,
     /// once the host governs it ([`PeerHandle::join_placed`]).
     JoinPlaced(String, String),
     /// The host answered the placement of this workspace.
@@ -506,7 +506,7 @@ enum Command {
         tilo_relay_protocol::legacy_window::CodecsRequest,
         InputCompletion,
     ),
-    Rooms(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
+    Administer(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
     Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
     Private(
         tilo_relay_protocol::rooms::private::PrivateCall,
@@ -514,7 +514,7 @@ enum Command {
     ),
     Node(NodeCompletion),
     Compact([u8; 16], Vec<u8>),
-    /// What the room's node answered a watching page asking for a
+    /// What the workspace's node answered a watching page asking for a
     /// record's keys.
     WatchedKeys(
         DocumentRoute,
@@ -648,7 +648,7 @@ enum Admission {
     Overdue,
 }
 
-/// Where the joined rooms' admission stands `now_ms`, for a subscription
+/// Where the joined workspaces' admission stands `now_ms`, for a subscription
 /// sent at `since_ms`.
 fn admission_state(status: &PeerStatus, since_ms: Option<u64>, now_ms: u64) -> Admission {
     if status.rooms.values().all(|ready| *ready) {
@@ -715,7 +715,7 @@ impl PeerHandle {
             signer,
             store,
             shared: shared.clone(),
-            rooms: BTreeSet::new(),
+            workspaces: BTreeSet::new(),
             placing: BTreeMap::new(),
             live: BTreeSet::new(),
             outbox: record.outbox.iter().cloned().collect(),
@@ -762,7 +762,7 @@ impl PeerHandle {
         }
     }
 
-    /// Whether the page only watches its rooms, as a public room's
+    /// Whether the page only watches its workspaces, as a public workspace's
     /// spectator: nobody there sees it, and it writes nothing.
     pub fn watching(&self) -> bool {
         self.watching
@@ -774,28 +774,28 @@ impl PeerHandle {
             .map_err(|_| "peer session is closed".to_string())
     }
 
-    /// Subscribe to a room.
+    /// Subscribe to a workspace.
     pub fn join(&self, workspace_id: u64) -> Result<(), String> {
         self.send(Command::Join(workspace_id))
     }
 
-    /// Join `room` (its UUID), a workspace of this device's person, named
+    /// Join `workspace` (its UUID), a workspace of this device's person, named
     /// `name`: the host is first asked to govern it
     /// ([`tilo_relay_protocol::rooms::RoomsRequest::Place`]), creating it
-    /// unless it does, so the room has governance like every other; then it
-    /// is subscribed. Where the host places nothing for this device (a room
-    /// of another person's, a host reached without its rooms route), the
-    /// room is subscribed as it is, and its own admission decides.
+    /// unless it does, so the workspace has governance like every other; then it
+    /// is subscribed. Where the host places nothing for this device (a workspace
+    /// of another person's, a host reached without its administration route),
+    /// workspace is subscribed as it is, and its own admission decides.
     ///
     /// # Errors
     ///
-    /// `room` is no room UUID, or the session is closed.
-    pub fn join_placed(&self, room: &str, name: &str) -> Result<(), String> {
-        tilo_relay_protocol::room_workspace_id(room).map_err(|error| error.to_string())?;
-        self.send(Command::JoinPlaced(room.to_owned(), name.to_owned()))
+    /// `workspace` is no workspace UUID, or the session is closed.
+    pub fn join_placed(&self, workspace: &str, name: &str) -> Result<(), String> {
+        tilo_relay_protocol::room_workspace_id(workspace).map_err(|error| error.to_string())?;
+        self.send(Command::JoinPlaced(workspace.to_owned(), name.to_owned()))
     }
 
-    /// Open `route`, an on-demand record of the joined room `workspace_id`
+    /// Open `route`, an on-demand record of the joined workspace `workspace_id`
     /// (`neighbour_wire::record_sync`): one a join does not replay. Its
     /// history arrives as [`PeerEvent::Document`]s, then
     /// [`PeerEvent::RecordOpened`]; its changes keep arriving after, and
@@ -859,7 +859,7 @@ impl PeerHandle {
         self.send(Command::OpenRoute(route))
     }
 
-    /// Join a room's live plane (after [`Self::join`]).
+    /// Join a workspace's live plane (after [`Self::join`]).
     pub fn live_join(&self, workspace_id: u64) -> Result<(), String> {
         self.send(Command::LiveJoin(workspace_id))
     }
@@ -896,7 +896,7 @@ impl PeerHandle {
         self.send(Command::OpenLive(workspace_id, frame, done))
     }
 
-    /// Send one remote-action frame to device `to` of the room (the host's
+    /// Send one remote-action frame to device `to` of the workspace (the host's
     /// own device reaches its app-serving plane). Dropped while
     /// disconnected: an action that ran late is worse than one that did not
     /// run, so the caller retries with the same invocation id.
@@ -909,9 +909,9 @@ impl PeerHandle {
         self.send(Command::RemoteAction(workspace_id, to, frame))
     }
 
-    /// Ask room `workspace_id` for content its records reference: `request`
+    /// Ask workspace `workspace_id` for content its records reference: `request`
     /// is a postcard-encoded `NeighbourMsg::RecordContentWant`. It rides
-    /// the room's presence, which the host fans out to every member and
+    /// the workspace's presence, which the host fans out to every member and
     /// answers itself from what it keeps; the pieces come back to this
     /// device alone as [`PeerEvent::RecordContent`]. Dropped while
     /// disconnected: the caller asks again.
@@ -919,7 +919,7 @@ impl PeerHandle {
         self.send(Command::WantContent(workspace_id, request))
     }
 
-    /// Send device `to` of room `workspace_id` one piece of content it asked
+    /// Send device `to` of workspace `workspace_id` one piece of content it asked
     /// for ([`PeerEvent::ContentWanted`]): `frame` is a postcard-encoded
     /// `NeighbourMsg::RecordContentPiece`. Dropped while disconnected: the
     /// asker asks again.
@@ -1037,7 +1037,7 @@ impl PeerHandle {
         self.send(Command::Here(request, done))
     }
 
-    /// Ask the room's governor for a private operation
+    /// Ask the workspace's governor for a private operation
     /// ([`tilo_relay_client::https::private`]) over the current HTTPS session;
     /// `done` receives its answer.
     pub fn private_then(
@@ -1048,14 +1048,14 @@ impl PeerHandle {
         self.send(Command::Private(request, done))
     }
 
-    /// Send `request` to the host's room administration over the current
+    /// Send `request` to the host's workspace administration over the current
     /// HTTPS session; `done` receives the answer.
     pub fn rooms_then(
         &self,
         request: tilo_relay_protocol::rooms::RoomsRequest,
         done: RoomsCompletion,
     ) -> Result<(), String> {
-        self.send(Command::Rooms(request, done))
+        self.send(Command::Administer(request, done))
     }
 
     /// Ask the host which device runs the person's apps beside it (a
@@ -1078,7 +1078,7 @@ impl PeerHandle {
         self.send(Command::Retry)
     }
 
-    /// Ask the host for every joined room's shared state again: the rooms
+    /// Ask the host for every joined workspace's shared state again: the workspaces
     /// are subscribed anew, the host replays their retained checkpoints and
     /// answers `Ready`. Offline, this reconnects now.
     pub fn refresh(&self) -> Result<(), String> {
@@ -1213,7 +1213,7 @@ impl PeerHandle {
 
     /// The token of the HTTPS session the peer runs now, `None` between
     /// sessions and over iroh: what a page leaving sends the host
-    /// (`/peer/v1/session/end`) so the room stops counting it at once.
+    /// (`/peer/v1/session/end`) so the workspace stops counting it at once.
     pub fn session_token(&self) -> Option<String> {
         lock(&self.shared).session.clone()
     }
@@ -1256,8 +1256,8 @@ struct Task {
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
     shared: Arc<Mutex<Shared>>,
-    rooms: BTreeSet<u64>,
-    /// Rooms of this device's person joined once the host governs them:
+    workspaces: BTreeSet<u64>,
+    /// Workspaces of this device's person joined once the host governs them:
     /// each one's UUID and name, until the host answered its placement.
     placing: BTreeMap<u64, (String, String)>,
     live: BTreeSet<u64>,
@@ -1268,7 +1268,7 @@ struct Task {
     resending: BTreeSet<[u8; 16]>,
     record: PeerRecord,
     ciphers: Ciphers,
-    /// This device's membership of the rooms' encrypted channels.
+    /// This device's membership of the workspaces' encrypted channels.
     channels: crate::channels::Channels,
     /// What channel state changed since the session last acted on it.
     channel_changes: crate::channels::Changes,
@@ -1287,7 +1287,7 @@ struct Task {
     /// keys; they are sealed and committed once the keys arrive.
     held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
     reassembly: Reassembly,
-    /// The host's last position per room, presented when resubscribing so
+    /// The host's last position per workspace, presented when resubscribing so
     /// the host replays only what came after it. Kept for the session task's
     /// lifetime only: it describes what this page has received.
     positions: BTreeMap<u64, Vec<u8>>,
@@ -1300,25 +1300,25 @@ struct Task {
     /// are held on: each waits for them to enter the outbox, then for the
     /// outbox as it stands then.
     held_barriers: Vec<(BTreeSet<DocumentRoute>, Completion)>,
-    /// When the rooms not yet admitted were subscribed (ms since the epoch).
+    /// When the workspaces not yet admitted were subscribed (ms since the epoch).
     admission_since: Option<u64>,
     /// Retained entry ids of every document delivered or published per
     /// route: what a snapshot of the route contains.
     delivered: BTreeMap<DocumentRoute, BTreeSet<[u8; 32]>>,
     /// Entry ids delivered since this page last subscribed whole. A resumed
     /// subscription keeps them; a whole one asks for them again (a refresh
-    /// wants the rooms whole), so it clears them.
+    /// wants the workspaces whole), so it clears them.
     received: BTreeSet<[u8; 32]>,
-    /// Each joined room as its governance admits it.
+    /// Each joined workspace as its governance admits it.
     replicas: crate::replica::Replicas,
-    /// Open compaction requests: room, route and the entries delivered when
+    /// Open compaction requests: workspace, route and the entries delivered when
     /// the request arrived.
     compactions: BTreeMap<[u8; 16], Compaction>,
-    /// This device's participation in the rooms' calls.
+    /// This device's participation in the workspaces' calls.
     voice: crate::voice::Participations,
 }
 
-/// An open compaction request: room, route and the entries it covers.
+/// An open compaction request: workspace, route and the entries it covers.
 type Compaction = (u64, DocumentRoute, Vec<[u8; 32]>);
 
 /// Entry ids a route remembers for compaction. Past it, later entries are
@@ -1343,7 +1343,7 @@ impl Task {
     /// when the session could not take them.
     fn announce(&self, client: &Link, workspace_id: u64) -> bool {
         if self.config.watching {
-            // Its hello and volunteering would be writes the room refuses.
+            // Its hello and volunteering would be writes the workspace refuses.
             return true;
         }
         if let Some(hello) = identity_hello(workspace_id, &self.config.cert)
@@ -1358,7 +1358,9 @@ impl Task {
     }
 
     fn compaction_requested(&mut self, workspace_id: u64, request: [u8; 16], route: DocumentRoute) {
-        if !self.rooms.contains(&workspace_id) || route.workspace_id().ok() != Some(workspace_id) {
+        if !self.workspaces.contains(&workspace_id)
+            || route.workspace_id().ok() != Some(workspace_id)
+        {
             return;
         }
         let covered = self
@@ -1483,11 +1485,11 @@ impl Task {
         }
     }
 
-    /// Subscribe every joined room again, from now on waiting for its
+    /// Subscribe every joined workspace again, from now on waiting for its
     /// `Ready`. Returns `false` when the session could not take them.
     fn resubscribe(&self, client: &Link) -> bool {
         let mut sent_ok = true;
-        for workspace_id in &self.rooms {
+        for workspace_id in &self.workspaces {
             sent_ok &= client
                 .send(Envelope::Subscribe {
                     workspace_id: *workspace_id,
@@ -1510,7 +1512,7 @@ impl Task {
         sent_ok
     }
 
-    /// Report `admission-timeout` once the rooms subscribed at
+    /// Report `admission-timeout` once the workspaces subscribed at
     /// `admission_since` are still not admitted, and clear it once they are.
     /// A timeout is reported once per subscription.
     fn check_admission(&mut self) {
@@ -1726,7 +1728,7 @@ impl Task {
     }
 
     /// The session is up: connected and authenticated, its transport
-    /// failures cleared, every room waiting to be admitted again.
+    /// failures cleared, every workspace waiting to be admitted again.
     fn connected(&self) {
         self.update(|status| {
             status.phase = TransportPhase::Connected;
@@ -1780,7 +1782,7 @@ impl Task {
                     }
                     Some(Command::Refresh) => {
                         self.clear_admission_failure();
-                        // A refresh asks for the rooms whole: no position.
+                        // A refresh asks for the workspaces whole: no position.
                         self.positions.clear();
                         self.received.clear();
                         if !self.resubscribe(&client) {
@@ -1873,7 +1875,7 @@ impl Task {
         }
     }
 
-    /// Ask the room for content on its presence ([`PeerHandle::want_content`]);
+    /// Ask the workspace for content on its presence ([`PeerHandle::want_content`]);
     /// nothing while disconnected.
     fn want_content(&self, workspace_id: u64, request: Vec<u8>, client: Option<&Link>) {
         let Some(client) = client else {
@@ -1903,7 +1905,7 @@ impl Task {
         };
         match command {
             Command::Join(workspace_id) => self.join(workspace_id, client),
-            Command::JoinPlaced(room, name) => self.join_placed(room, name, client),
+            Command::JoinPlaced(workspace, name) => self.join_placed(workspace, name, client),
             Command::Placed(workspace_id) => {
                 if self.placing.remove(&workspace_id).is_some() {
                     self.join(workspace_id, client)
@@ -1983,12 +1985,14 @@ impl Task {
             Command::Here(request, done) => Self::request_here(request, done, client),
             Command::Private(request, done) => Self::request_private(request, done, client),
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
-            Command::VoiceCall(room, request, op) => self.voice_call(room, request, op, client),
+            Command::VoiceCall(workspace, request, op) => {
+                self.voice_call(workspace, request, op, client)
+            }
             Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
             Command::VoiceLeave(workspace_id) => self.voice_leave(workspace_id, client),
             Command::VoiceShow(ws, showing) => self.voice_show(ws, showing, client),
-            Command::Rooms(request, done) => {
-                Self::request_rooms(request, done, client);
+            Command::Administer(request, done) => {
+                Self::administer(request, done, client);
                 true
             }
             Command::Node(done) => {
@@ -2006,7 +2010,7 @@ impl Task {
 
     /// Subscribe to `workspace_id`, now or once connected.
     fn join(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
-        self.rooms.insert(workspace_id);
+        self.workspaces.insert(workspace_id);
         self.update(|status| {
             status.rooms.entry(workspace_id).or_insert(false);
         });
@@ -2014,28 +2018,28 @@ impl Task {
         client.is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
     }
 
-    /// Join `room` once the host governs it ([`PeerHandle::join_placed`]).
-    fn join_placed(&mut self, room: String, name: String, client: Option<&Link>) -> bool {
-        let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(&room) else {
+    /// Join `workspace` once the host governs it ([`PeerHandle::join_placed`]).
+    fn join_placed(&mut self, workspace: String, name: String, client: Option<&Link>) -> bool {
+        let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(&workspace) else {
             return true;
         };
-        if self.rooms.contains(&workspace_id) {
+        if self.workspaces.contains(&workspace_id) {
             return true;
         }
         self.update(|status| {
             status.rooms.entry(workspace_id).or_insert(false);
         });
-        self.placing.insert(workspace_id, (room, name));
+        self.placing.insert(workspace_id, (workspace, name));
         match client {
             Some(client) => self.place(workspace_id, client),
             None => true,
         }
     }
 
-    /// Ask the host to govern the room joined as `workspace_id`; it is
+    /// Ask the host to govern the workspace joined as `workspace_id`; it is
     /// subscribed once the host answers, whatever it answers.
     fn place(&self, workspace_id: u64, client: &Link) -> bool {
-        let Some((room, name)) = self.placing.get(&workspace_id).cloned() else {
+        let Some((workspace, name)) = self.placing.get(&workspace_id).cloned() else {
             return true;
         };
         let commands = self.commands.clone();
@@ -2049,16 +2053,19 @@ impl Task {
                 let http = link.client().clone();
                 let session = link.session().to_owned();
                 n0_future::task::spawn(async move {
-                    let request = tilo_relay_protocol::rooms::RoomsRequest::Place { room, name };
-                    // Refused (not this person's host, a room governed
-                    // elsewhere) or unanswered: the room's admission decides.
+                    let request = tilo_relay_protocol::rooms::RoomsRequest::Place {
+                        room: workspace,
+                        name,
+                    };
+                    // Refused (not this person's host, a workspace governed
+                    // elsewhere) or unanswered: the workspace's admission decides.
                     let _ =
                         tilo_relay_client::https::rooms(http.as_ref(), &session, &request).await;
                     placed();
                 });
             }
-            // Rooms are administered over HTTPS only: a native peer joins
-            // rooms placed for it otherwise.
+            // Workspaces are administered over HTTPS only: a native peer joins
+            // workspaces placed for it otherwise.
             #[cfg(feature = "iroh")]
             Link::Iroh(_) => placed(),
         }
@@ -2074,7 +2081,7 @@ impl Task {
         if let Command::WatchedKeys(route, answer) = command {
             self.watched
                 .answered(&route, answer.is_ok(), tilo_clock::unix_now_ms());
-            // Refused: the room keeps the record from those who watch, and
+            // Refused: the workspace keeps the record from those who watch, and
             // its documents stay held, awaiting keys.
             if let Ok(keys) = answer {
                 self.absorb(crate::channels::Changes {
@@ -2088,9 +2095,9 @@ impl Task {
             return Some(command);
         }
         match command {
-            // A watching page still asks the room for content its records
-            // reference: a public room's host answers it. It hands the room
-            // none of its own.
+            // A watching page still asks the workspace for content its records
+            // reference: a public workspace's host answers it. It hands the
+            // workspace none of its own.
             Command::LiveJoin(_)
             | Command::Live(..)
             | Command::Publish(..)
@@ -2117,7 +2124,7 @@ impl Task {
         None
     }
 
-    /// Restore this session's rooms, pending commits and call participations.
+    /// Restore this session's workspaces, pending commits and call participations.
     fn resume_session(&mut self, client: &Link) -> bool {
         let mut sent_ok = true;
         // A resuming subscription can replay a frame before its covering position.
@@ -2125,7 +2132,7 @@ impl Task {
         if !client.resumable() {
             self.received.clear();
         }
-        for workspace_id in &self.rooms {
+        for workspace_id in &self.workspaces {
             sent_ok &= client.send(self.subscribe(client, *workspace_id)).is_ok();
         }
         for workspace_id in self.placing.keys() {
@@ -2294,7 +2301,7 @@ impl Task {
         true
     }
 
-    /// Ask the room's node for the keys of every record this watching
+    /// Ask the workspace's node for the keys of every record this watching
     /// page waits on and is not asking for already; each answer comes back
     /// as [`Command::WatchedKeys`].
     fn ask_watched_keys(&mut self, client: Option<&Link>) {
@@ -2305,7 +2312,7 @@ impl Task {
         let due = self.watched.due(tilo_clock::unix_now_ms(), |route| {
             route
                 .workspace_id()
-                .is_ok_and(|room| seated.get(&room) == Some(&true))
+                .is_ok_and(|workspace| seated.get(&workspace) == Some(&true))
         });
         for route in due {
             let http = link.client().clone();
@@ -2404,7 +2411,7 @@ impl Task {
         true
     }
 
-    fn request_rooms(
+    fn administer(
         request: tilo_relay_protocol::rooms::RoomsRequest,
         done: RoomsCompletion,
         client: Option<&Link>,
@@ -2420,7 +2427,7 @@ impl Task {
                 });
             }
             #[cfg(feature = "iroh")]
-            Some(Link::Iroh(_)) => done(Err("rooms are administered over HTTPS".into())),
+            Some(Link::Iroh(_)) => done(Err("workspaces are administered over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
         }
     }
@@ -2639,7 +2646,10 @@ impl Task {
         client: Option<&Link>,
     ) -> bool {
         let Ok(workspace_id) = route.workspace_id() else {
-            self.fail("protocol-rejected", "A document names an invalid room.");
+            self.fail(
+                "protocol-rejected",
+                "A document names an invalid workspace.",
+            );
             return true;
         };
         self.open_channel(&route);
@@ -2886,7 +2896,7 @@ impl Task {
     }
 
     /// Take this device into `route`'s channel, with the participants its
-    /// room's governance admits.
+    /// workspace's governance admits.
     fn open_channel(&mut self, route: &DocumentRoute) {
         let replicas = &self.replicas;
         let changes = self.channels.open(
@@ -2897,27 +2907,30 @@ impl Task {
         self.absorb(changes);
     }
 
-    /// Follow what `workspace_id`'s governance says now: whether the room
+    /// Follow what `workspace_id`'s governance says now: whether the workspace
     /// shares its members' layout, who its members are, and the channel
     /// commits that waited for a participant it now admits.
     fn follow_governance(&mut self, workspace_id: u64) {
-        if let Some((room, layout, members)) = self.replicas.layout(workspace_id) {
+        if let Some((workspace, layout, members)) = self.replicas.layout(workspace_id) {
             let personal = layout.is_personal();
-            if self.status().room_members.get(&room) != members.as_ref() {
+            if self.status().room_members.get(&workspace) != members.as_ref() {
                 self.update(|status| match members {
-                    Some(members) => _ = status.room_members.insert(room.clone(), members),
-                    None => _ = status.room_members.remove(&room),
+                    Some(members) => _ = status.room_members.insert(workspace.clone(), members),
+                    None => _ = status.room_members.remove(&workspace),
                 });
             }
-            if self.status().personal_rooms.contains(&room) != personal {
+            if self.status().personal_rooms.contains(&workspace) != personal {
                 self.update(|status| {
                     if personal {
-                        status.personal_rooms.insert(room.clone());
+                        status.personal_rooms.insert(workspace.clone());
                     } else {
-                        status.personal_rooms.remove(&room);
+                        status.personal_rooms.remove(&workspace);
                     }
                 });
-                self.emit(&PeerEvent::RoomLayout { room, personal });
+                self.emit(&PeerEvent::RoomLayout {
+                    workspace,
+                    personal,
+                });
             }
         }
         let replicas = &self.replicas;
@@ -2926,16 +2939,16 @@ impl Task {
             tilo_clock::unix_now_ms(),
         );
         self.absorb(changes);
-        // Writes held for a certificate or governance the room now has; the
-        // room's `Ready` decides those of its replay.
+        // Writes held for a certificate or governance the workspace now has; the
+        // workspace's `Ready` decides those of its replay.
         if lock(&self.shared).status.rooms.get(&workspace_id) == Some(&true) {
             self.decide_held(workspace_id);
         }
     }
 
     /// One retained or live message the host relayed to `workspace_id`:
-    /// the room's governance (a member's certificate, the room document)
-    /// is admitted through the room's replica; channel governance and
+    /// the workspace's governance (a member's certificate, the workspace document)
+    /// is admitted through the workspace's replica; channel governance and
     /// documents go on.
     fn inbound_body(&mut self, workspace_id: u64, body: Vec<u8>, author: [u8; 32]) {
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
@@ -2944,7 +2957,7 @@ impl Task {
                 | neighbour_wire::NeighbourMsg::SyncResp { .. }),
             ) => {
                 let retained = lock(&self.shared).status.rooms.get(&workspace_id) != Some(&true);
-                // Governance the room's replica refuses is not the room's.
+                // Governance the replica refuses is not the workspace's.
                 let admitted = self.replicas.admit(
                     workspace_id,
                     author,
@@ -2978,13 +2991,11 @@ impl Task {
         let now = tilo_clock::unix_now_ms();
         match message {
             neighbour_wire::NeighbourMsg::MlsGovernance {
-                workspace: room,
-                frame,
-                ..
+                workspace, frame, ..
             } => {
                 let replicas = &self.replicas;
                 let changes = self.channels.receive_frame(
-                    &room,
+                    &workspace,
                     *frame,
                     &|route| replicas.participants(route),
                     now,
@@ -3003,7 +3014,7 @@ impl Task {
                     cluster_id: cluster_id.clone(),
                     record: record_id.clone(),
                 };
-                // A room the host resumes after it lagged can replay an entry
+                // A workspace the host resumes after it lagged can replay an entry
                 // its live deliveries already carried; the page takes it once.
                 if self
                     .received
@@ -3014,7 +3025,7 @@ impl Task {
                 let Ok(workspace_id) = route.workspace_id() else {
                     return;
                 };
-                // The room's governance decides the write before any app
+                // The workspace's governance decides the write before any app
                 // sees it, and holds it while it cannot yet.
                 let retained = lock(&self.shared).status.rooms.get(&workspace_id) != Some(&true);
                 match self.replicas.decide_document(
@@ -3079,9 +3090,9 @@ impl Task {
         }
     }
 
-    /// Whether the host answered `Ready` for `route`'s room: it sent the
+    /// Whether the host answered `Ready` for `route`'s workspace: it sent the
     /// governance it holds first, so the page's mirror of its channels is
-    /// what the room decided.
+    /// what the workspace decided.
     fn governance_known(&self, route: &DocumentRoute) -> bool {
         route.workspace_id().is_ok_and(|workspace_id| {
             lock(&self.shared).status.rooms.get(&workspace_id) == Some(&true)
@@ -3117,7 +3128,7 @@ impl Task {
     /// now opens it.
     fn admitted(&mut self, workspace_id: u64, client: &Link) {
         self.check_admission();
-        // What this session could not ask before the room admitted it.
+        // What this session could not ask before the workspace admitted it.
         let asked = self
             .channels
             .ask_now(workspace_id, tilo_clock::unix_now_ms());
@@ -3144,7 +3155,7 @@ impl Task {
             .collect()
     }
 
-    /// Hold a document until its route's keys change, its room's governance
+    /// Hold a document until its route's keys change, its workspace's governance
     /// is known, or the host's replay supplies it.
     fn hold_document(&mut self, route: DocumentRoute, key: OpKey, body: Vec<u8>, author: [u8; 32]) {
         let held = self
@@ -3340,8 +3351,8 @@ impl Task {
                 };
                 let crate::channels::Outgoing::Request { workspace_id, .. } = &outgoing;
                 if lock(&self.shared).status.rooms.get(workspace_id) != Some(&true) {
-                    // The host takes a room's governance only from a session
-                    // it admitted to the room: this is asked again the
+                    // The host takes a workspace's governance only from a session
+                    // it admitted to the workspace: this is asked again the
                     // moment it does (`admitted`).
                     continue;
                 }
@@ -3381,7 +3392,7 @@ impl SavedPeerChannels {
 }
 
 /// Sign a governance message with the device key and wrap it for the host,
-/// which retains it for the room's participants. An access request goes
+/// which retains it for the workspace's participants. An access request goes
 /// routed, so they decide Read on the record.
 async fn sign_governance(
     signer: &dyn DeviceSigner,
@@ -3404,14 +3415,14 @@ async fn signed_governance(
 ) -> Option<Vec<(u64, neighbour_wire::NeighbourMsg)>> {
     let crate::channels::Outgoing::Request {
         workspace_id,
-        room,
+        cluster_id,
         mut request,
         route,
     } = outgoing;
     let signature = signer.sign(request.signing_bytes().ok()?).await.ok()?;
     request.signature = collab_types::Signature::from_bytes(signature);
     let routed = neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
-        room,
+        room: cluster_id,
         request: Box::new(request),
         route: Box::new(route),
         delivery: rand::random(),
@@ -3537,7 +3548,7 @@ fn refusal_text(reason: &str) -> String {
 /// The phrasing this session uses for the one answer that is a refusal.
 const REFUSAL: &str = "the workspace refused the change";
 
-/// This device's certificate for a room's other members. A native shell
+/// This device's certificate for a workspace's other members. A native shell
 /// accepts a member's edits only from a device whose certificate it holds,
 /// and a browser has no direct neighbours to hand it over, so it goes through
 /// the host, which authenticates the author and keeps it for later joiners.
@@ -3790,7 +3801,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let route = DocumentRoute {
             app_id: "so.tilo.notes".into(),
-            cluster_id: "room".into(),
+            cluster_id: "workspace".into(),
             record: "note".into(),
         };
         let request = collab_types::MlsAccessRequestV1::unsigned(
@@ -3815,14 +3826,14 @@ mod tests {
         Ok(())
     }
 
-    fn status(rooms: &[(u64, bool)]) -> PeerStatus {
+    fn status(workspaces: &[(u64, bool)]) -> PeerStatus {
         PeerStatus {
             phase: TransportPhase::Connected,
             authenticated: true,
             attempt: 0,
             next_attempt_at_ms: None,
             last_contact_at_ms: None,
-            rooms: rooms.iter().copied().collect(),
+            rooms: workspaces.iter().copied().collect(),
             routes: BTreeMap::new(),
             failures: Vec::new(),
             outgoing_pending: 0,
@@ -3901,7 +3912,7 @@ mod tests {
     }
 
     #[test]
-    fn rooms_not_admitted_within_the_timeout_are_overdue_once_subscribed() {
+    fn workspaces_not_admitted_within_the_timeout_are_overdue_once_subscribed() {
         let since = 1_000;
         let waiting = status(&[(1, true), (2, false)]);
         assert_eq!(

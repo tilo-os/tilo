@@ -1090,7 +1090,7 @@ impl ActionHost for Host {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        let room = caller.room().unwrap_or_default().to_owned();
+        let workspace = caller.workspace().unwrap_or_default().to_owned();
         match query.provider.as_deref() {
             Some(SESSION_PROVIDER) => self.session_page(caller, &query).map(Ok),
             Some(_) => self.state.action_query(caller, &query),
@@ -1110,7 +1110,7 @@ impl ActionHost for Host {
                                 .push(tilo_actions::remote::CatalogueProvider {
                                     provider: SESSION_PROVIDER.to_owned(),
                                     app_id: SESSION_PROVIDER.to_owned(),
-                                    room,
+                                    workspace,
                                     record_id: String::new(),
                                     browsable: true,
                                 });

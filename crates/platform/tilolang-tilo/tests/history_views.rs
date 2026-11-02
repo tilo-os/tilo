@@ -429,7 +429,7 @@ fn two_people_typing_one_rich_body_each_entry_shows_its_authors_change() {
     ada.commit();
     let at = target(&post);
     let mut bo = ada.fork("bo", &[(RICHTEXT, &ids)]);
-    // Bo replaces a word of what Ada wrote, in her own replica of the room.
+    // Bo replaces a word of what Ada wrote, in her own replica of the workspace.
     let body = |text: &str| Value::Rich(tilolang_runtime::rich::RichValue::from_text(text));
     let page = view_id(&bo);
     let editors = bo.host.open_resource(&at, Some(&page)).unwrap();
@@ -594,7 +594,7 @@ fn reading_one_entrys_body_diff_stays_within_a_fixed_budget_however_long_the_not
     );
 }
 
-/// The room calls Ada "Ada Lovelace"; an agent has no name but its kind. The history row shows
+/// The workspace calls Ada "Ada Lovelace"; an agent has no name but its kind. The history row shows
 /// the name the avatar beside it shows, never the id the record holds, and the agent reads as
 /// its kind and that it is one.
 struct Named;

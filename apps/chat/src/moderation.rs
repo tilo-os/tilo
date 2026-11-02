@@ -37,7 +37,7 @@ pub(crate) fn ban_request(workspace: &str, person: &str) -> InvokeRequest {
     argument.insert("person".into(), person.to_ascii_lowercase().into());
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget::room_governance(workspace, BAN),
+        target: RemoteActionTarget::workspace_governance(workspace, BAN),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,

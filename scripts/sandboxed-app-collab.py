@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two Tilo sessions, one room, and an edit made inside a **sandbox**.
+"""Two Tilo sessions, one workspace, and an edit made inside a **sandbox**.
 
 `two-shell-app-collab.py` starts two compositors and checks that an edit
 crosses between them — but it launches its apps as ordinary child
@@ -9,7 +9,7 @@ reaches the broker through one descriptor the launcher hands it. That is
 a different code path end to end, and it is the one the product runs.
 
 This harness uses the other path: the same two compositors, signed invite
-and room, then two *packaged* processes launched by `tilo-launcher` into
+and workspace, then two *packaged* processes launched by `tilo-launcher` into
 bwrap sandboxes, one in each session. One
 authors an Automerge document and publishes it; the other waits on its
 op stream and prints what it loaded. If the text the first one wrote
@@ -291,7 +291,7 @@ class Session:
     # -- sandboxes ---------------------------------------------------
 
     def launch_sandboxed(self, launcher: str, payload_root: str, manifest: str,
-                         room: str, instruction: str, log_path: str
+                         workspace_id: str, instruction: str, log_path: str
                          ) -> subprocess.Popen:
         """Start the probe under `tilo-launcher`, in a real sandbox.
 
@@ -305,7 +305,7 @@ class Session:
             "--manifest", manifest,
             "--payload-root", payload_root,
             "--minimal-libs",
-            "--workspace-id", room,
+            "--workspace-id", workspace_id,
             "--open", instruction,
         ]
         lg = open(log_path, "w")
@@ -450,20 +450,20 @@ def main() -> int:
                 break
             time.sleep(0.5)
         claim("the peer joined", joined, True)
-        room = host.active_workspace()["room"]
-        claim("both sessions are in one room", peer.active_workspace()["room"], room)
-        note(f"room = {room}")
+        workspace_id = host.active_workspace()["room"]
+        claim("both sessions are in one workspace", peer.active_workspace()["room"], workspace_id)
+        note(f"workspace id = {workspace_id}")
         for s in sessions:
             s.key("Escape")
 
         # The peers exchange device certificates when their link comes up.
-        # The host then admits the certified person and room sync carries that
-        # grant back to the peer. Joining the transport room alone is not
+        # The host then admits the certified person and workspace sync carries
+        # that grant back to the peer. Joining the transport alone is not
         # permission to author document operations.
         deadline = time.time() + 30
         while time.time() < deadline and not peer.has_local_write_membership():
             time.sleep(0.25)
-        claim("the peer's signed identity received room write membership",
+        claim("the peer's signed identity received workspace write membership",
               peer.has_local_write_membership(), True)
 
         step("3", "stage the probe as a package in each session")
@@ -476,7 +476,7 @@ def main() -> int:
         reader_log = os.path.join(out, "peer-reader.log")
         payload, manifest = staged[peer.name]
         reader = peer.launch_sandboxed(args.launcher_bin, payload, manifest,
-                                       room, f"read:{args.wait}", reader_log)
+                                       workspace_id, f"read:{args.wait}", reader_log)
         launched.append(reader)
         # The reader has to be subscribed before the writer publishes:
         # the broker fans an op to whoever is listening now, and a late
@@ -501,7 +501,7 @@ def main() -> int:
         writer_log = os.path.join(out, "host-writer.log")
         payload, manifest = staged[host.name]
         writer = host.launch_sandboxed(args.launcher_bin, payload, manifest,
-                                       room, f"write:{marker}", writer_log)
+                                       workspace_id, f"write:{marker}", writer_log)
         launched.append(writer)
         writer_rc = writer.wait(timeout=90)
         claim("the sandboxed writer published its edit", writer_rc, 0)

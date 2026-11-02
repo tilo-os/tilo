@@ -23,7 +23,7 @@ const fn default_page() -> u32 {
 }
 
 /// One exact existing resource whose inert local-view metadata is requested.
-/// The transport supplies identity and current room authority independently.
+/// The transport supplies identity and current workspace authority independently.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewResourceQuery {
@@ -39,8 +39,9 @@ pub struct ViewResourceQuery {
 pub struct ResourceViewLocator {
     /// Host-configured HTTPS listener origin.
     pub origin: String,
-    /// Current governed room, supplied by the host.
-    pub room: String,
+    /// Current governed workspace, supplied by the host.
+    #[serde(rename = "workspace", alias = "room")]
+    pub workspace: String,
     /// Certified host device key as hexadecimal.
     #[serde(rename = "hostDevice")]
     pub host_device: String,
@@ -58,7 +59,8 @@ pub struct ResourceViewLocator {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CanonicalActionRoute {
-    pub room: String,
+    #[serde(rename = "workspace", alias = "room")]
+    pub workspace: String,
     pub app_id: String,
     /// Empty names the package-primary record, never any record.
     pub record_id: String,
@@ -302,8 +304,9 @@ pub struct RowVisibility {
 pub struct CatalogueProvider {
     pub provider: String,
     pub app_id: String,
-    /// The workspace room the publisher belongs to.
-    pub room: String,
+    /// The workspace the publisher belongs to.
+    #[serde(rename = "workspace", alias = "room")]
+    pub workspace: String,
     /// The publisher's own record, when it names one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub record_id: String,

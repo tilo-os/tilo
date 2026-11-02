@@ -34,10 +34,10 @@
 //! - **Rates:** per device, requests and response bytes; per destination
 //!   host, requests from everyone together; requests in flight, per device
 //!   and in total ([`RateLimits`]).
-//! - **Budgets:** response bytes relayed per visitor and per room over a
-//!   window, a day by default ([`Budgets`]). Rates smooth a burst out; a
-//!   budget caps what one visitor, or everyone in a room together, streams
-//!   through the host in a day. Spent, the proxy answers
+//! - **Budgets:** response bytes relayed per visitor and per workspace over
+//!   a window, a day by default ([`Budgets`]). Rates smooth a burst out; a
+//!   budget caps what one visitor, or everyone in a workspace together,
+//!   streams through the host in a day. Spent, the proxy answers
 //!   [`ProxyFailure::OverBudget`] until the window turns over, and a
 //!   response it is relaying ends there with an error.
 //! - **Logs:** one line per refusal under the `fetch_proxy` target, naming
@@ -85,7 +85,7 @@ pub struct Config {
     pub destinations: Destinations,
     /// How much each device, and everyone, may ask of it.
     pub limits: RateLimits,
-    /// How much it relays per visitor and per room over a window.
+    /// How much it relays per visitor and per workspace over a window.
     pub budgets: Budgets,
 }
 
@@ -130,10 +130,10 @@ impl Rate {
 
 /// What the proxy allows each device, each destination and everyone.
 ///
-/// The defaults suit a public room on a busy day: a person scrolling a feed
-/// reader or a video list (a list and its thumbnails is some sixty requests)
-/// never meets them, while a script using the host as an open proxy runs
-/// out within a minute.
+/// The defaults suit a public workspace on a busy day: a person scrolling a
+/// feed reader or a video list (a list and its thumbnails is some sixty
+/// requests) never meets them, while a script using the host as an open
+/// proxy runs out within a minute.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RateLimits {
     /// Requests per device.
@@ -170,11 +170,11 @@ impl Default for RateLimits {
 }
 
 /// Response bytes the proxy relays over [`Budgets::window`], per visitor
-/// and per room; `None` is no budget.
+/// and per workspace; `None` is no budget.
 ///
 /// The defaults let a person watch a few hours of video a day through the
-/// host (a 360p stream is some 300 MiB an hour) and a room's people
-/// together a few days' worth, so one busy room cannot spend a host's
+/// host (a 360p stream is some 300 MiB an hour) and a workspace's people
+/// together a few days' worth, so one busy workspace cannot spend a host's
 /// transfer allowance on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budgets {
@@ -182,7 +182,10 @@ pub struct Budgets {
     pub window: Duration,
     /// Bytes one visitor (a [`Caller`]) may receive per window.
     pub visitor_bytes: Option<u64>,
-    /// Bytes everyone in one [`Room`] together may receive per window.
+    /// Bytes everyone in one workspace together may receive per window.
+    ///
+    /// Spelled `room_bytes` after the [`Room`] identifier it counts
+    /// against, which is published API.
     pub room_bytes: Option<u64>,
 }
 
@@ -196,8 +199,11 @@ impl Default for Budgets {
     }
 }
 
-/// A room or workspace on the host that a request's visitor belongs to, by
-/// the host's own identifier for it; its people share one budget.
+/// A workspace on the host that a request's visitor belongs to, by the
+/// host's own identifier for it; its people share one budget.
+///
+/// The name is published API, so it stays: hosts outside this crate import
+/// the type under it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Room(pub u64);
 
@@ -709,8 +715,8 @@ impl FetchProxy {
     }
 
     /// [`Self::serve`] for a caller who belongs to `rooms` on the host: what
-    /// it receives counts against each room's budget too, and a room that
-    /// spent its budget is refused.
+    /// it receives counts against each workspace's budget too, and a
+    /// workspace that spent its budget is refused.
     pub async fn serve_in<B>(
         &self,
         caller: Caller,
@@ -957,7 +963,7 @@ impl FetchProxy {
                 .max()
             {
                 return Err(Refused::over_budget(
-                    "this room received its share of the fetch proxy for now",
+                    "this workspace received its share of the fetch proxy for now",
                     wait,
                 ));
             }

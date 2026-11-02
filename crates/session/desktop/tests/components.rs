@@ -31,7 +31,7 @@ impl ComponentContextSource for Host {
         request: &TileRequest<'_>,
         target: &LaunchTarget,
     ) -> Result<(HostContext, RestoreInput), ui::launch::LaunchError> {
-        let records = self.owners.open(definition.app_id(), "room").unwrap();
+        let records = self.owners.open(definition.app_id(), "workspace").unwrap();
         let context = HostContext::prepare(
             definition,
             HostContextInputs {
@@ -61,7 +61,7 @@ fn fixture() -> (
 ) {
     let cache = ui::portable_storage::PortableStorage::new("profile", "device").unwrap();
     let mut owners = RecordOwners::portable(cache.clone());
-    let views = Rc::new(InstanceViewStore::portable(cache.clone(), "room").unwrap());
+    let views = Rc::new(InstanceViewStore::portable(cache.clone(), "workspace").unwrap());
     let mut catalog = ApplicationCatalog::new();
     let definitions = [
         word_processor::definition(),
@@ -73,7 +73,7 @@ fn fixture() -> (
     for (i, definition) in definitions.into_iter().enumerate() {
         catalog.register(definition).unwrap();
         let id = u64::try_from(i).unwrap() + 10;
-        let store = owners.open(definition.app_id(), "room").unwrap();
+        let store = owners.open(definition.app_id(), "workspace").unwrap();
         let checkout = tilo_desktop::records::component_record(
             definition.app_id(),
             id,

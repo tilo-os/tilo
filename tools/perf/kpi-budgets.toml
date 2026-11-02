@@ -1818,7 +1818,7 @@ min_delta = 2.0
 source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted frame during overview, focus and zoom interactions"
 
 # Relay hosting cost: crates/hosting/tilo-relay/examples/relay_load,
-# 100 collaborators in rooms of four, ten measured minutes, one sample per
+# 100 collaborators in workspaces of four, ten measured minutes, one sample per
 # minute; tools/perf/adapters.py hosting-load prices them with
 # tools/perf/prices.toml. The KPI target is at most $0.001 per
 # active collaborator-hour.
@@ -1919,7 +1919,7 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10.0
-source = "relay_load: one edit, publish to receipt by each other member of the room"
+source = "relay_load: one edit, publish to receipt by each other member of the workspace"
 
 # Presence delivery: publish to receipt of each pointer move and
 # caret the relay forwarded. The relay paces a pointer to 20 Hz, so a move
@@ -1937,7 +1937,7 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10.0
-source = "relay_load: one forwarded pointer move, publish to receipt by each other member of the room"
+source = "relay_load: one forwarded pointer move, publish to receipt by each other member of the workspace"
 
 [kpi."hosting.relay.presence_caret_ms.n100"]
 unit = "ms"
@@ -1947,7 +1947,7 @@ enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 10.0
-source = "relay_load: one forwarded caret, publish to receipt by each other member of the room"
+source = "relay_load: one forwarded caret, publish to receipt by each other member of the workspace"
 
 # File and directory barriers per committed edit: two are the floor
 # of the one-file-per-record store (the record, then its directory). Measured

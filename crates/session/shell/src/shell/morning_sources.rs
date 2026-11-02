@@ -109,7 +109,9 @@ impl NativeMorningSources {
             Phase::Providers => {
                 // Multiple live records cannot be guessed from a history-only locator.
                 let mut providers = page.providers.iter().filter(|provider| {
-                    provider.room == room && provider.app_id == source.app && provider.browsable
+                    provider.workspace == room
+                        && provider.app_id == source.app
+                        && provider.browsable
                 });
                 let Some(provider) = providers.next() else {
                     entry.pending = None;

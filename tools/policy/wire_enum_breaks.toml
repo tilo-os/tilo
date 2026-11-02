@@ -16,7 +16,7 @@ reason = "the workspace principal changes name in place, from `Room` to `Workspa
 [[break]]
 file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"
 enum = "WorkspaceMembershipCommand"
-reason = "puts the retired task grant commands back at their places: rooms and relays hold these commands, and the digests of their administration requests, in the encoding from before their removal"
+reason = "puts the retired task grant commands back at their places: workspaces and relays hold these commands, and the digests of their administration requests, in the encoding from before their removal"
 
 [[break]]
 file = "crates/sdk/tilo-resource/src/path.rs"
@@ -87,3 +87,8 @@ reason = "postcard frames on the socket between a runtime and the apps it starte
 file = "crates/runtime/runtime-collab/src/wire.rs"
 enum = "Reply"
 reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the variant carrying the workspace answer is renamed in place, so its place and the bytes that name it do not move"
+
+[[break]]
+file = "crates/collab/reference/src/link/json.rs"
+enum = "ScopeJson"
+reason = "read and written as JSON by name, and the variant keeps the wire name it had: it is renamed in place and carries `serde(rename = \"room\")`, so the page's links and `tests/links.json` read and write exactly the JSON they did"

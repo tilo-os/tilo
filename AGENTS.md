@@ -61,8 +61,10 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
 - Run the tests of the packages you touched (`cargo test --locked -p NAME`) and
   `bash tools/policy/run.sh`.
 - Extensive checks (images, macOS, VMs) only when you change what they test.
-- Shell: `cargo test --locked -p shell --test it MODULE::` and
-  `cargo check --locked -p shell --tests`.
+- Shell: `cargo test --locked -p shell --features hosted-test-control --test it MODULE::` and
+  `cargo check --locked -p shell --features hosted-test-control --tests`: the `it`
+  target requires `hosted-test-control`, and without it cargo leaves the target out
+  rather than checking or running it.
 - Browser crates: also check them for `--target wasm32-unknown-unknown`.
 - Never ignore a failure, weaken an assertion, or lean on a tautological helper.
 - Test through production interfaces, including cancellation and denial.

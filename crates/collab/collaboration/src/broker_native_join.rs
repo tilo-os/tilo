@@ -8,7 +8,7 @@ use tilo_lock::MutexRecover as _;
 /// The wait for a joining manager's primary route
 /// ([`CollaborationManager::join_native`]), made on a thread of its own: a
 /// window whose record is not on this device yet builds once the route is
-/// joined, from the room's committed history. Its outcome is an event
+/// joined, from the workspace's committed history. Its outcome is an event
 /// ([`Self::when_done`]); no clock decides it. The window's thread shows the
 /// window's loading state meanwhile and builds the window once it is told
 /// ([`Self::finish`]).

@@ -339,7 +339,8 @@ impl AppBrokerState {
         // A foreign device is not the person's: they are asked on one of
         // their own devices, which draws the question and answers it.
         if Self::asks_on_own_device(caller) {
-            let binding = self.witness_binding(&person, caller.room().unwrap_or_default(), request);
+            let binding =
+                self.witness_binding(&person, caller.workspace().unwrap_or_default(), request);
             // The other device shows no draft, so nothing on it is changed.
             return self
                 .own_device_witness(caller, &binding, request)
@@ -475,7 +476,7 @@ impl AppBrokerState {
         person: &str,
         request: &InvokeRequest,
     ) -> Result<Option<Question>, ActionHostError> {
-        let Some(workspace) = caller.room() else {
+        let Some(workspace) = caller.workspace() else {
             return Ok(None);
         };
         let actor = self.caller_actor(caller, workspace);

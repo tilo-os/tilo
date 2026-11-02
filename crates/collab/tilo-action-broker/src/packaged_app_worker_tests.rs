@@ -429,7 +429,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
                 .unwrap();
             let canonical = |id: &str| CatalogueQuery {
                 canonical_route: Some(CanonicalActionRoute {
-                    room: env.route.cluster_id.clone(),
+                    workspace: env.route.cluster_id.clone(),
                     app_id: env.route.app_id.clone(),
                     record_id: id.into(),
                 }),

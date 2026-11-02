@@ -1,4 +1,4 @@
-//! What this person signals to the room on the page's live presence beside
+//! What this person signals to the workspace on the page's live presence beside
 //! where they are: their latest wave, and whose view they follow. Each goes
 //! into the status the page reads only when it changed; the page restates
 //! it with every presence frame while it lasts.

@@ -395,7 +395,7 @@ fn a_confirming_choice_without_shift_asks_and_undo_takes_it_back() {
     assert_eq!(
         app.harness().asking_why(),
         None,
-        "the action asks, not the room's grants"
+        "the action asks, not the workspace's grants"
     );
     assert_eq!(app.state().notes.len(), 1, "nothing is removed yet");
     assert!(app.confirm_asked().is_some(), "the person agrees");

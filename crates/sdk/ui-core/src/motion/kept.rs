@@ -14,6 +14,11 @@
 //! A widget that finds nothing arrived: it moves in, unless its window is
 //! laying out its first frame ([`window_has_shown`]), which shows at rest.
 //!
+//! A window that closes ([`closing_window`]) drops its widgets for good:
+//! no rebuild follows, so they leave nothing. Otherwise the next window to
+//! lay out a container of the same shape (the same panel opened again)
+//! would take up their motion and draw a band leaving that it never showed.
+//!
 //! A control (a switch's knob, a box's mark, a slider's thumb, a badge)
 //! does this through a [`HandOn`]: by the id it was given, else by its
 //! kind and place.
@@ -38,15 +43,21 @@ thread_local! {
     static KEPT: RefCell<Vec<Kept>> = const { RefCell::new(Vec::new()) };
     /// Whether the window being laid out has shown a frame before.
     static WINDOW_SHOWN: Cell<bool> = const { Cell::new(false) };
+    /// How many windows are dropping their widgets as they close.
+    static CLOSING: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Leave `value`, the motion state of a widget being dropped, for the
 /// widget a rebuild puts in its place: the one with the same `id`, or else
 /// one laid out where it was (`at`).
 pub fn keep<T: 'static>(id: impl Into<String>, at: Option<Rect>, value: T) {
+    // A widget dropped as its window closes or its thread ends has no
+    // rebuild to wait for.
+    if CLOSING.try_with(Cell::get).is_ok_and(|closing| closing > 0) {
+        return;
+    }
     let id = id.into();
     let kind = TypeId::of::<T>();
-    // A widget dropped as its thread ends has no rebuild to wait for.
     let _ = KEPT.try_with(|kept| {
         let Ok(mut kept) = kept.try_borrow_mut() else {
             return;
@@ -225,6 +236,22 @@ pub(crate) fn laying_out_window(shown: bool) -> LayingOutWindow {
     LayingOutWindow(WINDOW_SHOWN.with(|cell| cell.replace(shown)))
 }
 
+/// While the guard lives, a window is dropping its widgets as it closes:
+/// they leave nothing ([`keep`]), since no rebuild of theirs follows.
+pub(crate) fn closing_window() -> ClosingWindow {
+    CLOSING.with(|closing| closing.set(closing.get() + 1));
+    ClosingWindow(())
+}
+
+/// Ends what [`closing_window`] began.
+pub(crate) struct ClosingWindow(());
+
+impl Drop for ClosingWindow {
+    fn drop(&mut self) {
+        let _ = CLOSING.try_with(|closing| closing.set(closing.get().saturating_sub(1)));
+    }
+}
+
 /// Restores what [`laying_out_window`] replaced.
 pub(crate) struct LayingOutWindow(bool);
 
@@ -309,6 +336,22 @@ mod tests {
         frame_ended();
         frame_ended();
         assert_eq!(take_kept::<u32>("sync"), None);
+        KEPT.with(|kept| assert!(kept.borrow().is_empty()));
+    }
+
+    #[test]
+    fn a_closing_window_leaves_nothing_for_the_next_one() {
+        let at = Rect::new(0.0, 0.0, 100.0, 30.0);
+        let mut band = HandOn::<u16>::default();
+        assert_eq!(band.build(Some("section")), None);
+        assert_eq!(band.place(at), None);
+        {
+            let _closing = closing_window();
+            band.leave(4);
+        }
+        let mut next = HandOn::<u16>::default();
+        assert_eq!(next.build(Some("section")), None);
+        assert_eq!(next.place(at), None, "nor by its place");
         KEPT.with(|kept| assert!(kept.borrow().is_empty()));
     }
 }

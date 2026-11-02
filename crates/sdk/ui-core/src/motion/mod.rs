@@ -84,7 +84,7 @@ pub use clock::{
 pub use curve::blend_across;
 pub use disclosure::Disclosure;
 pub use kept::{HandOn, keep, take_kept, take_kept_at, take_kept_where, window_has_shown};
-pub(crate) use kept::{frame_ended, laying_out_window};
+pub(crate) use kept::{closing_window, frame_ended, laying_out_window};
 pub use named::{
     Ambient, Appear, Attention, Breathe, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill,
     DrillDepth, Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reveal, Snap,

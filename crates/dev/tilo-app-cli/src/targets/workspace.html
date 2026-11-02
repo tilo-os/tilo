@@ -3,7 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Join</title>
 <!-- Served by `tilo-app run --platform web --share`: pick a name, then the
-     app opens in the shared room as a person of this page's own. -->
+     app opens in the shared workspace as a person of this page's own. -->
 <style>
   :root { color-scheme: light dark; --ground: #f4f3f1; --ink: #1c1b1a; --dim: #68655f; --field: #ffffff; --edge: #d6d3cd; --accent: #2b5fd9; }
   @media (prefers-color-scheme: dark) { :root { --ground: #161616; --ink: #ecebe8; --dim: #a09d97; --field: #222121; --edge: #3a3936; --accent: #7aa2ff; } }
@@ -20,7 +20,7 @@
 </style>
 <main>
   <h1 id="title">Join</h1>
-  <p id="lead">Everyone who opens this page joins the same room. Pick the name the others see.</p>
+  <p id="lead">Everyone who opens this page joins the same workspace. Pick the name the others see.</p>
   <form id="join">
     <input id="name" autocomplete="nickname" placeholder="Your name" required maxlength="32" autofocus>
     <button id="go">Join</button>
@@ -30,11 +30,11 @@
 <script type="module">
   const lead = document.getElementById('lead');
   const button = document.getElementById('go');
-  const room = await (await fetch('/__tilo/room/', {cache: 'no-store'})).json();
-  document.title = room.name;
-  document.getElementById('title').textContent = `Join ${room.name}`;
+  const workspace = await (await fetch('/__tilo/room/', {cache: 'no-store'})).json();
+  document.title = workspace.name;
+  document.getElementById('title').textContent = `Join ${workspace.name}`;
   const status = {
-    joining: 'Joining the room',
+    joining: 'Joining the workspace',
     waiting: 'Waiting for the first person to open it',
     loading: 'Opening what the others have open',
   };
@@ -45,7 +45,7 @@
     button.disabled = true;
     try {
       const {openInRoom} = await import('/dev-room.mjs');
-      globalThis.room = await openInRoom({
+      globalThis.workspace = await openInRoom({
         surface: document.getElementById('surface'),
         name,
         onStatus: phase => {

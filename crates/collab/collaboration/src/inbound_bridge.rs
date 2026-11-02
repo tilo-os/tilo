@@ -63,7 +63,7 @@ impl InboundBridge {
 
     /// Queue a durable event, waiting while the owner is behind on its
     /// events: the stream that produced it reads nothing more from the
-    /// broker until the owner has made room, so a burst slows its source
+    /// broker until the owner has made workspace, so a burst slows its source
     /// down instead of ending collaboration. The producer turn is retained
     /// through the owner's acknowledgement. False only when the owner went
     /// away or the event can never fit.
@@ -218,7 +218,7 @@ impl InboundBridge {
 
     /// The bytes `event` retains, when it can fit the control budget at all.
     /// One that never can is a protocol violation, not a burst: the bridge
-    /// fails closed rather than wait for room that never comes.
+    /// fails closed rather than wait for workspace that never comes.
     fn fitting_bytes(&self, event: &CollabEvent, serialized_bytes: Option<usize>) -> Option<usize> {
         let required_bytes = event_bytes(event).unwrap_or(usize::MAX);
         if required_bytes <= SDK_EVENT_QUEUE_BYTES {

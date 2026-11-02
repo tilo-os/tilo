@@ -143,7 +143,7 @@ Each must work with only the rules in §3, no domain knowledge:
 |---|---|
 | `*@ycombinator.com is:unread received:-30d` | identifier pattern, flags, time |
 | `Message author.identity.member:false` | an optional link as a path |
-| `Event attendees:*@acme.com room.floor:3` | identifiers in a set, a path |
+| `Event attendees:*@acme.com event.floor:3` | identifiers in a set, a path |
 | `Payment amount:>500EUR invoice:none` | a money literal, a missing reference |
 | `Contact phone:tel:+49* email:none` | identifier pattern, missing values |
 

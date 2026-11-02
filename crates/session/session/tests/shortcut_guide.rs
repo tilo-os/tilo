@@ -23,7 +23,7 @@ use std::time::Duration;
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{InputEvent, OutputConfig, Screenshot};
-use tilo_desktop::desktop_actions::{CHROME_RESOURCE, DISPLAY_KIND, SEARCH_RESOURCE};
+use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DISPLAY_KIND, SEARCH_RESOURCE};
 use tilo_session::{Options, Session, SessionConfig};
 use tilo_sheets::Seat as _;
 use tilo_sheets::shortcut_guide::{Guide, Pair};
@@ -170,7 +170,7 @@ fn displays(session: &Session) -> Vec<ResourceSpec> {
 fn focus(session: &mut Session, index: usize) {
     let display = displays(session)[index].id.clone();
     session
-        .invoke(display.as_str(), "focus", &serde_json::Map::new())
+        .invoke(display.as_str(), "focus-display", &serde_json::Map::new())
         .unwrap_or_else(|error| panic!("{display:?} focus: {error:?}"));
     let left = i32::try_from(index).expect("a display") * WIDTH;
     let place = (

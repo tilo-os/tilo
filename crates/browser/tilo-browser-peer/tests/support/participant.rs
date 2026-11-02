@@ -1,4 +1,4 @@
-//! A native participant of the room's channels, as a user's laptop is: it
+//! A native participant of the workspace's channels, as a user's laptop is: it
 //! announces itself, creates the note's channel and publishes its genesis,
 //! then admits every device of its user that asks for access to a channel.
 //! Browsers write no commits and never write in the clear, so every test
@@ -21,7 +21,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use tilo_relay::daemon::Relay;
 
-use crate::support::{Device, ROOM, enrol, route, scratch_dir, workspace};
+use crate::support::{Device, WORKSPACE, enrol, route, scratch_dir, workspace};
 
 /// Publish `message` through the host the way a shell does.
 pub fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
@@ -45,7 +45,7 @@ struct Channels {
 
 impl Channels {
     /// The channel's peer, its group created on first use: this laptop is
-    /// the first of the room's devices to open every channel.
+    /// the first of the workspace's devices to open every channel.
     fn peer(&mut self, channel: ChannelId) -> &mut ChannelPeer {
         self.peers.entry(channel).or_insert_with(|| {
             let dir = self.dir.path().join(hex::encode(channel.0));
@@ -108,7 +108,7 @@ pub struct Participant {
 }
 
 impl Participant {
-    /// Take part in the room through `host` as a new primary device of
+    /// Take part in the workspace through `host` as a new primary device of
     /// `root`.
     pub async fn start(host: &Relay, root: &SigningKey) -> Self {
         let device = enrol(root, "laptop", DeviceCapabilities::primary());
@@ -136,7 +136,7 @@ impl Participant {
             publish(
                 &session,
                 &NeighbourMsg::MlsGovernance {
-                    workspace: ROOM.into(),
+                    workspace: WORKSPACE.into(),
                     frame: Box::new(frame),
                     delivery: 1,
                 },
@@ -153,7 +153,7 @@ impl Participant {
         }
     }
 
-    /// Take part on through a restarted `host`, which kept the room.
+    /// Take part on through a restarted `host`, which kept the workspace.
     pub async fn reconnect(&mut self, host: &Relay, root: &SigningKey) {
         self.task.abort();
         let _ = (&mut self.task).await;
@@ -287,7 +287,7 @@ async fn admit(
         for frame in outgoing {
             delivery = delivery.checked_add(1).unwrap();
             let message = NeighbourMsg::MlsGovernance {
-                workspace: ROOM.into(),
+                workspace: WORKSPACE.into(),
                 frame: Box::new(frame),
                 delivery,
             };

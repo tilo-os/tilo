@@ -8,8 +8,8 @@
 //! action broker, which checks again that the shortcut still exists and that
 //! its saver may still run it.
 //!
-//! Only shortcuts saved by the person this device acts for in their room are
-//! armed ([`armed`]), so a collaborator's shortcut never fires on someone
+//! Only shortcuts saved by the person this device acts for in their
+//! workspace are armed ([`armed`]), so a collaborator's shortcut never fires on someone
 //! else's behalf, and deleting a shortcut disarms it at the next event.
 //!
 //! - [`KeyboardTriggers`] fires on a chord in the desktop's own notation.
@@ -23,10 +23,10 @@
 //! - [`AppEventTriggers`] fires on the events applications declare next to
 //!   their actions, read as the record changes they publish.
 //! - [`RecordChangedTriggers`] fires on a committed change to a record of a
-//!   watched kind in the saver's room, unless a shortcut's run made the
+//!   watched kind in the saver's workspace, unless a shortcut's run made the
 //!   change: see [`record_firings`].
 //! - [`IncomingMessageTriggers`] fires on a message someone else received in
-//!   the saver's rooms (a change its app marks as one).
+//!   the saver's workspaces (a change its app marks as one).
 //!
 //! What an event says (the app, the workspace, the file, the mode) is the
 //! trigger's payload ([`TriggerSpec::payload`]); each value is handed to the
@@ -196,27 +196,27 @@ impl Clock for SystemClock {
     }
 }
 
-/// A shortcut this device may start, with the room it is saved in, the
-/// person whose device proved saving it, and the fire times of that room's
-/// schedules already claimed.
+/// A shortcut this device may start, with the workspace it is saved in, the
+/// person whose device proved saving it, and the fire times of that
+/// workspace's schedules already claimed.
 #[derive(Clone, Debug)]
 pub struct Armed {
-    pub room: String,
+    pub workspace: String,
     pub shortcut: Shortcut,
     /// Who saved it, by their device's proof: its triggers fire on their
     /// behalf only.
     pub saver: String,
-    /// The fire times of that room's schedules already claimed, which say
-    /// when another of the person's devices took one.
+    /// The fire times of that workspace's schedules already claimed, which
+    /// say when another of the person's devices took one.
     pub claims: Vec<ScheduleClaim>,
 }
 
 /// Every shortcut in `workspaces` with triggers that the person this device
-/// acts for in its room (`local_person`) saved, by the proof of a device of
-/// theirs ([`tilo_peer_state::workspace::proven_saver`]) that holds at `now_ns`
-/// against the room's revocations (`revocations`, `None` for a room this
-/// device holds no document of). A `saved_by` without such a proof, or one
-/// for another room, never arms.
+/// acts for in its workspace (`local_person`) saved, by the proof of a device
+/// of theirs ([`tilo_peer_state::workspace::proven_saver`]) that holds at
+/// `now_ns` against the workspace's revocations (`revocations`, `None` for a
+/// workspace this device holds no document of). A `saved_by` without such a
+/// proof, or one for another workspace, never arms.
 pub fn armed(
     workspaces: &[tilo_desktop_model::Workspace],
     local_person: impl Fn(&tilo_desktop_model::Workspace) -> String,
@@ -238,14 +238,19 @@ pub fn armed(
             continue;
         };
         let person = local_person(workspace);
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         for shortcut in triggered {
-            if tilo_peer_state::workspace::proven_saver(&room, &shortcut, &revocations, now_ns)
-                .as_ref()
+            if tilo_peer_state::workspace::proven_saver(
+                &workspace_id,
+                &shortcut,
+                &revocations,
+                now_ns,
+            )
+            .as_ref()
                 == Some(&person)
             {
                 armed.push(Armed {
-                    room: room.clone(),
+                    workspace: workspace_id.clone(),
                     shortcut,
                     saver: person.clone(),
                     claims: workspace.schedule_claims.clone(),
@@ -273,14 +278,14 @@ pub enum TriggerEvent<'a> {
     Key(&'a KeyChord),
     /// The applications publishing live actions to the broker now.
     Apps(&'a BTreeSet<String>),
-    /// The workspaces this device is in now: room id to name.
+    /// The workspaces this device is in now: id to name.
     Workspaces(&'a BTreeMap<String, String>),
     /// Whether each focus mode is on now.
     Focus(FocusState),
     /// Files changed inside watched folders since the last look.
     Files(&'a [FolderChange]),
-    /// Changes committed to records of this device's rooms since the last
-    /// look.
+    /// Changes committed to records of this device's workspaces since the
+    /// last look.
     Records(&'a [RecordEvent]),
 }
 
@@ -322,10 +327,10 @@ impl FileChange {
 }
 
 /// A folder a file-changed trigger watches: the path the capability
-/// `capability` of workspace `room` shares with the shortcut's saver.
+/// `capability` of `workspace` shares with the shortcut's saver.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct WatchedFolder {
-    pub room: String,
+    pub workspace: String,
     pub capability: String,
     pub path: PathBuf,
 }
@@ -333,19 +338,19 @@ pub struct WatchedFolder {
 /// One file that changed inside a watched folder.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FolderChange {
-    pub room: String,
+    pub workspace: String,
     pub capability: String,
     /// The file's path inside the folder.
     pub file: String,
     pub change: FileChange,
 }
 
-/// Which file of which workspace a [`FolderChange`] is about: its room, its
-/// capability and the file's path. `Ord` puts files in the order a person
+/// Which file of which workspace a [`FolderChange`] is about: its workspace,
+/// its capability and the file's path. `Ord` puts files in the order a person
 /// sees them, so one poll reports them the same way twice.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChangedFile {
-    pub room: String,
+    pub workspace: String,
     pub capability: String,
     pub file: String,
 }
@@ -356,7 +361,7 @@ impl FolderChange {
     #[must_use]
     pub fn same_file(&self) -> ChangedFile {
         ChangedFile {
-            room: self.room.clone(),
+            workspace: self.workspace.clone(),
             capability: self.capability.clone(),
             file: self.file.clone(),
         }
@@ -366,7 +371,7 @@ impl FolderChange {
     pub fn inside(folder: &WatchedFolder, path: &Path, change: FileChange) -> Option<Self> {
         let file = path.strip_prefix(&folder.path).ok()?;
         (!file.as_os_str().is_empty()).then(|| Self {
-            room: folder.room.clone(),
+            workspace: folder.workspace.clone(),
             capability: folder.capability.clone(),
             file: file.to_string_lossy().into_owned(),
             change,
@@ -374,14 +379,14 @@ impl FolderChange {
     }
 }
 
-/// One trigger that fired: run `shortcut` in `room`, as run `run`.
+/// One trigger that fired: run `shortcut` in `workspace`, as run `run`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Firing {
-    pub room: String,
+    pub workspace: String,
     pub shortcut: String,
     pub trigger: TriggerSpec,
     pub run: RunId,
-    /// The fire time this device takes, to record in the room
+    /// The fire time this device takes, to record in the workspace
     /// ([`WorkspaceTree::claim_schedule`](tilo_desktop_model::WorkspaceTree::claim_schedule))
     /// before the run starts.
     pub claim: Option<ScheduleClaim>,
@@ -409,7 +414,7 @@ impl Firing {
             .map(|(name, value)| ((*name).to_string(), value.clone()))
             .collect();
         Self {
-            room: armed.room.clone(),
+            workspace: armed.workspace.clone(),
             shortcut: armed.shortcut.id.clone(),
             trigger: trigger.clone(),
             run: RunId::new(),
@@ -468,7 +473,7 @@ impl TriggerSource for KeyboardTriggers {
                         return None;
                     };
                     (KeyChord::parse(chord).ok().as_ref() == Some(pressed)).then(|| Firing {
-                        room: armed.room.clone(),
+                        workspace: armed.workspace.clone(),
                         shortcut: armed.shortcut.id.clone(),
                         trigger: trigger.clone(),
                         run: RunId::new(),
@@ -554,14 +559,14 @@ impl TriggerSource for WorkspaceJoinedTriggers {
         };
         workspaces
             .iter()
-            .filter(|(room, _)| !before.contains(*room))
-            .flat_map(|(room, name)| {
+            .filter(|(workspace, _)| !before.contains(*workspace))
+            .flat_map(|(workspace, name)| {
                 fire_matching(armed, |_, trigger| match trigger {
                     TriggerSpec::WorkspaceJoined { room: wanted }
-                        if wanted.as_ref().is_none_or(|wanted| wanted == room) =>
+                        if wanted.as_ref().is_none_or(|wanted| wanted == workspace) =>
                     {
                         Some(vec![
-                            ("workspace", Value::from(room.as_str())),
+                            ("workspace", Value::from(workspace.as_str())),
                             ("workspace_name", Value::from(name.as_str())),
                         ])
                     }
@@ -592,7 +597,8 @@ impl TriggerSource for FileChangedTriggers {
             .flat_map(|change| {
                 fire_matching(armed, |armed, trigger| match trigger {
                     TriggerSpec::FileChanged { capability }
-                        if *capability == change.capability && armed.room == change.room =>
+                        if *capability == change.capability
+                            && armed.workspace == change.workspace =>
                     {
                         Some(vec![
                             ("file", Value::from(change.file.as_str())),
@@ -662,7 +668,7 @@ pub fn watched_folders(
     for armed in armed {
         let Some(workspace) = workspaces
             .iter()
-            .find(|workspace| workspace.room().to_string() == armed.room)
+            .find(|workspace| workspace.room().to_string() == armed.workspace)
         else {
             continue;
         };
@@ -673,7 +679,7 @@ pub fn watched_folders(
             };
             if let Ok(path) = readable_folder(workspace, capability, saver) {
                 folders.push(WatchedFolder {
-                    room: armed.room.clone(),
+                    workspace: armed.workspace.clone(),
                     capability: capability.clone(),
                     path,
                 });
@@ -696,7 +702,7 @@ struct LedgerEntry {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct ScheduleLedger {
-    /// Keyed by `room/shortcut/trigger index`.
+    /// Keyed by `workspace/shortcut/trigger index`.
     #[serde(default)]
     schedules: BTreeMap<String, LedgerEntry>,
 }
@@ -824,7 +830,7 @@ impl TriggerSource for ScheduleTriggers {
                 let TriggerSpec::Schedule { schedule, catch_up } = trigger else {
                     continue;
                 };
-                let key = ledger_key(&armed.room, &armed.shortcut.id, index);
+                let key = ledger_key(&armed.workspace, &armed.shortcut.id, index);
                 live.insert(key.clone());
 
                 let current = self
@@ -849,7 +855,7 @@ impl TriggerSource for ScheduleTriggers {
                         let on_time = now.signed_duration_since(start) <= MISSED_AFTER;
                         if on_time || *catch_up == CatchUp::RunOnce {
                             due_now.push(Firing {
-                                room: armed.room.clone(),
+                                workspace: armed.workspace.clone(),
                                 shortcut: armed.shortcut.id.clone(),
                                 trigger: trigger.clone(),
                                 run: scheduled_run(&key, due),
@@ -904,8 +910,8 @@ impl TriggerSource for ScheduleTriggers {
     }
 }
 
-fn ledger_key(room: &str, shortcut: &str, index: usize) -> String {
-    format!("{room}/{shortcut}/{index}")
+fn ledger_key(workspace: &str, shortcut: &str, index: usize) -> String {
+    format!("{workspace}/{shortcut}/{index}")
 }
 
 /// How long after `due` this device takes the fire time of schedule `key`
@@ -1117,10 +1123,10 @@ impl RecordElection {
     }
 }
 
-/// What `event` fires among `armed` in its room, through the dispatcher a
+/// What `event` fires among `armed` in its workspace, through the dispatcher a
 /// bot's host uses too, so both fire on a change the same way.
 ///
-/// A change a shortcut's run made fires nothing here, in any room: a
+/// A change a shortcut's run made fires nothing here, in any workspace: a
 /// pair of shortcuts that watch each other's kind and write it would
 /// otherwise run each other for as long as the session lasts. The
 /// dispatcher says why ([`Skipped::Loop`]), and the change is passed on
@@ -1132,7 +1138,7 @@ fn record_firings(
 ) -> Vec<Firing> {
     use tilo_automation::dispatch::{self, Armed as DispatchArmed, Event, Firer};
     let mut firings = Vec::new();
-    for armed in armed.iter().filter(|armed| armed.room == event.room) {
+    for armed in armed.iter().filter(|armed| armed.workspace == event.room) {
         let saver = armed.saver.as_str();
         let dispatched = dispatch::dispatch(
             &[DispatchArmed {
@@ -1150,7 +1156,7 @@ fn record_firings(
             .filter(|fired| wanted(&fired.trigger))
         {
             firings.push(Firing {
-                room: armed.room.clone(),
+                workspace: armed.workspace.clone(),
                 shortcut: armed.shortcut.id.clone(),
                 trigger: fired.trigger,
                 run: fired.run,
@@ -1210,7 +1216,7 @@ impl TriggerSource for AppEventTriggers {
                     TriggerSpec::AppEvent { app_id, kind }
                         if *app_id == declared.app_id
                             && *kind == declared.kind
-                            && armed.room == declared.room =>
+                            && armed.workspace == declared.room =>
                     {
                         Some(vec![(
                             EVENT_INPUT,
@@ -1225,7 +1231,7 @@ impl TriggerSource for AppEventTriggers {
 }
 
 /// Fires a shortcut's incoming-message triggers on a message someone else
-/// received in the saver's rooms, on one of the saver's devices.
+/// received in the saver's workspaces, on one of the saver's devices.
 #[derive(Debug, Default)]
 pub struct IncomingMessageTriggers {
     election: RecordElection,
@@ -1436,7 +1442,7 @@ mod tests {
         };
         let mut schedules = ScheduleTriggers::open(None, Arc::new(|| ()));
         let armed = [Armed {
-            room: "room".into(),
+            workspace: "workspace".into(),
             shortcut: shortcut(&TriggerSpec::Schedule {
                 schedule: Schedule::Interval { seconds: 3600 },
                 catch_up: CatchUp::Skip,
@@ -1455,7 +1461,10 @@ mod tests {
         assert_eq!(fired.len(), 1, "the fire time runs");
         assert_eq!(
             fired[0].run,
-            scheduled_run(&ledger_key("room", "tidy", 0), at("2026-09-25T09:00:00Z")),
+            scheduled_run(
+                &ledger_key("workspace", "tidy", 0),
+                at("2026-09-25T09:00:00Z")
+            ),
             "the run is the fire time's, so the person's devices agree on it"
         );
         assert_eq!(
@@ -1479,7 +1488,7 @@ mod tests {
         let mut host =
             TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
         let armed = [Armed {
-            room: "room".into(),
+            workspace: "workspace".into(),
             shortcut: shortcut(&TriggerSpec::Keyboard {
                 chord: "Super+Shift+N".into(),
             }),
@@ -1505,7 +1514,7 @@ mod tests {
         let mut host =
             TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
         let armed = [Armed {
-            room: "room".into(),
+            workspace: "workspace".into(),
             shortcut: shortcut(&TriggerSpec::AppOpened {
                 app_id: "so.tilo.notes".into(),
             }),
@@ -1534,7 +1543,7 @@ mod tests {
         let mut host =
             TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
         let armed = [Armed {
-            room: "room".into(),
+            workspace: "workspace".into(),
             shortcut: shortcut(&TriggerSpec::FocusMode {
                 mode: tilo_automation::FOCUS_DO_NOT_DISTURB.into(),
                 transition: tilo_automation::FocusTransition::Enter,
@@ -1570,7 +1579,7 @@ mod tests {
         let mut host =
             TriggerHost::new(Arc::clone(&clock) as Arc<dyn Clock>, None, Arc::new(|| ()));
         let armed = [Armed {
-            room: "room".into(),
+            workspace: "workspace".into(),
             shortcut: shortcut(&TriggerSpec::FileChanged {
                 capability: "cap-1".into(),
             }),
@@ -1578,7 +1587,7 @@ mod tests {
             claims: Vec::new(),
         }];
         let watched = FolderChange {
-            room: "room".into(),
+            workspace: "workspace".into(),
             capability: "cap-1".into(),
             file: "Invoices/July.pdf".into(),
             change: FileChange::Created,
@@ -1589,7 +1598,7 @@ mod tests {
             "the file appearing starts the shortcut"
         );
         let elsewhere = FolderChange {
-            room: "room".into(),
+            workspace: "workspace".into(),
             capability: "cap-2".into(),
             file: "Notes.md".into(),
             change: FileChange::Modified,

@@ -84,7 +84,7 @@ impl Removal {
 }
 
 /// The node the workspace's grants decide the record's action `verb` at, below
-/// `ws`'s room, and the kind of action it is, as the record declares it.
+/// `ws`'s workspace, and the kind of action it is, as the record declares it.
 /// `None` for a verb the record does not declare.
 #[must_use]
 pub fn emoji_action(

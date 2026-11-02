@@ -29,7 +29,7 @@ fn a_room_being_joined_is_answered_once_it_is_ready() {
     // A write that changes nothing about the room leaves the wait as it is.
     {
         let mut tree = tree.write();
-        tree.desktop.room_epoch = tree.desktop.room_epoch.wrapping_add(1);
+        tree.desktop.workspace_epoch = tree.desktop.workspace_epoch.wrapping_add(1);
     }
     assert!(change.poll_unpin(&mut context).is_pending());
 

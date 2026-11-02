@@ -14,7 +14,8 @@ pub enum LinkError {
     MissingScope,
     NativeNeedsHost,
     BadScope,
-    BadRoom,
+    /// The workspace id in the link is not a canonical lowercase UUID.
+    BadWorkspace,
     BadHost,
     BadSlug,
     BadApp,
@@ -49,7 +50,9 @@ impl LinkError {
             Self::MissingScope => "missing-scope",
             Self::NativeNeedsHost => "native-needs-host",
             Self::BadScope => "bad-scope",
-            Self::BadRoom => "bad-room",
+            // The code is read by the page and by the link corpus: it keeps
+            // its spelling while the Rust name follows the workspace.
+            Self::BadWorkspace => "bad-room",
             Self::BadHost => "bad-host",
             Self::BadSlug => "bad-slug",
             Self::BadApp => "bad-app",
@@ -85,7 +88,7 @@ impl fmt::Display for LinkError {
             Self::MissingScope => f.write_str("This link is incomplete: it names an app but no workspace"),
             Self::NativeNeedsHost => f.write_str("A tilo:// link must name the workspace's host (/@host/w/…)"),
             Self::BadScope => f.write_str("The workspace part of this link is damaged: expected /me or /w/<id>"),
-            Self::BadRoom => f.write_str("The workspace id in this link is damaged (expected a lowercase, hyphenated id)"),
+            Self::BadWorkspace => f.write_str("The workspace id in this link is damaged (expected a lowercase, hyphenated id)"),
             Self::BadHost => f.write_str("The host in this link is not a valid lowercase host name"),
             Self::BadSlug => f.write_str("The workspace name in this link may only use a-z, 0-9 and -"),
             Self::BadApp => f.write_str("The app in this link must be its full package id, like so.tilo.chat"),

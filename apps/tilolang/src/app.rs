@@ -90,7 +90,7 @@ impl ResourceApp for TlApp {
     const TITLE: &'static str = "tilolang";
     const ICON: Option<&'static str> = Some("code-editor");
     // The record is the workspace's: every package keeps its resources in it.
-    const ROOM_RECORD: bool = true;
+    const WORKSPACE_RECORD: bool = true;
 
     fn named() -> Option<AppName> {
         let meta = &crate::installed_bundle()?.meta;
@@ -142,7 +142,7 @@ impl ResourceApp for TlApp {
                 ui::framework::RunMode::Live,
             )
             .keep_indexes_in(indexes)
-            .in_workspace(cx.room())
+            .in_workspace(cx.workspace())
             .opening(cx.record().clone()),
         ))
     }
@@ -181,7 +181,7 @@ impl ResourceApp for TlApp {
             if let Some(indexes) = indexes(&cx.storage().files()) {
                 window = window.keep_indexes_in(indexes);
             }
-            if let Some(workspace) = cx.room() {
+            if let Some(workspace) = cx.workspace() {
                 window = window.in_workspace(&workspace);
             }
             // Another record than the workspace's: the person's own, for a package that keeps

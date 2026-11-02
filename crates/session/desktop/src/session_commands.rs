@@ -17,8 +17,8 @@ use tilo_desktop_model::{DesktopTree, GroupId, RoomId, Strip, TileContent, Windo
 pub trait DesktopCommandSink {
     /// Run `read` over the desktop the widgets render.
     fn with_tree<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R;
-    /// The admitted revision a command against `room` binds to.
-    fn source(&mut self, room: RoomId) -> Result<CommandSource, String>;
+    /// The admitted revision a command against `workspace` binds to.
+    fn source(&mut self, workspace: RoomId) -> Result<CommandSource, String>;
     /// Apply a per-device view change. It never changes the topology.
     fn apply_local(&mut self, intent: LocalViewIntent);
     /// Hand a bound command to the owner.
@@ -30,7 +30,7 @@ pub trait DesktopCommandSink {
     fn submit(&mut self, command: BoundCommand) -> Result<(), String>;
 }
 
-fn group_room(tree: &DesktopTree, group: GroupId) -> Option<RoomId> {
+fn group_workspace(tree: &DesktopTree, group: GroupId) -> Option<RoomId> {
     tree.workspaces
         .iter()
         .find(|workspace| {
@@ -51,10 +51,10 @@ pub fn dispatch(sink: &mut impl DesktopCommandSink, intent: DesktopIntent) -> Re
             Ok(())
         }
         DesktopIntent::Session(intent) => {
-            let room = sink
-                .with_tree(|tree| group_room(tree, intent.group()))
+            let workspace = sink
+                .with_tree(|tree| group_workspace(tree, intent.group()))
                 .ok_or("source group is no longer present")?;
-            let source = sink.source(room)?;
+            let source = sink.source(workspace)?;
             let command = sink.with_tree(|tree| bind_intent(tree, source, intent))?;
             sink.submit(command)
         }
@@ -98,8 +98,8 @@ pub fn bind_intent(
     let workspace = tree
         .workspaces
         .iter()
-        .find(|workspace| workspace.room().to_string() == source.room)
-        .ok_or("source room is not present in the rendered desktop")?;
+        .find(|workspace| workspace.room().to_string() == source.workspace)
+        .ok_or("source workspace is not present in the rendered desktop")?;
     let group_id = intent.group();
     let (strip, group) = workspace
         .strips

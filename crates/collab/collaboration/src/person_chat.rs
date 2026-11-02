@@ -1,9 +1,9 @@
-//! Private person conversations, kept by the room's governor and reached
+//! Private person conversations, kept by the workspace's governor and reached
 //! through the host: the native broker's authenticated Chat channel, or the
-//! page's own session with the room (`install_transport`). Reads on the UI
+//! page's own session with the workspace (`install_transport`). Reads on the UI
 //! sync path use a bounded, revocable local snapshot; an operation answers
 //! with a [`Pending`] reply that a page fills later, never by waiting on the
-//! UI thread. There is no standalone store, room-document fallback, or
+//! UI thread. There is no standalone store, workspace-document fallback, or
 //! model-facing host tool.
 use crate::time::{Duration, Instant};
 use std::cell::Cell;
@@ -14,7 +14,7 @@ use tilo_lock::MutexRecover;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Contact {
     pub public_key: String,
-    /// The name the room keeps for the person, empty when it has none
+    /// The name the workspace keeps for the person, empty when it has none
     /// (it never answers one of their devices' labels).
     pub display_name: String,
     /// Whether a conversation with them holds messages.
@@ -39,7 +39,7 @@ pub struct Conversation {
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "operation", rename_all = "kebab-case")]
 pub enum Request {
-    /// The people of the room this person may talk to privately.
+    /// The people of the workspace this person may talk to privately.
     Contacts,
     /// Open the conversation with `public_key`, then the whole of it.
     Open { public_key: String },
@@ -65,9 +65,9 @@ pub type AnswerDone = Box<dyn FnOnce(Result<Answer, String>) + Send>;
 /// Called once with the conversation's sequence after a watch.
 pub type WatchDone = Box<dyn FnOnce(Result<u64, String>) + Send>;
 
-/// A host's door to the room governor's private conversations, for a
+/// A host's door to the workspace governor's private conversations, for a
 /// process without the native broker: the page installs its session with
-/// the room (`install_transport`). It never blocks; it answers through
+/// the workspace (`install_transport`). It never blocks; it answers through
 /// the callbacks, on the thread that runs the app.
 pub trait Transport: Send + Sync {
     /// Carry out `request` as the authenticated device of this process.
@@ -117,7 +117,7 @@ pub fn with_invocation<R>(
 }
 
 /// A private operation's answer, which may come later: a page asks the
-/// room over the network, and the UI thread never waits for it. Poll it
+/// workspace over the network, and the UI thread never waits for it. Poll it
 /// with [`Self::take`] from sync (its arrival wakes the app), or await it.
 pub struct Pending<T> {
     slot: Arc<Mutex<Slot<T>>>,
@@ -434,7 +434,7 @@ pub fn contacts() -> Vec<Contact> {
     contacts_snapshot()
 }
 
-/// Ask the room for its people again, when someone is there whom the last
+/// Ask the workspace for its people again, when someone is there whom the last
 /// list did not have: at most once every ten seconds, and the list in hand
 /// stays until the new one comes.
 pub fn refresh_contacts() {
@@ -495,7 +495,7 @@ fn bound_conversation(
 
 /// A conversation that holds messages is one its contact has, from the
 /// moment it is seen: the first message sent or come in lists them among
-/// the person's direct messages without waiting for the room's next list.
+/// the person's direct messages without waiting for the workspace's next list.
 fn note_conversation(value: &mut Cache, conversation: &Conversation) {
     if conversation.messages.is_empty() {
         return;

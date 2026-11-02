@@ -1,8 +1,8 @@
 //! A Shortcut as a file. A bot directory entry signs the BLAKE3 of these
-//! bytes and a room stores the same bytes, so there is exactly one spelling
-//! of a program: JSON with object keys sorted by their UTF-8 bytes at every
-//! depth, no insignificant whitespace, and serde's own number and string
-//! formatting. Anything else is refused, never re-encoded, because a
+//! bytes and a workspace stores the same bytes, so there is exactly one
+//! spelling of a program: JSON with object keys sorted by their UTF-8 bytes
+//! at every depth, no insignificant whitespace, and serde's own number and
+//! string formatting. Anything else is refused, never re-encoded, because a
 //! re-encoding would no longer match the hash someone reviewed.
 
 use serde_json::Value;
@@ -81,7 +81,7 @@ pub fn parse_program(bytes: &[u8]) -> Result<Shortcut, ProgramError> {
 }
 
 /// Lowercase BLAKE3 hex of a program file: its identity in a directory entry
-/// and in a room's content store.
+/// and in a workspace's content store.
 #[must_use]
 pub fn program_hash(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
@@ -89,7 +89,7 @@ pub fn program_hash(bytes: &[u8]) -> String {
 
 /// The checks that need no action descriptors: names, scoping, templates and
 /// recursion. Typing against descriptors happens at install, against the
-/// installing room's catalogue.
+/// installing workspace's catalogue.
 ///
 /// # Errors
 /// Every structural problem found.

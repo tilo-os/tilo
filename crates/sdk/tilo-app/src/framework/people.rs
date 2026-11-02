@@ -3,10 +3,10 @@
 //! or the participant reading ([`RecordEnv::me`](super::RecordEnv::me)).
 //!
 //! The document records ids — the same on every replica, whatever anyone is
-//! called — and the host knows the names: the room's roster announces them
+//! called — and the host knows the names: the workspace's roster announces them
 //! with the people who are present. A view resolves an id when it shows it,
 //! so a renamed person, or one whose name arrived after their edit, reads
-//! correctly everywhere at once. Names are the room's labels: people who
+//! correctly everywhere at once. Names are the workspace's labels: people who
 //! share a name carry the number presence tells them apart by
 //! ([`ui_core::presence::ParticipantLabels`]), and the participant reading
 //! is shown their own name like anyone else's.
@@ -23,7 +23,7 @@ use ui_core::widget::{Dropdown, Element};
 
 use super::ViewCx;
 
-/// The names the host knows for the participants of the window's room.
+/// The names the host knows for the participants of the window's workspace.
 /// Cloneable; clones read the same roster.
 #[derive(Clone)]
 pub struct People {
@@ -31,18 +31,18 @@ pub struct People {
     revision: LocalState<u64>,
     /// The participant this window is for, when someone edits it.
     me: Option<Rc<str>>,
-    /// The name this device knows its person by, for `me` until the room
+    /// The name this device knows its person by, for `me` until the workspace
     /// names them.
     local: Option<Rc<str>>,
 }
 
 #[derive(Default, PartialEq)]
 struct Roster {
-    /// Each participant the room names, as presence labels them.
+    /// Each participant the workspace names, as presence labels them.
     names: HashMap<String, String>,
-    /// The label this session's participant goes by, when the room said.
+    /// The label this session's participant goes by, when the workspace said.
     own: Option<String>,
-    /// Everyone the room names, by name, as `@` offers them.
+    /// Everyone the workspace names, by name, as `@` offers them.
     members: Vec<MentionCandidate>,
 }
 
@@ -62,7 +62,7 @@ impl People {
     }
 
     /// The name to show for `id`: the roster's label; for the window's own
-    /// participant before the room names them, the name this device knows
+    /// participant before the workspace names them, the name this device knows
     /// its person by; else the id itself — what a record written before ids
     /// were names holds, and what a capture's fixture people are called.
     pub fn name(&self, id: &str) -> String {
@@ -78,14 +78,14 @@ impl People {
         id.to_owned()
     }
 
-    /// The room's people and agents, this window's own participant among
+    /// The workspace's people and agents, this window's own participant among
     /// them, sorted by name: whom a picker of members offers
     /// ([`ViewCx::member_picker`]).
     pub fn members(&self) -> Vec<MentionCandidate> {
         self.roster.borrow().members.clone()
     }
 
-    /// Whether another person is in the room with this window now.
+    /// Whether another person is in the workspace with this window now.
     pub fn others_here(&self) -> bool {
         self.roster.borrow().members.iter().any(|member| {
             !member.is_self && member.kind == ui_core::presence::ParticipantKind::Person
@@ -137,13 +137,13 @@ impl People {
 }
 
 impl<R: Resource, T: 'static> ViewCx<R, T> {
-    /// A dropdown of the room's people and agents by name, bound to a verb
+    /// A dropdown of the workspace's people and agents by name, bound to a verb
     /// as [`Self::control_with`] binds a control: it shows `read` of the
     /// resource and invokes `action` with the value of the one picked.
     /// `first` are the options before the members (nobody, say); `value_of`
     /// is how the record names a member, `None` leaving one out; `make`
     /// dresses the bound dropdown (its id, its label). Built again as the roster
-    /// changes, so it offers whom the room names now.
+    /// changes, so it offers whom the workspace names now.
     pub fn member_picker<B: Binds<R, String> + Clone>(
         &self,
         first: Vec<(String, String)>,

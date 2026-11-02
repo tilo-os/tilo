@@ -252,14 +252,22 @@ impl DeviceCapabilities {
         self.can_own_workspaces && !self.can_act_as_host && !self.foreign
     }
 
-    /// Whether a room governed by a device with these capabilities has that
-    /// governor take part in its channels, wherever it runs (a person's
-    /// device or a relay): the room's records are then sealed channels each
-    /// member opens itself, never documents the governor commits in the
-    /// clear. The room host and every member decide this the same way.
+    /// Whether a workspace governed by a device with these capabilities has
+    /// that governor take part in its channels, wherever it runs (a person's
+    /// device or a relay): the workspace's records are then sealed channels
+    /// each member opens itself, never documents the governor commits in the
+    /// clear. The workspace host and every member decide this the same way.
+    #[must_use]
+    pub const fn takes_part_in_workspace_channels(&self) -> bool {
+        self.can_own_workspaces
+    }
+
+    /// The name the old shell and the room host still call it by; it goes
+    /// when they do.
+    #[doc(hidden)]
     #[must_use]
     pub const fn takes_part_in_room_channels(&self) -> bool {
-        self.can_own_workspaces
+        self.takes_part_in_workspace_channels()
     }
 
     /// Capability set for the user's primary device (holds root

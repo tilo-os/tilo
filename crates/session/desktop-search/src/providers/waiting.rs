@@ -29,17 +29,17 @@ pub fn waiting_kind() -> ResourceKind {
 
 /// The live notifications, newest last, as published.
 pub struct Waiting {
-    room: String,
+    workspace: String,
     notifications: Vec<ResourceSpec>,
 }
 
 impl Waiting {
     /// The notifications `notifications` published by the session itself,
-    /// in the workspace of `room`.
+    /// in the workspace of `workspace`.
     #[must_use]
-    pub fn new(room: impl Into<String>, notifications: Vec<ResourceSpec>) -> Self {
+    pub fn new(workspace: impl Into<String>, notifications: Vec<ResourceSpec>) -> Self {
         Self {
-            room: room.into(),
+            workspace: workspace.into(),
             notifications,
         }
     }
@@ -50,14 +50,14 @@ impl Waiting {
         let id = notification.id.as_str();
         if notification.actions.iter().any(|spec| spec.id == INVOKE) {
             return Some(
-                InvokeTarget::action(DESKTOP_APP, &self.room, id, INVOKE)
+                InvokeTarget::action(DESKTOP_APP, &self.workspace, id, INVOKE)
                     .with_argument(INVOKE_PARAM, DEFAULT_ACTION),
             );
         }
         let reply = tilo_actions::door::survey(std::slice::from_ref(notification))
             .into_iter()
             .find(|action| action.address.action == REPLY)?;
-        let mut target = InvokeTarget::action(DESKTOP_APP, &self.room, id, REPLY);
+        let mut target = InvokeTarget::action(DESKTOP_APP, &self.workspace, id, REPLY);
         target.descriptor = Some(reply);
         Some(target)
     }
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn what_asks_something_is_listed_newest_first_and_answered_by_address() {
         let waiting = Waiting::new(
-            "room",
+            "workspace",
             vec![
                 notification("notification:1", "Mara", &["close", "invoke"]),
                 notification("notification:2", "Backup done", &["close"]),

@@ -1,5 +1,7 @@
 //! The invitation and join layouts issued before the grants stopped naming
-//! the room's authority, kept so bytes a build wrote then still decode.
+//! the workspace's authority, kept so bytes a build wrote then still decode.
+//! Their fields keep the names that layout had: the structs exist to mirror
+//! the old bytes, not to name today's.
 //!
 //! Only the layout of the signed bytes changed: the signing domains are the
 //! same, so an old signature verifies over the old layout. A stored record
@@ -165,7 +167,7 @@ impl Grant {
 /// A signed invitation of this layout, checked.
 pub(super) struct Decoded {
     pub(super) grant: InviteGrant,
-    /// The device the room's host was when this was signed: the issuer
+    /// The device the workspace's host was when this was signed: the issuer
     /// itself, or the authority that delegated the invitation to it.
     pub(super) authority: DeviceCert,
     pub(super) inviter: Option<Inviter>,
@@ -236,7 +238,7 @@ fn check_delegation(grant: &Grant) -> Result<(), String> {
     if delegation.version != JOIN_VERSION
         || delegation.authority_device_public_key != grant.authority.device_public_key
         || uuid::Uuid::parse_str(&delegation.room)
-            .map_or(true, |room| room.to_string() != delegation.room)
+            .map_or(true, |workspace| workspace.to_string() != delegation.room)
         || delegation.room != grant.room
         || delegation.workspace_id != grant.workspace_id
         || delegate != &grant.issuer
@@ -304,7 +306,7 @@ pub(super) fn verify_complete(
     )?;
     if join.grant.room != challenge.room
         || join.grant.workspace_id != challenge.workspace_id
-        || join.room_authority().device_public_key != challenge.authority_device_public_key
+        || join.workspace_authority().device_public_key != challenge.authority_device_public_key
     {
         return Err("join challenge does not match signed invitation".into());
     }

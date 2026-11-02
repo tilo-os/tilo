@@ -89,11 +89,11 @@ per target goes through a crate in `crates/platform/`. The policy suite
 
 ## Where the code still differs
 
-The code still carries models this page does not have: rooms beside
-workspaces, governance by one device, per-person spaces, settings outside the
-resource model, and a second platform inside the shell. Each is being replaced
-by the model above, not kept beside it. [`workspace.md`](workspace.md), "Where
-the code differs", lists them.
+The code still carries models this page does not have: the stored `room` key
+and `RoomId` where a workspace is meant, governance by one device, per-person
+spaces, settings outside the resource model, and a second platform inside the
+shell. Each is being replaced by the model above, not kept beside it.
+[`workspace.md`](workspace.md), "Where the code differs", lists them.
 
 ## More
 

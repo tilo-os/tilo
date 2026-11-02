@@ -1,7 +1,7 @@
 //! The certified relay session as the toolkit's [`CollabTransport`], for
 //! `CollaborationManager::with_transport`.
 //!
-//! - A primary `Hello` joins the route's room (and its live plane); the
+//! - A primary `Hello` joins the route's workspace (and its live plane); the
 //!   primary route is acknowledged once the host answers `Ready`.
 //! - Document mutations are signed and committed by the session
 //!   ([`PeerHandle::publish`]); inbound documents arrive already verified as
@@ -15,7 +15,7 @@
 //! - `InstallDocumentEncryption` seals and opens the route with its
 //!   `channel-crypto` group.
 //! - Content a record references and this page lacks (`WantContent`, a
-//!   picture's hash) is asked of the room on its presence, as every
+//!   picture's hash) is asked of the workspace on its presence, as every
 //!   device asks; the host and any member keeping it answer this device
 //!   alone, in pieces. Only pieces of content this page asked for are kept,
 //!   and the assembled bytes reach the app (`CollabEvent::RecordContent`)
@@ -180,7 +180,7 @@ impl RelayCollabTransport {
         }
     }
 
-    /// Ask the room for content `route`'s record references, unless it was
+    /// Ask the workspace for content `route`'s record references, unless it was
     /// asked for lately ([`crate::content::ContentWants::ask`]).
     fn want_content(&mut self, route: &RouteSpec, hash: &str) -> Result<(), TransportError> {
         let workspace = workspace(route).ok_or(TransportError::Unsupported)?;

@@ -65,7 +65,7 @@ impl Call {
     ) -> Self {
         let answer = watch(session.query(CatalogueQuery {
             canonical_route: Some(CanonicalActionRoute {
-                room: owner.workspace.clone(),
+                workspace: owner.workspace.clone(),
                 app_id: "so.tilo.chat".into(),
                 record_id: String::new(),
             }),
@@ -189,7 +189,7 @@ fn provider_step(
     let providers: Vec<_> = page
         .providers
         .iter()
-        .filter(|p| p.room == owner.workspace && p.app_id == "so.tilo.chat")
+        .filter(|p| p.workspace == owner.workspace && p.app_id == "so.tilo.chat")
         .collect();
     let [provider] = providers.as_slice() else {
         return Step::Refused;

@@ -1,4 +1,4 @@
-/** Resolve a shared reference through the current certified room's catalogue.
+/** Resolve a shared reference through the current certified workspace's catalogue.
  * The source provider is required: resource ids are record-local, not global.
  * This is a fresh authorized read, never a URL capability or an invocation.
  */
@@ -11,11 +11,11 @@ export async function resolveResourceReference({reference, provider, actions, cu
   }
   // Caller-owned mutable objects cannot change the address during authentication.
   const address = {id: reference.id, kind: reference.kind};
-  if (!actions || !current()) throw Error('Shared resource requires the current admitted room');
+  if (!actions || !current()) throw Error('Shared resource requires the current admitted workspace');
   const page = await actions.catalogue({provider, view_resource: address, max_results: 256});
   if (!current()) throw Error('Shared resource connection changed');
   if (scope && (!page.locator || page.locator.origin !== scope.origin
-    || page.locator.room !== scope.room || page.locator.hostDevice !== scope.hostDevice
+    || page.locator.workspace !== scope.workspace || page.locator.hostDevice !== scope.hostDevice
     || page.locator.provider !== provider)) throw Error('Shared resource host locator changed or unavailable');
   if (page.next_cursor?.length) throw Error('Shared resource lookup exceeds the catalogue budget');
   const rows = page.rows.filter(row => row.provider === provider

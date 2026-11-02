@@ -15,8 +15,8 @@ impl DesktopTree {
         self.salt
     }
 
-    /// Every room this device is in, deduplicated, in workspace order. A
-    /// workspace whose room is still the unminted sentinel is skipped.
+    /// Every workspace this device is in, deduplicated, in workspace order. A
+    /// workspace whose workspace is still the unminted sentinel is skipped.
     pub fn rooms(&self) -> Vec<RoomId> {
         let mut seen = HashSet::new();
         self.workspaces
@@ -35,13 +35,17 @@ impl DesktopTree {
             .map(Workspace::room)
     }
 
-    /// Tell the tree which records `room`'s index holds. Returns whether
+    /// Tell the tree which records `workspace`'s index holds. Returns whether
     /// this was news, so the caller can skip re-asking when nothing moved.
-    pub fn set_room_records(&mut self, room: RoomId, held: BTreeMap<String, String>) -> bool {
-        match self.room_records_held.get(&room) {
+    pub fn set_workspace_records(
+        &mut self,
+        identity: RoomId,
+        held: BTreeMap<String, String>,
+    ) -> bool {
+        match self.workspace_records_held.get(&identity) {
             Some(existing) if *existing == held => false,
             _ => {
-                self.room_records_held.insert(room, held);
+                self.workspace_records_held.insert(identity, held);
                 true
             }
         }
@@ -49,8 +53,8 @@ impl DesktopTree {
 
     /// Take the references peers have added since this was last called.
     /// Drained rather than read so a queue that only grows isn't a leak.
-    pub fn take_inbound_room_records(&mut self) -> Vec<(RoomId, String, String)> {
-        std::mem::take(&mut self.room_records_inbound)
+    pub fn take_inbound_workspace_records(&mut self) -> Vec<(RoomId, String, String)> {
+        std::mem::take(&mut self.workspace_records_inbound)
     }
 
     pub fn set_active(&mut self, id: WorkspaceId) {
@@ -117,12 +121,12 @@ mod tests {
     }
 
     #[test]
-    fn room_records_report_only_news() {
+    fn workspace_records_report_only_news() {
         let mut tree = DesktopTree::default();
-        let room = RoomId::new();
+        let identity = RoomId::new();
         let held = BTreeMap::from([("r".to_owned(), "doc".to_owned())]);
-        assert!(tree.set_room_records(room, held.clone()));
-        assert!(!tree.set_room_records(room, held));
+        assert!(tree.set_workspace_records(identity, held.clone()));
+        assert!(!tree.set_workspace_records(identity, held));
         assert_eq!(tree.local_salt(), 0);
         tree.salt = 3;
         assert_eq!(tree.local_salt(), 3);

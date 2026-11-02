@@ -25,7 +25,7 @@ fn share_count(
             .admitted_workspace()
             .ok_or("the room is absent")?;
         Ok(
-            tilo_desktop_model::projection::room_policy_of(room_doc, &room.to_string())
+            tilo_desktop_model::projection::workspace_policy_of(room_doc, &room.to_string())
                 .grants
                 .iter()
                 .filter(|grant| tilo_action_policy::share::is_of_share(grant, share))

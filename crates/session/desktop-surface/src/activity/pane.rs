@@ -451,7 +451,7 @@ pub struct WorkspaceActivityPane {
     expanded_brief: Option<usize>,
     host: Rc<dyn ActivityHost>,
     /// The active workspace's durable identity, hex.
-    room: String,
+    workspace: String,
     /// The undo of an agent's run the host is carrying out, and the run.
     undo_pending: Option<(uuid::Uuid, String)>,
     facet_index: HistoryFacetIndex,
@@ -467,7 +467,7 @@ pub struct WorkspaceActivityPane {
     /// one ([`HistorySource::entries_since`]).
     pub(super) history_log: ui::history_source::HistoryLog,
     /// Each workspace change's reading, kept across refreshes; see
-    /// [`describe_room_changes`].
+    /// [`describe_workspace_changes`].
     workspace_changes: HashMap<ChangeHash, WorkspaceChange>,
     /// Each replayed entry's desktop, kept across rebuilds; see
     /// [`Self::rebuild_replay_frames`].
@@ -623,7 +623,7 @@ impl WorkspaceActivityPane {
             morning_source_offset: 0,
             expanded_brief: None,
             host: Rc::new(UnavailableActivityHost),
-            room: String::new(),
+            workspace: String::new(),
             undo_pending: None,
             facet_index: HistoryFacetIndex::default(),
             lens: LensSelection::default(),
@@ -1041,8 +1041,8 @@ impl WorkspaceActivityPane {
         tree: &mut impl ActivityTree,
         records: Option<&RecordStore>,
     ) -> WorkspaceActivityOutcome {
-        if let Some(room) = id.strip_prefix(&format!("{MORNING_SOURCE}.")) {
-            if room == self.room {
+        if let Some(workspace) = id.strip_prefix(&format!("{MORNING_SOURCE}.")) {
+            if workspace == self.workspace {
                 self.toggle_morning_selection();
             }
             return handled_outcome();
@@ -1051,8 +1051,8 @@ impl WorkspaceActivityPane {
             self.toggle_morning_selection();
             return handled_outcome();
         }
-        if let Some((room, key)) = super::morning::decode_action(id, MORNING_OPEN) {
-            if room != self.room {
+        if let Some((workspace, key)) = super::morning::decode_action(id, MORNING_OPEN) {
+            if workspace != self.workspace {
                 return handled_outcome();
             }
             return WorkspaceActivityOutcome {
@@ -1061,8 +1061,8 @@ impl WorkspaceActivityPane {
                 ..Default::default()
             };
         }
-        if let Some((room, key)) = super::morning::decode_action(id, MORNING_REMOVE) {
-            if room != self.room {
+        if let Some((workspace, key)) = super::morning::decode_action(id, MORNING_REMOVE) {
+            if workspace != self.workspace {
                 return handled_outcome();
             }
             self.remove_morning_source(key);
@@ -1073,8 +1073,8 @@ impl WorkspaceActivityPane {
             MorningCommand::DraftRefresh,
             MorningCommand::NextSource,
         ] {
-            if let Some((room, key)) = super::morning::decode_action(id, command.prefix()) {
-                if room == self.room {
+            if let Some((workspace, key)) = super::morning::decode_action(id, command.prefix()) {
+                if workspace == self.workspace {
                     self.submit_morning_command(key, command);
                 }
                 return handled_outcome();
@@ -1280,7 +1280,7 @@ impl WorkspaceActivityPane {
         let run = indexed.run.id.clone();
         let invocation = uuid::Uuid::new_v4();
         let undo = TaskRunUndo {
-            room: self.room.clone(),
+            workspace: self.workspace.clone(),
             invocation,
             task_id: task_id.to_owned(),
             steps,
@@ -1856,15 +1856,15 @@ impl WorkspaceActivityPane {
         if name != self.workspace_name {
             self.workspace_name = name;
         }
-        let room = tree
+        let workspace = tree
             .active_workspace()
             .map(|workspace| workspace.room().to_string())
             .unwrap_or_default();
-        if self.room != room || self.morning_workspace != tree.active.raw() {
+        if self.workspace != workspace || self.morning_workspace != tree.active.raw() {
             self.morning_command_message = None;
             self.morning_source_offset = 0;
         }
-        self.room = room;
+        self.workspace = workspace;
         self.morning_workspace = tree.active.raw();
         self.poll_undo();
 
@@ -1931,7 +1931,7 @@ impl WorkspaceActivityPane {
             .source
             .entries_since(tree.document_mut(), &mut self.history_log);
         self.last_rows = self.history_log.rows_revision();
-        let mut tags = describe_room_changes(
+        let mut tags = describe_workspace_changes(
             tree.document_mut(),
             &self.history_log,
             &mut entries,
@@ -2205,7 +2205,7 @@ impl WorkspaceActivityPane {
                 tree.workspaces
                     .iter()
                     .fold(HashMap::new(), |mut labels, workspace| {
-                        if let Some(records) = tree.room_records_held.get(&workspace.room()) {
+                        if let Some(records) = tree.workspace_records_held.get(&workspace.room()) {
                             for id in records.keys() {
                                 labels
                                     .entry(id.clone())
@@ -2306,7 +2306,7 @@ impl WorkspaceActivityPane {
             })
             .collect::<Vec<_>>();
 
-        let rooms: HashSet<_> = match self.scope {
+        let workspaces: HashSet<_> = match self.scope {
             WorkspaceScope::ThisWorkspace => tree
                 .active_workspace()
                 .map(|workspace| [workspace.room()].into_iter().collect())
@@ -2317,9 +2317,9 @@ impl WorkspaceActivityPane {
                 .map(tilo_desktop_model::Workspace::room)
                 .collect(),
         };
-        let record_ids: BTreeSet<RecordId> = rooms
+        let record_ids: BTreeSet<RecordId> = workspaces
             .into_iter()
-            .filter_map(|room| tree.room_records_held.get(&room))
+            .filter_map(|workspace| tree.workspace_records_held.get(&workspace))
             .flat_map(|held| held.keys())
             .filter_map(|id| RecordId::parse(id))
             .collect();
@@ -3141,7 +3141,7 @@ thread_local! {
 /// diffed. Each entry's hash and dependencies come from `log`, the history
 /// log `entries` were read through, so the workspace's changes are not listed
 /// again.
-fn describe_room_changes(
+fn describe_workspace_changes(
     doc: &mut automerge::AutoCommit,
     log: &ui::history_source::HistoryLog,
     entries: &mut [HistoryEntry],
@@ -3202,11 +3202,11 @@ fn describe_room_changes(
 /// counter, the record index, schedule claims, and in older workspaces who owned
 /// each id namespace and a kept strip's marker): state about the workspace, not
 /// something anyone did in it.
-const ROOM_BOOKKEEPING_KEYS: &[&str] = &[
-    tilo_desktop_model::projection::ROOM_DESKTOP_COUNTER_KEY,
+const WORKSPACE_BOOKKEEPING_KEYS: &[&str] = &[
+    tilo_desktop_model::projection::WORKSPACE_DESKTOP_COUNTER_KEY,
     "contents_owners_v1",
-    tilo_desktop_model::projection::ROOM_RECORDS_KEY,
-    tilo_desktop_model::projection::ROOM_SCHEDULE_CLAIMS_KEY,
+    tilo_desktop_model::projection::WORKSPACE_RECORDS_KEY,
+    tilo_desktop_model::projection::WORKSPACE_SCHEDULE_CLAIMS_KEY,
     "retained_empty_v1",
 ];
 
@@ -3231,7 +3231,7 @@ fn is_workspace_bookkeeping(patches: &[automerge::Patch]) -> bool {
                     Prop::Seq(_) => None,
                 })
                 .chain(leaf)
-                .any(|key| ROOM_BOOKKEEPING_KEYS.contains(&key))
+                .any(|key| WORKSPACE_BOOKKEEPING_KEYS.contains(&key))
         })
 }
 

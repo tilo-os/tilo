@@ -196,11 +196,11 @@
 //!   preference is still a setting.
 //! * **What grows without end** — a chat's messages, a log — is a chain of
 //!   part records of another resource type kept beside the app's own in its
-//!   room ([`Chain`], [`Chained`]): declared in [`ResourceApp::records`],
+//!   workspace ([`Chain`], [`Chained`]): declared in [`ResourceApp::records`],
 //!   read from a view or surface with [`RecordEnv::chain`], and published
 //!   beside the app's resource as one resource whose actions land on the
 //!   part they change (the head for something new, the part holding an
-//!   item for a change of it). A room's host replays a joining device the
+//!   item for a change of it). A workspace's host replays a joining device the
 //!   head only; earlier parts are held when someone opens them.
 //! * **Effects** — work with no document delta (reload, back up now,
 //!   connect, run a query) — are a typed vocabulary: `#[derive(Effect)]` on
@@ -397,7 +397,7 @@ pub use endpoint::{EffectCaller, EffectEndpoint};
 pub use env::{RecordEnv, WindowDocument};
 pub use form::{Form, FormSubmit};
 pub use hosted_actions::{HostedActions, HostedActionsLink, HostedInvocation};
-pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_room};
+pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_workspace};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
 pub use opening::Opened;

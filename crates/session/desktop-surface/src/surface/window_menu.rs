@@ -30,7 +30,7 @@ use tilo_desktop_model::{
 };
 
 use crate::i18n::{t, t_args};
-use crate::navigation::{Command, Route, RouteIds, WidthPreset};
+use crate::navigation::{ChromeEffect, DeskEffect, Destination, RouteIds, Verb, WidthPreset};
 
 use super::Shared;
 
@@ -360,104 +360,98 @@ fn strip_shown_name(name: &str, index: usize) -> String {
     }
 }
 
-/// The navigation command row `id` of the window at `route` means, for a
-/// desktop whose generation is `generation`; `name` is what the person
-/// typed for [`RENAME`]. `None` for a row that does not apply here.
-pub fn command(
-    tree: &DesktopTree,
-    route: &RouteIds,
-    id: &str,
-    name: Option<&str>,
-    generation: &str,
-) -> Option<Command> {
+/// The verb row `id` of the window at `route` means; `name` is what the
+/// person typed for [`RENAME`]. `None` for a row that does not apply here.
+pub fn command(tree: &DesktopTree, route: &RouteIds, id: &str, name: Option<&str>) -> Option<Verb> {
     let group = group_at(tree, route)?;
     let tab = group.tabs.iter().find(|tab| tab.id == route.tab)?;
-    let generation = generation.to_owned();
-    let route = route_of(route);
-    Some(match id {
-        REVEAL => Command::Select { generation, route },
-        RENAME => Command::Rename {
-            generation,
-            route,
+    let group_id = route.group.to_string();
+    let tab_id = route.tab.to_string();
+    let verb = match id {
+        REVEAL => Verb::Desk(DeskEffect::Focus { tab: tab_id }),
+        RENAME => Verb::Chrome(ChromeEffect::Rename {
+            group: Some(group_id),
+            strip: None,
+            workspace: None,
             name: name?.to_owned(),
-        },
-        FULLSCREEN | EXIT_FULLSCREEN => Command::Fullscreen {
-            generation,
-            route,
-            fullscreen: id == FULLSCREEN,
-        },
-        MAXIMIZE | RESTORE => Command::Maximize {
-            generation,
-            route,
-            maximized: id == MAXIMIZE,
-        },
-        WIDER => Command::Width {
-            generation,
-            route,
-            permille: WIDTHS
-                .iter()
-                .copied()
-                .find(|width| *width > group.width.permille())?,
-        },
-        NARROWER => Command::Width {
-            generation,
-            route,
-            permille: WIDTHS
-                .iter()
-                .rev()
-                .copied()
-                .find(|width| *width < group.width.permille())?,
-        },
-        HALF | WIDTH_NARROW | WIDTH_NORMAL | WIDTH_WIDE => Command::WidthPreset {
-            generation,
-            route,
-            preset: match id {
+        }),
+        FULLSCREEN | EXIT_FULLSCREEN => Verb::Chrome(ChromeEffect::Fullscreen {
+            group: group_id,
+            on: id == FULLSCREEN,
+        }),
+        MAXIMIZE | RESTORE => Verb::Chrome(ChromeEffect::Maximize {
+            group: group_id,
+            on: id == MAXIMIZE,
+        }),
+        WIDER => Verb::Chrome(ChromeEffect::SetWidth {
+            group: group_id,
+            permille: Some(
+                WIDTHS
+                    .iter()
+                    .copied()
+                    .find(|width| *width > group.width.permille())?,
+            ),
+            preset: None,
+        }),
+        NARROWER => Verb::Chrome(ChromeEffect::SetWidth {
+            group: group_id,
+            permille: Some(
+                WIDTHS
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|width| *width < group.width.permille())?,
+            ),
+            preset: None,
+        }),
+        HALF | WIDTH_NARROW | WIDTH_NORMAL | WIDTH_WIDE => Verb::Chrome(ChromeEffect::SetWidth {
+            group: group_id,
+            permille: None,
+            preset: Some(match id {
                 HALF => WidthPreset::Half,
                 WIDTH_NARROW => WidthPreset::Narrow,
                 WIDTH_NORMAL => WidthPreset::Normal,
                 _ => WidthPreset::Wide,
-            },
-        },
-        EQUALIZE => Command::EqualizeWidths { generation, route },
-        SHARE | UN_SHARE => Command::ShareWindow {
-            generation,
-            route,
-            shared: id == SHARE,
-        },
-        NEW_TAB => Command::TabOpenBeside {
-            generation,
+            }),
+        }),
+        EQUALIZE => Verb::Chrome(ChromeEffect::Equalize {
+            strip: route.strip.0.to_string(),
+        }),
+        SHARE | UN_SHARE => Verb::Chrome(ChromeEffect::ShareWindow {
+            group: group_id,
+            on: id == SHARE,
+        }),
+        NEW_TAB => Verb::Chrome(ChromeEffect::OpenApp {
             app: app_of(tab)?,
-            beside: route,
-            background: false,
-        },
-        SPLIT_RIGHT => Command::SplitRight { generation, route },
-        NEW_GROUP => Command::MoveToNewGroup { generation, route },
-        CLOSE => Command::Close { generation, route },
-        CLOSE_WINDOW => Command::CloseWindow { generation, route },
-        STOP_DESKTOP_CONTROL => Command::StopDesktopControl { generation, route },
+            beside: Some(tab_id),
+            background: None,
+        }),
+        SPLIT_RIGHT => Verb::Chrome(ChromeEffect::SplitRight { tab: tab_id }),
+        NEW_GROUP => Verb::Chrome(ChromeEffect::NewGroup { tab: tab_id }),
+        CLOSE => Verb::Desk(DeskEffect::CloseTab { tab: tab_id }),
+        CLOSE_WINDOW => Verb::Chrome(ChromeEffect::CloseWindow { group: group_id }),
+        STOP_DESKTOP_CONTROL => Verb::Chrome(ChromeEffect::StopDesktopControl { group: group_id }),
         place => {
-            if let Some(strip) = place.strip_prefix(MOVE_TO_STRIP) {
-                Command::MoveToStrip {
-                    generation,
-                    route,
-                    strip: place_number(strip)?.to_string(),
+            let to = if let Some(strip) = place.strip_prefix(MOVE_TO_STRIP) {
+                Destination {
+                    strip: Some(place_number(strip)?.to_string()),
+                    ..Destination::default()
                 }
             } else if let Some(workspace) = place.strip_prefix(MOVE_TO_WORKSPACE) {
-                Command::MoveToWorkspace {
-                    generation,
-                    route,
-                    workspace: place_number(workspace)?.to_string(),
+                Destination {
+                    workspace: Some(place_number(workspace)?.to_string()),
+                    ..Destination::default()
                 }
             } else {
-                Command::MoveToDisplay {
-                    generation,
-                    route,
-                    display: u32::try_from(place_number(place.strip_prefix(MOVE_TO_DISPLAY)?)?)
-                        .ok()?,
+                Destination {
+                    display: Some(place_number(place.strip_prefix(MOVE_TO_DISPLAY)?)?.to_string()),
+                    ..Destination::default()
                 }
-            }
+            };
+            Verb::Chrome(ChromeEffect::MoveTab { tab: tab_id, to })
         }
-    })
+    };
+    Some(verb)
 }
 
 /// The id `place` names after its `kind:` prefix.
@@ -519,16 +513,6 @@ fn group_at<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<&'a WindowGro
         .window_groups
         .iter()
         .find(|group| group.id == route.group)
-}
-
-/// `ids` as a command names a route.
-fn route_of(ids: &RouteIds) -> Route {
-    Route {
-        workspace: ids.workspace.0.to_string(),
-        strip: ids.strip.0.to_string(),
-        group: ids.group.to_string(),
-        tab: ids.tab.to_string(),
-    }
 }
 
 /// Apply a window-menu command to the tree, and name the widget follow-ups
@@ -814,8 +798,8 @@ impl crate::surface::DesktopHandle {
         })
     }
 
-    /// Choose row `id` of the window showing `tab`: the command the row
-    /// means, dispatched. `name` is what the person typed for [`RENAME`].
+    /// Choose row `id` of the window showing `tab`: the verb the row means,
+    /// dispatched. `name` is what the person typed for [`RENAME`].
     ///
     /// # Errors
     /// A row the window does not offer now, or one it offers but cannot be
@@ -825,7 +809,6 @@ impl crate::surface::DesktopHandle {
         tab: TabId,
         id: &str,
         name: Option<&str>,
-        generation: &str,
     ) -> Result<(), String> {
         let facts = self.window_facts(tab);
         let found = self.read(|tree| {
@@ -833,7 +816,7 @@ impl crate::surface::DesktopHandle {
             let offered = rows(tree, &route, &facts)
                 .into_iter()
                 .find(|row| row.id == id)?;
-            Some((command(tree, &route, id, name, generation), offered))
+            Some((command(tree, &route, id, name), offered))
         });
         let Some((command, offered)) = found else {
             return Err("That is not something this window offers".into());
@@ -844,7 +827,7 @@ impl crate::surface::DesktopHandle {
                 .unwrap_or_else(|| "That is not something this window offers".into()));
         }
         match command {
-            Some(command) => self.dispatch(&command, generation),
+            Some(verb) => self.dispatch(verb),
             None => Err("That is not something this window offers".into()),
         }
     }

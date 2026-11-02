@@ -29,7 +29,7 @@ impl PeerWorkspaceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         use automerge::{ObjType, ROOT, ReadDoc, Value, transaction::Transactable};
-        use tilo_desktop_model::projection::ROOM_AUTOMATIONS_KEY;
+        use tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY;
         if key.verifying_key().to_bytes() != caller.device_public_key {
             return Err("a shortcut change is signed by its caller's own device".into());
         }
@@ -65,7 +65,7 @@ impl PeerWorkspaceMut<'_> {
         let before = candidate.get_heads();
         candidate.set_actor(automerge::ActorId::from(caller.device_public_key.to_vec()));
         let map = match candidate
-            .get(ROOT, ROOM_AUTOMATIONS_KEY)
+            .get(ROOT, WORKSPACE_AUTOMATIONS_KEY)
             .map_err(|e| e.to_string())?
         {
             Some((Value::Object(ObjType::Map), map)) => Some(map),
@@ -126,11 +126,11 @@ fn put_shortcut(
     blob: Vec<u8>,
 ) -> Result<bool, String> {
     use automerge::{ObjType, ROOT, ScalarValue, Value};
-    use tilo_desktop_model::projection::ROOM_AUTOMATIONS_KEY;
+    use tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY;
     let map = match map {
         Some(map) => map,
         None => candidate
-            .put_object(ROOT, ROOM_AUTOMATIONS_KEY, ObjType::Map)
+            .put_object(ROOT, WORKSPACE_AUTOMATIONS_KEY, ObjType::Map)
             .map_err(|e| e.to_string())?,
     };
     match candidate.get(&map, id).map_err(|e| e.to_string())? {

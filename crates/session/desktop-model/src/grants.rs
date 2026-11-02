@@ -77,17 +77,17 @@ impl DesktopTree {
 pub const ALLOW_APP_ACTION: &str = "allow-app-action";
 
 /// What a workspace's history records when a person allows `app_label` to
-/// use `target_label`'s action `action_label` in `room`, for `lifetime`.
+/// use `target_label`'s action `action_label` in `workspace`, for `lifetime`.
 #[must_use]
 pub fn app_action_grant_context(
-    room: &str,
+    workspace: &str,
     app_label: &str,
     target_label: &str,
     action_label: &str,
     lifetime: &str,
 ) -> ActionContext {
     ActionContext::for_resource(
-        format!("workspace.permissions:{room}"),
+        format!("workspace.permissions:{workspace}"),
         "workspace.permissions",
         "App actions",
     )
@@ -126,7 +126,7 @@ mod tests {
 
     fn tree() -> (DesktopTree, WorkspaceId) {
         let id = WorkspaceId(1);
-        let mut workspace = Workspace::in_room(id, RoomId::new(), "Home");
+        let mut workspace = Workspace::in_workspace(id, RoomId::new(), "Home");
         workspace.set_owner("owner");
         (
             DesktopTree {
@@ -143,14 +143,14 @@ mod tests {
     fn a_grant_to_assign_one_role_assigns_that_role_only() {
         let (mut tree, _) = tree();
         let workspace = &mut tree.workspaces[0];
-        let room = workspace.policy.workspace.clone();
+        let workspace_id = workspace.policy.workspace.clone();
         for name in ["Reviewer", "Admin helper"] {
             let owner = workspace.person_authority("owner");
             let preset = Preset::new(
                 name,
                 "",
                 vec![Rule::new(
-                    TreePath::workspace(&room).app("so.tilo.notes"),
+                    TreePath::workspace(&workspace_id).app("so.tilo.notes"),
                     KindSet::READ,
                     Answer::Allow,
                 )],
@@ -162,7 +162,7 @@ mod tests {
         workspace.grant(Grant::new(
             "scribe-assigns-reviewer",
             Subject::agent("scribe"),
-            preset_assign_node(&room, "Reviewer"),
+            preset_assign_node(&workspace_id, "Reviewer"),
             KindSet::OUTSIDE,
             Answer::Allow,
             Subject::person("owner"),
@@ -171,7 +171,7 @@ mod tests {
         workspace.grant(Grant::new(
             "scribe-reads-notes",
             Subject::agent("scribe"),
-            TreePath::workspace(&room).app("so.tilo.notes"),
+            TreePath::workspace(&workspace_id).app("so.tilo.notes"),
             KindSet::READ,
             Answer::Allow,
             Subject::person("owner"),
@@ -201,7 +201,7 @@ mod tests {
             "another set is not"
         );
         let reading = TreePath::root()
-            .push(Level::Workspace, room.as_str())
+            .push(Level::Workspace, workspace_id.as_str())
             .app("so.tilo.notes");
         assert_eq!(
             workspace.answer_at("ada", &reading, tilo_action_policy::ActionKind::Read, 0),
@@ -209,11 +209,11 @@ mod tests {
         );
     }
 
-    fn app_grant(room: &str) -> Grant {
+    fn app_grant(workspace: &str) -> Grant {
         Grant::new(
             "app-open",
             Subject::app("so.tilo.caller"),
-            TreePath::workspace(room)
+            TreePath::workspace(workspace)
                 .app("so.tilo.target")
                 .resource("target.document")
                 .action("open"),
@@ -226,12 +226,12 @@ mod tests {
     #[test]
     fn only_a_governor_grants_and_the_stored_grant_names_them() {
         let (mut tree, id) = tree();
-        let room = tree.workspaces[0].policy.workspace.clone();
+        let workspace_id = tree.workspaces[0].policy.workspace.clone();
         assert!(
-            tree.grant_in_workspace_at(id, &"stranger".to_string(), app_grant(&room), 10)
+            tree.grant_in_workspace_at(id, &"stranger".to_string(), app_grant(&workspace_id), 10)
                 .is_err()
         );
-        tree.grant_in_workspace_at(id, &"owner".to_string(), app_grant(&room), 10)
+        tree.grant_in_workspace_at(id, &"owner".to_string(), app_grant(&workspace_id), 10)
             .unwrap();
         let stored = tree.workspaces[0]
             .policy
@@ -241,8 +241,13 @@ mod tests {
             .unwrap();
         assert_eq!(stored.granted_by, Subject::person("owner"));
         assert!(
-            tree.grant_in_workspace_at(WorkspaceId(2), &"owner".to_string(), app_grant(&room), 10)
-                .is_err()
+            tree.grant_in_workspace_at(
+                WorkspaceId(2),
+                &"owner".to_string(),
+                app_grant(&workspace_id),
+                10
+            )
+            .is_err()
         );
     }
 
@@ -250,8 +255,13 @@ mod tests {
     fn a_receipt_is_recorded_once_and_bounded() {
         let (mut tree, id) = tree();
         let invocation = InvocationId::new();
-        let context =
-            app_action_grant_context("room", "Caller\u{7}", "Target", &"x".repeat(400), "once");
+        let context = app_action_grant_context(
+            "workspace",
+            "Caller\u{7}",
+            "Target",
+            &"x".repeat(400),
+            "once",
+        );
         let receipt = tree
             .append_workspace_effect_receipt(
                 id,
@@ -451,7 +461,7 @@ impl crate::Workspace {
             Ok(())
         } else {
             Err(Refusal::NotPermitted(format!(
-                "{actor} may not {action} in this room"
+                "{actor} may not {action} in this workspace"
             )))
         }
     }
