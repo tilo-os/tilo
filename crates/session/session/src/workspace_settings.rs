@@ -353,10 +353,10 @@ fn govern(
     if changed.is_empty() {
         return;
     }
-    let room = workspace.room();
+    let workspace_id = workspace.room();
     let membership = fed
         .engine
-        .map(|engine| crate::membership::Membership::of(engine, room));
+        .map(|engine| crate::membership::Membership::of(engine, workspace_id));
     let writes = membership
         .as_ref()
         .map(|writes| writes.changes(workspace, &changed))
@@ -668,15 +668,16 @@ fn toggle_device(
         tracing::debug!(%device, "not a device key: nothing changed");
         return false;
     };
-    let Some(room) = handle.read(|tree| tree.active_workspace().map(Workspace::room)) else {
+    let Some(workspace_id) = handle.read(|tree| tree.active_workspace().map(Workspace::room))
+    else {
         return false;
     };
     let mut personal = personal.borrow_mut();
-    let Some(shown) = personal.shown_on(room, &device) else {
+    let Some(shown) = personal.shown_on(workspace_id, &device) else {
         return false;
     };
     if !shown {
-        return personal.set_shown(room, device, true);
+        return personal.set_shown(workspace_id, device, true);
     }
     // The desk keeps the person one workspace: keeping this device's last
     // one off it would leave them with none, and the workspace would stay
@@ -684,7 +685,7 @@ fn toggle_device(
     if personal.is_this_device(&device) && handle.read(|tree| tree.workspaces.len()) <= 1 {
         return false;
     }
-    personal.set_shown(room, device, false)
+    personal.set_shown(workspace_id, device, false)
 }
 
 /// The device `key` names, as the sheet hands it back.

@@ -194,7 +194,7 @@ impl Activity {
         self.0.woken.swap(false, Ordering::AcqRel)
     }
 
-    /// `workspace`'s room, as `tree` holds it.
+    /// The `RoomId` of `workspace`, as `tree` holds it.
     fn room_of(tree: &DesktopTree, workspace: WorkspaceId) -> Option<RoomId> {
         tree.workspaces
             .iter()
@@ -202,12 +202,12 @@ impl Activity {
             .map(Workspace::room)
     }
 
-    /// The records the workspace of `room` holds, as the worker last read
-    /// them: made when the history is first read for the workspace, and
+    /// The records the workspace `workspace_id` holds, as the worker last
+    /// read them: made when the history is first read for the workspace, and
     /// following them from then on.
-    fn records_of(&self, room: RoomId) -> Option<Rc<Watched<Vec<DetachedRecordHistory>>>> {
+    fn records_of(&self, workspace_id: RoomId) -> Option<Rc<Watched<Vec<DetachedRecordHistory>>>> {
         let store = self.0.store.clone()?;
-        let key = room.to_string();
+        let key = workspace_id.to_string();
         if let Some(known) = self.0.records.borrow().get(&key) {
             return Some(Rc::clone(known));
         }
@@ -252,13 +252,13 @@ impl HistorySource for Activity {
         tree: &DesktopTree,
         workspace: WorkspaceId,
     ) -> Vec<DetachedRecordHistory> {
-        let Some(room) = Self::room_of(tree, workspace) else {
+        let Some(workspace_id) = Self::room_of(tree, workspace) else {
             return Vec::new();
         };
-        let Some(watch) = self.records_of(room) else {
+        let Some(watch) = self.records_of(workspace_id) else {
             return Vec::new();
         };
-        let held = tree.workspace_records_held.get(&room);
+        let held = tree.workspace_records_held.get(&workspace_id);
         let records = watch.get();
         records
             .iter()
@@ -305,8 +305,11 @@ impl HistorySource for Activity {
         tree: &DesktopTree,
         target: &ui::HistoryResourceTarget,
     ) -> Option<tilo_desktop_model::TabId> {
-        let room = tree.active_workspace().map(Workspace::room)?;
-        self.0.openings.borrow_mut().push((room, target.clone()));
+        let workspace_id = tree.active_workspace().map(Workspace::room)?;
+        self.0
+            .openings
+            .borrow_mut()
+            .push((workspace_id, target.clone()));
         None
     }
 }

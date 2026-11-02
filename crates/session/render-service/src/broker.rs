@@ -1,11 +1,12 @@
-//! What the compositor's render broker and a room's render service say to
-//! each other, over the `SOCK_SEQPACKET` socket the service is started with.
+//! What the compositor's render broker and a workspace's render service say
+//! to each other, over the `SOCK_SEQPACKET` socket the service is started
+//! with.
 //!
 //! The broker owns attribution: the launcher connects every app to it and
-//! names the app and its room before the app holds the connection, so the
-//! broker — never the app — decides which room's service draws the app. It
-//! hands the service one end of a fresh channel per app connection with
-//! [`ToService::Connect`], and the app the other end.
+//! names the app and its workspace before the app holds the connection, so
+//! the broker — never the app — decides which workspace's service draws the
+//! app. It hands the service one end of a fresh channel per app connection
+//! with [`ToService::Connect`], and the app the other end.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,10 +23,11 @@ pub enum ToService {
     Connect {
         connection: u64,
         app_id: String,
+        /// The workspace whose service draws the app.
         room: String,
     },
-    /// Drop a connection: the app left, or now renders in another room's
-    /// service (a private room gained a member).
+    /// Drop a connection: the app left, or now renders in another workspace's
+    /// service (a private workspace gained a member).
     Drop { connection: u64 },
 }
 

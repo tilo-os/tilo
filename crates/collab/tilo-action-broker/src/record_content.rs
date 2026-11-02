@@ -421,6 +421,13 @@ impl RouteContent {
         );
     }
 
+    /// The bytes of `hash` this device keeps on `route`: what a host reads an
+    /// offloadable invocation's inputs from, and says of itself when another
+    /// device offers it work that reads that content.
+    pub fn kept(&self, route: &CrdtRoute, hash: &str) -> Option<Vec<u8>> {
+        self.shelf.read(&ContentScope::of(route), hash)
+    }
+
     /// News of content for the record `route` carries: answers to
     /// [`Self::want`] and where each stands until it arrives, and what
     /// another local app offered on its scope.

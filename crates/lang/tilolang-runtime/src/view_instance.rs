@@ -584,8 +584,14 @@ impl ViewInstance {
         let binding = self.live.find(key)?.binding.clone()?;
         match &binding.target {
             BindTarget::Field { target, field } => {
-                let (_, info) = self.core.registry.borrow().type_info(&target.ty)?;
-                let f = info.field(field)?.clone();
+                // Another app's resource, composed here, is typed `<app>#<Type>`: its
+                // declaration is the one its loaded package gives that type.
+                let f = {
+                    let registry = self.core.registry.borrow();
+                    let ty = registry.type_id(&target.ty)?;
+                    let (_, info) = registry.type_info(&ty)?;
+                    info.field(field)?.clone()
+                };
                 self.core.read_value(target, &f, None).ok()
             }
             BindTarget::State { key, .. } => {

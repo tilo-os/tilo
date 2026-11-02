@@ -1182,12 +1182,17 @@ impl<R> Edit<R> {
     /// grants: `workspace › app › kind › record [› item] › field… › field-edit`.
     /// The collection field holding an item is not a node of its own.
     #[must_use]
-    pub fn tree_path(&self, room: &str, app: &str, record: &str) -> tilo_action_policy::TreePath
+    pub fn tree_path(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> tilo_action_policy::TreePath
     where
         R: crate::Resource,
     {
         use tilo_action_policy::Level;
-        let mut tree = tilo_action_policy::TreePath::workspace(room)
+        let mut tree = tilo_action_policy::TreePath::workspace(workspace)
             .app(app)
             .kind(R::KIND)
             .resource(record);
@@ -1328,7 +1333,7 @@ impl<R> Serialize for Edit<R> {
 /// The arguments of [`FIELD_EDIT`](crate::FIELD_EDIT) that settle entry
 /// `id` of the outbox stored at field `field` with `outcome` (a
 /// [`Settled`](crate::Settled) in JSON form): [`Path::settle`] for a host
-/// that holds the record without its app's types, such as a room's host
+/// that holds the record without its app's types, such as a workspace's host
 /// settling what a bot's connector performed.
 #[must_use]
 pub fn outbox_settle_arguments(

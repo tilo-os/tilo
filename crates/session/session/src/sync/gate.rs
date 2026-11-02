@@ -37,29 +37,29 @@ impl Client {
         // to.
         self.user?;
         let required: WorkspaceAction = workspace_gate::required_workspace_action(msg)?;
-        let (room, known) = {
+        let (workspace, known) = {
             let plane = self.plane.borrow();
             if *peer == plane.publisher {
                 return None;
             }
-            let room = plane.workspaces.iter().find(|room| room.ws == *ws)?;
-            let known = room
+            let workspace = plane.workspaces.iter().find(|held| held.ws == *ws)?;
+            let known = workspace
                 .peers
                 .iter()
                 .find(|known| known.publisher == *peer)
                 .and_then(|known| known.user.clone());
-            (room.id.clone(), known)
+            (workspace.id.clone(), known)
         };
         // Who the device is: the certificate it said here, or, for a member
         // that announces none — a browser of the workspace — the identity the
         // workspace's governance admitted its device as.
-        let Some(person) = known.or_else(|| self.governed_person(&room, *peer)) else {
+        let Some(person) = known.or_else(|| self.governed_person(&workspace, *peer)) else {
             return Some("the device is not known here".to_owned());
         };
         let desk = self.desk.borrow().clone()?;
         let now = tilo_clock::unix_now();
         let allowed =
-            desk.read(|tree| workspace_gate::allows(tree, &room, &person, &required, now));
+            desk.read(|tree| workspace_gate::allows(tree, &workspace, &person, &required, now));
         if allowed {
             return None;
         }
@@ -68,14 +68,14 @@ impl Client {
         ))
     }
 
-    /// The person the workspace `room`'s governance admitted `device` as,
-    /// when the device announced no certificate of its own here.
-    fn governed_person(&self, room: &str, device: EndpointId) -> Option<String> {
+    /// The person the workspace `workspace`'s governance admitted `device`
+    /// as, when the device announced no certificate of its own here.
+    fn governed_person(&self, workspace: &str, device: EndpointId) -> Option<String> {
         let engine = self.engine.as_ref()?;
-        let room = DeskRoom::parse(room)?;
+        let workspace_id = DeskRoom::parse(workspace)?;
         engine
             .owner()
-            .with_current(room, |view| {
+            .with_current(workspace_id, |view| {
                 view.peer()
                     .permissions(*device.as_bytes(), SystemTime::now())
                     .map(|member| member.person)

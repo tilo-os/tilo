@@ -623,6 +623,12 @@ impl SurfaceHost for SessionKeys {
         Vec::new()
     }
 
+    /// The session's keys draw nothing: they take chords and hand the rest
+    /// on, so no frame is theirs to ask for.
+    fn prepare_frame(&mut self) -> bool {
+        false
+    }
+
     fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
         false
     }
@@ -898,7 +904,7 @@ mod tests {
             repeat: false,
             keysym,
             unmodified_keysym: keysym,
-            text,
+            text: text.map(String::from),
             modifiers,
         }
     }
@@ -932,6 +938,15 @@ mod tests {
             Rc::default(),
         );
         (keys, guide)
+    }
+
+    #[test]
+    fn the_key_surface_draws_no_frame() {
+        let mut keys = keys();
+        assert!(
+            !keys.prepare_frame(),
+            "the keys take chords and pass the rest on: a frame is never theirs"
+        );
     }
 
     #[test]
@@ -1188,7 +1203,7 @@ mod tests {
             &mut table,
             vec![settings_store::hardware::ActionChord {
                 chord: chord.clone(),
-                target: tilo_action_broker::automation::chord_target("room", "tidy"),
+                target: tilo_action_broker::automation::chord_target("workspace", "tidy"),
                 label: "Run Tidy".into(),
             }],
         ));

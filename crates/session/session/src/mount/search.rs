@@ -23,7 +23,7 @@ impl Shared {
         self.search.set_workspaces(self.handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .map(|workspace| (workspace.room().to_string(), workspace.name.clone()))
+                .map(|held| (held.room().to_string(), held.name.clone()))
                 .collect()
         }));
         let now = self.doors.revision();
@@ -34,14 +34,19 @@ impl Shared {
         let tabs = self.handle.read(|tree| {
             let mut tabs = Vec::new();
             for workspace in &tree.workspaces {
-                let room = workspace.room().to_string();
+                let workspace_id = workspace.room().to_string();
                 for tab in workspace
                     .strips
                     .iter()
                     .flat_map(|strip| &strip.window_groups)
                     .flat_map(|group| &group.tabs)
                 {
-                    tabs.push((tab.id, room.clone(), tab_app(&tab.tile), tab.title.clone()));
+                    tabs.push((
+                        tab.id,
+                        workspace_id.clone(),
+                        tab_app(&tab.tile),
+                        tab.title.clone(),
+                    ));
                 }
             }
             tabs
@@ -75,7 +80,7 @@ impl Shared {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
-        for (tab, room, app, title) in tabs {
+        for (tab, workspace_id, app, title) in tabs {
             let Some(app) = app else { continue };
             if title.trim().is_empty() || seen.get(tab) == Some(title) {
                 continue;
@@ -83,7 +88,7 @@ impl Shared {
             seen.insert(*tab, title.clone());
             self.search.record_place(Place {
                 app: app.clone(),
-                workspace: room.clone(),
+                workspace: workspace_id.clone(),
                 tab: *tab,
                 label: title.clone(),
                 value: String::new(),

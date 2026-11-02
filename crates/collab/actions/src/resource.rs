@@ -659,6 +659,64 @@ pub enum Readers {
     Granted,
 }
 
+/// What one of something is called and what several are, in a sentence:
+/// `mailbox` and `mailboxes`, `person` and `people`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct Noun {
+    pub one: String,
+    pub many: String,
+}
+
+impl Noun {
+    #[must_use]
+    pub fn new(one: impl Into<String>, many: impl Into<String>) -> Self {
+        Self {
+            one: one.into(),
+            many: many.into(),
+        }
+    }
+}
+
+/// Whether a resource is the one of its type a search naming the type
+/// means: mail's Inbox among its mailboxes, an app's root among what it
+/// holds. Later variants stand higher.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum Primary {
+    /// One of its type like the others.
+    #[default]
+    No,
+    /// The app's root: its one resource of the type, which stands first
+    /// when the app declares no primary of its own.
+    Root,
+    /// The instance its type declares its primary.
+    Declared,
+}
+
+/// What a resource is, in the words people use for it: its type's noun, the
+/// name of the app whose type it is, and whether it is its type's primary.
+/// What search matches a query naming what something is ("my mails",
+/// "notes") against, rather than its title.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ResourceType {
+    /// Its type: `mailbox`, `mailboxes`.
+    pub noun: Noun,
+    /// Its app, as people call it: `Mail`, `mails`.
+    pub app: Noun,
+    pub primary: Primary,
+}
+
 /// One open/presented resource and the actions it exports. Resources
 /// nest via [`children`](ResourceSpec::children).
 #[derive(Clone)]
@@ -686,6 +744,8 @@ pub struct ResourceSpec {
     pub views: Vec<ResourceViewSpec>,
     /// Who may read the reading this resource publishes.
     pub readers: Readers,
+    /// What it is, as people name it, when its type says ([`ResourceType`]).
+    pub resource_type: Option<ResourceType>,
 }
 
 impl ResourceSpec {
@@ -695,6 +755,7 @@ impl ResourceSpec {
             kind: kind.into(),
             label: label.into(),
             presentation: None,
+            resource_type: None,
             semantic_identity: None,
             app_id: None,
             children: Vec::new(),
@@ -714,6 +775,13 @@ impl ResourceSpec {
     #[must_use]
     pub fn with_presentation(mut self, presentation: ResourcePresentation) -> Self {
         self.presentation = presentation.is_valid().then_some(presentation);
+        self
+    }
+
+    /// Saying what it is, as people name it.
+    #[must_use]
+    pub fn with_type(mut self, resource_type: ResourceType) -> Self {
+        self.resource_type = Some(resource_type);
         self
     }
 

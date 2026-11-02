@@ -604,7 +604,9 @@ type = "int"
 [[resources.verbs.params]]
 name = "resource"
 required = true
-type = "text"
+
+[resources.verbs.params.type]
+resource = ""
 
 [[resources.verbs.params]]
 name = "view"

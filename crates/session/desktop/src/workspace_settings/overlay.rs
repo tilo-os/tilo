@@ -59,6 +59,8 @@ pub struct WorkspaceSettingsModel<'a> {
 /// A workspace this device keeps archived, as the General tab lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchivedWorkspace {
+    /// The archived workspace. The field keeps its name: the session reads it
+    /// by name when it lists the workspaces it keeps archived.
     pub room: tilo_desktop_model::RoomId,
     pub name: String,
 }

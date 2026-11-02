@@ -31,9 +31,9 @@ use tilo_session::{ActionPlane, Launches, Options, Session};
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 
-/// The workspace the desk shows, its room, and the app whose records it
-/// holds.
-const ROOM: &str = "5c07c075-0000-4000-8000-000000000042";
+/// The workspace the desk shows, the id it has on every device, and the app
+/// whose records it holds.
+const WORKSPACE: &str = "5c07c075-0000-4000-8000-000000000042";
 const PACKAGE: &str = "so.tilo.chat";
 const KIND: &str = "so.tilo.chat.message";
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000aa";
@@ -122,7 +122,7 @@ fn session_launching(
     .expect("session")
 }
 
-/// The shortcut named `Tidy` in [`ROOM`], with `trigger`, saved by this
+/// The shortcut named `Tidy` in [`WORKSPACE`], with `trigger`, saved by this
 /// computer's person.
 fn tidy_with(
     trigger: &TriggerSpec,
@@ -136,30 +136,30 @@ fn tidy_with(
         "triggers": [trigger],
     }))
     .expect("shortcut JSON");
-    tilo_peer_state::workspace::sign_saved_shortcut(ROOM, &mut shortcut, cert, device)
+    tilo_peer_state::workspace::sign_saved_shortcut(WORKSPACE, &mut shortcut, cert, device)
         .expect("the person's own device saved it");
     SavedShortcut::encode(&shortcut)
 }
 
 /// Put `workspace` on this session's desk, in place of the one it showed for
-/// the same room.
+/// the same workspace.
 fn show(session: &Session, workspace: Workspace) {
-    let room = workspace.room();
+    let id = workspace.room();
     let mut tree = session.handle().read(Clone::clone);
-    tree.workspaces.retain(|held| held.room() != room);
+    tree.workspaces.retain(|held| held.room() != id);
     tree.workspaces.push(workspace);
     session.handle().replace_tree(tree);
 }
 
-/// Put a workspace for [`ROOM`] holding `shortcuts` on this session's desk.
+/// Put a workspace for [`WORKSPACE`] holding `shortcuts` on this session's desk.
 fn show_room(session: &Session, shortcuts: Vec<SavedShortcut>) {
-    let room = RoomId::parse(ROOM).expect("a room id");
-    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Chat");
+    let workspace = RoomId::parse(WORKSPACE).expect("a workspace id");
+    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(workspace), workspace, "Chat");
     workspace.shortcuts = shortcuts;
     show(session, workspace);
 }
 
-/// Put a workspace for [`ROOM`] on this session's desk whose `person` reads
+/// Put a workspace for [`WORKSPACE`] on this session's desk whose `person` reads
 /// the folder `folder` through the capability `capability`, holding
 /// `shortcuts`.
 fn show_room_sharing(
@@ -171,8 +171,8 @@ fn show_room_sharing(
 ) {
     use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
-    let room = RoomId::parse(ROOM).expect("a room id");
-    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(room), room, "Chat");
+    let workspace = RoomId::parse(WORKSPACE).expect("a workspace id");
+    let mut workspace = Workspace::in_workspace(WorkspaceId::of_room(workspace), workspace, "Chat");
     workspace.set_owner(person);
     workspace.sandbox.push(
         CapOverride::grant(
@@ -218,10 +218,10 @@ fn pass(session: &mut Session, span: Duration) {
     }
 }
 
-/// Save `rows` (`(id, kind)`) as `package`'s index of `room` holds them, the
-/// way the app of a workspace writes it: published in one rename.
+/// Save `rows` (`(id, kind)`) as `package`'s index of `workspace` holds them,
+/// the way the app of a workspace writes it: published in one rename.
 fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
-    let directory = app_state::workspace_index_directory(home.data(), PACKAGE, ROOM)
+    let directory = app_state::workspace_index_directory(home.data(), PACKAGE, WORKSPACE)
         .expect("an index directory");
     let staged = directory.with_file_name("staging-chat");
     for old in [&staged, &directory] {
@@ -244,7 +244,7 @@ fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
 
 /// Where the record document lives.
 fn record_path(home: &tilo_test_env::TestHome) -> std::path::PathBuf {
-    app_state::DocStore::workspace_record_dir_at(home.data(), PACKAGE, ROOM, RECORD)
+    app_state::DocStore::workspace_record_dir_at(home.data(), PACKAGE, WORKSPACE, RECORD)
         .expect("the record's directory")
         .join(app_state::DOCUMENT_FILE)
 }
@@ -354,7 +354,7 @@ fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
     write_index(&home, &[(RECORD, KIND)]);
     seed_record(&home);
 
-    // Another person's device saved the shortcut in this room.
+    // Another person's device saved the shortcut in this workspace.
     let other_person = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
     let other_device = ed25519_dalek::SigningKey::from_bytes(&[0x32; 32]);
     let mut other_cert = tilo_user_identity::DeviceCert {
@@ -418,7 +418,7 @@ fn only_schedule(state: &Path) -> (String, serde_json::Value, i64) {
 fn keep_a_schedule_due_at(state: &Path, trigger: &TriggerSpec, due: i64) {
     let ledger = serde_json::json!({
         "schedules": {
-            format!("{ROOM}/tidy/0"): {
+            format!("{WORKSPACE}/tidy/0"): {
                 "trigger": serde_json::to_value(trigger).expect("the trigger"),
                 "next_fire_ms": due,
             }
@@ -457,7 +457,7 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
     let due = i64::try_from(tilo_clock::unix_now_ms()).unwrap() - 1_000;
     keep_a_schedule_due_at(state.path(), &trigger, due);
     let mut session = session_keeping(state.path(), &socket, &person);
-    // The room is on the desk before the first pass, as it is kept with the
+    // The workspace is on the desk before the first pass, as it is kept with the
     // desk across a restart: a schedule no workspace shows is one this device
     // no longer keeps a fire time for.
     show_room(&session, vec![scheduled(&device, &cert)]);
@@ -561,7 +561,7 @@ fn a_shortcut_armed_on_an_app_runs_once_when_it_starts() {
     // are none.
     pass(&mut session, Duration::from_millis(700));
     // The session starts the app: its own process runs it.
-    launches.started(std::process::id(), PACKAGE, ROOM, false);
+    launches.started(std::process::id(), PACKAGE, WORKSPACE, false);
     let runs = until_a_run(&mut session, 1);
     assert_eq!(
         runs,

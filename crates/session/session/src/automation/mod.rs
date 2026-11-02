@@ -387,9 +387,8 @@ impl Automation {
                 // A workspace this device holds arms against what its
                 // governance revokes. One it does not hold is a workspace on
                 // the desk whose records live elsewhere: nothing of it is
-                // known here,
-                // and the run it starts is refused by the broker unless the
-                // workspace it holds says otherwise.
+                // known here, and the run it starts is refused by the broker
+                // unless the workspace it holds says otherwise.
                 |workspace| Some(revocations(&workspace.room().to_string()).unwrap_or_default()),
                 now_ns,
             )
@@ -465,13 +464,13 @@ impl Automation {
     fn apply_saved(&mut self) {
         while let Ok(request) = self.saved.try_recv() {
             let result = self.save(
-                request.room.as_str(),
+                request.workspace.as_str(),
                 request.actor.as_str(),
                 &request.change,
             );
             if let Err(refusal) = &result {
                 tracing::info!(
-                    room = %request.room,
+                    workspace = %request.workspace,
                     actor = %request.actor,
                     %refusal,
                     "a saved shortcut was refused"

@@ -53,7 +53,7 @@ pub(super) fn rooted_edit_spec(
         return spec;
     }
     // A reaction is placed below the reactions field, wherever it is, as
-    // the room places it: someone who may only comment may react, though
+    // the workspace places it: someone who may only comment may react, though
     // no other edit of the record is theirs. The edit is offered to whoever
     // may react, and each invocation is what it does.
     let edit = spec.contract.need();

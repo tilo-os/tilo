@@ -56,8 +56,8 @@ const TITLES: [&str; 12] = [
     "Plumber quotes",
 ];
 
-/// A notebook kept by the notes app, published as the session publishes a room's records, and
-/// the notes in it titled [`TITLES`], made through the app's own actions: their ids, in order.
+/// A notebook kept by the notes app, published as the session publishes a workspace's records,
+/// and the notes in it titled [`TITLES`], made through the app's own actions: their ids, in order.
 fn notebook() -> (RecordService, Vec<String>) {
     let mut record = tilo_resource::Doc::new();
     let host = Host::new(&record, Principal::new(PERSON), || None).unwrap();
@@ -71,7 +71,7 @@ fn notebook() -> (RecordService, Vec<String>) {
     for committed in host.take_committed() {
         let action = &committed.action;
         let context =
-            ui::tilo_actions::ActionContext::for_resource("room", &action.kind, &action.kind)
+            ui::tilo_actions::ActionContext::for_resource("workspace", &action.kind, &action.kind)
                 .with_invoker(ui::tilo_actions::ActionInvoker::actor(PERSON));
         host.with_schemas(|| {
             ui::tilo_actions::apply_local_with_context(

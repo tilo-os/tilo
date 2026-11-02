@@ -302,23 +302,40 @@ impl Source for Actions {
         }
         let records: std::collections::HashSet<&str> =
             self.0.iter().map(|record| record.id.as_str()).collect();
-        tilo_actions::flatten(&self.0)
+        let flats: Vec<_> = tilo_actions::flatten(&self.0)
             .into_iter()
             .filter(|flat| offered_for(flat.action, needle))
+            .collect();
+        // An open record's actions answer to what they do. An item's (one
+        // message of a chat, one card of a board) answer only to the item
+        // named: "edit message" must not list the same edit once for every
+        // message there is. Each kind is ranked as one list.
+        let (own, items): (Vec<_>, Vec<_>) = flats
+            .iter()
+            .partition(|flat| records.contains(flat.resource_id.as_str()));
+        let mut own_scores = rank::action_match_scores(
+            needle,
+            own.iter().map(|flat| {
+                (
+                    flat.action.label.as_str(),
+                    flat.action.keywords.as_slice(),
+                    flat.resource_label.as_str(),
+                )
+            }),
+        )
+        .into_iter();
+        let mut item_scores = rank::item_action_match_scores(
+            needle,
+            items.iter().map(|flat| flat.resource_label.as_str()),
+        )
+        .into_iter();
+        flats
+            .iter()
             .filter_map(|flat| {
-                // An open record's actions answer to what they do. An item's
-                // (one message of a chat, one card of a board) answer only to
-                // the item named: "edit message" must not list the same edit
-                // once for every message there is.
                 let score = if records.contains(flat.resource_id.as_str()) {
-                    rank::action_match_score(
-                        needle,
-                        &flat.action.label,
-                        &flat.action.keywords,
-                        &flat.resource_label,
-                    )?
+                    own_scores.next().flatten()?
                 } else {
-                    rank::item_action_match_score(needle, &flat.resource_label)?
+                    item_scores.next().flatten()?
                 };
                 Some(Hit {
                     faces: Vec::new(),
@@ -345,13 +362,48 @@ impl Source for Actions {
 }
 
 /// What one app publishes in one workspace, as the session's action host lists
-/// it: inert descriptors.
+/// it: inert descriptors, and what each resource they act on is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PublishedActions {
     pub app: String,
     /// The workspace it publishes them in.
     pub workspace: String,
     pub actions: Vec<tilo_actions::ActionDescriptor>,
+    /// What the resources the actions act on are, by resource id, for those
+    /// whose type says ([`types_of`]): what a query naming a type matches.
+    pub types: BTreeMap<String, tilo_actions::ResourceType>,
+}
+
+impl PublishedActions {
+    /// Everything `resources` publish, as `app` publishes it in `workspace`.
+    #[must_use]
+    pub fn of(app: &str, workspace: &str, resources: &[ResourceSpec]) -> Self {
+        Self {
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            actions: tilo_actions::door::survey(resources),
+            types: types_of(resources),
+        }
+    }
+}
+
+/// What each resource of `resources` and their children is, by resource id,
+/// for those whose type says ([`ResourceSpec::resource_type`]).
+#[must_use]
+pub fn types_of(resources: &[ResourceSpec]) -> BTreeMap<String, tilo_actions::ResourceType> {
+    fn walk(resource: &ResourceSpec, out: &mut BTreeMap<String, tilo_actions::ResourceType>) {
+        if let Some(named) = &resource.resource_type {
+            out.insert(resource.id.as_str().to_owned(), named.clone());
+        }
+        for child in &resource.children {
+            walk(child, out);
+        }
+    }
+    let mut out = BTreeMap::new();
+    for resource in resources {
+        walk(resource, &mut out);
+    }
+    out
 }
 
 /// Whether a person may pick `action` for `needle`: it reaches people, and
@@ -393,40 +445,82 @@ impl Source for Published {
         if needle.trim().is_empty() {
             return Vec::new();
         }
-        let mut hits = Vec::new();
-        for published in &self.0 {
-            for action in &published.actions {
-                if !descriptor_offered(action, needle) {
-                    continue;
-                }
-                let Some(score) = rank::action_match_score(
-                    needle,
-                    &action.action_label,
-                    &action.keywords,
-                    &action.resource_label,
-                ) else {
-                    continue;
-                };
-                hits.push(Hit {
-                    faces: Vec::new(),
-                    outcome: None,
-                    kind: ResourceKind::Action,
-                    provider: self.id().into(),
-                    id: Self::row_id(published, &action.address),
-                    title: action.action_label.clone(),
-                    subtitle: action.description.clone(),
-                    facts: Vec::new(),
-                    score,
-                    icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
-                    target: Target::Invoke(Box::new(crate::model::InvokeTarget {
-                        app: published.app.clone(),
-                        workspace: published.workspace.clone(),
-                        address: action.address.clone(),
-                        arguments: serde_json::Map::new(),
-                        descriptor: Some(action.clone()),
-                    })),
-                });
+        let offered: Vec<_> = self
+            .0
+            .iter()
+            .flat_map(|published| {
+                published
+                    .actions
+                    .iter()
+                    .filter(|action| descriptor_offered(action, needle))
+                    .map(move |action| (published, action))
+            })
+            .collect();
+        let scores = rank::action_match_scores(
+            needle,
+            offered.iter().map(|(_, action)| {
+                (
+                    action.action_label.as_str(),
+                    action.keywords.as_slice(),
+                    action.resource_label.as_str(),
+                )
+            }),
+        );
+        // The nouns of every type each app publishes, by app: a word naming
+        // one is about that app's things.
+        let mut kin: BTreeMap<&str, Vec<&tilo_actions::Noun>> = BTreeMap::new();
+        for named in self.0.iter().flat_map(|published| published.types.values()) {
+            let nouns = kin.entry(named.app.one.as_str()).or_default();
+            if !nouns.contains(&&named.noun) {
+                nouns.push(&named.noun);
             }
+        }
+        let mut hits = Vec::new();
+        for ((published, action), score) in offered.into_iter().zip(scores) {
+            // A resource is found by what it is as well as by what it is
+            // called: "my mails" opens mail's Inbox, which no word of it
+            // names.
+            let by_type = (action.address.action == crate::model::OPEN_ACTION)
+                .then(|| published.types.get(action.address.resource.as_str()))
+                .flatten()
+                .and_then(|named| {
+                    let kin = kin
+                        .get(named.app.one.as_str())
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .filter(|noun| **noun != named.noun);
+                    ui::search::system::type_match_score(needle, named, kin, |rest| {
+                        rank::action_match_score(
+                            rest,
+                            &action.action_label,
+                            &action.keywords,
+                            &action.resource_label,
+                        )
+                    })
+                });
+            let Some(score) = score.max(by_type) else {
+                continue;
+            };
+            hits.push(Hit {
+                faces: Vec::new(),
+                outcome: None,
+                kind: ResourceKind::Action,
+                provider: self.id().into(),
+                id: Self::row_id(published, &action.address),
+                title: action.action_label.clone(),
+                subtitle: action.description.clone(),
+                facts: Vec::new(),
+                score,
+                icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
+                target: Target::Invoke(Box::new(crate::model::InvokeTarget {
+                    app: published.app.clone(),
+                    workspace: published.workspace.clone(),
+                    address: action.address.clone(),
+                    arguments: serde_json::Map::new(),
+                    descriptor: Some(action.clone()),
+                })),
+            });
         }
         // Equal matches: the action that does it in one step before the
         // one asking for input, and a switch before a view of the same
@@ -755,6 +849,11 @@ impl Source for Answers {
         crate::i18n::t("search-kind-answers")
     }
 
+    /// Asked what was typed, word for word.
+    fn verbatim(&self) -> bool {
+        true
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         self.answers(needle)
     }
@@ -931,6 +1030,11 @@ impl Source for WebSearch {
 
     fn name(&self) -> String {
         crate::i18n::t("search-kind-web")
+    }
+
+    /// Asked what was typed, word for word.
+    fn verbatim(&self) -> bool {
+        true
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
@@ -1934,5 +2038,222 @@ mod tests {
                 .as_deref(),
             Some("4")
         );
+    }
+
+    /// A resource of `app`'s type `noun` (plural `nouns`) labelled `label`, opened by its
+    /// `open`, standing `primary` among its type, with the actions `more` on it.
+    fn typed(
+        id: &str,
+        label: &str,
+        (noun, nouns): (&str, &str),
+        (app, apps): (&str, &str),
+        primary: tilo_actions::Primary,
+        more: &[(&str, &str)],
+    ) -> ResourceSpec {
+        let action = |id: &str, label: &str| {
+            tilo_actions::ActionSpec::immediate_encoded(
+                id,
+                label,
+                tilo_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction {
+                    type_id: "test.action".into(),
+                    payload: Vec::new(),
+                },
+            )
+        };
+        let mut resource = ResourceSpec::new(id, format!("tl.{app}.{noun}"), label)
+            .with_action(action(crate::model::OPEN_ACTION, "Open"))
+            .with_type(tilo_actions::ResourceType {
+                noun: tilo_actions::Noun::new(noun, nouns),
+                app: tilo_actions::Noun::new(app, apps),
+                primary,
+            });
+        for (id, label) in more {
+            resource = resource.with_action(action(id, label));
+        }
+        resource
+    }
+
+    /// The resources the hits for `needle` open, in the search's order, as text typed on the
+    /// canvas reads them: what each `open` hit names.
+    fn opened(needle: &str, resources: &[ResourceSpec]) -> Vec<String> {
+        let published = Published(vec![PublishedActions::of("session", "", resources)]);
+        search(needle, &[&published], 0)
+            .into_iter()
+            .flat_map(|group| group.results)
+            .filter_map(|hit| match hit.target {
+                Target::Invoke(invoke) if invoke.address.action == crate::model::OPEN_ACTION => {
+                    Some(invoke.address.resource.as_str().to_owned())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Mail as a workspace holds it: the app's root, its mailboxes (the Inbox its declared
+    /// primary) and conversations, each conversation offering to move it to the inbox.
+    fn mail() -> Vec<ResourceSpec> {
+        use tilo_actions::Primary;
+        let app = ("Mail", "mails");
+        let mailbox = |id: &str, label: &str, primary| {
+            typed(id, label, ("mailbox", "mailboxes"), app, primary, &[])
+        };
+        let thread = |id: &str, label: &str| {
+            typed(
+                id,
+                label,
+                ("thread", "threads"),
+                app,
+                Primary::No,
+                &[("to_inbox", "Move to inbox")],
+            )
+        };
+        vec![
+            typed("mail", "Mail", ("mail", "mails"), app, Primary::Root, &[])
+                .with_child(mailbox("mail/archive", "Archive", Primary::No))
+                .with_child(mailbox("mail/inbox", "Inbox", Primary::Declared))
+                .with_child(mailbox("mail/sent", "Sent", Primary::No))
+                .with_child(thread("mail/launch", "Launch plan for the autumn release"))
+                .with_child(thread("mail/lease", "Your lease renewal")),
+        ]
+    }
+
+    /// Notes as a workspace holds it: the app's root, the notebook its person renamed, and
+    /// its notes.
+    fn notes() -> Vec<ResourceSpec> {
+        use tilo_actions::Primary;
+        let app = ("Notes", "notes");
+        let note =
+            |id: &str, label: &str| typed(id, label, ("note", "notes"), app, Primary::No, &[]);
+        vec![
+            typed(
+                "notebook",
+                "Journal",
+                ("notes", "noteses"),
+                app,
+                Primary::Root,
+                &[],
+            )
+            .with_child(note("notebook/groceries", "Groceries"))
+            .with_child(note("notebook/trip", "Trip plan")),
+        ]
+    }
+
+    #[test]
+    fn my_mails_opens_the_inbox() {
+        let found = opened("my mails", &mail());
+        assert_eq!(
+            found.first().map(String::as_str),
+            Some("mail/inbox"),
+            "mail's declared primary leads what its name finds: {found:?}"
+        );
+        assert_eq!(
+            found.get(1).map(String::as_str),
+            Some("mail"),
+            "the app's root follows its declared primary: {found:?}"
+        );
+        for asked in ["mails", "all the mailboxes"] {
+            assert_eq!(
+                opened(asked, &mail()).first().map(String::as_str),
+                Some("mail/inbox"),
+                "{asked:?} names mail's resources, the Inbox first"
+            );
+        }
+        // The app's name is the root's title as well: the title leads, and every other
+        // resource of the app is still found by it, the Inbox first among them.
+        for asked in ["mail", "Mail"] {
+            let found = opened(asked, &mail());
+            assert_eq!(
+                found.get(..2),
+                Some(&["mail".to_owned(), "mail/inbox".to_owned()][..]),
+                "{asked:?}: {found:?}"
+            );
+            assert_eq!(
+                found.len(),
+                6,
+                "{asked:?} names every resource of mail: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn notes_opens_the_default_notebook() {
+        let found = opened("notes", &[notes(), mail()].concat());
+        assert_eq!(
+            found.first().map(String::as_str),
+            Some("notebook"),
+            "the notes app's root leads its notes: {found:?}"
+        );
+        assert!(
+            found.iter().all(|resource| !resource.starts_with("mail")),
+            "nothing of mail is a note: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_title_beats_a_type_named_like_it() {
+        use tilo_actions::Primary;
+        let shopping = typed(
+            "shop",
+            "Weekly shop",
+            ("grocery", "groceries"),
+            ("Shopping", "shoppings"),
+            Primary::Declared,
+            &[],
+        );
+        let found = opened("Groceries", &[notes(), vec![shopping]].concat());
+        assert_eq!(
+            found.get(..2),
+            Some(&["notebook/groceries".to_owned(), "shop".to_owned()][..]),
+            "the note called Groceries, then the list of groceries: {found:?}"
+        );
+    }
+
+    /// "youtube videos of <channel>": "of" is filler, "youtube" names the client and "videos"
+    /// a type of it, so the channel's name is what must match. The channel the client
+    /// publishes is found by it, and the video that names it; a video that does not is not.
+    #[test]
+    fn a_query_naming_an_apps_things_finds_the_channel_by_its_name() {
+        use tilo_actions::Primary;
+        let app = ("YouTube", "youtubes");
+        let resources = [
+            typed(
+                "channel",
+                "MKBHD",
+                ("channel", "channels"),
+                app,
+                Primary::No,
+                &[],
+            ),
+            typed(
+                "tour",
+                "Studio tour with MKBHD",
+                ("video", "videos"),
+                app,
+                Primary::No,
+                &[],
+            ),
+            typed(
+                "other",
+                "Bread at home",
+                ("video", "videos"),
+                app,
+                Primary::No,
+                &[],
+            ),
+        ];
+        let found = opened("youtube videos of mkbhd", &resources);
+        assert_eq!(found, ["channel", "tour"], "{found:?}");
+        assert_eq!(
+            opened("youtube videos", &resources).len(),
+            2,
+            "the videos, not the channel"
+        );
+    }
+
+    #[test]
+    fn a_type_and_a_title_together_find_the_one_they_both_name() {
+        let found = opened("mail archive", &mail());
+        assert_eq!(found.first().map(String::as_str), Some("mail/archive"));
     }
 }

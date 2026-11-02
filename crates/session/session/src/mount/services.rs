@@ -94,9 +94,9 @@ impl Published for ServiceDoor {
 }
 
 /// What the plane decides against on the collaboration side: what each of
-/// this device's rooms revokes, the client to the person's collaboration
-/// plane when there is one, and the broker and keys a room's sealed records
-/// are opened with.
+/// this device's workspaces revokes, the client to the person's
+/// collaboration plane when there is one, and the broker and keys a
+/// workspace's sealed records are opened with.
 pub(crate) struct Collaboration<'a> {
     pub revocations: crate::engine::Revocations,
     pub sync: Option<&'a crate::sync::Client>,
@@ -133,8 +133,8 @@ fn action_plane_path(options: &Options) -> Result<Option<std::path::PathBuf>, Er
 /// answers their calls through.
 ///
 /// The broker it serves on is `collaboration`'s, which the session's channel
-/// service gates a room's sealed records with, and whose keys an endpoint
-/// asks a record's keys from.
+/// service gates a workspace's sealed records with, and whose keys an
+/// endpoint asks a record's keys from.
 pub(crate) fn start_action_plane(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
@@ -183,14 +183,15 @@ pub(crate) fn start_action_plane(
     activity.serve_apps(std::sync::Arc::clone(&activity_wire));
     // Calls run over the collaboration plane: an app joins a channel through
     // the service, the session says the channel in its presence, and what the
-    // room says of its calls is what the app's channels show.
+    // workspace says of its calls is what the app's channels show.
     let calls = crate::calls::Calls::new();
     let calls_service = sync.map(|sync| {
         calls.follow(sync, None);
         let service = tilo_native_media::NativeMediaService::new();
         // A call's lane runs on the session's own endpoint, sealed with the
-        // room's channel keys and admitted by the room's governance: what
-        // every member of the room needs to be in the channel's call.
+        // workspace's channel keys and admitted by the workspace's
+        // governance: what every member of the workspace needs to be in the
+        // channel's call.
         let roster = sync.engine().map_or_else(
             || {
                 std::sync::Arc::new(|_: &str| Vec::new())
@@ -198,8 +199,8 @@ pub(crate) fn start_action_plane(
             },
             |engine| {
                 let engine = std::sync::Arc::clone(engine);
-                std::sync::Arc::new(move |room: &str| {
-                    engine.roster_devices(room).unwrap_or_default()
+                std::sync::Arc::new(move |workspace: &str| {
+                    engine.roster_devices(workspace).unwrap_or_default()
                 })
             },
         );

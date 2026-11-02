@@ -44,7 +44,8 @@ fn session_keeping(state: &Path) -> Session {
     .expect("session")
 }
 
-/// The workspaces on this desk: id, name, room, in order.
+/// The workspaces on this desk: id, name, the id it has on every device, in
+/// order.
 fn held(session: &Session) -> Vec<(String, String, String)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -89,7 +90,7 @@ fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
     tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
         .expect("this computer's certificate");
     env.set("TILO_IDENTITY_ROOT", root.path());
-    // The name they go by, which the room learns of them: never their
+    // The name they go by, which the workspace learns of them: never their
     // device's.
     ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
         ui::local_identity::LocalIdentity {
@@ -111,20 +112,23 @@ fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it_listed() {
         session.step(Duration::from_millis(1)).expect("a frame");
         let held = held(&session);
         assert_eq!(held.len(), 1, "a fresh device starts from one workspace");
-        let (id, name, room) = held[0].clone();
-        // A workspace is its room on every device: the one the person starts
-        // from opens again by its room, not by an id only this desk knew.
-        let room = tilo_desktop_model::RoomId::parse(&room).expect("a room");
+        let (id, name, workspace) = held[0].clone();
+        // A workspace is the same on every device, by the id its key
+        // derives: the one the person starts from opens again by that id, not
+        // by one only this desk knew.
+        let workspace = tilo_desktop_model::RoomId::parse(&workspace).expect("a workspace");
         assert_eq!(
             id,
-            tilo_desktop_model::WorkspaceId::of_room(room).0.to_string(),
-            "the workspace the desk starts from is its room's"
+            tilo_desktop_model::WorkspaceId::of_room(workspace)
+                .0
+                .to_string(),
+            "the workspace the desk starts from is known by that id"
         );
         assert!(
             list_path(state.path()).is_file(),
             "the person's list of their own workspaces is kept beside the desk"
         );
-        (name, room.to_string())
+        (name, workspace.to_string())
     };
 
     let mut again = session_keeping(state.path());
@@ -138,7 +142,7 @@ fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it_listed() {
     assert_eq!(
         (held[0].1.clone(), held[0].2.clone()),
         started,
-        "the same workspace, by name and by room"
+        "the same workspace, by name and by id"
     );
 }
 
@@ -214,7 +218,7 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
             tree.active_workspace()
                 .map(tilo_desktop_model::Workspace::room)
         })
-        .map(|room| room.to_string())
+        .map(|workspace| workspace.to_string())
         .expect("a workspace in front");
     session
         .invoke(
@@ -254,7 +258,7 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
         "the workspace kept off this device is off its desk: {after:?}"
     );
     assert!(
-        !after.iter().any(|(_, _, room)| *room == front),
+        !after.iter().any(|(_, _, workspace)| *workspace == front),
         "the workspace in front is the one kept off"
     );
     // It stays off: the choice is in the person's own list, not only on the

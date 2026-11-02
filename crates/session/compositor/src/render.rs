@@ -581,12 +581,65 @@ where
             );
         }
     }
-    let flash = visual.flash_alpha(Instant::now());
-    if flash > 0.0 {
-        elements.insert(
-            0,
-            OutputRenderElement::Dim(solid(bounds, Color32F::new(1.0, 1.0, 1.0, flash))),
+    // The visual alert lights the inside of the display's edge, over
+    // everything else: it stays obvious without covering what is on screen
+    // or washing the whole display with a luminance change, which is a
+    // photosensitivity risk.
+    let alert = visual.flash_alpha(Instant::now());
+    if alert > 0.0 {
+        let width = alert_edge_width(scale.x);
+        let colour = Color32F::new(ALERT_EDGE[0], ALERT_EDGE[1], ALERT_EDGE[2], alert);
+        elements.splice(
+            0..0,
+            alert_bands(bounds, width, colour)
+                .into_iter()
+                .map(OutputRenderElement::Dim),
         );
     }
     elements
+}
+
+/// The accent the visual alert's edge wears: the desktop's own accent, which
+/// reads against both a dark and a light wallpaper.
+const ALERT_EDGE: [f32; 3] = [0.246, 0.393, 0.752];
+
+/// How wide the alert's edge is, in logical pixels: a band along each edge,
+/// narrow enough to leave the screen's content alone and wide enough to see
+/// from across a desk.
+const ALERT_EDGE_WIDTH: f64 = 3.5;
+
+/// The width of the alert's edge in the physical pixels of an output drawn
+/// at `scale`: never nothing, so a fractional scale still shows it.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a few pixels of a display, far inside i32"
+)]
+fn alert_edge_width(scale: f64) -> i32 {
+    (ALERT_EDGE_WIDTH * scale).round().max(1.0) as i32
+}
+
+/// The four bands of the visual alert's edge, inside `bounds` (output
+/// physical pixels), `width` pixels wide.
+fn alert_bands(
+    bounds: Rectangle<i32, Physical>,
+    width: i32,
+    colour: Color32F,
+) -> [SolidColorRenderElement; 4] {
+    let (w, h) = (bounds.size.w, bounds.size.h);
+    // An output narrower than two edges plus something to show is all edge;
+    // it still shows the alert, never a band outside itself.
+    let width = width.clamp(1, (w.min(h) / 2).max(1));
+    let (x, y) = (bounds.loc.x, bounds.loc.y);
+    let band = |x0: i32, y0: i32, w: i32, h: i32| {
+        solid(
+            Rectangle::new(Point::from((x0, y0)), Size::from((w, h))),
+            colour,
+        )
+    };
+    [
+        band(x, y, w, width),
+        band(x, y + h - width, w, width),
+        band(x, y, width, h),
+        band(x + w - width, y, width, h),
+    ]
 }

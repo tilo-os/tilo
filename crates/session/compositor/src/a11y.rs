@@ -30,8 +30,10 @@ pub const MAX_CURSOR_SIZE: u32 = 128;
 pub const LENS_MAX: (i32, i32) = (420, 280);
 /// The largest share of an output the lens covers.
 pub const LENS_SHARE: f64 = 0.7;
-/// How long a visual alert stays on screen as it fades.
-pub const FLASH: Duration = Duration::from_millis(400);
+/// How long a visual alert stays on screen: lit at first, then fading. Short
+/// enough not to get in the way, long enough to be noticed from across a
+/// desk.
+pub const FLASH: Duration = Duration::from_millis(450);
 
 /// The step between frames while the alert fades.
 pub(crate) const FLASH_STEP: Duration = Duration::from_millis(16);
@@ -107,7 +109,7 @@ pub struct A11y {
     pub cursor: CursorA11y,
     pub color_filter: ColorFilter,
     pub magnifier: Magnifier,
-    /// Flash the screen when an alert arrives.
+    /// Light the display's edge when an alert arrives.
     pub visual_alerts: bool,
 }
 
@@ -169,7 +171,7 @@ pub(crate) struct Visual {
     pub(crate) magnifier_view: MagnifierView,
     pub(crate) crosshair: bool,
     pub(crate) focus: Focus,
-    /// When the visual alert started, and how long it takes to fade.
+    /// When the visual alert started, and how long it takes to fade out.
     pub(crate) flash: Option<(Instant, Duration)>,
 }
 
@@ -273,8 +275,8 @@ fn focused_rect(state: &State) -> Option<Rectangle<i32, Logical>> {
     Some(Rectangle::new(location, window.geometry().size))
 }
 
-/// Flash every output at `now`: the visual alert for what a person who
-/// cannot hear an alert sound would otherwise miss.
+/// Start the visual alert on every output at `now`: what a person who cannot
+/// hear an alert sound would otherwise miss.
 pub(crate) fn flash_all(state: &State, now: Instant) {
     for output in state.space.outputs() {
         change(output, |visual| visual.flash = Some((now, FLASH)));

@@ -495,6 +495,14 @@ impl Shell {
             .find_map(|(_, part)| part.borrow_mut().control_bounds(name))
     }
 
+    /// Whether a shown part lays out `text` for assistive technology.
+    pub(crate) fn says(&self, text: &str) -> bool {
+        self.parts
+            .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
+            .any(|(_, part)| part.borrow_mut().says(text))
+    }
+
     /// Where each display's bar stands now, by connector name: what a test reads to prove a
     /// bar on every display, and none on one a fullscreen window owns.
     pub(crate) fn parts(&self) -> Vec<BarPlace> {
@@ -804,7 +812,7 @@ impl crate::Session {
         }
         let doors = &self.shared.doors;
         let search = &self.shared.search;
-        let room = self.shared.handle.read(|tree| {
+        let workspace = self.shared.handle.read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.room().to_string())
                 .unwrap_or_default()
@@ -825,7 +833,7 @@ impl crate::Session {
                 {
                     return search
                         .perform_checked(
-                            &room,
+                            &workspace,
                             tilo_desktop_search::Target::Launch {
                                 app: app.to_owned(),
                             },
@@ -887,6 +895,13 @@ impl crate::Session {
     #[must_use]
     pub fn shell_control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.control(name)
+    }
+
+    /// Whether the shell lays out `text` for assistive technology anywhere on screen: a
+    /// label, a description or a value holding it. What a test reads a composed view by.
+    #[must_use]
+    pub fn shell_says(&self, text: &str) -> bool {
+        self.shell.as_ref().is_some_and(|shell| shell.says(text))
     }
 
     /// The shell's bars, one per display, as each stands now: the output it is on, where it

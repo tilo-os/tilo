@@ -17,6 +17,11 @@ packages=()
 for name in $(grep -o 'package([A-Za-z0-9_-]*)' <<<"$filter" | sed 's/^package(\(.*\))$/\1/' | sort -u); do
     packages+=(-p "$name")
 done
+# Their test features (tools/ci/package_features.py): a golden whose test target
+# lists `required-features` (the shell's e2e flows) is otherwise no target of
+# `--tests`, and the render would report no change for it.
+feature_flags=$(python3 tools/ci/package_features.py "${packages[@]}") || exit 2
+read -r -a features <<<"$feature_flags"
 
 # Diff against the tree as given, uncommitted changes included, so the patch
 # holds only what the render changed.
@@ -33,7 +38,7 @@ status=0
 UPDATE_EBOOK_MATH_BASELINE=1 UPDATE_EBOOK_TYPOGRAPHY_BASELINE=1 UPDATE_SNAPSHOTS=1 \
 UPDATE_TYPOGRAPHY_BASELINES=1 TILO_REQUIRE_GPU=1 \
     bash tools/test-env.sh cargo nextest run --locked --profile ci --tests "${packages[@]}" \
-    --no-tests=pass -E "$filter" || status=$?
+    "${features[@]}" --no-tests=pass -E "$filter" || status=$?
 
 bash tools/ci/golden-image.sh record "$image"
 for directory in e2e; do

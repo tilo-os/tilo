@@ -23,7 +23,7 @@ use tilo_actions::remote::{
     RemoteActionTarget, application_action_target, application_open_target,
 };
 use tilo_actions::{DoorError, ResourceSpec};
-use tilo_compositor::OutputConfig;
+use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
@@ -38,7 +38,7 @@ type Arguments = serde_json::Map<String, serde_json::Value>;
 #[derive(Default)]
 struct Host {
     invoked: RefCell<Vec<(RemoteActionTarget, Arguments)>>,
-    /// The uris it was asked to open, by the room it was asked for.
+    /// The uris it was asked to open, by the workspace it was asked for.
     opened: RefCell<Vec<(String, String)>>,
     /// The machine's own apps it was asked to start.
     started: RefCell<Vec<String>>,
@@ -62,10 +62,10 @@ impl AppActions for Host {
         Ok(())
     }
 
-    fn open_uri(&self, room: &str, uri: &str) -> Result<(), DoorError> {
+    fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError> {
         self.opened
             .borrow_mut()
-            .push((room.to_owned(), uri.to_owned()));
+            .push((workspace.to_owned(), uri.to_owned()));
         Ok(())
     }
 
@@ -156,13 +156,112 @@ fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_
         .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
 }
 
+/// Type one key of the keyboard, as the compositor takes it from the seat.
+fn type_key(session: &mut Session, keycode: u32) {
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::Key { keycode, pressed })
+            .expect("input");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+}
+
+/// Keys typed while the desk's search is open go into its query field: the
+/// desk takes the keyboard while its own search shows, rather than leaving
+/// the letters to the window behind it.
+#[test]
+fn typing_into_the_open_search_reaches_its_query() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    // A held key repeats; these keys are tapped, and a step of a headless
+    // session can take longer than a repeat waits.
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+    for keycode in [46, 30, 38] {
+        type_key(&mut session, keycode);
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "cal")
+    });
+}
+
+/// The same, for search opened by the chord the person presses: Super+Space
+/// through the seat reaches the desk's own search, and what they type next
+/// reaches its query.
+#[test]
+fn typing_after_the_search_chord_reaches_its_query() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
+        session
+            .compositor()
+            .input(InputEvent::Key { keycode, pressed })
+            .expect("input");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+    for keycode in [46, 30, 38] {
+        type_key(&mut session, keycode);
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "cal")
+    });
+}
+
+/// Pressing the chord again over the open search leaves it open: the chord
+/// opens search, and nothing the desk's own keyboard answers closes it.
+#[test]
+fn the_search_chord_over_the_open_search_leaves_it_open() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    for _ in 0..2 {
+        for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
+            session
+                .compositor()
+                .input(InputEvent::Key { keycode, pressed })
+                .expect("input");
+            session.step(Duration::from_millis(1)).expect("step");
+        }
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+    for _ in 0..10 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert!(
+        find(&session.resources(), SEARCH_RESOURCE).is_some(),
+        "the search is still up after the chord is pressed over it"
+    );
+}
+
 #[test]
 fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     let _settled = ui::motion::testing::settled();
     let host = Rc::new(Host::default());
     let mut session = session(Rc::clone(&host));
     session.step(Duration::from_millis(1)).unwrap();
-    let room = session.handle().read(|tree| {
+    let workspace = session.handle().read(|tree| {
         tree.active_workspace()
             .map(|workspace| workspace.room().to_string())
             .expect("a workspace")
@@ -189,7 +288,7 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     until(&mut session, |_| !host.invoked.borrow().is_empty());
     assert_eq!(
         host.invoked.borrow()[0].0,
-        application_open_target(&room, "so.tilo.sheets"),
+        application_open_target(&workspace, "so.tilo.sheets"),
         "the app opens by the workspace's address for it"
     );
     until(&mut session, |session| {
@@ -217,7 +316,7 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     assert_eq!(
         target,
         application_action_target(
-            &room,
+            &workspace,
             SETTINGS_APP,
             "settings.setting:keyboard.layout",
             "open"
@@ -468,7 +567,7 @@ const NOTES: &str = "so.tilo.notes";
 /// record, as a workspace that is not this one names it.
 const QUARTERLY: &str = "Quarterly plan.odt";
 
-/// The workspaces the desk shows, by room and by the name it gives it.
+/// The workspaces the desk shows, by id and by the name it gives each.
 fn workspaces(session: &Session) -> Vec<(String, String)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -478,8 +577,8 @@ fn workspaces(session: &Session) -> Vec<(String, String)> {
     })
 }
 
-/// The room of the workspace in front.
-fn active_room(session: &Session) -> String {
+/// The id of the workspace in front.
+fn workspace_in_front(session: &Session) -> String {
     session
         .handle()
         .read(|tree| {
@@ -489,15 +588,20 @@ fn active_room(session: &Session) -> String {
         .expect("a workspace")
 }
 
-/// Save `rows` (`(id, kind)`) as `package`'s index of `room` holds them —
+/// Save `rows` (`(id, kind)`) as `package`'s index of `workspace` holds them —
 /// what it held before is what the workspace no longer names — and publish it
 /// in one rename: the index of a workspace that appears while the session
 /// runs appears as one directory, which is what the worker following the
 /// device's indexes is told about.
-fn write_index(home: &tilo_test_env::TestHome, package: &str, room: &str, rows: &[(&str, &str)]) {
-    let directory = app_state::workspace_index_directory(home.data(), package, room)
+fn write_index(
+    home: &tilo_test_env::TestHome,
+    package: &str,
+    workspace: &str,
+    rows: &[(&str, &str)],
+) {
+    let directory = app_state::workspace_index_directory(home.data(), package, workspace)
         .expect("an index directory");
-    let staged = directory.with_file_name(format!("staging-{room}"));
+    let staged = directory.with_file_name(format!("staging-{workspace}"));
     for old in [&staged, &directory] {
         if old.exists() {
             std::fs::remove_dir_all(old).expect("the index it replaces");
@@ -516,16 +620,17 @@ fn write_index(home: &tilo_test_env::TestHome, package: &str, room: &str, rows: 
     std::fs::rename(&staged, &directory).expect("the index published");
 }
 
-/// The records `package`'s index of `room` names, read the way the workspace's
-/// apps read them: the record set's own discovery over the index document.
-fn known_in(package: &str, room: &str) -> Vec<String> {
-    let Ok(mut store) = app_state::DocStore::open_workspace(package, room) else {
+/// The records `package`'s index of `workspace` names, read the way the
+/// workspace's apps read them: the record set's own discovery over the index
+/// document.
+fn known_in(package: &str, workspace: &str) -> Vec<String> {
+    let Ok(mut store) = app_state::DocStore::open_workspace(package, workspace) else {
         return Vec::new();
     };
     let Some(index) = store.load().ok().flatten() else {
         return Vec::new();
     };
-    let mut records = ui::record::RecordSet::in_memory().with_home(room);
+    let mut records = ui::record::RecordSet::in_memory().with_home(workspace);
     records.discover_workspace(&index);
     records
         .known_records()
@@ -589,7 +694,7 @@ fn find_row(session: &mut Session, query: &str, title: &str) -> ResourceSpec {
 fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
     let home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
-    // An app of this device already keeps an index, in a room the desk does
+    // An app of this device already keeps an index, in a workspace the desk does
     // not show: the directories the session follows as more appear.
     write_index(
         &home,
@@ -610,10 +715,10 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
         serde_json::json!({}),
     );
     until(&mut session, |session| workspaces(session).len() == 2);
-    let here = active_room(&session);
+    let here = workspace_in_front(&session);
     let (other_room, other_name) = workspaces(&session)
         .into_iter()
-        .find(|(room, _)| *room != here)
+        .find(|(workspace, _)| *workspace != here)
         .expect("a workspace that is not the one in front");
     let document = home.home().join(QUARTERLY);
     std::fs::write(&document, "what the plan says").unwrap();
@@ -676,7 +781,7 @@ fn a_row_for_a_record_no_workspace_holds_any_more_brings_nothing_here() {
     let records = tilo_session::Records::of(home.data().to_path_buf());
     let mut session = session_over(Rc::new(Host::default()), Some(records), None);
     session.step(Duration::from_millis(1)).unwrap();
-    let here = active_room(&session);
+    let here = workspace_in_front(&session);
 
     // The row is collected now and chosen below.
     let stale = find_row(&mut session, "stale", "Stale plan.odt");
@@ -720,9 +825,9 @@ fn a_row_for_a_record_no_workspace_holds_any_more_brings_nothing_here() {
     );
 }
 
-/// Publish one entry an app of `room` holds, as its record `tab:0001`
+/// Publish one entry an app of `workspace` holds, as its record `tab:0001`
 /// filled with what it has: the one item, named `title`.
-fn published(index: &AppContentIndex, room: &str, title: &str) {
+fn published(index: &AppContentIndex, workspace: &str, title: &str) {
     use ui::search::index_publication::{IndexDelta, IndexEntry};
 
     let delta = IndexDelta {
@@ -743,7 +848,12 @@ fn published(index: &AppContentIndex, room: &str, title: &str) {
         ..IndexDelta::default()
     };
     index
-        .publish(room, NOTES, "tab:0001", &delta.encode().expect("a delta"))
+        .publish(
+            workspace,
+            NOTES,
+            "tab:0001",
+            &delta.encode().expect("a delta"),
+        )
         .expect("the index takes the publication");
 }
 
@@ -767,11 +877,11 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
     let host = Rc::new(Host::default());
     let mut session = session_over(Rc::clone(&host), None, Some(Arc::clone(&content)));
     session.step(Duration::from_millis(1)).unwrap();
-    let room = active_room(&session);
+    let workspace = workspace_in_front(&session);
 
     // What an app published before it closed: no app runs here, and the only
     // actions host is the fixture that runs nothing.
-    published(&content, &room, "Groceries for the weekend");
+    published(&content, &workspace, "Groceries for the weekend");
     let row = find_row(&mut session, "groceries", "Groceries for the weekend");
     assert_eq!(
         row.presentation
@@ -792,7 +902,7 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
     let (target, arguments) = host.invoked.borrow()[0].clone();
     assert_eq!(
         target,
-        application_action_target(&room, NOTES, "n1", "open"),
+        application_action_target(&workspace, NOTES, "n1", "open"),
         "the entry opens in the app that published it"
     );
     assert_eq!(arguments["anchor"], "n1");

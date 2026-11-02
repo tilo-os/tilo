@@ -122,6 +122,13 @@ pub enum SearchEntryKind {
     /// as an agent's are for every type (task-legibility.md §4, "off by default"). A
     /// conversation marks what others say in it, so a channel shows what is new.
     MarkOthers,
+    /// `noun "conversation"`, `noun "person" "people"`: what one of the type is called, and
+    /// several where English does not add an `s`. What search matches a query naming the type
+    /// by ("conversations"), and what `meta(r).noun` and `plural` say.
+    Noun { one: String, many: Option<String> },
+    /// `primary role == "inbox"`: the test, over the resource's own fields, that the one a
+    /// search naming the type means passes (mail's Inbox among its mailboxes).
+    Primary { expr: Expr },
 }
 
 /// `enum Name { a, b(x: T, y: U), c }`: a sum type. Values are written `.a`, `.b(x: 1, y: 2)`.

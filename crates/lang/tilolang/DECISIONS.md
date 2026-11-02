@@ -72,6 +72,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   resource: `@todo.Todo:<doc>/<field>:<item>`, exactly `ResourceRef::id_string`. Without it a
   block could not name a note or a draft, which live inside a collection. Ids still use only
   letters, digits, `_` and `-` between the separators.
+- **A program names any app's resource.** In a program, `@<app id>.<Type>:<id>` of an app it
+  neither holds nor reads is still a `host.Resource` (`foreign_ref`): a value it passes to an
+  action, as the reference a listing or an answer showed (`n2`) is written. Reading it fails as
+  a read of any app the program may not read does.
 - **`list(items) { x -> ... }`** is parsed as `column { for x in items { ... } }`.
 
 ## Language choices
@@ -253,6 +257,17 @@ convergence.md, "Actions".
   label (and icon) of an `if` is the branch a subject at rest takes, every Bool field at its
   default and every parameter at its default (`if done` with `done: Bool = not item.done` is
   the `then` branch); when that cannot be told, the `else` branch, as before.
+- **A `.none` default is left out wherever it stands.** `= .none` needs no parameter before
+  it, so an application that leaves such a parameter out before one it gives passes `.none`
+  there (no E028); the runtime computes a trailing one without code (`DefaultMeta::is_none`).
+  An app that publishes its actions without a module (a native app's surface, the session's)
+  is read with each parameter it may go without as `Option<T> = .none` (`DefaultMeta::none`,
+  no export), so `session.place(resource: n2, x: 80, y: 60)` leaves the rest out, `80` stands
+  for `.some(80)` as anywhere, and a `.none` reaches the app as no argument. A resource
+  parameter of such an action is `host.Resource` (of the kind it names, when it names one):
+  code passes the value it has, never the id's text; a view holding only an id writes
+  `resource(id, of: host.Resource)`. `Callable::signature` shows the defaults, so E022 says
+  what may be left out.
 - **E039.** A write of a register whose value is `not` of that same register, or that register
   plus or minus an amount, is refused: it is computed again wherever the change is applied.
   `let`s are followed (a variable reassigned anywhere is no longer followed). The message names
@@ -366,3 +381,22 @@ search.md, "What a type declares" and "Types, references and paths".
   (`boxes.contains("inbox")`), the index's run of that value.
 - **`outside` capabilities are a checked list** (`crate::origin::CAPABILITIES`: `post`,
   `smtp.send`), in the compiler and the runtime alike.
+- **What a type is called, and its primary, are `search` lines** (search.md, "What a query
+  names"). `noun "conversation"` or `noun "person" "people"` names one, and several where
+  English does not add an `s`; without it the noun is the type's name in words and the plural
+  derived (`TypeMeta::noun`, `::plural`, also what `meta(r).noun` and `.plural` say).
+  `primary role == "inbox"` is the test the one a search naming the type means passes. The
+  language had no means for either. A type option (`type Mailbox (primary: ...)`) would make
+  `origin:` one of several and put a predicate in a header; a new top-level declaration would
+  repeat the type's name for a line about it. The `search` block is where a type already says
+  how it is found, its lines are a word and their operand (`filter`, `sort`, `hide`), and
+  `primary` takes the predicate a named filter takes, lowered the same way (E102 for one that
+  reads another resource, E104 for a second). `primary` was already a word of the language
+  (`primary action`); here it means the same, the one that stands first. A block of only
+  `noun` and `primary` lines keeps the type's default filters: they say nothing of filters.
+- **A root is its type's primary unless a type of the app declares one.** A root is the app's
+  one resource of its type, so it is published as `Primary::Root`, below a declared primary:
+  "my mails" is the Inbox, the Mail root second; "notes" is the notebook, which declares
+  nothing. Whether a resource passes its `primary` is read where it is published, from the
+  fields the index holds; a change to a field the `primary` reads rebuilds that resource (a
+  record's whole tree), so the published answer is never stale.

@@ -643,14 +643,16 @@ jobs:
           mkdir -p /tmp/tilo-xdg-runtime
           chmod 700 /tmp/tilo-xdg-runtime
 
+      # The shard's packages with the features their targets need, so a target
+      # behind `required-features` is checked here rather than silently left out
+      # (tools/ci/check-all-targets.sh).
       - name: Check all targets in shard ${{ matrix.shard }}
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
           bash tools/ci/measure.sh "check shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
-          python3 tools/ci/compiler_inputs.py --output target/ci/compiler-inputs.json --
-          check --locked --all-targets ${{ matrix.packages }}
+          bash tools/ci/check-all-targets.sh --receipt target/ci/compiler-inputs.json ${{ matrix.packages }}
 
       # Without its default `native` feature, tilo-ui is the portable toolkit
       # that another host embeds with its own services. Keep that build

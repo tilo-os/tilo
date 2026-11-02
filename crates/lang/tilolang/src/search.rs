@@ -229,6 +229,29 @@ impl Ctx<'_> {
         }
     }
 
+    /// `primary role == "inbox"`: a predicate over the resource's own fields, as a named
+    /// filter's is, so the store answers it from what it holds of the resource.
+    fn primary(&mut self, expr: &Expr) -> Option<crate::pred::Pred<String>> {
+        let lower = Lower {
+            info: self.info,
+            env: self.env,
+            fields: Fields::Own,
+            outer: None,
+            captured: std::cell::RefCell::default(),
+        };
+        match lower.pred(expr) {
+            Ok(pred) => Some(pred),
+            Err((at, why)) => {
+                let msg = format!(
+                    "`primary` of {} is not a test over its own fields: {why}. It reads only its fields and literals (`role == \"inbox\"`)",
+                    about(self.info)
+                );
+                self.err("E102", at, msg);
+                None
+            }
+        }
+    }
+
     fn sort(&mut self, field: &ast::Ident, order: &ast::Ident) -> Option<SortMeta> {
         let info = self.field(field, "`sort`")?.clone();
         let Some(word) = SortOrder::from_word(&order.name) else {
@@ -299,9 +322,21 @@ pub fn resolve(
         return defaults(info, env);
     };
     let mut ctx = Ctx { info, env, diags };
-    let mut out = SearchMeta {
-        declared: true,
-        ..SearchMeta::default()
+    // What a type is called and which one is its primary say nothing of its filters: a block
+    // of only those keeps the filters every type has by default.
+    let declares = block.entries.iter().any(|entry| {
+        !matches!(
+            entry.kind,
+            SearchEntryKind::Noun { .. } | SearchEntryKind::Primary { .. }
+        )
+    });
+    let mut out = if declares {
+        SearchMeta {
+            declared: true,
+            ..SearchMeta::default()
+        }
+    } else {
+        defaults(info, env)
     };
     let mut hidden_names: Vec<(String, Span)> = Vec::new();
     for entry in &block.entries {
@@ -349,6 +384,40 @@ pub fn resolve(
                     continue;
                 }
                 out.mark_others = true;
+            }
+            SearchEntryKind::Noun { one, many } => {
+                if out.noun.is_some() {
+                    ctx.err(
+                        "E104",
+                        entry.span,
+                        format!(
+                            "{} is called something already; it has one noun",
+                            about(info)
+                        ),
+                    );
+                    continue;
+                }
+                if one.trim().is_empty() || many.as_deref().is_some_and(|m| m.trim().is_empty()) {
+                    ctx.err(
+                        "E104",
+                        entry.span,
+                        "a noun is a word: `noun \"conversation\"`",
+                    );
+                    continue;
+                }
+                out.noun = Some(one.trim().to_lowercase());
+                out.plural = many.as_deref().map(|many| many.trim().to_lowercase());
+            }
+            SearchEntryKind::Primary { expr } => {
+                if out.primary.is_some() {
+                    ctx.err(
+                        "E104",
+                        entry.span,
+                        format!("{} has a `primary` already; a type has one", about(info)),
+                    );
+                    continue;
+                }
+                out.primary = ctx.primary(expr);
             }
             SearchEntryKind::Hide { field } => {
                 if let Some(f) = ctx.field(field, "`hide`") {

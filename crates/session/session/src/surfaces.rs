@@ -616,7 +616,7 @@ impl Surfaces {
     }
 
     /// Start `surface` as a trusted client of `compositor`, on the layer
-    /// surface it names, as the app it runs for in `room`.
+    /// surface it names, as the app it runs for in `workspace`.
     ///
     /// # Errors
     /// The socket or the process could not be made.
@@ -624,7 +624,7 @@ impl Surfaces {
         &mut self,
         compositor: &mut Compositor,
         surface: &Surface,
-        room: &str,
+        workspace: &str,
     ) -> Result<(), StartError> {
         let socket = match &surface.output {
             Some(output) => compositor.connect_trusted_client_on(output),
@@ -660,7 +660,7 @@ impl Surfaces {
             // the session's services it makes for itself, as any app of the
             // session does.
             .env(APP_ID_ENV, &surface.app_id)
-            .env(WORKSPACE_ENV, room);
+            .env(WORKSPACE_ENV, workspace);
         if let Some(display) = &display {
             command.env("WAYLAND_DISPLAY", display.path());
         }
@@ -727,7 +727,7 @@ impl Surfaces {
         if let Some(launches) = &self.launches {
             // A surface app is the session's own program, run in its own
             // place: no package sandbox has the documents store bound in.
-            launches.started(child.id(), &surface.app_id, room, false);
+            launches.started(child.id(), &surface.app_id, workspace, false);
         }
         // The record exists: the app may reach what it published.
         if let Err(error) = registration.release() {
@@ -762,8 +762,13 @@ impl Surfaces {
 
     /// Start `surface` if the session can, and say so in the log if not: a
     /// missing surface app loses its surface, never the session.
-    pub fn start_or_log(&mut self, compositor: &mut Compositor, surface: &Surface, room: &str) {
-        if let Err(error) = self.start(compositor, surface, room) {
+    pub fn start_or_log(
+        &mut self,
+        compositor: &mut Compositor,
+        surface: &Surface,
+        workspace: &str,
+    ) {
+        if let Err(error) = self.start(compositor, surface, workspace) {
             tracing::warn!(surface = %surface.name, %error, "a surface app did not start");
         }
     }

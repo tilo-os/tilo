@@ -507,7 +507,7 @@ impl Service for Served {
         vec![clipboard_resource()]
     }
 
-    /// The copies, newest first: personal, so only a grant the room gives
+    /// The copies, newest first: personal, so only a grant the workspace gives
     /// reads them.
     fn read(&self, resource: &str) -> Option<Value> {
         (resource == CLIPBOARD_RESOURCE).then(|| reading(&self.clipboard.copies()))

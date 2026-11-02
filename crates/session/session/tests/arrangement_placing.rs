@@ -324,7 +324,7 @@ fn session_searching(
 fn index_mailbox(
     index: &tilo_desktop_search::content_index::AppContentIndex,
     app: &str,
-    room: &str,
+    workspace: &str,
 ) {
     let entry = tilo_resource::search_index::IndexEntry {
         key: "tl:so.tilo.lang.mail:inbox".to_owned(),
@@ -351,7 +351,7 @@ fn index_mailbox(
     ) {
         index
             .publish(
-                room,
+                workspace,
                 app,
                 "tab:0001",
                 &delta.encode().expect("a delta encodes"),
@@ -370,15 +370,15 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
     let mut session = session_searching(index.clone());
     step(&mut session);
     let (app, _) = with_mailbox(&mut session);
-    // The room the workspace in front is in: where search reads its entries.
-    let room = session
+    // The id of the workspace in front: where search reads its entries.
+    let workspace = session
         .handle()
         .read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.room().to_string())
         })
         .expect("a workspace is in front");
-    index_mailbox(&index, &app, &room);
+    index_mailbox(&index, &app, &workspace);
 
     session
         .invoke(

@@ -674,10 +674,10 @@ impl Desk {
 }
 
 impl Desk {
-    /// The room of the desk's workspace `key`, or of the workspace in front when
-    /// the caller names none.
-    fn room(&self, workspace: Option<&str>) -> Result<RoomId, DoorError> {
-        let room = self.handle.read(|tree| {
+    /// The id of the desk's workspace `key`, or of the workspace in front
+    /// when the caller names none.
+    fn workspace_id(&self, workspace: Option<&str>) -> Result<RoomId, DoorError> {
+        let workspace_id = self.handle.read(|tree| {
             let workspace = match workspace {
                 Some(key) => tree
                     .workspaces
@@ -687,7 +687,7 @@ impl Desk {
             };
             workspace.map(Workspace::room)
         });
-        room.ok_or_else(|| match workspace {
+        workspace_id.ok_or_else(|| match workspace {
             Some(key) => {
                 DoorError::InvalidArguments(format!("there is no workspace {key} on this device"))
             }
@@ -700,9 +700,9 @@ impl Desk {
     /// grants, whom it is addressed to, how it names them and when it lapses.
     fn invitations(&self, workspace: Option<&str>) -> Result<Started, DoorError> {
         let engine = self.engine()?;
-        let room = self.room(workspace)?;
+        let workspace_id = self.workspace_id(workspace)?;
         let invitations = engine
-            .invitations(&room.to_string(), std::time::SystemTime::now())
+            .invitations(&workspace_id.to_string(), std::time::SystemTime::now())
             .map_err(DoorError::Failed)?;
         let value = Value::Array(invitations.iter().map(invitation_json).collect());
         Ok(Started::Done(tilo_actions::ActionOutput {
@@ -719,9 +719,13 @@ impl Desk {
         workspace: Option<&str>,
     ) -> Result<Started, DoorError> {
         let engine = self.engine()?;
-        let room = self.room(workspace)?;
+        let workspace_id = self.workspace_id(workspace)?;
         let cancelled = engine
-            .cancel_invitation(&room.to_string(), invite, std::time::SystemTime::now())
+            .cancel_invitation(
+                &workspace_id.to_string(),
+                invite,
+                std::time::SystemTime::now(),
+            )
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput {
             value: Some(serde_json::json!({"cancelled": cancelled})),

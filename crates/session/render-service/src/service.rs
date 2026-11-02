@@ -7,7 +7,7 @@
 //! frame in this pass, then the service waits for the GPU once and tells
 //! each app which buffer to attach. An app whose frame takes the GPU longer
 //! than its budget has its following frames dropped until it has waited out
-//! the overrun, so one app cannot take the room's GPU from the others.
+//! the overrun, so one app cannot take the workspace's GPU from the others.
 //!
 //! Nothing an app sends can stop the loop: a refusal is a message back, a
 //! protocol violation closes that app's connection, and a panic while

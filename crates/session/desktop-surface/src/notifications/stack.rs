@@ -53,7 +53,11 @@ pub(super) const TOAST_HEIGHT: f64 = 64.0;
 const TOAST_GAP: f64 = 8.0;
 /// A banner's slot is in place within a quarter of a pixel.
 const SLOT_TOLERANCE: f64 = 0.25;
-pub(super) const EDGE_INSET: f64 = 24.0;
+/// The margin a panel pinned to a display's top-right corner keeps from its
+/// edge: one number for the banner stack, the notification centre and quick
+/// settings, so the corner reads as one place rather than three panels that
+/// nearly line up.
+pub const CORNER_INSET: f64 = 24.0;
 /// Horizontal text inset of the locked card and the "more" card.
 /// Deliberately the shared toast card's own `CARD_PAD_X`
 /// (`ui::widget::toast`, 14) so their text starts on the cards' line; it is
@@ -303,8 +307,8 @@ const MIN_BANNER_H: f64 = 56.0;
 #[must_use]
 pub fn transient_slot(viewport: Rect, top: f64, size: (f64, f64), window_bars: &[Rect]) -> Rect {
     let (width, height) = size;
-    let x1 = viewport.x1 - EDGE_INSET;
-    let mut y0 = top.max(viewport.y0 + EDGE_INSET);
+    let x1 = viewport.x1 - CORNER_INSET;
+    let mut y0 = top.max(viewport.y0 + CORNER_INSET);
     // Each shift clears at least one bar, so this ends.
     for _ in 0..=window_bars.len() {
         let slot = Rect::new(x1 - width, y0, x1, y0 + height);
@@ -376,7 +380,7 @@ impl NotificationStack {
     /// Where the first banner's top sits: inset from the viewport's corner,
     /// and below the window bars the host keeps clear.
     fn first_top(&self) -> f64 {
-        let top = (self.viewport.y0 + EDGE_INSET).max(self.clear_top + TOAST_GAP);
+        let top = (self.viewport.y0 + CORNER_INSET).max(self.clear_top + TOAST_GAP);
         transient_slot(
             self.viewport,
             top,
@@ -754,7 +758,7 @@ impl NotificationStack {
     /// Cards keep their designed width on ordinary displays and shrink on
     /// compact viewports instead of painting beyond the left edge.
     fn toast_width(&self) -> f64 {
-        (self.viewport.width() - EDGE_INSET * 2.0).clamp(0.0, TOAST_WIDTH)
+        (self.viewport.width() - CORNER_INSET * 2.0).clamp(0.0, TOAST_WIDTH)
     }
 
     /// Locked-session collapse: a single redacted card showing only `count`,
@@ -898,7 +902,7 @@ impl NotificationStack {
         mut y: f64,
         bounds: &mut StackBounds,
     ) {
-        let bottom = self.viewport.y1 - EDGE_INSET;
+        let bottom = self.viewport.y1 - CORNER_INSET;
         let card_radius = ui::widget::toast::card_radius(ctx.theme);
         let control_radius = f64::from(ctx.theme.tokens.radii.control);
         let held = self.held();
@@ -1075,7 +1079,7 @@ impl NotificationStack {
         // this pass and restore it below.
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
-        let x0_rest = self.viewport.x1 - EDGE_INSET - width;
+        let x0_rest = self.viewport.x1 - CORNER_INSET - width;
         let y = self.first_top();
         let mut ctx = PaintCtx {
             scene,
@@ -1136,15 +1140,15 @@ impl NotificationStack {
             .map(|banner| &banner.notification)
             .filter(|n| n.machine_wide)
             .collect();
-        let width = (viewport.width() - EDGE_INSET * 2.0).clamp(0.0, TOAST_WIDTH);
+        let width = (viewport.width() - CORNER_INSET * 2.0).clamp(0.0, TOAST_WIDTH);
         if banners.is_empty() || width <= 0.0 {
             return Rect::ZERO;
         }
         // Resolved type sizes, as the stack paints them (HIG §7a).
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
-        let x0 = viewport.x1 - EDGE_INSET - width;
-        let bottom = viewport.y1 - EDGE_INSET;
+        let x0 = viewport.x1 - CORNER_INSET - width;
+        let bottom = viewport.y1 - CORNER_INSET;
         let mut y = transient_slot(viewport, viewport.y0, (width, MIN_BANNER_H), window_bars).y0;
         let mut covered = Rect::ZERO;
         for n in banners {
@@ -1766,9 +1770,9 @@ pub(super) mod tests {
         let mut stack = NotificationStack::new();
         stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 480.0));
         let width = stack.toast_width();
-        let x0 = stack.viewport.x1 - EDGE_INSET - width;
+        let x0 = stack.viewport.x1 - CORNER_INSET - width;
         assert_eq!(width, 272.0);
-        assert_eq!(x0, EDGE_INSET);
+        assert_eq!(x0, CORNER_INSET);
     }
 
     fn draw(stack: &mut NotificationStack, host: &TestHost, theme: &Theme) {
@@ -1788,8 +1792,8 @@ pub(super) mod tests {
     fn a_window_bar_wins_and_the_transient_shifts() {
         let viewport = Rect::new(0.0, 40.0, 1600.0, 900.0);
         let free = transient_slot(viewport, 0.0, (360.0, 60.0), &[]);
-        assert_eq!(free.y0, 40.0 + EDGE_INSET);
-        assert_eq!(free.x1, 1600.0 - EDGE_INSET);
+        assert_eq!(free.y0, 40.0 + CORNER_INSET);
+        assert_eq!(free.x1, 1600.0 - CORNER_INSET);
         let bars = [
             Rect::new(900.0, 48.0, 1590.0, 92.0),
             Rect::new(0.0, 48.0, 880.0, 400.0),
@@ -1809,7 +1813,7 @@ pub(super) mod tests {
         host.push(Notification::new("Keep your name and work?", "A passkey"));
         let mut stack = NotificationStack::new();
         stack.set_viewport(Rect::new(0.0, 32.0, 1440.0, 900.0));
-        assert!((stack.first_top() - (32.0 + EDGE_INSET)).abs() < f64::EPSILON);
+        assert!((stack.first_top() - (32.0 + CORNER_INSET)).abs() < f64::EPSILON);
         // The windows' content starts at 76: their bars run from 32 to 76.
         stack.set_clear_top(76.0);
         draw(&mut stack, &host, &Theme::dark());
@@ -1838,7 +1842,7 @@ pub(super) mod tests {
         let host = TestHost::default();
         host.push(Notification::new("Jonas is calling", "Video call"));
         let viewport = Rect::new(0.0, 32.0, 1440.0, 900.0);
-        let corner = 32.0 + EDGE_INSET;
+        let corner = 32.0 + CORNER_INSET;
         let mut stack = NotificationStack::new();
         stack.set_viewport(viewport);
 
@@ -1981,7 +1985,7 @@ pub(super) mod tests {
             assert_eq!(shown[0], *ids.last().unwrap(), "the newest leads");
             let more = stack.more_rect;
             assert!(more.area() > 0.0, "the rest fold into one card");
-            assert!(more.y1 <= viewport.y1 - EDGE_INSET);
+            assert!(more.y1 <= viewport.y1 - CORNER_INSET);
             let hidden = ids.len() - shown.len();
             let label = t_args("notification-more", &[("count", hidden.into())]);
             assert!(

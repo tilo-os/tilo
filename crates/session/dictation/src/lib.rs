@@ -30,10 +30,10 @@ pub mod stream;
 pub mod target;
 
 pub use effects::DictationAction;
-pub use stream::PhononTranscript;
 pub use service::{
     DICTATION, DICTATION_KIND, DictationLink, DictationService, Request, dictation_resource,
 };
 pub use session::{Dictation, MAX_COMMIT_BYTES, MAX_DRAFT_BYTES, SESSION_WINDOW};
 pub use status::{DictationError, DictationStatus, RecoveryReason, RuntimeError, SessionId};
+pub use stream::PhononTranscript;
 pub use target::{Field, FieldRefusal, Insertion, Target};

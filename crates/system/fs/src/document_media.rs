@@ -67,7 +67,7 @@ pub use import::{
 const TAG_PREFIX: &str = "tilo/media/v1/";
 
 fn reference_tag(scope: &BlobScope, hash: Hash) -> String {
-    format!("{TAG_PREFIX}{}/{}", scope.room(), hash.to_hex())
+    format!("{TAG_PREFIX}{}/{}", scope.workspace(), hash.to_hex())
 }
 
 /// Does this device's index record `scope`'s workspace as referencing `hash`?

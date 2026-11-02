@@ -21,12 +21,12 @@ use tilo_desktop_model::DesktopTree;
 /// the kind of action it is.
 pub(crate) type WorkspaceAction = (TreePath, ActionKind);
 
-/// Whether the workspace `room` of `tree` lets `person` do `required`, at
-/// `now` (Unix seconds). A desk that holds no such workspace admits nothing:
-/// there is no policy here to ask.
+/// Whether the workspace `workspace` of `tree` lets `person` do `required`,
+/// at `now` (Unix seconds). A desk that holds no such workspace admits
+/// nothing: there is no policy here to ask.
 pub(crate) fn allows(
     tree: &DesktopTree,
-    room: &str,
+    workspace: &str,
     person: &str,
     required: &WorkspaceAction,
     now: u64,
@@ -34,7 +34,7 @@ pub(crate) fn allows(
     let (node, kind) = required;
     tree.workspaces
         .iter()
-        .find(|workspace| workspace.room().to_string() == room)
+        .find(|held| held.room().to_string() == workspace)
         .is_some_and(|workspace| {
             workspace.answer_at(person, &workspace.node().join(node), *kind, now) == Answer::Allow
         })
@@ -131,7 +131,7 @@ mod tests {
         (TreePath::root().field(COMMENTS_FIELD), ActionKind::Undoable)
     }
 
-    const ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000c";
+    const WORKSPACE: &str = "6b3f9a10-0000-4000-8000-00000000000c";
 
     fn cert(user: [u8; 32], device: [u8; 32]) -> DeviceCert {
         DeviceCert {
@@ -148,9 +148,9 @@ mod tests {
     fn envelope() -> Box<collab_types::SignedOp> {
         Box::new(collab_types::SignedOp::new_unsigned(
             b"change".to_vec(),
-            collab_types::document_artifact_id("so.tilo.notes", ROOM, "notes"),
+            collab_types::document_artifact_id("so.tilo.notes", WORKSPACE, "notes"),
             collab_types::Ed25519PublicKey::from_bytes([2; 32]),
-            collab_types::document_attestation_id("so.tilo.notes", ROOM, "notes"),
+            collab_types::document_attestation_id("so.tilo.notes", WORKSPACE, "notes"),
             collab_types::OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             1,
@@ -169,13 +169,13 @@ mod tests {
             MlsGovernanceFrame, PeerPresence, PeerPresencePayload, Signature,
         };
         let channel = ChannelId(uuid::Uuid::from_bytes([0x55; 16]));
-        let artifact = collab_types::document_artifact_id("so.tilo.notes", ROOM, "notes");
+        let artifact = collab_types::document_artifact_id("so.tilo.notes", WORKSPACE, "notes");
         let device_cert = || Box::new(cert([1; 32], [2; 32]));
         vec![
             (
                 NeighbourMsg::SyncReq {
                     since: Vec::new(),
-                    room: ROOM.into(),
+                    room: WORKSPACE.into(),
                     invite_id: None,
                     nonce: 0,
                 },
@@ -184,7 +184,7 @@ mod tests {
             (
                 NeighbourMsg::SyncResp {
                     changes: Vec::new(),
-                    room: ROOM.into(),
+                    room: WORKSPACE.into(),
                 },
                 Some(change()),
             ),
@@ -276,7 +276,7 @@ mod tests {
                 NeighbourMsg::AppDocument {
                     peer: 1,
                     app_id: "so.tilo.notes".into(),
-                    cluster_id: ROOM.into(),
+                    cluster_id: WORKSPACE.into(),
                     record_id: "notes".into(),
                     envelope: envelope(),
                 },
@@ -286,7 +286,7 @@ mod tests {
                 NeighbourMsg::AppPresenceV2 {
                     peer: 1,
                     app_id: "so.tilo.notes".into(),
-                    cluster_id: ROOM.into(),
+                    cluster_id: WORKSPACE.into(),
                     presence: PeerPresence {
                         key: vec![1],
                         payload: PeerPresencePayload::Selection { start: 0, end: 1 },
@@ -314,14 +314,14 @@ mod tests {
             ),
             (
                 NeighbourMsg::IdentityAnnouncement {
-                    workspace: ROOM.into(),
+                    workspace: WORKSPACE.into(),
                     device_cert: device_cert(),
                 },
                 None,
             ),
             (
                 NeighbourMsg::IdentityAnnouncementV2 {
-                    workspace: ROOM.into(),
+                    workspace: WORKSPACE.into(),
                     device_cert: device_cert(),
                     revocations: Vec::new(),
                 },
@@ -343,7 +343,7 @@ mod tests {
             ),
             (
                 NeighbourMsg::MlsGovernance {
-                    workspace: ROOM.into(),
+                    workspace: WORKSPACE.into(),
                     frame: Box::new(MlsGovernanceFrame {
                         version: 2,
                         channel,
@@ -365,7 +365,7 @@ mod tests {
             ),
             (
                 NeighbourMsg::MlsAccessRequest {
-                    workspace: ROOM.into(),
+                    workspace: WORKSPACE.into(),
                     request: Box::new(MlsAccessRequestV1 {
                         version: 1,
                         channel,
@@ -394,7 +394,7 @@ mod tests {
                 NeighbourMsg::RecordContentWant {
                     requester: 1,
                     app_id: "so.tilo.notes".into(),
-                    cluster_id: ROOM.into(),
+                    cluster_id: WORKSPACE.into(),
                     hash: "ab".into(),
                 },
                 Some(read()),
@@ -404,7 +404,7 @@ mod tests {
                     responder: 1,
                     requester: 2,
                     app_id: "so.tilo.notes".into(),
-                    cluster_id: ROOM.into(),
+                    cluster_id: WORKSPACE.into(),
                     hash: "ab".into(),
                     total: 1,
                     offset: 0,
@@ -417,14 +417,14 @@ mod tests {
                     responder: 1,
                     requester: 2,
                     app_id: "so.tilo.notes".into(),
-                    cluster_id: ROOM.into(),
+                    cluster_id: WORKSPACE.into(),
                     hash: "ab".into(),
                 },
                 Some(read()),
             ),
             (
                 NeighbourMsg::MlsRoutedAccessRequest {
-                    room: ROOM.into(),
+                    room: WORKSPACE.into(),
                     request: Box::new(MlsAccessRequestV1 {
                         version: 1,
                         channel,
@@ -456,7 +456,7 @@ mod tests {
             (
                 NeighbourMsg::SurfaceViewRequest {
                     peer: 1,
-                    room: ROOM.into(),
+                    room: WORKSPACE.into(),
                     views: vec![neighbour_wire::SurfaceView {
                         tab: 1,
                         width: 16,

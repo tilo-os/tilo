@@ -6,7 +6,7 @@
 //! sender proves a certificate of the person it writes as, the receiver
 //! answers with one of the person the text was addressed to, and a text
 //! arrives only when both sides addressed the other's root. Nothing of it
-//! goes through a room, a record or a relay: the two devices talk.
+//! goes through a workspace, a record or a relay: the two devices talk.
 //!
 //! What was exchanged is published as the `messages` resource — who this
 //! device is for private texts, and the conversation with each person, the

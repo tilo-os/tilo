@@ -1,5 +1,5 @@
 //! The service's device: opened once when the service starts, warm for
-//! every app of the room after that.
+//! every app of the workspace after that.
 
 use vello::wgpu;
 use vello::{AaSupport, Renderer, RendererOptions};

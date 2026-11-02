@@ -180,14 +180,8 @@ impl Checker<'_> {
                     return Self::root_ref(&info.key.app, &info.id, &info.key);
                 }
                 if self.names_import(base) {
-                    self.err(
-                        "E026",
-                        e.span,
-                        format!(
-                            "`{}` is declared by an imported package; call it as `{}(...)`",
-                            name.name, name.name
-                        ),
-                    );
+                    let alias = dotted(base).unwrap_or_default().join(".");
+                    self.not_a_value_of_import(&alias, &name.name, e.span);
                     return Ex::error();
                 }
                 let b = self.expr(base, None);
@@ -884,6 +878,95 @@ impl Checker<'_> {
                 Ex::error()
             }
         }
+    }
+
+    /// `alias.name` read as a value, where the package `alias` declares no value of that name:
+    /// what to write instead. An action is called (`session.show_overview()`), a type's
+    /// resources are values a program has (a reference an answer or a listing showed), and a
+    /// name the package does not declare is told apart from those it does.
+    fn not_a_value_of_import(&mut self, alias: &str, name: &str, span: Span) {
+        let env = self.env;
+        let Some(import) = env.find_import(alias) else {
+            return;
+        };
+        let app = import.app.clone();
+        if let Some(c) = env.foreign_callable(&app, name) {
+            self.err(
+                "E026",
+                span,
+                format!(
+                    "`{alias}.{name}` is {} {}, not a value; call it: `{alias}.{}`",
+                    article(c.kind.word()),
+                    c.kind.word(),
+                    c.signature(&env.app)
+                ),
+            );
+            return;
+        }
+        let key = crate::types::TypeKey {
+            app: app.clone(),
+            name: name.to_owned(),
+        };
+        if env.type_info(&key).is_some() {
+            self.err(
+                "E026",
+                span,
+                format!(
+                    "`{alias}.{name}` is a type, not a value; pass one of its resources by the \
+                     reference an answer or a listing showed for it (`{}1`)",
+                    name.chars().next().map_or('r', |c| c.to_ascii_lowercase())
+                ),
+            );
+            return;
+        }
+        if env.enums.iter().any(|e| e.key == key) {
+            self.err(
+                "E026",
+                span,
+                format!("`{alias}.{name}` is an enum; write one of its values, `{alias}.{name}.<variant>`"),
+            );
+            return;
+        }
+        let mut names: Vec<String> = import
+            .named_roots
+            .iter()
+            .map(|(root, _)| root.clone())
+            .chain(
+                env.callables
+                    .iter()
+                    .filter(|c| c.app == app && !c.hidden())
+                    .map(|c| c.name.clone()),
+            )
+            .chain(
+                env.types
+                    .iter()
+                    .filter(|t| t.key.app == app)
+                    .map(|t| t.key.name.clone()),
+            )
+            .collect();
+        names.dedup();
+        let hint = crate::diag::did_you_mean(name, names.iter().map(String::as_str))
+            .map(|near| format!("; did you mean `{alias}.{near}`?"))
+            .unwrap_or_default();
+        let actions: Vec<String> = env
+            .callables
+            .iter()
+            .filter(|c| c.app == app && !c.hidden())
+            .map(|c| format!("{alias}.{}", c.signature(&env.app)))
+            .take(8)
+            .collect();
+        self.err(
+            "E014",
+            span,
+            format!(
+                "package `{alias}` has no `{name}`{hint}; its actions are called, such as {}",
+                if actions.is_empty() {
+                    "(none)".to_owned()
+                } else {
+                    actions.join(", ")
+                }
+            ),
+        );
     }
 }
 

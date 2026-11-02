@@ -7,6 +7,35 @@ use winit::event::{ElementState, WindowEvent};
 use super::ActionPalette;
 use crate::theme::Theme;
 
+/// How much of the height a card may give its result list.
+const LIST_SHARE: f64 = 0.55;
+/// The tallest result list, at the theme's own text size.
+const LIST_MAX: f64 = 504.0;
+/// The shortest result list a card keeps, however little room it has.
+const LIST_MIN: f64 = 160.0;
+
+/// The width of a palette's card standing in `area`: three fifths of it,
+/// kept between 360 and 640, and never wider than `area` less its insets,
+/// so a card in a window narrower than the screen stays inside it.
+#[must_use]
+pub fn card_width(area: Rect, theme: &Theme) -> f64 {
+    let edge = f64::from(theme.tokens.spacing.s2);
+    (area.width() * 0.6)
+        .clamp(360.0, 640.0)
+        .min((area.width() - 2.0 * edge).max(1.0))
+}
+
+/// The tallest a card's result list grows in `area`: a little over half
+/// its height, up to [`LIST_MAX`] at the theme's size, so a card on a tall
+/// display shows a longer list than one in a short window.
+#[must_use]
+pub fn list_cap(area: Rect, theme: &Theme) -> f64 {
+    let scale = f64::from(theme.text_scale) * f64::from(theme.ui_scale);
+    (area.height() * LIST_SHARE)
+        .min(LIST_MAX * scale)
+        .max(LIST_MIN)
+}
+
 /// Where the palette's card stands in `window`, the part of the window it
 /// belongs to under the window's bar: its top-left corner and its width.
 /// Centred across the window, a little below its top, and never wider than
@@ -22,9 +51,7 @@ pub fn placement(window: Rect, theme: &Theme) -> (Point, f64) {
             (window.width() - 2.0 * edge).max(1.0),
         );
     }
-    let width = (window.width() * 0.6)
-        .clamp(360.0, 640.0)
-        .min((window.width() - 2.0 * edge).max(1.0));
+    let width = card_width(window, theme);
     let x0 = window.x0 + ((window.width() - width) / 2.0).max(0.0);
     let y0 = window.y0 + (window.height() * 0.12).max(24.0);
     (Point::new(x0, y0), width)

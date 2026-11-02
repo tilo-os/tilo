@@ -367,7 +367,8 @@ impl Hosted {
             handle: Some("ada".to_owned()),
         }));
         let _ = manager.poll();
-        let record = InstanceRecord::new(automerge::AutoCommit::new(), manager, route.clone(), "ada");
+        let record =
+            InstanceRecord::new(automerge::AutoCommit::new(), manager, route.clone(), "ada");
         let wake: tilolang_tilo::background::Waker = Arc::new(|| {});
         let mut host = TilolangHost::new(None, Arc::clone(&wake));
         let kept = host.kept(TASKS).unwrap();

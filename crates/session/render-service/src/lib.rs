@@ -1,20 +1,21 @@
-//! A room's render service: the one toolkit-app process that draws on the
-//! GPU.
+//! A workspace's render service: the one toolkit-app process that draws on
+//! the GPU.
 //!
 //! Toolkit apps record each frame as a vello scene, as always, and hand it
-//! to their room's render service instead of drawing it themselves
+//! to their workspace's render service instead of drawing it themselves
 //! (`tilo-render-protocol`). The service validates the scene, rasterizes it
 //! on a device it opened once — warm pipelines, warm glyph cache, shared by
-//! every app of the room — into a dma-buf, and the app attaches that buffer
-//! to its own surface, so the compositor composites or scans it out like any
-//! client's.
+//! every app of the workspace — into a dma-buf, and the app attaches that
+//! buffer to its own surface, so the compositor composites or scans it out
+//! like any client's.
 //!
-//! **One service per room.** The person's private rooms share one; every
-//! other room has its own, so an app in a room with strangers cannot touch
-//! the rendering, caches or GPU memory of another room. The compositor's
-//! broker starts them, restarts one that dies (apps keep showing their last
-//! frame and send their whole scene again), and decides which service draws
-//! an app from the room the launcher named, never from what the app says.
+//! **One service per workspace.** The person's private workspaces share one;
+//! every other workspace has its own, so an app in a workspace with
+//! strangers cannot touch the rendering, caches or GPU memory of another
+//! workspace. The compositor's broker starts them, restarts one that dies
+//! (apps keep showing their last frame and send their whole scene again),
+//! and decides which service draws an app from the workspace the launcher
+//! named, never from what the app says.
 //!
 //! The service runs as a mode of the shell binary (`shell __render-service`,
 //! [`dispatch`]): it inherits nothing but its broker socket, opens the

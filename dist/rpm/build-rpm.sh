@@ -75,7 +75,8 @@ if (( run_cargo )); then
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
     # those large binaries even though stage-payload never ships them.
-    ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --bin tilo-runtime-mcp --no-default-features )
+    ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell \
+        -p tilo-runtime --bin tilo-runtime-mcp --no-default-features )
     say "cargo build --release (native session)"
     ( cd "$repo_root" && cargo build --release --locked -p tilo-session --bin tilo-session )
 fi

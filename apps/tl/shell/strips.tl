@@ -96,7 +96,7 @@ view strip_column(a: Arrangement, v: Viewing, s: ArrangementStrip) {
     let shown = chosen ?? placed.first()
     let current = chosen?.key ?? ""
     let name = match shown {
-        .some(p) => place_name(p),
+        .some(p) => place_title(p),
         .none => "Empty strip",
     }
     ui.Card(title: name, selected: in_front, min: if not (space.width_class == .expanded or space.width_class == .wide) { 12rem } else if s.width <= 500 { 18rem } else if s.width < 900 { 30rem } else { 44rem }) {
@@ -115,11 +115,6 @@ view strip_column(a: Arrangement, v: Viewing, s: ArrangementStrip) {
             ui.EmptyState("Nothing here", inline: true)
         }
     }
-}
-
-/// What a place is called on its strip's frame and its tab: its title, else the app showing it.
-fn place_name(p: ArrangementPlace) -> Text {
-    if p.title == "" { p.shows } else { p.title }
 }
 
 /// A strip's controls under its name: its width, one of the three, and the controls of the place
@@ -147,7 +142,7 @@ view strip_controls(a: Arrangement, s: ArrangementStrip, shown: Option<Arrangeme
 
 /// One tab of a column: the place it stands for, lit when it is the place in front.
 view tab_chip(p: ArrangementPlace, current: Bool) {
-    ui.Chip(place_name(p), selected: .some(current))
+    ui.Chip(place_title(p), selected: .some(current))
 }
 
 /// A place's content: its resource drawn inline through the view it names, as its own app's code
@@ -198,7 +193,7 @@ view place_controls(a: Arrangement, p: ArrangementPlace) {
                 for r in a.rows {
                     if r.key != strip_row(a, p.strip) {
                         ui.MenuItem(r.name) {
-                            on choose: session.move_place(place: arranged(p.key), row: arranged(r.key), before: .none)
+                            on choose: session.move_place(place: arranged(p.key), row: arranged(r.key))
                         }
                     }
                 }

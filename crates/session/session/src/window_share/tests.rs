@@ -1,4 +1,4 @@
-//! Two sessions in one room: one shares a window of its desk, the other
+//! Two sessions in one workspace: one shares a window of its desk, the other
 //! shows it and reaches into it, and the bar on the sharing device says so.
 //! The two planes have no transport between them, so the test carries what
 //! one plane would have said to the other, to the members each message was
@@ -59,7 +59,7 @@ use crate::{Options, Session};
 
 type Arguments = serde_json::Map<String, Value>;
 
-const ROOM: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
+const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 const APP: &str = "so.tilo.notes";
 const PHOTOS: &str = "so.tilo.photos";
 const WIDTH: i32 = 1280;
@@ -68,16 +68,16 @@ fn device(seed: u8) -> EndpointId {
     iroh::SecretKey::from_bytes(&[seed; 32]).public()
 }
 
-fn room() -> RoomId {
-    RoomId::parse(ROOM).expect("a room id")
+fn workspace_id() -> RoomId {
+    RoomId::parse(WORKSPACE).expect("a workspace id")
 }
 
-/// A desk with one workspace in the room, its one tab showing `tile`: what a
-/// session shares a window of, or shows another member's window in.
+/// A desk with one workspace, its one tab showing `tile`: what a session
+/// shares a window of, or shows another member's window in.
 fn desk(tile: TileContent, tab: u64) -> DesktopTree {
-    let room = room();
-    let id = WorkspaceId::of_room(room);
-    let mut workspace = Workspace::in_workspace(id, room, "Desk");
+    let workspace_id = workspace_id();
+    let id = WorkspaceId::of_room(workspace_id);
+    let mut workspace = Workspace::in_workspace(id, workspace_id, "Desk");
     let mut strip = Strip::new(StripId::from(1), "Main");
     strip.window_groups.push(WindowGroup {
         id: GroupId::from(1_u64),
@@ -113,7 +113,7 @@ fn own_desk() -> DesktopTree {
 }
 
 /// A desk showing another device's window of `app_id` in `tab`: the tab the
-/// host shows that window in, as the room's shared layout names it.
+/// host shows that window in, as the workspace's shared layout names it.
 fn showing(host: EndpointId, app_id: &str, tab: u64) -> DesktopTree {
     desk(
         TileContent::HostedWindow {
@@ -153,8 +153,8 @@ fn showing_both(host: EndpointId, first: (&str, u64), second: (&str, u64)) -> De
     tree
 }
 
-/// `desk` under the governance the room's devices agree on: `owner` owns its
-/// workspace, and each of `members` holds their role there — the policy
+/// `desk` under the governance the workspace's devices agree on: `owner` owns
+/// its workspace, and each of `members` holds their role there — the policy
 /// every member's messages are admitted by.
 fn governed(mut desk: DesktopTree, owner: &str, members: &[(String, Role)]) -> DesktopTree {
     for workspace in &mut desk.workspaces {
@@ -166,7 +166,7 @@ fn governed(mut desk: DesktopTree, owner: &str, members: &[(String, Role)]) -> D
     desk
 }
 
-/// One device of the room: its session, its plane, and the messages its
+/// One device of the workspace: its session, its plane, and the messages its
 /// plane would have sent.
 struct Member {
     session: Session,
@@ -178,20 +178,20 @@ fn member(seed: u8, desk: DesktopTree) -> Member {
     member_as(seed, desk, Options::default().salt, None)
 }
 
-/// One device of the room whose plane takes part as the person its
+/// One device of the workspace whose plane takes part as the person its
 /// certificate names: a member whose messages the workspace's policy is
 /// asked about.
 fn member_of(seed: u8, desk: DesktopTree) -> Member {
     member_as(seed, desk, Options::default().salt, Some(person(seed)))
 }
 
-/// One device of the room whose ids are minted under `salt`: a session with
+/// One device of the workspace whose ids are minted under `salt`: a session with
 /// an identity mints under the salt its own key derives.
 fn member_minting_under(seed: u8, desk: DesktopTree, salt: u16) -> Member {
     member_as(seed, desk, salt, None)
 }
 
-/// One device of the room, taking part as `person` (their root key, hex)
+/// One device of the workspace, taking part as `person` (their root key, hex)
 /// when it says one: what a session with a device identity is on this plane.
 fn member_as(seed: u8, desk: DesktopTree, salt: u16, person: Option<String>) -> Member {
     member_on(
@@ -203,7 +203,7 @@ fn member_as(seed: u8, desk: DesktopTree, salt: u16, person: Option<String>) -> 
     )
 }
 
-/// One device of the room whose desk spreads over `outputs`.
+/// One device of the workspace whose desk spreads over `outputs`.
 fn member_on(
     seed: u8,
     desk: DesktopTree,
@@ -245,14 +245,17 @@ fn member_on(
     }
 }
 
-/// `from` said `msg` on `to`'s plane in the room: what the plane carries
+/// `from` said `msg` on `to`'s plane in the workspace: what the plane carries
 /// between the two devices.
 fn tell(to: &Member, from: &Member, msg: NeighbourMsg) {
-    let ws = to.sync.workspace_topic(ROOM).expect("the room's topic");
+    let ws = to
+        .sync
+        .workspace_topic(WORKSPACE)
+        .expect("the workspace's topic");
     to.sync.hear(said(from, ws, msg));
 }
 
-/// One message `from` said, as the room's topic would have carried it.
+/// One message `from` said, as the workspace's topic would have carried it.
 fn said(from: &Member, ws: Topic, msg: NeighbourMsg) -> NetEvent {
     NetEvent::Msg {
         ws,
@@ -381,7 +384,7 @@ fn identifier_of(compositor: &Compositor, app: &str) -> String {
         .expect("the window is shareable")
 }
 
-/// Share the window of `app` as `tab` of the room.
+/// Share the window of `app` as `tab` of the workspace.
 fn share(member: &mut Member, app: &str, tab: u64) {
     let window = identifier_of(member.session.compositor(), app);
     member
@@ -393,20 +396,20 @@ fn share(member: &mut Member, app: &str, tab: u64) {
                 "window": window,
                 "tab": tab.to_string(),
                 "app_id": app,
-                "room": ROOM,
+                "room": WORKSPACE,
             })),
         )
-        .expect("the window is shared with the room");
+        .expect("the window is shared with the workspace");
 }
 
-/// Show the window another member shares, in `tab` of the room.
+/// Show the window another member shares, in `tab` of the workspace.
 fn watch(member: &mut Member, tab: u64) {
     member
         .session
         .invoke(
             SHARES_RESOURCE,
             "watch",
-            &arguments(serde_json::json!({ "tab": tab.to_string(), "room": ROOM })),
+            &arguments(serde_json::json!({ "tab": tab.to_string(), "room": WORKSPACE })),
         )
         .expect("the window is shown on the desk");
 }
@@ -427,7 +430,10 @@ fn allow_input(member: &mut Member, tab: u64, on: bool) {
 /// viewing it does.
 fn move_pointer(viewer: &Member, host: &Member, surface: u64, x: f64, y: f64) {
     let event = postcard::to_stdvec(&SharedInput::PointerMotion { x, y }).expect("input");
-    let ws = host.sync.workspace_topic(ROOM).expect("the room's topic");
+    let ws = host
+        .sync
+        .workspace_topic(WORKSPACE)
+        .expect("the workspace's topic");
     host.sync.hear(NetEvent::Msg {
         ws,
         peer: viewer.sync.publisher(),
@@ -442,7 +448,7 @@ fn move_pointer(viewer: &Member, host: &Member, surface: u64, x: f64, y: f64) {
 }
 
 /// The start of a stream `from` shares: its own window, of `app`, shown as
-/// `tab` of the room.
+/// `tab` of the workspace.
 fn stream_start(from: &Member, surface: u64, tab: u64) -> NeighbourMsg {
     NeighbourMsg::SurfaceStreamStart {
         surface,
@@ -1231,7 +1237,7 @@ fn received_centre(viewer: &Member) -> (f64, f64) {
 }
 
 /// The host streams `viewer` the window of `tab`, and `viewer`'s desk shows
-/// it: one member of the room viewing another's window.
+/// it: one member of the workspace viewing another's window.
 #[track_caller]
 fn viewing(host: &mut Member, window: &mut Option<TestClient>, viewer: &mut Member, tab: u64) {
     until(host, window, viewer, |host, viewer, _| {
@@ -1410,10 +1416,10 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
 }
 
 /// A window one device shares shows on another device's desk because the
-/// room's governance says it is shared there: nobody names the tab on the
+/// workspace's governance says it is shared there: nobody names the tab on the
 /// other device.
 #[test]
-fn a_share_shows_on_another_device_from_the_rooms_governance() {
+fn a_share_shows_on_another_device_from_the_workspace_governance() {
     tilo_window_share::flatpak_share::read_encoders();
     let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x21).as_bytes());
     let tab = tilo_desktop_model::ids::compose_id(salt, 1);
@@ -1442,8 +1448,8 @@ fn a_share_shows_on_another_device_from_the_rooms_governance() {
         !rows(&shares(&host.session), "sharing").is_empty()
     });
 
-    // The room's governance says the window is shared, hosted on this
-    // device: what the room's document carries to its other devices.
+    // The workspace's governance says the window is shared, hosted on this
+    // device: what the workspace's document carries to its other devices.
     let grants = host
         .session
         .handle()
@@ -1452,7 +1458,7 @@ fn a_share_shows_on_another_device_from_the_rooms_governance() {
         grants
             .iter()
             .any(|grant| is_of_share(grant, &window_share_id(tab))),
-        "the share is in the room's governance: {grants:?}"
+        "the share is in the workspace's governance: {grants:?}"
     );
     assert!(
         hosted(&viewer.session, tab).is_none(),
@@ -1515,8 +1521,8 @@ fn hosted(session: &Session, tab: u64) -> Option<String> {
     })
 }
 
-/// Carry `from`'s governance to `to`'s desk, as the room's document carries
-/// it between the room's devices.
+/// Carry `from`'s governance to `to`'s desk, as the workspace's document
+/// carries it between the workspace's devices.
 fn carry_governance(from: &Session, to: &Session) {
     let grants = from.handle().read(|tree| {
         tree.workspaces
@@ -1562,7 +1568,10 @@ fn heard(viewer: &Member, seed: u8, label: &str) {
         signature: [0; 64],
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
-    let ws = viewer.sync.workspace_topic(ROOM).expect("the room's topic");
+    let ws = viewer
+        .sync
+        .workspace_topic(WORKSPACE)
+        .expect("the workspace's topic");
     viewer.sync.hear(NetEvent::Msg {
         ws,
         peer: device(seed),

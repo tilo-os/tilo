@@ -10,18 +10,20 @@ struct Host {
 
 impl Host {
     fn new(profile: &Path) -> Self {
-        tilo_rt::app().handle().block_on(async {
-            Self {
-                store: Arc::new(
-                    tilo_fs::ContentStore::open(&profile.join("content"))
+        tilo_rt::app()
+            .block_on(async {
+                Self {
+                    store: Arc::new(
+                        tilo_fs::ContentStore::open(&profile.join("content"))
+                            .await
+                            .unwrap(),
+                    ),
+                    endpoint: iroh::Endpoint::bind(iroh::endpoint::presets::N0)
                         .await
                         .unwrap(),
-                ),
-                endpoint: iroh::Endpoint::bind(iroh::endpoint::presets::N0)
-                    .await
-                    .unwrap(),
-            }
-        })
+                }
+            })
+            .unwrap()
     }
 
     fn start(&self, profile: &Path, folder: &Path, projection: Projection) -> WorkspaceFiles {

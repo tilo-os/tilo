@@ -144,6 +144,9 @@ pub(crate) struct SessionSearch {
     /// What the session itself publishes, as of the last frame: the desk
     /// cannot read its own tree while it opens search.
     own: RefCell<Vec<tilo_actions::ActionDescriptor>>,
+    /// What the resources the session publishes are, by id, as of the last
+    /// frame: what a query naming a type ("my mails") finds them by.
+    own_types: RefCell<std::collections::BTreeMap<String, tilo_actions::ResourceType>>,
     /// The windows open, as of the last frame.
     open_tabs: RefCell<Vec<u64>>,
     /// The live notifications the session publishes, as of the last frame.
@@ -158,10 +161,6 @@ pub(crate) struct SessionSearch {
     /// The downloaded programs, as of the last reading of the registry.
     downloaded: RefCell<DownloadedRows>,
 }
-
-/// How many of the search's top results text typed on the canvas reads
-/// through: enough to find the one to place, no more work than that.
-const FIND: usize = 16;
 
 /// The resource of the section keeping search's history.
 pub(crate) const HISTORY: &str = "settings:settings.search_history";
@@ -209,6 +208,7 @@ impl SessionSearch {
             apps,
             records,
             own: RefCell::default(),
+            own_types: RefCell::default(),
             open_tabs: RefCell::default(),
             notifications: RefCell::default(),
             workspaces: RefCell::default(),
@@ -245,6 +245,7 @@ impl SessionSearch {
             !searching && !opening
         });
         *self.own.borrow_mut() = published;
+        *self.own_types.borrow_mut() = tilo_desktop_search::providers::types_of(own);
         *self.open_tabs.borrow_mut() = open_tabs;
         if let Some(reading) = downloaded {
             let published = self
@@ -297,9 +298,11 @@ impl SessionSearch {
         }
     }
 
-    /// The top `FIND` results of the one search the palette and an agent's
-    /// `tilo` tool run, over the sources the person has on, in the ranking's
-    /// order: what text typed on the canvas places (shell.md §8).
+    /// The results of the one search the palette and an agent's `tilo` tool
+    /// run, over the sources the person has on, in the ranking's order: what
+    /// text typed on the canvas places (shell.md §8). Every one, as ranked:
+    /// the best resource to place may stand below many actions the text names
+    /// ("Inbox" under each conversation's "Move to inbox").
     #[must_use]
     pub(crate) fn find(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
         let needle = needle.trim();
@@ -330,6 +333,7 @@ impl SessionSearch {
             app: DESKTOP_APP.into(),
             workspace: String::new(),
             actions: self.own.borrow().clone(),
+            types: self.own_types.borrow().clone(),
         }];
         if let Some(apps) = &self.apps {
             sources.push(Box::new(Jobs(apps.jobs())));
@@ -343,11 +347,7 @@ impl SessionSearch {
         // name gets (a sum, a web search): text typed on the canvas names a
         // resource to place, never a sentence to search the web for.
         let groups = tilo_desktop_search::search(needle, &refs, 0);
-        groups
-            .into_iter()
-            .flat_map(|group| group.results)
-            .take(FIND)
-            .collect()
+        groups.into_iter().flat_map(|group| group.results).collect()
     }
 
     /// A window was at `place`.
@@ -658,6 +658,7 @@ impl SearchHost for SessionSearch {
             app: DESKTOP_APP.into(),
             workspace: workspace.to_owned(),
             actions: self.own.borrow().clone(),
+            types: self.own_types.borrow().clone(),
         }];
         if let Some(apps) = &self.apps {
             sources.push(Box::new(Jobs(apps.jobs())));

@@ -30,6 +30,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
+use tilo_actions::ActionDescriptor;
 use tilo_lock::MutexRecover as _;
 
 use super::{ActionHost, Addressed, McpServer, OneCall, Reply, app_names};
@@ -172,6 +173,179 @@ impl Programs {
         self.by_literal.insert(literal.to_owned(), shown.clone());
         shown
     }
+}
+
+/// Whether `id` can stand in a resource literal (`@app.Type:id`): an id, then `/item` steps,
+/// each of letters, digits, `_` and `-`.
+fn literal_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.split('/').all(|step| {
+            !step.is_empty()
+                && step
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        })
+}
+
+/// How the task's programs write what the apps declare: each action as it is called, and each
+/// type by its name. Read from the task host's catalogue, so a listing and a program agree.
+#[derive(Default)]
+pub(crate) struct ProgramForms {
+    /// By action id, each app's action of that id.
+    actions: BTreeMap<String, Vec<Declared>>,
+    /// `(app, type name)` → `notes.Note`.
+    types: BTreeMap<(String, String), String>,
+}
+
+/// One app's action, as a program calls it and what it acts on.
+struct Declared {
+    app: String,
+    /// `session.place(resource: host.Resource, x: Option<Int> = .none)`.
+    call: String,
+    /// The package's own type its first parameter takes: it acts on a resource of that type.
+    on: Option<String>,
+    /// The resource the session publishes a loose action on.
+    at: Option<String>,
+}
+
+impl ProgramForms {
+    fn of(catalogue: &Value) -> Self {
+        let mut forms = Self::default();
+        for app in catalogue
+            .as_object()
+            .into_iter()
+            .flat_map(|apps| apps.values())
+        {
+            let Some(id) = app["app"].as_str() else {
+                continue;
+            };
+            for signature in app["signatures"].as_array().into_iter().flatten() {
+                let text = |key: &str| signature[key].as_str().map(str::to_owned);
+                let (Some(kind), Some(call)) = (signature["kind"].as_str(), text("call")) else {
+                    continue;
+                };
+                match (kind, text("id"), text("name")) {
+                    ("action", Some(action), _) => {
+                        forms.actions.entry(action).or_default().push(Declared {
+                            app: id.to_owned(),
+                            call,
+                            on: text("on"),
+                            at: text("at"),
+                        });
+                    }
+                    ("type", _, Some(name)) => {
+                        forms.types.insert((id.to_owned(), name), call);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        forms
+    }
+
+    /// How a program calls the action `action` (its published id) of the resource `resource`
+    /// of `kind`, listed under the app `app`: the declaration that acts on that resource, a
+    /// resource of its type or the one it is published on. `None` when no app's does.
+    pub(crate) fn action(
+        &self,
+        app: &str,
+        action: &str,
+        resource: &str,
+        kind: &str,
+    ) -> Option<&str> {
+        let type_names = kind_type_names(kind);
+        let acts_here = |declared: &&Declared| match (&declared.on, &declared.at) {
+            (Some(on), _) => type_names.iter().any(|name| name == on),
+            (None, Some(at)) => at == resource,
+            (None, None) => declared.app == app,
+        };
+        let mut found = self.actions.get(action)?.iter().filter(acts_here);
+        let first = found.next()?;
+        found.next().is_none().then_some(first.call.as_str())
+    }
+
+    /// How a program calls `action`, listed under the app `listed`.
+    pub(crate) fn called(&self, action: &ActionDescriptor, listed: &str) -> Option<&str> {
+        self.action(
+            &action_app(action, listed),
+            &action.address.action,
+            &action.address.resource,
+            &action.resource_kind,
+        )
+    }
+
+    /// How a program names the type of a resource of `kind`, a tilolang app's
+    /// (`tl.<app>.<Type>`), when the task holds that app's package.
+    pub(crate) fn kind(&self, kind: &str) -> Option<&str> {
+        let (app, ty) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
+        self.types
+            .get(&(app.to_owned(), ty.to_owned()))
+            .map(String::as_str)
+    }
+}
+
+/// The names a package reading a surface gives the type of resources of `kind`
+/// (`tilolang_tilo::catalogue::kind_type_name`): a tilolang kind's own type (`tl.<app>.<Type>`),
+/// else its last segment in upper camel case, or its last two when that one is taken
+/// (`tilo.workspace.emoji` is `Emoji` or `WorkspaceEmoji`).
+fn kind_type_names(kind: &str) -> Vec<String> {
+    if let Some((_, ty)) = kind
+        .strip_prefix("tl.")
+        .and_then(|rest| rest.rsplit_once('.'))
+    {
+        return vec![ty.to_owned()];
+    }
+    let camel = |segment: &str| -> String {
+        segment
+            .split(['-', '_'])
+            .map(|word| {
+                let mut chars = word.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_uppercase().chain(chars).collect()
+                })
+            })
+            .collect()
+    };
+    let mut segments = kind.rsplit('.');
+    let last = camel(segments.next().unwrap_or(kind));
+    let before = segments.next().map(camel).unwrap_or_default();
+    vec![last.clone(), format!("{before}{last}")]
+}
+
+/// The app an action is declared by: a tilolang app's resource's (`tl.<app>.<Type>`) by its
+/// kind, any other's the app the listing is of.
+fn action_app(action: &ActionDescriptor, listed: &str) -> String {
+    action
+        .resource_kind
+        .strip_prefix("tl.")
+        .and_then(|rest| rest.rsplit_once('.'))
+        .map_or_else(|| listed.to_owned(), |(app, _)| app.to_owned())
+}
+
+/// What a resource's actions are, in its line of a listing: how many, and how a program calls
+/// the first of them (`3 actions: session.open_search, session.step_focus, …`).
+pub(super) fn actions_note<'a>(
+    actions: &'a [ActionDescriptor],
+    called: &impl Fn(&'a ActionDescriptor) -> Option<&'a str>,
+) -> String {
+    const NAMED: usize = 3;
+    let names: Vec<&str> = actions
+        .iter()
+        .filter_map(called)
+        .map(|call| call.split_once('(').map_or(call, |(name, _)| name))
+        .take(NAMED.saturating_add(1))
+        .collect();
+    let count = if actions.len() == 1 {
+        "1 action".to_owned()
+    } else {
+        format!("{} actions", actions.len())
+    };
+    if names.is_empty() {
+        return format!("[{count}]");
+    }
+    let more = if actions.len() > NAMED { ", …" } else { "" };
+    let shown: Vec<&str> = names.into_iter().take(NAMED).collect();
+    format!("[{count}: {}{more}]", shown.join(", "))
 }
 
 /// Whether `word` is written as a reference is (`n3`, `t91`).
@@ -544,7 +718,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             "undo task" => return self.undo_steps(true).await.map(|reply| (reply, None, None)),
             "history task" => return Ok((Reply::ok(self.history()), None, None)),
-            "catalogue" => return self.catalogue().await.map(|reply| (reply, None, None)),
+            "catalogue" => {
+                return self
+                    .catalogue()
+                    .await
+                    .map(|catalogue| (Reply::ok(catalogue.to_string()), None, None));
+            }
             _ => {}
         }
         let source = resolve_refs(program, &self.programs.lock_recover())?;
@@ -572,13 +751,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Every installed app the task's programs may name, with its declarations, as JSON
-    /// (`{alias: {app, signatures: [{name, signature}]}}`): read from the packages in the task's
-    /// host, so an app that runs nowhere is listed like any other.
+    /// (`{alias: {app, signatures: [{name, id, kind, signature, call}]}}`): read from the
+    /// packages in the task's host, so an app that runs nowhere is listed like any other.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the task's link is held while its host answers, as a program's run holds it"
     )]
-    async fn catalogue(&self) -> Result<Reply, String> {
+    pub(super) async fn catalogue(&self) -> Result<Value, String> {
         let mut link = self.task.lock().await;
         if link.is_none() {
             *link = Some(self.start_task().await?);
@@ -600,7 +779,36 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             *link = None;
         }
         drop(link);
-        asked.map(|catalogue| Reply::ok(catalogue.to_string()))
+        asked
+    }
+
+    /// How the task's programs write what a listing shows, when this door runs programs: each
+    /// action as it is called and each type by its name ([`ProgramForms`]). `None` for a door
+    /// that runs none, whose listing names actions as the door's own tools take them.
+    pub(super) async fn program_forms(&self) -> Option<ProgramForms> {
+        self.task_hosts.as_ref()?;
+        // optional-decode: a listing names actions by their ids when the catalogue is not there
+        self.catalogue()
+            .await
+            .ok()
+            .map(|catalogue| ProgramForms::of(&catalogue))
+    }
+
+    /// The reference a listed resource (the published `id` of a resource of `kind`) goes by in
+    /// this session's programs, given it the first time it is shown, as an answer's are: a
+    /// resource of a tilolang app (`tl.<app>.<Type>`), which a program passes as the value it
+    /// is. `None` for any other.
+    pub(super) fn listed_reference(&self, kind: &str, id: &str) -> Option<String> {
+        let (app, ty) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
+        if !ty.starts_with(|c: char| c.is_ascii_uppercase()) {
+            return None;
+        }
+        let inner = id.strip_prefix(&format!("tl:{app}:"))?;
+        if !literal_id(inner) {
+            return None;
+        }
+        let literal = format!("@{app}.{ty}:{inner}");
+        Some(self.programs.lock_recover().name(ty, &literal))
     }
 
     /// Run `source` in the task's host, doing what it reads and invokes as the task, until it

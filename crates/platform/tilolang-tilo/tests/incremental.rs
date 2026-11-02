@@ -510,6 +510,89 @@ fn a_retyped_item_moves_only_labels_and_a_reader_learns_them_alone() {
     );
 }
 
+/// Every published resource's id and whether it is its type's primary.
+fn primaries(resource: &ResourceSpec, out: &mut Vec<(String, tilo_actions::Primary)>) {
+    if let Some(named) = &resource.resource_type {
+        out.push((resource.id.as_str().to_owned(), named.primary));
+    }
+    for child in &resource.children {
+        primaries(child, out);
+    }
+}
+
+/// A resource says what it is as it is published, and whether it is its type's primary
+/// follows the fields its type's `primary` reads: an item finished becomes the primary in the
+/// tree republished, as it is in one published anew.
+#[test]
+fn whether_a_resource_is_its_types_primary_follows_what_its_primary_reads() {
+    use tilo_actions::Primary;
+    let source = TODO.replace(
+        "  done: Bool\n}",
+        "  done: Bool\n\n  search {\n    primary done\n  }\n}",
+    );
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(&source, "")]);
+    let meta = packages[0].meta.clone();
+    let root = ada.host.root_of(APP).unwrap().doc;
+    ada.commit();
+    for text in ["milk", "eggs"] {
+        add(&mut ada, &meta, &root, text);
+    }
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let now = |published: &Publications| {
+        let mut out = Vec::new();
+        primaries(&published.trees()[&root], &mut out);
+        out
+    };
+    let ids = item_ids(&ada, &meta, &root);
+    let items = field_id(&meta, "TodoList", "items");
+    let item = |id: &str| resource_id(APP, &format!("{root}/{id}"));
+    assert_eq!(
+        now(&published),
+        [
+            (resource_id(APP, &root), Primary::Root),
+            (item(&ids[0]), Primary::No),
+            (item(&ids[1]), Primary::No),
+        ]
+    );
+    let named = published.trees()[&root].resource_type.clone().unwrap();
+    assert_eq!(
+        (named.noun, named.app),
+        (
+            tilo_actions::Noun::new("todo list", "todo lists"),
+            tilo_actions::Noun::new("Todo", "todos")
+        )
+    );
+
+    let finish = meta.actions.iter().find(|a| a.name == "finish").unwrap();
+    let finished = ada
+        .host
+        .plan(&PlanRequest {
+            app: APP,
+            kind: "tl.so.tilo.todo.Item",
+            action_id: &finish.id,
+            resource: Some(&format!("{root}/{items}:{}", ids[1])),
+            args: &serde_json::Map::new(),
+            caller: None,
+        })
+        .unwrap();
+    ada.apply(&finished);
+    published.update(&ada.host, &planner);
+    assert_eq!(
+        now(&published),
+        [
+            (resource_id(APP, &root), Primary::Root),
+            (item(&ids[0]), Primary::No),
+            (item(&ids[1]), Primary::Declared),
+        ],
+        "the finished item is the primary now"
+    );
+    let mut anew = Publications::new(&ada.host);
+    anew.settle(&ada.host, &planner);
+    assert_eq!(now(&published), now(&anew));
+}
+
 #[test]
 fn planning_an_action_changes_nothing_anyone_follows() {
     let (ada, meta, root) = workspace();

@@ -356,3 +356,130 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
         "opening it in the centre reaches the app that sent it"
     );
 }
+
+/// A banner whose sender gave it a lifetime leaves the stack once that time
+/// has run out on screen with nobody holding it, and waits in the centre: a
+/// banner no one dismisses still goes.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one banner's whole life, from posted to retired"
+)]
+#[test]
+fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
+    let bus = PrivateBus::start();
+    let wake = tilo_service::LoopWake::default();
+    let (side, link) = tilo_session::portal_link::channel(wake.handle());
+    let desktop = Rc::new(
+        DesktopServices::start(
+            &Buses {
+                session: Bus::Address(bus.address().to_owned()),
+                system: Bus::None,
+            },
+            &wake.handle(),
+            std::sync::Arc::new(tilo_portal::NoCapture),
+            &side,
+            None,
+        )
+        .unwrap(),
+    );
+    let portal = desktop
+        .portal()
+        .map(|serving| link.with_captures(serving.input_captures().clone()));
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            services: desktop.services(),
+            wake,
+            desktop: Some(Rc::clone(&desktop)),
+            portal,
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
+    )
+    .expect("session");
+
+    let runtime = desktop.runtime();
+    let (id, app) = runtime.block_on(async {
+        let app = zbus::connection::Builder::address(bus.address())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let proxy = zbus::Proxy::new(
+            &app,
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+        )
+        .await
+        .unwrap();
+        let reply = proxy
+            .call_method(
+                "Notify",
+                &(
+                    "Mail",
+                    0_u32,
+                    "",
+                    "New mail",
+                    "From Ada",
+                    Vec::<&str>::new(),
+                    HashMap::<String, zbus::zvariant::Value>::new(),
+                    // Half a second on screen: enough to watch it arrive and
+                    // go again without holding the test up.
+                    500_i32,
+                ),
+            )
+            .await
+            .unwrap();
+        let id: u32 = reply.body().deserialize().unwrap();
+        (u64::from(id), app)
+    });
+
+    let up = until(&mut session, |session| {
+        session
+            .banners()
+            .shown()
+            .banners
+            .iter()
+            .any(|(banner, _)| *banner == id)
+            .then_some(())
+    });
+    assert!(up.is_some(), "the banner shows to begin with");
+    let up_at = std::time::Instant::now();
+
+    let left = until(&mut session, |session| {
+        session
+            .banners()
+            .shown()
+            .banners
+            .iter()
+            .all(|(banner, _)| *banner != id)
+            .then_some(())
+    });
+    assert!(
+        left.is_some(),
+        "the banner leaves once its lifetime runs out: {:?}",
+        session.banners().shown().banners
+    );
+    assert!(
+        up_at.elapsed() >= std::time::Duration::from_millis(250),
+        "the banner stayed up for its lifetime, not less: {:?}",
+        up_at.elapsed()
+    );
+    let kept = until(&mut session, |session| {
+        let centre = session.read(tilo_session::NOTIFICATIONS_RESOURCE)?;
+        let rows = centre.get("rows")?.as_array()?;
+        rows.iter()
+            .any(|row| row.get("id").and_then(Value::as_u64) == Some(id))
+            .then_some(centre)
+    });
+    assert!(
+        kept.is_some(),
+        "the centre keeps what left the stack: {:?}",
+        session.read(tilo_session::NOTIFICATIONS_RESOURCE)
+    );
+    runtime.block_on(async {
+        drop(app);
+    });
+}
