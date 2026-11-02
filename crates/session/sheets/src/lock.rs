@@ -39,15 +39,15 @@ use ui::caps_lock::CapsLockEstimate;
 use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
 use ui::icons::Icon;
 use ui::motion::{
-    Appear, Attention, Direction, MotionSpec, MotionValue, Pace, Presence, Reduced, Shortcut,
-    frame_now, want_frames_until,
+    Appear, Attention, CrossFade, Direction, MotionSpec, MotionValue, Pace, Presence, Reduced,
+    Shortcut, frame_now, want_frames_until,
 };
 use ui::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
 use ui::prelude::*;
 use ui::text_render::{NumericStyle, OpenTypeTag, TextWeight};
 use ui::tokens::{EffectiveMotion, MotionSource, Rhythm, Spacing};
 use ui::widget::{
-    AccessoryAction, Avatar, AvatarSize, ControlSize, FloatingPanel, IconSize, IconWidget, Manual,
+    AccessoryAction, Avatar, AvatarSize, ControlSize, IconSize, IconWidget, Manual,
     MeasureConstraint, Spinner, Tone,
 };
 use zeroize::{Zeroize, Zeroizing};
@@ -71,9 +71,12 @@ const CLOCK_SIZE: f32 = 88.0;
 /// sets its own.
 const CLOCK_WEIGHT: f32 = 280.0;
 
-/// The card's width: one large field with its inline arrow, and a name
-/// beside an avatar, under the clock.
-const CARD_WIDTH: f32 = 400.0;
+/// The field's width: one large field with its inline arrow, no wider than
+/// the greeter's credentials, and narrower on a display that is.
+const FIELD_WIDTH: f32 = 420.0;
+
+/// The line under the field fading in and out of the space kept for it.
+const NOTICE: MotionSpec = CrossFade::<()>::SPEC;
 
 /// How long the screen waits for input before it goes quiet.
 const IDLE: Duration = Duration::from_secs(20);
@@ -238,18 +241,25 @@ impl Shown {
         serde_json::from_str(reading)
     }
 
-    /// The line under the field: the answer to the last attempt, the check
-    /// in flight, the keyboard's Caps Lock, or the quiet waiting hint.
-    fn notice(&self) -> (String, Tone) {
+    /// What the screen has to say under the field, and in which tone: the
+    /// answer, a check in flight, or the keyboard's Caps Lock. Nothing to say
+    /// is nothing shown, and the space for a line is kept either way.
+    fn notice(&self) -> Option<(String, Tone)> {
         if let Some(error) = &self.error {
-            (error.clone(), Tone::Danger)
+            Some((error.clone(), Tone::Danger))
         } else if self.checking {
-            (t("lock-checking"), Tone::Neutral)
+            Some((t("lock-checking"), Tone::Neutral))
         } else if self.caps_lock {
-            (t("lock-caps-lock"), Tone::Warning)
+            Some((t("lock-caps-lock"), Tone::Warning))
         } else {
-            (t("lock-enter-hint"), Tone::Neutral)
+            None
         }
+    }
+
+    /// Whether there is a line to show at all, without wording it: the frame
+    /// pump asks this on every frame and words nothing it does not draw.
+    fn says_something(&self) -> bool {
+        self.error.is_some() || self.checking || self.caps_lock
     }
 }
 
@@ -453,6 +463,11 @@ impl ResourceApp for LockApp {
     };
     // Nothing is kept: there is no past to look back on.
     const DOCUMENT_HISTORY: bool = false;
+    // The lock screen belongs to no workspace and opens before anyone is
+    // signed in: it shows what the session told it, and nothing it writes
+    // outlives the lock.
+    const OPENS_WITHOUT_IDENTITY: bool = true;
+    const ATTACHES_RUNTIME: bool = false;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
@@ -460,15 +475,21 @@ impl ResourceApp for LockApp {
 
     fn view(cx: &mut ViewCx<LockScreen>) -> Element {
         let seat = cx.take_lent::<LockSeat>().unwrap_or_default();
-        let initial = cx
-            .fixture::<Shown>()
-            .map_or_else(|| seat.shown(), |shown| (*shown).clone());
-        let shown = cx.local(initial);
+        let shown = cx.local(seat.shown());
         // What the session publishes is what the screen draws: the worker
         // that watches it writes each reading into the local the view draws.
         *seat.local.borrow_mut() = Some(shown.clone());
         seat.reach(shown.writer());
         seat.presentation().wake_with(cx.waker());
+        // A capture shows the scene its scenario names, as the session would
+        // have published it: no session is there to say it.
+        let staged = shown.clone();
+        cx.on_stage(move |name| {
+            let Some(name) = name else {
+                return;
+            };
+            staged.update(|mine| *mine = staged_shown(name));
+        });
         let acting = seat.clone();
         cx.effects(move |effect: LockEffect, _cx| {
             match effect {
@@ -492,13 +513,23 @@ impl ResourceApp for LockApp {
         });
         let dispatch = cx.dispatcher();
         let hosting = seat.clone();
-        let content = cx.switch(&shown, move |cx, shown| screen(cx, shown, &seat));
+        let shaken: Rc<Cell<f64>> = Rc::new(Cell::new(0.0));
+        let notice: Rc<Cell<f32>> = Rc::new(Cell::new(1.0));
+        let posing = Rc::clone(&shaken);
+        let fading = Rc::clone(&notice);
+        let content = cx.switch(&shown, move |cx, shown| {
+            screen(cx, shown, &seat, &posing, &fading)
+        });
         Box::new(Stage {
             content,
             dispatch,
             seat: hosting,
             presence: Presence::closed(),
             shake: Attention::default(),
+            shaken,
+            notice,
+            notice_alpha: MotionValue::new(1.0),
+            notice_up: false,
             blank: MotionValue::new(0.0),
             caps: CapsLockEstimate::new(),
             keyboard: Cell::new(PasscodeKeyboard::default()),
@@ -512,70 +543,91 @@ impl ResourceApp for LockApp {
 
     fn scenarios() -> &'static [&'static str] {
         &[
-            "plain", "refused", "checking", "caps", "quiet", "playing", "minimal",
+            "plain", "typing", "refused", "checking", "caps", "playing", "minimal",
         ]
     }
 
-    fn fixture(fixture: &mut ui::framework::Fixture<LockScreen>) {
-        let shown = Shown {
-            clock: "10:42".to_owned(),
-            date: ui::format::day_heading(ui::clock::today(), false),
-            person: "Ada Lovelace".to_owned(),
-            error: None,
-            checking: false,
-            caps_lock: false,
-            status: Status {
-                network: Some("Home".to_owned()),
-                battery: Some(Battery {
-                    percent: Some(82),
-                    charging: false,
-                }),
-                layout: Some("US".to_owned()),
-                next_layout: Some("DE".to_owned()),
-                layouts: 2,
-                keyboard: false,
-                power: true,
-            },
-            media: None,
-            keyboard: false,
-            unlocking: false,
-        };
-        let shown = match fixture.scenario() {
-            Some("refused") => Shown {
-                error: Some(t("lock-wrong-password")),
-                ..shown
-            },
-            Some("checking") => Shown {
-                checking: true,
-                ..shown
-            },
-            Some("caps") => Shown {
-                caps_lock: true,
-                ..shown
-            },
-            Some("playing") => Shown {
-                media: Some(Media {
-                    title: "Clair de lune".to_owned(),
-                    subtitle: "Claude Debussy".to_owned(),
-                    playing: true,
-                    can_toggle: true,
-                    can_previous: true,
-                    can_next: true,
-                }),
-                ..shown
-            },
-            Some("minimal") => Shown {
-                status: Status::default(),
-                ..shown
-            },
-            _ => shown,
-        };
-        fixture.provide(shown);
+    fn scenario_input(
+        name: Option<&str>,
+        input: &mut ui::headless::FrameHarness,
+    ) -> Result<(), String> {
+        if name == Some("typing") {
+            input.type_text("sesame");
+        }
+        Ok(())
     }
 }
 
-/// The clock, the card and what the device says, as one centred block.
-fn screen(cx: &ViewCx<LockScreen>, shown: &Shown, seat: &LockSeat) -> Element {
+/// What a capture named `name` shows: a session of someone's, as the
+/// greeter's composition has it — a time, a person, a device with something
+/// to say — with the state the scenario is about.
+fn staged_shown(name: &str) -> Shown {
+    let scene = Shown {
+        clock: "10:42".to_owned(),
+        date: ui::format::day_heading(ui::clock::today(), false),
+        person: "Ada Lovelace".to_owned(),
+        error: None,
+        checking: false,
+        caps_lock: false,
+        status: Status {
+            network: Some("Home".to_owned()),
+            battery: Some(Battery {
+                percent: Some(82),
+                charging: false,
+            }),
+            layout: Some("US".to_owned()),
+            next_layout: Some("DE".to_owned()),
+            layouts: 2,
+            keyboard: false,
+            power: true,
+        },
+        media: None,
+        keyboard: false,
+        unlocking: false,
+    };
+    match name {
+        "refused" => Shown {
+            error: Some(t("lock-wrong-password")),
+            ..scene
+        },
+        "checking" => Shown {
+            checking: true,
+            ..scene
+        },
+        "caps" => Shown {
+            caps_lock: true,
+            ..scene
+        },
+        "playing" => Shown {
+            media: Some(Media {
+                title: "Clair de lune".to_owned(),
+                subtitle: "Claude Debussy".to_owned(),
+                playing: true,
+                can_toggle: true,
+                can_previous: true,
+                can_next: true,
+            }),
+            ..scene
+        },
+        "minimal" => Shown {
+            status: Status::default(),
+            ..scene
+        },
+        _ => scene,
+    }
+}
+
+/// The time, whose session this is, and the one field that unlocks it, as
+/// one centred block: the clock first, then who is here, then the field under
+/// their hands. What the device says stands on the bottom edge, out of the
+/// block's way, because it is the machine's and not the person's.
+fn screen(
+    cx: &ViewCx<LockScreen>,
+    shown: &Shown,
+    seat: &LockSeat,
+    shaken: &Rc<Cell<f64>>,
+    notice_alpha: &Rc<Cell<f32>>,
+) -> Element {
     let time = Text::new(&shown.clock)
         .with_id("lock-clock")
         .with_content_size(CLOCK_SIZE)
@@ -595,36 +647,21 @@ fn screen(cx: &ViewCx<LockScreen>, shown: &Shown, seat: &LockSeat) -> Element {
         .push(centred(Box::new(time)))
         .push(centred(Box::new(date)));
 
-    // The panel's own inset is the menu's: a card whose rows and field fill it
-    // needs room of its own so nothing sits against the edge.
-    let card = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_vertical_padding(Spacing::BASE.s4)
-        .with_horizontal_padding(Spacing::BASE.s4, Spacing::BASE.s4)
-        .with_rhythm(Rhythm::Section)
-        .push(person(shown))
-        .push(Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_rhythm(Rhythm::Tight)
-                .push(Box::new(field(shown, seat)))
-                .push(notice(shown)),
-        ));
-    let card = FloatingPanel::new(Box::new(card)).width(CARD_WIDTH);
-
     let mut blocks = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Group)
-        .push(Box::new(clock))
-        .push(centred(Box::new(card)));
+        .push(Box::new(clock));
+    if let Some(person) = person(shown) {
+        blocks = blocks.push(person);
+    }
+    blocks = blocks.push(field(shown, seat, shaken));
+    blocks = blocks.push(notice(shown, notice_alpha));
     if let Some(transport) = transport(cx, shown) {
         blocks = blocks.push(centred(transport));
     }
-    let blocks = blocks.push(status_row(cx, shown));
 
+    let status = status_row(cx, shown);
     Box::new(
         Manual::new(|layout| {
             let available = layout.available();
@@ -636,22 +673,48 @@ fn screen(cx: &ViewCx<LockScreen>, shown: &Shown, seat: &LockSeat) -> Element {
             );
             let edge = Spacing::BASE.s6;
             let widest = (available.width - edge * 2.0).max(edge);
-            let measured = layout.measure(
-                0,
+            // What the device says first: the block is kept clear of it.
+            let footer = layout.measure(
+                1,
                 ui::taffy::Size {
                     width: MeasureConstraint::AtMost(widest),
                     height: MeasureConstraint::Intrinsic,
                 },
             )?;
-            let width = f64::from(measured.size.width).min(f64::from(widest));
-            let height = f64::from(measured.size.height).min(area.height());
+            let footer_width = f64::from(footer.size.width).min(f64::from(widest));
+            let footer_height = f64::from(footer.size.height);
+            let footer_top = (area.y1 - f64::from(edge) - footer_height).max(area.y0);
+            // The block takes the width it is offered and centres what is
+            // in it, so the field keeps the width it asks for and the clock
+            // stays a centred line at every display size.
+            let measured = layout.measure(
+                0,
+                ui::taffy::Size {
+                    width: MeasureConstraint::Exact(widest),
+                    height: MeasureConstraint::Intrinsic,
+                },
+            )?;
+            let width = f64::from(widest);
+            let height = f64::from(measured.size.height)
+                .min(footer_top - area.y0 - f64::from(edge))
+                .max(0.0);
             // A little above the middle: the block reads as one thing, and
             // what sits under the hand is the field rather than the clock.
             let centre = Point::new(area.center().x, area.height() * 0.46);
             layout.place(0, Rect::from_center_size(centre, (width, height)))?;
+            layout.place(
+                1,
+                Rect::new(
+                    area.center().x - footer_width / 2.0,
+                    footer_top,
+                    area.center().x + footer_width / 2.0,
+                    footer_top + footer_height,
+                ),
+            )?;
             Ok(available)
         })
-        .child(Box::new(blocks)),
+        .child(Box::new(blocks))
+        .child(status),
     )
 }
 
@@ -729,35 +792,32 @@ fn transport(cx: &ViewCx<LockScreen>, shown: &Shown) -> Option<Element> {
     ))
 }
 
-/// The avatar and whose session this is.
-fn person(shown: &Shown) -> Element {
-    let avatar = Avatar::person(shown.person.clone(), shown.person.clone()).size(AvatarSize::Large);
-    let name = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_intrinsic_width()
-        .with_rhythm(Rhythm::Tight)
-        .push(Box::new(
-            Text::new(&shown.person).with_role(TextRole::Body).strong(),
-        ))
-        .push(Box::new(
-            Text::new(&t("lock-welcome"))
-                .with_role(TextRole::Caption)
-                .dimmed(),
-        ));
-    Box::new(
-        Row::new()
-            .no_wrap()
+/// Whose session this is: their picture over their name, the second thing
+/// the eye finds after the time, as the greeter sets it.
+fn person(shown: &Shown) -> Option<Element> {
+    let name = shown.person.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let avatar = Avatar::person(name.to_owned(), name.to_owned()).size(AvatarSize::Hero);
+    let heading = Text::new(name)
+        .with_id("lock-person")
+        .with_role(TextRole::LargeTitle)
+        .with_weight(TextWeight::Semibold)
+        .with_spoken(name);
+    Some(Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
             .with_rhythm(Rhythm::Related)
-            .with_align_items(ui::taffy::AlignItems::Center)
-            .with_justify(ui::taffy::JustifyContent::Center)
-            .push(Box::new(avatar))
-            .push(Box::new(name)),
-    )
+            .push(centred(Box::new(avatar)))
+            .push(centred(Box::new(heading))),
+    ))
 }
 
-/// The one password field, with the arrow that submits it.
-fn field(shown: &Shown, seat: &LockSeat) -> TextInput {
+/// The one password field, with the arrow that submits it, at the width the
+/// greeter's credentials take and no wider than the display allows.
+fn field(shown: &Shown, seat: &LockSeat, shaken: &Rc<Cell<f64>>) -> Element {
     // What is typed is the screen's at every keystroke, not at the next
     // frame: a reading of the session's may draw the screen again in
     // between, and the field it draws says what the person has typed so far.
@@ -774,22 +834,44 @@ fn field(shown: &Shown, seat: &LockSeat) -> TextInput {
         .with_initial_value(&seat.secret_text())
         .on_change(move |text| typed.type_password(text))
         .with_read_only(shown.checking);
+    // A refused password is the field's own: its edge says so, as the line
+    // under it says why.
+    Widget::set_invalid(&mut field, shown.error.is_some());
     // The field is where the keyboard goes: the screen has one thing to do.
     Widget::set_focus(&mut field, true);
-    field
+    let field = Container::new()
+        .with_no_padding()
+        .with_centered_max_width(FIELD_WIDTH)
+        .with_child(Box::new(field));
+    Box::new(Shaken {
+        inner: Box::new(field),
+        offset: Rc::clone(shaken),
+    })
 }
 
 /// What the screen says under the field: the answer, the check in flight,
-/// the keyboard's Caps Lock, or nothing to worry about yet.
-fn notice(shown: &Shown) -> Element {
-    let (line, tone) = shown.notice();
+/// the keyboard's Caps Lock, or a line kept clear for one of them, so the
+/// field never moves when there is something to say.
+fn notice(shown: &Shown, alpha: &Rc<Cell<f32>>) -> Element {
     let mut row = Row::new()
+        .with_id("lock-notice-row")
         .no_wrap()
         .with_rhythm(Rhythm::Related)
         .with_align_items(ui::taffy::AlignItems::Center)
         .with_justify(ui::taffy::JustifyContent::Center);
+    let said = shown.notice();
+    let tone = said.as_ref().map_or(Tone::Neutral, |(_, tone)| *tone);
+    let line = said.map_or_else(|| " ".to_owned(), |(line, _)| line);
     if shown.checking {
         row = row.push(Box::new(Spinner::for_text(TextRole::Caption)));
+    } else if tone == Tone::Warning {
+        // The keyboard's Caps Lock, as the key itself says it: the filled
+        // Shift glyph the on-screen keyboard latches.
+        row = row.push(Box::new(
+            IconWidget::new(Icon::ArrowBigUp)
+                .sized(IconSize::Small)
+                .tone(Tone::Warning),
+        ));
     }
     row = row.push(Box::new(
         Text::new(&line)
@@ -798,7 +880,94 @@ fn notice(shown: &Shown) -> Element {
             .tone(tone)
             .with_live(ui::a11y::Politeness::Polite),
     ));
-    Box::new(row)
+    Box::new(Faded {
+        inner: Box::new(row),
+        alpha: Rc::clone(alpha),
+    })
+}
+
+/// A field drawn where a refusal has pushed it: the toolkit's
+/// [`Attention`] shake, applied at paint from the offset the stage keeps
+/// current. Nothing of the clock, the name or the device moves, so the shake
+/// says which thing was refused.
+struct Shaken {
+    inner: Element,
+    offset: Rc<Cell<f64>>,
+}
+
+impl ui::widget::Decorator for Shaken {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.inner.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.inner.as_mut()
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut ui::advanced::Scene,
+        transform: ui::advanced::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::theme::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        let dx = self.offset.get();
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine * Affine is kurbo's float matrix product: it cannot overflow or panic"
+        )]
+        let moved = transform * ui::advanced::Affine::translate((dx, 0.0));
+        self.inner
+            .draw(scene, moved, text_renderer, theme, presence);
+    }
+}
+
+/// What the screen says under the field, fading in and out of the space kept
+/// for it as it comes and goes, so the field never moves when there is
+/// something to say.
+struct Faded {
+    inner: Element,
+    alpha: Rc<Cell<f32>>,
+}
+
+impl ui::widget::Decorator for Faded {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.inner.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.inner.as_mut()
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut ui::advanced::Scene,
+        transform: ui::advanced::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::theme::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        let alpha = self.alpha.get();
+        if alpha <= 0.0 {
+            return;
+        }
+        let face = self.inner.get_rect();
+        scene.push_layer(
+            ui::vello::peniko::Fill::NonZero,
+            ui::vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &ui::vello::kurbo::RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
+        );
+        self.inner
+            .draw(scene, transform, text_renderer, theme, presence);
+        scene.pop_layer();
+    }
 }
 
 /// What the device says, and what the session lets this screen do about it.
@@ -918,6 +1087,14 @@ struct Stage {
     seat: LockSeat,
     presence: Presence,
     shake: Attention,
+    /// The refusal's sideways offset, in px, as the last paint found it.
+    shaken: Rc<Cell<f64>>,
+    /// How much of the line under the field is showing, `0..=1`.
+    notice: Rc<Cell<f32>>,
+    /// Where that line stands in coming and going.
+    notice_alpha: MotionValue<f64>,
+    /// Whether the last paint had a line to show.
+    notice_up: bool,
     /// `0` with the screen awake, `1` when it has gone quiet.
     blank: MotionValue<f64>,
     /// The running guess at the keyboard's Caps Lock, from the typed letters.
@@ -972,6 +1149,24 @@ impl Stage {
             }
             self.seen_error.clone_from(&shown.error);
         }
+        // The field's own offset, for the paint that pushes it sideways, and
+        // the line under it coming into the room kept for it.
+        self.shaken.set(self.shake.offset(now).x);
+        let up = shown.says_something();
+        if up != self.notice_up {
+            self.notice_up = up;
+            let (to, direction) = if up {
+                (1.0, Direction::Enter)
+            } else {
+                (0.0, Direction::Exit)
+            };
+            self.notice_alpha
+                .set(to, NOTICE.timing(direction, motion, WATCHED), now);
+            self.ask_until();
+        }
+        self.notice.set(ui::num::f32_of_f64(
+            self.notice_alpha.get(now).clamp(0.0, 1.0),
+        ));
         if self.idle == Idle::Waking {
             self.idle = Idle::Awake;
             self.blank
@@ -991,10 +1186,14 @@ impl Stage {
 
     /// Ask the frame pump for frames until every motion in flight rests.
     fn ask_until(&self) {
-        let until = [self.presence.settles_at(), self.shake.settles_at()]
-            .into_iter()
-            .flatten()
-            .max();
+        let until = [
+            self.presence.settles_at(),
+            self.shake.settles_at(),
+            self.notice_alpha.settles_at(),
+        ]
+        .into_iter()
+        .flatten()
+        .max();
         if let Some(until) = until {
             want_frames_until(until);
         }
@@ -1005,6 +1204,16 @@ impl Stage {
         (self.idle == Idle::Awake && !self.seat.shown().unlocking)
             .then(|| self.last_input.checked_add(IDLE))
             .flatten()
+    }
+
+    /// The middle of the password field as the last layout left it, or the
+    /// screen's own middle before there is one.
+    fn field_centre(&mut self) -> Point {
+        let field = find_field(self.content.as_mut()).map(|field| field.get_rect());
+        let bounds = self.content.get_rect();
+        field
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .map_or_else(|| bounds.center(), |rect| rect.center())
     }
 
     /// Bring the screen's keyboard up, on the layer it was left on.
@@ -1051,7 +1260,9 @@ impl Stage {
                 value.pop();
                 field.set_text(&value);
             }
-            PasscodeInput::Enter if !checking => self.dispatch.effect(&LockEffect::Unlock),
+            PasscodeInput::Enter if !checking && !field.value().is_empty() => {
+                self.dispatch.effect(&LockEffect::Unlock);
+            }
             PasscodeInput::Enter => {}
         }
     }
@@ -1197,7 +1408,7 @@ impl ui::widget::Decorator for Stage {
                 *ctx.handled = true;
             }
             let submit = field.take_submit();
-            if submit && !checking {
+            if submit && !checking && !field.value().is_empty() {
                 self.dispatch.effect(&LockEffect::Unlock);
             }
         }
@@ -1206,6 +1417,9 @@ impl ui::widget::Decorator for Stage {
         // the screen's controls took is theirs.
         if press && !*ctx.handled && !self.seat.shown().keyboard {
             self.show_keyboard();
+            if let Some(field) = find_field(self.content.as_mut()) {
+                Widget::set_focus(field, true);
+            }
             *ctx.handled = true;
             return;
         }
@@ -1243,14 +1457,13 @@ impl ui::widget::Decorator for Stage {
             ui::auth_backdrop::STILL_SECONDS,
         );
         let quiet = self.blank.get(now).clamp(0.0, 1.0);
-        let pose = Appear::pose(self.presence.progress(now), bounds.center(), motion)
+        // The field is where the person is: the screen comes up about it and
+        // goes down about it, rather than about its own middle. The refusal
+        // moves the field alone, so the shake says which thing was refused.
+        let anchor = Appear::origin(bounds, self.field_centre());
+        let pose = Appear::pose(self.presence.progress(now), anchor, motion)
             .fade(ui::num::f32_of_f64(1.0 - quiet));
-        let shake = self.shake.offset(now);
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine * Affine is kurbo's float matrix product: it cannot overflow or panic"
-        )]
-        let placement = transform * ui::advanced::Affine::translate((shake.x, shake.y));
+        let placement = transform;
         let content = &mut self.content;
         // The screen's own keyboard goes up with the screen it belongs to:
         // same arrival, same shake, same fade when it leaves.
@@ -1272,6 +1485,7 @@ impl ui::widget::Decorator for Stage {
         self.presence.is_moving(now)
             || self.shake.is_moving(now)
             || self.blank.is_moving(now)
+            || self.notice_alpha.is_moving(now)
             || self.content.needs_animation_frame()
     }
 
@@ -1297,7 +1511,6 @@ impl ui::widget::Decorator for Stage {
         Some(
             AccessNode::new(Role::Dialog)
                 .with_name(t("lock-title"))
-                .with_description(t("lock-description"))
                 .with_state(AccessState::new().modal(true)),
         )
     }

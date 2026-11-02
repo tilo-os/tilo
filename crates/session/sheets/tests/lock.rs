@@ -351,3 +351,216 @@ fn the_same_screen_is_shown_whatever_the_display() {
         }
     }
 }
+
+/// A control the screen publishes by name, where it sits and whether it is
+/// offering to do anything.
+fn placed(app: &mut HeadlessApp<LockApp>, name: &str) -> (Rect, bool) {
+    let nodes = app.harness().a11y_nodes();
+    let Some((_, node)) = nodes
+        .into_iter()
+        .find(|(_, node)| node.label() == Some(name))
+    else {
+        panic!("the screen publishes {name}: {:?}", labels(app));
+    };
+    let bounds = node.bounds().expect("it is placed");
+    (
+        Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+        node.is_disabled(),
+    )
+}
+
+/// How many times the screen has asked the session to unlock since the last
+/// look.
+fn unlocks(asked: &Receiver<LockEffect>) -> usize {
+    asked
+        .try_iter()
+        .filter(|effect| *effect == LockEffect::Unlock)
+        .count()
+}
+
+/// What has the keyboard, named as the screen reader announces it.
+fn holds_keyboard(app: &mut HeadlessApp<LockApp>) -> Option<String> {
+    app.harness()
+        .focused_access_node()
+        .and_then(|node| node.name)
+}
+
+#[test]
+fn the_field_holds_the_keyboard_as_the_screen_comes_up() {
+    let (mut app, _seat, _asked) = locked(screen());
+    assert_eq!(
+        holds_keyboard(&mut app).as_deref(),
+        Some("Password"),
+        "a person who is unlocking types; nothing else has to be found first"
+    );
+}
+
+#[test]
+fn enter_unlocks_and_so_does_the_arrow_inside_the_field() {
+    let (mut app, seat, asked) = locked(screen());
+    app.harness().type_text("sesame");
+    app.settle();
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(unlocks(&asked), 1, "the Enter key is a submit, not a hint");
+
+    // The session answers: the field is the person's again.
+    seat.show(Shown {
+        checking: false,
+        ..seat.shown()
+    });
+    app.settle();
+    app.harness().type_text("sesame");
+    app.settle();
+    let (arrow, disabled) = placed(&mut app, "Unlock");
+    assert!(
+        !disabled,
+        "a field with something in it has something to hand over"
+    );
+    app.harness().click_at(arrow.center().x, arrow.center().y);
+    app.settle();
+    assert_eq!(
+        unlocks(&asked),
+        1,
+        "the arrow inside the field does what Enter does"
+    );
+}
+
+#[test]
+fn an_empty_field_has_nothing_to_hand_over() {
+    let (mut app, _seat, asked) = locked(screen());
+    let (arrow, disabled) = placed(&mut app, "Unlock");
+    assert!(disabled, "nothing typed is nothing to unlock with");
+    app.harness().click_at(arrow.center().x, arrow.center().y);
+    app.settle();
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        unlocks(&asked),
+        0,
+        "an empty field asks the session nothing, however it is asked"
+    );
+    assert_eq!(
+        holds_keyboard(&mut app).as_deref(),
+        Some("Password"),
+        "and the field keeps the keyboard"
+    );
+}
+
+#[test]
+fn a_refused_password_says_why_below_the_field() {
+    let reason = "That password did not unlock. Try again.";
+    let (mut app, _seat, asked) = locked(Shown {
+        error: Some(reason.to_owned()),
+        ..screen()
+    });
+    let (field, _) = placed(&mut app, "Password");
+    let (said, _) = placed(&mut app, reason);
+    assert!(
+        said.y0 >= field.y1,
+        "the reason sits under the field it is about: {said:?} against {field:?}"
+    );
+    assert!(
+        holds_keyboard(&mut app).is_some(),
+        "the keyboard stays usable"
+    );
+    app.harness().type_text("sesame");
+    app.settle();
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(unlocks(&asked), 1, "a refusal is not the end of the try");
+}
+
+#[test]
+fn the_field_stays_put_whatever_the_line_under_it_says() {
+    let (mut app, seat, _asked) = locked(screen());
+    let (quiet, _) = placed(&mut app, "Password");
+    let reason = "That password did not unlock. Try again.";
+    for said in [
+        Shown {
+            caps_lock: true,
+            ..screen()
+        },
+        Shown {
+            checking: true,
+            ..screen()
+        },
+        Shown {
+            error: Some(reason.to_owned()),
+            ..screen()
+        },
+        Shown {
+            caps_lock: true,
+            error: Some(reason.to_owned()),
+            ..screen()
+        },
+    ] {
+        seat.show(said);
+        app.settle();
+        let (field, _) = placed(&mut app, "Password");
+        assert!(
+            (field.y0 - quiet.y0).abs() < 1.0 && (field.y1 - quiet.y1).abs() < 1.0,
+            "the field waits where it was while the line under it changes: {field:?} against {quiet:?}"
+        );
+    }
+}
+
+#[test]
+fn nothing_tells_a_person_what_the_keyboard_already_does() {
+    let (mut app, _seat, _asked) = locked(screen());
+    let spoken: Vec<String> = labels(&mut app)
+        .into_iter()
+        .map(|label| label.to_lowercase())
+        .collect();
+    for filler in ["press enter", "enter to unlock", "type your password"] {
+        assert!(
+            !spoken.iter().any(|label| label.contains(filler)),
+            "no instruction where the field is: {filler} in {spoken:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "timing: the numbers are the report, run by hand"]
+fn the_unlock_dissolve_paints_its_frames_within_a_frame() {
+    use ui::framework::testing::perf;
+    let (mut app, seat, _asked) = locked(screen());
+    seat.show(Shown {
+        unlocking: true,
+        ..seat.shown()
+    });
+    let report = perf::measure(&mut app, "lock-unlock", (1, 1), |app, _| {
+        for _ in 0..24 {
+            let _painted = app.frame();
+        }
+    });
+    report.print();
+}
+
+#[test]
+fn the_field_is_a_prompt_wide_line_with_the_arrow_at_its_right_end() {
+    let (mut app, _seat, _asked) = locked(screen());
+    let (field, _) = placed(&mut app, "Password");
+    let (arrow, _) = placed(&mut app, "Unlock");
+    let (eye, _) = placed(&mut app, "Show password");
+    assert!(
+        (field.width() - 420.0).abs() < 1.0,
+        "the prompt is one readable line, not a sliver: {field:?}"
+    );
+    assert!(
+        (field.center().x - f64::from(VIEWPORT.0) / 2.0).abs() < 1.0,
+        "and it is centred under the clock: {field:?}"
+    );
+    assert!(
+        (arrow.x1 - field.x1).abs() < 1.0 && arrow.x0 >= field.x0,
+        "the arrow ends the field: {arrow:?} in {field:?}"
+    );
+    assert!(
+        eye.x1 <= arrow.x0,
+        "the show/hide control steps inboard of the arrow rather than under it: {eye:?} beside {arrow:?}"
+    );
+    assert!(
+        eye.x0 >= field.x0,
+        "and it stays inside the field it belongs to: {eye:?} in {field:?}"
+    );
+}
