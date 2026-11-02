@@ -615,6 +615,11 @@ impl Widget for Panel {
                 .map(|(id, _)| id.clone())
                 .into_iter()
                 .collect::<Vec<_>>();
+            let waved_until = shown
+                .waved
+                .as_ref()
+                .filter(|(_, at)| at.elapsed() < WAVE_SHOWN)
+                .and_then(|(_, at)| at.checked_add(WAVE_SHOWN));
             let model = CollaboratorsModel {
                 host: shown.area,
                 workspace: &workspace,
@@ -631,6 +636,7 @@ impl Widget for Panel {
                 expanded_id: expanded.as_deref(),
                 watching: 0,
                 waved: &waved,
+                waved_until,
                 spectating: false,
             };
             let cursor = shown.cursor;

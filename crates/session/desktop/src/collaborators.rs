@@ -210,6 +210,9 @@ pub struct CollaboratorsModel<'a> {
     /// Whom this person waved at a moment ago, by roster id: their row
     /// shows the wave sent.
     pub waved: &'a [String],
+    /// When the wave stops showing: the row it went to is drawn again
+    /// without one then.
+    pub waved_until: Option<ui::time::Instant>,
     /// This person only watches, as the workspace's spectator: counted
     /// among the watching, never among who is here.
     pub spectating: bool,
@@ -357,6 +360,9 @@ pub struct CollaboratorsOverlay {
     shown_followed: Option<String>,
     /// Whom the last frame showed waved at.
     shown_waved: Vec<String>,
+    /// When the wave it shows stops showing, so the row that carries it is
+    /// drawn again without one.
+    shown_waved_until: Option<ui::time::Instant>,
     motion: ui::tokens::EffectiveMotion,
     /// How the host draws the roster now, while it arrives; input is
     /// hit-tested there (`Pose::to_local`), not where it will rest.
@@ -449,6 +455,7 @@ impl CollaboratorsOverlay {
         model.workspace.clone_into(&mut self.shown_workspace);
         self.shown_followed = model.followed_id.map(str::to_owned);
         self.shown_waved = model.waved.to_vec();
+        self.shown_waved_until = model.waved_until;
         self.shown_exposure = model.exposure.map(str::to_owned);
         self.layout(text, theme, model);
         self.keyboard_focus = focused.and_then(|id| {
@@ -1283,7 +1290,11 @@ impl CollaboratorsOverlay {
             .any(|row| row.call.is_some())
             .then(|| ui::motion::Breathe::next_frame(ui::time::now(), self.motion))
             .flatten();
-        scrollbar.into_iter().chain(breath).min()
+        [scrollbar, breath, self.shown_waved_until]
+            .into_iter()
+            .flatten()
+            .filter(|at| *at > ui::time::now())
+            .min()
     }
 
     pub fn wants_pointer_capture(&self) -> bool {
@@ -2278,6 +2289,7 @@ mod tests {
                 expanded_id: expanded,
                 watching: 0,
                 waved: &[],
+                waved_until: None,
                 spectating: false,
             },
             None,
@@ -2309,6 +2321,7 @@ mod tests {
                 expanded_id: None,
                 watching: 0,
                 waved: &waved,
+                waved_until: None,
                 spectating: false,
             },
             None,
@@ -2466,6 +2479,7 @@ mod tests {
             expanded_id: None,
             watching: 0,
             waved: &[],
+            waved_until: None,
             spectating: false,
         };
         assert_eq!(

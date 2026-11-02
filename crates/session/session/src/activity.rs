@@ -714,7 +714,8 @@ mod tests {
             let tree = seed_tree(&mut minter, "Studio", vec![notes]);
             let workspace = tree.active;
             let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
-            let activity = Activity::new(None, None, "ada".to_string(), None, Lists::default(), None);
+            let activity =
+                Activity::new(None, None, "ada".to_string(), None, Lists::default(), None);
             surface.set_history_source(Box::new(activity.clone()));
             surface.serve_activity(activity.requests());
             Self {

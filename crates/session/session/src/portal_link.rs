@@ -38,6 +38,14 @@ use crate::Launches;
 const MAX_CLIPBOARD_BYTES: usize = 4 * 1024 * 1024;
 /// The frames a share stream is fed a second.
 const FRAMERATE: u32 = 30;
+
+/// How long a share stream's frames are apart.
+fn frame_interval() -> Duration {
+    Duration::from_secs(1)
+        .checked_div(FRAMERATE)
+        .unwrap_or(Duration::ZERO)
+}
+
 /// A pointer step of a scroll wheel notch, in logical pixels.
 const NOTCH: f64 = 15.0;
 
@@ -526,6 +534,17 @@ impl SessionLink {
         }
     }
 
+    /// When the streams next need the picture the desktop shows: after the
+    /// frame a shared screen last went out with, while an app is watching one
+    /// and the screen is not locked.
+    pub(crate) fn next_deadline(&self, locked: bool) -> Option<Instant> {
+        if self.live.is_empty() || locked {
+            return None;
+        }
+        self.pushed
+            .and_then(|pushed| pushed.checked_add(frame_interval()))
+    }
+
     /// Feed every stream the frame the desktop shows, at most
     /// [`FRAMERATE`] a second. A screen being shared is never the lock
     /// screen: nothing is pushed while the session is locked.
@@ -536,9 +555,7 @@ impl SessionLink {
         if self.live.is_empty() || compositor.locked() {
             return;
         }
-        let interval = Duration::from_secs(1)
-            .checked_div(FRAMERATE)
-            .unwrap_or(Duration::ZERO);
+        let interval = frame_interval();
         let now = Instant::now();
         if self
             .pushed
