@@ -39,6 +39,7 @@ use crate::about::TiloMenu;
 use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::desk_verbs::{OpenSearch, chrome_resource, desk_resource, launchpad_resource};
 use crate::desk_widgets::music::MusicAction;
+use crate::display_identify::DisplayIdentify;
 use crate::emoji_picker::{EmojiLink, EmojiPicker};
 use crate::fullscreen_hint::FullscreenHint;
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
@@ -737,6 +738,14 @@ pub struct DesktopChrome {
     reveals: Rc<RefCell<Reveals>>,
     /// The way out of the window that filled a display, said once over it.
     fullscreen_hint: FullscreenHint,
+    /// Which screen is which, said on each display for a moment after
+    /// Settings asks.
+    identify: DisplayIdentify,
+    /// Where the displays are the identify cards stand on, each by its
+    /// monitor, as last read from the desk.
+    identify_displays: Vec<(String, Rect)>,
+    /// The Identify request answered, so one press shows the cards once.
+    answered: Option<u64>,
     /// The desk's search palette, over the windows the desk draws: it is the
     /// one surface here that must cover a window in front, so the chrome
     /// draws it rather than the desk under them.
@@ -754,13 +763,21 @@ enum PaintedOverlay {
     Emoji,
     /// The way out of the window that filled a display.
     Hint,
+    /// Which screen is which, after Settings asked.
+    Identify,
     /// The search palette.
     Search,
 }
 
 impl PaintedOverlay {
     /// Every painted overlay, bottom to top.
-    const ALL: [Self; 4] = [Self::StripLabels, Self::Emoji, Self::Hint, Self::Search];
+    const ALL: [Self; 5] = [
+        Self::StripLabels,
+        Self::Emoji,
+        Self::Hint,
+        Self::Identify,
+        Self::Search,
+    ];
 
     /// The key its node keeps in the chrome's tree, so the id survives the
     /// other overlays opening and closing.
@@ -769,6 +786,7 @@ impl PaintedOverlay {
             Self::StripLabels => "chrome-strip-labels",
             Self::Emoji => "chrome-emoji-card",
             Self::Hint => "chrome-fullscreen-way-out",
+            Self::Identify => "chrome-display-identify",
             Self::Search => "chrome-search-palette",
         })
     }
@@ -779,6 +797,7 @@ impl PaintedOverlay {
             Self::StripLabels => chrome.navigator.is_open(),
             Self::Emoji => chrome.emoji.is_open(),
             Self::Hint => chrome.fullscreen_hint.is_up(ui::time::now()),
+            Self::Identify => chrome.identify.is_up(ui::time::now()),
             Self::Search => chrome.search.is_open(),
         }
     }
@@ -830,6 +849,9 @@ impl DesktopChrome {
             focused: false,
             reveals: Rc::default(),
             fullscreen_hint: FullscreenHint::default(),
+            identify: DisplayIdentify::default(),
+            identify_displays: Vec::new(),
+            answered: None,
             search,
         }
     }
@@ -978,6 +1000,7 @@ impl DesktopChrome {
             PaintedOverlay::StripLabels => self.navigator.accessibility(),
             PaintedOverlay::Emoji => self.emoji.accessibility(),
             PaintedOverlay::Hint => self.fullscreen_hint.accessibility(ui::time::now()),
+            PaintedOverlay::Identify => self.identify.accessibility(ui::time::now()),
             PaintedOverlay::Search => self.search.accessibility(),
         }
     }
@@ -1893,6 +1916,7 @@ impl DesktopChrome {
             || self.emoji_link.has_delivered()
             || self.navigator.needs_animation_frame(ui::time::now())
             || self.fullscreen_hint.needs_redraw(ui::time::now())
+            || self.identify.needs_redraw(ui::time::now())
             || self.children().iter().any(|child| child.needs_redraw())
     }
 }
@@ -2017,6 +2041,46 @@ impl DesktopChrome {
         // A window that just filled a display says how to leave it, once;
         // leaving full screen takes the words away with it.
         self.fullscreen_hint.follow(self.reveals.borrow().entered());
+        // Settings asked which screen is which: each display says its
+        // number and name for a moment.
+        changed |= self.follow_identify(now);
+        changed
+    }
+
+    /// Answer Settings' Identify request, once per press: each display says
+    /// the number its tile on the canvas carries and the name Settings gives
+    /// it. The displays are read while the cards stand, so a card follows the
+    /// display it names when the person moves one mid-answer.
+    fn follow_identify(&mut self, now: ui::time::Instant) -> bool {
+        let Some(chrome) = self.bar.chrome().cloned() else {
+            return false;
+        };
+        let ask = chrome.snapshot().identify;
+        let asked = ask.as_ref().map(|ask| ask.id);
+        let standing = self.identify.is_up(now);
+        self.identify.follow(ask, now);
+        if self.identify.is_up(now) {
+            let tree = chrome.tree();
+            self.identify_displays = tree
+                .outputs
+                .displays
+                .iter()
+                .map(|display| {
+                    (
+                        display.monitor.clone(),
+                        Rect::new(
+                            display.x,
+                            display.y,
+                            display.x + display.width,
+                            display.y + display.height,
+                        ),
+                    )
+                })
+                .collect();
+        }
+        let up = self.identify.is_up(now);
+        let changed = asked != self.answered || standing != up;
+        self.answered = asked;
         changed
     }
 
@@ -2418,6 +2482,10 @@ impl Widget for DesktopChrome {
         // chrome that would leave it, so the words saying how are the only
         // way out the person can see.
         self.fullscreen_hint.draw(scene, transform, text, theme);
+        // Settings' Identify, said on each display so the canvas tile and
+        // the physical screen carry the same number.
+        self.identify
+            .draw(&self.identify_displays, scene, transform, text, theme);
         // Topmost: the search palette dims what it stands over, a window in
         // front included, and the card over it.
         self.search.draw(scene, transform, text, theme, presence);
@@ -2670,6 +2738,7 @@ impl Widget for DesktopChrome {
     fn needs_animation_frame(&self) -> bool {
         self.emoji.needs_animation_frame()
             || self.fullscreen_hint.is_moving(ui::time::now())
+            || self.identify.is_moving(ui::time::now())
             || self.navigator.needs_animation_frame(ui::time::now())
             || self
                 .children()
@@ -2695,6 +2764,7 @@ impl Widget for DesktopChrome {
         )
         .chain(self.reveals.borrow().deadline())
         .chain(self.fullscreen_hint.next_wake_deadline(ui::time::now()))
+        .chain(self.identify.next_wake_deadline(ui::time::now()))
         .min()
     }
 

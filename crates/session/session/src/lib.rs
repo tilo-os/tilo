@@ -63,6 +63,7 @@ mod dictation;
 mod directory;
 mod display_confirm;
 mod display_control;
+mod display_identify;
 mod display_settings;
 mod display_sheet;
 pub mod displays;
@@ -739,6 +740,9 @@ pub struct Session {
     /// and how bright each one is, kept told of the outputs the compositor
     /// shows.
     displays_service: displays::Displays,
+    /// Settings' Identify answers: which screen is which, said on the
+    /// screens.
+    numbers: display_identify::Numbers,
     /// The question about a display change, and the answers it takes.
     confirmation: display_confirm::Confirmation,
     /// The display sheet: where the desktop appears, and the wireless
@@ -1153,6 +1157,9 @@ impl Session {
         // by the session's verbs and by the views bound to them, and read by
         // whoever asks through the door.
         let overlays = Overlays::new();
+        // Settings' Identify answers: the session reads the request each pass
+        // and the bar says each display's number and name on it.
+        let numbers = display_identify::Numbers::default();
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
@@ -1168,6 +1175,7 @@ impl Session {
                     fullscreen: Rc::clone(&fullscreen),
                     shares: Rc::clone(&window_shares),
                     reveals: Rc::clone(&reveals),
+                    identify: numbers.ask(),
                 },
             },
             sync.clone(),
@@ -1702,6 +1710,7 @@ impl Session {
             displays_service,
             readout_place,
             readout,
+            numbers,
             confirmation: display_confirm::Confirmation::default(),
             display_sheet: display_sheet::DisplaySheet::new(
                 display_seat,
@@ -1808,6 +1817,12 @@ impl Session {
         // A display with neither a backlight nor DDC/CI keeps its brightness
         // control: the compositor darkens what it shows to it.
         self.displays_service.dim(&mut self.compositor)?;
+        // Settings asked which screen is which: each display says its number
+        // and name for a moment.
+        self.numbers.follow(
+            self.compositor.display_snapshot(),
+            &self.compositor.outputs(),
+        );
         self.displays
             .follow(&mut self.compositor, night_light, turned)
     }
