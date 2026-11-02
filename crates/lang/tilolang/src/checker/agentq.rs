@@ -694,7 +694,12 @@ impl Checker<'_> {
         if self.st.written != Written::Program {
             return None;
         }
-        let app = self.source_app(&r.app)?;
+        // An app named by its id (`so.tilo.lang.notes`) that the program neither holds nor
+        // reads: its resource is still a value, which the program passes to an action (the
+        // session's `place`) as a listing or an answer showed it.
+        let app = self
+            .source_app(&r.app)
+            .or_else(|| r.app.contains('.').then(|| r.app.clone()))?;
         if self.env.find_import(&r.app).is_some() {
             return None;
         }

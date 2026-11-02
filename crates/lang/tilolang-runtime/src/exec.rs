@@ -291,6 +291,12 @@ impl Core {
                     param.name
                 )));
             };
+            // `.none` is a constant: an app that publishes its actions without a module (a
+            // native app's, the session's) has no code to compute it.
+            if default.is_none() {
+                args.push(Value::Opt(None));
+                continue;
+            }
             let before = meta.params.get(..i).unwrap_or_default();
             let value = self.call_pure(&pkg, &default.export, before, &args, &param.ty)?;
             args.push(value);
@@ -337,6 +343,9 @@ impl Core {
         let Some(default) = &param.default else {
             return Ok(None);
         };
+        if default.is_none() {
+            return Ok(Some(Value::Opt(None)));
+        }
         let params = meta.params.get(..at).unwrap_or_default();
         if params.len() != before.len() {
             return Ok(None);
@@ -911,10 +920,22 @@ impl Core {
             class: meta.class,
             destructive: meta.role.as_deref() == Some("destructive"),
             author: aref.author.clone(),
-            subject: aref.args.iter().find_map(|arg| match arg {
-                Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
-                _ => None,
-            }),
+            // The resource an action is on is its first parameter, when that is of one of its
+            // package's own types (`focus(window: Window)`); a resource it takes otherwise
+            // (`place(resource: host.Resource)`) is an argument, not where it is sent.
+            subject: meta
+                .params
+                .first()
+                .filter(|first| match parse_ty(&first.ty, &pkg.meta.app) {
+                    Ok(Ty::Record(key)) => key.app == pkg.meta.app,
+                    Ok(Ty::Union(keys)) => keys.iter().all(|key| key.app == pkg.meta.app),
+                    _ => false,
+                })
+                .and_then(|_| aref.args.first())
+                .and_then(|arg| match arg {
+                    Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+                    _ => None,
+                }),
         })
     }
 

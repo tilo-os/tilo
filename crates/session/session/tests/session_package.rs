@@ -52,6 +52,23 @@ fn the_description_reads_as_the_session_package() {
     );
     let close = action("close_place");
     assert_eq!(close.params[0].ty, "Int");
+    // What a place shows is a resource, passed as the value a program has; what `place` may go
+    // without is optional, as a tilolang action's is: left out, or given as the plain value.
+    let place = action("place");
+    let param = |name: &str| {
+        place
+            .params
+            .iter()
+            .find(|param| param.name == name)
+            .unwrap_or_else(|| panic!("`place` has no `{name}`"))
+    };
+    assert_eq!(param("resource").ty, "tilo.host.Resource");
+    assert_eq!(param("resource").default, None, "a place shows something");
+    assert_eq!(param("x").ty, "Option<Int>");
+    assert_eq!(
+        param("x").default,
+        Some(tilolang_tilo::runtime::meta::DefaultMeta::none())
+    );
     let text = std::fs::read_to_string(dir.join("surface.toml")).expect("the description");
     let addresses = tilolang_tilo::catalogue::addresses(&text).expect("each action one address");
     assert_eq!(addresses["close-place"], "shell:arrangement");

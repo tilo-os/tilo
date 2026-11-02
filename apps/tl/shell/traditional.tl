@@ -103,7 +103,7 @@ view frame_buttons(a: Arrangement, p: ArrangementPlace) {
                 for r in a.rows {
                     if r.key != p.strip {
                         ui.MenuItem(r.name) {
-                            on choose: session.move_place(place: arranged(p.key), row: arranged(r.key), before: .none)
+                            on choose: session.move_place(place: arranged(p.key), row: arranged(r.key))
                         }
                     }
                 }
@@ -258,7 +258,7 @@ view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
         for r in a.rows {
             if r.key != p.strip {
                 ui.MenuItem(r.name, icon: .navigation) {
-                    on choose: session.move_place(place: arranged(p.key), row: arranged(r.key), before: .none)
+                    on choose: session.move_place(place: arranged(p.key), row: arranged(r.key))
                 }
             }
         }

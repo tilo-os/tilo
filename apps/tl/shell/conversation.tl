@@ -89,11 +89,12 @@ view program_step(d: Desk, r: Run, e: RunEntry) {
 
 /// A resource a step printed, as a reference: a row naming it and its type. Activating it puts
 /// the resource on the canvas beside the conversation (§3): one arranging action, the person's,
-/// undone as one step.
+/// undone as one step. The step recorded the resource by its id; the place takes the resource
+/// that id names, of whichever app.
 view reference(r: Run, x: EntryRef) {
     let a = arrangement
     ui.ListRow(if x.label == "" { x.resource } else { x.label }, secondary: .some(type_label(x.type_kind)), icon: .file) {
-        on activate: session.place(workspace: .none, row: .none, strip: .none, place: .none, resource: x.resource, view: .none, x: .some(beside_x(a, r)), y: .some(beside_y(a, r)), width: .none, height: .none)
+        on activate: session.place(resource: resource(x.resource, of: host.Resource), x: beside_x(a, r), y: beside_y(a, r))
     }
 }
 
