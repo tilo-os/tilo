@@ -1101,21 +1101,30 @@ mod traditional_desktop {
                 "the bell's count and the dock's at {at}: {controls:?}"
             );
             for (count, icon) in counts {
-                // Centred on the icon's top trailing corner, as an app icon's count stands.
-                let corner = ui::kurbo::Point::new(icon.x1, icon.y0);
-                assert!(
-                    (count.center() - corner).hypot() < 1.0,
-                    "the count {count:?} stands on the corner of its icon {icon:?} at {at}"
-                );
-                assert!(
-                    count.x0 >= 0.0 && count.x1 <= f64::from(width) && count.y0 >= 0.0,
-                    "the count {count:?} stays on the output at {at}"
-                );
                 // Over its own control alone: never the one beside it.
                 let own = pressed
                     .iter()
                     .find(|r| r.contains(icon.center()))
                     .expect("the control the icon is on");
+                // Centred on the icon's top trailing corner, as an app icon's count stands, and
+                // held inside its own face where that corner would take it past the face's edge.
+                let corner = ui::kurbo::Point::new(icon.x1, icon.y0);
+                let wanted = Rect::from_center_size(corner, count.size());
+                let left = wanted
+                    .x0
+                    .clamp(own.x0, (own.x1 - wanted.width()).max(own.x0));
+                let top = wanted
+                    .y0
+                    .clamp(own.y0, (own.y1 - wanted.height()).max(own.y0));
+                let expected = Rect::new(left, top, left + wanted.width(), top + wanted.height());
+                assert!(
+                    (count.center() - expected.center()).hypot() < 1.0,
+                    "the count {count:?} stands on the corner of its icon {icon:?} inside its face {own:?} at {at}"
+                );
+                assert!(
+                    count.x0 >= 0.0 && count.x1 <= f64::from(width) && count.y0 >= 0.0,
+                    "the count {count:?} stays on the output at {at}"
+                );
                 for other in pressed.iter().filter(|r| *r != own) {
                     assert!(
                         other.intersect(count).area() <= 0.0,
