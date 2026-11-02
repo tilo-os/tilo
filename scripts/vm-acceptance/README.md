@@ -147,7 +147,7 @@ The compositor loads the device key and is therefore non-dumpable, so the store 
 its executable; it proves the device key on each bus connection instead
 (docs/identity-security.md). C01 (`checks/secrets.py`) judges that in the slot: its
 `/proc/<pid>/exe` is hidden from its own user, `tilo-secret-service apps list` names
-`binary:/usr/bin/shell` with the MLS key it keeps, the sealed MLS state sits in an
+`binary:/usr/bin/tilo-session` with the MLS key it keeps, the sealed MLS state sits in an
 owner-only directory with no custody warning in the session log, and Passwords' portal
 secret (`org.freedesktop.portal.Secret`, asked on the app's own `xdg-dbus-proxy` socket, the
 bus its sandbox has) comes from the store, and comes back the same after

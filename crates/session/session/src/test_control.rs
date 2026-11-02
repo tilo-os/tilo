@@ -1,6 +1,7 @@
 //! The development test-control socket: `tilo-control` drives a session it was started for
 //! (`tilo-session --test-control PATH`, or `$TILO_TEST_CONTROL`, honoured by development builds
-//! only) over the protocol it speaks to the shell's (`shell::shell::test_control`): one JSON
+//! only, at `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` when neither names one) over the
+//! protocol it speaks to the shell's (`shell::shell::test_control`): one JSON
 //! request per line, tagged by `op`, and one answer per line, `{"ok": {"frame": N}}` or
 //! `{"err": {"code": .., "message": ..}}`.
 //!
@@ -15,7 +16,8 @@
 //!   name they go by (a tab's pill, a place's switch, `onboarding.begin.button`), and a press of
 //!   one of them through the same action route an assistive technology activates it with — never
 //!   a point aimed at;
-//! - the pointer: `pointer_move`, `pointer_button` (left, right or middle) and `click_at`;
+//! - the pointer: `pointer_move`, `pointer_button` (left, right or middle), `click_at` and
+//!   `scroll`;
 //! - `drag`: a press at one place, interpolated motion, and the release at another, which is how
 //!   a tab moves into another group or onto another strip;
 //! - the keyboard: `key`, `key_down`/`key_up` (a held modifier across a keystroke) and `key`'s
@@ -45,8 +47,8 @@ use tilo_surface_host::Doors;
 use crate::engine::Engine;
 
 /// The variable `tilo-control` reads the test-control socket's path from: what a development
-/// session binds the socket at when its command line names none, and what it prints with the
-/// path it opened.
+/// session binds the socket at when its command line names none and the default is not wanted,
+/// and what it prints with the path it opened.
 pub const ENV: &str = "TILO_TEST_CONTROL";
 
 /// Whether this build opens the test-control socket it is given: development builds, and the
