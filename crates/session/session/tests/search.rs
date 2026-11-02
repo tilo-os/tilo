@@ -156,6 +156,39 @@ fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_
         .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
 }
 
+/// Tap each key in turn, a frame apart, as a person's letters arrive.
+fn keys(session: &mut Session, keycodes: &[u32]) {
+    for keycode in keycodes {
+        for pressed in [true, false] {
+            session
+                .compositor()
+                .input(InputEvent::Key {
+                    keycode: *keycode,
+                    pressed,
+                })
+                .expect("input");
+            session.step(Duration::from_millis(12)).expect("step");
+        }
+    }
+    for _ in 0..20 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+}
+
+/// Press the search chord: Super and Space together.
+fn chord(session: &mut Session) {
+    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
+        session
+            .compositor()
+            .input(InputEvent::Key { keycode, pressed })
+            .expect("input");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    for _ in 0..10 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+}
+
 /// Type one key of the keyboard, as the compositor takes it from the seat.
 fn type_key(session: &mut Session, keycode: u32) {
     for pressed in [true, false] {
@@ -292,7 +325,7 @@ fn typing_letters_in_one_batch_reaches_the_query() {
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).expect("step");
     }
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label.clone());
+    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
     assert_eq!(
         label.as_deref(),
         Some("cal"),
@@ -325,32 +358,15 @@ fn typing_after_deleting_the_whole_query_reaches_it_again() {
         session.step(Duration::from_millis(16)).expect("step");
     }
     // Letters and deletions alike arrive a frame apart, as a person's do.
-    fn keys(session: &mut Session, keycodes: &[u32]) {
-        for keycode in keycodes {
-            for pressed in [true, false] {
-                session
-                    .compositor()
-                    .input(InputEvent::Key {
-                        keycode: *keycode,
-                        pressed,
-                    })
-                    .expect("input");
-                session.step(Duration::from_millis(12)).expect("step");
-            }
-        }
-        for _ in 0..20 {
-            session.step(Duration::from_millis(16)).expect("step");
-        }
-    }
-    let untyped = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label.clone());
+    let untyped = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
     keys(&mut session, &[46, 30, 38]);
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label.clone());
+    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
     assert_eq!(label.as_deref(), Some("cal"), "the first letters reach it");
     keys(&mut session, &[14, 14, 14]);
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label.clone());
+    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
     assert_eq!(label, untyped, "the query is empty again");
     keys(&mut session, &[48, 24, 24]);
-    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label.clone());
+    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label);
     assert_eq!(
         label.as_deref(),
         Some("boo"),
@@ -369,18 +385,6 @@ fn the_search_chord_closes_the_open_search_and_opens_it_again() {
         rate: 0,
     });
     session.step(Duration::from_millis(1)).expect("step");
-    fn chord(session: &mut Session) {
-        for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
-            session
-                .compositor()
-                .input(InputEvent::Key { keycode, pressed })
-                .expect("input");
-            session.step(Duration::from_millis(1)).expect("step");
-        }
-        for _ in 0..10 {
-            session.step(Duration::from_millis(16)).expect("step");
-        }
-    }
     chord(&mut session);
     until(&mut session, |session| {
         find(&session.resources(), SEARCH_RESOURCE).is_some()
