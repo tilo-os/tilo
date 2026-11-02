@@ -1576,7 +1576,7 @@ impl TileSource for Tiles {
         })
     }
 
-    fn workspace_room(&self) -> Option<String> {
+    fn workspace_id(&self) -> Option<String> {
         Some(self.inputs.workspace.clone())
     }
 

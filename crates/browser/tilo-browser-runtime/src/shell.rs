@@ -444,7 +444,6 @@ pub(crate) struct BrowserShell {
     rect: Rect,
     chrome: Rc<PageChrome>,
     handle: DesktopHandle,
-    generation: String,
     offers: HostOffers,
     requests: HostRequests,
     profile: LazyProfileCard,
@@ -589,7 +588,7 @@ impl BrowserShell {
         // keeps no device settings to rebind them in.
         let top = DesktopChrome::new(
             handle.clone(),
-            generation.clone(),
+            generation,
             Rc::new(PageRules(Rc::clone(&chrome), offers.host.clone())),
             bar,
             tilo_menu,
@@ -602,7 +601,6 @@ impl BrowserShell {
             rect: Rect::ZERO,
             chrome,
             handle,
-            generation,
             offers,
             requests,
             profile: LazyProfileCard::new(),
@@ -683,7 +681,7 @@ impl BrowserShell {
     ) {
         let tree = self.handle.read(Clone::clone);
         let people = self.chrome.people(&tree);
-        let (handle, generation) = (&self.handle, &self.generation);
+        let handle = &self.handle;
         // As following a link to their app does: its window here, else one.
         let open_app = |app: &str| {
             crate::desktop::known_application(app).is_some()

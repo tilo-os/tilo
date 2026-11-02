@@ -1857,7 +1857,7 @@ impl WasmPeer {
             if !self.handle.watching() && crate::page_person::speaks(self.id) {
                 crate::person_chat::install(self.handle.clone(), workspace);
                 if let Some(identity) = ui::local_identity::load() {
-                    set_member_name(&self.handle, &workspace, &identity.display_name);
+                    set_member_name(&self.handle, workspace, &identity.display_name);
                 }
                 *self.speaking_workspace.borrow_mut() = Some(workspace.to_owned());
             }
