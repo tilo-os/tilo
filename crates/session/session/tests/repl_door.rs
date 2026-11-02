@@ -568,3 +568,79 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         "the note is found by its title: {found}"
     );
 }
+
+/// The overview shown from the REPL is the shell's own on its screen, and showing it is no step:
+/// `undo` after it takes back the place before it. A step whose undo the session refuses (an
+/// outside action, which no history holds) stays, and `undo` goes on to the step before it.
+#[test]
+fn showing_the_overview_is_no_step_and_a_refused_undo_holds_no_other_step() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let questions = Questions::new();
+    let program = std::env::current_exe().expect("this test's program");
+    let (mut session, note) = session(root.path(), &questions, vec![program]);
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    let mut run = |session: &mut Session, program: &str| {
+        let (answer, failed) = repl.call(session, "tilo", json!({"program": program}));
+        (answer, failed)
+    };
+
+    let (answer, failed) = run(
+        &mut session,
+        &format!(
+            "session.place_found(text: \"{NOTE_TITLE}\", view: .none, x: .some(80), y: .some(60))"
+        ),
+    );
+    assert!(!failed && answer.contains("step 1"), "{answer}");
+    until(&mut session, "the note placed", |session| {
+        placed(session, &note) == 1
+    });
+
+    let (answer, failed) = run(&mut session, "session.overview(open: .some(true))");
+    assert!(!failed, "the overview opens: {answer}");
+    assert!(
+        !answer.contains("step"),
+        "showing the overview is no step: {answer}"
+    );
+    until(&mut session, "the shell's overview", |session| {
+        on_screen(session, "Overview").is_some()
+    });
+
+    let (answer, failed) = run(&mut session, "undo");
+    assert!(!failed && answer.contains("undone: step 1"), "{answer}");
+    until(&mut session, "the note taken off", |session| {
+        placed(session, &note) == 0
+    });
+
+    let (answer, failed) = run(&mut session, "session.overview(open: .some(false))");
+    assert!(!failed, "the overview closes: {answer}");
+    until(&mut session, "the overview closed", |session| {
+        on_screen(session, "Overview").is_none()
+    });
+
+    // A place, then an outside action no history takes back.
+    let (answer, failed) = run(
+        &mut session,
+        &format!(
+            "session.place_found(text: \"{NOTE_TITLE}\", view: .none, x: .some(80), y: .some(60))"
+        ),
+    );
+    assert!(!failed && answer.contains("step 2"), "{answer}");
+    until(&mut session, "the note placed again", |session| {
+        placed(session, &note) == 1
+    });
+    let (answer, failed) = run(&mut session, "session.notifications(open: false)");
+    assert!(!failed && answer.contains("step 3"), "{answer}");
+    let (answer, failed) = run(&mut session, "undo");
+    assert!(failed, "the outside step is not taken back: {answer}");
+    assert!(answer.contains("undo` takes back step 2 next"), "{answer}");
+    let (answer, failed) = run(&mut session, "undo");
+    assert!(!failed && answer.contains("undone: step 2"), "{answer}");
+    until(&mut session, "the note taken off again", |session| {
+        placed(session, &note) == 0
+    });
+}

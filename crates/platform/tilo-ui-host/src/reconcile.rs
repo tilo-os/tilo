@@ -1306,6 +1306,14 @@ impl Reconciler {
                 let kept = scroll
                     .child_mut()
                     .is_some_and(|content| self.reconcile_children(content, old_node, new_node));
+                // A surface the person pans (a desk of strips) shows a card that just arrived
+                // on it, as a window placed on a desk comes into view.
+                if kept
+                    && token(new_node, "axis") == Some("both")
+                    && let Some(arrived) = arrived_card(old_node, new_node)
+                {
+                    scroll.reveal_on_layout(arrived);
+                }
                 (!kept).then(|| self.build(new_node))
             }
             "embed" if same_shell(old_node, new_node) && frames(old_node) == frames(new_node) => {
@@ -1492,6 +1500,29 @@ fn in_avatar_column(row: &UiNode, avatars: bool) -> UiNode {
 /// native Notes edits a note in.
 fn is_body(node: &UiNode) -> bool {
     node.kind == crate::adapter::kind("TextInput") && token(node, "field_role") == Some("body")
+}
+
+/// The card that arrived under `new_node` since `old_node`, by its key: the last of `new_node`'s
+/// outermost cards (a place on a desk, not what its content holds) `old_node` did not hold. A
+/// card's body is laid out under its key, which is what the scroll holding it finds it by
+/// ([`Scrollable::reveal_on_layout`]).
+fn arrived_card(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
+    fn cards<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
+        if node.kind == crate::adapter::kind("Card") {
+            out.push(&node.key);
+            return;
+        }
+        for child in &node.children {
+            cards(child, out);
+        }
+    }
+    let (mut before, mut now) = (Vec::new(), Vec::new());
+    cards(old_node, &mut before);
+    cards(new_node, &mut now);
+    now.into_iter()
+        .rev()
+        .find(|key| !before.contains(key))
+        .map(str::to_owned)
 }
 
 /// Whether the embedded view `node` is framed as one object: unless it is made of objects

@@ -105,6 +105,9 @@ struct Step {
     program: String,
     changed: u64,
     undone: bool,
+    /// Its undo was refused or failed: it stays in effect, and `undo` passes over it to the
+    /// step before, so one step that cannot be taken back never holds the others.
+    kept: bool,
 }
 
 /// Where one app a step changed takes it back: by the app's id and its resource, never by a
@@ -923,6 +926,7 @@ fn answer_text(programs: &mut Programs, program: &str, answer: &Value) -> (Strin
                         program: program.lines().next().unwrap_or_default().to_owned(),
                         changed,
                         undone: false,
+                        kept: false,
                     });
                 }
                 false
@@ -995,7 +999,13 @@ fn history_text(programs: &Programs) -> String {
                 "changes"
             },
             step.program,
-            if step.undone { "  (undone)" } else { "" }
+            if step.undone {
+                "  (undone)"
+            } else if step.kept {
+                "  (could not be undone)"
+            } else {
+                ""
+            }
         );
     }
     text
@@ -1074,7 +1084,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .iter()
                     .enumerate()
                     .rev()
-                    .find(|(_, step)| !step.undone)
+                    .find(|(_, step)| !step.undone && !step.kept)
                     .map(|(index, step)| (index, step.clone()))
             };
             let Some((index, step)) = next else {
@@ -1084,11 +1094,28 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 break;
             };
             if let Err(why) = self.undo_in(&step.history).await {
+                // The step stays as it is; the steps before it are still the task's to take
+                // back, so the next `undo` goes on to them rather than failing here again.
+                let before = {
+                    let mut programs = self.programs.lock_recover();
+                    if let Some(kept) = programs.steps.get_mut(index) {
+                        kept.kept = true;
+                    }
+                    programs
+                        .steps
+                        .iter()
+                        .rev()
+                        .find(|step| !step.undone && !step.kept)
+                        .map(|step| step.number)
+                };
                 let _ = write!(
                     text,
-                    "{}undoing step {}: {why}",
+                    "{}undoing step {}: {why}; it stays{}",
                     if text.is_empty() { "" } else { "\n" },
                     step.number,
+                    before.map_or_else(String::new, |number| format!(
+                        ", and `undo` takes back step {number} next"
+                    )),
                 );
                 return Ok(Reply::failed(text));
             }

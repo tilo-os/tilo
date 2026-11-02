@@ -584,9 +584,145 @@ pub(crate) fn bar_under(
     }
 }
 
+/// `host`, the desktop's desk, as the desk stands under `layer`: the shell's whole screen draws
+/// the desk itself (its strips, their frames and the places in them, around the wells the windows
+/// stand in), so the desktop's own desk steps aside ([`Aside`]) rather than drawing a second set of
+/// strips under it. It still keeps the windows' model the wells place them by, and answers its
+/// chords.
+pub(crate) fn desk_under(
+    layer: Option<ShellLayer>,
+    host: impl SurfaceHost + 'static,
+) -> Box<dyn SurfaceHost> {
+    bar_under(layer, host)
+}
+
+/// The chrome's published side as the desk stands under `layer`: on the shell's whole screen
+/// the chrome draws none of its surfaces, so its `overview` (what the touchpad's pinch, the
+/// overview's shortcut, an agent and the REPL run) opens and closes the shell's own overview,
+/// the surface the desk shows over its windows (`overlays`), which the screen's views draw.
+/// Every other action is the chrome's.
+pub(crate) fn chrome_door<T: tilo_surface_host::Published + 'static>(
+    layer: Option<ShellLayer>,
+    chrome: &Rc<RefCell<T>>,
+    overlays: &Rc<crate::overlays::Overlays>,
+) -> tilo_surface_host::Shared {
+    let chrome = Rc::clone(chrome) as tilo_surface_host::Shared;
+    if layer == Some(ShellLayer::Screen) {
+        let overlays = Rc::clone(overlays);
+        Rc::new(RefCell::new(ScreenChrome { chrome, overlays }))
+    } else {
+        chrome
+    }
+}
+
+/// The chrome's door on the shell's whole screen ([`chrome_door`]).
+struct ScreenChrome {
+    chrome: tilo_surface_host::Shared,
+    overlays: Rc<crate::overlays::Overlays>,
+}
+
+impl ScreenChrome {
+    /// Whether the overview is to be open after `address` with `arguments`, when it is one of
+    /// the chrome's ways of opening or closing it: `Ok(None)` for every other action.
+    fn overview(
+        &self,
+        address: &ActionAddress,
+        arguments: &Map<String, Value>,
+    ) -> Result<Option<bool>, tilo_actions::DoorError> {
+        if address.resource != tilo_desktop::desk_verbs::CHROME_RESOURCE {
+            return Ok(None);
+        }
+        let open = self.overlays.here() == crate::overlays::Overlay::Overview.name();
+        match address.action.as_str() {
+            "overview" => match arguments.get("open") {
+                None | Some(Value::Null) => Ok(Some(!open)),
+                Some(Value::Bool(wanted)) => Ok(Some(*wanted)),
+                Some(other) => Err(tilo_actions::DoorError::InvalidArguments(format!(
+                    "argument `open` must be boolean, got {other}"
+                ))),
+            },
+            "shortcut"
+                if arguments.get("action").cloned().and_then(|action| {
+                    serde_json::from_value::<ui::shortcut_table::ShortcutAction>(action).ok()
+                }) == Some(ui::shortcut_table::ShortcutAction::WorkspaceOverview) =>
+            {
+                Ok(Some(!open))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Open or close the shell's overview.
+    fn show_overview(&self, open: bool) -> ui::host_operation::ResourceOperationStart {
+        let name = crate::overlays::Overlay::Overview.name();
+        if open {
+            self.overlays.open(name);
+        } else {
+            self.overlays.close(name);
+        }
+        ui::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+    }
+}
+
+impl tilo_surface_host::Published for ScreenChrome {
+    fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
+        self.chrome.borrow_mut().resources()
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &Map<String, Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        if let Some(open) = self.overview(address, arguments)? {
+            return Ok(self.show_overview(open));
+        }
+        self.chrome.borrow_mut().invoke(address, arguments)
+    }
+
+    fn invoke_as(
+        &mut self,
+        actor: &str,
+        address: &ActionAddress,
+        arguments: &Map<String, Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        if let Some(open) = self.overview(address, arguments)? {
+            return Ok(self.show_overview(open));
+        }
+        self.chrome
+            .borrow_mut()
+            .invoke_as(actor, address, arguments)
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        self.chrome.borrow_mut().accessible_labels()
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.chrome.borrow().revision()
+    }
+
+    fn offered(&self) -> bool {
+        self.chrome.borrow().offered()
+    }
+
+    fn exclusive(&self) -> bool {
+        self.chrome.borrow().exclusive()
+    }
+
+    fn serves_while_locked(&self) -> bool {
+        self.chrome.borrow().serves_while_locked()
+    }
+
+    fn locked_resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
+        self.chrome.borrow_mut().locked_resources()
+    }
+}
+
 /// A surface of the session's own the shell's whole screen stands in for: the desktop's bar,
-/// whose band the screen's bar takes. It draws nothing and takes no pointer, and still answers
-/// the chords it answers anywhere, so a key the person presses does what it did.
+/// whose band the screen's bar takes, and the desktop's desk, whose strips the screen draws. It
+/// draws nothing and takes no pointer, and still answers the chords it answers anywhere, so a key
+/// the person presses does what it did.
 pub(crate) struct Aside<T>(pub(crate) T);
 
 impl<T: SurfaceHost> SurfaceHost for Aside<T> {

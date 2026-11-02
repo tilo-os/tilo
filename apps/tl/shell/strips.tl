@@ -57,20 +57,20 @@ view strips_view(a: Arrangement, v: Viewing) {
     }
 }
 
-/// One row: the strip across the desk, named, with its columns of places side by side. A narrow
-/// output shows one place at a time, as the phone shell does: fewer than 30rem cannot hold two
-/// columns, so the strip in front shows and the rest are a step away.
+/// One row: the strip across the desk, named, with its columns of places side by side. A phone's
+/// or a tablet's output cannot hold a wide column beside another, so there each strip takes the
+/// output's width, one under the other, as the phone shell shows them.
 view row_of(a: Arrangement, v: Viewing, held: ArrangementRow) {
     stack(gap: .related) {
-        row(gap: .related, align: .center) {
-            ui.Text(held.name, role: .subheading)
-            if strips_of(a, held.key).any(s -> s.key == v.focused) {
-                ui.Badge("In front", tone: .info)
-            }
-        }
-        if space.compact {
-            for s in strips_of(a, held.key).take(1) {
-                strip_column(a, v, s)
+        ui.Text(held.name, role: .subheading)
+        if not (space.width_class == .expanded or space.width_class == .wide) {
+            stack(gap: .group) {
+                for s in strips_of(a, held.key) {
+                    strip_column(a, v, s)
+                }
+                if strips_of(a, held.key).is_empty() {
+                    ui.EmptyState("No window here yet", message: "Open something into this strip.", inline: true)
+                }
             }
         } else {
             row(gap: .group, align: .start, wrap: true) {
@@ -85,43 +85,49 @@ view row_of(a: Arrangement, v: Viewing, held: ArrangementRow) {
     }
 }
 
-/// One strip: a column of places. The place in front shows; the others stand as tabs above it,
-/// so a column of one reads as one window and a column of several as its tabs (§4). Its width,
-/// what it holds and bringing it forward are the strip's own controls: a width is one
-/// `resize-strip`, a place moved out one `move-place`, both attributed and undoable like a drag.
+/// One strip: a column of places in the shell's frame, headed by the strip's name (what its
+/// place in front shows) and lit while it is the strip in front; a press on it brings it to the
+/// front. The place in front shows; the others stand as tabs above it, so a column of one reads
+/// as one window and a column of several as its tabs (§4).
 view strip_column(a: Arrangement, v: Viewing, s: ArrangementStrip) {
     let in_front = s.key == v.focused
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)
     let shown = chosen ?? placed.first()
     let current = chosen?.key ?? ""
-    stack(gap: .related, min: if s.width <= 500 { 18rem } else if s.width < 900 { 30rem } else { 44rem }) {
-        strip_header(a, v, s, in_front)
+    let name = match shown {
+        .some(p) => place_name(p),
+        .none => "Empty strip",
+    }
+    ui.Card(title: name, selected: in_front, min: if not (space.width_class == .expanded or space.width_class == .wide) { 12rem } else if s.width <= 500 { 18rem } else if s.width < 900 { 30rem } else { 44rem }) {
+        on activate: focus_strip(v, s.key)
+        strip_controls(a, s, shown)
         if placed.len() > 1 {
             row(gap: .tight, align: .center, wrap: true) {
                 for p in placed {
-                    tab_chip(p, in_front and p.key == current)
+                    tab_chip(p, p.key == current)
                 }
             }
         }
         if let p = shown {
-            place_window(a, p, in_front)
+            place_view(p)
         } else {
             ui.EmptyState("Nothing here", inline: true)
         }
     }
 }
 
-/// A strip's own header: a press brings it to the front, its width is one of the three, and a
-/// place in it moves to another row of the desk — what a drag commits, as a press does here.
-view strip_header(a: Arrangement, v: Viewing, s: ArrangementStrip, in_front: Bool) {
+/// What a place is called on its strip's frame and its tab: its title, else the app showing it.
+fn place_name(p: ArrangementPlace) -> Text {
+    if p.title == "" { p.shows } else { p.title }
+}
+
+/// A strip's controls under its name: its width, one of the three, and the controls of the place
+/// in front (its pin, closing it, moving it to another row of the desk) — what a drag commits, as
+/// a press does here. A width is one `resize-strip`, a place moved out one `move-place`, both
+/// attributed and undoable like a drag.
+view strip_controls(a: Arrangement, s: ArrangementStrip, shown: Option<ArrangementPlace>) {
     row(gap: .tight, align: .center, wrap: true) {
-        ui.Text(if in_front { "In front" } else { "Bring forward" }, role: .caption, secondary: not in_front)
-        if not in_front {
-            ui.Button("Bring forward", icon: .chevron_right, icon_only: true, role: .plain) {
-                on press: focus_strip(v, s.key)
-            }
-        }
         ui.MenuButton("Width", icon: .columns_2, icon_only: true, role: .plain) {
             ui.MenuItem("Narrow", checked: .some(width_of(s.width) == .narrow)) {
                 on choose: session.resize_strip(strip: arranged(s.key), permille: permille_of(.narrow))
@@ -133,21 +139,15 @@ view strip_header(a: Arrangement, v: Viewing, s: ArrangementStrip, in_front: Boo
                 on choose: session.resize_strip(strip: arranged(s.key), permille: permille_of(.wide))
             }
         }
+        if let p = shown {
+            place_controls(a, p)
+        }
     }
 }
 
 /// One tab of a column: the place it stands for, lit when it is the place in front.
 view tab_chip(p: ArrangementPlace, current: Bool) {
-    ui.Chip(if p.title == "" { p.shows } else { p.title }, selected: .some(current))
-}
-
-/// A place's window: the shell's frame around it, and the well the app's own window shows in
-/// (shell.md §8). The frame's bar is the shell's — the title, the pin and the controls that
-/// close or move the place — and the window is composited under it, in the well's rectangle.
-view place_window(a: Arrangement, p: ArrangementPlace, in_front: Bool) {
-    ui.Card(title: if p.title == "" { p.shows } else { p.title }) {
-        place_content(a, p)
-    }
+    ui.Chip(place_name(p), selected: .some(current))
 }
 
 /// A place's content: its resource drawn inline through the view it names, as its own app's code
