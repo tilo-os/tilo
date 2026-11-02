@@ -230,6 +230,102 @@ fn the_notification_key_asks_the_panel_for_the_page_it_shows() {
 }
 
 #[test]
+fn the_panel_opens_each_radios_details_in_place() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "toggle-wifi");
+    let controls = at_rest(session);
+    save(&controls, "session-quick-settings");
+
+    // Wi-Fi's chevron opens its networks in place: the same window, the same
+    // place, and what the network publishes under the tiles.
+    until_ready(session, "open-section");
+    let ended = ask_ended(session, "open-section", Some(json!({ "section": "wifi" })));
+    assert!(
+        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the panel opened its networks: {ended:?}"
+    );
+    changed(session, &controls);
+    let wifi = at_rest(session);
+    assert!(
+        differing(&controls, &wifi) > 500,
+        "the networks stand under the tiles: {} pixels changed",
+        differing(&controls, &wifi)
+    );
+    save(&wifi, "session-quick-settings-wifi");
+
+    // Back gives the page it opened from, down to the frame.
+    let ended = ask_ended(session, "close-section", None);
+    assert!(
+        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the panel closed its networks: {ended:?}"
+    );
+    changed(session, &wifi);
+    let back = at_rest(session);
+    save(&back, "session-quick-settings-closed");
+    assert!(
+        differing(&back, &controls) * 5 < differing(&controls, &wifi),
+        "closing gives back the page it opened from: {} of the {} pixels the \
+         section changed",
+        differing(&back, &controls),
+        differing(&controls, &wifi)
+    );
+
+    // Bluetooth's opens the paired accessories the same way.
+    until_ready(session, "open-section");
+    let ended = ask_ended(
+        session,
+        "open-section",
+        Some(json!({ "section": "bluetooth" })),
+    );
+    assert!(
+        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the panel opened its accessories: {ended:?}"
+    );
+    changed(session, &back);
+    let devices = at_rest(session);
+    assert!(
+        differing(&controls, &devices) > 500,
+        "the paired accessories stand under the tiles: {} pixels changed",
+        differing(&controls, &devices)
+    );
+    save(&devices, "session-quick-settings-bluetooth");
+
+    // And back again, to the page it opened from.
+    let ended = ask_ended(session, "close-section", None);
+    assert!(
+        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the panel closed its accessories: {ended:?}"
+    );
+    changed(session, &devices);
+    let back = at_rest(session);
+    save(&back, "session-quick-settings-come-back");
+    assert!(
+        differing(&back, &controls) * 5 < differing(&controls, &devices),
+        "closing gives back the page it opened from: {} of the {} pixels the \
+         section changed",
+        differing(&back, &controls),
+        differing(&controls, &devices)
+    );
+    session.stop_surface("quick-settings");
+}
+
+/// How many pixels of `after` differ from `before` by more than a shade.
+fn differing(before: &Screenshot, after: &Screenshot) -> usize {
+    before
+        .rgba
+        .chunks_exact(4)
+        .zip(after.rgba.chunks_exact(4))
+        .filter(|(a, b)| {
+            a.iter()
+                .zip(b.iter())
+                .any(|(a, b)| u8::abs_diff(*a, *b) > 8)
+        })
+        .count()
+}
+
+#[test]
 fn the_wifi_tile_is_the_published_networks_action() {
     let mut laptop = session_of_device(&[panel()], Machine::Owned);
     let session = &mut laptop.session;
@@ -754,6 +850,28 @@ fn changed(session: &mut Session, before: &Screenshot) -> Screenshot {
             session.surfaces().names()
         );
     }
+}
+
+/// The frame once the panel has stopped moving: a dozen frames the same, so
+/// an in-place slide or a page's fade has come to rest.
+fn at_rest(session: &mut Session) -> Screenshot {
+    const STILL: usize = 12;
+    let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
+    let mut still = 0;
+    for _ in 0..600 {
+        pump(session);
+        let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
+        still = if frame.rgba == last.rgba {
+            still + 1
+        } else {
+            0
+        };
+        last = frame;
+        if still >= STILL {
+            return last;
+        }
+    }
+    panic!("the panel never came to rest");
 }
 
 /// A headless session that starts `surfaces` with it.

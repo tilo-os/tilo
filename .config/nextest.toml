@@ -52,6 +52,7 @@ command = [
     "bash", "tools/build-sibling-binaries.sh",
     "click-test-client:click_test_client", "launcher:tilo-launcher",
     "notes:notes", "file-explorer:file-explorer", "tasks:tasks",
+    "tilo-quick-settings:tilo-quick-settings",
     "tilo-runtime:tilo-runtime-mcp",
 ]
 

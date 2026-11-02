@@ -154,6 +154,9 @@ pub(crate) struct Desk {
     pub(crate) signals: Rc<NoticeSignals>,
     /// Whether the device has quick settings; without, its status is its notifications.
     pub(crate) status_panel: bool,
+    /// What stands over the windows, where the panel's own app is placed when
+    /// the device has one: the stack the bar's status press opens.
+    pub(crate) panel: tilo_desktop::overlays::Overlays,
     /// Who is here, when this session takes part in the collaboration plane.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the
@@ -897,6 +900,19 @@ impl Service for Desk {
             _ => {}
         }
         if let DeskEffect::ShowSurface { surface } = &effect {
+            // The quick settings are their own app, standing where the stack
+            // places its slot: the press opens the slot, and the panel's app
+            // draws it there. A device without that app keeps the shell's own
+            // view of the surface.
+            if surface == crate::quick_settings::SURFACE && self.status_panel {
+                use tilo_desktop::overlays::Slot;
+                if self.panel.is_open(Slot::QuickSettings) {
+                    self.panel.close(Slot::QuickSettings);
+                } else {
+                    self.panel.open(Slot::QuickSettings, None);
+                }
+                return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+            }
             self.overlays.toggle(surface);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }

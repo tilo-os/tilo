@@ -1167,6 +1167,7 @@ impl Session {
             signals: Rc::clone(&notice_signals),
             clock: Rc::clone(&clock),
             status_panel: quick_settings::installed(&options.surfaces),
+            panel: overlays.clone(),
             sync: sync.clone(),
             notices: notices.clone(),
             overlays: Rc::clone(&desk_overlays),
