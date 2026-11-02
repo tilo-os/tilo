@@ -22,6 +22,7 @@ fn published() -> Vec<ResourceSpec> {
         title: "Scratch".to_owned(),
         subtitle: None,
         kind: "Apps".to_owned(),
+        facts: Vec::new(),
     }];
     vec![
         chrome_resource(),

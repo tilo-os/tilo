@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 14
+version = 15
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -34,6 +34,7 @@ sources = [
     "crates/collab/actions/src/framework.rs",
     "crates/collab/actions/src/entry.rs",
     "crates/system/content/src/lib.rs",
+    "crates/collab/collab-types/src/presence/shell.rs",
 ]
 roots = ["Request", "Response", "ToolRequest", "ToolReply", "Call", "HostFrame"]
 capnp = [
@@ -382,6 +383,7 @@ Uuid = "uuid::Uuid: 16 bytes"
 "PeerPresencePayload::Selection" = "#2 struct"
 "PeerPresencePayload::Selection.end" = "#1 u64"
 "PeerPresencePayload::Selection.start" = "#0 u64"
+"PeerPresencePayload::Shell" = "#15 tuple(Box<ShellPresence>)"
 "PeerPresencePayload::Status" = "#8 struct"
 "PeerPresencePayload::Status.automatic" = "#1 bool"
 "PeerPresencePayload::Status.text" = "#0 String"
@@ -560,6 +562,33 @@ Uuid = "uuid::Uuid: 16 bytes"
 "SettingsCall::Update.action" = "#2 Option<String>"
 "SettingsCall::Update.section" = "#0 String"
 "SettingsCall::Update.values" = "#1 Vec<u8>"
+"ShellChat" = "struct deny_unknown_fields"
+"ShellChat.sent" = "#1 bool"
+"ShellChat.text" = "#0 String"
+"ShellPresence" = "struct deny_unknown_fields"
+"ShellPresence.activity" = "#5 Option<String>"
+"ShellPresence.agent" = "#3 bool"
+"ShellPresence.chat" = "#10 Option<ShellChat>"
+"ShellPresence.colour" = "#4 String"
+"ShellPresence.label" = "#2 String"
+"ShellPresence.place" = "#6 Option<String>"
+"ShellPresence.reaction" = "#11 Option<ShellReaction>"
+"ShellPresence.selection" = "#9 Option<ShellSelection>"
+"ShellPresence.sent_at_ms" = "#1 u64"
+"ShellPresence.seq" = "#0 u32"
+"ShellPresence.size" = "#7 [u32; 2]"
+"ShellPresence.windows" = "#8 Vec<ShellWindow>"
+"ShellReaction" = "struct deny_unknown_fields"
+"ShellReaction.emoji" = "#1 String"
+"ShellReaction.seq" = "#0 u32"
+"ShellSelection" = "struct deny_unknown_fields"
+"ShellSelection.anchor" = "#0 String"
+"ShellSelection.head" = "#1 String"
+"ShellWindow" = "struct deny_unknown_fields"
+"ShellWindow.app" = "#0 String"
+"ShellWindow.focused" = "#3 bool"
+"ShellWindow.record" = "#1 [u8; 8]"
+"ShellWindow.rect" = "#2 [u16; 4]"
 "Signature" = "tuple([u8; 64]) transparent"
 "SignedOp" = "struct deny_unknown_fields"
 "SignedOp.artifact" = "#1 ArtifactId"

@@ -95,7 +95,6 @@ impl Calls {
         let mut people: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut cameras: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut screens: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        let mut bridges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for call in &live {
             let in_call = people.entry(call.channel.clone()).or_default();
             for caller in &call.people {
@@ -114,15 +113,6 @@ impl Calls {
                         .entry(call.channel.clone())
                         .or_default()
                         .insert(person.clone());
-                }
-                // The call says which software its people's frames pass
-                // through, lowercased as every service is named.
-                let carrying = bridges.entry(call.channel.clone()).or_default();
-                for service in &caller.services {
-                    let service = service.trim().to_lowercase();
-                    if !service.is_empty() {
-                        carrying.insert(service);
-                    }
                 }
             }
         }
@@ -154,10 +144,6 @@ impl Calls {
                 screens: screens
                     .remove(&channel_id)
                     .map(|set| set.into_iter().collect())
-                    .unwrap_or_default(),
-                bridges: bridges
-                    .remove(&channel_id)
-                    .map(|services| services.into_iter().collect())
                     .unwrap_or_default(),
                 channel_id,
                 people: people.into_iter().collect(),
@@ -2292,7 +2278,7 @@ mod tests {
     /// through.
     #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_page_in_a_call_is_heard_and_hears_through_the_bridge_the_call_shows() {
+    async fn a_page_in_a_call_is_heard_and_hears() {
         let owner = person_key();
         let laptop = device(&owner, 0x11, "Laptop");
         // The page's device: the key its frames name, and the device its host
@@ -2353,17 +2339,12 @@ mod tests {
         let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
         let left = carrier(&laptop, &keys);
 
-        // The call shows the service the page's frames pass through.
+        // The call shows the page's person in it.
         let rosters = left.calls.rosters();
         let standup = rosters
             .iter()
             .find(|roster| roster.channel_id == CHANNEL)
             .expect("the roster of the channel the call is in");
-        assert_eq!(
-            standup.bridges,
-            ["web"],
-            "the call says which service carries a page into it"
-        );
         assert_eq!(
             standup.people,
             vec![person(0x22)],
