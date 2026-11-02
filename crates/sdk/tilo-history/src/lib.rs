@@ -95,15 +95,14 @@ impl Messages for Catalogue {
 
     fn format(&self, key: &str, args: &FluentArgs<'_>) -> Option<String> {
         // `message.attribute` names an attribute: Fluent keys hold no `.`.
-        let pattern = match self.bundle.get_message(key) {
-            Some(message) => message.value()?,
-            None => {
-                let (name, attribute) = key.rsplit_once('.')?;
-                self.bundle
-                    .get_message(name)?
-                    .get_attribute(attribute)?
-                    .value()
-            }
+        let pattern = if let Some(message) = self.bundle.get_message(key) {
+            message.value()?
+        } else {
+            let (name, attribute) = key.rsplit_once('.')?;
+            self.bundle
+                .get_message(name)?
+                .get_attribute(attribute)?
+                .value()
         };
         let mut errors = Vec::new();
         let text = self.bundle.format_pattern(pattern, Some(args), &mut errors);
