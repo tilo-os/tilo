@@ -133,7 +133,10 @@ pub(crate) struct Replacing {
     graveyard: Vec<Box<dyn Widget>>,
     at: ReplaceAt,
     armed: Rc<Cell<bool>>,
+    /// The structural flag this fixture is about: a replacement it reports.
     dirty: bool,
+    /// What the replacement changed on screen, whether or not it reported it.
+    repaint: bool,
     /// Whether it reports the replacement, as every widget must; one that
     /// forgets may leave a stale layout, never a call into a replaced child.
     reports: bool,
@@ -153,6 +156,7 @@ impl Replacing {
                 at,
                 armed: Rc::clone(&armed),
                 dirty: false,
+                repaint: true,
                 reports: true,
                 rect: Rect::ZERO,
             },
@@ -177,19 +181,18 @@ impl Replacing {
         let old = std::mem::replace(&mut self.child, Box::new(fresh));
         self.graveyard.push(old);
         self.dirty = self.reports;
+        self.repaint = true;
     }
 }
 
 impl Widget for Replacing {
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
-        self.dirty = true;
         self.replace_if(ReplaceAt::Sync);
     }
     fn settle(&mut self, _edits: &mut crate::widget::Edits<'_>, _path: &automerge::ObjId) {
         self.replace_if(ReplaceAt::Settle);
     }
     fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {
-        self.dirty = true;
         self.replace_if(ReplaceAt::Event);
     }
     fn take_structure_dirty(&mut self) -> bool {
@@ -230,10 +233,10 @@ impl Widget for Replacing {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        crate::widget::redraw_or_children(self.repaint, self)
     }
     fn mark_drawn(&mut self) {
-        self.dirty = false;
+        self.repaint = false;
         crate::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
