@@ -849,6 +849,10 @@ mod component_adapter {
             self.in_root_mut(|root| root.observe_physical_input(input));
         }
 
+        fn paints_ground(&self) -> bool {
+            self.in_root(|root| root.paints_ground()).unwrap_or(true)
+        }
+
         // A component's diagnostic probe observes its own record, the
         // document its widgets actually render, not the runner's outer one.
         fn native_input_snapshot(

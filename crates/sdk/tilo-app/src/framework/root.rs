@@ -138,9 +138,12 @@ pub(crate) struct ResourceRoot {
     /// Whether the resource keeps document state History shows.
     history: bool,
     /// Whether the window stands on the framework's ground: every window but
-    /// a sheet the shell shows over the desktop ([`WindowRole::Sheet`]).
+    /// one shown over other apps' content — a sheet over the desktop
+    /// ([`WindowRole::Sheet`]), or the on-screen keyboard over the app it
+    /// types into ([`WindowRole::InputSurface`]).
     ///
     /// [`WindowRole::Sheet`]: ui_core::application::WindowRole::Sheet
+    /// [`WindowRole::InputSurface`]: ui_core::application::WindowRole::InputSurface
     ground: bool,
     /// Platform presentation actions; the browser implementation has no state.
     native_presentation: crate::runner::Presentation,
@@ -513,9 +516,11 @@ impl ResourceRoot {
     }
 
     /// Stand on nothing: what the view does not paint shows what is under
-    /// the window.
+    /// the window, in the live window and in the picture a host draws from
+    /// it alike.
     pub(crate) fn without_ground(mut self) -> Self {
         self.ground = false;
+        self.native_presentation.without_ground();
         self
     }
 
@@ -1485,6 +1490,10 @@ impl RootModel for ResourceRoot {
             Some((_, shown)) => shown.as_mut(),
             None => self.content.as_mut(),
         }
+    }
+
+    fn paints_ground(&self) -> bool {
+        self.ground
     }
 
     fn take_structure_dirty(&mut self) -> bool {

@@ -9,6 +9,7 @@ use ui_core::presence::PresenceCtx;
 use ui_core::vello::{
     Scene,
     kurbo::{Affine, Rect},
+    peniko::Color,
 };
 use ui_core::{Theme, automerge::AutoCommit, text_render::TextRenderer};
 
@@ -20,6 +21,10 @@ pub(crate) struct Presentation {
     render_text: Option<TextRenderer>,
     past: Option<DrawPast>,
     activation_requested: Cell<bool>,
+    /// Whether the window's picture is cleared to the window's ground: off
+    /// for a window that stands on nothing, whose picture is cleared to
+    /// nothing so what is under it shows.
+    ground: bool,
 }
 
 impl Presentation {
@@ -30,7 +35,14 @@ impl Presentation {
             render_text: None,
             past: None,
             activation_requested: Cell::new(false),
+            ground: true,
         }
+    }
+
+    /// Clear the window's picture to nothing: what the view does not paint is
+    /// the window under it.
+    pub(crate) fn without_ground(&mut self) {
+        self.ground = false;
     }
 
     pub(crate) fn drawing_past(&mut self, past: DrawPast) {
@@ -100,6 +112,11 @@ impl Presentation {
         };
         let (width, height) = (side(rect.width()), side(rect.height()));
         let theme = self.drawn_theme.clone().unwrap_or_else(Theme::dark);
+        let ground = if self.ground {
+            theme.tokens.colors.surfaces.content
+        } else {
+            Color::TRANSPARENT
+        };
         let text = self.render_text.get_or_insert_with(TextRenderer::new);
         let mut scene = Scene::new();
         let shown = if let Some(version) = version {
@@ -116,7 +133,7 @@ impl Presentation {
             scene.fill(
                 ui_core::vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.surfaces.content,
+                ground,
                 None,
                 &bounds,
             );
@@ -127,7 +144,7 @@ impl Presentation {
             scene.fill(
                 ui_core::vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.surfaces.content,
+                ground,
                 None,
                 &rect,
             );
@@ -136,12 +153,7 @@ impl Presentation {
         };
         // On the GPU, only a frame that kept all of its geometry; without an
         // adapter (a confined app worker, a machine with no GPU), on the CPU.
-        let rgba = ui_core::offscreen::render_picture(
-            &scene,
-            width,
-            height,
-            theme.tokens.colors.surfaces.content,
-        )?;
+        let rgba = ui_core::offscreen::render_picture(&scene, width, height, ground)?;
         let png =
             ui_core::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())?;
         let hash = self

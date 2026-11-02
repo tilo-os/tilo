@@ -238,8 +238,10 @@ fn open_window_early(offer: mpsc::Sender<Arc<Window>>) -> bool {
     let mut made = false;
     if on_wayland(&event_loop) {
         let app_id = primary_window_app_id(None);
+        // The app is not constructed yet: an ordinary window until its own
+        // window says otherwise, and one that does is made again below.
         let attributes =
-            primary_window_attributes(super::resolve_window_title(None), None, &app_id);
+            primary_window_attributes(super::resolve_window_title(None), None, &app_id, false);
         #[allow(
             deprecated,
             reason = "winit deprecates making a window before the loop runs because macOS, iOS and the web cannot; this runs only on a Wayland display, where window creation completes its own first configure"

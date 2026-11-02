@@ -631,10 +631,15 @@ fn primary_window_attributes(
     title: String,
     icon: Option<winit::window::Icon>,
     app_id: &str,
+    transparent: bool,
 ) -> winit::window::WindowAttributes {
     let window_attributes = Window::default_attributes()
         .with_title(title)
         .with_window_icon(icon)
+        // A window that stands on nothing shows what lies under it wherever
+        // its content paints nothing, which the compositor can only blend
+        // when the window's own surface carries alpha.
+        .with_transparent(transparent)
         // Draggable title bar on compositors with no server-side
         // decorations (e.g. GNOME/mutter); explicit though it's the
         // winit default, so the intent is unmistakable.
@@ -1289,7 +1294,7 @@ impl AppHandler {
                 self.app.startup_renderer = None;
                 self.render = Some(create_window_render(
                     window,
-                    false,
+                    !self.app.root_widget.paints_ground(),
                     self.a11y_proxy.clone(),
                 )?);
                 return Ok(());
@@ -1300,6 +1305,7 @@ impl AppHandler {
                 .take_if(|preparation| preparation.made_early_window())
             {
                 let worker_window = window.clone();
+                let transparent = !self.app.root_widget.paints_ground();
                 self.render = Some(crate::render_thread::spawn_render_thread_deferred(
                     move || {
                         let startup =
@@ -1309,17 +1315,17 @@ impl AppHandler {
                         match startup {
                             Ok(Ok(startup)) => prepare_window_render(
                                 &worker_window,
-                                false,
+                                transparent,
                                 Some(startup.prepared),
                                 startup.surface,
                             ),
                             Ok(Err(error)) => {
                                 tracing::warn!(%error, "renderer preparation failed; selecting device for the actual surface");
-                                prepare_window_render(&worker_window, false, None, None)
+                                prepare_window_render(&worker_window, transparent, None, None)
                             }
                             Err(error) => {
                                 tracing::warn!(%error, "renderer preparation disconnected; selecting device for the actual surface");
-                                prepare_window_render(&worker_window, false, None, None)
+                                prepare_window_render(&worker_window, transparent, None, None)
                             }
                         }
                     },
@@ -1354,7 +1360,7 @@ impl AppHandler {
         }
         self.render = Some(create_window_render(
             window,
-            false,
+            !self.app.root_widget.paints_ground(),
             self.a11y_proxy.clone(),
         )?);
         Ok(())
@@ -3111,7 +3117,13 @@ impl AppHandler {
                 scene,
                 width,
                 height,
-                base_color: app.theme.tokens.colors.surfaces.content,
+                // A window that stands on nothing is cleared to transparent:
+                // what it does not paint shows what lies under it.
+                base_color: if app.root_widget.paints_ground() {
+                    app.theme.tokens.colors.surfaces.content
+                } else {
+                    Color::TRANSPARENT
+                },
                 damage_regions,
                 scroll_copies,
                 full_redraw: full_redraw_required,
@@ -3736,7 +3748,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // The window the launch made before constructing the app, when it
         // announces the id this app's window must have. Its surface may
         // already be configured on the renderer-preparation thread.
-        let early = match early_for(take_early_window(), &app_id) {
+        // A window that stands on nothing needs a transparent surface, which
+        // the launch makes before it knows the app: it gives way to one made
+        // for the app below, as an input surface's does.
+        let stands_on_ground = self.app.root_widget.paints_ground();
+        let early = if stands_on_ground {
+            early_for(take_early_window(), &app_id)
+        } else {
+            Early::Discarded
+        };
+        let early = match early {
             Early::Kept(window) => {
                 tilo_startup_metrics::mark("startup-window-adopted");
                 window.set_title(&title);
@@ -3751,7 +3772,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             Early::Absent => None,
         };
         let window = early.unwrap_or_else(|| {
-            let window_attributes = primary_window_attributes(title, icon.clone(), &app_id);
+            let window_attributes = primary_window_attributes(
+                title,
+                icon.clone(),
+                &app_id,
+                !stands_on_ground,
+            );
             // `resumed` is a winit `ApplicationHandler` callback returning `()`,
             // so a `create_window` failure (compositor gone) has nowhere to
             // propagate to; there is no window to run without it either way.

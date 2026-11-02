@@ -107,7 +107,10 @@ impl SlotBar {
         // its first frame: the row never shows there, not even until the
         // shell says so.
         let standalone = app.floating.client.is_none();
-        let shown = standalone && window.fullscreen().is_none();
+        // A window that stands on no ground is an overlay the session floats
+        // over another window, such as a sheet or the keyboard: it wears no
+        // bar of its own, since everything it paints shows what is under it.
+        let shown = standalone && window.fullscreen().is_none() && app.root_widget.paints_ground();
         if standalone {
             if crate::window_toolbar::set_hosted(shown) {
                 app.needs_sync = true;

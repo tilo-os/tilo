@@ -820,7 +820,13 @@ pub(crate) fn build_root<A: ResourceApp>(
     let mut root = ResourceRoot::new(app.title(), icon(app), label, cx, alive, content)
         .following(permissions, scope)
         .with_presentation((app.local_operations)());
-    if A::BEHAVIOUR.window == ui_core::application::WindowRole::Sheet {
+    // A window shown over other apps' content paints no ground of its own:
+    // what it does not paint shows what is under it, and a keyboard that
+    // hides its keys takes the whole of its window with them.
+    if matches!(
+        A::BEHAVIOUR.window,
+        ui_core::application::WindowRole::Sheet | ui_core::application::WindowRole::InputSurface
+    ) {
         root = root.without_ground();
     }
     if !app.document_history {

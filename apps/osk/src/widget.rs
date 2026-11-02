@@ -2888,10 +2888,9 @@ impl Widget for OskWidget {
         let rows = self.current_layout().row_count();
         // Prose reserves its suggestion band so predictions never move the
         // keys. Code has no word predictions and needs only its editing strip.
-        // When the
-        // compositor has hidden the keyboard it requests no height and paints
-        // nothing — the real overlay surface is mapped/unmapped by the
-        // compositor, so a hidden keyboard occupies no surface either way.
+        // Hidden by the compositor, the keyboard requests no height and paints
+        // nothing, and its window stands on no ground: a keyboard put away
+        // leaves the app under it showing.
         let total_h = if self.visible && self.parked {
             // Parked: the toolbar strip alone.
             self.toolbar_height + self.spacing.s1
@@ -2931,8 +2930,8 @@ impl Widget for OskWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // A hidden keyboard paints nothing (and `build_layout` gave it zero
-        // height, so there is no area to fill anyway).
+        // A hidden keyboard paints nothing, panel included, so what is under
+        // its window shows through it.
         if !self.visible {
             return;
         }

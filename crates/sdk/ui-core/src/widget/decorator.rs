@@ -443,6 +443,8 @@ decorator_trait! {
         #[doc(hidden)]
         fn resets_binding_inheritance() -> bool;
         #[doc(hidden)]
+        fn paints_ground() -> bool;
+        #[doc(hidden)]
         fn inactive_bound_dispatch_boundary() -> Option<NodeId>;
         fn native_input_snapshot(state: &AppModel, path: &ModelPath) -> Option<serde_json::Value>;
         fn callback_binding() -> Option<crate::bound_dispatch::CallbackBinding>;

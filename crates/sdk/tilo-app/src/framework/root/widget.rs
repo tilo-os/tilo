@@ -31,6 +31,11 @@ pub(crate) trait RootModel:
     /// The widget shown: the view, or why the record does not read.
     fn view(&self) -> &(dyn Widget + 'static);
     fn view_mut(&mut self) -> &mut (dyn Widget + 'static);
+    /// Whether the window is cleared to the theme's content colour behind
+    /// what the view paints. A root that stands on nothing answers `false`.
+    fn paints_ground(&self) -> bool {
+        true
+    }
     /// The root itself, for a test or host that reaches it by type.
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
     fn provide<'a>(&'a self, request: &mut Request<'a, '_>);
@@ -209,6 +214,10 @@ impl Decorator for RootWidget {
 
     fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
         self.0.view_mut()
+    }
+
+    fn paints_ground(&self) -> bool {
+        self.0.paints_ground()
     }
 
     fn take_structure_dirty(&mut self) -> bool {

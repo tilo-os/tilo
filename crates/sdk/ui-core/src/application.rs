@@ -1304,7 +1304,8 @@ pub enum WindowRole {
     /// it outside the workspace and shows it only while a text field is
     /// focused. It is a session service started without a workspace, so it
     /// attaches to no workspace runtime. Its controls type into other apps'
-    /// fields, so no headless drive may operate it.
+    /// fields, so no headless drive may operate it. It stands on no ground of
+    /// its own: it floats over another app's content and shows it through.
     InputSurface,
     /// A sheet the shell shows over the desktop (the power menu). It stands
     /// on no ground of its own: what it does not paint shows the desktop

@@ -269,8 +269,16 @@ impl KeyboardPresentation<'_> {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // No ground of its own: the keyboard stands on the window's.
-        let ground = theme.tokens.colors.surfaces.content;
+        // The keyboard paints its own panel, so it exists exactly while the
+        // keys do: its window stands on no ground of its own, and a keyboard
+        // the person has put away leaves the app under it showing.
+        let ground = ui::surface::region(
+            scene,
+            transform,
+            self.rect,
+            ui::surface::Region::Content,
+            theme,
+        );
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
 
         // Toolbar.

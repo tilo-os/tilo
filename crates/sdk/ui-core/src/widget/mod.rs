@@ -1312,6 +1312,14 @@ pub trait Widget {
     fn resets_binding_inheritance(&self) -> bool {
         false
     }
+    /// Whether the window this widget fills is cleared to the theme's content
+    /// colour behind it. One that stands on nothing answers `false`: its
+    /// window is cleared to transparent, and whatever its view does not paint
+    /// shows what lies under the window.
+    #[doc(hidden)]
+    fn paints_ground(&self) -> bool {
+        true
+    }
     /// Drawn live content whose input and bound dispatch a framework surface
     /// suspends: it stays visible and keeps its state, but takes no events and
     /// opens no records.

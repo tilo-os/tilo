@@ -139,6 +139,61 @@ impl ResourceApp for InputSurfaceApp {
     }
 }
 
+/// An input surface floats over another app's content, so its window paints no
+/// ground of its own: what its view does not paint is the app under it. A
+/// keyboard that hides its keys leaves nothing behind on the app it typed into.
+#[test]
+fn an_input_surface_window_stands_on_no_ground() {
+    let mut app = TestApp::<InputSurfaceApp>::new().unwrap();
+    let harness = app.harness();
+    let (width, height) = harness.frame_output().logical_size;
+    let pixels = harness.render_rgba_transparent();
+    for (x, y) in [(0, height - 1), (width - 1, height - 1)] {
+        let at = usize::try_from((y * width + x) * 4).unwrap();
+        assert_eq!(
+            pixels[at..at + 4],
+            [0, 0, 0, 0],
+            "the app under the input surface shows through at ({x}, {y})"
+        );
+    }
+    let mut window = TestApp::<ChecklistApp>::new().unwrap();
+    let harness = window.harness();
+    let (width, height) = harness.frame_output().logical_size;
+    let pixels = harness.render_rgba_transparent();
+    let at = usize::try_from(((height - 1) * width) * 4).unwrap();
+    assert_ne!(
+        pixels[at + 3],
+        0,
+        "a window that is not an input surface stands on the ground"
+    );
+}
+
+/// The picture a host draws from an input surface is clear where its view
+/// paints nothing: the keyboard's window floats over the app it types into, so
+/// a keyboard that has hidden its keys leaves that app showing.
+#[test]
+fn an_input_surface_picture_is_clear_where_its_view_paints_nothing() {
+    let mut app = TestApp::<InputSurfaceApp>::new().unwrap();
+    let shown = app.call("render", serde_json::json!({})).unwrap().unwrap();
+    let address = shown["content"].as_str().expect("a stored picture");
+    let hash = tilo_app::tilo_actions::content_hash(address).expect("a content address");
+    let png = app.content().read(hash).expect("the picture is stored");
+    let picture = tilo_app::png::decode_rgba8(&png).unwrap();
+    let width = usize::try_from(picture.width).unwrap();
+    let bottom_left = usize::try_from(picture.height - 1).unwrap() * width * 4;
+    assert_eq!(
+        picture.rgba[bottom_left + 3],
+        0,
+        "the window under the input surface shows through its unpainted foot"
+    );
+    let painted = picture
+        .rgba
+        .chunks_exact(4)
+        .filter(|pixel| pixel[3] > 0)
+        .count();
+    assert!(painted > 0, "the view itself is drawn");
+}
+
 #[test]
 fn an_input_surface_window_announces_its_own_app_id() {
     use tilo_app::framework::testing::inspect_live_window;
