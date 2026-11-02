@@ -75,6 +75,7 @@ mod here;
 mod i18n;
 pub mod identity;
 mod import_readiness;
+mod input_sources;
 pub mod keyboard;
 mod keys;
 mod launches;
@@ -134,7 +135,9 @@ use std::time::{Duration, Instant};
 
 use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
+use tilo_compositor::{
+    Compositor, DisplayConfig, Error, KeyboardLayout, NestedConfig, OutputConfig, WindowPolicy,
+};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop::osd::{Hint, Osd, OsdKind};
@@ -423,6 +426,17 @@ struct Shared {
     /// serves it: what it asks on whether first use is over, and the review
     /// it saved to be opened when it is.
     folder_import: RefCell<Option<import_readiness::Continuation>>,
+}
+
+/// Type with `keyboard`: the compositor's keymap, and the words printed on
+/// the keys of what the session draws (the shortcut guide, the desk's
+/// chords), both follow it.
+pub(crate) fn apply_keyboard(compositor: &mut Compositor, keyboard: &KeyboardLayout) {
+    compositor.set_keyboard_layout(keyboard);
+    ui::keycaps::set_active(ui::keycaps::Keycaps::from_xkb(
+        &keyboard.layout,
+        &keyboard.variant,
+    ));
 }
 
 /// The app a window shows, by its id.
@@ -1017,7 +1031,7 @@ impl Session {
         // its next pass.
         options.wake.bind(compositor.waker());
         compositor.set_input_config(options.config.input.clone());
-        compositor.set_keyboard_layout(&options.config.keyboard);
+        apply_keyboard(&mut compositor, &options.config.keyboard);
         compositor.set_idle_config(options.config.idle);
         a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(display_settings::PanelBacklight::find()));
@@ -1798,11 +1812,12 @@ impl Session {
             .borrow_mut()
             .observe(&self.compositor.outputs(), caret);
         if let Some(on) = self.shared.notifications.borrow().take_quiet_change() {
-            self.shared.show_readout(&Osd::from(Hint {
+            self.show_hint(Hint {
                 kind: OsdKind::DoNotDisturb,
                 on,
                 chord: None,
-            }));
+                name: None,
+            });
         }
     }
 
@@ -2563,11 +2578,17 @@ impl Session {
     /// Show a mode change in the readout, said in words: a switch flipped by
     /// a key or a switch has nothing to read as a level.
     fn hint(&self, kind: OsdKind, on: bool) {
-        self.shared.show_readout(&Osd::from(Hint {
+        self.show_hint(Hint {
             kind,
             on,
             chord: None,
-        }));
+            name: None,
+        });
+    }
+
+    /// Show `hint` in the readout.
+    fn show_hint(&self, hint: Hint) {
+        self.shared.show_readout(&Osd::from(hint));
     }
 
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
@@ -2646,22 +2667,17 @@ impl Session {
                 Ok(())
             }
             SessionCommand::NextInputSource => {
-                let Some(id) = self.sources.next() else {
+                let Some((sources, name)) = input_sources::next() else {
                     return Ok(());
                 };
-                self.compositor
-                    .set_keyboard_layout(&self.sources.compiled());
-                if self.night_light.1
-                    && let Err(error) = settings_store::update_section(
-                        settings_store::hardware::INPUT_SECTION,
-                        serde_json::Map::from_iter([(
-                            "keyboard_layout".to_owned(),
-                            serde_json::Value::String(id),
-                        )]),
-                    )
-                {
-                    tracing::warn!(%error, "the input source choice was not kept");
-                }
+                self.sources = sources;
+                apply_keyboard(&mut self.compositor, &self.sources.compiled());
+                self.show_hint(Hint {
+                    kind: OsdKind::InputSource,
+                    on: true,
+                    chord: None,
+                    name: Some(name),
+                });
                 Ok(())
             }
             SessionCommand::AskUninstall { app } => {
