@@ -778,8 +778,12 @@ impl SearchResultsView {
             }) => self.bands.three_line,
             Some(SearchRow::Message { .. } | SearchRow::FileHit { .. }) => self.bands.two_line,
             Some(SearchRow::Media { .. }) => self.bands.media,
-            Some(SearchRow::Command(_)) | None if r.subtitle.is_some() => self.bands.two_line,
-            Some(SearchRow::Command(_)) | None => self.bands.one_line,
+            // An item is drawn as the generic row until the app's own row
+            // for it is there to draw instead.
+            Some(SearchRow::Command(_) | SearchRow::Item { .. }) | None if r.subtitle.is_some() => {
+                self.bands.two_line
+            }
+            Some(SearchRow::Command(_) | SearchRow::Item { .. }) | None => self.bands.one_line,
         }
     }
 
@@ -929,6 +933,15 @@ impl SearchResultsView {
                 command,
                 &state,
             ),
+            // An item is the reference its app draws: the generic row until
+            // the row that app draws for it is here.
+            Some(SearchRow::Item { .. }) | None => command_row::draw(
+                &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
+                row.rect,
+                result,
+                &CommandRow::default(),
+                &state,
+            ),
             Some(template) => {
                 let ink = RowInk {
                     primary: if selected {
@@ -949,15 +962,6 @@ impl SearchResultsView {
                 };
                 draw_template(scene, transform, tr, theme, row.rect, template, ink);
             }
-            // The generic row (icon, title and subtitle) is a command row
-            // with nothing more.
-            None => command_row::draw(
-                &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
-                row.rect,
-                result,
-                &CommandRow::default(),
-                &state,
-            ),
         }
     }
 
@@ -1564,8 +1568,10 @@ fn draw_template(
                 &code,
             );
         }
-        // Drawn by `command_row`, with the row's state.
-        SearchRow::Command(_) => {}
+        // Drawn by `command_row`, with the row's state; an item's row is
+        // the app's own, drawn from the reference, and the generic row
+        // carries the line above until it is.
+        SearchRow::Command(_) | SearchRow::Item { .. } => {}
     }
 }
 

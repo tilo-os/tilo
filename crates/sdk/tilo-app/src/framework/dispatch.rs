@@ -596,6 +596,12 @@ impl DispatchCore {
         !self.past && self.may(&reaction_need())
     }
 
+    /// Whether the participant may read what this window holds: one who may
+    /// not is found nothing of it.
+    pub(crate) fn may_read(&self) -> bool {
+        self.may(&ActionNeed::of(ActionKind::Read))
+    }
+
     /// Whether the workspace this record is in has anyone besides this window's
     /// participant, its owner or a member, here now or not: what it holds is
     /// shared with them.

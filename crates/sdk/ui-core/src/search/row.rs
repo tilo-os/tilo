@@ -44,6 +44,20 @@ pub enum SearchRow {
     /// A command, place or person: the title over an optional description
     /// (the result's subtitle), with what leads and trails it.
     Command(Box<CommandRow>),
+    /// An item of a published resource: the app that keeps it, the item's
+    /// kind and its id. A hit is a reference to what it opens, never a copy
+    /// of it: choosing one runs the app's `open` at the item, and the row it
+    /// is drawn with is the app's own. An entry the app gives a shape of its
+    /// own ([`Self::Message`], [`Self::Media`]) says how it reads already;
+    /// one without any is this.
+    Item {
+        /// The app that keeps the item (`so.tilo.notes`).
+        app: String,
+        /// The item's kind (`notes.notebook.pages`).
+        kind: String,
+        /// The item's id in that app.
+        id: String,
+    },
 }
 
 /// The slots of a [`SearchRow::Command`] row beyond its title, subtitle and
@@ -173,6 +187,40 @@ impl SearchRow {
         }
     }
 
+    /// The item `id` of the kind `kind` in `app`, as a reference.
+    pub fn item(app: impl Into<String>, kind: impl Into<String>, id: impl Into<String>) -> Self {
+        Self::Item {
+            app: app.into(),
+            kind: kind.into(),
+            id: id.into(),
+        }
+    }
+
+    /// The resource id of the item this row is, when it is one: `<kind>
+    /// /<collection>/<id>` (`notes.notebook/pages/<id>`), the address its
+    /// app's `open` shows. `None` for a row that names no item.
+    #[must_use]
+    pub fn item_resource(&self) -> Option<String> {
+        let Self::Item { kind, id, .. } = self else {
+            return None;
+        };
+        // An item's kind is the resource's kind and the collection's field
+        // joined by a dot (`notes.notebook.pages`); the resource id is the
+        // same two joined by a slash.
+        let (resource, collection) = kind.rsplit_once('.')?;
+        (!resource.is_empty() && !collection.is_empty() && !id.is_empty())
+            .then(|| format!("{resource}/{collection}/{id}"))
+    }
+
+    /// The app keeping the item this row is, when it is one.
+    #[must_use]
+    pub fn item_app(&self) -> Option<&str> {
+        match self {
+            Self::Item { app, .. } => Some(app),
+            _ => None,
+        }
+    }
+
     /// The message's body snippet, or a file hit's matched line.
     #[must_use]
     pub fn snippet(mut self, text: impl Into<String>) -> Self {
@@ -180,7 +228,7 @@ impl SearchRow {
         match &mut self {
             Self::Message { snippet, .. } => *snippet = Some(text),
             Self::FileHit { snippet, .. } => *snippet = text,
-            Self::Media { .. } | Self::Command(_) => {}
+            Self::Media { .. } | Self::Command(_) | Self::Item { .. } => {}
         }
         self
     }
@@ -304,6 +352,9 @@ impl SearchRow {
                 }
                 parts.join(". ")
             }
+            // The result's title says what the item is called, as the app
+            // draws it; the reference says nothing of itself.
+            Self::Item { .. } => String::new(),
         }
     }
 
@@ -349,5 +400,25 @@ mod tests {
         assert!(matches!(bad, SearchRow::FileHit { matched: None, .. }));
         let media = SearchRow::media("Talk").byline("Conf").duration("12:04");
         assert_eq!(media.spoken(), "Talk, Conf, 12:04");
+    }
+
+    /// A hit that is an item of a resource is a reference to it: the app, the
+    /// item's kind and its id, and the resource id its `open` shows.
+    #[test]
+    fn an_item_row_addresses_the_item_it_is() {
+        let row = SearchRow::item("so.tilo.notes", "notes.notebook.pages", "page-7");
+        assert_eq!(row.item_app(), Some("so.tilo.notes"));
+        assert_eq!(
+            row.item_resource().as_deref(),
+            Some("notes.notebook/pages/page-7")
+        );
+        assert_eq!(row.spoken(), "", "the result's title speaks for it");
+        assert_eq!(row.location(), None);
+        assert_eq!(
+            SearchRow::item("so.tilo.notes", "no-dot", "x").item_resource(),
+            None,
+            "a kind with no collection names no item"
+        );
+        assert_eq!(SearchRow::message("Ada", "Hi").item_resource(), None);
     }
 }

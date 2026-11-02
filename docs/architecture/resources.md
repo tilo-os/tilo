@@ -450,6 +450,20 @@ view at that item (§4). The index follows the same change deltas, so a large
 collection is not re-indexed per keystroke. `#[resource(search = path)]`
 replaces or extends the default.
 
+A hit is a reference, never a copy: `SearchRow::Item { app, kind, id }` says
+which app keeps the item, of what kind it is and its id there, and the row it is
+drawn with is the app's own. An entry that says how it reads already keeps that
+shape (a message, a video, a file match) and is drawn so.
+
+One contract covers what lies outside a resource too. A search result of a
+service an app shows (videos, an external catalogue) is an entry it publishes
+the same way, invoking a published action instead of naming an item; it is
+found beside the app's items, in the same list, with the row the service gives
+it. An app writes no provider of its own for either.
+
+A record the person may not read is found nothing of: the source answers no
+hits, as the app shows none.
+
 ### 3.5 Opening a reference
 
 A reference to what another app keeps (a `tilo_reference::ResourceRef`

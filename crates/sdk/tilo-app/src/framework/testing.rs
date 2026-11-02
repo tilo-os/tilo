@@ -309,6 +309,7 @@ pub fn search_source<R: Resource>(
 ) -> impl ui_core::search::SearchProvider {
     super::root::ResourceSearch::new(
         R::LABEL,
+        R::APP_ID,
         std::sync::Arc::new(super::root::IndexedEntries::built(entries, 0)),
     )
 }
