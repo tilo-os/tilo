@@ -827,7 +827,7 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
         !harness.session.quick_settings_open(),
         "the panel closes on the way to Settings"
     );
-    let room = harness.session.handle().read(|tree| {
+    let workspace = harness.session.handle().read(|tree| {
         tree.active_workspace()
             .map(|workspace| workspace.room().to_string())
             .unwrap_or_default()
@@ -838,7 +838,7 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
             .first()
             .map(|(target, _)| target.clone()),
         Some(application_action_target(
-            &room,
+            &workspace,
             "so.tilo.settings",
             "settings.section:devices_sync",
             "open"

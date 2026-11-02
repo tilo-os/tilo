@@ -444,9 +444,9 @@ fn shown_windows(session: &Session) -> Vec<Option<u64>> {
 }
 
 /// Open [`PROBE`] as the desk does, then its window as the compositor would,
-/// and hand back the process it runs in and the room it runs in.
+/// and hand back the process it runs in and the workspace it runs in.
 fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, String) {
-    let room = session
+    let workspace = session
         .desktop()
         .with_policy(|policy| {
             policy.handle().read(|tree| {
@@ -460,7 +460,7 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
             app: PROBE.to_owned(),
             open: None,
         },
-        &apps.workspace_named(&room),
+        &apps.workspace_named(&workspace),
     )
     .expect("the app starts");
     until(session, "the app runs", |_| started.exists());
@@ -478,7 +478,7 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
     until(session, "the app's window is on the desk", |session| {
         groups(session) == vec![vec![PROBE.to_owned()]]
     });
-    (pid, room)
+    (pid, workspace)
 }
 
 /// Ask the session what `app` asks over a window's own shell-ui connection:
@@ -488,11 +488,11 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
 fn ask(
     launches: &Arc<Launches>,
     app: &str,
-    room: &str,
+    workspace: &str,
     pid: u32,
     message: &FloatingSurfaceClientMessage,
 ) -> UnixStream {
-    let connections = ServiceLinks::new(Arc::clone(launches)).window(app, room, 7, Some(pid));
+    let connections = ServiceLinks::new(Arc::clone(launches)).window(app, workspace, 7, Some(pid));
     let mut stream: UnixStream = connections
         .shell_ui
         .expect("the app's shell-ui connection")
@@ -518,12 +518,12 @@ fn a_window_the_app_asks_for_opens_beside_its_own_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, room) = probe_showing(&mut session, &apps, &started);
+    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
 
     let _connection = ask(
         &launches,
         PROBE,
-        &room,
+        &workspace,
         pid,
         &FloatingSurfaceClientMessage::OpenTabBeside {
             target: None,
@@ -560,12 +560,12 @@ fn an_address_the_app_does_not_claim_opens_no_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, room) = probe_showing(&mut session, &apps, &started);
+    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
 
     let _connection = ask(
         &launches,
         PROBE,
-        &room,
+        &workspace,
         pid,
         &FloatingSurfaceClientMessage::OpenTabBeside {
             target: Some("https://example.invalid/notes".into()),
@@ -667,7 +667,7 @@ fn an_app_closes_only_its_own_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, room) = probe_showing(&mut session, &apps, &started);
+    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
     session
         .desktop()
         .with_policy(|policy| policy.map(window(12, "org.example.Other")).unwrap());
@@ -678,7 +678,7 @@ fn an_app_closes_only_its_own_tab() {
     let _connection = ask(
         &launches,
         PROBE,
-        &room,
+        &workspace,
         pid,
         &FloatingSurfaceClientMessage::CloseTab { instance: None },
     );
@@ -695,7 +695,7 @@ fn an_app_closes_only_its_own_tab() {
     let _connection = ask(
         &launches,
         PROBE,
-        &room,
+        &workspace,
         pid,
         &FloatingSurfaceClientMessage::ReopenClosedTab,
     );
