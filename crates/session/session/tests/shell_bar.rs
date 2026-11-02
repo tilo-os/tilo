@@ -1019,7 +1019,7 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     );
     // Someone here, as the collaboration plane lists them: their face, named for assistive
     // technology, on the one button that opens the roster.
-    set_here(&mut session, 1);
+    set_here(&session, 1);
     until(&mut session, |session| says(session, "Mia Clayton is here"));
     let one = bar_control(&session, "Mia Clayton is here").expect("one face, named");
     assert!(
@@ -1040,7 +1040,7 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         (3, "Mia Clayton and 2 others are here"),
         (4, "Mia Clayton and 3 others are here"),
     ] {
-        set_here(&mut session, count);
+        set_here(&session, count);
         until(&mut session, |session| says(session, label));
         widths.push(bar_control(&session, label).map_or_else(
             || panic!("{count} here: {:?}", session.accessible_labels()),
@@ -1948,7 +1948,7 @@ fn creating_a_named_workspace_from_the_workspaces_surface_makes_it() {
 const HERE: [&str; 4] = ["Mia Clayton", "Sam Okafor", "Jo Park", "Ada Byron"];
 
 /// Who is here, as the collaboration plane lists them: the first `count` of [`HERE`].
-fn set_here(session: &mut Session, count: usize) {
+fn set_here(session: &Session, count: usize) {
     let here: Vec<_> = HERE
         .iter()
         .take(count)
@@ -2217,7 +2217,7 @@ fn the_trailing_group_stands_in_order_and_ends_with_the_persons_face() {
     let _settled = ui::motion::testing::settled();
     let mut session = device_session(WIDTH, HEIGHT);
     until_settled(&mut session, |session| says(session, &desk(session).clock));
-    set_here(&mut session, 2);
+    set_here(&session, 2);
     until_settled(&mut session, |session| says(session, "are here"));
     let people = bar_control(&session, "are here").expect("who is here");
     let sound = bar_control(&session, "Volume").expect("the sound's level");
@@ -2271,7 +2271,7 @@ fn the_bar_draws_the_material_of_the_style_the_person_chose() {
     let _settled = ui::motion::testing::settled();
     let mut session = device_session(WIDTH, HEIGHT);
     until_settled(&mut session, |session| says(session, &desk(session).clock));
-    set_here(&mut session, 2);
+    set_here(&session, 2);
     until_settled(&mut session, |session| says(session, "are here"));
     let calm = keep(&mut session, "shell-bar-calm");
     session
@@ -2355,7 +2355,7 @@ fn a_compact_bar_keeps_a_glance_and_nothing_overflows_it() {
     for (width, height) in [(320, 568), (390, 844)] {
         let mut session = device_session(width, height);
         until_settled(&mut session, |session| says(session, &desk(session).clock));
-        set_here(&mut session, 4);
+        set_here(&session, 4);
         until_settled(&mut session, |session| desk(session).people.len() == 4);
         let clock = desk(&session).clock;
         for words in [
@@ -2422,7 +2422,7 @@ fn the_bar_draws_inside_every_width_style_and_appearance() {
                     .expect("the bar takes the style");
                 settle(&mut session);
                 for count in [0, 1, 4] {
-                    set_here(&mut session, count);
+                    set_here(&session, count);
                     until_settled(&mut session, |session| desk(session).people.len() == count);
                     settle(&mut session);
                     let shot = keep(

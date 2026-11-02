@@ -415,7 +415,7 @@ fn the_bars_material_is_the_one_its_style_names() {
     );
     let translucent = pick(&r, "Finish", "translucent");
     let record = shell_ref(&r);
-    choose(&mut r, "set_bar_finish", vec![record, translucent]);
+    choose(&r, "set_bar_finish", vec![record, translucent]);
     r.commit();
     assert!(
         material(&r).contains("glass"),
@@ -424,7 +424,7 @@ fn the_bars_material_is_the_one_its_style_names() {
     );
     let solid = pick(&r, "Finish", "solid");
     let record = shell_ref(&r);
-    choose(&mut r, "set_bar_finish", vec![record, solid]);
+    choose(&r, "set_bar_finish", vec![record, solid]);
     r.commit();
     assert!(
         material(&r).contains("calm"),
