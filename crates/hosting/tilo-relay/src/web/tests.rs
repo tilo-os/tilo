@@ -133,6 +133,7 @@ async fn browser_as(
 /// A page takes its seat in a room by subscribing to it over its session, as
 /// the page's own client does once it joined: the room's bootstrap and replay
 /// reach the page, then its `Ready`.
+#[cfg(feature = "agents")]
 async fn subscribe(addr: SocketAddr, token: [u8; 32], workspace_id: u64) {
     let (status, _) = post(
         addr,

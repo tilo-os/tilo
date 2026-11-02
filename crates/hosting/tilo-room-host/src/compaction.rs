@@ -278,7 +278,7 @@ impl Compactor {
 
     /// Fold the sealed history of the channels `keys` names, as one of their
     /// participants, instead of asking a member to.
-    #[cfg(feature = "agents")]
+    #[cfg(any(feature = "agents", feature = "web"))]
     pub(crate) fn with_participant_keys(&self, keys: Arc<dyn ParticipantKeys>) {
         let _ = self.0.participant.set(keys);
     }

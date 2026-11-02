@@ -273,7 +273,7 @@ impl HostSessions {
         .await
         .map_err(HostError::Rooms)?;
         governance.attach(rooms.clone());
-        #[cfg(feature = "agents")]
+        #[cfg(any(feature = "agents", feature = "web"))]
         sessions
             .handler
             .compactor

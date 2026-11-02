@@ -21,7 +21,7 @@ test-support = ["tilo-room-host/test-support"]
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
 agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
-web = ["dep:tilo-call-lane", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:bytes"]
+web = ["tilo-room-host/web", "dep:tilo-call-lane", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:bytes"]
 
 [[bin]]
 name = "tilo-relay"

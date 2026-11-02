@@ -591,7 +591,7 @@ impl Participation {
     }
 }
 
-#[cfg(feature = "agents")]
+#[cfg(any(feature = "agents", feature = "web"))]
 impl Rooms {
     /// The content keys of `route`'s channel, for this host's own endpoints
     /// (the room actions it runs for its members' pages). `create` opens the
@@ -1068,7 +1068,7 @@ mod tests {
     /// What a member seals in a channel opens with the content keys the node
     /// reads for a spectator, also from a node that only finds the channel
     /// on disk; a channel never created stays missing.
-    #[cfg(feature = "agents")]
+    #[cfg(any(feature = "agents", feature = "web"))]
     #[test]
     fn a_members_content_opens_with_the_nodes_existing_keys() {
         let tmp = tempfile::tempdir().unwrap();

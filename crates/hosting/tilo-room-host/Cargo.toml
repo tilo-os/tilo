@@ -16,7 +16,10 @@ path = "src/lib.rs"
 test-support = ["tilo-relay-store/test-support"]
 # Agents on the host: rooms keep apps' confined replicas and hand their
 # records' channel keys to pages.
-agents = ["dep:tilo-agent-participant", "dep:tilo-secrets", "dep:ui", "dep:chat"]
+agents = ["web", "dep:tilo-agent-participant", "dep:tilo-secrets", "dep:ui", "dep:chat"]
+# Pages reach the host: it follows the records its members write sealed and
+# opens them with the channels' keys it holds as a participant.
+web = []
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }

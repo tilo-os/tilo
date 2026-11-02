@@ -428,7 +428,7 @@ impl GovernedRoom {
 
     /// [`Self::call_binding`] of a sealed Chat, opened with the channel's
     /// keys this relay holds as a member.
-    #[cfg(feature = "agents")]
+    #[cfg(any(feature = "agents", feature = "web"))]
     async fn sealed_call_binding(
         &self,
         app: &str,
@@ -443,9 +443,9 @@ impl GovernedRoom {
         media::resolve_chat_binding(app, record, channel, &doc).map_err(|error| error.to_string())
     }
 
-    /// A host built without agents takes part in no channels, so it cannot
-    /// read a sealed Chat.
-    #[cfg(not(feature = "agents"))]
+    /// A relay built without the browser listener takes part in no channels, so
+    /// it cannot read a sealed Chat.
+    #[cfg(not(any(feature = "agents", feature = "web")))]
     #[expect(
         clippy::unused_async,
         reason = "the same call as the build's that takes part in channels"
