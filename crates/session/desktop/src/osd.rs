@@ -3,14 +3,17 @@
 //!
 //! A key that changes something invisible (the volume) or unreadable (the
 //! brightness, *because* it is what changed) needs an answer on screen: a
-//! slab that appears, shows the new level, and gets out of the way. It never
-//! takes focus or the pointer and never outlives the moment it was about.
-//! It is deliberately not a notification, which persists and stacks:
-//! pressing volume up eight times shows one slab counting up, not eight
-//! banners.
+//! slab that appears, says **which device it changed**, shows the new level
+//! as a bar, and gets out of the way. It never takes focus or the pointer and
+//! never outlives the moment it was about. It is deliberately not a
+//! notification, which persists and stacks: pressing volume up eight times
+//! shows one slab counting up, not eight banners.
 //!
-//! Whoever handled the key shows it through its published action
-//! (`desktop:osd/show`), as any caller would.
+//! Two shapes, one action: [`Osd::Level`] for something read as an amount (a
+//! volume, a backlight) and [`Osd::Hint`] for a mode whose new state words are
+//! enough (night light, Do Not Disturb, a chord taken). Whoever handled the
+//! key shows it through its published action (`desktop:osd/show`), as any
+//! caller would.
 
 use std::collections::HashMap;
 
@@ -21,10 +24,11 @@ use tilo_actions::{
     ParamType, ResourceSpec, ResultSpec,
 };
 use ui::a11y::{AccessNode, Politeness, Role};
+use ui::motion::{Direction, MotionValue, Presence, Transient};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextKind, TextWeight};
+use ui::text_render::{TextKind, TextStyle, TextWeight};
 use ui::time::{Duration, Instant};
-use ui::tokens::TextRole;
+use ui::tokens::{EffectiveMotion, Motion, MotionSource, TextRole};
 use ui::widget::{TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};
 use vello::Scene;
@@ -43,38 +47,59 @@ pub const OSD_RESOURCE: &str = "desktop:osd";
 /// does not leave it hanging around.
 pub const OSD_HOLD: Duration = Duration::from_millis(1_500);
 
-/// The pill's height: its glyph's square and the gap above and below it.
+/// The hint pill's height: its glyph's square and the gap above and below it.
 /// Unscaled `BASE` values because a host sizes the surface from this before
 /// any theme is in hand.
-pub const OSD_HEIGHT: f32 = ui::tokens::Metrics::BASE.icon_lg + 2.0 * ui::tokens::Spacing::BASE.s3;
+pub const OSD_ROW_HEIGHT: f32 =
+    ui::tokens::Metrics::BASE.icon_lg + 2.0 * ui::tokens::Spacing::BASE.s3;
+
+/// The level pill's height: the device's row, the bar beneath it, and the gap
+/// above and below.
+pub const OSD_LEVEL_HEIGHT: f32 = 2.0 * ui::tokens::Spacing::BASE.s3
+    + ui::tokens::Metrics::BASE.icon_lg
+    + 2.0 * ui::tokens::Spacing::BASE.s2;
 
 /// Room above and below the pill's body for the shadow it floats on: a
 /// surface sized to the body alone would cut the shadow off in a hard edge.
 pub const OSD_MARGIN: f32 = ui::tokens::Spacing::BASE.s8;
 
-/// How far the pill's bottom edge stands above the output's bottom edge: the
-/// same inset the readouts have always rested at, where a glance finds them
-/// and no bar or dock sits.
+/// How far the pill's edge stands above the output's bottom edge (or below
+/// its top, when it moves up): the same inset the readouts have always rested
+/// at, where a glance finds them and no bar or dock sits.
 pub const OSD_INSET: f32 = ui::tokens::Spacing::BASE.s16;
 
-/// The height of the surface a host shows the readout on: the pill and its
-/// shadow's room, in whole logical pixels.
+/// The pill's content is at least this wide: a short word still leaves a bar
+/// long enough to read as a level rather than a dash.
+pub const OSD_BAR: f32 = ui::tokens::Metrics::BASE.icon_lg * 5.0;
+
+/// Where a readout stands on its display.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Placement {
+    /// The bottom edge, where a glance finds it.
+    #[default]
+    Bottom,
+    /// The top edge, when the bottom is where the person is typing.
+    Top,
+}
+
+/// The height of the surface a host shows a readout on: the taller pill and
+/// its shadow's room, in whole logical pixels.
 #[must_use]
 pub fn surface_height() -> i32 {
     #[allow(
         clippy::cast_possible_truncation,
         reason = "a pill's height in logical pixels is a few dozen"
     )]
-    let height = (OSD_HEIGHT + 2.0 * OSD_MARGIN).ceil() as i32;
+    let height = (OSD_LEVEL_HEIGHT.max(OSD_ROW_HEIGHT) + 2.0 * OSD_MARGIN).ceil() as i32;
     height
 }
 
 /// Where the readout's surface goes on the output `(x, y, w, h)`: a band
-/// across the output, its pill bottom-centred in it, [`OSD_INSET`] above the
-/// output's bottom edge. The pill is as wide as what it reads, so the band is
-/// as wide as the output and the pill centres itself in it.
+/// across the output, its pill centred in it, [`OSD_INSET`] in from the edge
+/// `placement` names. The pill is as wide as what it reads, so the band is as
+/// wide as the output and the pill centres itself in it.
 #[must_use]
-pub fn place(output: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+pub fn place(output: (i32, i32, i32, i32), placement: Placement) -> (i32, i32, i32, i32) {
     #[allow(
         clippy::cast_possible_truncation,
         reason = "insets of a few dozen logical pixels"
@@ -82,14 +107,52 @@ pub fn place(output: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
     let (inset, margin) = (OSD_INSET.round() as i32, OSD_MARGIN.round() as i32);
     let (x, y, w, h) = output;
     let height = surface_height();
-    let bottom = y
-        .saturating_add(h)
-        .saturating_sub(inset)
-        .saturating_add(margin);
-    (x, bottom.saturating_sub(height), w.max(1), height)
+    let top = match placement {
+        Placement::Bottom => y
+            .saturating_add(h)
+            .saturating_sub(inset)
+            .saturating_add(margin)
+            .saturating_sub(height),
+        Placement::Top => y.saturating_add(inset).saturating_sub(margin),
+    };
+    (x, top, w.max(1), height)
 }
 
-/// What the readout is about.
+/// How wide a pill may be before it is no longer "under the caret": the
+/// longest a readout's content is drawn, around the middle of the display.
+const READING_HALF_WIDTH: f64 = 240.0;
+
+/// Where a readout on `output` stands so the text caret `caret` (in the same
+/// desk coordinates) keeps clear of it: the bottom, unless the caret is in
+/// the way there — typing at the bottom of the screen must not be covered by
+/// what the person just changed.
+#[must_use]
+pub fn clear_of_caret(caret: Option<Rect>, output: (i32, i32, i32, i32)) -> Placement {
+    let Some(caret) = caret else {
+        return Placement::Bottom;
+    };
+    let (seen, half) = (f64::from(OSD_INSET), READING_HALF_WIDTH);
+    let (x, y, w, h) = output;
+    let (cx, bottom) = (
+        f64::from(x) + f64::from(w) / 2.0,
+        f64::from(y) + f64::from(h),
+    );
+    let band = Rect::new(
+        cx - half,
+        bottom - seen - f64::from(surface_height()),
+        cx + half,
+        bottom - seen,
+    );
+    let overlaps =
+        caret.x1 > band.x0 && caret.x0 < band.x1 && caret.y1 > band.y0 && caret.y0 < band.y1;
+    if overlaps {
+        Placement::Top
+    } else {
+        Placement::Bottom
+    }
+}
+
+/// What a readout is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OsdKind {
@@ -106,11 +169,21 @@ pub enum OsdKind {
     Stop,
     /// A brightness key on a machine with no display that can be dimmed.
     NoBacklight,
+    /// The night light was turned on or off.
+    NightLight,
+    /// Do Not Disturb was turned on or off.
+    DoNotDisturb,
+    /// The screen magnifier was turned on or off.
+    Magnifier,
+    /// The keys are being taken for something else (a shortcut's chord).
+    CapturedKeys,
+    /// The pointer was let go where it was held.
+    PointerReleased,
 }
 
 impl OsdKind {
     /// Every kind, as its published name spells it.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 17] = [
         Self::Volume,
         Self::Brightness,
         Self::KeyboardBacklight,
@@ -123,9 +196,15 @@ impl OsdKind {
         Self::PreviousTrack,
         Self::Stop,
         Self::NoBacklight,
+        Self::NightLight,
+        Self::DoNotDisturb,
+        Self::Magnifier,
+        Self::CapturedKeys,
+        Self::PointerReleased,
     ];
 
-    /// Whether a level bar shows beside the caption.
+    /// Whether the readout is a level with a bar, rather than a state said in
+    /// words.
     #[must_use]
     pub const fn has_level(self) -> bool {
         matches!(
@@ -135,19 +214,112 @@ impl OsdKind {
     }
 }
 
-/// One readout: what it is about, its level (`0.0 ..= 1.0`) and whether
-/// the thing is on (sound not muted, the radio or touchpad on).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Osd {
+/// Which device a reading is about, and what to draw for it: the glyph says
+/// *what* changed (a pair of headphones, a panel), so the words can say which
+/// one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeviceGlyph {
+    /// A speaker, the machine's own or a pair of them.
+    #[default]
+    Speaker,
+    Headphones,
+    /// A display: a panel or a monitor on a cable.
+    Display,
+    Keyboard,
+}
+
+impl DeviceGlyph {
+    /// The glyph a sink called `name` plays through: headphones and headsets
+    /// say so in their name, everything else is a speaker.
+    #[must_use]
+    pub fn of_sink(name: &str) -> Self {
+        let name = name.to_lowercase();
+        if ["headphone", "headset", "earbud", "buds", "airpods", "beats"]
+            .iter()
+            .any(|word| name.contains(word))
+        {
+            Self::Headphones
+        } else {
+            Self::Speaker
+        }
+    }
+
+    const fn icon(self) -> ui::icons::Icon {
+        match self {
+            Self::Speaker => ui::icons::Icon::Speaker,
+            Self::Headphones => ui::icons::Icon::Headphones,
+            Self::Display => ui::icons::Icon::Monitor,
+            Self::Keyboard => ui::icons::Icon::Keyboard,
+        }
+    }
+}
+
+/// The device a reading is about: what the person knows it by, and its glyph.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Device {
+    pub name: String,
+    #[serde(default)]
+    pub glyph: DeviceGlyph,
+}
+
+impl Device {
+    #[must_use]
+    pub fn new(name: impl Into<String>, glyph: DeviceGlyph) -> Self {
+        Self {
+            name: name.into(),
+            glyph,
+        }
+    }
+}
+
+/// One readout: either an amount read as a level, or a state said in words.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "shows", content = "reading", rename_all = "kebab-case")]
+pub enum Osd {
+    Level(Level),
+    Hint(Hint),
+}
+
+/// A reading with a bar: the volume, a display's brightness, the keyboard's
+/// backlight. `level` runs `0.0 ..= 1.0`; `on` is false when what it reads is
+/// muted or off, which fills nothing while the bar keeps its place.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Level {
     pub kind: OsdKind,
     #[serde(default)]
     pub level: f32,
     #[serde(default = "on")]
     pub on: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<Device>,
+}
+
+/// A mode change said in words ("Night light on"), with the chord that did it
+/// where there was one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hint {
+    pub kind: OsdKind,
+    #[serde(default = "on")]
+    pub on: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chord: Option<String>,
 }
 
 const fn on() -> bool {
     true
+}
+
+impl From<Level> for Osd {
+    fn from(level: Level) -> Self {
+        Self::Level(level)
+    }
+}
+
+impl From<Hint> for Osd {
+    fn from(hint: Hint) -> Self {
+        Self::Hint(hint)
+    }
 }
 
 /// `level` as a whole percentage.
@@ -161,84 +333,13 @@ fn percent(level: f32) -> u32 {
     percent
 }
 
-impl Osd {
-    /// The one line the slab reads.
-    #[must_use]
-    pub fn caption(&self) -> String {
-        let level = || [("percent", percent(self.level).into())];
-        match self.kind {
-            OsdKind::Volume if !self.on => t("osd-muted"),
-            OsdKind::Volume => t_args("osd-volume", &level()),
-            OsdKind::Brightness => t_args("osd-brightness", &level()),
-            OsdKind::NoBacklight => t("osd-no-backlight"),
-            OsdKind::KeyboardBacklight if self.level <= 0.0 => t("osd-keyboard-backlight-off"),
-            OsdKind::KeyboardBacklight => t_args("osd-keyboard-backlight", &level()),
-            OsdKind::Microphone if self.on => t("osd-microphone-on"),
-            OsdKind::Microphone => t("osd-microphone-muted"),
-            OsdKind::AirplaneMode if self.on => t("osd-airplane-mode-on"),
-            OsdKind::AirplaneMode => t("osd-airplane-mode-off"),
-            OsdKind::Touchpad if self.on => t("osd-touchpad-on"),
-            OsdKind::Touchpad => t("osd-touchpad-off"),
-            OsdKind::Play => t("osd-play"),
-            OsdKind::Pause => t("osd-pause"),
-            OsdKind::NextTrack => t("osd-next-track"),
-            OsdKind::PreviousTrack => t("osd-previous-track"),
-            OsdKind::Stop => t("osd-stop"),
-        }
-    }
-
-    /// The short value the pill reads beside its glyph: `65%`, `Muted`,
-    /// `Off`, or the whole message where there is no level to read.
-    #[must_use]
-    pub fn value_text(&self) -> String {
-        let percent = || t_args("osd-percent", &[("percent", percent(self.level).into())]);
-        match self.kind {
-            OsdKind::Volume if !self.on => t("osd-muted"),
-            OsdKind::KeyboardBacklight if self.level <= 0.0 => t("osd-off"),
-            OsdKind::Volume | OsdKind::Brightness | OsdKind::KeyboardBacklight => percent(),
-            _ => self.caption(),
-        }
-    }
-
-    /// The glyph for what the readout is about, and whether it reads as on:
-    /// a state that is off (muted, dark, radio down) dims its glyph and, for
-    /// the microphone, warns.
-    #[must_use]
-    pub fn glyph(&self) -> (ui::icons::Icon, GlyphTone) {
-        use ui::icons::Icon;
-        match self.kind {
-            OsdKind::Volume if self.on => (Icon::Volume2, GlyphTone::On),
-            OsdKind::Volume => (Icon::VolumeX, GlyphTone::On),
-            OsdKind::Brightness => (Icon::Sun, GlyphTone::On),
-            OsdKind::KeyboardBacklight if self.level <= 0.0 => (Icon::Keyboard, GlyphTone::Off),
-            OsdKind::KeyboardBacklight => (Icon::Keyboard, GlyphTone::On),
-            OsdKind::Microphone if self.on => (Icon::Mic, GlyphTone::On),
-            OsdKind::Microphone => (Icon::MicOff, GlyphTone::Warn),
-            OsdKind::AirplaneMode if self.on => (Icon::WifiOff, GlyphTone::On),
-            OsdKind::AirplaneMode => (Icon::Wifi, GlyphTone::On),
-            OsdKind::Touchpad if self.on => (Icon::Mouse, GlyphTone::On),
-            OsdKind::Touchpad => (Icon::Mouse, GlyphTone::Off),
-            OsdKind::Play => (Icon::Play, GlyphTone::On),
-            OsdKind::Pause => (Icon::Pause, GlyphTone::On),
-            OsdKind::NextTrack => (Icon::SkipForward, GlyphTone::On),
-            OsdKind::PreviousTrack => (Icon::SkipBack, GlyphTone::On),
-            OsdKind::Stop => (Icon::Square, GlyphTone::On),
-            OsdKind::NoBacklight => (Icon::Monitor, GlyphTone::Off),
-        }
-    }
-
-    /// How much of the level track is filled: a muted volume keeps its track
-    /// and empties its fill, so the pill does not change shape while still
-    /// agreeing with the crossed-out volume glyph.
-    #[must_use]
-    pub fn filled(&self) -> f64 {
-        if self.kind == OsdKind::Volume && !self.on {
-            0.0
-        } else if self.kind.has_level() {
-            f64::from(self.level.clamp(0.0, 1.0))
-        } else {
-            0.0
-        }
+/// What the person calls the kind of reading when no device is named.
+fn kind_name(kind: OsdKind) -> String {
+    match kind {
+        OsdKind::Volume => t("osd-volume-name"),
+        OsdKind::Brightness => t("osd-brightness-name"),
+        OsdKind::KeyboardBacklight => t("osd-keyboard-backlight-name"),
+        _ => t("osd-readout"),
     }
 }
 
@@ -251,119 +352,416 @@ pub enum GlyphTone {
     Warn,
 }
 
-/// The pill's geometry: its glyph, optional level track and value on one
-/// row, bottom-centred in the surface's band. Kept apart from paint so the
-/// rhythm is testable and every kind, level or state, shares one shape.
+impl Level {
+    /// The whole reading, as one line for a person who cannot see it.
+    #[must_use]
+    pub fn caption(&self) -> String {
+        t_args(
+            "osd-reading",
+            &[
+                ("device", self.device_name().into()),
+                ("value", self.value_text().into()),
+            ],
+        )
+    }
+
+    /// The short value the pill reads: `65%`, `Muted`, `Off`.
+    #[must_use]
+    pub fn value_text(&self) -> String {
+        let percent = || t_args("osd-percent", &[("percent", percent(self.level).into())]);
+        match self.kind {
+            OsdKind::Volume if !self.on => t("osd-muted"),
+            OsdKind::KeyboardBacklight if self.level <= 0.0 => t("osd-off"),
+            _ => percent(),
+        }
+    }
+
+    /// What the pill calls the thing it read: the device's name, else the
+    /// kind's.
+    #[must_use]
+    pub fn device_name(&self) -> String {
+        self.device
+            .as_ref()
+            .map_or_else(|| kind_name(self.kind), |device| device.name.clone())
+    }
+
+    /// The glyph for the device it changed (its own when the session named
+    /// it), and whether it reads as on.
+    #[must_use]
+    pub fn glyph(&self) -> (ui::icons::Icon, GlyphTone) {
+        use ui::icons::Icon;
+        if let Some(device) = &self.device {
+            let tone = if self.kind == OsdKind::KeyboardBacklight && self.level <= 0.0 {
+                GlyphTone::Off
+            } else {
+                GlyphTone::On
+            };
+            return (device.glyph.icon(), tone);
+        }
+        match self.kind {
+            OsdKind::Volume if self.on => (Icon::Volume2, GlyphTone::On),
+            OsdKind::Volume => (Icon::VolumeX, GlyphTone::On),
+            OsdKind::KeyboardBacklight if self.level <= 0.0 => (Icon::Keyboard, GlyphTone::Off),
+            OsdKind::CapturedKeys | OsdKind::KeyboardBacklight => (Icon::Keyboard, GlyphTone::On),
+            _ => (Icon::Sun, GlyphTone::On),
+        }
+    }
+
+    /// How much of the level bar is filled: a muted volume keeps its bar and
+    /// empties its fill, so the pill does not change shape while still
+    /// agreeing with the crossed-out volume glyph.
+    #[must_use]
+    pub fn filled(&self) -> f64 {
+        if self.kind == OsdKind::Volume && !self.on {
+            0.0
+        } else {
+            f64::from(self.level.clamp(0.0, 1.0))
+        }
+    }
+}
+
+impl Hint {
+    /// The words the pill reads: what the mode is, and where it now stands.
+    #[must_use]
+    pub fn words(&self) -> String {
+        match self.kind {
+            OsdKind::NightLight if self.on => t("osd-night-light-on"),
+            OsdKind::NightLight => t("osd-night-light-off"),
+            OsdKind::DoNotDisturb if self.on => t("osd-do-not-disturb-on"),
+            OsdKind::DoNotDisturb => t("osd-do-not-disturb-off"),
+            OsdKind::Magnifier if self.on => t("osd-magnifier-on"),
+            OsdKind::Magnifier => t("osd-magnifier-off"),
+            OsdKind::CapturedKeys => t("osd-keys-captured"),
+            OsdKind::PointerReleased => t("osd-pointer-released"),
+            OsdKind::Microphone if self.on => t("osd-microphone-on"),
+            OsdKind::Microphone => t("osd-microphone-muted"),
+            OsdKind::AirplaneMode if self.on => t("osd-airplane-mode-on"),
+            OsdKind::AirplaneMode => t("osd-airplane-mode-off"),
+            OsdKind::Touchpad if self.on => t("osd-touchpad-on"),
+            OsdKind::Touchpad => t("osd-touchpad-off"),
+            OsdKind::Play => t("osd-play"),
+            OsdKind::Pause => t("osd-pause"),
+            OsdKind::NextTrack => t("osd-next-track"),
+            OsdKind::PreviousTrack => t("osd-previous-track"),
+            OsdKind::Stop => t("osd-stop"),
+            OsdKind::NoBacklight => t("osd-no-backlight"),
+            OsdKind::Volume | OsdKind::Brightness | OsdKind::KeyboardBacklight => {
+                kind_name(self.kind)
+            }
+        }
+    }
+
+    /// The glyph for what was turned on or off, and whether it reads as on.
+    #[must_use]
+    pub fn glyph(&self) -> (ui::icons::Icon, GlyphTone) {
+        use ui::icons::Icon;
+        match self.kind {
+            OsdKind::NightLight if self.on => (Icon::Moon, GlyphTone::On),
+            OsdKind::NightLight => (Icon::Moon, GlyphTone::Off),
+            OsdKind::DoNotDisturb if self.on => (Icon::BellOff, GlyphTone::On),
+            OsdKind::DoNotDisturb => (Icon::Bell, GlyphTone::Off),
+            OsdKind::Magnifier if self.on => (Icon::ZoomIn, GlyphTone::On),
+            OsdKind::Magnifier => (Icon::ZoomIn, GlyphTone::Off),
+            OsdKind::PointerReleased => (Icon::Mouse, GlyphTone::On),
+            OsdKind::Microphone if self.on => (Icon::Mic, GlyphTone::On),
+            OsdKind::Microphone => (Icon::MicOff, GlyphTone::Warn),
+            OsdKind::AirplaneMode if self.on => (Icon::WifiOff, GlyphTone::On),
+            OsdKind::AirplaneMode => (Icon::Wifi, GlyphTone::On),
+            OsdKind::Touchpad if self.on => (Icon::Mouse, GlyphTone::On),
+            OsdKind::Touchpad => (Icon::Mouse, GlyphTone::Off),
+            OsdKind::Play => (Icon::Play, GlyphTone::On),
+            OsdKind::Pause => (Icon::Pause, GlyphTone::On),
+            OsdKind::NextTrack => (Icon::SkipForward, GlyphTone::On),
+            OsdKind::PreviousTrack => (Icon::SkipBack, GlyphTone::On),
+            OsdKind::Stop => (Icon::Square, GlyphTone::On),
+            OsdKind::NoBacklight => (Icon::Monitor, GlyphTone::Off),
+            OsdKind::Volume => (Icon::Volume2, GlyphTone::On),
+            OsdKind::Brightness => (Icon::Sun, GlyphTone::On),
+            OsdKind::KeyboardBacklight | OsdKind::CapturedKeys => (Icon::Keyboard, GlyphTone::On),
+        }
+    }
+}
+
+impl Osd {
+    /// The line a person who cannot see the pill is told.
+    #[must_use]
+    pub fn caption(&self) -> String {
+        match self {
+            Self::Level(level) => level.caption(),
+            Self::Hint(hint) => hint.words(),
+        }
+    }
+
+    /// The glyph the pill leads with, and how it is inked.
+    #[must_use]
+    pub fn glyph(&self) -> (ui::icons::Icon, GlyphTone) {
+        match self {
+            Self::Level(level) => level.glyph(),
+            Self::Hint(hint) => hint.glyph(),
+        }
+    }
+
+    /// The reading's `kind`.
+    #[must_use]
+    pub fn kind(&self) -> OsdKind {
+        match self {
+            Self::Level(level) => level.kind,
+            Self::Hint(hint) => hint.kind,
+        }
+    }
+
+    /// The action's flat arguments for this reading, on `display` (the
+    /// connector of the display that changed), as any caller would pass them.
+    #[must_use]
+    pub fn arguments(&self, display: Option<&str>) -> serde_json::Map<String, serde_json::Value> {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(
+            "kind".into(),
+            serde_json::to_value(self.kind()).unwrap_or_default(),
+        );
+        match self {
+            Self::Level(level) => {
+                arguments.insert("level".into(), f64::from(level.level).into());
+                arguments.insert("on".into(), level.on.into());
+                if let Some(device) = &level.device {
+                    arguments.insert("device".into(), device.name.clone().into());
+                    arguments.insert(
+                        "device-glyph".into(),
+                        serde_json::to_value(device.glyph).unwrap_or_default(),
+                    );
+                }
+            }
+            Self::Hint(hint) => {
+                arguments.insert("on".into(), hint.on.into());
+                if let Some(chord) = &hint.chord {
+                    arguments.insert("chord".into(), chord.clone().into());
+                }
+            }
+        }
+        if let Some(display) = display {
+            arguments.insert("display".into(), display.into());
+        }
+        arguments
+    }
+}
+
+/// The text styles the pill sets its lines in.
+struct Styles {
+    /// The device's name, above the bar.
+    name: TextStyle,
+    /// The value at the bar's end.
+    value: TextStyle,
+    /// A hint's words.
+    words: TextStyle,
+    /// The chord that asked for it.
+    chord: TextStyle,
+}
+
+impl Styles {
+    fn new(theme: &Theme) -> Self {
+        Self {
+            name: theme.text(TextRole::Label).with_weight(TextWeight::Medium),
+            value: theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold)
+                .with_kind(TextKind::Numeric),
+            words: theme.text(TextRole::Label).with_weight(TextWeight::Medium),
+            chord: theme.text(TextRole::Caption),
+        }
+    }
+}
+
+/// The pill's geometry: its glyph, the device's name, the level as a bar and
+/// the value, or a hint's words and chord. Kept apart from paint so the rhythm
+/// is testable and every reading, level or state, shares one shape.
 #[derive(Clone, Debug, PartialEq)]
 struct Pill {
     rect: Rect,
     glyph: Rect,
-    /// The level track between the glyph and the value, for a kind with a
-    /// level.
-    track: Option<Rect>,
-    /// Where the value goes: right-aligned in its slot after the track for a
-    /// level, or straight after the glyph for a bare message.
-    text: Rect,
+    /// The device's name (a level) or the hint's words.
+    name: Rect,
+    /// The level bar under the name, spanning the content: the level *is* the
+    /// bar.
+    bar: Option<Rect>,
+    /// The value at the end of the name's row, for a level.
+    value: Option<Rect>,
+    name_text: String,
+    value_text: String,
+    chord: Option<(String, Rect)>,
+}
+
+/// What the pill reads, measured: the name or the hint's words, the value,
+/// and the chord that asked for it where one did.
+struct Words {
+    name: String,
+    name_w: f64,
+    name_h: f64,
     value: String,
+    value_w: f64,
+    /// The width the widest line needs: what the bar spans and the pill is as
+    /// wide as.
+    content: f64,
+    chord: Option<(String, f64, f64)>,
+}
+
+impl Words {
+    /// `osd`'s lines in `styles`, measured: a level's device and value above a
+    /// bar as wide as the widest reading, or a hint's words and its chord.
+    fn of(osd: &Osd, styles: &Styles, text: &mut TextRenderer, gap: f64) -> Self {
+        let (name_text, value_text, chord_text) = match osd {
+            Osd::Level(level) => (level.device_name(), level.value_text(), None),
+            Osd::Hint(hint) => (hint.words(), String::new(), hint.chord.clone()),
+        };
+        let name_style = match osd {
+            Osd::Level(_) => &styles.name,
+            Osd::Hint(_) => &styles.words,
+        };
+        let (name_w, name_h) = text.measure_style(&name_text, None, name_style);
+        let (value_w, _) = text.measure_style(&value_text, None, &styles.value);
+        let mut content = f64::from(name_w);
+        let chord = chord_text.map(|words| {
+            let (w, h) = text.measure_style(&words, None, &styles.chord);
+            content += gap / 2.0 + f64::from(w);
+            (words, f64::from(w), f64::from(h))
+        });
+        if matches!(osd, Osd::Level(_)) {
+            // The bar is as wide as the widest reading, never so short it
+            // reads as a dash: the number gaining a digit does not resize the
+            // pill.
+            let mut slot = f64::from(value_w);
+            for reading in [
+                t_args("osd-percent", &[("percent", 100.into())]),
+                t("osd-muted"),
+                t("osd-off"),
+            ] {
+                let (w, _) = text.measure_style(&reading, None, &styles.value);
+                slot = slot.max(f64::from(w));
+            }
+            content = content.max(slot).max(f64::from(OSD_BAR));
+        }
+        Self {
+            name: name_text,
+            name_w: f64::from(name_w),
+            name_h: f64::from(name_h),
+            value: value_text,
+            value_w: f64::from(value_w),
+            content,
+            chord,
+        }
+    }
 }
 
 impl Pill {
-    /// Lay the pill out in the surface's `band`, whose pill is
-    /// [`OSD_HEIGHT`] tall and as wide as its widest reading.
-    fn layout(
-        band: Rect,
-        theme: &Theme,
-        text: &mut TextRenderer,
-        osd: Osd,
-        style: &ui::text_render::TextStyle,
-    ) -> Self {
+    /// Lay the pill out centred in the surface's `band`.
+    fn layout(band: Rect, theme: &Theme, text: &mut TextRenderer, osd: &Osd) -> Self {
         let sp = &theme.tokens.spacing;
+        let styles = Styles::new(theme);
         let icon = f64::from(theme.tokens.metrics.icon_lg);
-        let (pad, gap) = (f64::from(sp.s4), f64::from(sp.s3));
-        let value = osd.value_text();
-        let (value_w, text_h) = text.measure_style(&value, None, style);
-        let has_track = osd.kind.has_level();
-        // A level's value slot is as wide as its widest reading, so the
-        // track does not shift as the number gains digits or the sink mutes.
-        let mut slot = f64::from(value_w);
-        if has_track {
-            let full = t_args("osd-percent", &[("percent", 100.into())]);
-            for reading in [full, t("osd-muted")] {
-                let (w, _) = text.measure_style(&reading, None, style);
-                slot = slot.max(f64::from(w));
-            }
-        }
-        let track_len = icon * 6.0;
-        let wanted = pad * 2.0 + icon + gap + slot + if has_track { gap + track_len } else { 0.0 };
-        let width = wanted.min(band.width()).max(0.0);
-        // As tall as its glyph or its line, and the gap above and below,
-        // never taller than the band has room for.
+        let (pad, gap, vpad) = (f64::from(sp.s4), f64::from(sp.s3), f64::from(sp.s3));
+        let bar_gap = f64::from(sp.s2);
+        let bar_h = f64::from(sp.s2).max(6.0);
+        let words = Words::of(osd, &styles, text, gap);
+        let width = (pad * 2.0 + icon + gap + words.content).min(band.width());
+        // Two rows for a level (the device and the value above the bar), one
+        // for a hint, never taller than the band has room for.
+        let levels = matches!(osd, Osd::Level(_));
+        let body = if levels {
+            icon.max(words.name_h) + bar_gap + bar_h
+        } else {
+            icon.max(words.name_h)
+        };
         let room = (band.height() - 2.0 * f64::from(OSD_MARGIN)).max(0.0);
-        let height = (icon.max(f64::from(text_h)) + 2.0 * gap).min(room);
+        let height = (body + 2.0 * vpad).min(room);
         // Bottom-centred: the pill grows upward from the line it rests on.
         let x0 = band.center().x - width / 2.0;
         let y1 = band.y1 - f64::from(OSD_MARGIN);
         let rect = Rect::new(x0, y1 - height, x0 + width, y1);
-        let cy = rect.center().y;
         let glyph = Rect::new(
             rect.x0 + pad,
-            cy - icon / 2.0,
+            rect.center().y - icon / 2.0,
             rect.x0 + pad + icon,
-            cy + icon / 2.0,
+            rect.center().y + icon / 2.0,
         );
-        let text_x0 = if has_track {
-            rect.x1 - pad - slot
-        } else {
-            glyph.x1 + gap
-        };
-        let text_rect = Rect::new(
-            text_x0,
-            cy - f64::from(text_h) / 2.0,
-            rect.x1 - pad,
-            cy + f64::from(text_h) / 2.0,
-        );
-        let track = has_track.then(|| {
-            let track_h = f64::from(sp.s1) * 1.5;
+        let content_x0 = glyph.x1 + gap;
+        let content_x1 = (rect.x1 - pad).max(content_x0);
+        let row = if levels {
             Rect::new(
-                glyph.x1 + gap,
-                cy - track_h / 2.0,
-                text_x0 - gap,
-                cy + track_h / 2.0,
+                content_x0,
+                rect.y0 + vpad,
+                content_x1,
+                rect.y0 + vpad + icon.max(words.name_h),
+            )
+        } else {
+            Rect::new(content_x0, rect.y0 + vpad, content_x1, rect.y1 - vpad)
+        };
+        let middle = row.center().y;
+        let name = Rect::new(
+            row.x0,
+            middle - words.name_h / 2.0,
+            row.x1,
+            middle + words.name_h / 2.0,
+        );
+        let bar = levels.then(|| {
+            Rect::new(
+                content_x0,
+                rect.y1 - vpad - bar_h,
+                content_x1,
+                rect.y1 - vpad,
+            )
+        });
+        let value =
+            levels.then(|| Rect::new(content_x1 - words.value_w, name.y0, content_x1, name.y1));
+        let chord = words.chord.map(|(chord, w, h)| {
+            let x0 = name.x0 + words.name_w + gap / 2.0;
+            (
+                chord,
+                Rect::new(x0, middle - h / 2.0, x0 + w, middle + h / 2.0),
             )
         });
         Self {
             rect,
             glyph,
-            track,
-            text: text_rect,
+            name,
+            bar,
             value,
+            name_text: words.name,
+            value_text: words.value,
+            chord,
         }
     }
 }
 
-/// The empty part of the level track: a hairline wash over the pill's own
+/// The empty part of the level bar: a hairline wash over the pill's own
 /// ground, so it reads on every palette rather than vanishing under a lift
 /// of the desktop's base.
-fn track_color(theme: &Theme) -> vello::peniko::Color {
+fn bar_color(theme: &Theme) -> vello::peniko::Color {
     ui::tokens::colors::Colors::hairline_on(ui::chrome::shell::panel_ground(theme), 80)
 }
 
-/// Paint the readout's pill in `band`, returning its resting rect.
+/// Paint the readout's pill in `band`, `level` of the bar filled, returning
+/// its resting rect.
 fn draw_pill(
     scene: &mut Scene,
     transform: Affine,
     text: &mut TextRenderer,
     theme: &Theme,
     band: Rect,
-    raised: Osd,
+    raised: &Osd,
+    level: f64,
 ) -> Rect {
-    let style = theme
-        .text(TextRole::Label)
-        .with_weight(TextWeight::Medium)
-        .with_kind(TextKind::Numeric);
-    let pill = Pill::layout(band, theme, text, raised, &style);
+    let pill = Pill::layout(band, theme, text, raised);
     let painted = ui::chrome::shell::paint_panel(scene, transform, pill.rect, theme, 1.0);
     let theme = &painted.theme;
+    draw_glyph(scene, transform, &pill, theme, raised);
+    draw_name(scene, transform, text, &pill, theme, raised);
+    draw_bar(scene, transform, &pill, theme, level);
+    draw_value(scene, transform, text, &pill, theme, raised);
+    pill.rect
+}
+
+/// Paint the readout's glyph, inked for what it reads: lit, dimmed when the
+/// thing is off, warning where it asks for the person's attention.
+fn draw_glyph(scene: &mut Scene, transform: Affine, pill: &Pill, theme: &Theme, raised: &Osd) {
     let colors = &theme.tokens.colors;
     let (icon, tone) = raised.glyph();
     let tint = match tone {
@@ -379,42 +777,122 @@ fn draw_pill(
         tint,
         ui::icons::LUCIDE_DEFAULT_STROKE_PX * 1.4,
     );
-    if let Some(track) = pill.track {
-        let track_h = track.height();
+}
+
+/// Paint the pill's name (a level's device, a hint's words), and the chord
+/// that asked for it where one did.
+fn draw_name(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    pill: &Pill,
+    theme: &Theme,
+    raised: &Osd,
+) {
+    let styles = Styles::new(theme);
+    let colors = &theme.tokens.colors;
+    let (name_style, name_tint) = match raised {
+        Osd::Level(_) => (&styles.name, colors.text_dim),
+        Osd::Hint(_) => (&styles.words, colors.text_primary),
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a pill's name room in logical pixels is far inside f32 range"
+    )]
+    let name_room = pill.name.width() as f32;
+    let name = text.elide_to_width_style(&pill.name_text, name_room, name_style);
+    let (_, name_h) = text.measure_style(&name, None, name_style);
+    text.draw_style(
+        scene,
+        &name,
+        name_tint,
+        transform
+            .pre_translate((pill.name.x0, pill.name.center().y - f64::from(name_h) / 2.0).into()),
+        None,
+        name_style,
+    );
+    let Some((chord, chord_rect)) = &pill.chord else {
+        return;
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a chord's room in logical pixels is far inside f32 range"
+    )]
+    let chord_room = chord_rect.width() as f32;
+    let shown = text.elide_to_width_style(chord, chord_room, &styles.chord);
+    let (_, chord_h) = text.measure_style(&shown, None, &styles.chord);
+    text.draw_style(
+        scene,
+        &shown,
+        colors.text_dim,
+        transform.pre_translate(
+            (
+                chord_rect.x0,
+                chord_rect.center().y - f64::from(chord_h) / 2.0,
+            )
+                .into(),
+        ),
+        None,
+        &styles.chord,
+    );
+}
+
+/// Paint the level as a bar: its empty track, and the filled share of it.
+fn draw_bar(scene: &mut Scene, transform: Affine, pill: &Pill, theme: &Theme, level: f64) {
+    let Some(bar) = pill.bar else {
+        return;
+    };
+    let bar_h = bar.height();
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        bar_color(theme),
+        None,
+        &vello::kurbo::RoundedRect::from_rect(bar, bar_h / 2.0),
+    );
+    if level > 0.0 {
+        let w = (bar.width() * level).max(bar_h);
+        let fill = Rect::new(bar.x0, bar.y0, bar.x0 + w, bar.y1);
         scene.fill(
             Fill::NonZero,
             transform,
-            track_color(theme),
+            theme.tokens.colors.text_primary,
             None,
-            &vello::kurbo::RoundedRect::from_rect(track, track_h / 2.0),
+            &vello::kurbo::RoundedRect::from_rect(fill, bar_h / 2.0),
         );
-        let filled = raised.filled();
-        if filled > 0.0 {
-            let w = (track.width() * filled).max(track_h);
-            let fill = Rect::new(track.x0, track.y0, track.x0 + w, track.y1);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.text_primary,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(fill, track_h / 2.0),
-            );
-        }
     }
+}
+
+/// Paint the value at the end of the bar's row, dimmed where it stands for
+/// nothing (a muted output).
+fn draw_value(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    pill: &Pill,
+    theme: &Theme,
+    raised: &Osd,
+) {
+    let Some(value) = pill.value else {
+        return;
+    };
+    let styles = Styles::new(theme);
+    let colors = &theme.tokens.colors;
+    let muted = matches!(
+        raised,
+        Osd::Level(Level {
+            kind: OsdKind::Volume,
+            on: false,
+            ..
+        })
+    );
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "a pill's value room in logical pixels is far inside f32 range"
+        reason = "a value's room in logical pixels is far inside f32 range"
     )]
-    let room = pill.text.width() as f32;
-    let shown = text.elide_to_width_style(&pill.value, room, &style);
-    let (shown_w, shown_h) = text.measure_style(&shown, None, &style);
-    let muted = raised.kind == OsdKind::Volume && !raised.on;
-    // The value hugs the track's end; a bare message starts at the glyph.
-    let x = if pill.track.is_some() {
-        pill.text.x1 - f64::from(shown_w)
-    } else {
-        pill.text.x0
-    };
+    let value_room = value.width() as f32;
+    let shown = text.elide_to_width_style(&pill.value_text, value_room, &styles.value);
+    let (shown_w, shown_h) = text.measure_style(&shown, None, &styles.value);
     text.draw_style(
         scene,
         &shown,
@@ -423,11 +901,16 @@ fn draw_pill(
         } else {
             colors.text_primary
         },
-        transform.pre_translate((x, pill.text.center().y - f64::from(shown_h) / 2.0).into()),
+        transform.pre_translate(
+            (
+                value.x1 - f64::from(shown_w),
+                value.center().y - f64::from(shown_h) / 2.0,
+            )
+                .into(),
+        ),
         None,
-        &style,
+        &styles.value,
     );
-    pill.rect
 }
 
 #[must_use]
@@ -451,6 +934,26 @@ pub fn osd_resource() -> ResourceSpec {
                 t("desktop-action-param-osd-level"),
             ),
             ActionParam::optional_owned("on", ParamType::Boolean, t("desktop-action-param-osd-on")),
+            ActionParam::optional_owned(
+                "device",
+                ParamType::Text,
+                t("desktop-action-param-osd-device"),
+            ),
+            ActionParam::optional_owned(
+                "device-glyph",
+                ParamType::Text,
+                t("desktop-action-param-osd-device-glyph"),
+            ),
+            ActionParam::optional_owned(
+                "chord",
+                ParamType::Text,
+                t("desktop-action-param-osd-chord"),
+            ),
+            ActionParam::optional_owned(
+                "display",
+                ParamType::Text,
+                t("desktop-action-param-osd-display"),
+            ),
         ],
         |args| {
             let kind = args
@@ -461,10 +964,31 @@ pub fn osd_resource() -> ResourceSpec {
                 .unwrap_or(OsdKind::Volume);
             #[allow(clippy::cast_possible_truncation, reason = "a level between 0 and 1")]
             let level = args.number("level").unwrap_or(0.0) as f32;
-            let osd = Osd {
-                kind,
-                level: level.clamp(0.0, 1.0),
-                on: args.boolean("on").unwrap_or(true),
+            let on = args.boolean("on").unwrap_or(true);
+            let osd = if kind.has_level() {
+                Osd::from(Level {
+                    kind,
+                    level: level.clamp(0.0, 1.0),
+                    on,
+                    device: args.text("device").map(|name| Device {
+                        name: name.into(),
+                        glyph: args
+                            .text("device-glyph")
+                            .and_then(|glyph| {
+                                serde_json::from_value::<DeviceGlyph>(serde_json::Value::String(
+                                    glyph.into(),
+                                ))
+                                .ok()
+                            })
+                            .unwrap_or_else(|| DeviceGlyph::of_sink(name)),
+                    }),
+                })
+            } else {
+                Osd::from(Hint {
+                    kind,
+                    on,
+                    chord: args.text("chord").map(Into::into),
+                })
             };
             EncodedAction::encode_operation(OPERATION, &osd).expect("a readout always serializes")
         },
@@ -477,20 +1001,28 @@ pub fn osd_resource() -> ResourceSpec {
     ResourceSpec::new(OSD_RESOURCE, "desktop", t("desktop-actions-osd")).with_action(spec)
 }
 
-/// The readout up now, and since when.
-#[derive(Clone, Copy, Debug)]
+/// The readout up now: what it says, when it came, when it last changed, how
+/// open it is drawn and where its bar stands.
 struct Raised {
     osd: Osd,
     /// When this run of readouts appeared: a burst of presses keeps it.
     shown_since: Instant,
     /// When it last changed: it stays [`OSD_HOLD`] after.
     changed_at: Instant,
+    /// Its coming and going, on the readout's motion: a new reading mid-flight
+    /// keeps the opener, and a hide it reverses starts from where it is drawn.
+    presence: Presence,
+    /// The bar's fill, on a spring: it follows the reading rather than
+    /// jumping to it, and a reversed press turns from where it is.
+    level: MotionValue<f64>,
 }
 
 /// The slab, as a widget filling the rectangle its host gives it.
 pub struct OsdSlab {
     raised: Option<Raised>,
     rect: Rect,
+    /// Whether the person asked for no motion, as the last theme drew it.
+    reduce_motion: bool,
 }
 
 impl Default for OsdSlab {
@@ -505,6 +1037,7 @@ impl OsdSlab {
         Self {
             raised: None,
             rect: Rect::ZERO,
+            reduce_motion: false,
         }
     }
 
@@ -512,14 +1045,38 @@ impl OsdSlab {
     /// longer.
     pub fn show(&mut self, osd: Osd) {
         let now = ui::time::now();
-        let shown_since = self
-            .raised
-            .filter(|raised| live(raised, now))
-            .map_or(now, |raised| raised.shown_since);
+        let motion = self.motion();
+        let prior = self.raised.take().filter(|raised| live(raised, now));
+        let shown_since = prior.as_ref().map_or(now, |raised| raised.shown_since);
+        let same = prior
+            .as_ref()
+            .is_some_and(|raised| same_target(&raised.osd, &osd));
+        let target = match &osd {
+            Osd::Level(level) => level.filled(),
+            Osd::Hint(_) => 0.0,
+        };
+        let mut presence = prior
+            .as_ref()
+            .map_or_else(Presence::closed, |raised| raised.presence);
+        presence.show(true, Transient::READOUT, motion, MotionSource::Pointer, now);
+        // A new kind is another thing said: its bar starts where the reading
+        // is. The same reading pressed again springs from where it stands.
+        let mut bar = prior
+            .as_ref()
+            .filter(|_| same)
+            .map_or_else(|| MotionValue::new(target), |raised| raised.level);
+        if same {
+            let timing = Transient::READOUT.timing(Direction::Enter, motion, MotionSource::Pointer);
+            bar.set(target, timing, now);
+        } else {
+            bar.snap(target);
+        }
         self.raised = Some(Raised {
             osd,
             shown_since,
             changed_at: now,
+            presence,
+            level: bar,
         });
     }
 
@@ -528,8 +1085,68 @@ impl OsdSlab {
     pub fn current(&self) -> Option<Osd> {
         let now = ui::time::now();
         self.raised
+            .as_ref()
             .filter(|raised| live(raised, now))
-            .map(|raised| raised.osd)
+            .map(|raised| raised.osd.clone())
+    }
+
+    /// How open the readout is drawn at `now`, `0..=1`: its show and hide are
+    /// one interruptible spring, never a fresh fade.
+    #[cfg(test)]
+    #[must_use]
+    fn openness_at(&self, now: Instant) -> f64 {
+        self.raised
+            .as_ref()
+            .map_or(0.0, |raised| raised.presence.progress(now))
+    }
+
+    /// How much of the bar is filled at `now`.
+    #[cfg(test)]
+    #[must_use]
+    fn level_at(&self, now: Instant) -> f64 {
+        self.raised
+            .as_ref()
+            .map_or(0.0, |raised| raised.level.get(now).clamp(0.0, 1.0))
+    }
+
+    /// The motion the person allows.
+    fn motion(&self) -> EffectiveMotion {
+        EffectiveMotion::new(Motion::default(), self.reduce_motion)
+    }
+
+    /// Take the readout's hold into account at `now`: once it is over, ask it
+    /// to go, and let it go once its spring has closed it.
+    fn follow(&mut self, now: Instant) {
+        let motion = self.motion();
+        let Some(raised) = &mut self.raised else {
+            return;
+        };
+        if now >= expires(raised) {
+            raised.presence.show(
+                false,
+                Transient::READOUT,
+                motion,
+                MotionSource::Pointer,
+                now,
+            );
+        }
+        if !raised.presence.is_visible(now) {
+            self.raised = None;
+        }
+    }
+}
+
+/// Whether both readings are of the same thing: a level follows on from one
+/// for the same device, and starts afresh for another.
+fn same_target(before: &Osd, after: &Osd) -> bool {
+    match (before, after) {
+        (Osd::Level(before), Osd::Level(after)) => {
+            before.kind == after.kind
+                && before.device.as_ref().map(|device| &device.name)
+                    == after.device.as_ref().map(|device| &device.name)
+        }
+        (Osd::Hint(before), Osd::Hint(after)) => before.kind == after.kind,
+        _ => false,
     }
 }
 
@@ -544,16 +1161,6 @@ fn expires(raised: &Raised) -> Instant {
 /// Whether `raised` is still up at `now`.
 fn live(raised: &Raised, now: Instant) -> bool {
     now < expires(raised)
-}
-
-/// How opaque `raised` is at `now`: easing in, held, easing out.
-fn alpha(raised: &Raised, now: Instant) -> f32 {
-    ui::motion::Transient::opacity(
-        ui::motion::Transient::READOUT,
-        (raised.shown_since, expires(raised)),
-        now,
-        ui::tokens::EffectiveMotion::default(),
-    )
 }
 
 impl ui::resources::PublishesResources for OsdSlab {
@@ -616,25 +1223,24 @@ impl Widget for OsdSlab {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.reduce_motion = theme.reduce_motion;
         let now = ui::time::now();
-        let Some(raised) = self.raised else {
+        self.follow(now);
+        let Some(raised) = self.raised.as_ref() else {
             return;
         };
-        if !live(&raised, now) {
-            self.raised = None;
-            return;
-        }
-        let alpha = alpha(&raised, now);
+        let openness = raised.presence.progress(now);
+        let alpha = ui::motion::unit_opacity(openness);
         if alpha <= 0.0 {
             return;
         }
-        // The pill rises into place as it fades in and sinks as it fades out;
-        // the slide follows the opacity, so it needs no clock of its own and a
-        // reduced-motion theme (alpha pinned at 1) never moves.
+        // The pill rises into place as it comes and sinks as it goes: the
+        // slide follows the same spring, so a hide reversed mid-flight
+        // reverses from where the pill is drawn.
         let slide = if theme.reduce_motion {
             0.0
         } else {
-            f64::from(theme.tokens.spacing.s2) * f64::from(1.0 - alpha.clamp(0.0, 1.0))
+            f64::from(theme.tokens.spacing.s2) * (1.0 - openness.clamp(0.0, 1.0))
         };
         let transform = transform.then_translate((0.0, slide).into());
         if alpha < 0.999 {
@@ -646,7 +1252,11 @@ impl Widget for OsdSlab {
                 &self.rect,
             );
         }
-        draw_pill(scene, transform, text, theme, self.rect, raised.osd);
+        let Some(raised) = self.raised.as_ref() else {
+            return;
+        };
+        let level = raised.level.get(now);
+        draw_pill(scene, transform, text, theme, self.rect, &raised.osd, level);
         if alpha < 0.999 {
             scene.pop_layer();
         }
@@ -662,8 +1272,10 @@ impl Widget for OsdSlab {
     }
 
     fn needs_redraw(&self) -> bool {
+        let now = ui::time::now();
         self.raised
-            .is_some_and(|raised| live(&raised, ui::time::now()))
+            .as_ref()
+            .is_some_and(|raised| live(raised, now) || raised.presence.is_visible(now))
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -683,64 +1295,35 @@ impl Widget for OsdSlab {
 mod tests {
     use super::*;
 
-    #[test]
-    fn captions_read_the_level_and_the_state() {
-        ui::i18n::I18nManager::init("en-US");
-        let volume = Osd {
+    fn volume(level: f32) -> Osd {
+        Osd::from(Level {
             kind: OsdKind::Volume,
-            level: 0.554,
+            level,
             on: true,
-        };
-        assert_eq!(volume.caption(), "Volume 55%");
-        assert_eq!(volume.value_text(), "55%");
-        assert_eq!(
-            Osd {
-                on: false,
-                ..volume
-            }
-            .caption(),
-            "Muted"
-        );
-        assert_eq!(
-            Osd {
-                on: false,
-                ..volume
-            }
-            .value_text(),
-            "Muted"
-        );
-        assert_eq!(
-            Osd {
-                kind: OsdKind::Touchpad,
-                level: 0.0,
-                on: false,
-            }
-            .caption(),
-            "Touchpad off"
-        );
-        assert_eq!(
-            Osd {
-                kind: OsdKind::KeyboardBacklight,
-                level: 0.0,
-                on: true,
-            }
-            .value_text(),
-            "Off"
-        );
-        assert_eq!(
-            Osd {
-                kind: OsdKind::KeyboardBacklight,
-                level: 0.4,
-                on: true,
-            }
-            .value_text(),
-            "40%"
-        );
+            device: Some(Device::new("Studio headphones", DeviceGlyph::Headphones)),
+        })
+    }
+
+    fn brightness(level: f32) -> Osd {
+        Osd::from(Level {
+            kind: OsdKind::Brightness,
+            level,
+            on: true,
+            device: Some(Device::new("Built-in display", DeviceGlyph::Display)),
+        })
+    }
+
+    fn night_light(on: bool) -> Osd {
+        Osd::from(Hint {
+            kind: OsdKind::NightLight,
+            on,
+            chord: Some("⌃⌥N".into()),
+        })
     }
 
     /// A 1280 by 800 output's readout band.
     fn band() -> Rect {
-        let (x, y, w, h) = place((0, 0, 1280, 800));
+        let (x, y, w, h) = place((0, 0, 1280, 800), Placement::Bottom);
         Rect::new(
             f64::from(x),
             f64::from(y),
@@ -750,173 +1333,285 @@ mod tests {
     }
 
     /// The pill `osd` lays out in the band of a 1280 by 800 output.
-    fn pill(osd: Osd) -> Pill {
-        let theme = Theme::dark();
-        let style = theme
-            .text(TextRole::Label)
-            .with_weight(TextWeight::Medium)
-            .with_kind(TextKind::Numeric);
-        Pill::layout(band(), &theme, &mut TextRenderer::new(), osd, &style)
-    }
-
-    fn volume(level: f32) -> Osd {
-        Osd {
-            kind: OsdKind::Volume,
-            level,
-            on: true,
-        }
+    fn pill(osd: &Osd) -> Pill {
+        Pill::layout(band(), &Theme::dark(), &mut TextRenderer::new(), osd)
     }
 
     #[test]
-    fn the_readout_rests_bottom_centred_where_the_old_shell_put_it() {
-        let pill = pill(volume(0.65));
-        // The old shell's pill on this output: a body 260 wide by 48 high at
-        // x510..769, y688..735, its shadow reaching a few pixels further and
-        // its bottom edge 64 above the screen's.
-        assert_eq!(pill.rect.y1, 736.0);
-        assert_eq!(pill.rect.y0, 688.0);
-        assert_eq!(pill.rect.center().x, 640.0);
-        assert!(pill.rect.width() < 320.0, "{}", pill.rect.width());
-        // The glyph starts the pill's left inset and is a square icon.
+    fn a_level_names_its_device_and_the_level_is_the_bar() {
+        ui::i18n::I18nManager::init("en-US");
+        let pill = pill(&volume(0.65));
+        // The device is named above the bar, with the device's own glyph.
+        assert_eq!(pill.name_text, "Studio headphones");
+        assert_eq!(
+            volume(0.65).glyph(),
+            (ui::icons::Icon::Headphones, GlyphTone::On)
+        );
+        assert_eq!(pill.value_text, "65%");
+        // The bar spans the content under the name, and the value ends it.
+        let bar = pill.bar.expect("a level has a bar");
+        let value = pill.value.expect("a level has a value");
+        assert_eq!(bar.width(), value.x1 - bar.x0);
+        assert!(bar.y0 > pill.name.y1, "the bar stands under the device");
+        assert!(bar.height() >= 6.0, "a bar, not a hairline");
+        // The glyph leads, a square, and the content follows it.
         assert_eq!(pill.glyph.x0, pill.rect.x0 + 16.0);
         assert_eq!(pill.glyph.width(), pill.glyph.height());
-        // The value ends it, right-aligned an inset from the right edge.
-        assert_eq!(pill.text.x1, pill.rect.x1 - 16.0);
-        // The track runs between them, six icons long.
-        let track = pill.track.expect("a level has a track");
-        assert_eq!(track.width(), pill.glyph.width() * 6.0);
-        assert!(track.x0 > pill.glyph.x1 && track.x1 <= pill.text.x0);
-        assert!(track.height() < 8.0, "a hairline, not a bar");
-        assert_eq!(pill.value, "65%");
+        assert!(pill.name.x0 > pill.glyph.x1);
+        // A level's pill is taller than a hint's, and rests on the same line.
+        assert!(pill.rect.height() > f64::from(OSD_ROW_HEIGHT));
+        assert_eq!(pill.rect.y1, band().y1 - f64::from(OSD_MARGIN));
+        assert_eq!(pill.rect.center().x, 640.0);
+        assert_eq!(
+            volume(0.65).caption(),
+            "Studio headphones, 65%",
+            "a person who cannot see it hears the device and the level"
+        );
     }
 
     #[test]
-    fn a_level_pill_keeps_its_width_as_the_reading_changes() {
-        let wide = pill(volume(0.65)).rect.width();
-        for other in [
-            volume(0.05),
-            volume(1.0),
-            Osd {
-                on: false,
-                ..volume(0.65)
-            },
-        ] {
-            assert_eq!(pill(other).rect.width(), wide, "{other:?} resized the pill");
-        }
-        // And a bare state is as wide as its own message, not a level's slot.
-        let touchpad = Osd {
-            kind: OsdKind::Touchpad,
-            level: 0.0,
-            on: true,
+    fn the_pill_is_as_wide_as_what_it_reads() {
+        ui::i18n::I18nManager::init("en-US");
+        let level = |name: &str, glyph| {
+            Osd::from(Level {
+                kind: OsdKind::Volume,
+                level: 0.1,
+                on: true,
+                device: Some(Device::new(name, glyph)),
+            })
         };
-        assert!(pill(touchpad).track.is_none());
-        assert_eq!(pill(touchpad).text.x0, pill(touchpad).glyph.x1 + 12.0);
+        let short = level("Buds", DeviceGlyph::Headphones);
+        let long = level("Studio monitoring headphones", DeviceGlyph::Headphones);
+        assert!(
+            pill(&long).rect.width() > pill(&short).rect.width(),
+            "a longer device name makes a wider pill"
+        );
+        // Its reading may change without the pill changing shape: the value
+        // slot fits the widest reading, so the bar keeps its length.
+        let wide = pill(&volume(0.65)).rect.width();
+        let muted = Osd::from(Level {
+            kind: OsdKind::Volume,
+            level: 0.65,
+            on: false,
+            device: Some(Device::new("Studio headphones", DeviceGlyph::Headphones)),
+        });
+        for other in [volume(0.05), volume(1.0), muted] {
+            assert_eq!(
+                pill(&other).rect.width(),
+                wide,
+                "{other:?} resized the pill"
+            );
+        }
+        // A hint is one row, and narrows to its words.
+        let hint = pill(&night_light(true));
+        assert!(hint.bar.is_none());
+        assert!(hint.rect.height() < pill(&volume(0.65)).rect.height());
     }
 
     #[test]
-    fn the_track_empties_when_the_sound_is_muted() {
-        assert!((volume(0.37).filled() - 0.37).abs() < 1e-6);
-        assert_eq!(
-            Osd {
-                on: false,
-                ..volume(0.37)
-            }
-            .filled(),
-            0.0
-        );
-        assert_eq!(
-            Osd {
-                kind: OsdKind::Touchpad,
-                level: 0.5,
-                on: true,
-            }
-            .filled(),
-            0.0,
-            "a state with no level has no track to fill"
-        );
-        // Out-of-range levels are clamped, never drawn past the track.
-        assert_eq!(volume(2.0).filled(), 1.0);
-        assert_eq!(volume(-1.0).filled(), 0.0);
+    fn the_bar_empties_when_the_sound_is_muted() {
+        let level = |level: f32, on: bool| Level {
+            kind: OsdKind::Volume,
+            level,
+            on,
+            device: None,
+        };
+        assert!((level(0.37, true).filled() - 0.37).abs() < 1e-6);
+        assert_eq!(level(0.37, false).filled(), 0.0);
+        assert_eq!(level(2.0, true).filled(), 1.0);
+        assert_eq!(level(-1.0, true).filled(), 0.0);
+        assert_eq!(level(0.37, false).value_text(), "Muted");
     }
 
     #[test]
-    fn every_kind_names_its_own_glyph_and_dims_when_it_is_off() {
-        use ui::icons::Icon;
-        let glyph = |kind, level, on| Osd { kind, level, on }.glyph();
+    fn a_hint_says_the_mode_in_words_and_keeps_its_chord() {
+        ui::i18n::I18nManager::init("en-US");
+        let hint = night_light(true);
+        assert_eq!(hint.caption(), "Night light on");
+        let pill = pill(&hint);
+        assert_eq!(pill.name_text, "Night light on");
         assert_eq!(
-            glyph(OsdKind::Volume, 0.5, true),
-            (Icon::Volume2, GlyphTone::On)
+            pill.chord.as_ref().map(|(chord, _)| chord.as_str()),
+            Some("⌃⌥N")
         );
-        assert_eq!(
-            glyph(OsdKind::Volume, 0.5, false),
-            (Icon::VolumeX, GlyphTone::On)
-        );
-        assert_eq!(
-            glyph(OsdKind::Brightness, 0.5, true),
-            (Icon::Sun, GlyphTone::On)
-        );
-        assert_eq!(
-            glyph(OsdKind::KeyboardBacklight, 0.5, true),
-            (Icon::Keyboard, GlyphTone::On)
-        );
-        assert_eq!(
-            glyph(OsdKind::KeyboardBacklight, 0.0, true),
-            (Icon::Keyboard, GlyphTone::Off)
-        );
-        assert_eq!(
-            glyph(OsdKind::Microphone, 0.0, false),
-            (Icon::MicOff, GlyphTone::Warn)
-        );
-        assert_eq!(
-            glyph(OsdKind::Touchpad, 0.0, false),
-            (Icon::Mouse, GlyphTone::Off)
-        );
-        assert_eq!(
-            glyph(OsdKind::NextTrack, 0.0, true),
-            (Icon::SkipForward, GlyphTone::On)
-        );
-        assert_eq!(
-            glyph(OsdKind::NoBacklight, 0.0, true),
-            (Icon::Monitor, GlyphTone::Off)
-        );
-        // Every kind the action accepts has a glyph of its own.
+        // Every mode a person cannot see says what changed.
+        for (kind, on, words) in [
+            (OsdKind::DoNotDisturb, true, "Do not disturb on"),
+            (OsdKind::DoNotDisturb, false, "Do not disturb off"),
+            (OsdKind::Magnifier, true, "Magnifier on"),
+            (OsdKind::NightLight, false, "Night light off"),
+            (OsdKind::CapturedKeys, true, "Keys captured"),
+            (OsdKind::PointerReleased, true, "Pointer released"),
+            (OsdKind::Touchpad, false, "Touchpad off"),
+        ] {
+            assert_eq!(
+                Osd::from(Hint {
+                    kind,
+                    on,
+                    chord: None
+                })
+                .caption(),
+                words
+            );
+        }
+    }
+
+    #[test]
+    fn every_kind_has_a_glyph_and_says_something() {
+        ui::i18n::I18nManager::init("en-US");
         for kind in OsdKind::ALL {
-            let (_, tone) = Osd {
+            let hint = Osd::from(Hint {
                 kind,
-                level: 0.0,
                 on: true,
-            }
-            .glyph();
+                chord: None,
+            });
+            let (_, tone) = hint.glyph();
             assert!(matches!(
                 tone,
                 GlyphTone::On | GlyphTone::Off | GlyphTone::Warn
             ));
+            assert!(!hint.caption().is_empty(), "{kind:?} says nothing");
         }
+        assert!(OsdKind::Volume.has_level());
+        assert!(!OsdKind::NightLight.has_level());
+        assert_eq!(
+            DeviceGlyph::of_sink("Studio headphones"),
+            DeviceGlyph::Headphones
+        );
+        assert_eq!(DeviceGlyph::of_sink("Built-in Audio"), DeviceGlyph::Speaker);
+    }
+
+    #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "spacing steps are whole logical pixels"
+    )]
+    fn the_readout_moves_out_of_the_text_carets_way() {
+        let output = (0, 0, 1280, 800);
+        assert_eq!(clear_of_caret(None, output), Placement::Bottom);
+        // Typing in a field near the bottom centre: the readout stands at the
+        // top, clear of the line being typed.
+        let caret = Rect::new(620.0, 700.0, 628.0, 720.0);
+        assert_eq!(clear_of_caret(Some(caret), output), Placement::Top);
+        let (x, y, w, _) = place(output, Placement::Top);
+        assert_eq!(x, 0);
+        assert_eq!(y, (OSD_INSET - OSD_MARGIN) as i32);
+        assert_eq!(w, 1280);
+        // A caret far from the middle is no concern: the pill stays where a
+        // glance finds it.
+        let far = Rect::new(40.0, 700.0, 48.0, 720.0);
+        assert_eq!(clear_of_caret(Some(far), output), Placement::Bottom);
+        // Nor is one in the middle of the screen, away from the foot.
+        let middle = Rect::new(620.0, 300.0, 628.0, 320.0);
+        assert_eq!(clear_of_caret(Some(middle), output), Placement::Bottom);
+        // A second display is judged on its own foot.
+        let second = (1280, 0, 1920, 1080);
+        assert_eq!(clear_of_caret(Some(caret), second), Placement::Bottom);
     }
 
     #[test]
     fn a_readout_shows_by_its_action_changes_in_place_and_goes() {
         let _settled = ui::motion::testing::settled();
+        ui::i18n::I18nManager::init("en-US");
         let mut slab = OsdSlab::new();
         assert!(slab.current().is_none());
         let resource = osd_resource();
         let spec = &resource.actions[0];
+        let show = |arguments: &serde_json::Map<String, serde_json::Value>| {
+            tilo_actions::door::encode_json(
+                std::slice::from_ref(&resource),
+                &tilo_actions::ActionAddress::new(OSD_RESOURCE, spec.id.as_str()),
+                arguments,
+            )
+            .expect("the readout's action takes these arguments")
+        };
         let mut arguments = serde_json::Map::new();
         arguments.insert("kind".into(), "brightness".into());
         arguments.insert("level".into(), 0.3.into());
-        let encoded = tilo_actions::door::encode_json(
-            std::slice::from_ref(&resource),
-            &tilo_actions::ActionAddress::new(OSD_RESOURCE, spec.id.as_str()),
-            &arguments,
-        )
-        .unwrap();
+        arguments.insert("device".into(), "Built-in display".into());
+        arguments.insert("device-glyph".into(), "display".into());
+        let encoded = show(&arguments);
         let osd: Osd = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(
+            osd,
+            brightness(0.3),
+            "the action carries the device the key changed"
+        );
         slab.show(osd);
         assert_eq!(
-            slab.current().map(|osd| osd.kind),
+            slab.current().map(|osd| osd.kind()),
             Some(OsdKind::Brightness)
         );
-        slab.show(Osd { level: 0.4, ..osd });
-        assert_eq!(slab.current().map(|osd| osd.level), Some(0.4));
+        slab.show(brightness(0.4));
+        match slab.current().expect("still up") {
+            Osd::Level(level) => assert_eq!(level.level, 0.4),
+            Osd::Hint(_) => panic!("a brightness is a level"),
+        }
+        // A mode change shows as a hint, with the chord that made it.
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("kind".into(), "night-light".into());
+        arguments.insert("chord".into(), "⌃⌥N".into());
+        let encoded = show(&arguments);
+        let osd: Osd = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(osd, night_light(true));
+        slab.show(osd);
+        assert_eq!(
+            slab.current().map(|osd| osd.caption()),
+            Some("Night light on".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_level_follows_on_a_spring_and_a_reverse_turns_from_where_it_is() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut slab = OsdSlab::new();
+        slab.show(volume(0.2));
+        let pressed = ui::time::now();
+        slab.show(volume(0.8));
+        // Thirty milliseconds after the second press the bar is on its way,
+        // not already there: the level is a spring, never a jump.
+        let early_at = pressed.checked_add(Duration::from_millis(30)).unwrap();
+        let early = slab.level_at(early_at);
+        assert!((0.2..0.8).contains(&early), "the bar moved to {early}");
+        let later = pressed.checked_add(Duration::from_millis(60)).unwrap();
+        assert!(slab.level_at(later) > early, "the bar keeps moving");
+        let settled_at = pressed.checked_add(Duration::from_millis(600)).unwrap();
+        assert!((slab.level_at(settled_at) - 0.8).abs() < 1e-3);
+        assert!(slab.openness_at(early_at) > 0.0, "the readout is up");
+        // Pressing it down again turns the bar back from where it is drawn,
+        // never cutting to the new reading.
+        let before = slab.level_at(ui::time::now());
+        slab.show(volume(0.1));
+        let after = ui::time::now()
+            .checked_add(Duration::from_millis(2))
+            .unwrap();
+        assert!(before > 0.2, "the bar had started to rise: {before}");
+        assert!(
+            slab.level_at(after) > before - 0.05,
+            "it turned from where it was drawn"
+        );
+    }
+
+    #[test]
+    fn a_readout_takes_itself_away_on_the_spring_that_brought_it() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut slab = OsdSlab::new();
+        slab.show(volume(0.5));
+        let up = ui::time::now();
+        assert!(slab.needs_redraw());
+        assert!(slab.openness_at(up) > 0.0, "it is up");
+        // Its hold runs, and then it goes: the openness falls on the same
+        // spring the coming used, rather than being cut off.
+        let leaving = up
+            .checked_add(OSD_HOLD)
+            .and_then(|at| at.checked_add(Duration::from_millis(20)))
+            .unwrap();
+        slab.follow(leaving);
+        let falling = leaving.checked_add(Duration::from_millis(120)).unwrap();
+        assert!(slab.openness_at(falling) < 0.5, "it is on its way out");
+        let gone = leaving.checked_add(Duration::from_millis(600)).unwrap();
+        slab.follow(gone);
+        assert!(slab.raised.is_none(), "it has gone, and asks for no frame");
+        assert!(!slab.needs_redraw());
     }
 }

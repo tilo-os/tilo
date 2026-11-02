@@ -1,10 +1,11 @@
 //! The session's surface apps on their layers above the windows: where
 //! each goes on the outputs, and when it shows.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_compositor::{HostKey, HostLayer, KeyClaim, OutputInfo, SurfaceHost};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
 use tilo_surface_host::{AppHost, Placement, Published};
@@ -19,12 +20,6 @@ fn bar_height() -> i32 {
     )]
     let height = TOPBAR_HEIGHT_PX.ceil() as i32;
     height
-}
-
-/// The first output's rectangle `(x, y, w, h)`, the one the bar's status
-/// cluster is on.
-fn first(outputs: &[(i32, i32, i32, i32)]) -> Option<(i32, i32, i32, i32)> {
-    outputs.first().copied()
 }
 
 /// The rect the stack places a surface at, as a placement at `scale`.
@@ -339,14 +334,63 @@ impl SurfaceHost for Banners {
     }
 }
 
-/// The hardware keys' readout, bottom-centre on the first output: it never
-/// takes the pointer or the keyboard.
+/// Where each display stands and where the person is typing, as the session
+/// last saw the compositor: what the readout answers with when a key raises
+/// one.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ReadoutPlace {
+    /// The focused text field's caret, in desk coordinates.
+    caret: Option<Rect>,
+    /// Each display's connector, and its rectangle.
+    displays: Vec<(String, (i32, i32, i32, i32))>,
+}
+
+/// The session's hold of [`ReadoutPlace`], shared with the readout.
+pub(crate) type ReadoutPlaces = Rc<RefCell<ReadoutPlace>>;
+
+impl ReadoutPlace {
+    /// Take the outputs the compositor shows and the caret of the field the
+    /// person types into, as they stand now.
+    pub(crate) fn observe(&mut self, outputs: &[OutputInfo], caret: Option<Rect>) {
+        self.displays = outputs
+            .iter()
+            .filter(|output| output.enabled)
+            .filter_map(|output| Some((output.name.clone(), output.rect?)))
+            .collect();
+        self.caret = caret;
+    }
+
+    /// The caret the person types at, when there is one.
+    fn caret(&self) -> Option<Rect> {
+        self.caret
+    }
+
+    /// Where the display `display` stands, or the first one when none is
+    /// named or it is not shown.
+    fn output(&self, display: Option<&str>) -> Option<(i32, i32, i32, i32)> {
+        display
+            .and_then(|display| {
+                self.displays
+                    .iter()
+                    .find(|(connector, _)| connector == display)
+                    .map(|(_, rect)| *rect)
+            })
+            .or_else(|| self.displays.first().map(|(_, rect)| *rect))
+    }
+}
+
+/// The hardware keys' readout, on the display whose key changed it: it never
+/// takes the pointer or the keyboard, and shows over the lock too.
 pub(crate) struct Readout {
     host: tilo_surface_host::WidgetHost,
+    /// Where each display stands and where the person types.
+    places: ReadoutPlaces,
+    /// The display the readout up now answers for, by connector.
+    display: Option<String>,
 }
 
 impl Readout {
-    pub(crate) fn new(scale: f64) -> Self {
+    pub(crate) fn new(scale: f64, places: ReadoutPlaces) -> Self {
         Self {
             host: tilo_surface_host::WidgetHost::new(
                 Box::new(tilo_desktop::osd::OsdSlab::new()),
@@ -362,7 +406,23 @@ impl Readout {
                 },
                 false,
             ),
+            places,
+            display: None,
         }
+    }
+
+    /// Stand on the display `display` answers for, in the band the person is
+    /// not typing in.
+    fn stand(&mut self, display: Option<&str>) {
+        self.display = display.map(str::to_owned);
+        let Some(output) = self.places.borrow().output(display) else {
+            return;
+        };
+        let caret = self.places.borrow().caret();
+        let side = tilo_desktop::osd::clear_of_caret(caret, output);
+        let scale = self.host.placement().scale;
+        let (x, y, w, h) = tilo_desktop::osd::place(output, side);
+        self.host.set_placement(placement(x, y, w, h, scale));
     }
 }
 
@@ -380,11 +440,30 @@ impl Published for Readout {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
+        // A readout stands on the display whose key changed it, and keeps
+        // clear of the line the person is typing on.
+        if address.resource == tilo_desktop::osd::OSD_RESOURCE && address.action == "show" {
+            let display = arguments
+                .get("display")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            self.stand(display.as_deref());
+        }
         Published::invoke(&mut self.host, address, arguments)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
         Published::accessible_labels(&mut self.host)
+    }
+
+    /// A key pressed on the lock screen still answers there: the readout is
+    /// the session's own word about what changed, not an app's.
+    fn serves_while_locked(&self) -> bool {
+        true
+    }
+
+    fn locked_resources(&mut self) -> Vec<ResourceSpec> {
+        self.resources()
     }
 }
 
@@ -421,15 +500,18 @@ impl SurfaceHost for Readout {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
-        let Some(output) = first(outputs) else {
-            return;
-        };
-        let scale = self.host.placement().scale;
-        // A band across the output, its pill bottom-centred in it: where a
-        // glance finds it, clear of the bar and the dock.
-        let (x, y, w, h) = tilo_desktop::osd::place(output);
-        self.host.set_placement(placement(x, y, w, h, scale));
+    fn outputs_changed(&mut self, _outputs: &[(i32, i32, i32, i32)]) {
+        // Where the displays stand comes with the session's own reading of
+        // them (connectors, not just rectangles): the readout stands on the
+        // display it answers for again.
+        let display = self.display.clone();
+        self.stand(display.as_deref());
+    }
+
+    /// A hardware key's answer shows over the lock screen, where it was
+    /// pressed.
+    fn above_lock(&self) -> bool {
+        true
     }
 }
 
@@ -444,6 +526,10 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
 
     fn below_windows(&self) -> bool {
         self.0.borrow().below_windows()
+    }
+
+    fn above_lock(&self) -> bool {
+        self.0.borrow().above_lock()
     }
 
     fn withholds_captures(&self) -> bool {

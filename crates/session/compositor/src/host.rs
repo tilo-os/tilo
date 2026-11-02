@@ -167,6 +167,14 @@ pub trait SurfaceHost {
         false
     }
 
+    /// Whether this surface shows over the session's lock. Only what the
+    /// session itself stands up answers a key pressed while locked (the
+    /// hardware keys' readout), and only its pixels show then: the lock still
+    /// takes every key and every pointer press.
+    fn above_lock(&self) -> bool {
+        false
+    }
+
     /// Whether a capture may not show what this surface draws now: it shows
     /// a secret, such as what the person typed into a password field. Every
     /// copy of the desktop's pixels — a screenshot, a recording, a share

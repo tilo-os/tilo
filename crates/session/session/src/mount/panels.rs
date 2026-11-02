@@ -13,7 +13,7 @@ use crate::controls::SessionControls;
 use crate::keys::{
     ControllerKeys, DeskKeys, GuideKeys, Invocations, PressedChords, Presses, SessionKeys,
 };
-use crate::panels::{Held, Popover, Readout};
+use crate::panels::{Held, Popover, Readout, ReadoutPlace, ReadoutPlaces};
 use crate::setup::Setup;
 use crate::{BeforeDesk, DeviceHost, Doors, Options, PanelHost, QuickSettings, SessionCommand};
 
@@ -102,8 +102,16 @@ pub(crate) fn mount_controls(
         reveals,
     }: KeyContext,
     scale: f64,
-) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations, PressedChords) {
-    let readout = Rc::new(RefCell::new(Readout::new(scale)));
+) -> (
+    Rc<RefCell<Vec<SessionCommand>>>,
+    Invocations,
+    PressedChords,
+    ReadoutPlaces,
+) {
+    // Where each display stands and where the person types, filled in every
+    // pass: what the readout answers with.
+    let places: ReadoutPlaces = Rc::new(RefCell::new(ReadoutPlace::default()));
+    let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(&places))));
     compositor.add_host(Box::new(Held(Rc::clone(&readout))));
     doors.add(readout);
     let commands = Rc::new(RefCell::new(Vec::new()));
@@ -131,7 +139,7 @@ pub(crate) fn mount_controls(
         },
         reveals,
     )));
-    (commands, invocations, triggered)
+    (commands, invocations, triggered, places)
 }
 
 /// The device's own backend, when the session runs one, and the quick

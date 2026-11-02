@@ -327,6 +327,9 @@ pub(crate) struct SessionNotifications {
     published: Option<u64>,
     /// Counts arrivals, keeping each one's artwork apart.
     generation: u64,
+    /// The Do Not Disturb change since the readout last said one: whoever
+    /// flipped the switch, on screen it says so.
+    quiet_changed: Cell<Option<bool>>,
 }
 
 impl SessionNotifications {
@@ -387,6 +390,7 @@ impl SessionNotifications {
             transient: BTreeSet::new(),
             published: None,
             generation: 0,
+            quiet_changed: Cell::new(None),
         }
     }
 
@@ -459,7 +463,13 @@ impl SessionNotifications {
     /// The settings document could not be written.
     pub(crate) fn set_do_not_disturb(&self, on: bool) -> std::io::Result<()> {
         self.policy.lock_recover().do_not_disturb = on;
+        self.quiet_changed.set(Some(on));
         NotificationPolicy::save_do_not_disturb(on)
+    }
+
+    /// The Do Not Disturb change since the readout last confirmed one.
+    pub(crate) fn take_quiet_change(&self) -> Option<bool> {
+        self.quiet_changed.take()
     }
 
     /// The desk's log of what it shows: the live banners and the centre

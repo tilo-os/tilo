@@ -458,8 +458,13 @@ where
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
     let hosted = |renderer: &mut R, elements: &mut Vec<OutputRenderElement<R>>, below: bool| {
         for host in state.hosts.iter().rev().filter(|host| {
-            // While locked only the lock client shows.
-            !locked && host.below_windows() == below
+            if locked {
+                // While locked only the session's own readout shows, over the
+                // lock client: it answers a hardware key pressed there.
+                host.above_lock()
+            } else {
+                host.below_windows() == below
+            }
         }) {
             for picture in host.window_pictures().iter().rev() {
                 if let Some(window) = window_of(picture.window) {
@@ -485,8 +490,10 @@ where
         }
     };
     if locked {
-        // The lock client's surfaces, and nothing of the session's.
+        // The lock client's surfaces, and then the session's own readout,
+        // which answers a key pressed on the lock screen and shows there.
         elements.extend(state.lock_elements(renderer, output));
+        hosted(renderer, &mut elements, false);
         return elements;
     }
     elements.extend(state.drag_icon_elements(renderer, output));

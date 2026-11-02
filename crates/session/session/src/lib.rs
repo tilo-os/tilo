@@ -132,7 +132,7 @@ use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
-use tilo_desktop::osd::{Osd, OsdKind};
+use tilo_desktop::osd::{Hint, Osd, OsdKind};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
@@ -657,6 +657,9 @@ pub struct Session {
     /// Whether the night light is on, and whether a change is kept in the
     /// person's settings.
     night_light: (bool, bool),
+    /// Where each display stands and where the person types, as the readout
+    /// answers with them.
+    readout_place: crate::panels::ReadoutPlaces,
     /// When the on-screen keyboard runs, as the person chose: never, over a
     /// field they touch, or always.
     keyboard_preference: tilo_accessibility_settings::OnScreenKeyboard,
@@ -1233,7 +1236,7 @@ impl Session {
             portal_shortcuts.clone(),
             Rc::clone(&controller),
         );
-        let (commands, invocations, triggered) = mount_controls(
+        let (commands, invocations, triggered, readout_place) = mount_controls(
             &mut compositor,
             &mut doors,
             shortcuts,
@@ -1610,6 +1613,7 @@ impl Session {
             slot_views,
             displays: display_settings::Displays::default(),
             displays_service,
+            readout_place,
             confirmation: display_confirm::Confirmation::default(),
             display_sheet: display_sheet::DisplaySheet::new(
                 display_seat,
@@ -1703,6 +1707,29 @@ impl Session {
             .land(&self.shared.handle, &self.compositor.outputs());
         self.displays
             .follow(&mut self.compositor, night_light, turned)
+    }
+
+    /// Keep the readout's facts current: where the displays stand, where the
+    /// person types, and a mode change waiting for the readout to confirm it.
+    fn follow_readout(&mut self) {
+        let caret = self.compositor.text_caret().map(|caret| {
+            ui::kurbo::Rect::new(
+                caret.x,
+                caret.y,
+                caret.x + caret.width,
+                caret.y + caret.height,
+            )
+        });
+        self.readout_place
+            .borrow_mut()
+            .observe(&self.compositor.outputs(), caret);
+        if let Some(on) = self.shared.notifications.borrow().take_quiet_change() {
+            self.shared.show_readout(Osd::from(Hint {
+                kind: OsdKind::DoNotDisturb,
+                on,
+                chord: None,
+            }));
+        }
     }
 
     /// Place the surfaces over the desk on the displays as they are now: the
@@ -2443,6 +2470,11 @@ impl Session {
                 let (zoom, remembered) = self.magnifier;
                 self.magnifier = settings_store::magnifier::step(zoom, remembered, step.into());
                 self.compositor.set_zoom(f64::from(self.magnifier.0));
+                self.shared.show_readout(Osd::from(Hint {
+                    kind: OsdKind::Magnifier,
+                    on: self.magnifier.0 > settings_store::magnifier::OFF,
+                    chord: None,
+                }));
                 Ok(())
             }
             SessionCommand::LogOut => {
@@ -2476,6 +2508,11 @@ impl Session {
                 if kept && let Err(error) = settings_store::hardware::NIGHT_LIGHT.set(on) {
                     tracing::warn!(%error, "the night light setting was not kept");
                 }
+                self.shared.show_readout(Osd::from(Hint {
+                    kind: OsdKind::NightLight,
+                    on,
+                    chord: None,
+                }));
                 Ok(())
             }
             SessionCommand::PasteFiles { destination } => {
@@ -2511,11 +2548,11 @@ impl Session {
                 let enabled = on.unwrap_or(!self.input.touchpad_enabled);
                 self.input.touchpad_enabled = enabled;
                 self.compositor.set_input_config(self.input.clone());
-                self.shared.show_readout(Osd {
+                self.shared.show_readout(Osd::from(Hint {
                     kind: OsdKind::Touchpad,
-                    level: 0.0,
                     on: enabled,
-                });
+                    chord: None,
+                }));
                 Ok(())
             }
         }
@@ -2591,6 +2628,7 @@ impl Session {
         // What the services published this pass is what every surface of the
         // machine shows.
         self.shared.follow_status();
+        self.follow_readout();
         self.shared.show_answered_readouts();
         // The surface apps are answered after the services took in what
         // their devices did, so a panel is sent the reading of this pass.

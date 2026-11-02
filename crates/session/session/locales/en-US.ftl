@@ -153,3 +153,6 @@ identity-clock-wait-title = Waiting for the clock
 identity-clock-wait-body = Your Tilo identity is safe. The desktop opens once this computer's date and time are right.
 identity-clock-wait-not-yet-valid = Your Tilo identity is safe. Its certificate starts at { $valid }, and this computer's clock reads { $now }. The desktop opens by itself once the clock passes that, or you set the date and time.
 identity-clock-wait-expired = Your Tilo identity is safe. Its certificate ran until { $until }, and this computer's clock reads { $now }. The desktop opens by itself once the date and time are set right.
+
+## what the readout calls the keyboard, whose backlight it just changed.
+osd-keyboard-name = Keyboard

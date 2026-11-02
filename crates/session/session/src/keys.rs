@@ -19,7 +19,7 @@ use tilo_actions::{ActionAddress, DoorError};
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop::desk_widgets::DeskFold;
-use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
+use tilo_desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_surface_host::DeskGesture;
 use ui::host_operation::ResourceOperationStart;
@@ -28,6 +28,7 @@ use xkeysym::key as keysyms;
 
 use crate::Shared;
 use crate::displays;
+use crate::i18n::t;
 use crate::mount::services::answered;
 use crate::mount::shell::{OVERLAYS, WINDOW_MENU};
 /// One published action to invoke, with its arguments.
@@ -802,7 +803,7 @@ impl Shared {
                 Ok(started) => {
                     if let Some(kind) = invocation.readout {
                         let now = self.reading(kind);
-                        self.show_readout(now);
+                        self.show_readout(now.clone());
                         if started == ResourceOperationStart::Accepted {
                             // The device has not answered yet: the readout
                             // shows where it started, and again where the
@@ -819,11 +820,11 @@ impl Shared {
                     if invocation.readout == Some(OsdKind::Brightness)
                         && Self::says_nothing_to_dim(&error)
                     {
-                        self.show_readout(Osd {
+                        self.show_readout(Osd::Hint(Hint {
                             kind: OsdKind::NoBacklight,
-                            level: 0.0,
                             on: true,
-                        });
+                            chord: None,
+                        }));
                     }
                     tracing::debug!(
                         ?error,
@@ -836,7 +837,8 @@ impl Shared {
         ran
     }
 
-    /// The readout of `kind` as the device's own service publishes it now.
+    /// The readout of `kind` as the device's own service publishes it now:
+    /// naming the device it is about, so the pill says whose level it is.
     pub(crate) fn reading(&self, kind: OsdKind) -> Osd {
         let services = self.services.borrow();
         let read = |resource: &str| services.read(resource);
@@ -845,25 +847,89 @@ impl Shared {
                 serde_json::from_value::<tilo_audio_service::sound::Sound>(reading).ok()
             })
         };
-        let (level, on) = match kind {
-            OsdKind::Volume => sound().map_or((0.0, true), |sound| {
-                (sound.volume.unwrap_or(0.0), !sound.muted)
-            }),
-            OsdKind::Microphone => sound().map_or((0.0, true), |sound| (0.0, !sound.input_muted)),
-            OsdKind::Brightness => read(displays::RESOURCE)
+        let displays = || {
+            read(displays::RESOURCE)
                 .and_then(|reading| serde_json::from_value::<displays::Reading>(reading).ok())
-                .map_or((0.0, true), |reading| {
-                    (reading.brightness().unwrap_or(0.0), true)
-                }),
-            OsdKind::AirplaneMode => read(NETWORK)
+        };
+        if !kind.has_level() {
+            let on = match kind {
+                OsdKind::Microphone => sound().is_none_or(|sound| !sound.input_muted),
+                OsdKind::AirplaneMode => read(NETWORK)
+                    .and_then(|reading| {
+                        serde_json::from_value::<tilo_connectivity_service::model::Network>(reading)
+                            .ok()
+                    })
+                    .is_some_and(|network| network.airplane_mode),
+                _ => true,
+            };
+            return Osd::Hint(Hint {
+                kind,
+                on,
+                chord: None,
+            });
+        }
+        let (level, on, device) = match kind {
+            OsdKind::Volume => sound().map_or((0.0, true, None), |sound| {
+                let device = sound
+                    .outputs
+                    .iter()
+                    .find(|output| output.chosen)
+                    .map(|output| {
+                        let name = if output.label.is_empty() {
+                            output.name.clone()
+                        } else {
+                            output.label.clone()
+                        };
+                        Device::new(name, DeviceGlyph::of_sink(&output.name))
+                    });
+                (sound.volume.unwrap_or(0.0), !sound.muted, device)
+            }),
+            OsdKind::Brightness => displays().map_or((0.0, true, None), |reading| {
+                let device = Self::dimmable(&reading)
+                    .map(|display| Device::new(display.name.clone(), DeviceGlyph::Display));
+                (reading.brightness().unwrap_or(0.0), true, device)
+            }),
+            OsdKind::KeyboardBacklight => read(KEYBOARD_BACKLIGHT)
                 .and_then(|reading| {
-                    serde_json::from_value::<tilo_connectivity_service::model::Network>(reading)
+                    serde_json::from_value::<tilo_system_service::model::KeyboardLight>(reading)
                         .ok()
                 })
-                .map_or((0.0, true), |network| (0.0, network.airplane_mode)),
-            _ => (0.0, true),
+                .map_or((0.0, true, None), |light| {
+                    let level = light
+                        .level
+                        .filter(|_| light.max > 0)
+                        .map_or(0.0, |level| level as f32 / light.max as f32);
+                    let device = Device::new(t("osd-keyboard-name"), DeviceGlyph::Keyboard);
+                    (level, level > 0.0, Some(device))
+                }),
+            _ => (0.0, true, None),
         };
-        Osd { kind, level, on }
+        Osd::Level(Level {
+            kind,
+            level,
+            on,
+            device,
+        })
+    }
+
+    /// The display a brightness key is about: the one the person works on
+    /// when it can be dimmed, else the first one that can ([`displays::Reading::brightness`]).
+    fn dimmable(reading: &displays::Reading) -> Option<&displays::Display> {
+        reading
+            .focused
+            .as_deref()
+            .and_then(|focused| {
+                reading
+                    .displays
+                    .iter()
+                    .find(|display| display.connector == focused && display.brightness.is_some())
+            })
+            .or_else(|| {
+                reading
+                    .displays
+                    .iter()
+                    .find(|display| display.brightness.is_some())
+            })
     }
 
     /// Show the readouts a device answered since the key was pressed, where it
@@ -890,11 +956,25 @@ impl Shared {
         matches!(error, DoorError::Unavailable { code, .. } if code == "no-backlight")
     }
 
-    /// Show `osd` through the readout's published action.
+    /// Show `osd` through the readout's published action, on the display the
+    /// person works on: the readout answers there, over whatever that display
+    /// shows, including the lock.
     pub(crate) fn show_readout(&self, osd: Osd) {
-        let Ok(serde_json::Value::Object(arguments)) = serde_json::to_value(osd) else {
-            return;
-        };
+        let display = self
+            .services
+            .borrow()
+            .read(displays::RESOURCE)
+            .and_then(|reading| serde_json::from_value::<displays::Reading>(reading).ok())
+            .and_then(|reading| {
+                // A brightness key dims the display it is about; every other
+                // readout answers on the display the person works on.
+                if osd.kind() == OsdKind::Brightness {
+                    Self::dimmable(&reading).map(|display| display.connector.clone())
+                } else {
+                    reading.focused
+                }
+            });
+        let arguments = osd.arguments(display.as_deref());
         let address = ActionAddress::new(OSD_RESOURCE, "show");
         if let Err(error) = self.doors.invoke(&address, &arguments) {
             tracing::debug!(?error, "no readout shown");
