@@ -429,6 +429,7 @@ impl std::fmt::Debug for Tooltip {
             .field("anchor", &self.anchor)
             .field("hover_since", &self.hover_since)
             .field("appear", &self.appear)
+            .field("dirty", &self.dirty)
             .finish()
     }
 }
