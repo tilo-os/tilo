@@ -1708,7 +1708,13 @@ impl Session {
     /// # Errors
     /// The compositor or its window did not start.
     pub fn nested(options: Options, config: &NestedConfig) -> Result<Self, Error> {
-        let mut session = Self::new(options, |policy| Compositor::nested(policy, config))?;
+        // The desktop this session runs inside hands it over as one
+        // connection the window takes once, so the window opens before the
+        // session builds anything of its own: the desk builds the surface
+        // apps' renderers, whose adapter request connects to that desktop,
+        // and after that the window would find no connection left.
+        let window = tilo_compositor::NestedBackend::open_window(config)?;
+        let mut session = Self::new(options, |policy| Compositor::nested(policy, config, window))?;
         session.warm()?;
         Ok(session)
     }
