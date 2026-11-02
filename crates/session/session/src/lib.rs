@@ -2927,10 +2927,17 @@ impl Session {
             .emoji
             .step(&mut self.compositor, origin, Instant::now());
         let compositor = &mut self.compositor;
-        self.shared
+        let appeared = self
+            .shared
             .notifications
             .borrow_mut()
             .step(&mut || Some(compositor.activation_token()));
+        // What the person was just told flashes the screen when they asked
+        // for a visual alert: a person who cannot hear the alert sound is
+        // told of it the same way.
+        if appeared && compositor.a11y().visual_alerts {
+            compositor.flash();
+        }
         self.shared.open_notifications();
         self.settle()?;
         self.follow_bars();

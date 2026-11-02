@@ -316,6 +316,9 @@ pub(crate) struct SessionNotifications {
     by_sender: BTreeMap<u32, u64>,
     /// The daemon notifications whose banner was up at the last look.
     up: BTreeSet<u32>,
+    /// The desk's banners that were up at the last look: a new one is
+    /// something the person was told since then.
+    banners_up: BTreeSet<u64>,
     /// Desktop notifications kept out of the centre once their banner left.
     transient: BTreeSet<u64>,
     /// The log revision the banners were last handed.
@@ -378,6 +381,7 @@ impl SessionNotifications {
             chosen,
             by_sender: BTreeMap::new(),
             up: BTreeSet::new(),
+            banners_up: BTreeSet::new(),
             transient: BTreeSet::new(),
             published: None,
             generation: 0,
@@ -565,9 +569,6 @@ impl SessionNotifications {
         self.desktop.undo_clear();
     }
 
-    /// Take in what arrived and what the banners asked, and hand the
-    /// banners what they show now. `token` mints an activation token for
-    /// each notification the person chose, so its app may raise its window.
     /// Tell the person `notice`, which the session itself raised rather than
     /// one of their apps.
     pub(crate) fn tell(&self, notice: crate::notices::Notice) {
@@ -576,7 +577,14 @@ impl SessionNotifications {
         }
     }
 
-    pub(crate) fn step(&mut self, token: &mut dyn FnMut() -> Option<String>) {
+    /// Take in what arrived and what the banners asked, and hand the
+    /// banners what they show now. `token` mints an activation token for
+    /// each notification the person chose, so its app may raise its window.
+    ///
+    /// Answers whether a banner the person was not shown before is up now:
+    /// the loop flashes the screen for it when they asked for a visual
+    /// alert.
+    pub(crate) fn step(&mut self, token: &mut dyn FnMut() -> Option<String>) -> bool {
         // Banners whose time on screen ran out leave first.
         self.desktop.expire(ui::time::now());
         self.settle(CloseReason::Expired);
@@ -596,12 +604,25 @@ impl SessionNotifications {
         }
         self.answer_chosen(token);
         self.settle(CloseReason::Dismissed);
+        // Every banner the desk puts up passes through its log, whether an
+        // app sent it or the session raised it: a new one there is what the
+        // person was just told.
+        let banners: BTreeSet<u64> = self
+            .desktop
+            .log()
+            .active()
+            .iter()
+            .map(|notification| notification.id)
+            .collect();
+        let appeared = banners.difference(&self.banners_up).next().is_some();
+        self.banners_up = banners;
         let revision = self.desktop.revision();
         if self.published != Some(revision) {
             self.published = Some(revision);
             self.banners.publish(self.desktop.feed());
         }
         self.publish_signals();
+        appeared
     }
 
     fn arrive(&mut self, arrival: Arrival) {
