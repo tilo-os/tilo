@@ -9,7 +9,7 @@
 //! encoded. A layer that starts being shown starts at a keyframe: the
 //! standing one while the picture has not changed since, so a still screen
 //! costs no encode, or one encoded from the last frame at once. Each
-//! tilo-video/1 object ([`tilo_moq::video`]) is sealed under the stream's
+//! tilo-video/1 object ([`crate::picture`]) is sealed under the stream's
 //! media key ([`crate::frame`]) and written to a unidirectional stream per
 //! source and layer, which starts at a keyframe.
 //!
@@ -28,19 +28,19 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
+use crate::picture::{self as video, Codec, VideoObject};
 use channel_crypto::ChannelContentKeys;
 use iroh::endpoint::{ReadExactError, RecvStream, SendStream};
 use media::realtime::{EncoderConfig, InputFormat, InputFrame, RealtimeEncoder, StreamCodec};
 use tilo_lock::MutexRecover as _;
-use tilo_moq::video::{self, Codec, VideoObject};
 use tokio::sync::mpsc;
 
 use crate::carrier::Peer;
 use crate::frame::{OVERHEAD, Opener, Sealer, Stream};
 use crate::roster::Roster;
 
+pub use crate::picture::{Layer, Source};
 pub use crate::wire::{layer_of_wire, layer_wire, source_of_wire, source_wire, stream_of};
-pub use tilo_moq::video::{Layer, Source};
 
 /// Camera frames a second.
 pub const CAMERA_FPS: u32 = 30;

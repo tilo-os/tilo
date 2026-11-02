@@ -21,12 +21,12 @@ use collab_types::ChannelId;
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
+use tilo_call_lane::picture::{Layer, Source, VideoObject};
 use tilo_call_lane::video::{Asking, Picture, Sink};
 use tilo_call_lane::{
     CAMERA_SIZE, Calls, Frame, Hello, Inbox, Lane, Roster, Sending, Video, even_rgba, fitted,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_moq::video::{Layer, Source, VideoObject};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CALL: &str = "voice";

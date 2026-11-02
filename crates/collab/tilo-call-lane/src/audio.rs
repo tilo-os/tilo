@@ -1,8 +1,8 @@
 //! A call's voice: one device's microphone sealed into the tilo-voice/1
 //! bundles a lane's datagrams carry, and what the other devices hear from it.
 
+use crate::voice::{self, Rebundler, VoiceObject};
 use channel_crypto::ChannelContentKeys;
-use tilo_moq::voice::{self, Rebundler, VoiceObject};
 
 use crate::frame::{self, Opener, Refusal, Sealer, Stream};
 
@@ -149,9 +149,9 @@ mod tests {
     use super::{Microphone, heard};
     use crate::frame::{Opener, Refusal, Sealer, Stream};
     use crate::roster::Roster;
+    use crate::voice;
     use channel_crypto::ChannelContentKeys;
     use collab_types::ChannelId;
-    use tilo_moq::voice;
 
     const ALICE: [u8; 32] = [1; 32];
     const BOB: [u8; 32] = [2; 32];

@@ -17921,7 +17921,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-lock",
  "tilo-media",
- "tilo-moq",
  "tilo-seal",
  "tilo-test-env",
  "tokio",

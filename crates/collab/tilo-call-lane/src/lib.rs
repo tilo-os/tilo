@@ -54,9 +54,11 @@ pub mod bridge;
 pub mod carrier;
 pub mod frame;
 pub mod page;
+pub mod picture;
 pub mod roster;
 #[cfg(feature = "lanes")]
 pub mod video;
+pub mod voice;
 pub mod wire;
 
 pub use audio::{Heard, Microphone, heard};
@@ -66,8 +68,8 @@ pub use bridge::Bridge;
 pub use carrier::{ALPN, Calls, Failed, Hello, Peer};
 pub use frame::{Lane, OVERHEAD, Opener, Refusal, Sealer, Stream};
 pub use page::Page;
+pub use picture::{Layer, Source};
 pub use roster::Roster;
-pub use tilo_moq::video::{Layer, Source};
 #[cfg(feature = "lanes")]
 pub use video::{
     Asking, CAMERA_FPS, CAMERA_SIZE, Camera, Feed, Frame, Inbox, Picture, PicturePeer, SCREEN_FPS,

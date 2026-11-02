@@ -24,10 +24,6 @@ channel-crypto = { version = "0.1.0", path = "../channel-crypto" }
 collab-types = { version = "0.1.0", path = "../collab-types" }
 # The counter-nonce AEAD the frames are sealed with.
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
-# The tilo-voice/1 object profile: the frame's header, the datagram bundle
-# rule and the bundling a sender repeats earlier frames with. Only the
-# profile, not its relay feature.
-tilo-moq = { version = "0.1.0", path = "../../hosting/tilo-moq" }
 # The real-time H.264 encoder a camera or screen picture is encoded with, and
 # the camera capture it comes from.
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"], optional = true }

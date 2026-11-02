@@ -6,7 +6,7 @@
 //! than with the lane's pictures, and a page that carries neither iroh nor an
 //! encoder still reads them.
 
-use tilo_moq::video::{Layer, Source};
+use crate::picture::{Layer, Source};
 
 use crate::frame::Stream;
 
