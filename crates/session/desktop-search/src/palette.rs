@@ -1272,7 +1272,8 @@ mod tests {
         }
     }
 
-    /// Search over `base` with an app whose answer is still coming.
+    /// Search over `base` with an app whose answer is still coming: what
+    /// the app publishes, and the window the person searches it from.
     fn with_a_late_app(base: SearchData) -> (DesktopSearch, std::rc::Rc<std::cell::Cell<bool>>) {
         let arrived = std::rc::Rc::new(std::cell::Cell::new(false));
         let mut meeting = ResourceSpec::new("meeting", "notes.page", "Meeting");
@@ -1293,7 +1294,6 @@ mod tests {
             providers: vec![Box::new(LateApp {
                 arrived: std::rc::Rc::clone(&arrived),
             })],
-            scope: Scope::InApp(AppScope::front()),
             ..base
         });
         (search, arrived)
