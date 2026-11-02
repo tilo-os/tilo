@@ -3,8 +3,9 @@
 //! A bar and a dock stand over what they cover, so their ground is the theme's bar finish
 //! ([`crate::tokens::SurfaceRole::Bar`]) rather than any app's colour: edge to edge and square
 //! at the `full` fit, a rounded body inset from the edges at the floating one. A view says
-//! which through [`ChromeShape`]; the theme decides what the body is made of, and the shape
-//! follows the theme's radii so a rounder theme is rounder chrome.
+//! which through [`ChromeShape`] and what the body is made of through [`ChromeMaterial`]; the
+//! theme resolves that into a finish, and the shape follows the theme's radii so a rounder
+//! theme is rounder chrome.
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -15,7 +16,7 @@ use crate::component::{Component, Described};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::{Rhythm, SurfaceRole};
+use crate::tokens::{ChromeMaterial, Rhythm, SurfaceRole};
 use crate::widget::{Container, Decorator, Element, Widget};
 
 /// How a bar or a dock's body sits in its edge.
@@ -61,6 +62,10 @@ pub struct ChromeProps {
     pub shape: Option<ChromeShape>,
     /// The screen edge the body stands on, where a square body draws its rule.
     pub edge: Option<ChromeEdge>,
+    /// What the body is made of: the theme's bar body (the default), the theme's glass, or
+    /// that glass made calm. A shell's bar and dock say which the person chose; every body
+    /// that leaves it out draws the theme's bar body.
+    pub material: Option<ChromeMaterial>,
     /// What the body holds.
     #[component(slot(default))]
     pub body: Option<Element>,
@@ -71,6 +76,7 @@ pub struct ChromeBody {
     name: Option<String>,
     shape: ChromeShape,
     edge: ChromeEdge,
+    material: ChromeMaterial,
     container: Container,
     rect: Rect,
 }
@@ -83,6 +89,7 @@ impl Described for ChromeBody {
             name,
             shape,
             edge,
+            material,
             body,
         } = props;
         let shape = shape.unwrap_or_default();
@@ -101,6 +108,7 @@ impl Described for ChromeBody {
             name,
             shape,
             edge: edge.unwrap_or_default(),
+            material: material.unwrap_or_default(),
             container,
             rect: Rect::ZERO,
         };
@@ -114,6 +122,7 @@ impl Described for ChromeBody {
         self.name = props.name;
         self.shape = props.shape.unwrap_or_default();
         self.edge = props.edge.unwrap_or_default();
+        self.material = props.material.unwrap_or_default();
         // The body in the slot is reconciled in place; what the body is made of changed, so
         // the container is built again around it by the host when the shape changed.
         true
@@ -137,18 +146,20 @@ impl ChromeBody {
             // so what shows through is not darkened.
             crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
         }
-        crate::backdrop::fill_role(
+        let finish = theme.chrome_material(self.material);
+        crate::backdrop::fill_role_as(
             scene,
             transform,
             &body,
             SurfaceRole::Bar,
+            &finish,
             theme,
             crate::chrome::panel_ground(theme),
         );
         let (width, ink) = crate::surface::border(theme).unwrap_or_else(|| {
             (
                 1.0,
-                if theme.finish(SurfaceRole::Bar).hairline() {
+                if finish.hairline() {
                     crate::chrome::chrome_hairline(theme)
                 } else {
                     Color::TRANSPARENT
@@ -263,5 +274,23 @@ mod tests {
         let body = ChromeBody::from_props("c", props);
         assert_eq!(body.rect, Rect::ZERO);
         assert_eq!(body.shape, ChromeShape::Square);
+        assert_eq!(body.material, ChromeMaterial::Bar);
+    }
+
+    #[test]
+    fn a_body_remembered_the_material_it_was_built_with() {
+        let mut body = ChromeBody::from_props(
+            "c",
+            ChromeProps {
+                material: Some(ChromeMaterial::Calm),
+                ..ChromeProps::default()
+            },
+        );
+        assert_eq!(body.material, ChromeMaterial::Calm);
+        body.set_props(ChromeProps {
+            material: Some(ChromeMaterial::Glass),
+            ..ChromeProps::default()
+        });
+        assert_eq!(body.material, ChromeMaterial::Glass);
     }
 }

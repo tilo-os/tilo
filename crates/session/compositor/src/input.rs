@@ -456,6 +456,10 @@ pub struct HostKey {
     pub keysym: u32,
     /// The keysym of the key's first level (no Shift), for shortcuts.
     pub unmodified_keysym: u32,
+    /// The keysym another configured layout puts on this key when the active
+    /// one has none in Latin: a shortcut is named by it, so Ctrl+C copies
+    /// while a Cyrillic, Greek or Hebrew layout types.
+    pub latin_keysym: u32,
     /// The text the key types, if it types any: the character the layout
     /// gives it, or what a dead key's or the Compose key's sequence finishes
     /// with, which is a character of its own or several.

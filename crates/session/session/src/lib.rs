@@ -32,6 +32,7 @@ mod activity_models;
 mod activity_provider;
 pub mod agent_door;
 mod app_icons;
+mod app_names;
 mod app_sheets;
 pub mod arrangement;
 mod asks;
@@ -75,6 +76,7 @@ mod here;
 mod i18n;
 pub mod identity;
 mod import_readiness;
+mod input_sources;
 pub mod keyboard;
 mod keys;
 mod launches;
@@ -103,6 +105,7 @@ mod rotation;
 pub mod run;
 mod run_programs;
 mod search;
+mod search_ask;
 pub mod seeded_apps;
 pub mod session_package;
 mod setup;
@@ -134,7 +137,9 @@ use std::time::{Duration, Instant};
 
 use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
+use tilo_compositor::{
+    Compositor, DisplayConfig, Error, KeyboardLayout, NestedConfig, OutputConfig, WindowPolicy,
+};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop::osd::{Hint, Osd, OsdKind};
@@ -155,6 +160,7 @@ pub use controls::{
     CLIPBOARD_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
     SESSION_RESOURCE, SessionCommand,
 };
+pub use desk_migration::shell::shell_state_path;
 pub use devices::RESOURCE as DEVICES_RESOURCE;
 pub use engine::Person;
 pub use env::SessionEnvironment;
@@ -264,6 +270,9 @@ struct Shared {
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
     services: Rc<RefCell<Services>>,
+    /// The services the session serves its apps and devices itself, kept for
+    /// as long as it runs (`mount::doors::TABLE` says which).
+    table: mount::doors::Doors,
     /// The windows this session shares with its workspaces, and the streams it receives from them.
     window_shares: Rc<RefCell<window_share::WindowShares>>,
     /// The runs of what people ask this session's agents to do, fed every
@@ -425,6 +434,17 @@ struct Shared {
     /// serves it: what it asks on whether first use is over, and the review
     /// it saved to be opened when it is.
     folder_import: RefCell<Option<import_readiness::Continuation>>,
+}
+
+/// Type with `keyboard`: the compositor's keymap, and the words printed on
+/// the keys of what the session draws (the shortcut guide, the desk's
+/// chords), both follow it.
+pub(crate) fn apply_keyboard(compositor: &mut Compositor, keyboard: &KeyboardLayout) {
+    compositor.set_keyboard_layout(keyboard);
+    ui::keycaps::set_active(ui::keycaps::Keycaps::from_xkb(
+        &keyboard.layout,
+        &keyboard.variant,
+    ));
 }
 
 /// The app a window shows, by its id.
@@ -903,6 +923,7 @@ impl Session {
         // reads it, and the apps this session runs reach the same model.
         let activity = activity::Activity::new(
             options.state.as_deref(),
+            options.old_desk.as_deref(),
             options.person.clone(),
             options.search.records.as_ref().map(records::Records::root),
             options.search.lists.clone(),
@@ -1055,7 +1076,7 @@ impl Session {
         // its next pass.
         options.wake.bind(compositor.waker());
         compositor.set_input_config(options.config.input.clone());
-        compositor.set_keyboard_layout(&options.config.keyboard);
+        apply_keyboard(&mut compositor, &options.config.keyboard);
         compositor.set_idle_config(options.config.idle);
         a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(display_settings::PanelBacklight::find()));
@@ -1194,6 +1215,10 @@ impl Session {
             &overlays,
         )));
         compositor.add_host(shell::bar_under(options.shell, Held(Rc::clone(&chrome))));
+        // Search's code is asked for as the session starts, so it is in by the
+        // time someone searches; a search asked for before then opens now,
+        // and the desk publishes it on its next pass.
+        handle.search_palette().borrow_mut().adopt();
         // The desk as the session publishes it, which the shell reads through the door.
         let desk_overlays = Rc::new(overlays::Overlays::new());
         let chrome_door = shell::chrome_door(options.shell, &chrome, &desk_overlays);
@@ -1376,6 +1401,24 @@ impl Session {
                 .as_ref()
                 .map(|desktop| desktop.questions().clone())
         });
+        // Every service this session serves, from the one table that says
+        // who serves each: the identity an app signs in through, the
+        // machine's readings an app the launcher connects reads, and the
+        // data this device used. They start here, before any app does.
+        let table = mount::doors::start(mount::doors::Serving {
+            desk: action_plane
+                .as_ref()
+                .map(|plane| std::sync::Arc::clone(&plane.desk)),
+            keys: engine
+                .as_ref()
+                .map_or_else(Default::default, |engine| engine.keys()),
+            questions: questions.clone(),
+            consents: options
+                .desktop
+                .as_ref()
+                .and_then(|desktop| desktop.consents())
+                .cloned(),
+        });
         let session_doors = std::sync::Arc::new(agent_door::SessionDoors::new(
             options.wake.handle(),
             std::sync::Arc::clone(&run_programs),
@@ -1520,6 +1563,7 @@ impl Session {
             waiting: RefCell::default(),
             readings,
             services,
+            table,
             window_shares,
             agent_runs,
             run_programs,
@@ -1751,7 +1795,13 @@ impl Session {
     /// # Errors
     /// The compositor or its window did not start.
     pub fn nested(options: Options, config: &NestedConfig) -> Result<Self, Error> {
-        let mut session = Self::new(options, |policy| Compositor::nested(policy, config))?;
+        // The desktop this session runs inside hands it over as one
+        // connection the window takes once, so the window opens before the
+        // session builds anything of its own: the desk builds the surface
+        // apps' renderers, whose adapter request connects to that desktop,
+        // and after that the window would find no connection left.
+        let window = tilo_compositor::NestedBackend::open_window(config)?;
+        let mut session = Self::new(options, |policy| Compositor::nested(policy, config, window))?;
         session.warm()?;
         Ok(session)
     }
@@ -1811,11 +1861,12 @@ impl Session {
             .borrow_mut()
             .observe(&self.compositor.outputs(), caret);
         if let Some(on) = self.shared.notifications.borrow().take_quiet_change() {
-            self.shared.show_readout(&Osd::from(Hint {
+            self.show_hint(Hint {
                 kind: OsdKind::DoNotDisturb,
                 on,
                 chord: None,
-            }));
+                name: None,
+            });
         }
     }
 
@@ -2257,6 +2308,60 @@ impl Session {
         &self.input
     }
 
+    /// Let each round of asks play out: a round can ask for another (a key's
+    /// shortcut the chrome leaves to the session); a few rounds settle any
+    /// chain.
+    fn settle_asks(&mut self) -> Result<(), Error> {
+        for _ in 0..4 {
+            self.shared.follow_asks();
+            // What was plugged in since, and what the person asked of its
+            // notice: an open starts Files like any other launch.
+            if let Some(drives) = &self.shared.drives {
+                drives.follow(self.shared.launch.as_deref());
+            }
+            // What the desktop asked to open, and what stopped since.
+            if let Some(launch) = &self.shared.launch {
+                launch.follow();
+            }
+            // The windows this device left open, one at a time, each into the
+            // tab it was in.
+            self.shared.follow_restore();
+            // What the apps asked of their own tabs, and of what a capture
+            // may show of them, as the desk commands they are.
+            self.follow_app_asks();
+            self.shared.follow_gestures();
+            self.shared.follow_tab_menus();
+            let ran = self.shared.run_invocations(self.compositor.locked());
+            let commands = std::mem::take(&mut *self.shared.commands.borrow_mut());
+            let commanded = !commands.is_empty();
+            for command in commands {
+                self.command(command)?;
+            }
+            if !ran && !commanded && self.shared.asks.borrow().is_empty() {
+                break;
+            }
+            // What ran may have queued desktop commands on the shared
+            // handle (the chrome switching workspace): the desk carries
+            // them out on its next pass.
+            self.shared.desktop.with_widgets(WidgetHost::relayout);
+        }
+        Ok(())
+    }
+
+    /// Answer what the apps asked of their own tabs, and of what a capture
+    /// may show of them, as the desk commands they are.
+    fn follow_app_asks(&mut self) {
+        if let Some(tabs) = &mut self.tabs {
+            tabs.follow(
+                &self.shared.desktop,
+                self.shared.launch.as_deref(),
+                &mut self.compositor,
+                self.desktop.as_deref(),
+                self.capture_studio.as_ref(),
+            );
+        }
+    }
+
     /// Carry out everything asked since the last look: the desktop's asks,
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
@@ -2266,7 +2371,7 @@ impl Session {
         self.shared.serve_activity();
         self.follow_collaboration();
         self.follow_automation();
-        self.shared.follow_personal();
+        self.shared.follow_records();
         // Who each workspace on the desk is whose, after the workspaces this
         // pass brought: the person's own are theirs, and one joined keeps its
         // host's owner.
@@ -2320,56 +2425,18 @@ impl Session {
             &self.shared.invocations,
         );
         self.place_sheets();
-        // Each round can ask for another (a key's shortcut the chrome
-        // leaves to the session); a few rounds settle any chain.
-        for _ in 0..4 {
-            self.shared.follow_asks();
-            // What was plugged in since, and what the person asked of its
-            // notice: an open starts Files like any other launch.
-            if let Some(drives) = &self.shared.drives {
-                drives.follow(self.shared.launch.as_deref());
-            }
-            // What the desktop asked to open, and what stopped since.
-            if let Some(launch) = &self.shared.launch {
-                launch.follow();
-            }
-            // The windows this device left open, one at a time, each into the
-            // tab it was in.
-            self.shared.follow_restore();
-            // What the apps asked of their own tabs, and of what a capture
-            // may show of them, as the desk commands they are.
-            if let Some(tabs) = &mut self.tabs {
-                tabs.follow(
-                    &self.shared.desktop,
-                    self.shared.launch.as_deref(),
-                    &mut self.compositor,
-                );
-            }
-            self.shared.follow_gestures();
-            self.shared.follow_tab_menus();
-            let ran = self.shared.run_invocations(self.compositor.locked());
-            let commands = std::mem::take(&mut *self.shared.commands.borrow_mut());
-            let commanded = !commands.is_empty();
-            for command in commands {
-                self.command(command)?;
-            }
-            if !ran && !commanded && self.shared.asks.borrow().is_empty() {
-                break;
-            }
-            // What ran may have queued desktop commands on the shared
-            // handle (the chrome switching workspace): the desk carries
-            // them out on its next pass.
-            self.shared.desktop.with_widgets(WidgetHost::relayout);
-        }
+        self.settle_asks()?;
         // The menu the reading says is up has its view over the desk, and
         // the view goes when the menu does.
         self.follow_window_menu();
         // Each open window takes the temperature of the workspace it is in, as this pass left it.
         self.follow_window_warmth();
         self.shared.clipboard.serve_asks(&mut self.compositor);
-        // One file of a paste in flight per turn, so a folder of files does
-        // not hold up a frame.
-        self.shared.clipboard.step_files();
+        // A paste of files runs on its own thread; the loop only asks
+        // whether it is over and tells the person how it went.
+        for notice in self.shared.clipboard.step_files() {
+            self.shared.notifications.borrow().tell(notice);
+        }
         // What was copied here reaches the person's other devices, and what
         // they copied there joins the clipboard here.
         if let Some(fabric) = &self.shared.fabric {
@@ -2560,11 +2627,17 @@ impl Session {
     /// Show a mode change in the readout, said in words: a switch flipped by
     /// a key or a switch has nothing to read as a level.
     fn hint(&self, kind: OsdKind, on: bool) {
-        self.shared.show_readout(&Osd::from(Hint {
+        self.show_hint(Hint {
             kind,
             on,
             chord: None,
-        }));
+            name: None,
+        });
+    }
+
+    /// Show `hint` in the readout.
+    fn show_hint(&self, hint: Hint) {
+        self.shared.show_readout(&Osd::from(hint));
     }
 
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
@@ -2639,28 +2712,21 @@ impl Session {
                 Ok(())
             }
             SessionCommand::PasteFiles { destination } => {
-                self.shared
-                    .clipboard
-                    .paste_files(std::path::Path::new(&destination));
+                self.paste_files(&destination);
                 Ok(())
             }
             SessionCommand::NextInputSource => {
-                let Some(id) = self.sources.next() else {
+                let Some((sources, name)) = input_sources::next() else {
                     return Ok(());
                 };
-                self.compositor
-                    .set_keyboard_layout(&self.sources.compiled());
-                if self.night_light.1
-                    && let Err(error) = settings_store::update_section(
-                        settings_store::hardware::INPUT_SECTION,
-                        serde_json::Map::from_iter([(
-                            "keyboard_layout".to_owned(),
-                            serde_json::Value::String(id),
-                        )]),
-                    )
-                {
-                    tracing::warn!(%error, "the input source choice was not kept");
-                }
+                self.sources = sources;
+                apply_keyboard(&mut self.compositor, &self.sources.compiled());
+                self.show_hint(Hint {
+                    kind: OsdKind::InputSource,
+                    on: true,
+                    chord: None,
+                    name: Some(name),
+                });
                 Ok(())
             }
             SessionCommand::AskUninstall { app } => {
@@ -2675,6 +2741,14 @@ impl Session {
                 Ok(())
             }
         }
+    }
+
+    /// Paste what was copied into `destination`, beside what is already there.
+    fn paste_files(&self, destination: &str) {
+        self.shared.clipboard.paste_files(
+            std::path::Path::new(destination),
+            crate::mount::clipboard_files::Conflict::KeepBoth,
+        );
     }
 
     /// Answer the installed folder importer this pass, and open the review it
@@ -2836,6 +2910,7 @@ impl Session {
         self.compositor.render()?;
         // What `tilo-control` asks of the frame just drawn.
         let locked = self.compositor.locked();
+        let lock_screen_drawn = self.compositor.lock_drawn();
         test_control::serve(
             self.control.as_ref(),
             &mut self.compositor,
@@ -2845,6 +2920,7 @@ impl Session {
                 overlays: &self.shared.overlays,
                 engine: self.shared.engine.as_deref(),
                 locked,
+                lock_screen_drawn,
             },
         );
         // What assistive technology reads of the frame just drawn, and what

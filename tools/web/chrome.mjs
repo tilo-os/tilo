@@ -5,11 +5,12 @@
 // Pages are served from 127.0.0.1, a secure context, so OPFS, Web Locks and
 // WebGPU are available.
 import {spawn} from 'node:child_process';
-import {accessSync, constants as fsConstants, createReadStream, existsSync, mkdtempSync, readdirSync, rmSync, statSync} from 'node:fs';
+import {accessSync, constants as fsConstants, readFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {homedir, tmpdir} from 'node:os';
 import {extname, join, normalize} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {brotliCompressSync, constants as zlibConstants} from 'node:zlib';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -26,19 +27,57 @@ const TYPES = {
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+/** Compressed copies by path, kept until the file they were made from changes:
+ * a bundle's start module is tens of megabytes and a page load asks for it
+ * again every run. */
+const compressed = new Map();
+
+/** `file` as the browser's `{body, encoding}`, brotli when it accepts it: a
+ * deployment serves the bundle compressed, so the transfer a page waits on is
+ * the compressed one. */
+function body(file, accept) {
+  // A PNG is already compressed.
+  if (TYPES[extname(file)] === 'image/png' || !accept.includes('br')) {
+    return {body: readFileSync(file), encoding: null};
+  }
+  const {mtimeMs, size} = statSync(file);
+  const cached = compressed.get(file);
+  if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.served;
+  const body = brotliCompressSync(readFileSync(file), {
+    params: {[zlibConstants.BROTLI_PARAM_QUALITY]: 5, [zlibConstants.BROTLI_PARAM_SIZE_HINT]: size},
+  });
+  const served = {body, encoding: 'br'};
+  compressed.set(file, {mtimeMs, size, served});
+  return served;
+}
+
+/** Compress everything under `root` before serving: a page load then waits on
+ * the transfer, not on the server compressing it, as a deployment's edge
+ * serves what it compressed ahead of time. */
+function warm(root) {
+  for (const entry of readdirSync(root, {recursive: true, withFileTypes: true})) {
+    if (!entry.isFile()) continue;
+    body(join(entry.parentPath, entry.name), 'br');
+  }
+}
+
 /** Serve `root` on 127.0.0.1; resolves to `{url, close}`. */
 export function serve(root) {
+  warm(root);
   const server = createServer((request, response) => {
     const path = normalize(decodeURIComponent(new URL(request.url, 'http://x').pathname));
     let file = join(root, path);
     if (!file.startsWith(root)) { response.writeHead(403).end(); return; }
     if (existsSync(file) && statSync(file).isDirectory()) file = join(file, 'index.html');
     if (!existsSync(file)) { response.writeHead(404).end(); return; }
+    const {body: bytes, encoding} = body(file, request.headers['accept-encoding'] ?? '');
     response.writeHead(200, {
       'content-type': TYPES[extname(file)] ?? 'application/octet-stream',
       'cache-control': 'no-store',
+      'content-length': bytes.length,
+      ...(encoding ? {'content-encoding': encoding, vary: 'accept-encoding'} : {}),
     });
-    createReadStream(file).pipe(response);
+    response.end(bytes);
   });
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({
     url: `http://127.0.0.1:${server.address().port}`,

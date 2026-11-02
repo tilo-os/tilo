@@ -80,6 +80,11 @@ fn strip_of(session: &Session, tab: u64) -> Option<u64> {
 
 /// A window of `app` on the desk, its tab's id.
 fn open_window(session: &mut Session, app: &str) -> u64 {
+    open_window_called(session, app, app)
+}
+
+/// A window of `app` on the desk calling itself `title`, its tab's id.
+fn open_window_called(session: &mut Session, app: &str, title: &str) -> u64 {
     // A table's window, opened the way the launcher opens one: a tab of the
     // strip in front.
     let handle = session.handle().clone();
@@ -96,7 +101,7 @@ fn open_window(session: &mut Session, app: &str) -> u64 {
         id: group,
         tabs: vec![tilo_desktop_model::Tab {
             id: tab,
-            title: app.to_owned(),
+            title: title.to_owned(),
             tile: tilo_desktop_model::TileContent::LocalApp {
                 app_id: app.to_owned(),
                 label: app.to_owned(),
@@ -196,6 +201,34 @@ fn move_to(place: u64, row: u64) -> tilo_session::arrangement::ArrangementAction
     }
 }
 
+/// Every action `resource` and its children publish, by the resource's id and the action's.
+fn published_actions(resource: &tilo_actions::ResourceSpec, out: &mut Vec<(String, String)>) {
+    out.extend(
+        resource
+            .actions
+            .iter()
+            .map(|action| (resource.id.0.clone(), action.id.clone())),
+    );
+    for child in &resource.children {
+        published_actions(child, out);
+    }
+}
+
+/// The resource the session publishes the place `key` as: what its own actions are pressed on.
+fn place_resource(key: u64) -> String {
+    tilo_session::arrangement::Item::Place.resource(&key.to_string())
+}
+
+/// The resource the session publishes the row `key` as: what a place's move names.
+fn row_resource(key: u64) -> String {
+    tilo_session::arrangement::Item::Row.resource(&key.to_string())
+}
+
+/// The resource the session publishes the strip `key` as: what its own resize is pressed on.
+fn strip_resource(key: u64) -> String {
+    tilo_session::arrangement::Item::Strip.resource(&key.to_string())
+}
+
 // (2) An agent moves a window through the published action, attributed to
 // the agent and undoable.
 #[test]
@@ -212,26 +245,23 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
         .row
         .0;
 
-    // The action is published, so the catalogue, tilo-control and an agent
-    // see it.
-    let address = session
-        .resources()
-        .into_iter()
-        .flat_map(|resource| {
-            resource
-                .actions
-                .into_iter()
-                .map(move |action| (resource.id.0.clone(), action.id.clone()))
-        })
-        .any(|(resource, action)| resource == "shell:arrangement" && action == "move-place");
-    assert!(address, "the arranging action is published");
+    // The place's own resource publishes the actions a press names it by, so the
+    // catalogue, tilo-control and an agent see them.
+    let mut shown = Vec::new();
+    for resource in session.resources() {
+        published_actions(&resource, &mut shown);
+    }
+    let published = shown
+        .iter()
+        .any(|(resource, action)| *resource == place_resource(window) && action == "move");
+    assert!(published, "the place publishes its own actions");
 
     session
         .invoke_with_actor(
             "agent-task:reading",
-            "shell:arrangement",
-            "move-place",
-            &serde_json::json!({"place": window, "row": second}),
+            &place_resource(window),
+            "move",
+            &serde_json::json!({"row": row_resource(second)}),
         )
         .expect("the action runs");
     step(&mut session);
@@ -371,9 +401,9 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
     session
         .invoke_with_actor(
             "agent-task:reading",
-            "shell:arrangement",
-            "move-place",
-            &serde_json::json!({"place": window, "row": second}),
+            &place_resource(window),
+            "move",
+            &serde_json::json!({"row": row_resource(second)}),
         )
         .expect("the action is taken");
     step(&mut session);
@@ -434,18 +464,18 @@ fn a_pinned_place_stays_where_the_person_put_it() {
     // The person pins it, through the published action.
     invoke_as(
         &mut session,
-        "shell:arrangement",
-        "pin-place",
-        &serde_json::json!({"place": window, "pinned": true}),
+        &place_resource(window),
+        "pin",
+        &serde_json::json!({"pinned": true}),
     );
     assert!(arrangement(&session).place(window).unwrap().pinned);
 
     // The agent's move is refused, and the place stands.
     let refused = session.invoke_with_actor(
         "agent-task:reading",
-        "shell:arrangement",
-        "move-place",
-        &serde_json::json!({"place": window, "row": second}),
+        &place_resource(window),
+        "move",
+        &serde_json::json!({"row": row_resource(second)}),
     );
     assert!(refused.is_err(), "the agent may not move a pinned place");
     assert_eq!(strip_of(&session, window), Some(from));
@@ -499,6 +529,45 @@ fn the_arrangement_reads_out_by_key_for_the_shells_views() {
     );
 }
 
+// A place reads out named the way every surface shows it: the window's own title and its app's
+// own name, never an app id, and the app's name alone for a window that has no title.
+#[test]
+fn a_place_reads_out_named_by_its_window_and_its_app_never_an_id() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let window = open_window_called(&mut session, "org.example.TextEditor", "Groceries");
+    step(&mut session);
+    let reading = session.arrangement().borrow().reading();
+    let place = reading
+        .places
+        .iter()
+        .find(|place| place.key == window.to_string())
+        .expect("the place reads out by its key");
+    assert_eq!(
+        place.name, "Groceries — Text Editor",
+        "the window's own title, then the app's name: never the id it is opened by"
+    );
+    assert!(
+        !place.name.contains("org.example"),
+        "no surface ever reads an app id: {}",
+        place.name
+    );
+
+    let untitled = open_window_called(&mut session, "org.example.TextEditor", "");
+    step(&mut session);
+    let reading = session.arrangement().borrow().reading();
+    let place = reading
+        .places
+        .iter()
+        .find(|place| place.key == untitled.to_string())
+        .expect("the untitled window reads out");
+    assert_eq!(
+        place.name, "Text Editor",
+        "a window with no title of its own is its app alone"
+    );
+}
+
 // Moving a place to another row through the published action is a place the reading then shows
 // in that row, and undo puts it back — the same both ways. Moving a place into another row's
 // empty strip makes a strip there; undo takes the place back to the strip it came from.
@@ -516,9 +585,9 @@ fn a_move_the_reading_shows_is_undone_to_where_it_was() {
 
     invoke_as(
         &mut session,
-        "shell:arrangement",
-        "move-place",
-        &serde_json::json!({"place": window, "row": second}),
+        &place_resource(window),
+        "move",
+        &serde_json::json!({"row": row_resource(second)}),
     );
     let key = window.to_string();
     let reading = session.arrangement().borrow().reading();
@@ -566,9 +635,9 @@ fn resizing_a_strip_is_one_step_and_undone() {
 
     invoke_as(
         &mut session,
-        "shell:arrangement",
-        "resize-strip",
-        &serde_json::json!({"strip": strip, "permille": 333}),
+        &strip_resource(strip),
+        "resize",
+        &serde_json::json!({"permille": 333}),
     );
     let now = arrangement(&session)
         .strip(strip)
@@ -584,4 +653,116 @@ fn resizing_a_strip_is_one_step_and_undone() {
         .map(|strip| strip.width.permille())
         .expect("the strip is in the record");
     assert_eq!(back, was, "undo restores the width");
+}
+
+/// A session on a device whose salt is the top of an id's high bits: every place, strip and
+/// row here is above `i64::MAX`, so no id fits the integer an id-shaped verb would take.
+fn salted_session() -> Session {
+    Session::headless(
+        Options {
+            person: ADA.to_owned(),
+            presentation: ui::headless::fixture_runner_inputs,
+            state: None,
+            collab: false,
+            salt: 0x8000,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session")
+}
+
+// Every arranging press names the place, strip or row it presses, so on a device whose ids do
+// not fit an integer each of them still reaches the record's own entry: pin, close, move to a
+// row and a strip's width all land on the thing they name, and on nothing else.
+#[test]
+fn every_arranging_press_reaches_the_record_on_a_salted_device() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = salted_session();
+    step(&mut session);
+    let window = open_window(&mut session, "org.example.Notes");
+    let other = open_window_called(&mut session, "org.example.Notes", "Other");
+    assert!(
+        window > u64::try_from(i64::MAX).unwrap() && other > window,
+        "the desk's ids do not fit an integer: {window}, {other}"
+    );
+    let second = add_strip(&session, "Second");
+    step(&mut session);
+    let strip = strip_of(&session, window).expect("the place is in a strip");
+    let other_strip = strip_of(&session, other).expect("the other place is in a strip");
+    assert_ne!(strip, other_strip, "each place has its own strip");
+
+    // Each press names its own resource, by the whole of the id: pin reaches this place, and
+    // the other place stands unpinned.
+    invoke_as(
+        &mut session,
+        &place_resource(window),
+        "pin",
+        &serde_json::json!({"pinned": true}),
+    );
+    assert_eq!(
+        arrangement(&session)
+            .place(window)
+            .map(|place| place.pinned),
+        Some(true),
+        "pin reached the place it named"
+    );
+    assert_eq!(
+        arrangement(&session).place(other).map(|place| place.pinned),
+        Some(false),
+        "and no other place"
+    );
+
+    // So does a strip's resize, which names its strip.
+    invoke_as(
+        &mut session,
+        &strip_resource(strip),
+        "resize",
+        &serde_json::json!({"permille": 333}),
+    );
+    assert_eq!(
+        arrangement(&session)
+            .strip(strip)
+            .map(|strip| strip.width.permille()),
+        Some(333),
+        "resize reached the strip it named"
+    );
+
+    // And a move names its place and its row, each by its own resource.
+    invoke_as(
+        &mut session,
+        &place_resource(window),
+        "move",
+        &serde_json::json!({"row": row_resource(second)}),
+    );
+    assert_eq!(
+        arrangement(&session)
+            .strip_of(window)
+            .map(|strip| strip.row.0),
+        Some(second),
+        "move reached the place it named, into the row it named"
+    );
+    assert_eq!(
+        strip_of(&session, other),
+        Some(other_strip),
+        "the other place stayed in its own strip"
+    );
+
+    // Close names its place too: only that place goes.
+    invoke_as(
+        &mut session,
+        &place_resource(window),
+        "close",
+        &serde_json::json!({}),
+    );
+    assert_eq!(
+        strip_of(&session, window),
+        None,
+        "close reached the place it named"
+    );
+    assert_eq!(
+        strip_of(&session, other),
+        Some(other_strip),
+        "and closed no other place"
+    );
 }

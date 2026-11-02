@@ -16,7 +16,7 @@
 
 use std::fs;
 
-use std::io::Write as _;
+use std::io::{BufRead as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -31,6 +31,7 @@ use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
+use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::mount::app_tabs::ServiceLinks;
 use tilo_session::mount::apps::Apps;
 use tilo_session::{AppActions, AppLists, Launches, Lists, Options, SearchOptions, Session};
@@ -386,6 +387,26 @@ fn probe_session(
     home: &mut tilo_test_env::TestHome,
     started: &Path,
 ) -> (Session, Rc<Apps>, Arc<Launches>, tilo_test_env::StandIn) {
+    probe_session_on(home, started, None)
+}
+
+/// The same session with the desktop services of a login running beside it,
+/// which is where the questions the person answers on the sheet are asked.
+fn probe_session_with_services(
+    home: &mut tilo_test_env::TestHome,
+    started: &Path,
+    bus: &tilo_test_env::PrivateBus,
+) -> (Session, Rc<Apps>, Arc<Launches>, tilo_test_env::StandIn) {
+    probe_session_on(home, started, Some(bus))
+}
+
+/// The session `home` starts its apps in, with `bus`'s desktop services
+/// beside it when there is a login to serve.
+fn probe_session_on(
+    home: &mut tilo_test_env::TestHome,
+    started: &Path,
+    bus: Option<&tilo_test_env::PrivateBus>,
+) -> (Session, Rc<Apps>, Arc<Launches>, tilo_test_env::StandIn) {
     let socket = home.runtime().join("wayland-7");
     let probe = installed_probe(home, started);
     let mut environment = tilo_app_launch::SessionEnvironment::from_process();
@@ -396,12 +417,38 @@ fn probe_session(
         Some(probe.path().to_owned()),
     ));
     let launches = Arc::new(Launches::default());
+    let wake = tilo_service::LoopWake::default();
+    let desktop = bus.map(|bus| {
+        let (side, _link) = tilo_session::portal_link::channel(wake.handle());
+        Rc::new(
+            DesktopServices::start(
+                &Buses {
+                    session: Bus::Address(bus.address().to_owned()),
+                    system: Bus::None,
+                },
+                &wake.handle(),
+                Arc::new(tilo_portal::NoCapture),
+                &side,
+                None,
+            )
+            .expect("desktop services"),
+        )
+    });
+    let services = desktop
+        .as_ref()
+        .map_or_else(Vec::new, |desktop| desktop.services());
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(&apps)),
             launches: Arc::clone(&launches),
+            services,
+            wake,
+            // A login's services take part in no collaboration plane of their
+            // own; the tests of the desk alone do.
+            collab: desktop.is_none(),
+            desktop,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -586,6 +633,259 @@ fn an_address_the_app_does_not_claim_opens_no_tab() {
         1,
         "and starts nothing"
     );
+}
+
+/// Where this test's captures are written: in the build's own directory when
+/// it runs somewhere else than where they are read (a remote builder mirrors
+/// that directory back), else under the home's comparison captures.
+fn shots_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("SHELL_UI_SHOTS_OUT") {
+        return PathBuf::from(dir);
+    }
+    // The run says where its target directory is; else this binary stands in
+    // `target/<profile>/deps`, and its build's directory is the one holding
+    // the profile.
+    let binary = std::env::current_exe().expect("the running test's path");
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            binary
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+        });
+    if let Some(target) = target {
+        return target.join("shell-ui-shots");
+    }
+    let home = std::env::var("HOME").expect("HOME");
+    PathBuf::from(home).join(".cache/visual-compare/shell-ui")
+}
+
+/// Write the frame the session shows now, and the names it gives what it
+/// shows, beside it.
+fn capture_to(session: &mut Session, name: &str) {
+    let dir = shots_dir();
+    fs::create_dir_all(&dir).expect("create the shots directory");
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot");
+    image::save_buffer(
+        dir.join(format!("{name}.png")),
+        &shot.rgba,
+        shot.width,
+        shot.height,
+        image::ColorType::Rgba8,
+    )
+    .expect("write the frame");
+    fs::write(
+        dir.join(format!("{name}.labels")),
+        session.accessible_labels().join("\n"),
+    )
+    .expect("write the labels");
+}
+
+/// The slots a window of an app in its own process declares over its
+/// `shell-ui` connection stand in its window's bar in the running session,
+/// and an ask about the device's own shell is answered on the connection
+/// that made it rather than left waiting.
+#[test]
+fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
+    use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
+
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
+    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+    let toolbar = WindowToolbar {
+        location: Some(ToolbarLocation {
+            label: "Home".to_owned(),
+            editable: true,
+            ..ToolbarLocation::default()
+        }),
+        actions: vec![ToolbarAction::new("save", "plus", "Save")],
+        ..WindowToolbar::default()
+    };
+    let _connection = ask(
+        &launches,
+        PROBE,
+        &workspace,
+        pid,
+        &FloatingSurfaceClientMessage::Toolbar {
+            toolbar: Some(toolbar),
+            instance: None,
+        },
+    );
+    until(
+        &mut session,
+        "the app's slot is in its window's bar",
+        |session| {
+            session
+                .accessible_labels()
+                .iter()
+                .any(|label| label == "Save")
+        },
+    );
+    capture_to(&mut session, "app-slots-in-the-bar");
+
+    // The session serves no question about the device's own shell here, so
+    // the app is told the target stays closed on the connection it asked on.
+    let mut asking = ask(
+        &launches,
+        PROBE,
+        &workspace,
+        pid,
+        &FloatingSurfaceClientMessage::AllowHostShell,
+    );
+    asking
+        .set_read_timeout(Some(Duration::from_millis(20)))
+        .unwrap();
+    // The session answers on its own pass, so the answer arrives while it
+    // steps; nothing waits on a read while the desk stands still.
+    let mut seen = Vec::new();
+    for _ in 0..400 {
+        session.step(Duration::from_millis(1)).unwrap();
+        let mut chunk = [0u8; 512];
+        match std::io::Read::read(&mut asking, &mut chunk) {
+            Ok(read) => seen.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("the connection broke: {error}"),
+        }
+        if seen.contains(&b'\n') {
+            break;
+        }
+    }
+    let whole = seen
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(&seen[..0], |end| &seen[..end]);
+    let frames: Vec<ui::floating_surface::FloatingSurfaceHostMessage> =
+        String::from_utf8(whole.to_vec())
+            .expect("frames are text")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line.trim()).expect("a shell-ui frame"))
+            .collect();
+    assert!(
+        frames.contains(
+            &ui::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed { allowed: false }
+        ),
+        "the app is told the target stays closed: {frames:?}"
+    );
+}
+
+/// The resource publishing `action` among everything the session publishes.
+fn publisher(session: &Session, action: &str) -> Option<String> {
+    fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            if resource.actions.iter().any(|offered| offered.id == action) {
+                Some(resource.id.as_str().to_owned())
+            } else {
+                find(&resource.children, action)
+            }
+        })
+    }
+    find(&session.resources(), action)
+}
+
+/// Answer `effect` on the portal sheet's door for `handle`.
+fn answer_on_the_sheet(session: &mut Session, handle: &str, effect: &str) {
+    let sheet = publisher(session, effect).expect("the sheet publishes that");
+    let arguments = serde_json::json!({ "handle": handle })
+        .as_object()
+        .expect("an object")
+        .clone();
+    session
+        .invoke(&sheet, effect, &arguments)
+        .expect("the sheet takes the answer");
+}
+
+/// The person's answer to the question about the device's own shell reaches
+/// the app: the question stands on the portal sheet, the answer is handed to
+/// the runtime's supervisor as the allow it records, and the app hears on the
+/// connection it asked on that the target is open.
+#[test]
+fn the_answer_to_the_device_shell_question_reaches_the_app() {
+    use tilo_sheets::portal::PortalEffect;
+
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let bus = tilo_test_env::PrivateBus::start();
+    let (mut session, apps, launches, _launcher) =
+        probe_session_with_services(&mut home, &started, &bus);
+    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+
+    // The runtime's supervisor stands where the session dials it, and records
+    // the allow it is handed.
+    let socket = launcher::services::socket_for("ush");
+    fs::create_dir_all(socket.parent().expect("a socket in a directory")).unwrap();
+    let supervisor =
+        std::os::unix::net::UnixListener::bind(&socket).expect("the supervisor listens");
+    let recorded = std::thread::spawn(move || {
+        let (stream, _) = supervisor.accept().expect("the session dials in");
+        let mut line = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut line)
+            .expect("the allow");
+        let request: serde_json::Value = serde_json::from_str(line.trim()).expect("a request");
+        assert_eq!(
+            request["op"], "allow-host",
+            "the allow is the only op asked for"
+        );
+        assert!(
+            request.get("expiry").is_some(),
+            "the allow names how long it lasts: {request}"
+        );
+        (&stream)
+            .write_all(b"{\"result\":\"allowed\"}\n")
+            .expect("the recorded allow is answered");
+    });
+
+    let mut asking = ask(
+        &launches,
+        PROBE,
+        &workspace,
+        pid,
+        &FloatingSurfaceClientMessage::AllowHostShell,
+    );
+    until(&mut session, "the question is on the sheet", |session| {
+        session
+            .portal()
+            .is_some_and(|portal| portal.dialog().is_some())
+    });
+    capture_to(&mut session, "device-shell-question");
+    let handle = session
+        .portal()
+        .and_then(tilo_sheets::portal::PortalSeat::dialog)
+        .expect("a question is up")
+        .handle;
+    answer_on_the_sheet(&mut session, &handle, PortalEffect::CONFIRM.id);
+
+    asking
+        .set_read_timeout(Some(Duration::from_millis(20)))
+        .unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..400 {
+        session.step(Duration::from_millis(1)).unwrap();
+        let mut chunk = [0u8; 512];
+        match std::io::Read::read(&mut asking, &mut chunk) {
+            Ok(read) => seen.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("the connection broke: {error}"),
+        }
+        if String::from_utf8_lossy(&seen).contains("HostShellAllowed") {
+            break;
+        }
+    }
+    assert!(
+        String::from_utf8_lossy(&seen).contains("\"allowed\":true"),
+        "the app hears the target is open: {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+    recorded.join().expect("the supervisor saw the allow");
 }
 
 /// The class the X11 app's window announces: no program name here matches it,

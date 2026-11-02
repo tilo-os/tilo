@@ -172,7 +172,7 @@ pub enum RoomEvent {
         plain_origin: Option<String>,
         /// The room's throwaway user root (hex).
         user_public_key: String,
-        /// SHA-256 of a development certificate, for WebTransport pinning.
+        /// SHA-256 of a development certificate, for a client that pins it.
         certificate_sha256: Option<String>,
         /// Page origins allowed to call the room cross-origin.
         allowed_origins: Vec<String>,

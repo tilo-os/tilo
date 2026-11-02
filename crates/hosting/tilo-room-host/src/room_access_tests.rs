@@ -17,7 +17,7 @@ const MODES: [AdmissionMode; 3] = [
     AdmissionMode::SameOwner,
     AdmissionMode::Governed,
 ];
-const OPS: [RoomOperation; 13] = [
+const OPS: [RoomOperation; 12] = [
     RoomOperation::Subscribe,
     RoomOperation::State,
     RoomOperation::Replay,
@@ -29,7 +29,6 @@ const OPS: [RoomOperation; 13] = [
     RoomOperation::OwnChannelKeys,
     RoomOperation::DelegateMembership,
     RoomOperation::Publish,
-    RoomOperation::Watch,
     RoomOperation::ChannelReadKeys,
 ];
 
@@ -202,19 +201,19 @@ fn decide_matrix() {
         });
     };
     // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
-    // OwnChannelKeys, DelegateMembership, Publish, Watch, ChannelReadKeys
+    // OwnChannelKeys, DelegateMembership, Publish, ChannelReadKeys
     let cases = vec![
         Case {
             name: "owner's member device",
             peer: peer(owner, [10; 32], false, None),
             setup: listed([10; 32]),
-            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
+            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
         },
         Case {
             name: "owner's unlisted device",
             peer: peer(owner, [11; 32], false, None),
             setup: none(),
-            expected: ["NNNNNNNNsdNNO", "ENNAAEANsdNAO", "NNNNNNNNsdNNO"],
+            expected: ["NNNNNNNNsdNO", "ENNAAEANsdNO", "NNNNNNNNsdNO"],
         },
         Case {
             name: "owner's device a pending replacement removed",
@@ -223,7 +222,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([12; 32]);
                 runtime.membership_ceiling = Some(HashSet::new());
             }),
-            expected: ["NNNNNNNNsdNNO", "NNNNNNNNsdNNO", "NNNNNNNNsdNNO"],
+            expected: ["NNNNNNNNsdNO", "NNNNNNNNsdNO", "NNNNNNNNsdNO"],
         },
         Case {
             // Failure scenario 1: trusted relay-wide because another room's
@@ -233,13 +232,13 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 runtime.governed_user_roots.insert(bob);
             }),
-            expected: ["NNNNNNNNsdNNO", "NNNNNNNNsdNNO", "NNNNNNNNsdNNO"],
+            expected: ["NNNNNNNNsdNO", "NNNNNNNNsdNO", "NNNNNNNNsdNO"],
         },
         Case {
             name: "cross-user exact member device",
             peer: peer(bob, [22; 32], false, None),
             setup: listed([22; 32]),
-            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
+            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
         },
         Case {
             name: "same-user host this room is attached to",
@@ -247,19 +246,19 @@ fn decide_matrix() {
             setup: Box::new(|runtime, _| {
                 runtime.attached_hosts.insert([30; 32]);
             }),
-            expected: ["AAANNNNNsdANO", "AAAAAEANsdAAO", "AAANNNNNsdANO"],
+            expected: ["AAANNNNNsdAO", "AAAAAEANsdAO", "AAANNNNNsdAO"],
         },
         Case {
             name: "same-user host this room is not attached to",
             peer: peer(owner, [31; 32], true, None),
             setup: none(),
-            expected: ["NNNNNNNNsdNNO", "ENNAAEANsdNAO", "NNNNNNNNsdNNO"],
+            expected: ["NNNNNNNNsdNO", "ENNAAEANsdNO", "NNNNNNNNsdNO"],
         },
         Case {
             name: "cross-user host certificate, listed as a member",
             peer: peer(bob, [32; 32], true, None),
             setup: listed([32; 32]),
-            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
+            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
         },
         Case {
             name: "agent delegated this room",
@@ -268,7 +267,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([40; 32]);
                 relay.delegate([40; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
+            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
         },
         Case {
             name: "agent whose delegation expired",
@@ -277,7 +276,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([41; 32]);
                 relay.delegate([41; 32], Some((NOW, ROOM)));
             }),
-            expected: ["eeeeeeeeeeeee", "eeeeeeeeeeeee", "eeeeeeeeeeeee"],
+            expected: ["eeeeeeeeeeee", "eeeeeeeeeeee", "eeeeeeeeeeee"],
         },
         Case {
             name: "withdrawn agent",
@@ -286,7 +285,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([42; 32]);
                 relay.delegate([42; 32], None);
             }),
-            expected: ["wwwwwwwwwwwww", "wwwwwwwwwwwww", "wwwwwwwwwwwww"],
+            expected: ["wwwwwwwwwwww", "wwwwwwwwwwww", "wwwwwwwwwwww"],
         },
         Case {
             name: "agent delegated another room",
@@ -295,7 +294,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([43; 32]);
                 relay.delegate([43; 32], Some((NOW + 1, OTHER_ROOM)));
             }),
-            expected: ["ooooooooooooo", "ooooooooooooo", "ooooooooooooo"],
+            expected: ["oooooooooooo", "oooooooooooo", "oooooooooooo"],
         },
         Case {
             name: "the device governing this room on this relay",
@@ -304,7 +303,7 @@ fn decide_matrix() {
                 runtime.room_authority =
                     Some(crate::rooms::RoomAuthority::governed_by(ROOM, [70; 32]));
             }),
-            expected: ["NNNNNNNNsdNNO", "ENNAAEANsdNAO", "NNNNNNNNAdNNO"],
+            expected: ["NNNNNNNNsdNO", "ENNAAEANsdNO", "NNNNNNNNAdNO"],
         },
         Case {
             name: "another listed device of the owner, while this relay governs",
@@ -314,7 +313,7 @@ fn decide_matrix() {
                 runtime.room_authority =
                     Some(crate::rooms::RoomAuthority::governed_by(ROOM, [70; 32]));
             }),
-            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
+            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
         },
         Case {
             name: "agent delegated this room, in a room this relay governs",
@@ -324,7 +323,7 @@ fn decide_matrix() {
                     Some(crate::rooms::RoomAuthority::governed_by(ROOM, [70; 32]));
                 relay.delegate([44; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["NNNNNNNNsdNNO", "ENNAAEANsdNAO", "NNNNNNNNsANNO"],
+            expected: ["NNNNNNNNsdNO", "ENNAAEANsdNO", "NNNNNNNNsANO"],
         },
         Case {
             name: "another user's agent, in a room this relay governs",
@@ -334,13 +333,13 @@ fn decide_matrix() {
                     Some(crate::rooms::RoomAuthority::governed_by(ROOM, [70; 32]));
                 relay.delegate([45; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["NNNNNNNNsdNNO", "NNNNNNNNsdNNO", "NNNNNNNNsdNNO"],
+            expected: ["NNNNNNNNsdNO", "NNNNNNNNsdNO", "NNNNNNNNsdNO"],
         },
         Case {
             name: "spectator device",
             peer: peer(spectator, [80; 32], false, Some(NOW + 1)),
             setup: Box::new(move |runtime, _| watched(runtime)),
-            expected: ["AAAWWWWWsdWAP", "AAAWWWWWsdWAP", "AAAWWWWWsdWAP"],
+            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
         },
         Case {
             name: "spectator device the room lists",
@@ -349,19 +348,19 @@ fn decide_matrix() {
                 watched(runtime);
                 runtime.membership.devices.push([81; 32]);
             }),
-            expected: ["AAAWWWWWsdWAP", "AAAWWWWWsdWAP", "AAAWWWWWsdWAP"],
+            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
         },
         Case {
             name: "spectator device whose certificate expired",
             peer: peer(spectator, [82; 32], false, Some(NOW)),
             setup: Box::new(move |runtime, _| watched(runtime)),
-            expected: ["xxxxxxxxxxxxx", "xxxxxxxxxxxxx", "xxxxxxxxxxxxx"],
+            expected: ["xxxxxxxxxxxx", "xxxxxxxxxxxx", "xxxxxxxxxxxx"],
         },
         Case {
             name: "spectator device of a public room, before it holds a seat",
             peer: peer(spectator, [85; 32], false, Some(NOW + 1)),
             setup: Box::new(move |runtime, _| public(runtime)),
-            expected: ["AAAWWWWWsdWAP", "AAAWWWWWsdWAP", "AAAWWWWWsdWAP"],
+            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
         },
         Case {
             name: "seated spectator device of a public room",
@@ -378,7 +377,7 @@ fn decide_matrix() {
                     )),
                 );
             }),
-            expected: ["AAAWWWWWsdWAA", "AAAWWWWWsdWAA", "AAAWWWWWsdWAA"],
+            expected: ["AAAWWWWWsdWA", "AAAWWWWWsdWA", "AAAWWWWWsdWA"],
         },
         Case {
             name: "seated spectator device of a room that is not public",
@@ -395,7 +394,7 @@ fn decide_matrix() {
                     )),
                 );
             }),
-            expected: ["AAAWWWWWsdWAP", "AAAWWWWWsdWAP", "AAAWWWWWsdWAP"],
+            expected: ["AAAWWWWWsdWP", "AAAWWWWWsdWP", "AAAWWWWWsdWP"],
         },
         Case {
             name: "spectator device of a room that lets nobody watch",
@@ -403,7 +402,7 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 runtime.governed_user_roots.insert(spectator);
             }),
-            expected: ["NNNNNNNNsdNNO", "NNNNNNNNsdNNO", "NNNNNNNNsdNNO"],
+            expected: ["NNNNNNNNsdNO", "NNNNNNNNsdNO", "NNNNNNNNsdNO"],
         },
         Case {
             name: "member device of a room others watch",
@@ -412,13 +411,13 @@ fn decide_matrix() {
                 watched(runtime);
                 runtime.membership.devices.push([84; 32]);
             }),
-            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
+            expected: ["AAAAAAAAsdAO", "AAAAAAAAsdAO", "AAAAAAAAsdAO"],
         },
         Case {
             name: "member device whose certificate expired",
             peer: peer(owner, [50; 32], false, Some(NOW)),
             setup: listed([50; 32]),
-            expected: ["xxxxxxxxxxxxx", "xxxxxxxxxxxxx", "xxxxxxxxxxxxx"],
+            expected: ["xxxxxxxxxxxx", "xxxxxxxxxxxx", "xxxxxxxxxxxx"],
         },
         Case {
             name: "revoked member device",
@@ -427,13 +426,13 @@ fn decide_matrix() {
                 runtime.membership.devices.push([51; 32]);
                 relay.revoke([51; 32]);
             }),
-            expected: ["rrrrrrrrrrrrr", "rrrrrrrrrrrrr", "rrrrrrrrrrrrr"],
+            expected: ["rrrrrrrrrrrr", "rrrrrrrrrrrr", "rrrrrrrrrrrr"],
         },
         Case {
             name: "member device of a user the policy no longer trusts",
             peer: peer(carol, [52; 32], false, None),
             setup: listed([52; 32]),
-            expected: ["ttttttttttttt", "ttttttttttttt", "ttttttttttttt"],
+            expected: ["tttttttttttt", "tttttttttttt", "tttttttttttt"],
         },
     ];
     let tmp = tempfile::tempdir().unwrap();

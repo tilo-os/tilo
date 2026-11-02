@@ -27,7 +27,8 @@
 //! (`TILO_TEST_CONTROL=`). The owner's own control socket — what `tilo-control`
 //! drives the desktop with, and the actions it lists and invokes — is the
 //! seat's `admin-control.sock` in `$XDG_RUNTIME_DIR/tilo-session`, which this
-//! session serves as the account whose desktop it is; `--admin-control PATH`
+//! session serves when its account owns the machine: a member of `wheel` whose
+//! identity claimed the device at its first login; `--admin-control PATH`
 //! opens it elsewhere, and a headless session, which serves no seat, opens it
 //! only when asked to (`--headless-owner-control`, under
 //! `headless-owner-control.sock` there). Whichever it binds it prints
@@ -187,6 +188,23 @@ struct CommandLine {
     seed_apps: bool,
 }
 
+/// Whether this account's identity is the one that claimed this device at its first
+/// login — the fact that, with `wheel`, makes the session the device's owner and its
+/// control door the person's own.
+///
+/// # Errors
+///
+/// When the claim or the identity exists but cannot be read: the answer is refused, never
+/// guessed.
+#[cfg(target_os = "linux")]
+fn device_owner() -> std::io::Result<bool> {
+    let identity_dir = runtime_identity::identity_dir_from_env()?;
+    tilo_identity_host::provisioning::active_identity_owns_device(
+        &identity_dir,
+        &tilo_identity_host::provisioning::collaboration_identity_paths(),
+    )
+}
+
 /// The command line `ours` parsed, or `None` when it names a backend there
 /// is not.
 #[cfg(target_os = "linux")]
@@ -259,10 +277,29 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
     if headless_owner && backend != Backend::Headless {
         eprintln!("tilo-session: --headless-owner-control is for a headless session");
     }
-    let owned = match backend {
+    // The machine this session runs on, whether or not its account is the one that owns it.
+    let this_machine = match backend {
         Backend::Headless => headless_owner,
         Backend::Nested => false,
         Backend::Drm => true,
+    };
+    // The owner's door is the device owner's: an account in `wheel` whose identity claimed the
+    // device at its first login. A path named on the command line is the person's own say-so,
+    // and a session in another desktop's window, or one nobody asked for an owner's door,
+    // serves none.
+    let owned = match named_admin {
+        Some(_) => this_machine,
+        None if !this_machine => false,
+        None => match tilo_session::test_control::owner_decision(
+            os_actions::users::administers_this_device(),
+            device_owner(),
+        ) {
+            Ok(()) => true,
+            Err(refusal) => {
+                eprintln!("tilo-session: serving no owner's control door: {refusal}");
+                false
+            }
+        },
     };
     let admin_control =
         tilo_session::test_control::admin_path(owned, backend == Backend::Headless, named_admin);
@@ -686,6 +723,9 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
         user: tilo_session::unlock::login_user(),
         verifier: tilo_session::unlock::installed(),
         state: tilo_paths::state_dir(),
+        // The desk the shell this session replaces kept here, brought over on
+        // the first start that has no desk of its own.
+        old_desk: tilo_session::shell_state_path(),
         // A session in a window of another desktop leaves the machine's
         // traffic to the session that owns it.
         vpn: owned.then(Vpn::machine),

@@ -336,12 +336,6 @@ fn kept_before_the_store(
         ui::record::init_scoped(&mut written, id, kind, retired, Some(retired)),
         "the record was stamped for that workspace then"
     );
-    // A document written then names the workspace under the key of its time.
-    let (_, meta) = written.get(ROOT, "tilo:record").unwrap().unwrap();
-    written.delete(&meta, "workspace").unwrap();
-    written
-        .put(&meta, ui::record::LEGACY_WORKSPACE_KEY, retired)
-        .unwrap();
     store
         .write(&key, durable_store::WriteOp::Replace(written.save()), None)
         .unwrap();

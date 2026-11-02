@@ -236,9 +236,10 @@ pub struct WorkspaceAuthorityEnvelope {
     pub revision: u64,
     pub capabilities: Vec<CapOverride>,
     /// Who may reach each workspace a relay carries, by its relay workspace
-    /// id. A revision signed and stored before the name changed wrote it
-    /// under the old key, which still reads.
-    #[serde(default, rename = "workspace_members", alias = "room_members")]
+    /// id. Written under `room_members`, the key every signed and stored
+    /// revision was written under; one written while the field was named for
+    /// the workspace reads as the same map.
+    #[serde(default, rename = "room_members", alias = "workspace_members")]
     pub workspace_members: std::collections::BTreeMap<String, Vec<collab_types::WorkspaceMember>>,
     pub tombstoned: bool,
     pub governor: [u8; 32],
@@ -1318,7 +1319,7 @@ mod tests {
     /// reads, verifies and enforces: only the stored key changed, and the
     /// signature is over the members themselves, not the key.
     #[test]
-    fn an_envelope_stored_under_the_old_key_still_reads_and_verifies() {
+    fn an_envelope_names_its_members_under_the_stored_key() {
         let governor = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
         let workspace = uuid::Uuid::new_v4();
         let member = collab_types::Ed25519PublicKey([0x52; 32]);
@@ -1337,8 +1338,9 @@ mod tests {
         .unwrap();
 
         let written = serde_json::to_string(&envelope).unwrap();
-        assert!(written.contains("\"workspace_members\""), "{written}");
-        let stored = written.replace("\"workspace_members\"", "\"room_members\"");
+        assert!(written.contains("\"room_members\""), "{written}");
+        assert!(!written.contains("\"workspace_members\""), "{written}");
+        let stored = written.replace("\"room_members\"", "\"workspace_members\"");
         let read: WorkspaceAuthorityEnvelope = serde_json::from_str(&stored).unwrap();
         assert_eq!(read, envelope);
         read.verify(workspace, governor.verifying_key().to_bytes())

@@ -703,6 +703,42 @@ impl crate::storage::StorageSource for HeldStorage {
 /// service, which in the session is the compositor's main loop, nor on the
 /// asking connection's: the hub's storage thread reads, and the connection
 /// answers the app's other requests meanwhile.
+/// A server whose socket another server took over still stops: what it
+/// wakes is its own acceptor, never whatever the path holds by then, and
+/// the socket now at the path is the other server's to keep and to unlink.
+#[test]
+fn a_server_stops_after_another_server_took_its_socket() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("system-stats.sock");
+    let first = crate::server::Server::bind(
+        &socket,
+        Hub::shared().clone(),
+        std::sync::Arc::new(NoPrompter),
+    )
+    .unwrap();
+    let second = crate::server::Server::bind(
+        &socket,
+        Hub::shared().clone(),
+        std::sync::Arc::new(NoPrompter),
+    )
+    .unwrap();
+    let (stopped, did_stop) = mpsc::channel();
+    let dropping = std::thread::spawn(move || {
+        drop(first);
+        let _ = stopped.send(());
+    });
+    did_stop
+        .recv_timeout(tilo_test_env::hang_bound())
+        .expect("the first server stops although its socket is taken");
+    dropping.join().unwrap();
+    assert!(
+        socket.exists(),
+        "the first server leaves the socket at the path to the server that took it"
+    );
+    drop(second);
+    assert!(!socket.exists(), "the second server unlinks its own socket");
+}
+
 #[test]
 fn a_slow_storage_read_holds_up_neither_the_service_nor_the_connection() {
     struct Shared(std::sync::Arc<HeldStorage>);

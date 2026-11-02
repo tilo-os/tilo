@@ -31,8 +31,10 @@ persistent connection:
   agent.invoke.local.app.accept  with --app PROVIDER:ID only
   agent.invoke.local.app         the same, complete (wait_ms)
 
-The no-op is `actions/navigation.axis.disable`: a shell action that needs
-no consent, clears a flag that is already clear and draws nothing new.
+The no-op is `so.tilo.session/desktop:chrome␟reopen-closed` (`tilo_session::
+desktop_surface::ChromeEffect::ReopenClosed`): a session service action that
+needs no consent, and with nothing closed reopens nothing and changes nothing.
+It is nullary, so the MCP tool call carries no arguments either.
 
 Either point it at a running desktop (`--socket`; on a real session that
 is `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock`, which serves these
@@ -41,8 +43,10 @@ ops to the device admin) or let it start a headless compositor through
 compositor is a release build only with `--features dev-overrides`, which
 serves the test-control socket; that socket runs the same dispatch and
 capability gate as the admin socket, without the admin socket's per-connection
-peer check. The compositor, its profile and its socket are removed on exit,
-whatever happens.
+peer check. It starts on a desk: a first pass mints the throwaway identity a
+development login opens its desk with, so the no-op is the desk's own action
+and not setup's. The compositor, its profile and its socket are removed on
+exit, whatever happens.
 
 Records go to `--out` through tools/perf/record.py (`--env-json` from
 `record.py env`), or to stdout as JSON lines.
@@ -54,6 +58,7 @@ import argparse
 import contextlib
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -70,7 +75,7 @@ import record  # noqa: E402
 
 SPAWN = REPO / "scripts" / "headless-examples" / "spawn-headless.sh"
 MCP_SERVER = REPO / "scripts" / "tilo-mcp-server.py"
-NOOP = ("actions", "navigation.axis.disable")
+NOOP = ("so.tilo.session", "desktop:chrome\u001freopen-closed")
 TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 # Generous: the answer leaves as soon as the invocation settles.
 WAIT_MS = 5000
@@ -372,6 +377,45 @@ def spawned(shell: Path, log: Path, timeout: int,
             os.rmdir(directory)
 
 
+@contextlib.contextmanager
+def desk_session(shell: Path, log: Path, timeout: int) -> Iterator[tuple[str, Path]]:
+    """A headless session with a desk of its own: (control socket, runtime directory).
+
+    A session that holds no identity opens setup instead of a desk, so a first
+    pass mints the throwaway identity a development login opens its desk with
+    and exits; the pass that is measured starts on it. Its agent door goes
+    where a client in that login looks for it. The profile, its sockets and its
+    compositor are removed on exit.
+    """
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    cache.mkdir(parents=True, exist_ok=True)
+    profile = Path(tempfile.mkdtemp(prefix="desk-session.", dir=cache))
+    try:
+        for sub in ("config", "data", "state", "cache", "home", "run"):
+            (profile / sub).mkdir(parents=True, exist_ok=True, mode=0o700)
+        runtime = profile / "run"
+        env = {"TILO_HEADLESS_PROFILE": str(profile),
+               # spawn-headless.sh runs the session with XDG_RUNTIME_DIR=<profile>/run;
+               # the door goes where a client in that login looks for it.
+               "TILO_AGENT_DOOR": str(runtime / "tilo-session" / "agent.sock"),
+               "RUST_LOG": os.environ.get("RUST_LOG", "info")}
+        identity_log = log.with_name(log.stem + ".identity.log")
+        with spawned(shell, identity_log, timeout, env) as socket_path:
+            conn = Connection(socket_path, timeout=60)
+            try:
+                minted = answer_of(conn.round_trip(request({"op": "provision_test_identity"}))[1],
+                                   "provision the test identity")
+            finally:
+                conn.close()
+            if not isinstance(minted, dict) or minted.get("throwaway") is not True:
+                raise BenchError(f"no throwaway identity for the measured session: "
+                                 f"{json.dumps(minted)[:400]} (see {identity_log})")
+        with spawned(shell, log, timeout, env) as socket_path:
+            yield socket_path, runtime
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
+
+
 def drain(stream: Any, log: Path) -> None:
     with log.open("ab") as sink:
         for chunk in iter(lambda: stream.read1(65536), b""):
@@ -543,7 +587,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.spawn:
             log = args.log or Path(tempfile.gettempdir()) / "agent-rtt-compositor.log"
-            with spawned(args.spawn, log, args.startup_timeout) as socket_path:
+            with desk_session(args.spawn, log, args.startup_timeout) as (socket_path, _runtime):
                 results = run(args, socket_path)
         else:
             results = run(args, args.socket)

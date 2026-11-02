@@ -111,6 +111,11 @@ impl People {
     fn redraw(&self) {
         self.host.borrow_mut().relayout();
     }
+
+    /// Draw in the person's theme, as their settings now have it.
+    pub(crate) fn set_theme(&self, theme: ui::Theme) {
+        self.host.borrow_mut().set_theme(theme);
+    }
 }
 
 impl SurfaceHost for People {

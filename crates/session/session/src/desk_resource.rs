@@ -245,7 +245,10 @@ fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::Window
                     } else {
                         title.to_owned()
                     },
-                    origin_app: tab.app_title.clone().unwrap_or_else(|| app.clone()),
+                    // The app as people know it, never the id: a window is named by what it
+                    // shows, and its `app_title` is a person's own name for the window, not
+                    // its app's name.
+                    origin_app: crate::app_names::app_name(&app),
                     app_key: app,
                     icon,
                     strip: strip.name.trim().to_owned(),

@@ -1,9 +1,9 @@
 //! Cache adapter for the canonical record lifecycle; widget, action and history
 //! ownership remain in the ordinary RecordStore.
 use super::{
-    AutoCommit, LEGACY_WORKSPACE_KEY, Parked, PortableStorage, Rc, RecordCheckout, RecordId,
-    RecordOpenError, RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus,
-    RecordSet, RecordStore, Reserved, Transactable, WORKSPACE, identity, meta_obj, transfer,
+    AutoCommit, Parked, PortableStorage, Rc, RecordCheckout, RecordId, RecordOpenError,
+    RecordOpenOutcome, RecordOwners, RecordReservation, RecordSaveStatus, RecordSet, RecordStore,
+    Reserved, Transactable, WORKSPACE, WORKSPACE_ALIAS, identity, meta_obj, transfer,
     validate_identity, workspace_scope,
 };
 // The browser cache has its own key space (with a package-primary slot).
@@ -123,8 +123,7 @@ impl RecordSet {
         };
         doc.put(&metadata, "home", &self.home).map_err(error)?;
         doc.put(&metadata, WORKSPACE, &self.home).map_err(error)?;
-        doc.put(&metadata, LEGACY_WORKSPACE_KEY, &self.home)
-            .map_err(error)?;
+        let _ = doc.delete(&metadata, WORKSPACE_ALIAS);
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
                 .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),

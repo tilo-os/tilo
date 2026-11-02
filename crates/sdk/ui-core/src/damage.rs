@@ -358,6 +358,40 @@ pub fn pixel_rect(rect: Rect, width: u32, height: u32) -> Option<FineDamageRect>
 // the native app host's own window damage and a tile's hint for the app it
 // hosts both say where moved widgets were and are with these.
 
+/// The pixels `damage` covers in a `width` × `height` target, as regions a
+/// presentation can copy, or `None` when the list is empty, absurdly long or
+/// holds a rectangle no pixel grid can take: a host then repaints whole.
+pub(crate) fn bounded_present_damage(
+    width: u32,
+    height: u32,
+    damage: &[Rect],
+) -> Option<Vec<tilo_presentation::DamageRect>> {
+    if width == 0 || height == 0 || damage.is_empty() || damage.len() > 128 {
+        return None;
+    }
+    let mut regions = Vec::with_capacity(damage.len());
+    for rect in damage {
+        if !rect.is_finite() || rect.x1 < rect.x0 || rect.y1 < rect.y0 {
+            return None;
+        }
+        regions.extend(pixel_rect(*rect, width, height));
+    }
+    if regions.is_empty() {
+        return None;
+    }
+    Some(
+        coalesce_regions(regions)
+            .into_iter()
+            .map(|rect| tilo_presentation::DamageRect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            })
+            .collect(),
+    )
+}
+
 /// A widget's identity within one tree walk: its address and its depth (a
 /// widget held at the start of its parent shares the parent's address).
 pub(crate) type WidgetIdentity = (*const (), usize);

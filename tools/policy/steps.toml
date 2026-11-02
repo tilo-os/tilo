@@ -285,7 +285,7 @@ tests = true
 node_tests = [
   "tools/tests/test_accounts_web_storage.py", "tools/tests/test_chrome_process_cleanup.py",
   "tools/tests/test_suites_run.py",
-  "tools/tests/test_web_example_shared_assets.py",
+  "tools/tests/test_build_web_examples.py",
 ]
 
 [[step]]

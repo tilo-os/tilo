@@ -150,7 +150,7 @@ impl From<WidthPreset> for tilo_desktop_model::WindowWidth {
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "so.tilo.desk")]
 pub enum DeskEffect {
-    /// Focus a window
+    /// Bring its window to the front
     #[effect(own_device, idempotent)]
     Focus {
         /// The tab to bring forward.
@@ -158,7 +158,7 @@ pub enum DeskEffect {
         tab: String,
     },
 
-    /// Close a tab
+    /// Close its window
     #[effect(own_device)]
     CloseTab {
         /// The tab's id.

@@ -11,10 +11,12 @@
 
 use std::collections::HashMap;
 use std::io::BufReader;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
+
+use rustix::event::{PollFd, PollFlags, poll};
 
 use crate::hub::{Hub, Spec, Subscription};
 use crate::protocol::{
@@ -51,7 +53,11 @@ impl Prompter for NoPrompter {
 /// A running service.
 pub struct Server {
     path: PathBuf,
-    stop: Arc<AtomicBool>,
+    /// The socket as this server left it: another server may have replaced
+    /// it since, and its socket is not this one's to unlink.
+    socket: (u64, u64),
+    /// Closed to wake the acceptor out of its wait.
+    wake: Option<UnixStream>,
     acceptor: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -65,17 +71,38 @@ impl Server {
             std::fs::remove_file(path)?;
         }
         let listener = UnixListener::bind(path)?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
+        let socket = socket_of(path)?;
+        // The acceptor waits on its own socket and this pair, never on the
+        // path: a server that took the path over must not keep this one's
+        // acceptor waiting.
+        let (wake, waking) = UnixStream::pair()?;
         let acceptor = std::thread::Builder::new()
             .name("tilo-system-stats-accept".into())
             .spawn(move || {
-                for stream in listener.incoming() {
-                    if thread_stop.load(Ordering::Acquire) {
+                let mut ready = [
+                    PollFd::new(&listener, PollFlags::IN),
+                    PollFd::new(&waking, PollFlags::IN),
+                ];
+                loop {
+                    match poll(&mut ready, None) {
+                        Ok(0) | Err(rustix::io::Errno::INTR) => continue,
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(%error, "system information service stopped accepting");
+                            break;
+                        }
+                    }
+                    if ready[1]
+                        .revents()
+                        .intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR)
+                    {
                         break;
                     }
-                    match stream {
-                        Ok(stream) => {
+                    if !ready[0].revents().intersects(PollFlags::IN) {
+                        continue;
+                    }
+                    match listener.accept() {
+                        Ok((stream, _)) => {
                             let hub = hub.clone();
                             let prompter = Arc::clone(&prompter);
                             let spawned = std::thread::Builder::new()
@@ -95,7 +122,8 @@ impl Server {
             })?;
         Ok(Self {
             path: path.to_path_buf(),
-            stop,
+            socket,
+            wake: Some(wake),
             acceptor: Some(acceptor),
         })
     }
@@ -109,14 +137,20 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        // Wake the accept loop so it sees the stop.
-        let _ = UnixStream::connect(&self.path);
+        drop(self.wake.take());
         if let Some(acceptor) = self.acceptor.take() {
             let _ = acceptor.join();
         }
-        let _ = std::fs::remove_file(&self.path);
+        if socket_of(&self.path).is_ok_and(|socket| socket == self.socket) {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
+}
+
+/// Which file at `path` is, as the filesystem numbers it.
+fn socket_of(path: &Path) -> std::io::Result<(u64, u64)> {
+    let metadata = std::fs::metadata(path)?;
+    Ok((metadata.dev(), metadata.ino()))
 }
 
 /// Serve a connection that starts with the launcher's handoff.

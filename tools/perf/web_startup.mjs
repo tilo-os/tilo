@@ -47,13 +47,18 @@ function arguments_(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (flag === '--help' || flag === '-h') {
-      console.log(`web_startup --bundle DIR [--device CLASS] [--page PAGE] [--json PATH] [--timeout MS]
+      console.log(`web_startup --bundle DIR [--device CLASS] [--page PAGE] [--json PATH] [--timeout MS] [--warm]
 
 Measures a page load from navigation start to the first presented desktop
 frame: the page's own startup marks, the wasm module's transfer and compile,
 the JavaScript heap after the first frame, and the frames it presents while
-the strip pans.`);
+the strip pans. --warm loads the page a second time in the same browser, as a
+person coming back to it: the module is in the browser's cache then.`);
       process.exit(0);
+    }
+    if (flag === '--warm') {
+      options.warm = true;
+      continue;
     }
     // `--flag=value` for values that themselves start with a dash, as a
     // browser switch does.
@@ -184,6 +189,29 @@ const main = async () => {
       })
       .then(summary)
       .catch(() => null);
+    // The same page again in the same browser: what a person coming back to
+    // it gets, with the module already fetched and compiled once.
+    const warm = options.warm
+      ? await tab
+          .navigate(at)
+          .then(() =>
+            tab.waitFor(
+              `performance.getEntriesByType('mark').some(m => m.name === 'tilo:first-frame')`,
+              {timeout: options.timeout},
+            ),
+          )
+          .then(() => tab.evaluate(`(${readMarks.toString()})()`))
+          .then(read =>
+            read.marks['first-frame'] === undefined
+              ? null
+              : {
+                  first_frame_ms: read.marks['first-frame'],
+                  marks_ms: read.marks,
+                  wasm: read.wasm ?? null,
+                },
+          )
+          .catch(() => null)
+      : null;
     const gaps = {};
     let previous = 0;
     for (const phase of PHASES) {
@@ -202,10 +230,14 @@ const main = async () => {
       wasm: settled.wasm ?? null,
       heap_mib: settled.heap_mib ?? null,
       frames: frames ?? null,
+      warm: warm ?? null,
       errors: tab.log.filter(line => line.startsWith('EXC ')),
     };
     console.log(`device ${measurement.device}  page ${measurement.page}`);
     console.log(`first frame      ${firstFrame.toFixed(1)} ms`);
+    if (measurement.warm) {
+      console.log(`warm first frame ${measurement.warm.first_frame_ms.toFixed(1)} ms`);
+    }
     for (const [phase, ms] of Object.entries(gaps)) {
       console.log(`  ${phase.padEnd(14)} ${ms.toFixed(1)} ms`);
     }

@@ -104,6 +104,7 @@ impl Presentation {
     pub(crate) fn take_window_activation_intent(&self) -> bool {
         false
     }
+    pub(crate) fn without_ground(&mut self) {}
     pub(crate) fn start_operation(
         &mut self,
         _: &ui_core::host_operation::ResourceOperation<'_>,

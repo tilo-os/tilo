@@ -17,12 +17,17 @@ fn packages() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
 }
 
-/// Copy the package at `from` into `to`, created.
+/// Copy the package at `from` into `to`, created: its sources, ids lock and catalogues
+/// (`locales/`).
 fn copy_package(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
-        std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            copy_package(&entry.path(), &to.join(entry.file_name()));
+        } else {
+            std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+        }
     }
 }
 

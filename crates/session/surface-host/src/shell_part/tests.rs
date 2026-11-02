@@ -270,7 +270,12 @@ fn the_bars_status_reads_the_devices_published_resources() {
         part.prepare_frame();
     }
     assert!(part.says("71%"), "the charge stays as it charges");
-    for name in ["Volume, 42%", "Wi-Fi, Station", "71%"] {
+    assert!(
+        part.says("71%, charging"),
+        "and says it takes charge: {:?}",
+        part.accessible_labels()
+    );
+    for name in ["Volume, 42%", "Wi-Fi, Station", "71%, charging"] {
         click(&mut part, name);
         assert_eq!(
             link.asked.borrow_mut().pop_front().map(|ask| ask.action),
@@ -816,6 +821,7 @@ fn type_into(part: &mut ShellPart, text: &str) {
                 repeat: false,
                 keysym: u32::from(letter),
                 unmodified_keysym: u32::from(letter),
+                latin_keysym: u32::from(letter),
                 text: pressed.then(|| letter.to_string()),
                 modifiers: tilo_compositor::KeyModifiers::default(),
             };
@@ -885,6 +891,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
                 repeat: false,
                 keysym: u32::from(letter),
                 unmodified_keysym: u32::from(letter),
+                latin_keysym: u32::from(letter),
                 text: pressed.then(|| letter.to_string()),
                 modifiers: tilo_compositor::KeyModifiers::default(),
             };
@@ -1065,4 +1072,62 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
         1,
         "a window that may not be pictured is not drawn over: {pictures:?}"
     );
+}
+
+/// The people who come and go in [`the_bars_people_stay_who_is_here_across_a_commit`].
+const HERE: [&str; 4] = ["Mia Clayton", "Sam Okafor", "Jo Park", "Ada Byron"];
+
+/// Who is here is exactly who the desk says is here, and stays so across a commit of the
+/// shell's own record (a setting changes the bar's body, not the list it drew): with nobody,
+/// one, four and one again, the bar names those people and no others.
+#[test]
+fn the_bars_people_stay_who_is_here_across_a_commit() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, link) = part_with(reading());
+    let mut now = reading();
+    for count in [0_usize, 1, 4, 1] {
+        now.people = (0..count)
+            .map(|at| PersonReading {
+                key: format!("p{at}"),
+                name: HERE[at].to_owned(),
+            })
+            .collect();
+        link.publish(now.clone());
+        for _ in 0..4 {
+            part.prepare_frame();
+        }
+        // The bar's body is set: a commit of the shell's own record, as pressing the setting
+        // in the shell's settings does.
+        part.run_setting(
+            "set_bar_finish",
+            vec![serde_json::json!(if count == 1 {
+                "translucent"
+            } else {
+                "solid"
+            })],
+        )
+        .unwrap_or_else(|why| panic!("the bar takes a finish: {why}"));
+        for _ in 0..4 {
+            part.prepare_frame();
+        }
+        let labels = part.accessible_labels();
+        let said = |name: &str| labels.iter().any(|label| label.contains(name));
+        let expected = match count {
+            0 => "People".to_owned(),
+            1 => format!("{} is here", HERE[0]),
+            2 => format!("{} and {} are here", HERE[0], HERE[1]),
+            _ => format!("{} and {} others are here", HERE[0], count - 1),
+        };
+        assert!(
+            labels.iter().any(|label| label.contains(&expected)),
+            "the bar says {expected:?}: {labels:?}"
+        );
+        // Nobody who left is still named: going from four to one names one person, not four.
+        for name in &HERE[count..] {
+            assert!(
+                !said(name),
+                "{count} are here: {name} is still said: {labels:?}"
+            );
+        }
+    }
 }

@@ -422,7 +422,6 @@ impl RelayCollabTransport {
             | PeerPresencePayload::Reaction { .. }
             | PeerPresencePayload::Wave { .. }
             | PeerPresencePayload::Composing { .. }
-            | PeerPresencePayload::Bridge { .. }
             | PeerPresencePayload::Shell(_) => {}
         }
     }

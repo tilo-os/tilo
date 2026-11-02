@@ -28,9 +28,7 @@ fn service_streams(app: &mut ChatApp, channel: &str, count: usize) {
     snapshot.state = ui::native_media::State::Live;
     snapshot.issue = None;
     snapshot.inventory_revision = Some(1);
-    snapshot.publishers = (1..=count)
-        .map(|index| format!("{}/{index:064x}", "11".repeat(32)))
-        .collect();
+    snapshot.publishers = (1..=count).map(|index| format!("{index:064x}")).collect();
     if count > 0 {
         snapshot.rosters = vec![ui::native_media::Roster {
             channel_id: channel.into(),
@@ -2697,36 +2695,27 @@ fn floating_pins_leave_the_composer_whole() {
 mod calls_and_peers;
 mod workspace_state;
 
-/// Each Discord guest in the expanded call is their own tile, named as
-/// their bridged messages read, and opens how loud they play here.
+/// Every participant in the expanded call is their own tile, named as their
+/// messages read, and opens how loud they play here.
 #[test]
-fn a_bridged_calls_guests_get_their_own_tiles_and_volume() {
-    use ui::native_media::{Guest, Roster};
+fn each_participant_in_an_expanded_call_gets_their_own_tile_and_volume() {
+    use ui::native_media::Roster;
     let (mut app, mut doc) = app_with_doc();
     app.call.join("c_standup");
     app.call.expanded = true;
     app.native_voice.snapshot.rosters = vec![Roster {
         channel_id: "c_standup".into(),
-        people: vec!["u_aria".into()],
-        guests: vec![Guest {
-            id: "discord:1".into(),
-            name: "Dana".into(),
-            avatar: None,
-            service: "discord".into(),
-            linked: None,
-            muted: false,
-        }],
-        bridges: vec!["discord".into()],
+        people: vec!["u_aria".into(), "u_milo".into()],
         ..Default::default()
     }];
     app.refresh_native_streams();
     render_frame(&mut app, 1280.0, 720.0);
-    let dana = app
+    let milo = app
         .semantic_hits()
         .into_iter()
-        .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if id == "discord:1"))
-        .expect("Dana has a tile of her own");
-    assert_eq!(dana.2.text, "Dana, from Discord: volume and mute for you");
+        .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if id == "u_milo"))
+        .expect("Milo has a tile of his own");
+    assert_eq!(milo.2.text, "Milo Park: volume and mute for you");
     assert!(
         app.semantic_hits()
             .iter()
@@ -2734,23 +2723,23 @@ fn a_bridged_calls_guests_get_their_own_tiles_and_volume() {
         "this person's own tile has no volume"
     );
 
-    app.on_hit(dana.1, &mut ui::widget::Edits::lend(&mut doc));
-    let menu = app.menu.as_ref().expect("her tile opens the volume menu");
-    assert_eq!(menu.target, MenuTarget::CallParticipant("discord:1".into()));
+    app.on_hit(milo.1, &mut ui::widget::Edits::lend(&mut doc));
+    let menu = app.menu.as_ref().expect("his tile opens the volume menu");
+    assert_eq!(menu.target, MenuTarget::CallParticipant("u_milo".into()));
     activate_context_menu_action(
         &mut app,
         &mut doc,
-        MenuTarget::CallParticipant("discord:1".into()),
+        MenuTarget::CallParticipant("u_milo".into()),
         MenuAction::Silence,
     );
-    assert!(app.call_listening("discord:1").silenced);
+    assert!(app.call_listening("u_milo").silenced);
     activate_context_menu_action(
         &mut app,
         &mut doc,
-        MenuTarget::CallParticipant("discord:1".into()),
+        MenuTarget::CallParticipant("u_milo".into()),
         MenuAction::Volume(50),
     );
-    let listening = app.call_listening("discord:1");
+    let listening = app.call_listening("u_milo");
     assert_eq!((listening.percent, listening.silenced), (50, false));
 }
 

@@ -313,6 +313,12 @@ impl Session {
     }
 
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
+    /// frame harness making it.
+    fn rich() -> Self {
+        Self::new(RICHBODY, "tests/richbody", "ada", |_| {})
+    }
+
+    /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
     /// live `App` running it: the same bar, fields and list as Notes, with a rich body.
     fn live_rich() -> Self {
         Self::open(RICHBODY, "tests/richbody", "ada", |hosted| {
@@ -1144,4 +1150,172 @@ fn typing_in_a_title_is_undone_and_redone_in_the_frame_harness() {
 #[test]
 fn typing_in_a_title_is_undone_and_redone_in_the_live_window() {
     typing_in_a_title_is_undone_and_redone(Session::live_notes());
+}
+
+/// The centre of the notebook's row named `title`.
+fn note_row(session: &mut Session, title: &str) -> (f64, f64) {
+    let mut found = Vec::new();
+    named(session.window.root(), title, &mut found);
+    let rect = found
+        .last()
+        .copied()
+        .unwrap_or_else(|| panic!("the notebook offers {title:?}"));
+    (rect.center().x, rect.center().y)
+}
+
+/// A new note named `title`, its body open for typing.
+fn new_note(session: &mut Session, title: &str) {
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
+    session.settle();
+    session.window.type_text(title);
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+}
+
+/// A note's body is a document: Markdown typed into it is the structure the moment it closes
+/// (`# `, `- `, `[ ] `, `**`), and what the app keeps are the document's paragraphs, with no
+/// markers left in the text.
+#[test]
+fn a_rich_body_is_a_document_and_markdown_typed_into_it_becomes_its_paragraphs() {
+    use tilo_render_protocol::patch::rich::{Attr, Mark as RichMark};
+    let mut session = Session::live_rich();
+    new_note(&mut session, "Groceries");
+    let enter = ui::winit::keyboard::NamedKey::Enter;
+    session.window.type_text("# Plan");
+    session.window.press_key(enter);
+    session.settle();
+    session.window.type_text("- milk");
+    // Enter continues the list; Enter on the empty item after it leaves it.
+    for _ in 0..2 {
+        session.window.press_key(enter);
+        session.settle();
+    }
+    session.window.type_text("[ ] coffee");
+    for _ in 0..2 {
+        session.window.press_key(enter);
+        session.settle();
+    }
+    session.window.type_text("**bold**");
+    session.settle();
+    let blocks = match session.field_value("Write something") {
+        Some(tilo_ui_host::Value::Rich(rich)) => rich.blocks,
+        other => panic!("a rich body: {other:?}"),
+    };
+    let written: Vec<(&str, &str)> = blocks
+        .iter()
+        .map(|block| (block.kind.as_str(), block.text.as_str()))
+        .collect();
+    assert_eq!(
+        written,
+        [
+            ("heading", "Plan"),
+            ("list_item", "milk"),
+            ("list_item", "coffee"),
+            ("paragraph", "bold"),
+        ],
+        "each marker is the structure, not text"
+    );
+    assert_eq!(
+        blocks[0].attrs.get("level"),
+        Some(&Attr::Int(1)),
+        "a first-level heading"
+    );
+    assert_eq!(
+        blocks[2].attrs.get("checked"),
+        Some(&Attr::Bool(false)),
+        "a checklist with its box empty"
+    );
+    assert_eq!(
+        blocks[3].marks,
+        [RichMark {
+            start: 0,
+            end: 4,
+            name: "strong".into(),
+            value: Attr::Bool(true),
+        }],
+        "the closing `**` made the run bold"
+    );
+}
+
+/// What a note's body was written as comes back when its note is opened again: the document is
+/// the field's value, kept in the record, not a draft the window holds.
+#[test]
+fn a_rich_body_comes_back_as_its_document_when_its_note_is_opened_again() {
+    let mut session = Session::live_rich();
+    new_note(&mut session, "Groceries");
+    session.window.type_text("# Plan");
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+    session.window.type_text("- milk");
+    session.settle();
+    new_note(&mut session, "Other");
+    let row = note_row(&mut session, "Groceries");
+    session.window.click_at(row.0, row.1);
+    session.settle();
+    let (title, body) = open_note(&mut session);
+    assert_eq!(title, "Groceries");
+    assert_eq!(body, "Plan\nmilk", "the document as it was written");
+    let kinds: Vec<String> = match session.field_value("Write something") {
+        Some(tilo_ui_host::Value::Rich(rich)) => {
+            rich.blocks.iter().map(|block| block.kind.clone()).collect()
+        }
+        other => panic!("a rich body: {other:?}"),
+    };
+    assert_eq!(kinds, ["heading", "list_item"]);
+}
+
+/// The document editor as captured, when shots are asked for with `TILO_RICHBODY_SHOTS`: a
+/// relative directory is under the build's target directory, where a remote builder hands it
+/// back.
+#[test]
+fn shots() {
+    let Some(dir) = std::env::var_os("TILO_RICHBODY_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let dir = match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(target) if dir.is_relative() => std::path::PathBuf::from(target).join(dir),
+        _ => dir,
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let _settled = ui::motion::testing::settled();
+    for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+        let mut session = Session::rich();
+        session.window.harness().set_theme(theme);
+        new_note(&mut session, "Saturday");
+        let enter = ui::winit::keyboard::NamedKey::Enter;
+        // Typed as a person types it: Markdown markers become the document's blocks.
+        let enter_again = |session: &mut Session| {
+            session.window.press_key(enter);
+            session.settle();
+        };
+        for line in [
+            "# Errands",
+            "- milk",
+            "- eggs",
+            "[ ] coffee",
+            "> Ask whether Tuesday morning works",
+            "```rust",
+        ] {
+            session.window.type_text(line);
+            session.settle();
+            enter_again(&mut session);
+            // A list, a checklist and a quote each need the Enter on their empty line after
+            // them to end and start the next block the person wants.
+            if matches!(line.chars().next(), Some('-' | '[' | '>')) {
+                enter_again(&mut session);
+            }
+        }
+        session.window.type_text("fn main() {}");
+        session.settle();
+        session
+            .window
+            .harness()
+            .render_png(&dir.join(format!("rich-body-{shade}.png")));
+    }
 }

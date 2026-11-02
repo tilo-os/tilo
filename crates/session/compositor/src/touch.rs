@@ -9,13 +9,16 @@
 //! browser's pinch-to-zoom); three or more are offered to the desktop first
 //! ([`crate::WindowPolicy::gesture`]).
 
+use smithay::backend::input::ButtonState;
 use smithay::input::pointer::{
-    GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
-    GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
+    ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
+    GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+    GestureSwipeUpdateEvent, MotionEvent as PointerMotionEvent,
 };
 use smithay::input::touch::{DownEvent, MotionEvent, UpEvent};
+use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, Serial};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 
 use crate::gestures;
 use crate::input::{BTN_LEFT, GestureEvent};
@@ -24,6 +27,17 @@ use crate::state::State;
 
 /// A client surface and its origin in the logical layout.
 pub(crate) type Focus = Option<(WlSurface, Point<f64, Logical>)>;
+
+/// Whether the client `surface` belongs to bound `wl_touch`. One that did not
+/// has the seat's touch objects of no use: a finger reaches it as a pointer
+/// press at the same place, so a tap still clicks.
+fn binds_touch(surface: &WlSurface) -> bool {
+    surface.client().is_some_and(|client| {
+        client
+            .get_data::<crate::state::ClientState>()
+            .is_some_and(crate::state::ClientState::binds_touch)
+    })
+}
 
 /// Where each finger on the screen went down.
 #[derive(Debug, Default)]
@@ -49,6 +63,11 @@ pub(crate) struct Finger {
     pub(crate) focus: Focus,
     /// Where the finger is.
     pub(crate) at: Point<f64, Logical>,
+    /// The client bound no `wl_touch`: the finger reaches it as a pointer
+    /// press, which is the only way it can be typed on at all.
+    pointer: bool,
+    /// When it went down, for the times the pointer events carry.
+    time: u32,
 }
 
 impl Touches {
@@ -95,11 +114,24 @@ impl State {
             )
         };
         self.touch.clients.retain(|finger| finger.slot != slot);
+        // One finger at a time holds the pointer down: a second one on a
+        // client that bound no touch has no pointer of its own, and pressing
+        // it again would be a press the client never lifted.
+        let pointer = focus
+            .as_ref()
+            .is_some_and(|(surface, _)| !binds_touch(surface))
+            && !self.touch.clients.iter().any(|finger| finger.pointer);
         self.touch.clients.push(Finger {
             slot,
             focus: focus.clone(),
             at,
+            pointer,
+            time,
         });
+        if pointer {
+            self.touch_pointer(focus, at, Some(ButtonState::Pressed), serial, time);
+            return;
+        }
         let Some(touch) = self.seat.get_touch() else {
             return;
         };
@@ -146,14 +178,15 @@ impl State {
             }
             return;
         }
-        let focus = self
+        let (focus, pointer) = self
             .touch
             .clients
             .iter_mut()
             .find(|finger| finger.slot == slot)
             .map(|finger| {
                 finger.at = at;
-                finger.focus.clone()
+                finger.time = time;
+                (finger.focus.clone(), finger.pointer)
             })
             .unwrap_or_default();
         // The lock screen covers the display, stretched to it: it reads the
@@ -163,6 +196,10 @@ impl State {
         } else {
             at
         };
+        if pointer {
+            self.touch_pointer(focus, at, None, SERIAL_COUNTER.next_serial(), time);
+            return;
+        }
         if let Some(touch) = self.seat.get_touch() {
             touch.motion(
                 self,
@@ -205,12 +242,23 @@ impl State {
             }
             return;
         }
-        let at = self
+        let lifted = self
             .touch
             .clients
             .iter()
             .position(|finger| finger.slot == slot)
-            .map_or(self.pointer, |index| self.touch.clients.remove(index).at);
+            .map(|index| self.touch.clients.remove(index));
+        let at = lifted.as_ref().map_or(self.pointer, |finger| finger.at);
+        if let Some(finger) = lifted.filter(|finger| finger.pointer) {
+            let at = if self.locked() {
+                self.lock_point(finger.at)
+            } else {
+                finger.at
+            };
+            self.touch_pointer(finger.focus, at, Some(ButtonState::Released), serial, time);
+            self.x11_drag_motion(at);
+            return;
+        }
         if let Some(touch) = self.seat.get_touch() {
             touch.up(
                 self,
@@ -249,7 +297,22 @@ impl State {
             .clients
             .last()
             .map_or(self.pointer, |finger| finger.at);
-        self.touch.clients.clear();
+        for finger in std::mem::take(&mut self.touch.clients) {
+            if finger.pointer {
+                let at = if self.locked() {
+                    self.lock_point(finger.at)
+                } else {
+                    finger.at
+                };
+                self.touch_pointer(
+                    finger.focus,
+                    at,
+                    Some(ButtonState::Released),
+                    SERIAL_COUNTER.next_serial(),
+                    finger.time,
+                );
+            }
+        }
         let finger = self.drag_finger();
         if let Some(touch) = self.seat.get_touch() {
             touch.cancel(self);
@@ -258,6 +321,42 @@ impl State {
             self.drag_cancelled();
         }
         self.x11_drag_motion(at);
+    }
+
+    /// A finger on a client that bound no `wl_touch`, as the pointer it can
+    /// take: moved to the finger, and pressed there or lifted as `button` says.
+    fn touch_pointer(
+        &mut self,
+        focus: Focus,
+        at: Point<f64, Logical>,
+        button: Option<ButtonState>,
+        serial: Serial,
+        time: u32,
+    ) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        pointer.motion(
+            self,
+            focus,
+            &PointerMotionEvent {
+                location: at,
+                serial,
+                time,
+            },
+        );
+        if let Some(state) = button {
+            pointer.button(
+                self,
+                &ButtonEvent {
+                    button: BTN_LEFT,
+                    state,
+                    serial,
+                    time,
+                },
+            );
+        }
+        pointer.frame(self);
     }
 
     pub(crate) fn gesture(&mut self, gesture: GestureEvent, serial: Serial, time: u32) {

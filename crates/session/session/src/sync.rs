@@ -34,6 +34,7 @@ use collab_types::presence::{Availability, PointerSpace, PresenceKey};
 use collab_types::{PeerPresence, PeerPresencePayload};
 use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
+use tilo_action_broker::record_content::ContentSources;
 use tilo_desktop::chrome::WaveNotice;
 use tilo_desktop::here::{Here, LiveMember, Wave};
 use tilo_desktop_model::{DesktopTree, RoomId as DeskRoom, TabId, WorkspaceId as DeskWorkspace};
@@ -83,11 +84,6 @@ pub struct OwnPresence {
     /// The voice channel they are in here, if any: what everyone else's
     /// roster says beside their face.
     pub call: Option<InCall>,
-    /// The services carrying this device's media into that channel, as this
-    /// session says them: a page has no call lane of its own, so the device
-    /// the page's frames name carries them, and the call says which software
-    /// its frames pass through. Empty when nothing bridges it.
-    pub bridge: Vec<String>,
     /// Whose view they follow, by that member's publisher.
     pub following: Option<String>,
 }
@@ -132,9 +128,6 @@ pub struct LiveCaller {
     pub camera: bool,
     /// The device shares its screen in the call.
     pub screen: bool,
-    /// The services carrying this device's media into this call: the software
-    /// everyone's frames of them pass through.
-    pub services: Vec<String>,
 }
 
 impl LiveCall {
@@ -144,19 +137,12 @@ impl LiveCall {
         if self.name.trim().is_empty() {
             self.name.clone_from(&presence.call.name);
         }
-        let services = peer
-            .bridge
-            .as_ref()
-            .filter(|(channel, _)| *channel == presence.call.channel)
-            .map(|(_, services)| services.clone())
-            .unwrap_or_default();
         self.people.push(LiveCaller {
             id: peer.publisher.to_string(),
             label: peer.label.clone(),
             user: peer.user.clone(),
             camera: presence.camera,
             screen: presence.screen,
-            services,
         });
     }
 
@@ -194,9 +180,6 @@ struct Peer {
     /// The call they are in, as their presence says: the channel's id,
     /// what it is called, and what their device sends there.
     call: Option<InCall>,
-    /// Which services carry their media into which channel, as their presence
-    /// says.
-    bridge: Option<(String, Vec<String>)>,
     /// Where their pointer is: the tab of this workspace its tile shows, and the
     /// position on that tile in logical pixels from its corner.
     pointer: Option<(u64, f64, f64)>,
@@ -215,7 +198,6 @@ impl Peer {
             following: None,
             wave: None,
             call: None,
-            bridge: None,
             pointer: None,
             here: false,
         }
@@ -310,9 +292,6 @@ impl Workspace {
                             seq: *seq,
                             target: target.clone(),
                         });
-                    }
-                    PeerPresencePayload::Bridge { channel, services } => {
-                        peer.bridge = Some((channel.clone(), services.clone()));
                     }
                     _ => {}
                 });
@@ -942,19 +921,6 @@ impl Client {
         self.set_own(own)
     }
 
-    /// The services carrying this device's media into the call it is in, as
-    /// everyone here reads them (`["web"]` for a page bridged into its call).
-    /// Said again in the workspace in front; empty when nothing bridges it.
-    /// Whether that changed anything.
-    pub fn bridged(&self, services: Vec<String>) -> bool {
-        let mut own = self.own.borrow().clone();
-        if own.bridge == services {
-            return false;
-        }
-        own.bridge = services;
-        self.set_own(own)
-    }
-
     /// Whether this person is in the call in `channel`, on any of their
     /// devices: what a Join is not offered for.
     #[must_use]
@@ -1170,14 +1136,29 @@ impl Client {
         if !changed {
             return;
         }
-        let sources = self
-            .plane
-            .borrow()
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.ws == ws)
-            .map(|workspace| workspace.content.sources(self.publisher()))
-            .unwrap_or_default();
+        let (sources, connected) = {
+            let plane = self.plane.borrow();
+            match plane.workspaces.iter().find(|workspace| workspace.ws == ws) {
+                Some(workspace) => (
+                    workspace.content.sources(self.publisher()),
+                    Some((
+                        workspace.id.clone(),
+                        workspace.content.devices(self.publisher()),
+                    )),
+                ),
+                None => (ContentSources::default(), None),
+            }
+        };
+        // The devices of the workspace this session reaches are the ones an
+        // offer round asks: one that is away is not asked, and not waited for.
+        if let Some(actions) = self.device_actions.get()
+            && let Some((workspace, devices)) = connected
+        {
+            actions.here(
+                &workspace,
+                devices.iter().map(|device| *device.as_bytes()).collect(),
+            );
+        }
         content.sources_changed(ws, sources);
     }
 
@@ -1565,12 +1546,6 @@ impl Client {
             payloads.push(PeerPresencePayload::Wave {
                 seq: wave.seq,
                 target: wave.target,
-            });
-        }
-        if let Some(call) = &own.call {
-            payloads.push(PeerPresencePayload::Bridge {
-                channel: call.call.channel.clone(),
-                services: own.bridge.clone(),
             });
         }
         for payload in payloads {

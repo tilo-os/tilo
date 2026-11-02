@@ -27,7 +27,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::quick_settings;
-use tilo_session::{Options, Session};
+use tilo_session::{Options, Service as _, Session};
 use tilo_surface_host::DeskReading;
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
@@ -1003,43 +1003,79 @@ fn alt_backtick_walks_only_the_front_apps_windows() {
     assert_eq!(lifted(&session), crossed.key);
 }
 
-/// Who else is here stands on the bar as their face and as the chip that names them, both read
-/// from the session's presence; the chip calls the session's own `toggle-collaborators`: the
-/// roster opens and lists them.
+/// Who is here is one button of faces — up to three, then a face counting the rest — whose name
+/// names the people, so no words take the bar's room at any width; pressing it calls the
+/// session's own `toggle-collaborators`, and the roster opens and lists them.
 #[test]
 fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     until(&mut session, |session| says(session, &desk(session).clock));
-    // Someone else here, as the collaboration plane lists them.
-    let member = tilo_desktop::here::LiveMember {
-        publisher: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd".to_owned(),
-        kind: "person".to_owned(),
-        label: "Mia Clayton".to_owned(),
-        ..tilo_desktop::here::LiveMember::default()
-    };
-    session
-        .sync()
-        .expect("the session takes part in the plane")
-        .here()
-        .borrow_mut()
-        .set_members(None, Some(vec![member]));
-    until(&mut session, |session| says(session, "Mia Clayton is here"));
-    let shown = |session: &Session| {
-        session
-            .accessible_labels()
-            .iter()
-            .filter(|label| label.as_str() == "Mia Clayton")
-            .count()
-    };
+    // Nobody here: the people door alone.
+    let door = bar_control(&session, "People").expect("the people door");
     assert!(
-        shown(&session) > 0,
-        "their face is on the bar, named for assistive technology: {:?}",
+        session.shell_control("Mia Clayton").is_none(),
+        "no face of a person who is not here"
+    );
+    // Someone here, as the collaboration plane lists them: their face, named for assistive
+    // technology, on the one button that opens the roster.
+    set_here(&session, 1);
+    until(&mut session, |session| says(session, "Mia Clayton is here"));
+    let one = bar_control(&session, "Mia Clayton is here").expect("one face, named");
+    assert!(
+        one.2 < 60.0,
+        "the group is faces, not the words that name them: {} wide",
+        one.2
+    );
+    assert!(
+        session.shell_control("Mia Clayton").is_none(),
+        "the face has no control of its own beside a chip: {:?}",
         session.accessible_labels()
     );
-    let before = shown(&session);
-    press(&mut session, "Mia Clayton is here");
-    until(&mut session, |session| shown(session) > before);
+    // Three here: three faces. And a fourth: three faces and a count, which is narrower than
+    // one face more.
+    let mut widths = vec![one.2];
+    for (count, label) in [
+        (2, "Mia Clayton and Sam Okafor are here"),
+        (3, "Mia Clayton and 2 others are here"),
+        (4, "Mia Clayton and 3 others are here"),
+    ] {
+        set_here(&session, count);
+        until(&mut session, |session| says(session, label));
+        widths.push(bar_control(&session, label).map_or_else(
+            || panic!("{count} here: {:?}", session.accessible_labels()),
+            |rect| rect.2,
+        ));
+    }
+    assert!(
+        widths[3] - widths[2] < widths[1] - widths[0],
+        "the fourth here is a count, not a face: {widths:?}"
+    );
+    assert!(
+        widths[2] - widths[1] > 1.0,
+        "a face joins the group: {widths:?}"
+    );
+    assert!(
+        door.2 < 40.0,
+        "nobody here: the glyph alone, {} wide",
+        door.2
+    );
+    // The button opens who is here, where each person has their own name.
+    assert!(
+        !session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Mia Clayton"),
+        "nobody's name stands anywhere while the roster is closed: {:?}",
+        session.accessible_labels()
+    );
+    press(&mut session, "Mia Clayton and 3 others are here");
+    until(&mut session, |session| {
+        let labels = session.accessible_labels();
+        ["Mia Clayton", "Sam Okafor", "Jo Park", "Ada Byron"]
+            .into_iter()
+            .all(|name| labels.iter().any(|label| label == name))
+    });
     keep(&mut session, "shell-people-roster");
 }
 
@@ -1170,6 +1206,30 @@ fn an_apps_open_the_shell_calls_starts_it() {
     );
 }
 
+/// A sound service over a card in memory: the speakers, at 40%.
+fn speaker() -> tilo_audio_service::sound::SoundService {
+    let card = Card {
+        graph: std::sync::Mutex::new(media::audio::AudioGraph {
+            sinks: vec![media::audio::AudioDevice {
+                id: 40,
+                serial: 40,
+                name: "node-40".to_owned(),
+                description: "Speakers".to_owned(),
+                is_default: true,
+                volume: Some(0.4),
+                muted: Some(false),
+                channels: 2,
+                codec: None,
+            }],
+            ..media::audio::AudioGraph::default()
+        }),
+    };
+    let mut sound =
+        tilo_audio_service::sound::SoundService::new(std::sync::Arc::new(card), None).unwrap();
+    sound.settle();
+    sound
+}
+
 /// A session of `width` by `height` with the shell's bar, the person's settings and a sound
 /// card: what the quick settings read and change.
 fn session_with_devices(width: i32, height: i32) -> Session {
@@ -1207,29 +1267,9 @@ fn session_where(
     extra: Vec<Box<dyn tilo_session::Service>>,
     surfaces: Vec<tilo_session::surfaces::Surface>,
 ) -> Session {
-    use tilo_session::Service as _;
-    let card = Card {
-        graph: std::sync::Mutex::new(media::audio::AudioGraph {
-            sinks: vec![media::audio::AudioDevice {
-                id: 40,
-                serial: 40,
-                name: "node-40".to_owned(),
-                description: "Speakers".to_owned(),
-                is_default: true,
-                volume: Some(0.4),
-                muted: Some(false),
-                channels: 2,
-                codec: None,
-            }],
-            ..media::audio::AudioGraph::default()
-        }),
-    };
-    let mut sound =
-        tilo_audio_service::sound::SoundService::new(std::sync::Arc::new(card), None).unwrap();
-    sound.settle();
     let mut services: Vec<Box<dyn tilo_session::Service>> = vec![
         Box::new(tilo_settings_service::SettingsService::new()),
-        Box::new(sound),
+        Box::new(speaker()),
     ];
     services.extend(extra);
     Session::headless(
@@ -1900,4 +1940,530 @@ fn creating_a_named_workspace_from_the_workspaces_surface_makes_it() {
         "{:?}",
         session.shell_refusals()
     );
+}
+
+// ---- the bar's trailing group, its material and a compact bar ---------------------------
+
+/// The people who come here in these tests, in the order they arrive.
+const HERE: [&str; 4] = ["Mia Clayton", "Sam Okafor", "Jo Park", "Ada Byron"];
+
+/// Who is here, as the collaboration plane lists them: the first `count` of [`HERE`].
+fn set_here(session: &Session, count: usize) {
+    let here: Vec<_> = HERE
+        .iter()
+        .take(count)
+        .enumerate()
+        .map(|(at, name)| tilo_desktop::here::LiveMember {
+            publisher: format!("{:064x}", at + 1),
+            kind: "person".to_owned(),
+            label: (*name).to_owned(),
+            ..tilo_desktop::here::LiveMember::default()
+        })
+        .collect();
+    session
+        .sync()
+        .expect("the session takes part in the plane")
+        .here()
+        .borrow_mut()
+        .set_members(None, Some(here));
+}
+
+/// Where the bar's control whose name holds `words` stands, logical `(x, y, w, h)`.
+fn bar_control(session: &Session, words: &str) -> Option<(f64, f64, f64, f64)> {
+    session
+        .accessible_labels()
+        .into_iter()
+        .filter(|label| label.contains(words))
+        .find_map(|label| session.shell_control(&label))
+}
+
+/// Every control the shell shows, by the name assistive technology hears, with where it
+/// stands: the bar's and the dock's.
+fn bar_controls(session: &Session) -> Vec<(String, (f64, f64, f64, f64))> {
+    session
+        .accessible_labels()
+        .into_iter()
+        .filter_map(|label| session.shell_control(&label).map(|rect| (label, rect)))
+        .collect()
+}
+
+/// The bar's band, logical `(x, y, w, h)`: the shell's own bar, as tall as the theme and the
+/// text scale make it.
+fn bar_band(session: &Session) -> (f64, f64, f64, f64) {
+    // The bar's own ground, as assistive technology names it.
+    if let Some(rect) = session.shell_control("Top bar") {
+        return rect;
+    }
+    // The band the bar holds at the top of the output it stands on, when the ground has no
+    // bounds of its own; the bar's controls stand inside it, and nothing of the desk does.
+    session
+        .shell_bars()
+        .first()
+        .map_or((0.0, 0.0, 0.0, 0.0), |bar| {
+            let (x, y, w, _) = bar.rect;
+            (f64::from(x), f64::from(y), f64::from(w), BAR_BAND_HEIGHT)
+        })
+}
+
+/// The height of the bar's band: its ground's padding around the controls it holds.
+const BAR_BAND_HEIGHT: f64 = 40.0;
+
+/// The controls standing in the bar's band, by where their middle is: what a person sees on
+/// the bar, not on the desk. A control that reaches out of the band is still one of the bar's,
+/// which is what lets a test see it overflow.
+fn bar_band_controls(session: &Session) -> Vec<(String, (f64, f64, f64, f64))> {
+    let band = bar_band(session);
+    let holds = |x: f64, y: f64, w: f64, h: f64| {
+        let (x, y) = (x + w / 2.0, y + h / 2.0);
+        x >= band.0 && x <= band.0 + band.2 && y >= band.1 && y <= band.1 + band.3
+    };
+    bar_controls(session)
+        .into_iter()
+        .filter(|(_, (x, y, w, h))| holds(*x, *y, *w, *h))
+        .collect()
+}
+
+/// Run frames until what a setting wrote is drawn: nothing the views read reports itself.
+fn settle(session: &mut Session) {
+    for _ in 0..20 {
+        session.settle_services();
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+}
+
+/// A device whose pack charges (or drains) and whose link is Wi-Fi, in memory: what the bar's
+/// status reads where this machine's own services do not run.
+#[derive(Clone, Copy, Debug)]
+struct Device {
+    charging: bool,
+}
+
+impl tilo_session::Service for Device {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        vec![
+            tilo_actions::ResourceSpec::new("power:battery", "power:battery", "Battery"),
+            tilo_actions::ResourceSpec::new("network", "network", "Network"),
+        ]
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        match resource {
+            "power:battery" => Some(serde_json::json!({
+                "present": true,
+                "percentage": 61,
+                "state": if self.charging { "charging" } else { "discharging" },
+                "on_battery": !self.charging,
+            })),
+            "network" => Some(serde_json::json!({
+                "link": { "kind": "wifi", "name": "Studio", "signal": 4 },
+            })),
+            _ => None,
+        }
+    }
+
+    fn invoke(
+        &mut self,
+        _resource: &str,
+        _action: &str,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        Err(tilo_actions::DoorError::Unavailable {
+            code: "test".to_owned(),
+            reason: "this device takes no actions: its readings are the test's".to_owned(),
+        })
+    }
+}
+
+/// A session at `width` by `height` whose device charges and is on Wi-Fi, with the person's
+/// settings published: what the bar's status and its appearance read.
+fn device_session(width: i32, height: i32) -> Session {
+    device_session_over(width, height, Device { charging: true })
+}
+
+/// The same session over `device`.
+fn device_session_over(width: i32, height: i32, device: Device) -> Session {
+    let mut session = Session::headless(
+        Options {
+            services: vec![
+                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(speaker()),
+                Box::new(device),
+            ],
+            ..options()
+        },
+        &[OutputConfig::new("HEADLESS-1", width, height)],
+    )
+    .expect("session");
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(1),
+        rate: 0,
+    });
+    session
+}
+
+/// Turn the person's dark mode on or off, as the quick settings' tile does: the settings'
+/// own published action.
+fn set_appearance(session: &mut Session, dark: bool) {
+    session
+        .invoke(
+            "settings:settings.appearance",
+            "set-dark-mode",
+            &serde_json::Map::from_iter([("on".to_owned(), serde_json::json!(dark))]),
+        )
+        .expect("the appearance changes");
+}
+
+/// How many pixels of `after` differ from `before` by more than a shade, inside `rect` and
+/// outside every rect of `allowed`: what changed where the test points, and what changed
+/// anywhere else.
+fn changed_near(
+    before: &tilo_compositor::Screenshot,
+    after: &tilo_compositor::Screenshot,
+    rect: (f64, f64, f64, f64),
+    allowed: &[(f64, f64, f64, f64)],
+) -> (usize, usize) {
+    changed_by(before, after, rect, allowed, 8)
+}
+
+/// The same, for a change of more than `shade` in a channel: a material's tint can move the
+/// bar by a level or two and still be another material.
+fn changed_by(
+    before: &tilo_compositor::Screenshot,
+    after: &tilo_compositor::Screenshot,
+    rect: (f64, f64, f64, f64),
+    allowed: &[(f64, f64, f64, f64)],
+    shade: u8,
+) -> (usize, usize) {
+    assert_eq!(
+        (before.width, before.height),
+        (after.width, after.height),
+        "the two frames are of one screen"
+    );
+    let holds = |rect: (f64, f64, f64, f64), x: f64, y: f64| {
+        x >= rect.0 && x < rect.0 + rect.2 && y >= rect.1 && y < rect.1 + rect.3
+    };
+    let mut inside = 0;
+    let mut outside = 0;
+    for (index, (a, b)) in before
+        .rgba
+        .chunks_exact(4)
+        .zip(after.rgba.chunks_exact(4))
+        .enumerate()
+    {
+        if !a
+            .iter()
+            .zip(b.iter())
+            .any(|(a, b)| u8::abs_diff(*a, *b) > shade)
+        {
+            continue;
+        }
+        let x = (index % before.width as usize) as f64;
+        let y = (index / before.width as usize) as f64;
+        if holds(rect, x, y) {
+            inside += 1;
+        } else if !allowed.iter().any(|allowed| holds(*allowed, x, y)) {
+            outside += 1;
+        }
+    }
+    (inside, outside)
+}
+
+/// How many pixels of `after` differ from `before` by more than a shade, inside `rect` and
+/// outside it.
+fn changed_in(
+    before: &tilo_compositor::Screenshot,
+    after: &tilo_compositor::Screenshot,
+    rect: (f64, f64, f64, f64),
+) -> (usize, usize) {
+    changed_near(before, after, rect, &[rect])
+}
+
+/// The count's badge stands wholly inside the bell's face, which stands inside the bar: what
+/// the person sees when a notification arrives, and where.
+#[test]
+fn the_bells_count_stands_inside_the_bar() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &desk(session).clock));
+    let before = keep(&mut session, "shell-bar-bell");
+    session
+        .notices()
+        .post_quiet(tilo_desktop_surface::notifications::Notification::new(
+            "New mail", "From Ada",
+        ));
+    until(&mut session, |session| {
+        desk(session).unread == 1 && says(session, "Notifications, 1 unread")
+    });
+    let after = keep(&mut session, "shell-bar-bell-counted");
+    let bell = bar_control(&session, "Notifications, 1 unread").expect("the bell");
+    let band = bar_band(&session);
+    assert!(
+        bell.1 >= band.1 && bell.1 + bell.3 <= band.1 + band.3 + 0.5,
+        "the bell stands inside the bar's band: {bell:?} of {band:?}"
+    );
+    // The count sits on the bell's corner, inside the bell's own bounds: a badge is clamped
+    // inside the control it counts, so a bell standing inside the bar's band carries no pixel
+    // of its count over the screen's top edge. (What the notice itself draws on the desk is
+    // not the bar's; the pixels below the bar change with it.)
+    let (inside, _) = changed_in(&before, &after, bell);
+    assert!(inside > 20, "the count shows: {inside} pixels");
+}
+
+/// The bar's trailing group, in order: who is here, the device's status, the bell and the
+/// person's own face, with a gap between who is here and the status, and the person's face at
+/// the far end.
+#[test]
+fn the_trailing_group_stands_in_order_and_ends_with_the_persons_face() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = device_session(WIDTH, HEIGHT);
+    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    set_here(&session, 2);
+    until_settled(&mut session, |session| says(session, "are here"));
+    let people = bar_control(&session, "are here").expect("who is here");
+    let sound = bar_control(&session, "Volume").expect("the sound's level");
+    let link = bar_control(&session, "Wi-Fi").expect("the connection");
+    let pack = bar_control(&session, "61%, charging").expect("the charge");
+    let bell = bar_control(&session, "Notifications").expect("the bell");
+    let me = bar_control(&session, PERSON).expect("the person's own face");
+    println!(
+        "trailing group at {WIDTH}: who is here {people:?}, sound {sound:?}, link {link:?}, \
+         charge {pack:?}, bell {bell:?}, me {me:?}"
+    );
+    let order = [
+        ("who is here", people),
+        ("the sound", sound),
+        ("the connection", link),
+        ("the charge", pack),
+        ("the bell", bell),
+        ("the person's face", me),
+    ];
+    for pair in order.windows(2) {
+        let (first, second) = (pair[0], pair[1]);
+        assert!(
+            first.1.0 + first.1.2 <= second.1.0,
+            "{} stands before {}: {first:?} {second:?}",
+            first.0,
+            second.0
+        );
+    }
+    assert!(
+        sound.0 - (people.0 + people.2) > 6.0,
+        "a gap stands between who is here and the device's status: {people:?} {sound:?}"
+    );
+    let rightmost = bar_band_controls(&session)
+        .into_iter()
+        .map(|(_, rect)| rect.0 + rect.2)
+        .fold(f64::MIN, f64::max);
+    assert!(
+        (me.0 + me.2 - rightmost).abs() < 0.5,
+        "the person's own face is the last control, at the far end: {me:?} of {rightmost}"
+    );
+    assert!(
+        f64::from(WIDTH) - (me.0 + me.2) < 24.0,
+        "and stands at the bar's trailing edge: {me:?}"
+    );
+}
+
+/// The bar is the theme's own bar material, chosen by the person's style: the glass of the
+/// translucent style and the calm ground of the solid one, on one view, over one desk.
+#[test]
+fn the_bar_draws_the_material_of_the_style_the_person_chose() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = device_session(WIDTH, HEIGHT);
+    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    set_here(&session, 2);
+    until_settled(&mut session, |session| says(session, "are here"));
+    // The desk's first frames draw every translucent body before the compositor has handed
+    // it what stands below it; let the session reach its rest before the frame is kept, as
+    // the captures after a setting change do.
+    settle(&mut session);
+    let calm = keep(&mut session, "shell-bar-calm");
+    session
+        .run_shell_setting("set_bar_finish", vec![serde_json::json!("translucent")])
+        .expect("the bar takes the theme's glass");
+    settle(&mut session);
+    let glass = keep(&mut session, "shell-bar-glass");
+    let band = bar_band(&session);
+    // The theme's glass lets the ground through it: over the desk's flat backdrop it moves the
+    // whole band by a level rather than by a shade, so every pixel of the band that differs at
+    // all counts as the other material.
+    // The ground paints the bar's whole body, the Chrome's padding around the controls
+    // included: what changes outside the controls' bounds is still the bar.
+    let ground = (band.0 - 8.0, band.1 - 8.0, band.2 + 16.0, band.3 + 16.0);
+    let (in_bar, under) = changed_by(
+        &calm,
+        &glass,
+        (0.0, 0.0, f64::from(glass.width), band.3),
+        &[ground],
+        0,
+    );
+    assert!(
+        in_bar > 10_000,
+        "the bar's ground is another material: {in_bar} pixels in its band {band:?}"
+    );
+    assert_eq!(
+        under, 0,
+        "the desk under the bar is the same in both styles: one view, not two"
+    );
+    session
+        .run_shell_setting("set_bar_finish", vec![serde_json::json!("solid")])
+        .expect("and back to the calm ground");
+    settle(&mut session);
+    let back = keep(&mut session, "shell-bar-calm-again");
+    // The clock may turn its minute between the two frames; nothing else may differ.
+    let mut allowed = vec![];
+    allowed.extend(bar_control(&session, &desk(&session).clock));
+    let (_, outside) = changed_by(&calm, &back, (0.0, 0.0, 0.0, 0.0), &allowed, 1);
+    assert_eq!(outside, 0, "the same style draws the same bar");
+}
+
+/// The charge's control is the power service's own state: a pack taking charge shows the
+/// charging battery, a pack that drains the plain one, and the bar says which.
+#[test]
+fn the_charge_shows_the_charging_battery_while_the_pack_takes_charge() {
+    let _settled = ui::motion::testing::settled();
+    let mut taking = device_session_over(WIDTH, HEIGHT, Device { charging: true });
+    until_settled(&mut taking, |session| says(session, "61%, charging"));
+    let charging = keep(&mut taking, "shell-bar-charging");
+    let mut draining = device_session_over(WIDTH, HEIGHT, Device { charging: false });
+    until_settled(&mut draining, |session| {
+        says(session, "61%") && !says(session, "charging")
+    });
+    let plain = keep(&mut draining, "shell-bar-draining");
+    let people = bar_control(&taking, "People").expect("who is here");
+    let plain_people = bar_control(&draining, "People").expect("who is here, draining");
+    let pack = bar_control(&taking, "61%, charging").expect("the charge");
+    // The trailing group is laid out from the width its readings take: the longer charge
+    // moves everyone who stands at its leading side over, so what differs is the trailing
+    // group and nothing before it — not the clock, the tabs or the launcher.
+    let (_, _, _, band) = bar_band(&taking);
+    let from = people.0.min(plain_people.0);
+    let allowed = [(from, 0.0, f64::from(charging.width) - from, band)];
+    let (glyph, outside) = changed_near(&charging, &plain, pack, &allowed);
+    assert!(
+        glyph > 20,
+        "the charging battery's glyph is another glyph: {glyph} pixels"
+    );
+    assert_eq!(
+        outside, 0,
+        "and only the charge's reading changed between the two: {outside} pixels elsewhere"
+    );
+}
+
+/// A compact bar keeps what a glance needs — the clock, the connection, the charge, the bell
+/// and the person's own face — and gives way on who is here and the sound: nothing stands past
+/// the screen's edge, however much the device reads.
+#[test]
+fn a_compact_bar_keeps_a_glance_and_nothing_overflows_it() {
+    let _settled = ui::motion::testing::settled();
+    for (width, height) in [(320, 568), (390, 844)] {
+        let mut session = device_session(width, height);
+        until_settled(&mut session, |session| says(session, &desk(session).clock));
+        set_here(&session, 4);
+        until_settled(&mut session, |session| desk(session).people.len() == 4);
+        let clock = desk(&session).clock;
+        for words in [
+            clock.as_str(),
+            "Wi-Fi",
+            "61%, charging",
+            "Notifications",
+            PERSON,
+        ] {
+            assert!(
+                says(&session, words),
+                "a compact bar keeps {words:?}: {:?}",
+                session.accessible_labels()
+            );
+        }
+        for words in ["Volume", "are here"] {
+            assert!(
+                !says(&session, words),
+                "and gives way on {words:?}: {:?}",
+                session.accessible_labels()
+            );
+        }
+        let over: Vec<_> = bar_band_controls(&session)
+            .into_iter()
+            .filter(|(_, (x, _, w, _))| *x < -0.5 || x + w > f64::from(width) + 0.5)
+            .collect();
+        assert!(
+            over.is_empty(),
+            "nothing stands past {width}'s edge: {over:?}"
+        );
+        // The trailing group ends inside the bar's band, not over its edge.
+        let (_, y, _, h) = bar_control(&session, PERSON).expect("the person's face");
+        let band = bar_band(&session);
+        assert!(
+            y >= band.1 && y + h <= band.1 + band.3 + 0.5,
+            "and stands in the bar's band: {y} {h} of {band:?}"
+        );
+        keep(&mut session, &format!("shell-bar-{width}-compact"));
+    }
+}
+
+/// The bar at 1280, 390 and 320 wide, in both styles, light and dark, with nobody, one person
+/// and four here: what a person sees, and that nothing overflows any of them.
+#[test]
+fn the_bar_draws_inside_every_width_style_and_appearance() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let roomy = |width: i32| width >= 600;
+    for (width, height) in [(1280, 800), (390, 844), (320, 568)] {
+        for count in [0, 1, 4] {
+            // Who is here first, on a bar of the plain theme: a person is told who is here
+            // before they change how the bar looks, and the frames kept are that bar.
+            let mut session = device_session(width, height);
+            until_settled(&mut session, |session| says(session, &desk(session).clock));
+            set_here(&session, count);
+            let who = if count == 1 { "is here" } else { "are here" };
+            until_settled(&mut session, |session| {
+                desk(session).people.len() == count
+                    && (count == 0 || !roomy(width) || says(session, who))
+            });
+            for (appearance, dark) in [("light", false), ("dark", true)] {
+                set_appearance(&mut session, dark);
+                until_settled(&mut session, |session| {
+                    appearance_mode(session) == serde_json::json!(appearance)
+                });
+                for style in ["calm", "glass"] {
+                    let finish = if style == "glass" {
+                        "translucent"
+                    } else {
+                        "solid"
+                    };
+                    session
+                        .run_shell_setting("set_bar_finish", vec![serde_json::json!(finish)])
+                        .expect("the bar takes the style");
+                    settle(&mut session);
+                    let shot = keep(
+                        &mut session,
+                        &format!("bar-{width}-{style}-{appearance}-{count}"),
+                    );
+                    assert_eq!(
+                        (shot.width, shot.height),
+                        (
+                            u32::try_from(width).unwrap(),
+                            u32::try_from(height).unwrap()
+                        ),
+                        "the capture is of the whole screen"
+                    );
+                    let band = bar_band(&session);
+                    let over: Vec<_> = bar_band_controls(&session)
+                        .into_iter()
+                        .filter(|(_, (x, y, w, h))| {
+                            *x < -0.5
+                                || x + w > f64::from(width) + 0.5
+                                || *y < band.1 - 0.5
+                                || y + h > band.1 + band.3 + 0.5
+                        })
+                        .collect();
+                    assert!(
+                        over.is_empty(),
+                        "{width} wide, {style} in {appearance}, {count} here: nothing overflows: \
+                         {over:?}"
+                    );
+                }
+            }
+        }
+    }
 }

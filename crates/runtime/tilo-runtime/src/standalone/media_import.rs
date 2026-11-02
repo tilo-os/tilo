@@ -176,8 +176,8 @@ impl WorkspaceGovernanceServices for MediaImport {
             input: tilo_actions::door::InputSpec::None,
             params: vec![
                 ActionParam::required("source_store", ParamType::Text, "Host-configured source: runtime-profile-content").with_choices([SOURCE]),
-                ActionParam::required("source_workspace", ParamType::Text, "Legacy scope: unscoped").with_choices(["unscoped"]),
-                ActionParam::required("destination_workspace", ParamType::Text, "This runtime's owned workspace"),
+                ActionParam::required("source_room", ParamType::Text, "Legacy scope: unscoped").with_choices(["unscoped"]),
+                ActionParam::required("destination_room", ParamType::Text, "This runtime's owned workspace"),
                 ActionParam::required("hashes", ParamType::Array, "Exact unique lowercase blake3 hashes; 1 to 128")
                     .with_schema(serde_json::json!({"minItems": 1, "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}})),
                 ActionParam::required("max_bytes", ParamType::Integer, "Total byte ceiling; 1 to 268435456")

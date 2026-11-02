@@ -15,7 +15,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use smithay::backend::input::{InputEvent as DeviceEvent, TabletToolEvent, TabletToolType};
+use smithay::backend::input::{
+    Event as _, InputEvent as DeviceEvent, TabletToolEvent, TabletToolType,
+};
 use smithay::backend::libinput::LibinputInputBackend;
 use smithay::input::keyboard::xkb;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -56,11 +58,18 @@ pub(super) struct Input {
     /// The assists' timer (a mouse-keys glide, a slow key, automatic
     /// switch scanning), while one is armed.
     ticker: Option<RegistrationToken>,
-    /// The keymap shortcut chords are typed on.
-    keymap: Option<xkb::Keymap>,
+    /// The keymap shortcut chords are typed on, and the layout it was
+    /// compiled for.
+    keymap: Option<(crate::config::KeyboardLayout, xkb::Keymap)>,
     /// Pad rings and strips turned into scroll steps.
     dials: super::input_source::DialSteps,
     pads: Vec<Pad>,
+    /// The keyboard that typed last, by its identity: whose source list a
+    /// switch of input source picks from.
+    active_keyboard: Option<String>,
+    /// The devices and that keyboard, as published for Settings and the
+    /// session.
+    published: PublishedInputs,
 }
 
 /// A tablet pad as clients are told about it, and the mode its groups are
@@ -81,6 +90,8 @@ impl Input {
             keymap: None,
             dials: super::input_source::DialSteps::default(),
             pads: Vec::new(),
+            active_keyboard: None,
+            published: PublishedInputs::default(),
         }
     }
 
@@ -101,6 +112,85 @@ impl Input {
     }
 }
 
+/// The attached devices and the keyboard that typed last, published in the
+/// private runtime directory: which keyboards are attached decides whose
+/// source list a switch of input source picks from
+/// ([`settings_store::keyboard_sources::active_scope`]).
+#[derive(Default)]
+struct PublishedInputs {
+    snapshot: Option<settings_store::hardware::InputHardwareSnapshot>,
+    /// This process's snapshot lease, looked for once.
+    publisher: Option<(u32, u64)>,
+    lease_looked_for: bool,
+}
+
+impl PublishedInputs {
+    /// Publish `devices` and the keyboard typed on last, when either changed.
+    fn refresh(&mut self, devices: &[Device], active: Option<&str>) {
+        if !self.lease_looked_for {
+            self.lease_looked_for = true;
+            self.publisher = settings_store::hardware::publisher_identity().ok();
+            if self.publisher.is_none() {
+                tracing::debug!("no snapshot lease: Settings cannot read these input devices");
+            }
+        }
+        let (publisher_pid, publisher_start_ticks) = self.publisher.unwrap_or_default();
+        let mut entries: Vec<settings_store::hardware::InputDeviceSnapshot> = devices
+            .iter()
+            .map(|device| settings_store::hardware::InputDeviceSnapshot {
+                key: device_key(device.id_vendor(), device.id_product(), device.name()),
+                name: device.name().to_owned(),
+                kind: input_kind(device_caps(device).kind()),
+                ..settings_store::hardware::InputDeviceSnapshot::default()
+            })
+            .collect();
+        entries.sort_by(|left, right| left.key.cmp(&right.key));
+        entries.dedup_by(|left, right| left.key == right.key);
+        let snapshot = settings_store::hardware::InputHardwareSnapshot {
+            publisher_pid,
+            publisher_start_ticks,
+            devices: entries,
+            active_keyboard: active.map(str::to_owned),
+        };
+        if self.snapshot.as_ref() == Some(&snapshot) {
+            return;
+        }
+        if self.publisher.is_some()
+            && let Err(error) = snapshot.save()
+        {
+            tracing::debug!(%error, "the input devices were not published for Settings");
+        }
+        self.snapshot = Some(snapshot);
+    }
+}
+
+/// A device's kind as the stored input preferences name it.
+fn input_kind(kind: input_config::DeviceKind) -> settings_store::hardware::InputDeviceKind {
+    use settings_store::hardware::InputDeviceKind;
+    match kind {
+        input_config::DeviceKind::Touchpad => InputDeviceKind::Touchpad,
+        input_config::DeviceKind::Mouse => InputDeviceKind::Mouse,
+        input_config::DeviceKind::Keyboard => InputDeviceKind::Keyboard,
+        input_config::DeviceKind::Touchscreen => InputDeviceKind::Touchscreen,
+        input_config::DeviceKind::Tablet => InputDeviceKind::Tablet,
+        input_config::DeviceKind::TabletPad => InputDeviceKind::TabletPad,
+        input_config::DeviceKind::Other => InputDeviceKind::Other,
+    }
+}
+
+/// The identity of the keyboard `event` came from, when it came from one.
+fn typed_on(event: &DeviceEvent<LibinputInputBackend>) -> Option<String> {
+    let DeviceEvent::Keyboard { event } = event else {
+        return None;
+    };
+    let device = event.device();
+    Some(device_key(
+        device.id_vendor(),
+        device.id_product(),
+        device.name(),
+    ))
+}
+
 /// How far one ring or strip step scrolls, in logical pixels (a wheel
 /// notch).
 const DIAL_SCROLL: f64 = 15.0;
@@ -114,6 +204,7 @@ pub(super) fn dispatch_pad(
     mode: (u32, u32),
     state: &mut State,
 ) {
+    let layout = state.keyboard.clone();
     let (switched, event, chord, steps) = {
         let mut this = input.borrow_mut();
         let this = &mut *this;
@@ -136,7 +227,7 @@ pub(super) fn dispatch_pad(
         let chord = match action {
             PadAction::Button { button, pressed } => this.pad_chord(device, button).map(|chord| {
                 if pressed {
-                    this.chord(&chord)
+                    this.chord(&chord, layout.as_ref())
                 } else {
                     Vec::new()
                 }
@@ -289,9 +380,11 @@ pub(super) fn dispatch(
     state: &mut State,
     extent: Size<i32, Logical>,
 ) {
+    let typed_on = typed_on(&event);
     let events = {
         let mut this = input.borrow_mut();
-        match event {
+        let this = &mut *this;
+        let events = match event {
             DeviceEvent::DeviceAdded { mut device } => {
                 input_config::configure(&this.config, &mut device);
                 let pad = if device.has_capability(DeviceCapability::TabletPad) {
@@ -304,11 +397,15 @@ pub(super) fn dispatch(
                 // typed on by touching it, so a tap into a field never waits
                 // for a keyboard process to start.
                 state.note_touchscreen(this.has_touchscreen());
+                this.published
+                    .refresh(&this.devices, this.active_keyboard.as_deref());
                 pad
             }
             DeviceEvent::DeviceRemoved { device } => {
                 this.devices.retain(|known| known != &device);
                 state.note_touchscreen(this.has_touchscreen());
+                this.published
+                    .refresh(&this.devices, this.active_keyboard.as_deref());
                 this.remove_pad(&device)
             }
             DeviceEvent::TabletToolAxis { event } => {
@@ -367,7 +464,15 @@ pub(super) fn dispatch(
                     event => this.access.filter(event, Instant::now()),
                 })
                 .unwrap_or_default(),
+        };
+        if let Some(key) = typed_on
+            && this.active_keyboard.as_deref() != Some(key.as_str())
+        {
+            this.active_keyboard = Some(key);
+            this.published
+                .refresh(&this.devices, this.active_keyboard.as_deref());
         }
+        events
     };
     for event in events {
         state.note_typing(&event, Instant::now());
@@ -518,11 +623,17 @@ impl Input {
         shaped.x = x;
         shaped.y = y;
         shaped.pressure = apply_pressure_curve(config.pressure_curve, event.pressure());
-        self.remap(shaped, &config)
+        self.remap(shaped, &config, state.keyboard.as_ref())
     }
 
-    /// Apply the tablet's button and eraser mapping.
-    fn remap(&mut self, mut event: TabletEvent, config: &TabletConfig) -> Vec<InputEvent> {
+    /// Apply the tablet's button and eraser mapping; shortcut chords type on
+    /// `layout`.
+    fn remap(
+        &mut self,
+        mut event: TabletEvent,
+        config: &TabletConfig,
+        layout: Option<&crate::config::KeyboardLayout>,
+    ) -> Vec<InputEvent> {
         let mut chord = None;
         if event.tool.tool_type == TabletToolType::Eraser {
             match eraser_route(config) {
@@ -561,27 +672,30 @@ impl Input {
         }
         let mut events = vec![InputEvent::Tablet(event)];
         if let Some(chord) = chord {
-            events.extend(self.chord(&chord));
+            events.extend(self.chord(&chord, layout));
         }
         events
     }
 
     /// The key events that type `chord`: modifiers down, the key down and
     /// up, modifiers up in reverse.
-    fn chord(&mut self, chord: &KeyChord) -> Vec<InputEvent> {
-        if self.keymap.is_none() {
-            let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-            self.keymap = xkb::Keymap::new_from_names(
-                &context,
-                "",
-                "",
-                "",
-                "",
-                None,
-                xkb::KEYMAP_COMPILE_NO_FLAGS,
-            );
+    fn chord(
+        &mut self,
+        chord: &KeyChord,
+        layout: Option<&crate::config::KeyboardLayout>,
+    ) -> Vec<InputEvent> {
+        // A shortcut types on the layout the person chose, and on US until
+        // settings reach the compositor; an empty name is xkb's own US
+        // because the keymap reads none from the environment.
+        let layout = layout.cloned().unwrap_or_default();
+        if self
+            .keymap
+            .as_ref()
+            .is_none_or(|(compiled_for, _)| *compiled_for != layout)
+        {
+            self.keymap = compile_keymap(&layout).map(|keymap| (layout.clone(), keymap));
         }
-        let keymap = self.keymap.as_ref();
+        let keymap = self.keymap.as_ref().map(|(_, keymap)| keymap);
         let Some(codes) = chord_keycodes(chord, |ch| {
             keymap.and_then(|keymap| char_keycode(keymap, ch))
         }) else {
@@ -598,6 +712,22 @@ impl Input {
         });
         down.chain(up).collect()
     }
+}
+
+/// The keymap `layout` compiles. Every name is stated and the context reads
+/// none from the environment, so the machine's own layout and options
+/// (`XKB_DEFAULT_*`) cannot decide what a shortcut types.
+fn compile_keymap(layout: &crate::config::KeyboardLayout) -> Option<xkb::Keymap> {
+    let context = xkb::Context::new(xkb::CONTEXT_NO_ENVIRONMENT_NAMES);
+    xkb::Keymap::new_from_names(
+        &context,
+        "evdev",
+        layout.model.as_str(),
+        layout.layout.as_str(),
+        layout.variant.as_str(),
+        Some(layout.options.clone()),
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )
 }
 
 /// The evdev keycode of the key typing `ch` on its first level.

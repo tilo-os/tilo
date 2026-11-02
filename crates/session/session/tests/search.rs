@@ -607,8 +607,15 @@ fn switched_off() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Search for `query` and let what it shows settle: the published search
-/// names what is typed, and its rows follow.
+/// How many frames a search is waited out: the desk asks its sources in the
+/// frames that follow the query, a few at a time, and rebuilds the rows once
+/// the card has laid out and once the index's code has arrived. The sources
+/// are far fewer than this, and the slowest is asked in a frame of its own.
+const SEARCH_FRAMES: usize = 200;
+
+/// Search for `query` and wait for the search to be over: the published
+/// search names what is typed, and its rows stand once every source has
+/// answered.
 fn search_for(session: &mut Session, query: &str) {
     invoke(
         session,
@@ -616,16 +623,12 @@ fn search_for(session: &mut Session, query: &str) {
         "search",
         serde_json::json!({ "query": query }),
     );
-    for _ in 0..40 {
+    // A frame that changes nothing stands while a source is still to
+    // answer, so the rows are read only after the frames a search takes,
+    // never when they happen to stop changing.
+    for _ in 0..SEARCH_FRAMES {
         session.step(Duration::from_millis(1)).expect("step");
-        let searched = find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| {
-            search.label == query && (!search.children.is_empty() || query.is_empty())
-        });
-        if searched {
-            break;
-        }
     }
-    session.step(Duration::from_millis(1)).expect("step");
 }
 
 /// The row whose label is exactly `title`.

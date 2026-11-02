@@ -300,50 +300,18 @@ test('the app says what it shows and collects the pictures as they arrive', asyn
   assert.equal(answer.state, 'live');
 });
 
-test('a bridged call names the people it carries in as guests, never as the bridge\'s person', async () => {
-  const f = fixture();
-  const ana = 'a'.repeat(64);
-  const bridge = 'b'.repeat(64);
-  const own = {service: 'discord', account: null, name: 'Tilo', avatar: null, linked: null};
-  const dana = {service: 'discord', account: '80351110224678912', name: 'Dana', avatar: 'd'.repeat(64), linked: null};
-  const ben = {service: 'discord', account: '90351110224678912', name: 'Ben', avatar: null, linked: ana};
-  f.voice.calls = [
-    {app: 'so.tilo.chat', record: '', channel: 'voice', call: CALL, active: true, participants: [
-      {user: ana, device: '1'},
-      {user: bridge, device: '2', bridged: dana},
-      // Muted in Discord: everyone sees it.
-      {user: bridge, device: '2', bridged: ben, muted: true},
-      {user: bridge, device: '2', bridged: own},
-    ]},
-    // The bridge listening on its own, before anyone joins.
-    {app: 'so.tilo.chat', record: '', channel: 'lounge', call: CALL, active: true, participants: [{user: bridge, device: '2', bridged: own}]},
-  ];
-  const status = await f.controls.execute(f.request({op: 'status'}));
-  assert.deepEqual(status.rosters, [
-    {channel_id: 'lounge', people: [], bridges: ['discord']},
-    {channel_id: 'voice', people: [ana], bridges: ['discord'], guests: [
-      {id: 'discord:80351110224678912', name: 'Dana', service: 'discord', avatar: 'd'.repeat(64)},
-      {id: 'discord:90351110224678912', name: 'Ben', service: 'discord', linked: ana, muted: true},
-    ]},
-  ]);
-  assert.equal(callIdOf({user: bridge, bridged: own}), null, 'the bridge itself is nobody in the call');
-});
-
-test('the status names who the call hears talking, people and guests by id', async () => {
+test('the status names who the call hears talking, each person by id', async () => {
   const f = fixture();
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   const ana = 'a'.repeat(64);
-  const bridge = 'b'.repeat(64);
   const participants = [
     {user: ana, self: true, speaking: true},
     {user: ana, speaking: true},
-    {user: bridge, speaking: true, bridged: {service: 'discord', account: '7', name: 'Dana'}},
-    {user: bridge, speaking: true, bridged: {service: 'discord', account: null, name: 'Tilo'}},
     {user: 'c'.repeat(64), speaking: false},
   ];
-  assert.deepEqual(speakingOf(participants), [ana, 'discord:7']);
+  assert.deepEqual(speakingOf(participants), [ana]);
   Object.assign(f.state, {phase: 'live', canPublish: true, participants});
-  assert.deepEqual((await f.controls.execute(f.request({op: 'status'}))).speaking, [ana, 'discord:7']);
+  assert.deepEqual((await f.controls.execute(f.request({op: 'status'}))).speaking, [ana]);
   Object.assign(f.state, {phase: 'idle'});
   assert.deepEqual((await f.controls.execute(f.request({op: 'status'}))).speaking, [], 'nobody talks outside a call');
 });
@@ -353,9 +321,9 @@ test('a participant\'s volume reaches this device\'s playback only', async () =>
   const volumes = [];
   f.voice.call.setVolume = (id, gain) => volumes.push([id, gain]);
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
-  await f.controls.execute(f.request({op: 'set_volume', participant: 'discord:7', percent: 0}));
+  await f.controls.execute(f.request({op: 'set_volume', participant: 'b'.repeat(64), percent: 0}));
   await f.controls.execute(f.request({op: 'set_volume', participant: 'a'.repeat(64), percent: 150}));
-  assert.deepEqual(volumes, [['discord:7', 0], ['a'.repeat(64), 1.5]]);
+  assert.deepEqual(volumes, [['b'.repeat(64), 0], ['a'.repeat(64), 1.5]]);
 });
 
 test('the status names who the call hears talking, so the app can ring them', async () => {
@@ -363,13 +331,15 @@ test('the status names who the call hears talking, so the app can ring them', as
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   const [ana, ben] = ['a'.repeat(64), 'b'.repeat(64)];
   Object.assign(f.state, {phase: 'live', canPublish: true, participants: [
-    {namespace: `${CALL}/${'1'.repeat(64)}`, user: ben, self: false, publishes: true, speaking: true},
-    {namespace: `${CALL}/${'2'.repeat(64)}`, user: ana, self: true, publishes: true, speaking: true},
-    {namespace: `${CALL}/${'3'.repeat(64)}`, user: ben, self: false, publishes: true, speaking: true},
-    {namespace: `${CALL}/${'4'.repeat(64)}`, user: 'c'.repeat(64), self: false, publishes: true, speaking: false},
+    {user: ben, self: false, publishes: true, speaking: true},
+    {user: ana, self: true, publishes: true, speaking: true},
+    {user: ben, self: false, publishes: true, speaking: true},
+    {user: 'c'.repeat(64), self: false, publishes: true, speaking: false},
   ]});
   const talking = await f.controls.execute(f.request({op: 'status'}));
   assert.deepEqual(talking.speaking, [ana, ben], 'each person once, sorted');
+  assert.deepEqual(talking.publishers, [ben, 'c'.repeat(64)], 'each person whose tile carries a stream once');
+  assert.equal(talking.publication, ana, 'this device publishes under its person');
   f.state.participants = f.state.participants.map(participant => ({...participant, speaking: false}));
   const quiet = await f.controls.execute(f.request({op: 'status'}));
   assert.deepEqual(quiet.speaking, []);
@@ -378,11 +348,11 @@ test('the status names who the call hears talking, so the app can ring them', as
 
 test('a browser that cannot carry calls is told so when it joins, and opens no call', async () => {
   const f = fixture();
-  f.voice.call.unsupported = () => 'WebTransport is unavailable';
+  f.voice.call.unsupported = () => 'the call lane is unavailable';
   const answer = await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   assert.equal(answer.state, 'ended');
   assert.equal(answer.issue, 'unsupported');
   assert.deepEqual(f.opened, []);
   assert.deepEqual(f.operations, []);
-  assert.equal(endedIssue({admitted: false, unsupported: true, reason: 'WebTransport is unavailable'}), 'unsupported');
+  assert.equal(endedIssue({admitted: false, unsupported: true, reason: 'the call lane is unavailable'}), 'unsupported');
 });

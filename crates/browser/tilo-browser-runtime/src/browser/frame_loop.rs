@@ -402,7 +402,10 @@ pub(super) async fn watch_first_frame(id: u64) {
                         }
                         let pending = m.gpu.as_ref().map_or(0, |gpu| {
                             gpu.shared.try_borrow_mut().map_or(1, |mut shared| {
-                                shared.renderer.deferred_pipelines().pending
+                                shared
+                                    .renderer
+                                    .as_mut()
+                                    .map_or(0, |renderer| renderer.deferred_pipelines().pending)
                             })
                         });
                         return Ok(pending > 0);

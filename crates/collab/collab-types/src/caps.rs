@@ -72,12 +72,13 @@ pub enum Principal {
 
 /// [`Principal`] as it is written and read.
 ///
-/// A workspace principal was called a room before, and grants already stored
-/// name it that way. The variant keeps its place — postcard, which encoded
-/// capability lists are written in, names a variant by position, and a signed
-/// authority revision verifies over the bytes it was signed with — so every
-/// stored grant and revision still reads and verifies; it writes the
-/// workspace's name and still reads the one grants were stored under.
+/// A workspace principal was called a room, and grants already stored name it
+/// that way. The variant keeps its place — postcard, which encoded capability
+/// lists are written in, names a variant by position, and a signed authority
+/// revision verifies over the bytes it was signed with — so every stored grant
+/// and revision still reads and verifies. It is written under the name grants
+/// were stored under, and a grant written while it was named `Workspace` still
+/// reads.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum PrincipalWire {
@@ -85,7 +86,7 @@ enum PrincipalWire {
     App(String),
     Agent(String),
     Token(String),
-    #[serde(alias = "Room")]
+    #[serde(rename = "Room", alias = "Workspace")]
     Workspace(String),
 }
 
@@ -307,9 +308,10 @@ impl Scope {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct FsAuthority {
     pub capabilities: Vec<CapOverride>,
-    /// The file it is in outlives an image update, so the key it was written
-    /// under before the name changed still reads (see [`FsAuthorityV2`]).
-    #[serde(rename = "workspace_members")]
+    /// The file it is in outlives an image update, so it is written under the
+    /// key it was first written under, and the key a build in between wrote it
+    /// under still reads (see [`FsAuthorityV2`]).
+    #[serde(rename = "room_members")]
     pub workspace_members: std::collections::BTreeMap<String, Vec<WorkspaceMember>>,
 }
 
@@ -319,7 +321,7 @@ pub struct FsAuthority {
 struct FsAuthorityV2 {
     #[serde(default)]
     capabilities: Vec<CapOverride>,
-    #[serde(default, rename = "workspace_members", alias = "room_members")]
+    #[serde(default, rename = "room_members", alias = "workspace_members")]
     workspace_members: std::collections::BTreeMap<String, Vec<WorkspaceMember>>,
 }
 
@@ -676,20 +678,24 @@ pub fn decide_capability(
 mod tests {
     use super::*;
 
-    /// A grant written when a workspace principal was called a room still
-    /// reads as the same grant, and a new one is written under the workspace's
-    /// name: the variant keeps its place on the wire, so the bytes a signature
-    /// was made over verify unchanged.
+    /// A grant is written under the workspace principal's stored name, and a
+    /// grant written while it was named `Workspace` still reads as the same
+    /// grant: the variant keeps its place on the wire, so the bytes a
+    /// signature was made over verify unchanged.
     #[test]
-    fn a_subject_stored_under_the_old_name_still_reads() {
-        let old = r#"{"Principal":{"Room":"ws-design"}}"#;
-        let subject: Subject = serde_json::from_str(old).unwrap();
-        assert_eq!(subject, Subject::workspace("ws-design"));
+    fn a_subject_is_written_under_the_name_it_was_stored_under() {
         assert_eq!(
             serde_json::to_string(&Subject::workspace("ws-design")).unwrap(),
-            r#"{"Principal":{"Workspace":"ws-design"}}"#,
-            "the name is written as a workspace; the old one still reads"
+            r#"{"Principal":{"Room":"ws-design"}}"#,
+            "a reader on any build knows this name"
         );
+        for written in [
+            r#"{"Principal":{"Room":"ws-design"}}"#,
+            r#"{"Principal":{"Workspace":"ws-design"}}"#,
+        ] {
+            let subject: Subject = serde_json::from_str(written).unwrap();
+            assert_eq!(subject, Subject::workspace("ws-design"), "{written}");
+        }
 
         // Postcard names a variant by its place: `Subject::Principal` (1) then
         // the workspace principal (4), the place a room kept.
@@ -701,18 +707,23 @@ mod tests {
         );
     }
 
-    /// The file a mount's authority is written in outlives an image update:
-    /// one written under the members' old key still reads, and a new one is
-    /// written under the workspace's.
+    /// The file a mount's authority is written in outlives an image update: it
+    /// is written under the members' stored key, and one written while the key
+    /// was named for a workspace still reads.
     #[test]
-    fn an_authority_stored_under_the_old_key_still_reads() {
-        let old = r#"{"capabilities":[],"room_members":{}}"#;
-        let authority: FsAuthority = serde_json::from_str(old).unwrap();
-        assert_eq!(authority, FsAuthority::default());
+    fn an_authority_is_written_under_the_key_it_was_stored_under() {
         assert_eq!(
-            serde_json::to_string(&authority).unwrap(),
-            r#"{"capabilities":[],"workspace_members":{}}"#
+            serde_json::to_string(&FsAuthority::default()).unwrap(),
+            r#"{"capabilities":[],"room_members":{}}"#,
+            "a reader on any build knows this key"
         );
+        for written in [
+            r#"{"capabilities":[],"room_members":{}}"#,
+            r#"{"capabilities":[],"workspace_members":{}}"#,
+        ] {
+            let authority: FsAuthority = serde_json::from_str(written).unwrap();
+            assert_eq!(authority, FsAuthority::default(), "{written}");
+        }
     }
 
     #[test]

@@ -289,6 +289,7 @@ portal-access-input-capture = your keyboard and pointer
 portal-access-global-shortcuts = global keyboard shortcuts
 portal-access-notification = your notifications
 portal-access-secret = your saved passwords
+portal-access-host-shell = the device's own shell
 portal-access-generic = { $capability }
 
 ## The portal's other questions

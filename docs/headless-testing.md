@@ -355,9 +355,11 @@ release build serves the socket only with `--features dev-overrides`.
 login runs it: a scripted, streamed fake model drives `tilo-runtime-mcp
 --connect` through the session's agent door, creates a note in Notes,
 writes its body, finds it by its title and reads it back, and the record
-splits the time between Tilo, the model and the agent loop. Its `--spawn`
-desktop is seeded by the `agent_task_desktop` example of `shell` and
-serves the door (`TILO_AGENT_DOOR`) in its profile.
+splits the time between Tilo, the model and the agent loop. It needs a
+session where apps start, with Notes installed (a dev session on a machine;
+a builder starts no app). Its `--spawn` session starts headless on a scratch
+profile, mints the throwaway identity a development login opens its desk
+with, and serves the door (`TILO_AGENT_DOOR`) in that profile.
 
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash
@@ -581,84 +583,28 @@ no heap memory; only explicitly enabled tracing incurs CPU clock and I/O costs.
 
 ## Idle wakeups
 
-Pull requests count app work through the production `NativeAppTick` scheduling
-seam in `compositor/native_idle_work_tests.rs`. Two adversarial widgets retain
-answered deadlines until draw, while the real `FrameBuilder` runs their pump,
-layout and paint passes. A due poll must update each app once with zero layout
-or draw calls; a future poll must schedule exactly one additional update. A
-later app change must still lay out and draw. Instants are explicit scheduler
-inputs, not elapsed-time gates or synchronization deadlines. This covers the
-app scheduling seam with an available presenter, not every native-loop service.
+An idle desktop should leave the CPU asleep. The installed desktop is measured
+by VM acceptance: an idle session's compositor, its apps and the shared
+workspace's broker and shovels are sampled from `/proc` over a window, and
+`idle.wakeups_per_s.{shell,shell_threads,tilo-ush.four_apps}` record the context
+switches per second (voluntary: the thread blocked again) beside `idle.frames`
+and `idle.loop_ticks_per_s`, which say the loop parked and painted nothing. Its
+budgets are in `scripts/vm-acceptance/run.py` (`BUDGETS`), and the records are
+compared with the store as the vm-acceptance lane's. A loop that spins without
+blocking shows in CPU and in the loop's tick rate rather than in wakeups, so a
+check holds both.
 
-```bash
-cargo test -p shell --lib idle_work_tests
-```
-
-An idle desktop should leave the CPU asleep. The shell's explicit
-`examples/idle-wakeups.rs` executable holds it to a budget: it starts the production binary headless with
-a signed-in desktop, restores a Notes tab, opens a Terminal through
-`window.new.terminal`, waits out startup work and 5 s more, then samples every thread of the
-compositor's process tree from `/proc` for 10 s and fails above
-`IDLE_WAKEUP_BUDGET` wakeups per second (voluntary context switches: how often
-a thread blocked again), above `IDLE_CPU_BUDGET` percent of a core, or if the
-compositor painted while nobody touched it. It also holds the in-process apps'
-collaboration shovel and the identity service's client thread to
-`KEY_ROUND_BUDGET` per shovel, so a route asking for its channel keys on a 1 s
-timer again fails by name.
-
-```bash
-cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark
-cargo build --locked -p shell --bin shell
-TILO_IDLE_SHELL_BIN="$PWD/target/debug/shell" \
-  bash tools/test-env.sh target/debug/examples/idle-wakeups
-```
-
-It prints a table, busiest first:
-
-```text
-idle wakeups over 10.0 s: 60.27/s and 2.1 % of a core across 1 processes
-  wakeups/s  preempt/s   cpu %  threads  process / thread
-      20.79       1.20     0.6        2  shell / tilo-collab-bro
-      19.89       0.00     0.4        1  shell / tilo-audio-outp
-       ...
-compositor frame loop: 0.0 ticks/s (0 ticks, woken by: ), 0 frames painted (after: ), 0 clock minute(s) turned; its paint-stats in the window:
-```
-
-`wakeups/s` counts every context switch (voluntary: the thread blocked again;
-involuntary: it was preempted), `preempt/s` the involuntary share, `cpu %` its
-CPU time, `threads` how many threads of that name were seen (names are the
-kernel's 15-byte truncation). A loop that spins without blocking shows in
-`cpu %` and in the frame loop's tick rate rather than in wakeups, so the gate
-also holds the loop to `LOOP_TICK_BUDGET` and to no painted frames but the top
-bar's clock repaint when a minute turns in the window. It counts the
-compositor's `paint-tick` lines (`TILO_PAINT_STATS=ticks`), one per loop
-iteration with what woke it, read inside the window: a 2-second `paint-stats`
-summary counts every tick since the previous one, so the first one printed in
-the window can carry startup's ticks. This wall-clock measurement is not a
-pull-request test: the example has `test = false` and a non-default
-`scheduled-idle-benchmark` feature. The shared fixture remains in
-`tests/idle_wakeups.rs` for integration tests. The scheduled lane
-(`kpis=wakeups`) runs the executable three times with a 60 s window
-(`TILO_IDLE_WAKEUP_WINDOW_SECS`), preserves every budget assertion and records
-`wakeups.*`. `TILO_IDLE_SHELL_BIN` explicitly selects the built production
-binary because Cargo's integration-test-only `CARGO_BIN_EXE_shell` is not
-available to examples. When a change
-removes a waker, lower `IDLE_WAKEUP_BUDGET` in the same pull request to the new
-measurement plus the same margin.
-
-Headless covers what headless runs. DRM-only services (power, hotplug, the
-rotation sensor) and out-of-process apps are held by per-thread probes in
-their own crates: `tilo_test_env::idle::{spawned_thread, assert_stays_asleep}`
-for one service thread of a unit test, `idle_wakeups(pid, settle, window)` for
-a process tree, and `sample_process` with `Wakeups::between` for a stretch the
-test drives itself (`shell::network::idle_quiet_tests` uses it for the
-collaboration plane of two converged desktops).
+Headless covers what headless runs. Services and out-of-process apps are held
+by per-thread probes in their own crates:
+`tilo_test_env::idle::{spawned_thread, assert_stays_asleep}` for one service
+thread of a unit test, `idle_wakeups(pid, settle, window)` for a process tree,
+and `sample_process` with `Wakeups::between` for a stretch the test drives
+itself.
 
 A gate that runs inside the pull-request test shard shares the runner with
 other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
-counts only voluntary switches, one per wakeup. Both gates in
-`idle_quiet_tests`, the lone desktop and the converged pair, use it, each
-together with a CPU bound that catches a thread spinning without blocking.
+counts only voluntary switches, one per wakeup, together with a CPU bound that
+catches a thread spinning without blocking.
 
 ## Idle memory
 

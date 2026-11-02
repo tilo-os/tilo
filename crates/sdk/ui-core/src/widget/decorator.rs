@@ -457,6 +457,7 @@ decorator_trait! {
         fn children() -> Vec<&dyn Widget>;
         fn for_each_child(visitor: &mut dyn FnMut(&dyn Widget));
         fn for_each_child_in_clip(visitor: &mut dyn FnMut(&dyn Widget));
+        fn for_each_hosted_child(visitor: &mut dyn FnMut(&dyn Widget));
         fn name() -> &str;
         fn test_id() -> Option<&str>;
         fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
@@ -630,6 +631,7 @@ concrete_decorator_widget!(super::nav_list::NavList);
 concrete_decorator_widget!(super::media_transport::MediaTransport);
 concrete_decorator_widget!(super::window_search::QueryView);
 concrete_decorator_widget!(super::TabStrip);
+concrete_decorator_widget!(super::page_slide::PageSlide);
 
 #[cfg(test)]
 #[path = "decorator_tests.rs"]

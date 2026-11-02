@@ -94,8 +94,8 @@ pub use backdrop::{BackdropImage, BackdropRequest};
 pub use backend::drm::access_keys::Assists;
 pub use backend::drm::devices::RequestedMode;
 pub use backend::{
-    Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, InputConfig, NestedBackend,
-    NestedConfig, Screenshot, TabletConfig,
+    Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, HostWindow, InputConfig,
+    NestedBackend, NestedConfig, Screenshot, TabletConfig,
 };
 pub use color_filter::ColorFilter;
 pub use config::{Hdr, KeyboardLayout, Settings};
@@ -376,10 +376,21 @@ impl Compositor {
     }
 
     /// A compositor in a window of the desktop it runs inside (see
-    /// [`backend::nested`]).
-    pub fn nested(policy: Box<dyn WindowPolicy>, config: &NestedConfig) -> Result<Self, Error> {
+    /// [`backend::nested`]), the window
+    /// [`backend::NestedBackend::open_window`] opened.
+    ///
+    /// The caller opens the window: a session opens it before it builds
+    /// anything else, so the one connection its desktop was handed goes to
+    /// the window and not to whatever the desk starts.
+    pub fn nested(
+        policy: Box<dyn WindowPolicy>,
+        config: &NestedConfig,
+        window: backend::HostWindow,
+    ) -> Result<Self, Error> {
         let mut compositor = Self::new(policy, |handle, state| {
-            Ok(Box::new(NestedBackend::start(handle, state, config)?))
+            Ok(Box::new(NestedBackend::start(
+                handle, state, config, window,
+            )?))
         })?;
         compositor.set_hosted(true);
         Ok(compositor)
@@ -1455,11 +1466,14 @@ impl Compositor {
             return;
         };
         let xkb = smithay::input::keyboard::XkbConfig {
-            rules: "",
+            // Every name is stated: an empty one would take the machine's
+            // (`XKB_DEFAULT_*`), so a person's chosen layout would type with
+            // the host's rules and options mixed in.
+            rules: "evdev",
             model: &layout.model,
             layout: &layout.layout,
             variant: &layout.variant,
-            options: (!layout.options.is_empty()).then(|| layout.options.clone()),
+            options: Some(layout.options.clone()),
         };
         if let Err(error) = keyboard.set_xkb_config(state, xkb) {
             tracing::warn!(

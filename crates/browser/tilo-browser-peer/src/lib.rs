@@ -16,7 +16,7 @@
 //!   by the host to live members;
 //! - **calls** ([`call_media`], and [`voice`] for the relay's own media path):
 //!   the page's turns with the device that bridges it into a call, and the
-//!   grants for its voice carrier.
+//!   grants that admit it to the call.
 //!
 //! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it. With the
 //! `toolkit` feature, [`transport::RelayCollabTransport`] plugs the session

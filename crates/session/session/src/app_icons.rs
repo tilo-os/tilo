@@ -24,7 +24,7 @@ use desktop_entry::icon_theme::{self, IconFormat, IconLookup, IconSearchPath};
 use tilo_lock::MutexRecover as _;
 use ui::icons::{AppImage, AppImageSource};
 
-use crate::lists::Lists;
+use crate::lists::{AppLists, Lists};
 
 /// The most bytes of an icon file the worker reads: an icon is kilobytes,
 /// and a hostile or broken theme must not make it parse megabytes.
@@ -190,6 +190,12 @@ static LISTS: Mutex<Option<Lists>> = Mutex::new(None);
 /// those lists carry are named.
 pub(crate) fn set_lists(lists: Lists) {
     *LISTS.lock_recover() = Some(lists);
+}
+
+/// The app lists as last read, for the names they carry: the installed
+/// packages' own names and the machine's desktop entries.
+pub(crate) fn app_lists() -> Option<Arc<AppLists>> {
+    LISTS.lock_recover().as_ref().map(Lists::latest)
 }
 
 /// Wake the loop once artwork is ready, so the banner repaints with it.

@@ -23,6 +23,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
+use collab_types::scope::Scope;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
 use opus::{Application, Channels, Decoder, Encoder};
@@ -113,12 +114,10 @@ fn camera_frame(fill: u8) -> tilo_call_lane::Frame {
 fn grant_json(grant: &VoiceGrant) -> Value {
     json!({
         "call": hex::encode(grant.call), "epoch": grant.epoch,
-        "participation": hex::encode(grant.participation), "token": hex::encode(&grant.token),
-        "endpoint": grant.endpoint, "fingerprints": grant.fingerprints,
-        "directions": grant.directions, "publication": grant.publication,
-        "subscriptions": grant.subscriptions, "expiresAtNs": grant.expires_at_ns,
+        "participation": hex::encode(grant.participation),
+        "directions": grant.directions,
         "participants": grant.participants.iter().map(|p| json!({
-            "namespace": p.namespace, "device": hex::encode(p.device_public_key),
+            "device": hex::encode(p.device_public_key),
             "user": hex::encode(p.user_public_key), "publishes": p.publishes,
         })).collect::<Vec<_>>(),
     })
@@ -196,6 +195,8 @@ struct Native {
     /// The device the page's frames name: the host that bridges it.
     bridge: [u8; 32],
     ear: Opener,
+    /// The call's scope: the channel its frames are sealed in.
+    scope: Scope,
     mouth: Microphone,
     decoder: Decoder,
     tone: Vec<Vec<u8>>,
@@ -252,7 +253,8 @@ impl Native {
             .accept(ALPN, calls)
             .spawn();
         let video = Video::new(device);
-        video.set_keys(keys, roster.clone());
+        let scope = Scope::channel(governed.cluster_id.clone(), channel);
+        video.set_keys(keys, roster.clone(), &scope);
         // The page's camera is shown here: what makes it encode, and at which
         // layer.
         video.show(bridge, &[Layer::Low], &[]);
@@ -270,7 +272,8 @@ impl Native {
             device,
             bridge,
             ear: Opener::new(keys.clone(), roster),
-            mouth: Microphone::new(keys, device, 2).unwrap(),
+            mouth: Microphone::new(keys, device, &scope, 2).unwrap(),
+            scope,
             decoder: Decoder::new(48_000, Channels::Mono).unwrap(),
             tone: tone(440.0, 50),
             timestamp: 0,
@@ -336,7 +339,9 @@ impl Native {
             }
         }
         while let Ok(datagram) = self.received.try_recv() {
-            for frame in heard(&self.ear, self.bridge, &datagram).expect("the page's frames open") {
+            for frame in heard(&self.ear, self.bridge, &self.scope, &datagram)
+                .expect("the page's frames open")
+            {
                 if !self.sequences.insert(frame.sequence) {
                     continue;
                 }

@@ -20,7 +20,9 @@
 //! authenticated.
 
 use neighbour_wire::offer::{Route, Work};
+use std::time::Duration;
 use tilo_actions::ActionOutput;
+use tilo_actions::InvocationId;
 use tilo_actions::remote::{InvokeRequest, Pending};
 
 use crate::placement::Choice;
@@ -46,10 +48,19 @@ pub trait OffloadPeers: Send + Sync {
     /// nobody willing, or moving the inputs there no faster than the run
     /// here — that it stays here ([`Choice`]).
     ///
-    /// Every device is asked at once and given the round's whole deadline to
-    /// answer; one that does not is ranked as away. `None` when the round was
-    /// abandoned before it finished.
-    fn ask(&self, workspace: &str, route: &Route, work: &Work) -> Pending<Choice>;
+    /// `invocation` is the invocation the work would run, and names the
+    /// offer: the device that takes it keeps the work under it, for the
+    /// device that asked. Every device is asked at once and given the whole
+    /// of `within` to answer; one that does not is ranked as away. `None`
+    /// when the round was abandoned before it finished.
+    fn ask(
+        &self,
+        workspace: &str,
+        route: &Route,
+        work: &Work,
+        invocation: InvocationId,
+        within: Duration,
+    ) -> Pending<Choice>;
 
     /// Run `invocation` on `device` in `workspace` and follow it there until
     /// it settles, with the bytes of the content it produced.

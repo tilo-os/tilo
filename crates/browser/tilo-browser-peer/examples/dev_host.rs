@@ -1,6 +1,6 @@
 //! A local host for browser runs of the runtime bundle: `tilo-relay` serving
-//! HTTPS + WebTransport with a development certificate, a throwaway user
-//! root, and an approver that certifies every browser device that asks.
+//! HTTPS with a development certificate, a throwaway user root, and an
+//! approver that certifies every browser device that asks.
 //! Never use it outside development: anyone who reaches it is admitted.
 //!
 //! ```sh
@@ -11,7 +11,7 @@
 //! `room`) for the page's `connectPeer`, then serves until interrupted. The
 //! page's browser must accept the self-signed HTTPS certificate (trust it
 //! once, or start a test browser with `--ignore-certificate-errors`);
-//! WebTransport pins it by hash.
+//! Clients pin it by its hash.
 #![allow(
     clippy::significant_drop_tightening,
     reason = "a test holds its fixtures' locks for the length of a step"
@@ -97,7 +97,6 @@ async fn main() {
             allowed_origins,
             plain_listen: None,
             public_origin: None,
-            live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,

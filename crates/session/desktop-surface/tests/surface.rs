@@ -10,7 +10,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowWidth, Workspace};
+use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
+use tilo_desktop::topbar::TopBarChrome;
+use tilo_desktop_model::commands::DesktopCommand;
+use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TileContent, WindowWidth, Workspace};
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, Route, Verb};
 use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, TileSource, TypedInsertion, TypedRefusal, seed_tree,
@@ -133,6 +137,80 @@ fn widgets(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
     for child in &node.children {
         widgets(child, out);
     }
+}
+
+/// What the chrome over the desk asks the person they may change.
+struct ChromeRules {
+    handle: DesktopHandle,
+}
+
+impl DesktopRules for ChromeRules {
+    fn tree(&self) -> DesktopTree {
+        self.handle.read(Clone::clone)
+    }
+
+    fn author(&self) -> String {
+        "Ada".into()
+    }
+
+    fn may(&self, _: &DesktopCommand) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn may_create_workspace(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The chrome the session hosts over the windows, over the desk `handle`
+/// holds: search's palette is drawn and answered there, so a test that
+/// searches drives this beside the desk.
+fn chrome_at(handle: &DesktopHandle, size: (u32, u32)) -> ui::headless::FrameHarness {
+    let chrome = DesktopChrome::new(
+        handle.clone(),
+        "g".into(),
+        Rc::new(ChromeRules {
+            handle: handle.clone(),
+        }),
+        TopBarChrome::from_tree(&handle.read(Clone::clone)),
+        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+        false,
+    );
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        chrome,
+        size,
+        ui::Theme::dark(),
+    );
+    frame.set_caller_palette_enabled(false);
+    frame.relayout();
+    frame
+}
+
+/// What the person types into the open palette's field: search's card is the
+/// chrome's, over the windows, so the keys go there, and the desk takes up
+/// what the card asked before the card draws it again.
+fn type_search(
+    desk: &mut ui::headless::FrameHarness,
+    chrome: &mut ui::headless::FrameHarness,
+    text: &str,
+) {
+    chrome.type_text(text);
+    chrome.relayout();
+    desk.relayout();
+    chrome.relayout();
+}
+
+/// A key pressed in the open palette's field, taken up as [`type_search`] is.
+fn key_search(
+    desk: &mut ui::headless::FrameHarness,
+    chrome: &mut ui::headless::FrameHarness,
+    key: &str,
+) {
+    chrome.key(key);
+    chrome.relayout();
+    desk.relayout();
+    chrome.relayout();
 }
 
 #[test]
@@ -1542,20 +1620,22 @@ fn nothing_of_the_desktops_takes_committed_text_while_search_is_closed() {
 #[test]
 fn the_search_shortcut_then_an_app_name_and_enter_opens_the_app() {
     let (mut driver, handle, _) = mount();
-    driver.set_platform_conventions(ui::platform::PlatformConventions::new(
+    let mut chrome = chrome_at(&handle, (1200, 800));
+    chrome.set_platform_conventions(ui::platform::PlatformConventions::new(
         ui::platform::Platform::Linux,
     ));
-    driver.set_modifiers(&["ctrl".into()]);
-    driver.key("k");
-    driver.set_modifiers(&[]);
+    chrome.set_modifiers(&["ctrl".into()]);
+    chrome.key("k");
+    chrome.set_modifiers(&[]);
+    driver.relayout();
+    chrome.relayout();
     assert!(
         handle.search_open(),
         "Ctrl+K opens search where Ctrl is the command key"
     );
-    assert!(find(&driver.inspection().root, "ActionPalette").is_some());
-    driver.type_text("sheets");
-    driver.key("Enter");
-    driver.relayout();
+    assert!(find(&chrome.inspection().root, "ActionPalette").is_some());
+    type_search(&mut driver, &mut chrome, "sheets");
+    key_search(&mut driver, &mut chrome, "Enter");
     assert!(!handle.search_open(), "choosing a row closes search");
     let snapshot = handle.snapshot("g", vec![]);
     assert!(
@@ -1574,16 +1654,16 @@ fn the_search_shortcut_then_an_app_name_and_enter_opens_the_app() {
         "sheets",
         "the launched app is focused"
     );
-    assert!(find(&driver.inspection().root, "ActionPalette").is_none());
+    assert!(find(&chrome.inspection().root, "ActionPalette").is_none());
 }
 
 #[test]
 fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
     let (mut driver, handle, _) = mount();
+    let mut chrome = chrome_at(&handle, (1200, 800));
     dispatch(&mut driver, &handle, verb("search", serde_json::json!({})));
     assert!(handle.search_open());
-    driver.key("Escape");
-    driver.relayout();
+    key_search(&mut driver, &mut chrome, "Escape");
     assert!(!handle.search_open(), "Escape dismisses");
     assert_eq!(
         handle.snapshot("g", vec![]).entries.len(),
@@ -1597,8 +1677,7 @@ fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
         verb("search", serde_json::json!({"query":"scratch"})),
     );
     assert!(handle.search_open());
-    driver.key("Enter");
-    driver.relayout();
+    key_search(&mut driver, &mut chrome, "Enter");
     let snapshot = handle.snapshot("g", vec![]);
     assert_eq!(
         snapshot.entries.len(),
@@ -1623,13 +1702,14 @@ fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
 #[test]
 fn escape_clears_what_was_typed_before_it_closes_search() {
     let (mut driver, handle, _) = mount();
+    let mut chrome = chrome_at(&handle, (1200, 800));
     handle.open_search(Scope::Workspace, Some("sheets".into()));
     driver.relayout();
+    chrome.relayout();
     assert!(handle.search_open());
     assert_eq!(handle.search_rows().0, "sheets");
 
-    driver.key("Escape");
-    driver.relayout();
+    key_search(&mut driver, &mut chrome, "Escape");
     assert!(handle.search_open(), "the first Escape keeps search open");
     assert_eq!(handle.search_rows().0, "", "…and clears the query");
     assert!(
@@ -1642,14 +1722,13 @@ fn escape_clears_what_was_typed_before_it_closes_search() {
         handle.search_rows().1
     );
 
-    driver.key("Escape");
-    driver.relayout();
+    key_search(&mut driver, &mut chrome, "Escape");
     assert!(!handle.search_open(), "Escape on the empty field closes");
 }
 
 /// The open palette's result rows.
-fn result_rows(driver: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode> {
-    let palette = find(&driver.inspection().root, "ActionPalette")
+fn result_rows(chrome: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode> {
+    let palette = find(&chrome.inspection().root, "ActionPalette")
         .unwrap()
         .semantics
         .clone()
@@ -1660,14 +1739,17 @@ fn result_rows(driver: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode>
 #[test]
 fn an_app_chosen_from_search_while_its_window_is_open_is_focused_not_opened_twice() {
     let (mut driver, handle, _) = mount();
+    let mut chrome = chrome_at(&handle, (1200, 800));
     handle.open_search(Scope::Workspace, Some("sheets".into()));
     driver.relayout();
-    choose_row(&mut driver, "Sheets");
+    chrome.relayout();
+    choose_row(&mut driver, &mut chrome, "Sheets");
     assert!(handle.focus_app("so.tilo.notes"));
     driver.relayout();
     handle.open_search(Scope::Workspace, Some("sheets".into()));
     driver.relayout();
-    choose_row(&mut driver, "Sheets");
+    chrome.relayout();
+    choose_row(&mut driver, &mut chrome, "Sheets");
     let snapshot = handle.snapshot("g", vec![]);
     assert_eq!(
         labels(&snapshot),
@@ -1690,9 +1772,11 @@ fn an_app_chosen_from_search_while_its_window_is_open_is_focused_not_opened_twic
 #[test]
 fn windows_titled_alike_say_which_one_each_is() {
     let (mut driver, handle, _) = mount_with(&["Chat", "Chat", "Notes"]);
+    let mut chrome = chrome_at(&handle, (1200, 800));
     handle.open_search(Scope::Workspace, Some("chat".into()));
     driver.relayout();
-    let chats: Vec<String> = result_rows(&driver)
+    chrome.relayout();
+    let chats: Vec<String> = result_rows(&chrome)
         .into_iter()
         .filter(|row| row.name.as_deref() == Some("Chat"))
         .filter_map(|row| row.description)
@@ -1714,13 +1798,13 @@ fn windows_titled_alike_say_which_one_each_is() {
 #[test]
 fn the_search_shortcut_closes_open_search_and_a_host_can_toggle_it() {
     let (mut driver, handle, _) = mount();
+    let mut chrome = chrome_at(&handle, (1200, 800));
     handle.toggle_search();
     driver.relayout();
     assert!(handle.search_open());
-    driver.set_modifiers(&["super".into()]);
-    driver.key("k");
-    driver.set_modifiers(&[]);
-    driver.relayout();
+    chrome.set_modifiers(&["super".into()]);
+    key_search(&mut driver, &mut chrome, "k");
+    chrome.set_modifiers(&[]);
     assert!(!handle.search_open());
     handle.toggle_search();
     driver.relayout();
@@ -1733,10 +1817,11 @@ fn the_search_shortcut_closes_open_search_and_a_host_can_toggle_it() {
 #[test]
 fn a_host_command_from_search_runs_against_the_focused_window() {
     let (mut driver, handle, _) = mount();
+    let mut chrome = chrome_at(&handle, (1200, 800));
     handle.open_search(Scope::Workspace, Some("close window".into()));
     driver.relayout();
-    driver.key("Enter");
-    driver.relayout();
+    chrome.relayout();
+    key_search(&mut driver, &mut chrome, "Enter");
     assert_eq!(
         handle.snapshot("g", vec![]).entries.len(),
         1,
@@ -1748,9 +1833,11 @@ fn a_host_command_from_search_runs_against_the_focused_window() {
 fn assistive_technology_and_agents_search_through_the_palette_semantics() {
     use ui::a11y::Action;
     let (mut driver, handle, _) = mount();
+    let mut chrome = chrome_at(&handle, (1200, 800));
     handle.toggle_search();
     driver.relayout();
-    let palette = find(&driver.inspection().root, "ActionPalette")
+    chrome.relayout();
+    let palette = find(&chrome.inspection().root, "ActionPalette")
         .expect("the open palette is in the semantic tree")
         .semantics
         .clone()
@@ -1761,15 +1848,17 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
             .iter()
             .any(|c| c.action_target.as_deref() == Some("command-palette:query"))
     );
-    driver
+    chrome
         .perform_semantic_named(
             "command_palette_input",
             Some("command-palette:query"),
             &Action::SetValue("writer".into()),
         )
         .unwrap();
+    chrome.relayout();
     driver.relayout();
-    let palette = find(&driver.inspection().root, "ActionPalette")
+    chrome.relayout();
+    let palette = find(&chrome.inspection().root, "ActionPalette")
         .unwrap()
         .semantics
         .clone()
@@ -1777,33 +1866,41 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
     let results = &palette.children[1].children;
     let first = results.first().expect("a result for the typed query");
     assert_eq!(first.name.as_deref(), Some("Writer"));
-    driver
+    chrome
         .perform_semantic_named(
             "command_palette_input",
             first.action_target.as_deref(),
             &Action::Activate,
         )
         .unwrap();
+    chrome.relayout();
     driver.relayout();
+    chrome.relayout();
     assert!(!handle.search_open());
     assert!(labels(&handle.snapshot("g", vec![])).contains(&"writer".into()));
 }
 
 /// Choose the row named `name` in open search, which must offer it.
-fn choose_row(driver: &mut ui::headless::FrameHarness, name: &str) {
-    let rows = result_rows(driver);
+fn choose_row(
+    desk: &mut ui::headless::FrameHarness,
+    chrome: &mut ui::headless::FrameHarness,
+    name: &str,
+) {
+    let rows = result_rows(chrome);
     let names: Vec<_> = rows.iter().map(|row| row.name.clone()).collect();
     let row = rows.iter().find(|row| row.name.as_deref() == Some(name));
     assert!(row.is_some(), "no row {name:?} among {names:?}");
     let row = row.unwrap();
-    driver
+    chrome
         .perform_semantic_named(
             "command_palette_input",
             row.action_target.as_deref(),
             &ui::a11y::Action::Activate,
         )
         .unwrap();
-    driver.relayout();
+    chrome.relayout();
+    desk.relayout();
+    chrome.relayout();
 }
 
 /// Search over everything answers what is not a name, as the native shell's
@@ -1817,27 +1914,30 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
     let _background = pumped.background().enter();
     ui::host::scoped(&services, || {
         let (mut driver, handle, _) = mount();
+        let mut chrome = chrome_at(&handle, (1200, 800));
         handle.open_search(Scope::Workspace, Some("12*7".into()));
         driver.relayout();
+        chrome.relayout();
         assert_eq!(
-            result_rows(&driver)
+            result_rows(&chrome)
                 .first()
                 .and_then(|row| row.name.clone())
                 .as_deref(),
             Some("84"),
             "the sum leads"
         );
-        driver.key("Enter");
-        driver.relayout();
+        key_search(&mut driver, &mut chrome, "Enter");
         assert!(!handle.search_open(), "choosing the answer closes search");
 
         handle.open_search(Scope::Workspace, Some("5 km in miles".into()));
         driver.relayout();
-        choose_row(&mut driver, "3.1069 mi");
+        chrome.relayout();
+        choose_row(&mut driver, &mut chrome, "3.1069 mi");
 
         handle.open_search(Scope::Workspace, Some("tilo desktop".into()));
         driver.relayout();
-        choose_row(&mut driver, "Search the web for tilo desktop");
+        chrome.relayout();
+        choose_row(&mut driver, &mut chrome, "Search the web for tilo desktop");
         assert!(!handle.search_open());
     });
     pumped.run_pending();
@@ -1863,17 +1963,21 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
 fn search_opens_an_app_the_node_runs_for_this_desktop() {
     use ui::a11y::Action;
     let (mut driver, handle, _) = mount();
+    let mut chrome = chrome_at(&handle, (1200, 800));
     handle.toggle_search();
     driver.relayout();
-    driver
+    chrome.relayout();
+    chrome
         .perform_semantic_named(
             "command_palette_input",
             Some("command-palette:query"),
             &Action::SetValue("terminal".into()),
         )
         .unwrap();
+    chrome.relayout();
     driver.relayout();
-    let palette = find(&driver.inspection().root, "ActionPalette")
+    chrome.relayout();
+    let palette = find(&chrome.inspection().root, "ActionPalette")
         .unwrap()
         .semantics
         .clone()
@@ -1887,13 +1991,14 @@ fn search_opens_an_app_the_node_runs_for_this_desktop() {
         !format!("{first:?}").contains(" only"),
         "the row offers it: {first:?}"
     );
-    driver
+    chrome
         .perform_semantic_named(
             "command_palette_input",
             first.action_target.as_deref(),
             &Action::Activate,
         )
         .unwrap();
+    chrome.relayout();
     driver.relayout();
     assert_eq!(
         NODE_LAUNCHES.with(|launches| launches.borrow().clone()),
@@ -2020,6 +2125,7 @@ fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
     );
     driver.set_caller_palette_enabled(false);
     driver.relayout();
+    let mut chrome = chrome_at(&handle, (1200, 800));
     let before = handle.snapshot("g", vec![]);
     let group = before.active.clone().unwrap().group;
     let windows = |snapshot: &tilo_desktop_surface::navigation::Snapshot| {
@@ -2035,15 +2141,15 @@ fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
         .expect("the focused window offers a new tab");
     driver.click_at(plus.center().x, plus.center().y);
     driver.relayout();
+    chrome.relayout();
     assert!(handle.search_open(), "the control opens search");
     assert_eq!(
         labels(&handle.snapshot("g", vec![])),
         labels(&before),
         "nothing opens before an application is chosen"
     );
-    driver.type_text("sheets");
-    driver.key("Enter");
-    driver.relayout();
+    type_search(&mut driver, &mut chrome, "sheets");
+    key_search(&mut driver, &mut chrome, "Enter");
     assert!(!handle.search_open());
     let after = handle.snapshot("g", vec![]);
     let active = after.active.clone().unwrap();
@@ -2055,9 +2161,9 @@ fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
     // Search opened otherwise opens an application as its own window.
     handle.toggle_search();
     driver.relayout();
-    driver.type_text("writer");
-    driver.key("Enter");
-    driver.relayout();
+    chrome.relayout();
+    type_search(&mut driver, &mut chrome, "writer");
+    key_search(&mut driver, &mut chrome, "Enter");
     let last = handle.snapshot("g", vec![]);
     assert_ne!(last.active.as_ref().unwrap().group, group);
     assert_eq!(windows(&last).len(), windows(&before).len() + 1);
@@ -2400,10 +2506,12 @@ fn search_fits_a_phone_screen() {
     );
     driver.set_caller_palette_enabled(false);
     driver.relayout();
+    let mut chrome = chrome_at(&handle, (390, 844));
     handle.toggle_search();
     driver.relayout();
-    driver.relayout();
-    let [x, _, width, _] = find(&driver.inspection().root, "ActionPalette")
+    chrome.relayout();
+    chrome.relayout();
+    let [x, _, width, _] = find(&chrome.inspection().root, "ActionPalette")
         .expect("search is open")
         .rect;
     assert!(

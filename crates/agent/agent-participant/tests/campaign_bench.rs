@@ -122,7 +122,6 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             allowed_origins: Vec::new(),
             plain_listen: None,
             public_origin: None,
-            live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,

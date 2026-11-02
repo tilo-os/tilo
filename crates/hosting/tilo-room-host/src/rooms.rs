@@ -36,6 +36,8 @@ pub use content::{ContentKeeper, RoomContent};
 mod desktop_writes;
 mod device_keys;
 mod device_plane;
+#[cfg(test)]
+mod device_plane_tests;
 pub use device_plane::HostJobs;
 #[cfg(test)]
 mod device_rejoin_tests;
@@ -1116,7 +1118,6 @@ impl Rooms {
     }
 
     /// These rooms, held without keeping them alive.
-    #[cfg(feature = "web")]
     #[must_use]
     pub fn downgrade(&self) -> WeakRooms {
         WeakRooms(Arc::downgrade(&self.inner))

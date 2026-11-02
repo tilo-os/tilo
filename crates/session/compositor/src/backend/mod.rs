@@ -17,7 +17,7 @@ pub use drm::input_config::InputConfig;
 pub use drm::tablet::TabletConfig;
 pub use drm::{DisplayConfig, DrmBackend};
 pub use headless::HeadlessBackend;
-pub use nested::{NestedBackend, NestedConfig};
+pub use nested::{HostWindow, NestedBackend, NestedConfig};
 
 /// What a backend does for the compositor.
 pub trait Backend {

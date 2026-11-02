@@ -232,7 +232,7 @@ impl Demo {
                     ts: m(70),
                     text: "Dropping the transport notes here so they don't get lost.".into(),
                     attachment: Some(Attachment::File {
-                        name: "moq-over-iroh.md".into(),
+                        name: "transport-notes.md".into(),
                         blob: crate::images::DEMO_NOTES.into(),
                         size: 18_944,
                     }),

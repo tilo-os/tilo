@@ -202,25 +202,18 @@ d-wrth4lq3 = Clear done~present
 d-swaiyhcf = Show board~present
 
 d-i2mhsb3h = Home
-    .doc = The tasks window: Inbox, Today, Upcoming and Done, each the tasks the filter of that name holds of, and the projects, each opening in a window of its own.
 
 d-asnonvwl = Project page
-    .doc = A project's window: its tasks, in order, with the entry that adds to it at their foot; or, shown as a board (its Board toggle), the same tasks as a lane per section.
 
 d-gu3twlv2 = Project board
-    .doc = A project's board: a lane per section, the first for the tasks in none, each open task a card.
 
 d-hc5ndp4x = Task card
-    .doc = A task on a board: its row.
 
 d-w63ba6ad = Task row
-    .doc = One task in a list: a checkbox for whether it is done, its title, its project, when it is due, a flag while it matters, and who is doing it.
 
 d-dne3p7nf = Step row
-    .doc = One step of a task's checklist: a checkbox for whether it is done, and what it is.
 
 d-mtmufg3w = Task page
-    .doc = A task's window: whether it is done and its title, when it is due, its project, how much it matters, who is doing it, its steps, its notes, and what happened to it.
 
 d-i2mhsb3h~row0 = Home for p
 

@@ -7,9 +7,18 @@ invoke the chosen `(provider, id)`. The [search selection guide](../../docs/head
 explains how to distinguish same-named native and host apps and verify execution
 without opening the palette. Use the input examples below when testing input or
 rendering itself. `action-api-demo.py` starts its own
-isolated session and exercises semantic invocation. `agent-seats-proof.py`
-starts an `agent-control` session and drives it from two MCP sessions at once:
-each agent's strip, screenshots and held keys stay its own.
+isolated session and exercises semantic invocation.
+
+## Proofs
+
+Two proofs start a headless session of their own, on a scratch home, and read
+every claim back off that session rather than off the thing that asked for it.
+`tools/ci/session-proofs.sh` runs both, and the nightly workflow runs that.
+
+| Proof | What it asserts |
+|---|---|
+| `mcp-live-proof.py` | A model drives the desktop over MCP: the tools and resources it is offered, taking Setup's way forward and watching the desk move on to its second step, and a refusal arriving as an error with the compositor's own code. |
+| `session-lock-proof.py` | The desk's own lock action locks the session, the lock screen's own frame covers the desk, a password that is not the person's is refused, and the person's own password brings the desk back. |
 
 For examples that connect to an existing compositor, start it once with:
 
@@ -17,7 +26,7 @@ For examples that connect to an existing compositor, start it once with:
 ./scripts/headless-examples/spawn-headless.sh
 ```
 
-The socket defaults to `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`; pass a path to use another (keep it in a directory only you can write, never `/tmp`). The script refuses a socket a live compositor still answers on. It spawns `shell --backend headless` against a scratch profile — its own HOME, XDG homes, device identity and filesystem-daemon handoff directories, so your real identity and workspaces are never touched — waits for the socket, and prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground); the scratch profile goes with it.
+The socket defaults to `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`; pass a path to use another (keep it in a directory only you can write, never `/tmp`). The script refuses a socket a live compositor still answers on. It spawns `tilo-session --backend headless` against a scratch profile — its own HOME, XDG homes, device identity and filesystem-daemon handoff directories, so your real identity and workspaces are never touched — waits for the socket, and prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground); the scratch profile goes with it.
 
 `TILO_HEADLESS_TIMEOUT` sets how long to wait for the socket, in seconds (default 60). `TILO_HEADLESS_PROFILE=DIR` keeps a scratch profile in `DIR` across runs instead of a fresh one each time.
 
@@ -48,14 +57,6 @@ The input examples use the Python standard library. Native protocol proofs below
 have their own explicit external prerequisites.
 
 ## Native protocol journeys
-
-`native-pair-journey.py --state-proof` isolates signed native app-state composition
-without an audio server. It requires late app hydration, concurrent semantic edits
-and local presentation on both compositors.
-
-`native-pair-journey.py` checks two certified native Chat peers with private
-synthetic audio. It currently fails at governed app creation and writes an
-explicitly unqualified receipt.
 
 `startup-frame-timeline.py` launches a synthetic native SDK payload through a
 private registered desktop action and the production net-off sandbox. It records

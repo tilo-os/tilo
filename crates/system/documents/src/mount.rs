@@ -20,7 +20,9 @@ use std::fs::File;
 use std::io;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{FileExt as _, FileTypeExt as _, MetadataExt as _};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -40,15 +42,77 @@ use crate::{AppKey, Documents, Kind, is_app, is_workspace};
 const TTL: Duration = Duration::from_secs(1);
 const ROOT: u64 = 1;
 
-/// The documents filesystem, mounted; unmounted when dropped.
+/// The documents filesystem, mounted; unmounted when dropped, and also when
+/// the process that mounted it ends without dropping it.
 pub struct Mounted {
     _session: fuser::BackgroundSession,
+    /// Removes the mount where this process could not drop it.
+    _guardian: Guardian,
     at: PathBuf,
 }
 
 impl Mounted {
     pub fn path(&self) -> &Path {
         &self.at
+    }
+}
+
+/// A process that unmounts `at` when the one that mounted it ends, however it
+/// ends.
+///
+/// fuser watches a mount it made only with `AutoUnmount`, and refuses that
+/// with an owner-only mount ([`fuser::SessionACL::Owner`]): fusermount serves
+/// auto-unmount for a shared mount alone (`allow_other` or `allow_root`),
+/// which would let other users in. So the mount is watched from outside
+/// instead: a process of its own, in a process group of its own, waits on a
+/// pipe only this process holds and unmounts once it is closed. A session
+/// that ends on its own unmounts as it drops its [`Mounted`]; one that is
+/// killed or crashes — a stop of its whole process group, `SIGKILL`, an abort
+/// — leaves the kernel's connection aborted but the mount in place, and this
+/// removes it, so the next start can mount at that path again.
+struct Guardian {
+    /// The end this process holds: its end, and with it the process's end,
+    /// closes the pipe.
+    _end: ChildStdin,
+}
+
+impl Guardian {
+    /// A guardian for the mount at `at`, made once it is mounted: one made
+    /// before a mount that then failed would unmount what another session
+    /// serves at that path.
+    fn new(at: &Path) -> io::Result<Self> {
+        let mut process = Command::new("sh")
+            .args([
+                "-c",
+                // The read ends with the pipe, so with the process that holds
+                // its other end, and the helper then unmounts what is still
+                // mounted there: lazily, so a folder an app that outlived its
+                // session still holds open is detached rather than left
+                // behind, and only while the mount is up, so a session that
+                // already unmounted its own mount does not take down another
+                // session's made since at that path.
+                "read -r _; grep -qF \" $1 \" /proc/self/mountinfo \
+                 && exec fusermount3 -u -q -z -- \"$1\"",
+                "tilo-documents-guardian",
+            ])
+            .arg(at)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            // A stop of the session's whole process group, its SIGKILL
+            // included, must not end the guardian with it.
+            .process_group(0)
+            .spawn()?;
+        let Some(end) = process.stdin.take() else {
+            return Err(io::Error::other("the documents guardian has no pipe"));
+        };
+        // Nobody here waits for the guardian, which ends when the mount it
+        // cleans up does; the thread reaps it then rather than leave it to
+        // the process to collect.
+        std::thread::spawn(move || {
+            let _ = process.wait();
+        });
+        Ok(Self { _end: end })
     }
 }
 
@@ -62,7 +126,8 @@ const MAX_THREADS: usize = 8;
 ///
 /// # Errors
 ///
-/// When FUSE is unavailable or the folder cannot be prepared.
+/// When FUSE is unavailable, the folder cannot be prepared, or the process
+/// that unmounts it when this one ends cannot be started.
 pub fn mount(documents: Documents, at: &Path) -> io::Result<Mounted> {
     clear_stale_mount(at)?;
     std::fs::create_dir_all(at)?;
@@ -88,8 +153,10 @@ pub fn mount(documents: Documents, at: &Path) -> io::Result<Mounted> {
         std::thread::available_parallelism().map_or(2, |cpus| cpus.get().clamp(2, MAX_THREADS)),
     );
     let session = fuser::spawn_mount(DocumentsFs::new(documents), at, &config)?;
+    let guardian = Guardian::new(at)?;
     Ok(Mounted {
         _session: session,
+        _guardian: guardian,
         at: at.to_path_buf(),
     })
 }
@@ -99,7 +166,7 @@ pub fn mount(documents: Documents, at: &Path) -> io::Result<Mounted> {
 fn clear_stale_mount(at: &Path) -> io::Result<()> {
     match std::fs::metadata(at) {
         Err(error) if error.raw_os_error() == Some(Errno::NOTCONN.raw_os_error()) => {
-            let status = std::process::Command::new("fusermount3")
+            let status = Command::new("fusermount3")
                 .args(["-u", "-z"])
                 .arg(at)
                 .status()?;
@@ -1074,5 +1141,72 @@ mod tests {
             std::fs::remove_dir(&path).is_err(),
             "the chosen folder stays"
         );
+    }
+
+    /// Whether a mount is up at `at` right now.
+    fn mounted_at(at: &Path) -> bool {
+        let Ok(at) = at.canonicalize() else {
+            return false;
+        };
+        let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+        mountinfo.lines().any(|line| {
+            line.split(' ')
+                .nth(4)
+                .is_some_and(|point| Path::new(&point.replace("\\040", " ")) == at)
+        })
+    }
+
+    /// The child of the test below: it mounts at the path the test names,
+    /// says so, and waits to be killed. A test of its own only so that the
+    /// child's mount dies with a process, which no test can do to its own.
+    #[test]
+    fn mount_child_that_waits_to_be_killed() {
+        let (Ok(at), Ok(ready)) = (
+            std::env::var("TILO_DOCUMENTS_MOUNT_AT"),
+            std::env::var("TILO_DOCUMENTS_MOUNT_READY"),
+        ) else {
+            return;
+        };
+        let mounted = mount(Documents::new(), Path::new(&at)).unwrap();
+        std::fs::write(&ready, b"mounted").unwrap();
+        loop {
+            std::thread::park();
+            std::hint::black_box(mounted.path());
+        }
+    }
+
+    #[test]
+    fn a_mount_whose_session_is_killed_is_unmounted_for_the_next_one() {
+        let Some((_probe_dir, probing)) = mounted(&Documents::new()) else {
+            return;
+        };
+        drop(probing);
+        let dir = tempfile::tempdir().unwrap();
+        let at = dir.path().join("documents");
+        let ready = dir.path().join("mounted");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "mount::tests::mount_child_that_waits_to_be_killed",
+                "--nocapture",
+            ])
+            .env("TILO_DOCUMENTS_MOUNT_AT", &at)
+            .env("TILO_DOCUMENTS_MOUNT_READY", &ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        tilo_test_env::wait_until("the child mounts the documents", || ready.exists());
+        assert!(mounted_at(&at), "the child serves a mount");
+        // A stop of the session's whole process group, its SIGKILL included.
+        let group = rustix::process::Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
+        rustix::process::kill_process_group(group, rustix::process::Signal::KILL).unwrap();
+        child.wait().unwrap();
+        tilo_test_env::wait_until("the killed session's mount is unmounted", || {
+            !mounted_at(&at)
+        });
+        let again = mount(Documents::new(), &at).unwrap();
+        assert_eq!(again.path(), at);
     }
 }

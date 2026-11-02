@@ -2,14 +2,14 @@
 use serde::{Deserialize, Serialize};
 
 /// One message's bound. A call has no participant limit; a status names
-/// each participant's stream (129 bytes) and person (64), so this carries
-/// well over a thousand of them, and a [`Command::Pictures`] answer always
-/// at least one whole picture of the largest layer
-/// ([`MAX_PICTURE_BYTES`] in base64).
+/// each person (64 bytes) and the people whose pictures it shows (64
+/// each), so this carries well over a thousand of them, and a
+/// [`Command::Pictures`] answer always at least one whole picture of the
+/// largest layer ([`MAX_PICTURE_BYTES`] in base64).
 pub const MAX_WIRE_BYTES: usize = 1024 * 1024;
 pub const MAX_INPUTS: usize = 128;
-/// The largest picture one [`Picture`] carries: a tilo-video/1 object
-/// (`tilo_moq::video::MAX_OBJECT_BYTES`).
+/// The largest picture one [`Picture`] carries: one encoded tilo-video/1
+/// object.
 pub const MAX_PICTURE_BYTES: usize = 512 * 1024;
 /// Pictures one tile set may ask for at once: what a call view shows.
 pub const MAX_SHOWN: usize = 64;
@@ -75,8 +75,8 @@ pub enum Command {
     Pictures {
         after: u64,
     },
-    /// How loud this device plays one participant (a person id or a
-    /// [`Guest::id`]), in percent of as they arrive: `0` silences them,
+    /// How loud this device plays one participant (a person id), in
+    /// percent of as they arrive: `0` silences them,
     /// up to [`MAX_VOLUME_PERCENT`]. Only what this device hears changes;
     /// nobody else's call does, so it carries no intent.
     SetVolume {
@@ -97,7 +97,7 @@ pub enum PictureSource {
     Screen,
 }
 
-/// How large a picture is received: `tilo_moq::video::Layer`.
+/// How large a picture is received: the layer its tile asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PictureLayer {
@@ -146,7 +146,7 @@ impl Picture {
     }
 
     /// The coded picture inside the object, as the tilo-video/1 header
-    /// frames it (`tilo_moq::video`: version, flags, codec, layer, sequence,
+    /// frames it (version, flags, codec, layer, sequence,
     /// capture time, width, height, payload length, reserved; 32 bytes), or
     /// `None` for an object that does not hold together.
     #[must_use]
@@ -289,8 +289,8 @@ pub enum Issue {
     ScreenDenied,
     /// Sharing the screen could not start, or stopped.
     ScreenLost,
-    /// This device cannot take part in calls at all (a browser without
-    /// the WebTransport the call's carrier needs): no retry helps.
+    /// This device cannot take part in calls at all (the platform has no
+    /// audio capture and playout): no retry helps.
     Unsupported,
 }
 
@@ -301,11 +301,14 @@ pub struct Input {
     pub label: String,
 }
 
-/// Current authority's publisher streams, never an inferred participant roster.
+/// Whose pictures this device publishes and receives now, never an inferred
+/// participant roster.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Inventory {
     pub revision: Option<u64>,
+    /// The person whose camera or screen this device publishes, if it does.
     pub publication: Option<String>,
+    /// The people whose pictures this device receives, sorted and distinct.
     pub publishers: Vec<String>,
 }
 impl Inventory {
@@ -320,31 +323,12 @@ impl Inventory {
         if self.revision.is_none() && (self.publication.is_some() || !self.publishers.is_empty()) {
             return false;
         }
-        let mut call = None;
-        for namespace in self.publication.iter().chain(self.publishers.iter()) {
-            let Some(prefix) = namespace_valid(namespace)
-                .then(|| namespace.get(..64))
-                .flatten()
-            else {
-                return false;
-            };
-            if call.is_some_and(|prior| prior != prefix) {
-                return false;
-            }
-            call = Some(prefix);
-        }
-        self.publication
-            .as_ref()
-            .is_none_or(|own| !self.publishers.contains(own))
+        self.publication.as_deref().is_none_or(person_valid)
+            && self
+                .publishers
+                .iter()
+                .all(|publisher| person_valid(publisher))
     }
-}
-fn namespace_valid(value: &str) -> bool {
-    value.len() == 129
-        && value.as_bytes().get(64) == Some(&b'/')
-        && value
-            .bytes()
-            .enumerate()
-            .all(|(i, b)| i == 64 || b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -371,8 +355,8 @@ pub struct Snapshot {
     /// and while this device takes part: what a voice channel shows.
     #[serde(default)]
     pub rosters: Vec<Roster>,
-    /// Who this device's call hears talking now (person ids and
-    /// [`Guest::id`]s, sorted and distinct), this person among them while
+    /// Who this device's call hears talking now (person ids, sorted and
+    /// distinct), this person among them while
     /// their microphone is heard: what the speaking rings show.
     #[serde(default)]
     pub speaking: Vec<String>,
@@ -407,9 +391,7 @@ pub struct Snapshot {
 pub struct Roster {
     pub channel_id: String,
     /// Person ids (a user root key in lowercase hex), sorted and distinct:
-    /// a person on two devices is in the call once. A bridge's
-    /// participations are never among them: their person is the bridge's,
-    /// not the one they carry.
+    /// a person on two devices is in the call once.
     pub people: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cameras: Vec<String>,
@@ -424,84 +406,6 @@ pub struct Roster {
     /// them is muted too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deafened: Vec<String>,
-    /// The people a bridge carries into the call from another service,
-    /// sorted by id and distinct: each shown as themselves, reached
-    /// through their service.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub guests: Vec<Guest>,
-    /// The services bridging the call (lowercase, sorted and distinct):
-    /// what the call's people say reaches them too, so the call says so.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bridges: Vec<String>,
-}
-
-/// A person a bridge carries into a call from another service.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Guest {
-    /// `<service>:<account>`: how `speaking` and [`Command::SetVolume`]
-    /// name them.
-    pub id: String,
-    /// Their name on that service: trimmed, 1..=80 characters.
-    pub name: String,
-    /// BLAKE3 hex of their picture in the workspace's content store.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub avatar: Option<String>,
-    /// The service, lowercase: `discord`.
-    pub service: String,
-    /// The workspace member the account is linked to (a person id): shown as
-    /// that member, reached through `service`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub linked: Option<String>,
-    /// Muted on that service: everyone sees it, as a member's microphone.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub muted: bool,
-}
-
-impl Guest {
-    /// The id of `account` on `service`.
-    #[must_use]
-    pub fn id_of(service: &str, account: &str) -> String {
-        format!("{service}:{account}")
-    }
-
-    #[must_use]
-    pub fn valid(&self) -> bool {
-        let name = self.name.chars().count();
-        guest_valid(&self.id)
-            && self
-                .id
-                .split_once(':')
-                .is_some_and(|(service, _)| service == self.service)
-            && (1..=80).contains(&name)
-            && self.name.trim() == self.name
-            && !self.name.chars().any(char::is_control)
-            && self.avatar.as_deref().is_none_or(hex32)
-            && self.linked.as_deref().is_none_or(person_valid)
-    }
-}
-
-/// A service a bridge reaches: lowercase letters, digits and `-`.
-fn service_valid(service: &str) -> bool {
-    (1..=32).contains(&service.len())
-        && service
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
-/// A guest id: `<service>:<account>`.
-fn guest_valid(id: &str) -> bool {
-    id.split_once(':').is_some_and(|(service, account)| {
-        service_valid(service)
-            && !account.is_empty()
-            && account.len() <= 128
-            && !account.chars().any(|c| c.is_control() || c.is_whitespace())
-    })
-}
-
-/// Who a call names: a person id or a guest id.
-fn participant_valid(id: &str) -> bool {
-    person_valid(id) || guest_valid(id)
 }
 
 impl Roster {
@@ -518,19 +422,6 @@ impl Roster {
             && among(&self.cameras)
             && among(&self.screens)
             && among(&self.muted)
-            && self
-                .guests
-                .iter()
-                .all(|guest| guest.valid() && self.bridges.binary_search(&guest.service).is_ok())
-            && self
-                .guests
-                .windows(2)
-                .all(|pair| matches!(pair, [left, right] if left.id < right.id))
-            && self.bridges.iter().all(|service| service_valid(service))
-            && self
-                .bridges
-                .windows(2)
-                .all(|pair| matches!(pair, [left, right] if left < right))
             && among(&self.deafened)
             && self
                 .deafened
@@ -591,7 +482,7 @@ impl Request {
                 Command::SetVolume {
                     participant,
                     percent,
-                } => participant_valid(participant) && *percent <= MAX_VOLUME_PERCENT,
+                } => person_valid(participant) && *percent <= MAX_VOLUME_PERCENT,
                 Command::SetMuted { .. }
                 | Command::SetDeafened { .. }
                 | Command::SetCamera { .. }
@@ -702,7 +593,7 @@ impl Snapshot {
                     && !matches!(self.state, State::Unavailable | State::Idle | State::Ended)))
             && self.input_id.as_deref().is_none_or(identifier)
             && self.rosters.iter().all(Roster::valid)
-            && self.speaking.iter().all(|id| participant_valid(id))
+            && self.speaking.iter().all(|id| person_valid(id))
             && self
                 .speaking
                 .windows(2)

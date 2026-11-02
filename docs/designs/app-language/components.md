@@ -97,6 +97,53 @@ Rust so Tilo runs well on slow hardware.
 Steps 3 and 4 produce a texture placed in the normal widget tree, with layout, focus and
 accessibility.
 
+### 4.1 Drawing with the design system (step 2)
+
+One described component, `ui.Drawing`, draws a list of shapes. The shapes are values, so a
+drawing is a pure function of what the view reads, it is retained like any other node, and the
+compiler checks it like any other prop. There is no paint callback and no new syntax.
+
+```
+/// How full a disk is, as a ring.
+view usage_ring(used: Float) {
+    ui.Drawing(role: .progress(used), size: 4rem) {
+        shapes: [
+            .arc(center: (0.5, 0.5), radius: 0.42, from: 0.0, to: 1.0,
+                 stroke: .role(.track), width: .regular),
+            .arc(center: (0.5, 0.5), radius: 0.42, from: 0.0, to: used,
+                 stroke: .role(.accent), width: .regular, cap: .round),
+        ]
+        on press(shape): open_details()
+    }
+}
+```
+
+- **Shapes:** `.rect` (with a corner role), `.ellipse`, `.arc`, `.line`, `.path(points:,
+  curve: .straight | .smooth, closed:)` and `.text(role:)`. Coordinates are fractions of the
+  drawing's box, so a drawing scales with its layout and never names pixels.
+- **Looks come from the theme only.** A fill or stroke is `.role(...)` (accent, track, positive,
+  danger, ink, and the rest of the theme's roles), optionally with `.wash` (a vertical gradient
+  of the role into transparency). A stroke width is a token (`.hairline`, `.regular`,
+  `.strong`), text is a text role, and a corner is a radius role. There are no raw colours,
+  sizes or fonts, so a drawing reads right in every theme.
+- **A semantic role is required:** `.progress(f)`, `.chart(summary)`, `.picture(label)`,
+  `.decoration` for purely visual ones. Screen readers and agents read the role, not the shapes.
+- **Motion:** when a shape's numbers change between two readings, the widget moves them with the
+  platform's motion curve (`motion` theme role), in Rust, at native refresh. A view never
+  animates.
+- **Retained and damage-limited:** the widget builds its scene from the shapes once per
+  change of its props, caches it like any part, and damages only its own box. An idle drawing
+  costs nothing.
+- **Events are data:** `press(shape)` gives the index of the topmost shape under the
+  pointer, and `hover(shape)` likewise, so a chart's bar or a map's region is pressable without
+  a closure.
+
+Underneath, `ui.Drawing` is a ui-core widget (`#[derive(Component)]`) that lowers shapes to the
+same `kurbo` paths, fills, strokes and gradients the toolkit's own `Chart` and `Sparkline`
+paint with, resolving each role against the current theme. The component description gains
+the one thing it lacks for this: a closed set of cases *with fields* (`Type::Cases`, as a
+tilolang `enum` with payloads), which the compiler already understands from `enum`.
+
 ## 5. Efficiency is enforced
 
 - Counts, filters and queries come from the index, never a loop in a view. The compiler warns

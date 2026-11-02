@@ -701,11 +701,15 @@ impl Reconciler {
         };
         // In a document, a body is the block editor native Notes edits a note in.
         if is_body(node) {
-            let state = self.text_state(&node.key);
+            let field = if node.kind == crate::adapter::kind("RichInput") {
+                crate::body::Stored::Rich(self.rich_state(&node.key))
+            } else {
+                crate::body::Stored::Markdown(self.text_state(&node.key))
+            };
             let placeholder = crate::date::shown(node, "placeholder").unwrap_or_default();
             return Box::new(BodyEditor::new(
                 &node.key,
-                &state,
+                field,
                 &self.sink,
                 presence_path(node),
                 &placeholder,
@@ -1536,10 +1540,13 @@ fn in_avatar_column(row: &UiNode, avatars: bool) -> UiNode {
     row
 }
 
-/// Whether `node` is a document's body: a text field the window shows as the block editor
-/// native Notes edits a note in.
+/// Whether `node` is a document's body: a field the window shows as the block editor native
+/// Notes edits a note in — the one that holds Markdown as text, and the one that holds the
+/// document's paragraphs.
 fn is_body(node: &UiNode) -> bool {
-    node.kind == crate::adapter::kind("TextInput") && token(node, "field_role") == Some("body")
+    (node.kind == crate::adapter::kind("TextInput")
+        || node.kind == crate::adapter::kind("RichInput"))
+        && token(node, "field_role") == Some("body")
 }
 
 /// The card that arrived under `new_node` since `old_node`, by its key: the last of `new_node`'s

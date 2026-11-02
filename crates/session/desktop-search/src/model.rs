@@ -262,7 +262,15 @@ impl Hit {
             Target::Launch { app } if self.kind == ResourceKind::Application => {
                 Thing::App(app.clone())
             }
-            Target::Window { tab, .. } => Thing::Window(*tab),
+            // The window row itself is the window; a row that only goes to
+            // a window when chosen (a note shown in it, a place the person
+            // was in) is its own thing, or every item one window shows
+            // would be one row.
+            Target::Window { tab, .. }
+                if self.kind == ResourceKind::Custom(crate::providers::WINDOWS_KIND.into()) =>
+            {
+                Thing::Window(*tab)
+            }
             Target::Command { id } => Thing::Command(id.clone()),
             // A row that opens an app's item at its anchor is the item, as
             // the same item opened through the app's `open` is.
@@ -290,7 +298,8 @@ impl Hit {
             | Target::Open { .. }
             | Target::Cancel { .. }
             | Target::Prefer { .. }
-            | Target::Launch { .. } => Thing::Row(self.provider.clone(), self.id.clone()),
+            | Target::Launch { .. }
+            | Target::Window { .. } => Thing::Row(self.provider.clone(), self.id.clone()),
         }
     }
 }
@@ -356,6 +365,12 @@ pub trait Source {
     fn verbatim(&self) -> bool {
         false
     }
+    /// Take in what arrived since the rows were built that changes them (an
+    /// answer still being written), and say whether it did: the palette
+    /// builds the rows again when one says it did.
+    fn poll(&self) -> bool {
+        false
+    }
 }
 
 /// A source a host keeps between searches (its index built once) is
@@ -381,6 +396,9 @@ impl<S: Source + ?Sized> Source for std::rc::Rc<S> {
     }
     fn verbatim(&self) -> bool {
         (**self).verbatim()
+    }
+    fn poll(&self) -> bool {
+        (**self).poll()
     }
 }
 
@@ -552,12 +570,59 @@ impl SearchStream {
             }
             did_ask = true;
         }
-        if !did_ask && !self.pending.is_empty() {
-            // Nothing fits a frame and nothing answered yet: the search
-            // still moves, wherever the row it first shows comes from.
-            did_ask = self.ask(0, sources, costs, used);
+        // A frame with nothing to show, or only the row every query gets,
+        // asks the sources still to answer, fastest first, until one brings
+        // a row of its own: the instant answer (a sum, a conversion) is
+        // then in the frame that would otherwise say nothing matched or
+        // lead with the web. Every source measured within a frame is asked;
+        // one slower only when it is the first asked of this frame, so a
+        // search with nothing to show still moves and no frame waits long.
+        let mut first = true;
+        while self.merged.is_empty()
+            || self
+                .merged
+                .iter()
+                .all(|(hit, _)| crate::providers::WebSearch::is_fallback(hit))
+        {
+            let Some((index, took)) = self.fastest_pending(sources, costs) else {
+                break;
+            };
+            if !first && took > FRAME_BUDGET {
+                break;
+            }
+            first = false;
+            if !self.ask(index, sources, costs, used) {
+                continue;
+            }
+            did_ask = true;
         }
         did_ask
+    }
+
+    /// The source still to answer that is measured fastest, with what it
+    /// took: one never measured counts as instant.
+    fn fastest_pending(
+        &self,
+        sources: &[&dyn Source],
+        costs: &SourceCosts,
+    ) -> Option<(usize, Duration)> {
+        self.pending
+            .iter()
+            .enumerate()
+            .min_by_key(|(index, at)| {
+                let took = sources
+                    .get(**at)
+                    .and_then(|source| costs.measured(source.id()))
+                    .unwrap_or_default();
+                (took, *index)
+            })
+            .map(|(index, at)| {
+                let took = sources
+                    .get(*at)
+                    .and_then(|source| costs.measured(source.id()))
+                    .unwrap_or_default();
+                (index, took)
+            })
     }
 
     /// Ask the `index`th source still to answer, keeping its rows and what
@@ -1364,6 +1429,102 @@ mod tests {
             p95 < Duration::from_millis(30),
             "p95 first frame over 2000 rows is {p95:?}"
         );
+    }
+
+    /// A source whose rows are worked out already, for any needle: an
+    /// answer or a web search answers what was typed, word for word.
+    struct Ready {
+        id: &'static str,
+        hits: Vec<Hit>,
+    }
+
+    impl Source for Ready {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn query(&self, _needle: &str) -> Vec<Hit> {
+            self.hits.clone()
+        }
+    }
+
+    /// The answer a source that answers at once brings is in the frame,
+    /// ahead of the row every query gets, even while a slower source is
+    /// still out: a frame holding nothing but the web row is not the
+    /// answer.
+    #[test]
+    fn an_instant_answer_is_in_the_frame_with_the_web_row() {
+        use crate::providers::{WebSearch, answers_kind};
+        let web = WebSearch::default();
+        let answers = Ready {
+            id: "quick-answers",
+            hits: vec![hit(
+                "quick-answers",
+                "sum:12*7",
+                "84",
+                answers_kind(),
+                system::MAX_PROVIDER_SCORE,
+                Target::Copy { text: "84".into() },
+            )],
+        };
+        let sources: Vec<&dyn Source> = vec![&web, &answers];
+        let mut costs = SourceCosts::default();
+        costs.record("web", Duration::from_micros(5));
+        // Measured slower than a frame: not asked with the fast ones.
+        costs.record("quick-answers", FRAME_BUDGET + Duration::from_millis(20));
+        let stream = search_stream(
+            "12*7",
+            &sources,
+            0,
+            &mut costs,
+            frame_deadline(FRAME_BUDGET),
+            &|_| 0.0,
+        );
+        let names: Vec<String> = stream.rows().into_iter().map(|row| row.title).collect();
+        assert_eq!(
+            names.first().map(String::as_str),
+            Some("84"),
+            "the sum leads: {names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name.starts_with("Search the web")),
+            "the web row is still offered: {names:?}"
+        );
+    }
+
+    /// A window is one row; the items it shows are their own rows, or
+    /// every item one window shows would collapse into it.
+    #[test]
+    fn items_shown_in_one_window_are_their_own_rows() {
+        use crate::providers::WINDOWS_KIND;
+        let to_window = || Target::Window { tab: 0, app: None };
+        let window = hit(
+            "windows",
+            "window:0",
+            "Notes",
+            ResourceKind::Custom(WINDOWS_KIND.into()),
+            10,
+            to_window(),
+        );
+        let groceries = hit(
+            "app-actions",
+            "note:one",
+            "Groceries",
+            ResourceKind::Note,
+            10,
+            to_window(),
+        );
+        let bills = hit(
+            "app-actions",
+            "note:two",
+            "Bills",
+            ResourceKind::Note,
+            10,
+            to_window(),
+        );
+        assert_eq!(window.thing(), Thing::Window(0));
+        assert_ne!(groceries.thing(), bills.thing());
+        assert_ne!(groceries.thing(), Thing::Window(0));
     }
 
     use std::rc::Rc;

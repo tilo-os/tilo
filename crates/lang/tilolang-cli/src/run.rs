@@ -88,10 +88,11 @@ fn session_command(
     command
 }
 
-/// Have the session script stopped as an interrupt stops it when this process ends in a way
-/// that runs none of its own code (a signal, a kill): the kernel sends it SIGTERM then, and its
-/// cleanup stops what it started.
-fn end_with_this_process(command: &mut Command) {
+/// Have the process `command` starts stop as an interrupt stops it when this process ends in a
+/// way that runs none of its own code (a signal, a kill): the kernel sends it SIGTERM then. The
+/// session script's cleanup stops what it started; the app the tool runs itself flushes its
+/// store on the way out ([`crate::dev`]).
+pub(crate) fn end_with_this_process(command: &mut Command) {
     use std::os::unix::process::CommandExt as _;
     let parent = rustix::process::getpid();
     // SAFETY: runs in the forked child before exec, and calls only async-signal-safe system
@@ -155,7 +156,7 @@ fn wait_for_file(
     sender: &mpsc::Sender<Wake>,
 ) -> Result<(), String> {
     let dir = path.parent().ok_or("a ready file has a directory")?;
-    let _watch = watch_into(Watcher::entries(dir).presence(), sender.clone())
+    let _watch = watch_into(Watcher::entries(dir).presence(), sender.clone(), None)
         .map_err(|error| format!("{}: {error}", dir.display()))?;
     loop {
         if path.exists() {
@@ -206,7 +207,7 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         version: "0.1.0".to_owned(),
     };
     let identity = crate::identity_at(&crate::state_dir().join("publisher.json"))?;
-    let mut dev = Dev::new(build, identity, peers, build_dir.join("bin"));
+    let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"));
     // The sessions install them as they start.
     let apps = dev.build_for_start()?;
 
@@ -233,12 +234,14 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
     });
     wait_for_file(&ready, &wakes, &sender)?;
     dev.open()?;
-    for peer in &dev.peers {
-        eprintln!(
-            "    drive it: TILO_TEST_CONTROL={} {} windows",
-            peer.control.display(),
-            dev.bin.join("tilo-control").display()
-        );
+    if let Some(bin) = dev.bin() {
+        for peer in dev.peers() {
+            eprintln!(
+                "    drive it: TILO_TEST_CONTROL={} {} windows",
+                peer.control.display(),
+                bin.join("tilo-control").display()
+            );
+        }
     }
     eprintln!(
         "==> {} is open; a saved .tl file reaches it, with its state",

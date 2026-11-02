@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::app_names::app_name;
 use crate::lists::{AppLists, Lists};
 use crate::records::Records;
 
@@ -160,6 +161,10 @@ pub(crate) struct SessionSearch {
     here: RefCell<Vec<WorkspaceHere>>,
     /// The downloaded programs, as of the last reading of the registry.
     downloaded: RefCell<DownloadedRows>,
+    /// The question search answered, and the answer as it is being written:
+    /// kept across the builds of the rows so what arrives stays where the
+    /// person asked it.
+    ask: crate::search_ask::Shared,
 }
 
 /// The resource of the section keeping search's history.
@@ -173,11 +178,6 @@ fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, 
         serde_json::json!({ "path": [{ "field": field }], "op": "set", "value": value }),
     );
     edit
-}
-
-/// An app's name as people know it.
-pub(crate) fn app_name(app: &str) -> String {
-    tilo_desktop_search::availability::name_for(app).map_or_else(|| app.to_owned(), str::to_owned)
 }
 
 impl SessionSearch {
@@ -214,6 +214,7 @@ impl SessionSearch {
             workspaces: RefCell::default(),
             here: RefCell::default(),
             downloaded: RefCell::default(),
+            ask: crate::search_ask::Shared::default(),
         }
     }
 
@@ -667,6 +668,10 @@ impl SearchHost for SessionSearch {
                 records.held(workspace),
             )));
         }
+        sources.push(Box::new(crate::search_ask::Ask::new(
+            std::sync::Arc::clone(&self.ask),
+            workspace,
+        )));
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
             workspace: workspace.to_owned(),

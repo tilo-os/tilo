@@ -211,7 +211,7 @@ impl Gpu {
         };
         let adapter = renderer
             .adapter_info()
-            .filter(|info| !ui::render_thread::rasterizes_on_cpu(info))?;
+            .filter(|info| !ui::gpu::rasterizes_on_cpu(info))?;
         Some(Self {
             pixels: vec![0; length(size)],
             renderer,

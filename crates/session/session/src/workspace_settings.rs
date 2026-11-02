@@ -570,7 +570,7 @@ fn settings(
 ) -> sheet::Settings {
     let workspace = tree.active_workspace();
     let names = PeopleNames::of(tree, person, own_name().as_deref());
-    let apps = Directory { lists };
+    let apps = Directory;
     sheet::Settings {
         title: t("workspace-settings-title"),
         name: workspace.map_or_else(
@@ -1091,23 +1091,10 @@ fn apps_pane(ws: &Workspace, person: &UserId, lists: &AppLists) -> sheet::Apps {
 }
 
 /// This machine's applications, as the workspace settings name them.
-struct Directory<'a> {
-    lists: &'a AppLists,
-}
+struct Directory;
 
-impl domain::AppDirectory for Directory<'_> {
+impl domain::AppDirectory for Directory {
     fn app_display_name(&self, app_id: &str) -> Option<String> {
-        self.lists
-            .applications
-            .iter()
-            .find(|app| app.id == app_id)
-            .map(|app| app.title.clone())
-            .or_else(|| {
-                self.lists
-                    .host_apps
-                    .iter()
-                    .find(|app| app.desktop_id == app_id)
-                    .map(|app| app.name.clone())
-            })
+        crate::app_names::listed_name(app_id)
     }
 }

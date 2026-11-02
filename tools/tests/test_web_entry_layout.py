@@ -46,8 +46,8 @@ class Layout(unittest.TestCase):
             (bundle / page).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(WEB / page, bundle / page)
         # entry-page.mjs imports two modules, each of them two more, and one of
-        # those a fourth; media-moq-library.mjs is the one the page names itself,
-        # and the rest is what a module may mention without importing.
+        # those a fourth; the rest is what a module may mention without
+        # importing.
         modules = {
             'entry-page.mjs': "import {a} from './host.mjs';\n"
                               "export * from './arrival.mjs';\n"
@@ -64,7 +64,6 @@ class Layout(unittest.TestCase):
             'session/buffers.mjs': "export const buffers = 1;\n",
             'desktop.mjs': "export const desktop = 1;\n",
             'never-preloaded.mjs': "export const never = 1;\n",
-            'media-moq-library.mjs': "export const moq = 1;\n",
             'in-a-comment.mjs': "export const no = 1;\n",
             'in-a-string.mjs': "export const no = 1;\n",
         }
@@ -96,10 +95,10 @@ class Layout(unittest.TestCase):
         return re.findall(r'<link rel="modulepreload" href="([^"]+)">', self.page(site, page))
 
     # The entry module's whole static graph, in the order a browser meets it: the
-    # page's own modulepreload of the library, then the entry module and the
-    # modules it imports, each level in import order. Dynamic imports, comments
-    # and strings name no module.
-    EXPECTED = ('media-moq-library.mjs', 'entry-page.mjs', 'host.mjs', 'arrival.mjs',
+    # page's own modulepreload of the entry module, then the modules it imports,
+    # each level in import order. Dynamic imports, comments and strings name no
+    # module.
+    EXPECTED = ('entry-page.mjs', 'host.mjs', 'arrival.mjs',
                 'session/peer.mjs', 'session/live.mjs', 'table.mjs', 'desktop.mjs',
                 'session/buffers.mjs')
 
@@ -213,9 +212,8 @@ class ShippedGraph(unittest.TestCase):
         self.assertIn('host.mjs', names)
         self.assertIn('entry-page.mjs', names)
         # A module a dynamic import names is preloaded only if a static import
-        # reaches it too: the library the transports load on demand, and the
-        # relay a page connects to when it has one, are not preloaded.
-        self.assertNotIn('media-moq-library.mjs', names)
+        # reaches it too: the relay a page connects to when it has one is not
+        # preloaded.
         self.assertNotIn('relay.mjs', names)
 
     @unittest.skipUnless((WEB / 'entry-page.mjs').is_file(), 'the runtime sources are not here')

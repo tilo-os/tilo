@@ -323,14 +323,30 @@ pub fn fill_role(
     theme: &Theme,
     ground: Color,
 ) {
-    paint_body(
+    fill_role_as(
         scene,
         transform,
         shape,
-        (theme.finish(role), role),
+        role,
+        theme.finish(role),
         theme,
         ground,
     );
+}
+
+/// Fill `shape` as a surface of `role` in `finish` stands: the finish the caller chose (a
+/// chrome's [`crate::tokens::ChromeMaterial`], through [`Theme::chrome_material`]) rather than
+/// the role's own, so the surface is drawn by the painter set of the material it is made of.
+pub fn fill_role_as(
+    scene: &mut Scene,
+    transform: Affine,
+    shape: &RoundedRect,
+    role: SurfaceRole,
+    finish: &Finish,
+    theme: &Theme,
+    ground: Color,
+) {
+    paint_body(scene, transform, shape, (finish, role), theme, ground);
 }
 
 /// Paint `shape` as the body of a surface of `role` in `finish` over

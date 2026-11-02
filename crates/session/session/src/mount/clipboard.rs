@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use std::path::Path;
 
 use serde_json::{Map, Value};
-use settings_store::clipboard_history::{HISTORY, PASTE, StoredCopy, StoredHistory, StoredPaste};
+use settings_store::clipboard_history::{HISTORY, StoredCopy, StoredHistory};
 use settings_store::paste_shortcut::{self, PasteShortcut};
 use tilo_actions::{ActionOutput, DoorError, ResourceSpec};
 use tilo_compositor::clipboard_history::{Copy, History, Pull, Pulled, TEXT_MIME, kept_mime};
@@ -58,8 +58,9 @@ pub(crate) struct Clipboard {
     /// The files the selection holds, when what was copied last is a list of
     /// files: what a paste into a folder takes.
     files: RefCell<Option<CopiedFiles>>,
-    /// The paste of files in flight, as far as its journal got.
-    paste: RefCell<Option<StoredPaste>>,
+    /// The paste of files in flight, on its own thread, or the paste a
+    /// session that stopped left behind to be undone.
+    paste: RefCell<Option<clipboard_files::Paste>>,
     /// Whether what was copied here since the last share still has to be
     /// offered to the person's other devices.
     unshared: Cell<bool>,
@@ -97,8 +98,8 @@ impl Clipboard {
             asks: RefCell::new(Vec::new()),
             generation: Cell::new(0),
             files: RefCell::new(None),
-            // A paste the last session was in the middle of is finished here.
-            paste: RefCell::new(PASTE.get()),
+            // A paste the last session was in the middle of is undone here.
+            paste: RefCell::new(clipboard_files::Paste::unfinished()),
             unshared: Cell::new(true),
             synced_at: Cell::new(None),
         }
@@ -236,10 +237,11 @@ impl Clipboard {
         cleared
     }
 
-    /// Paste the copied files into `destination`, as their journal says:
-    /// the plan is written down before the first file is touched, and the
-    /// loop carries it out a file at a time ([`Self::step_files`]).
-    pub(crate) fn paste_files(&self, destination: &Path) {
+    /// Paste the copied files into `destination` on a thread of its own, as
+    /// `conflict` says when a name is taken: the staging, the syncing and
+    /// the receipt are [`clipboard_files`]', and the loop only asks whether
+    /// it is over ([`Self::step_files`]).
+    pub(crate) fn paste_files(&self, destination: &Path, conflict: clipboard_files::Conflict) {
         if self.paste.borrow().is_some() {
             tracing::debug!("a paste of files is still going on");
             return;
@@ -248,21 +250,27 @@ impl Clipboard {
             tracing::debug!("the clipboard holds no files to paste");
             return;
         };
-        let started = clipboard_files::begin(&files, destination, ui::time::unix_now_ms());
-        *self.paste.borrow_mut() = started;
+        *self.paste.borrow_mut() = Some(clipboard_files::Paste::start(
+            &files,
+            destination,
+            conflict,
+            ui::time::unix_now_ms(),
+        ));
     }
 
-    /// Carry out one file of the paste in flight, and write its journal.
-    pub(crate) fn step_files(&self) {
+    /// What the paste that just ended has to tell the person, if anything.
+    pub(crate) fn step_files(&self) -> Vec<crate::notices::Notice> {
         let mut paste = self.paste.borrow_mut();
-        let Some(open) = paste.as_mut() else {
-            return;
-        };
-        let done = clipboard_files::step(open);
-        if done {
-            *paste = None;
+        if !paste.as_ref().is_some_and(clipboard_files::Paste::finished) {
+            return Vec::new();
         }
-        clipboard_files::save(paste.as_ref());
+        let Some(mut done) = paste.take() else {
+            return Vec::new();
+        };
+        drop(paste);
+        crate::notices::paste_notice(&done.outcome())
+            .into_iter()
+            .collect()
     }
 
     /// Share what was copied here with the person's other devices, and take
@@ -530,9 +538,14 @@ impl Service for Served {
             ClipboardAction::Clear => {
                 self.clipboard.clear();
             }
-            ClipboardAction::PasteFiles { destination } => {
-                self.clipboard.paste_files(Path::new(&destination));
-            }
+            ClipboardAction::PasteFiles {
+                destination,
+                conflict,
+            } => self.clipboard.paste_files(
+                Path::new(&destination),
+                clipboard_files::Conflict::parse(conflict.as_deref())
+                    .unwrap_or(clipboard_files::Conflict::KeepBoth),
+            ),
         }
         Ok(Started::Done(ActionOutput::default()))
     }
@@ -585,6 +598,10 @@ pub(crate) enum ClipboardAction {
         /// The folder to paste them into
         #[param("The folder")]
         destination: String,
+        /// What to do when a name is already there: keep both (the
+        /// default), skip it, or put what is there in the Trash
+        #[param("What a taken name gets")]
+        conflict: Option<String>,
     },
 }
 

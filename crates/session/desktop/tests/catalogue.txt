@@ -39,19 +39,19 @@ desktop:chrome desktop (Desktop)
   workspace-settings Open the workspace's settings
 desktop:desk desktop (Windows)
   choose-search-row Choose a search row
-  close-tab Close a tab
-  focus Focus a window
+  close-tab Close its window
+  focus Bring its window to the front
   focus-display Focus a display
   launchpad Choose a launchpad card
   move-to-display Move the window in front to another display
   search Search the desktop
   step-focus Step through the windows
   desktop:tab:7 desktop.window (Notes)
-    close-tab Close a tab
-    focus Focus a window
+    close-tab Close Notes
+    focus Focus Notes
   desktop:tab:8 desktop.window (Mail)
-    close-tab Close a tab
-    focus Focus a window
+    close-tab Close Mail
+    focus Focus Mail
   desktop:display:1 desktop.display (Display 1)
     focus-display Focus a display
   desktop:search desktop.search (scr)

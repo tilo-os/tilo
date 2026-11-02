@@ -1,12 +1,15 @@
 //! Desktop search on the surface: the shared [`DesktopSearch`] palette over
-//! what this desktop has open, drawn above the shown strip.
+//! what this desktop has open, drawn by the chrome above the windows.
 //!
 //! Search opens from the same chords as the native shell's (Super+K and
 //! Super+Space; Ctrl+K where the platform's command key is Ctrl), from a
 //! `global-search`/`commands` navigation command, or from
 //! [`DesktopHandle::toggle_search`]. A window's new-tab control opens it
 //! over the applications only, and the one chosen opens as a tab of that
-//! window, as the native shell's does. While open it takes every input event.
+//! window, as the native shell's does. The desk keeps what search stands
+//! over and what it found; the chrome, which stands above the windows, draws
+//! the card there, dims what it covers, routes the person's input to it and
+//! closes it ([`DesktopHandle::search_palette`], [`DesktopHandle::search_area`]).
 //! Choosing an application launches it, a window focuses it, and an
 //! application's action or content runs through the palette's control
 //! invocation, which the frame host resolves against the live resource
@@ -14,15 +17,16 @@
 //! is not a name, as the native shell's does: a sum or a unit conversion is
 //! copied, an address or a web search opens in a new browser tab.
 
+use std::rc::Rc;
+
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
 use tilo_desktop_search::{SearchData, Target};
 use ui::automerge::AutoCommit;
 use ui::kurbo::Rect;
 use ui::search::{AppScope, Scope};
-use ui::taffy::{NodeId, TaffyTree};
 use ui::widget::Widget;
-use ui::winit::event::{ElementState, MouseButton, WindowEvent};
+use ui::winit::event::{ElementState, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
 
 use super::{DesktopHandle, DesktopSurface, holder_refusal, route_of};
@@ -206,7 +210,7 @@ const MAXIMIZE_WINDOW: &str = "desktop.maximize-window";
 /// Search command ids and banner action keys of the host's own actions.
 const HOST_PREFIX: &str = "host:";
 /// The least workspace the palette keeps from the surface's sides.
-const PALETTE_EDGE: f64 = 8.0;
+pub const PALETTE_EDGE: f64 = 8.0;
 
 /// An action only the host that embeds the desktop can perform (in a
 /// browser: keeping the person's identity with a passkey). The desktop
@@ -359,22 +363,81 @@ impl DesktopHandle {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Open { scope, query });
     }
 
+    /// Search `tab`'s app, the way an app in a process of its own asked
+    /// (`ui::floating_surface::FloatingSurfaceClientMessage::OpenAppSearch`):
+    /// inside a session there is one search, the shell's, and the app opens
+    /// none of its own. A tab that shows no app searches nothing.
+    pub fn search_app(&self, tab: TabId, request: ui::search::SearchRequest) {
+        let mut shared = self.shared.borrow_mut();
+        let Some(app) = shared
+            .tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|candidate| candidate.id == tab)
+            .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+        else {
+            return;
+        };
+        shared.search_request = Some(SearchRequest::Open {
+            scope: Scope::InApp(AppScope {
+                app: Some(app),
+                part: request.part.clone(),
+            }),
+            query: request.query,
+        });
+    }
+
     /// Whether the search palette is open, as of the last update pass.
     pub fn search_open(&self) -> bool {
         self.shared.borrow().search_open
     }
 
-    /// Whether the desk itself takes the keys the person types: its search
-    /// or its notification centre is open, and what they type goes into it
-    /// rather than to the window behind.
+    /// The palette the desk searches with, shared with the host that draws it
+    /// over the windows: the desk fills it with what its windows hold and
+    /// carries out what is chosen there, while that host draws it, routes the
+    /// person's input to it and closes it. [`Self::note_search_activity`] tells
+    /// the desk what that host changed.
+    pub fn search_palette(
+        &self,
+    ) -> std::rc::Rc<std::cell::RefCell<tilo_desktop_search::LazyDesktopSearch>> {
+        std::rc::Rc::clone(&self.shared.borrow().search)
+    }
+
+    /// Where the palette stands when it was opened for one window: that
+    /// window under its bar, over the rest of it, as the desk last laid it
+    /// out; nothing over everything.
+    pub fn search_area(&self) -> Option<Rect> {
+        self.shared.borrow().search_area
+    }
+
+    /// Changes to what the palette shows or asks of the desk, counted: a host
+    /// that changed the palette without asking the desk to (typing in it,
+    /// opening it) bumps it, and the desk takes that up on its next pass.
+    pub fn note_search_activity(&self) {
+        let mut shared = self.shared.borrow_mut();
+        shared.search_revision = shared.search_revision.wrapping_add(1);
+    }
+
+    /// The [`Self::note_search_activity`] count as of the last update pass.
+    pub fn search_revision(&self) -> u64 {
+        self.shared.borrow().search_revision
+    }
+
+    /// Whether the desk itself takes the keys the person types: its
+    /// notification centre is open, and what they type goes into it rather
+    /// than to the window behind. Its search does not: the palette stands
+    /// over the windows, drawn by the host above them, which takes the keys
+    /// while it is up.
     pub fn wants_keyboard(&self) -> bool {
-        let shared = self.shared.borrow();
-        let centre = shared
+        self.shared
+            .borrow()
             .presentation
             .notifications
             .as_ref()
-            .is_some_and(|notifications| notifications.center_open);
-        shared.search_open || centre
+            .is_some_and(|notifications| notifications.center_open)
     }
 
     /// Search from now on also over what `host` adds, and hand it what is
@@ -457,7 +520,7 @@ pub fn search_chord_keys(platform: ui::platform::PlatformConventions) -> Vec<Str
 
 /// The search chords: Super+K and Super+Space as in the native shell, and
 /// Ctrl+K where Ctrl is the platform's command key.
-fn is_search_chord(
+pub fn is_search_chord(
     event: &WindowEvent,
     modifiers: ui::winit::event::Modifiers,
     platform: ui::platform::PlatformConventions,
@@ -483,17 +546,17 @@ fn is_search_chord(
 
 /// Escape as a person presses it; a held key counts as each press it repeats,
 /// as the old launcher did: the first clears, the next closes.
-fn is_escape(event: &WindowEvent) -> bool {
+pub fn is_escape(event: &WindowEvent) -> bool {
     let WindowEvent::KeyboardInput { event: key, .. } = event else {
         return false;
     };
     key.state == ElementState::Pressed && matches!(&key.logical_key, Key::Named(NamedKey::Escape))
 }
 
-/// Every open window as search lists it: the app it shows (for its glyph),
-/// and where it is. Windows titled alike say what tells them apart: who
-/// holds the window, or else which of them it is, counted left to right.
-/// The name of the app window `group` shows, as the desktop labels it.
+/// Every open window as search lists it: called by what it shows and the app
+/// it shows it in (`Groceries — Notes`), with the app for its glyph. Only
+/// windows called alike say more: where each of them is, or which of them it
+/// is, counted left to right.
 fn window_app(tree: &DesktopTree, group: GroupId) -> Option<String> {
     let window = tree
         .workspaces
@@ -517,20 +580,33 @@ fn windows(
         for strip in &workspace.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
+                    let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile);
                     let app_title = match &tab.tile {
                         TileContent::LocalApp { label, .. } => label.clone(),
-                        _ => String::new(),
+                        _ => app.as_ref().map_or_else(String::new, |app| {
+                            tilo_desktop_search::names::app_name(app)
+                        }),
                     };
-                    let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile);
                     let place = holders
                         .get(&tab.id)
                         .map(|holder| holder.name.clone())
                         .into_iter()
                         .chain([workspace.name.clone(), strip.name.clone()])
                         .collect();
+                    // A window bar that only says what the app is called
+                    // names no place: the row is the app, so the bar's words
+                    // for it are dropped rather than repeated as a title.
+                    let named = app.as_deref().is_some_and(|app| {
+                        tilo_desktop_search::names::is_apps_own_name(app, &tab.title)
+                    });
+                    let title = if named {
+                        app_title.clone()
+                    } else {
+                        tilo_desktop_search::names::named_window(&app_title, &tab.title)
+                    };
                     out.push(WindowEntry {
                         tab: tab.id,
-                        title: tab.title.clone(),
+                        title,
                         app_title,
                         app,
                         place,
@@ -560,6 +636,10 @@ fn windows(
                 "search-window-nth",
                 &[("nth", nth.into()), ("count", all.into())],
             ));
+        } else {
+            // Where a window is needs saying only when another is called
+            // the same: a lone window's name is enough to find it by.
+            entry.place.clear();
         }
     }
     out
@@ -698,11 +778,13 @@ impl DesktopSurface {
         } else {
             std::collections::HashMap::new()
         };
-        self.search.open(data);
+        let mut search = self.search.borrow_mut();
+        search.open(data);
         if let Some(usage) = usage {
-            self.search.set_usage(usage);
+            search.set_usage(usage);
         }
-        self.search.set_platform_conventions(self.platform);
+        search.set_platform_conventions(self.platform);
+        drop(search);
         // What a chosen application opens in: a tab of the window group
         // the new-tab control belongs to, else a window of its own.
         self.new_tab_into = match &scope {
@@ -716,14 +798,26 @@ impl DesktopSurface {
         };
         self.search_owners = owners;
         if let Some(query) = query {
-            self.search.set_query(&query);
+            self.search.borrow_mut().set_query(&query);
         }
         self.structure_dirty = true;
+        self.note_search_activity();
     }
 
     fn close_search(&mut self) {
-        self.search.close();
+        self.search.borrow_mut().close();
         self.structure_dirty = true;
+        self.note_search_activity();
+    }
+
+    /// Search opened or closed from the desk: what the host above the windows
+    /// draws and asks about the palette changed, as it does when the person
+    /// types there ([`DesktopHandle::note_search_activity`]).
+    fn note_search_activity(&self) {
+        DesktopHandle {
+            shared: Rc::clone(&self.shared),
+        }
+        .note_search_activity();
     }
 
     /// The window an app is open in: its window in front, or the window in
@@ -879,24 +973,27 @@ impl DesktopSurface {
     /// Take a host's search request, follow the palette, and perform what
     /// was chosen. Runs every update pass, before queued commands apply.
     pub(super) fn step_search(&mut self, doc: &AutoCommit) {
+        let opened = self.search.borrow().is_open();
         let request = self.shared.borrow_mut().search_request.take();
         match request {
-            Some(SearchRequest::Toggle) if self.search.is_open() => self.close_search(),
+            Some(SearchRequest::Toggle) if opened => self.close_search(),
             Some(SearchRequest::Toggle) => self.open_search(doc, Scope::Workspace, None),
             Some(SearchRequest::Open { scope, query }) => self.open_search(doc, scope, query),
             None => {}
         }
         let asks = std::mem::take(&mut self.shared.borrow_mut().search_asks);
         for ask in asks {
-            if !self.search.is_open() {
+            let mut search = self.search.borrow_mut();
+            if !search.is_open() {
                 break;
             }
             match ask {
-                SearchAsk::Query(query) => self.search.set_query(&query),
+                SearchAsk::Query(query) => search.set_query(&query),
                 SearchAsk::Choose(index, argument) => {
-                    self.search.choose(index, argument);
+                    search.choose(index, argument);
                 }
             }
+            drop(search);
             self.structure_dirty = true;
         }
         let ask = self.shared.borrow_mut().typed_ask.take();
@@ -910,24 +1007,26 @@ impl DesktopSurface {
     /// Write text committed into the desktop's own field, if the person is
     /// still typing into the field it was meant for.
     fn commit_typed(&mut self, ask: &TypedAsk) {
-        if !self.search.is_open() {
+        if !self.search.borrow().is_open() {
             return;
         }
         // The field may have taken an edit or moved its caret since the text
         // was committed: then the text is not the person's to review any
         // more and goes nowhere, as a dictation into a field that moved.
-        if typed_field(&self.search) != Ok(ask.field) {
+        if typed_field(&self.search.borrow()) != Ok(ask.field) {
             return;
         }
-        if self.search.commit_query_text(&ask.text) {
+        if self.search.borrow_mut().commit_query_text(&ask.text) {
             self.structure_dirty = true;
         }
     }
 
     /// Keep what the open search shows where the desktop publishes it.
     fn publish_search_rows(&self) {
-        let rows: Vec<SearchRow> = if self.search.is_open() {
-            self.search
+        let search = self.search.borrow();
+        let open = search.is_open();
+        let rows: Vec<SearchRow> = if open {
+            search
                 .results()
                 .iter()
                 .map(|hit| SearchRow {
@@ -940,20 +1039,28 @@ impl DesktopSurface {
         } else {
             Vec::new()
         };
-        let query = if self.search.is_open() {
-            self.search.query().to_owned()
+        let query = if open {
+            search.query().to_owned()
         } else {
             String::new()
         };
-        let typed = if self.search.is_open() {
-            typed_field(&self.search)
+        let typed = if open {
+            typed_field(&search)
         } else {
             Err(TypedRefusal::NoField)
         };
         let mut shared = self.shared.borrow_mut();
+        let changed = shared.search_rows != rows
+            || shared.search_query != query
+            || shared.typed_field != typed;
         shared.search_rows = rows;
         shared.search_query = query;
         shared.typed_field = typed;
+        if changed {
+            // What the host above the windows draws of search, and what it
+            // offers assistive technology, follows what the desk published.
+            shared.search_revision = shared.search_revision.wrapping_add(1);
+        }
     }
 
     /// After the palette handled input (an event, or an assistive
@@ -961,21 +1068,27 @@ impl DesktopSurface {
     fn follow_search(&mut self, doc: &AutoCommit) {
         // Backspace at the start of the field, or the token's own button,
         // takes the scope away: the same search, over every workspace.
-        if self.search.is_open() && self.search.take_scope_widened() {
-            let query = self.search.query().to_owned();
+        let mut search = self.search.borrow_mut();
+        if search.is_open() && search.take_scope_widened() {
+            let query = search.query().to_owned();
+            drop(search);
             self.open_search(doc, Scope::Everywhere, Some(query));
+            search = self.search.borrow_mut();
         }
-        if self.search.is_open() {
-            let closed = self.search.observe();
-            let refreshed = self.search.refresh();
+        if search.is_open() {
+            let closed = search.observe();
+            let refreshed = search.refresh();
             self.structure_dirty |= closed || refreshed;
         }
-        let choice = self.search.take_choice();
-        if choice.is_some()
-            && let Some(host) = self.shared.borrow().search_host.clone()
-            && let Some(usage) = self.search.usage()
-        {
-            host.chose(usage);
+        let choice = search.take_choice();
+        let usage = if choice.is_some() {
+            search.usage().cloned()
+        } else {
+            None
+        };
+        drop(search);
+        if let Some((usage, host)) = usage.zip(self.shared.borrow().search_host.clone()) {
+            host.chose(&usage);
         }
         if matches!(choice, Some(Target::Launch { .. })) {
             // The person opened something from search themselves: what
@@ -993,7 +1106,7 @@ impl DesktopSurface {
             (Some(target), _) => self.perform(target),
             (None, into) => self.new_tab_into = into,
         }
-        let open = self.search.is_open();
+        let open = self.search.borrow().is_open();
         if open {
             ui::control_hints::performed::note(
                 ui::control_hints::performed::Performed::OpenedSearch,
@@ -1005,7 +1118,11 @@ impl DesktopSurface {
             self.search_window = None;
             self.search_owners.clear();
         }
-        self.shared.borrow_mut().search_open = open;
+        let mut shared = self.shared.borrow_mut();
+        if shared.search_open != open {
+            shared.search_open = open;
+            shared.search_revision = shared.search_revision.wrapping_add(1);
+        }
     }
 
     /// Focus window `group`, as choosing it in search does.
@@ -1189,82 +1306,9 @@ impl DesktopSurface {
         }
     }
 
-    /// Route one event while search is open, or open it on its chord.
-    /// Returns whether search took the event.
-    pub(super) fn search_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        let modifiers = *ctx.modifiers;
-        if !self.search.is_open() {
-            if is_search_chord(event, modifiers, self.platform) {
-                self.open_search(&ctx.state, Scope::Workspace, None);
-                self.shared.borrow_mut().search_open = true;
-                return true;
-            }
-            return false;
-        }
-        // The pointer is where it last moved over the surface, read as the
-        // surface answers the event: a press on the card is the palette's,
-        // and only one off it is the person leaving search.
-        let outside_press = matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
-        ) && !self
-            .search
-            .palette()
-            .is_some_and(|palette| palette.get_rect().contains(self.pointer));
-        if outside_press || is_search_chord(event, modifiers, self.platform) {
-            self.close_search();
-        } else if is_escape(event) && self.search.escape() {
-            // Cleared the query, or closed an empty search: see
-            // [`DesktopSearch::escape`].
-            self.structure_dirty = true;
-        } else {
-            let path = ctx.path.clone();
-            let node_id = ctx.node_id;
-            if let Some(palette) = self.search.palette_mut() {
-                palette.handle_event(event, &mut ctx.reborrow(&path, node_id));
-            }
-        }
-        self.follow_search(&ctx.state);
-        true
-    }
-
-    /// Dim the desktop and draw the palette above it.
-    pub(super) fn draw_search(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: ui::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if !self.search.is_open() {
-            return;
-        }
-        // The desktop's own scrim, never a literal fill: the same dim the
-        // shell lays behind its palette, in the theme's hue and strength.
-        ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
-        if let Some(palette) = self.search.palette_mut() {
-            palette.draw(scene, transform, text, theme, presence);
-        }
-    }
-
-    /// Where the open palette's card stands.
-    #[cfg(test)]
-    pub(super) fn search_palette_rect(&self) -> Rect {
-        self.search.palette().map_or(Rect::ZERO, Widget::get_rect)
-    }
-
     /// The window a search over one window (`search_window`) stands over,
     /// under its bar, which the palette keeps clear.
-    fn searched_window_rect(&self) -> Option<Rect> {
+    pub(super) fn searched_window_rect(&self) -> Option<Rect> {
         let (strip, group) = self.search_window?;
         self.rows
             .get(&strip)?
@@ -1281,64 +1325,6 @@ impl DesktopSurface {
                 )
             })
             .filter(|rect| rect.area() > 0.0)
-    }
-
-    /// Place the palette's layout node where the card stands: over the
-    /// window a search of one window was opened from, as an app's own
-    /// palette stands over its window, else the display's own card, a
-    /// little below its top. Both follow the room they have
-    /// ([`ui::action_palette::placement`] and [`ui::action_palette::list_cap`]),
-    /// so the card is three fifths of the room's width and as many rows as
-    /// the room is tall, and it stays on the surface.
-    pub(super) fn search_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &ui::Theme,
-        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> Option<NodeId> {
-        // Search's code is asked for as the desktop first lays out, so it
-        // is in by the time someone searches; search asked for before
-        // then opens now.
-        self.structure_dirty |= self.search.adopt();
-        if !self.search.is_open() {
-            return None;
-        }
-        let surface = self.rect;
-        // What the search covers is what it stands over: the window in
-        // front, or the whole display when it reaches past it.
-        let area = self.searched_window_rect().unwrap_or(surface);
-        let (origin, width) = ui::action_palette::placement(area, theme);
-        if surface.width() > 0.0 {
-            self.search
-                .set_room(width, ui::action_palette::list_cap(area, theme));
-        }
-        let node = self
-            .search
-            .palette_mut()?
-            .build_layout(taffy, theme, node_map);
-        let (width, _) = self.search.desired_size();
-        let mut style = taffy.style(node).cloned().unwrap_or_default();
-        style.position = ui::taffy::Position::Absolute;
-        // Inside the surface's edges, even where it is barely wider than
-        // the card.
-        let x0 = origin.x.clamp(
-            surface.x0 + PALETTE_EDGE,
-            (surface.x1 - width - PALETTE_EDGE).max(surface.x0 + PALETTE_EDGE),
-        );
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a place on the surface is a few thousand logical pixels"
-        )]
-        let at = |v: f64| ui::taffy::LengthPercentageAuto::length(v as f32);
-        style.inset = ui::taffy::Rect {
-            left: at(x0 - surface.x0),
-            right: ui::taffy::LengthPercentageAuto::auto(),
-            top: at(origin.y - surface.y0),
-            bottom: ui::taffy::LengthPercentageAuto::auto(),
-        };
-        style.margin.left = ui::taffy::LengthPercentageAuto::length(0.0);
-        let _ = taffy.set_style(node, style);
-        Some(node)
     }
 }
 

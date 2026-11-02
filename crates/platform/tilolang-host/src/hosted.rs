@@ -217,6 +217,10 @@ impl Platform for HostPlatform {
         self.phrases.say(id, args)
     }
 
+    fn add_words(&self, catalogues: &[(String, String)]) {
+        self.phrases.add_package(catalogues);
+    }
+
     fn now(&self) -> String {
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
     }

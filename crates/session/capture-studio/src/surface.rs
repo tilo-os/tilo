@@ -124,6 +124,7 @@ impl StudioSurface {
         let opened = self.follow();
         self.take_scene();
         if opened {
+            self.choose_how_it_opened();
             self.choose_what_is_asked();
         }
         self.take_intents();
@@ -158,6 +159,14 @@ impl StudioSurface {
                 false
             }
             _ => false,
+        }
+    }
+
+    /// The bar comes up on what somebody outside the studio opened it for: a
+    /// screenshot, a recording, or a picture in a picture.
+    fn choose_how_it_opened(&mut self) {
+        if let Some(mode) = self.studio.link().take_open_on() {
+            self.widget.set_mode(mode);
         }
     }
 

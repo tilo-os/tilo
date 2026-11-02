@@ -67,9 +67,9 @@ mode = "host"
 open-uri = "via-host"
 
 [sandbox.services]
-collab = "optional@14"
-tilo-fs = "optional@14"
-tools = "optional@14"
+collab = "optional@16"
+tilo-fs = "optional@16"
+tools = "optional@16"
 shell-ui = "optional@20"
 
 [entrypoint]

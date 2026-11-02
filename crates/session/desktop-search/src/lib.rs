@@ -34,6 +34,7 @@ pub mod i18n;
 pub mod indexed;
 pub mod lazy;
 pub mod model;
+pub mod names;
 pub mod palette;
 pub mod preferences;
 pub mod providers;

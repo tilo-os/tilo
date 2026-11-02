@@ -5,7 +5,7 @@
 //!   `/etc/tilo/relay.toml`) and exit.
 //! - `run` — long-running daemon (systemd `Type=notify`); with feature
 //!   `web`, `--web <addr> --allowed-origin <origin> --tls dev|files:<chain>,<key>`
-//!   also serves browsers (HTTPS + WebTransport).
+//!   also serves browsers (HTTPS).
 //! - `dev` (feature `web`) — a throwaway local host for browser development:
 //!   its own user root, the browser listener, and an approver that
 //!   certifies every browser that asks.

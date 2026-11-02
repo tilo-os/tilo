@@ -105,8 +105,13 @@ pub struct Seen {
     /// The absolute positions the pointer was put at here, as
     /// `wl_pointer.motion` sent them.
     pub pointer_positions: Vec<(f64, f64)>,
+    /// Where the pointer entered, as `wl_pointer.enter` placed it.
+    pub pointer_entered_at: Option<(f64, f64)>,
     pub keyboard: Option<WlKeyboard>,
     pub touch: Option<WlTouch>,
+    /// Whether this client leaves the seat's touch objects alone, as a
+    /// toolkit that only knows the pointer does.
+    pub no_touch: bool,
     pub pointer_constraints: Option<ZwpPointerConstraintsV1>,
     pub locked_pointer: Option<ZwpLockedPointerV1>,
     pub confined_pointer: Option<ZwpConfinedPointerV1>,
@@ -478,7 +483,37 @@ pub fn mapped_client(
     size: (i32, i32),
     rgba: [u8; 4],
 ) -> TestClient {
+    map(
+        TestClient::connect(compositor),
+        compositor,
+        app_id,
+        size,
+        rgba,
+    )
+}
+
+/// A mapped window whose client never binds `wl_touch`, as a toolkit that
+/// only knows the pointer does.
+pub fn mapped_client_without_touch(
+    compositor: &mut Compositor,
+    app_id: &str,
+    size: (i32, i32),
+    rgba: [u8; 4],
+) -> TestClient {
     let mut client = TestClient::connect(compositor);
+    client.seen.no_touch = true;
+    map(client, compositor, app_id, size, rgba)
+}
+
+/// Put `client`'s window up: a surface of `size` in `rgba`, mapped as
+/// `app_id` once the compositor has it.
+fn map(
+    mut client: TestClient,
+    compositor: &mut Compositor,
+    app_id: &str,
+    size: (i32, i32),
+    rgba: [u8; 4],
+) -> TestClient {
     pump(compositor, &mut [&mut client], |_, clients| {
         clients[0].seen.wm_base.is_some() && clients[0].seen.seat.is_some()
     });
@@ -496,6 +531,7 @@ pub fn mapped_client(
     });
     client
 }
+
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -635,7 +671,10 @@ impl Dispatch<WlSeat, ()> for Seen {
             if capabilities.contains(wl_seat::Capability::Keyboard) && seen.keyboard.is_none() {
                 seen.keyboard = Some(seat.get_keyboard(qh, ()));
             }
-            if capabilities.contains(wl_seat::Capability::Touch) && seen.touch.is_none() {
+            if capabilities.contains(wl_seat::Capability::Touch)
+                && seen.touch.is_none()
+                && !seen.no_touch
+            {
                 seen.touch = Some(seat.get_touch(qh, ()));
             }
         }
@@ -652,7 +691,14 @@ impl Dispatch<WlPointer, ()> for Seen {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_pointer::Event::Enter { .. } => seen.pointer_inside = true,
+            wl_pointer::Event::Enter {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                seen.pointer_inside = true;
+                seen.pointer_entered_at = Some((surface_x, surface_y));
+            }
             wl_pointer::Event::Leave { .. } => seen.pointer_inside = false,
             wl_pointer::Event::Motion {
                 surface_x,

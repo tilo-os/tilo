@@ -112,10 +112,18 @@ fn fair_budget_keeps_totals_and_single_kind_is_exempt() {
             .iter()
             .map(|g| (g.results.len(), g.total))
             .collect::<Vec<_>>(),
-        [(1, 1), (3, 20), (4, 10)]
+        [(1, 1), (3, 20), (2, 10)],
+        "the groups keep their totals; the rows they leave room for are the ones offering the rest"
     );
+    // The rows shown plus the row offering each cut group's rest fill the
+    // budget: six rows and two "Show all" rows, never a row cut away.
     let entries = command_entries(&groups);
-    assert_eq!(entries.len(), 8);
+    let offered: usize = groups
+        .iter()
+        .map(|g| g.results.len() + usize::from(g.results.len() < g.total))
+        .sum();
+    assert_eq!(entries.len(), 6);
+    assert_eq!(offered, 8);
     assert_eq!(entries[0].id, "result:0");
     assert_eq!(entries[0].group.as_deref(), Some("Apps"));
     assert_eq!(entries[0].icon, Some(crate::icons::Icon::LayoutGrid));
@@ -138,7 +146,11 @@ fn groups_share_the_budget_and_an_expanded_group_keeps_every_row() {
     };
     let trimmed = trim_groups(groups(), 12, &[]);
     let shown: Vec<usize> = trimmed.iter().map(|g| g.results.len()).collect();
-    assert_eq!(shown, vec![4, 3, 5], "a fair share, what's left rolls on");
+    assert_eq!(
+        shown,
+        vec![4, 3, 3],
+        "one row each, then round again, leaving the cut groups the row that offers their rest"
+    );
     assert!(trimmed[0].is_capped() && !trimmed[1].is_capped());
     assert_eq!(trimmed[0].total, 66, "the header still counts every row");
 

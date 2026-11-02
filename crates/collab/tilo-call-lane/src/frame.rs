@@ -1,7 +1,8 @@
-//! A stream's frames: the lane and source they belong to, sealing them, and
-//! opening what arrives.
+//! A stream's frames: the lane and source they belong to, the track they are
+//! sealed under, sealing them, and opening what arrives.
 
 use channel_crypto::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN};
+use collab_types::scope::Scope;
 use tilo_seal::discord_voice::{TransportCipher, XCHACHA};
 
 use crate::roster::Roster;
@@ -12,6 +13,37 @@ pub const OVERHEAD: usize = 28;
 
 /// Bytes of header before the ciphertext.
 const HEADER_LEN: usize = 12;
+
+/// The full name a frame is sealed under: the workspace, the scope within it
+/// and the track ([`TrackName::new`]).
+///
+/// It is the tag's associated data, so a frame sealed for one track never
+/// opens as another's: not another window's, and not the same track name in
+/// another scope. The device is not in the name — the frame's key is derived
+/// for its sender, and [`Roster`] decides who may send at all.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TrackName(String);
+
+impl TrackName {
+    /// `track`'s name within `scope`: `<workspace>/<scope id>/<track>`, the
+    /// namespace the track is published in and the track within it.
+    #[must_use]
+    pub fn new(scope: &Scope, track: &str) -> Self {
+        Self(format!("{}/{}/{track}", scope.workspace_id(), scope.id()))
+    }
+
+    /// The name as the tag covers it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for TrackName {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str(&self.0)
+    }
+}
 
 /// The sequence the sealed `frame` names in its header: which frame of its
 /// sender's stream it is, as the tag authenticates it. `None` when `frame` is
@@ -60,6 +92,9 @@ pub enum Lane {
 
 /// One media stream of a call: what its frames carry, and the lane they
 /// travel on.
+///
+/// The tags are keys: one derived key per tag, so a stream's frames are never
+/// another's. New streams are appended; an existing tag is never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stream {
     /// The person's microphone.
@@ -68,6 +103,15 @@ pub enum Stream {
     Camera,
     /// A screen the person shares.
     Screen,
+    /// A window's pictures: the same objects as a screen layer, sealed apart
+    /// so no window's frame opens as another's.
+    Window,
+    /// Who is here, and what they are doing.
+    Presence,
+    /// One window's input events.
+    Input,
+    /// A low-rate note of what this device is doing.
+    Activity,
 }
 
 impl Stream {
@@ -76,7 +120,12 @@ impl Stream {
     pub const fn lane(self) -> Lane {
         match self {
             Self::Microphone => Lane::Audio,
-            Self::Camera | Self::Screen => Lane::Video,
+            Self::Camera
+            | Self::Screen
+            | Self::Window
+            | Self::Presence
+            | Self::Input
+            | Self::Activity => Lane::Video,
         }
     }
 
@@ -86,16 +135,38 @@ impl Stream {
     pub const fn tag(self) -> [u8; MEDIA_STREAM_TAG_LEN] {
         const AUDIO: u8 = 0;
         const VIDEO: u8 = 1;
+        const PLANE: u8 = 2;
         match self {
             Self::Microphone => [AUDIO, 0],
             Self::Camera => [VIDEO, 0],
             Self::Screen => [VIDEO, 1],
+            Self::Presence => [AUDIO, 1],
+            Self::Window => [PLANE, 0],
+            Self::Input => [PLANE, 1],
+            Self::Activity => [PLANE, 2],
+        }
+    }
+
+    /// The track a call lane seals this stream's frames as. The live plane
+    /// names its tracks finer (one per window, camera layer and screen layer)
+    /// and passes its own name to [`Sealer::new`].
+    #[must_use]
+    pub const fn track(self) -> &'static str {
+        match self {
+            Self::Microphone => "audio",
+            Self::Camera => "camera",
+            Self::Screen => "screen",
+            Self::Window => "window",
+            Self::Presence => "presence",
+            Self::Input => "input",
+            Self::Activity => "activity",
         }
     }
 }
 
 /// What one device seals one stream's frames with: the stream's media key at
-/// the epoch the channel is on, derived once.
+/// the epoch the channel is on, derived once, and the track those frames are
+/// named as.
 ///
 /// The channel's epoch moves when its membership changes, and with it the
 /// key: a carrier that sees a new epoch builds a new sealer.
@@ -103,10 +174,12 @@ pub struct Sealer {
     cipher: TransportCipher,
     epoch: u64,
     stream: Stream,
+    track: TrackName,
 }
 
 impl Sealer {
-    /// Seal `stream`'s frames as `sender`, under the epoch `keys` is at.
+    /// Seal `stream`'s frames as `sender`, under the epoch `keys` is at, as
+    /// the track `track` names.
     ///
     /// # Errors
     ///
@@ -116,6 +189,7 @@ impl Sealer {
         keys: &ChannelContentKeys,
         sender: [u8; 32],
         stream: Stream,
+        track: TrackName,
     ) -> Result<Self, Refusal> {
         let epoch = keys.epoch();
         let key = keys
@@ -127,6 +201,7 @@ impl Sealer {
             cipher,
             epoch,
             stream,
+            track,
         })
     }
 
@@ -134,6 +209,12 @@ impl Sealer {
     #[must_use]
     pub const fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// The track this seals.
+    #[must_use]
+    pub fn track(&self) -> &TrackName {
+        &self.track
     }
 
     /// `body` as frame `seq` of the stream: a sender's counter under this
@@ -145,7 +226,7 @@ impl Sealer {
     pub fn seal(&self, seq: u32, body: &[u8]) -> Result<Vec<u8>, Refusal> {
         let sealed = self
             .cipher
-            .seal(seq, &aad(self.epoch, seq, self.stream), body)
+            .seal(seq, &aad(self.epoch, seq, self.stream, &self.track), body)
             .map_err(|_| Refusal::Primitive)?;
         let mut frame = Vec::with_capacity(body.len().saturating_add(OVERHEAD));
         frame.extend_from_slice(&self.epoch.to_le_bytes());
@@ -175,7 +256,8 @@ impl Opener {
         self.roster = roster;
     }
 
-    /// The frame `sender` sealed as `seq` of `stream`, or why it is refused.
+    /// The frame `sender` sealed as `seq` of `stream`, as the track `track`
+    /// names, or why it is refused.
     ///
     /// A frame from a device the roster does not name is refused before
     /// anything is derived or decrypted ([`Refusal::OffRoster`]); one sealed
@@ -187,9 +269,15 @@ impl Opener {
     /// # Errors
     ///
     /// As its description above, and [`Refusal::Unauthenticated`] for a
-    /// frame that is another stream's, another position's, another epoch's,
-    /// or one whose bytes were changed.
-    pub fn open(&self, sender: [u8; 32], stream: Stream, frame: &[u8]) -> Result<Vec<u8>, Refusal> {
+    /// frame that is another stream's, another track's, another position's,
+    /// another epoch's, or one whose bytes were changed.
+    pub fn open(
+        &self,
+        sender: [u8; 32],
+        stream: Stream,
+        track: &TrackName,
+        frame: &[u8],
+    ) -> Result<Vec<u8>, Refusal> {
         if !self.roster.admits(sender) {
             return Err(Refusal::OffRoster);
         }
@@ -204,19 +292,23 @@ impl Opener {
         let cipher =
             TransportCipher::new(XCHACHA, key.expose_secret()).map_err(|_| Refusal::Primitive)?;
         cipher
-            .open(seq, &aad(epoch, seq, stream), sealed)
+            .open(seq, &aad(epoch, seq, stream, track), sealed)
             .map_err(|_| Refusal::Unauthenticated)
     }
 }
 
 /// What the tag covers besides the body: the epoch and sequence in the
-/// header, and the stream the frame names.
-fn aad(epoch: u64, seq: u32, stream: Stream) -> [u8; HEADER_LEN + MEDIA_STREAM_TAG_LEN] {
-    let mut aad = [0_u8; HEADER_LEN + MEDIA_STREAM_TAG_LEN];
-    let (epoch_bytes, rest) = aad.split_at_mut(8);
-    epoch_bytes.copy_from_slice(&epoch.to_le_bytes());
-    let (seq_bytes, stream_bytes) = rest.split_at_mut(4);
-    seq_bytes.copy_from_slice(&seq.to_le_bytes());
-    stream_bytes.copy_from_slice(&stream.tag());
+/// header, the stream the frame names, and the track it belongs to.
+fn aad(epoch: u64, seq: u32, stream: Stream, track: &TrackName) -> Vec<u8> {
+    let name = track.as_str().as_bytes();
+    let mut aad = Vec::with_capacity(
+        HEADER_LEN
+            .saturating_add(MEDIA_STREAM_TAG_LEN)
+            .saturating_add(name.len()),
+    );
+    aad.extend_from_slice(&epoch.to_le_bytes());
+    aad.extend_from_slice(&seq.to_le_bytes());
+    aad.extend_from_slice(&stream.tag());
+    aad.extend_from_slice(name);
     aad
 }

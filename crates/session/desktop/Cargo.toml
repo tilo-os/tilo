@@ -61,6 +61,12 @@ notes = { path = "../../../apps/notes" }
 tilo-tts = { path = "../../system/tts" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
 
+# The palette's proof that it stands over the windows: the compositor's own
+# host of a widget tree, with the pixels it drew.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tilo-surface-host = { path = "../surface-host" }
+tilo-compositor = { path = "../compositor" }
+
 [lints]
 workspace = true
 

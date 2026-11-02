@@ -1,5 +1,5 @@
 /**
- * The tilo-video/1 object profile (tilo-moq `video`): a call's camera and
+ * The tilo-video/1 object profile: a call's camera and
  * screen pictures, each source in resolution layers, each layer its own
  * track (`camera/low`, `camera/mid`, `camera/high`, `screen/low`,
  * `screen/high`). A group starts at a keyframe. Each object is one coded

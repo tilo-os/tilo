@@ -1,0 +1,251 @@
+//! Software fine rasterization; wgpu only uploads and presents these pixels.
+//!
+//! Every host draws a software adapter's frames through this canvas, native
+//! or in a page, so both produce the same pixels from the same frame.
+
+use tilo_cpu_raster::{CpuRasterizer, Options, Region, Target};
+
+use crate::damage::bounded_present_damage;
+use crate::retained_raster::FrameContent;
+
+/// Threads a large region rasterizes on: a native host has them, a page has
+/// one thread and [`Options::threads`] is a no-op there.
+const THREADS: u16 = if cfg!(target_arch = "wasm32") { 0 } else { 4 };
+
+pub(crate) struct CpuCanvas {
+    rasterizer: CpuRasterizer,
+    pixels: Vec<u8>,
+    size: (u32, u32),
+    valid: bool,
+    regions: Vec<Region>,
+    /// What the last frame changed and [`Self::upload`] sends: what it
+    /// rasterized, and where its scroll copies landed.
+    uploads: Vec<Region>,
+    /// The frames' scenes hold only what their damage needs: one that must
+    /// be rasterized whole is refused.
+    damage_only: bool,
+}
+
+/// A canvas to rasterize frames into when they are rasterized on the CPU
+/// (`on_cpu`), else none.
+pub(crate) fn canvas(on_cpu: bool) -> Option<CpuCanvas> {
+    on_cpu.then(CpuCanvas::new)
+}
+
+impl CpuCanvas {
+    pub(crate) fn new() -> Self {
+        Self {
+            rasterizer: CpuRasterizer::new(Options {
+                threads: THREADS,
+                ..Options::default()
+            }),
+            pixels: Vec::new(),
+            size: (0, 0),
+            valid: false,
+            regions: Vec::new(),
+            uploads: Vec::new(),
+            damage_only: false,
+        }
+    }
+
+    /// Whether the frames' scenes hold only what their damage needs
+    /// (`RetainedRaster::rasterize_damage_only`).
+    pub(crate) fn draw_damage_only(&mut self, damage_only: bool) {
+        self.damage_only = damage_only;
+    }
+
+    pub(crate) fn invalidate(&mut self) {
+        self.valid = false;
+    }
+
+    pub(crate) fn rasterize(&mut self, frame: &FrameContent<'_>) -> Result<u64, String> {
+        if frame.width == 0 || frame.height == 0 {
+            return Err("CPU target dimensions must be nonzero".into());
+        }
+        let size = (frame.width, frame.height);
+        let stride = frame.width.checked_mul(4).ok_or("CPU row overflow")?;
+        let length = usize::try_from(u64::from(stride) * u64::from(frame.height))
+            .map_err(|_| "CPU buffer overflow")?;
+        if frame.width > u32::from(u16::MAX) || frame.height > u32::from(u16::MAX) {
+            return Err("CPU target exceeds rasterizer dimensions".into());
+        }
+        if self.size != size {
+            self.valid = false;
+            if length > self.pixels.len() {
+                self.pixels
+                    .try_reserve(length.saturating_sub(self.pixels.len()))
+                    .map_err(|error| error.to_string())?;
+            }
+            self.pixels.resize(length, 0);
+            self.size = size;
+        }
+        // What a scroll keeps on screen moves before the damage around it
+        // is rasterized; a copy that cannot be made repaints everything.
+        let copied = !frame.full_redraw
+            && self.valid
+            && crate::scroll_copy::copy_pixels(
+                &mut self.pixels,
+                (frame.width, frame.height, stride as usize),
+                frame.scroll_copies,
+            );
+        let whole =
+            frame.full_redraw || !self.valid || (!copied && !frame.scroll_copies.is_empty());
+        let bounded = bounded_present_damage(frame.width, frame.height, frame.damage_regions);
+        if self.damage_only && (whole || bounded.is_none()) {
+            // The copies may have moved the pixels: what is retained is no
+            // longer the last frame.
+            self.valid = false;
+            return Err(crate::retained_raster::DAMAGE_ONLY_REFUSED.to_owned());
+        }
+        self.regions = if whole {
+            vec![Region::new(0, 0, frame.width, frame.height)]
+        } else {
+            bounded
+                .map(|regions| {
+                    regions
+                        .into_iter()
+                        .map(|r| Region::new(r.x, r.y, r.width, r.height))
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![Region::new(0, 0, frame.width, frame.height)])
+        };
+        let mut target = Target::new(&mut self.pixels, frame.width, frame.height, stride as usize)
+            .map_err(|error| error.to_string())?;
+        self.rasterizer.prepare(frame.scene.encoding());
+        self.rasterizer.render_prepared(
+            &mut target,
+            Some(&self.regions),
+            tilo_cpu_raster::color::AlphaColor::new(frame.base_color.components),
+        );
+        self.valid = true;
+        self.uploads.clone_from(&self.regions);
+        if !whole {
+            self.uploads
+                .extend(frame.scroll_copies.iter().filter_map(|copy| {
+                    let (x, y) = copy.destination(frame.width, frame.height)?;
+                    Some(Region::new(x, y, copy.width, copy.height))
+                }));
+        }
+        Ok(self
+            .regions
+            .iter()
+            .map(|r| u64::from(r.width) * u64::from(r.height))
+            .sum())
+    }
+
+    /// The canvas: premultiplied RGBA8, rows of `width * 4` bytes. What a
+    /// test reads back; a host presents the target it uploaded.
+    #[cfg(test)]
+    pub(crate) fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    pub(crate) fn upload(&self, queue: &vello::wgpu::Queue, texture: &vello::wgpu::Texture) {
+        let stride = self.size.0.saturating_mul(4);
+        for region in &self.uploads {
+            let offset = u64::from(region.y) * u64::from(stride) + u64::from(region.x) * 4;
+            let Some(bytes) = usize::try_from(offset)
+                .ok()
+                .and_then(|offset| self.pixels.get(offset..))
+            else {
+                continue;
+            };
+            queue.write_texture(
+                vello::wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: vello::wgpu::Origin3d {
+                        x: region.x,
+                        y: region.y,
+                        z: 0,
+                    },
+                    aspect: vello::wgpu::TextureAspect::All,
+                },
+                bytes,
+                vello::wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(stride),
+                    rows_per_image: Some(self.size.1),
+                },
+                vello::wgpu::Extent3d {
+                    width: region.width,
+                    height: region.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vello::{
+        Scene,
+        kurbo::{Affine, Rect},
+        peniko::{Color, Fill},
+    };
+
+    fn scene(rect: Rect) -> Scene {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(255, 0, 0, 128),
+            None,
+            &rect,
+        );
+        scene
+    }
+
+    fn render(canvas: &mut CpuCanvas, scene: &Scene, damage: &[Rect], full: bool) {
+        canvas
+            .rasterize(&FrameContent {
+                scene,
+                width: 16,
+                height: 16,
+                base_color: Color::TRANSPARENT,
+                damage_regions: damage,
+                scroll_copies: &[],
+                full_redraw: full,
+                backdrop: &crate::backdrop::BackdropFrame::default(),
+            })
+            .expect("valid CPU frame");
+    }
+
+    #[test]
+    fn damaged_move_erases_old_pixels_and_matches_full_render() {
+        let mut canvas = CpuCanvas::new();
+        render(
+            &mut canvas,
+            &scene(Rect::new(1.0, 1.0, 5.0, 5.0)),
+            &[],
+            true,
+        );
+        assert_eq!(&canvas.pixels[136..140], &[128, 0, 0, 128]);
+        let next = scene(Rect::new(6.0, 1.0, 10.0, 5.0));
+        render(&mut canvas, &next, &[Rect::new(1.0, 1.0, 10.0, 5.0)], false);
+        let mut oracle = CpuCanvas::new();
+        render(&mut oracle, &next, &[], true);
+        assert_eq!(canvas.pixels, oracle.pixels);
+        assert_eq!(canvas.regions, vec![Region::new(1, 1, 9, 4)]);
+    }
+
+    #[test]
+    fn gpu_handoff_invalidates_cpu_damage_history() {
+        let mut canvas = CpuCanvas::new();
+        render(
+            &mut canvas,
+            &scene(Rect::new(1.0, 1.0, 5.0, 5.0)),
+            &[],
+            true,
+        );
+        canvas.invalidate();
+        let next = scene(Rect::new(6.0, 1.0, 10.0, 5.0));
+        render(&mut canvas, &next, &[Rect::new(6.0, 1.0, 10.0, 5.0)], false);
+        let mut oracle = CpuCanvas::new();
+        render(&mut oracle, &next, &[], true);
+        assert_eq!(canvas.pixels, oracle.pixels);
+        assert_eq!(canvas.regions, vec![Region::new(0, 0, 16, 16)]);
+    }
+}

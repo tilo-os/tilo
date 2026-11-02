@@ -41,6 +41,13 @@ desk-not-opened-newer-detail = { $path } was saved by a newer version of Tilo (l
 desk-not-opened-unreadable-title = Your desk could not be read
 desk-not-opened-unreadable-detail = { $path } is there but could not be read ({ $error }). It has not been changed: this session starts on an empty desk and keeps nothing, so it cannot be written over.
 
+## The desk Tilo kept before this version, which was not brought over: it is
+## still on disk, untouched, and this session keeps its own desk instead.
+desk-not-opened-old-newer-title = Your old desk was not brought over
+desk-not-opened-old-newer-detail = { $path } is the desk Tilo kept before this version, saved by a newer one (layout { $found }; this one understands { $understood }). It has not been changed and is still on this machine: this session starts on an empty desk.
+desk-not-opened-old-unreadable-title = Your old desk could not be read
+desk-not-opened-old-unreadable-detail = { $path } is the desk Tilo kept before this version, and it could not be read ({ $error }). It has not been changed and is still on this machine: this session starts on an empty desk.
+
 ## A window this device left open whose app did not come back.
 desk-window-not-installed = { $app } is not installed on this machine
 desk-window-would-not-start = { $app } could not be started: { $why }
@@ -156,3 +163,15 @@ identity-clock-wait-expired = Your Tilo identity is safe. Its certificate ran un
 
 ## what the readout calls the keyboard, whose backlight it just changed.
 osd-keyboard-name = Keyboard
+
+## What a paste of copied files into a folder did.
+paste-app-name = Files
+paste-refused-title = Nothing was pasted
+paste-nothing-to-paste = Every name was taken, or the files are already in that folder.
+paste-not-a-folder = { $path } is not a folder.
+paste-stopped = { $reason }
+paste-failed-title = Some files were not pasted
+paste-failed-body = { $failed } of { $total } did not land. { $name }: { $reason }
+paste-undone-title = The last paste did not finish
+paste-undone-body = { $landed } of { $total } had already landed. Those are kept; the rest is where it was.
+paste-undone-trouble = { $landed } of { $total } had already landed. Those are kept; the rest could not be put back yet: { $reason }

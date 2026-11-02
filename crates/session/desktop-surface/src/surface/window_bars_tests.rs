@@ -148,3 +148,143 @@ fn each_apps_slots_stand_in_its_windows_bar_and_a_press_reaches_it() {
         assert_eq!(*heard.borrow(), expected, "what {action}'s app heard");
     }
 }
+
+/// The tabs of the shown strip, with the id of the one each group shows.
+fn shown_tabs(frame: &ui::headless::FrameHarness) -> Vec<(u64, u64)> {
+    frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .expect("the strip is shown")
+        .groups
+        .iter()
+        .map(|group| (group.active_tab_id(), group.tabs()[0].id))
+        .collect()
+}
+
+/// An app in a process of its own declares its slots over its connection:
+/// the next pass shows them in its window's bar, what the person did there
+/// goes back on that same connection, and the slots go when it closes.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one test, from the declaration to the press it sends back"
+)]
+fn an_apps_own_process_declares_its_slots_and_hears_the_press_on_its_connection() {
+    let (surface, handle) = crate::surface::tests::desktop(2);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1600, 800),
+        ui::Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let shown = shown_tabs(&frame);
+    let (front, _) = shown[0];
+    let toolbar = WindowToolbar {
+        location: Some(ui::window_toolbar::ToolbarLocation {
+            label: "plan.md".to_owned(),
+            editable: true,
+            ..ui::window_toolbar::ToolbarLocation::default()
+        }),
+        actions: vec![ToolbarAction::new("save", "plus", "Save")],
+        ..WindowToolbar::default()
+    };
+    handle.declare_bar(front, 41, Some(toolbar));
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    let (button, edited) = {
+        let group = frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .expect("the strip is shown")
+            .groups
+            .iter()
+            .find(|group| group.active_tab_id() == front)
+            .expect("the window it declared for");
+        assert_eq!(
+            group
+                .tab_toolbar(front)
+                .map(|shown| shown.actions[0].id.clone()),
+            Some("save".to_owned()),
+            "the app's slot stands in its window's bar"
+        );
+        let (_, _, _, actions) = group.bar_for_tests().toolbar_rects();
+        (
+            actions.first().copied().unwrap_or(ui::kurbo::Rect::ZERO),
+            group.editing_location(),
+        )
+    };
+    assert!(!edited, "nothing asked for the location yet");
+    assert!(button.area() > 0.0, "the slot is a button in the bar");
+
+    frame.click_at(button.center().x, button.center().y);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert_eq!(
+        handle.take_bar_events(),
+        vec![(
+            41,
+            ToolbarEvent::Action {
+                id: "save".to_owned(),
+            }
+        )],
+        "the press goes back on the connection that declared the slot"
+    );
+
+    // The app asked for its location to be edited, as its own Ctrl+L does.
+    handle.edit_bar_location(front);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    let editing = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .expect("the strip is shown")
+        .groups
+        .iter()
+        .find(|group| group.active_tab_id() == front)
+        .expect("the window it asked for")
+        .editing_location();
+    assert!(editing, "the location is a field now");
+
+    // A tab behind the one its window shows is nobody's to edit.
+    if let Some((_, behind)) = shown.get(1) {
+        handle.edit_bar_location(*behind);
+        for _ in 0..3 {
+            frame.relayout();
+        }
+        let background = frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .expect("the strip is shown")
+            .groups
+            .iter()
+            .find(|group| group.active_tab_id() == front)
+            .expect("the window in front");
+        assert!(
+            background.editing_location(),
+            "a tab behind stays as it was"
+        );
+    }
+
+    // The app's connection closes: its slots go with it.
+    handle.bar_connection_closed(41);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    let gone = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .expect("the strip is shown")
+        .groups
+        .iter()
+        .find(|group| group.active_tab_id() == front)
+        .expect("the window")
+        .tab_toolbar(front)
+        .cloned();
+    assert_eq!(gone, None, "nothing of the app's is left in the bar");
+}

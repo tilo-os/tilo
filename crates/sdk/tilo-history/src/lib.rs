@@ -78,6 +78,14 @@ impl Catalogue {
     pub fn has(&self, key: &str) -> bool {
         self.bundle.has_message(key)
     }
+
+    /// Adds `source`'s messages. A message an earlier source already holds keeps that one, so
+    /// a translation added before its source language wins over it.
+    pub fn add(&mut self, source: &str) {
+        let resource =
+            FluentResource::try_new(source.to_owned()).unwrap_or_else(|(resource, _)| resource);
+        let _ = self.bundle.add_resource(resource);
+    }
 }
 
 impl Messages for Catalogue {
@@ -86,7 +94,16 @@ impl Messages for Catalogue {
     }
 
     fn format(&self, key: &str, args: &FluentArgs<'_>) -> Option<String> {
-        let pattern = self.bundle.get_message(key)?.value()?;
+        // `message.attribute` names an attribute: Fluent keys hold no `.`.
+        let pattern = if let Some(message) = self.bundle.get_message(key) {
+            message.value()?
+        } else {
+            let (name, attribute) = key.rsplit_once('.')?;
+            self.bundle
+                .get_message(name)?
+                .get_attribute(attribute)?
+                .value()
+        };
         let mut errors = Vec::new();
         let text = self.bundle.format_pattern(pattern, Some(args), &mut errors);
         errors.is_empty().then(|| text.into_owned())

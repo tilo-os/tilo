@@ -213,6 +213,59 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> String + '_ {
 /// A package does not compile (the message lists the errors by file), or a file cannot be
 /// written, or a generated manifest does not validate.
 pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<BuiltApp>, String> {
+    assembled(options, identity)?
+        .into_iter()
+        .map(|app| deliver(app, options, identity))
+        .collect()
+}
+
+/// Stage, pack and sign an app as the `.tapp` a session installs.
+///
+/// # Errors
+/// A file cannot be written, the generated manifest does not validate, or the app does not pack.
+fn deliver(
+    app: Assembled,
+    options: &BuildOptions,
+    identity: &SigningIdentity,
+) -> Result<BuiltApp, String> {
+    let staged = options.out.join(short_name(&app.app));
+    let payload = staged.join("payload");
+    if payload.exists() {
+        std::fs::remove_dir_all(&payload).map_err(io(&payload))?;
+    }
+    app.bundle
+        .write(&payload)
+        .map_err(|error| error.to_string())?;
+    if let Some(icon) = &app.meta.icon {
+        let path = payload.join(ICON_FILE);
+        std::fs::write(&path, icon_artwork(icon)?).map_err(io(&path))?;
+    }
+    let manifest_path = staged.join("manifest.toml");
+    std::fs::write(&manifest_path, &app.manifest).map_err(io(&manifest_path))?;
+    let manifest = Manifest::from_toml_str(&app.manifest)
+        .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+    let packed = tilo_app_package::pack::pack(&payload, &manifest, identity)
+        .map_err(|error| format!("{}: {error}", app.app))?;
+    let tapp = options.out.join(format!("{}.tapp", short_name(&app.app)));
+    write_tapp(&tapp, &packed)?;
+    Ok(BuiltApp {
+        app: app.app,
+        title: app.title,
+        meta: app.meta,
+        digest: app.digest,
+        payload,
+        manifest: manifest_path,
+        tapp,
+    })
+}
+
+/// Compile the packages of `options` in dependency order, writing each one's ids lock when it
+/// changed: what every delivery starts from.
+///
+/// # Errors
+/// A package does not compile (the message lists the errors by file), or an ids lock cannot be
+/// written.
+fn compiled(options: &BuildOptions) -> Result<Vec<tilolang::source::BuiltPackage>, String> {
     let (built, _) = crate::compile(&options.dir, &options.search, &mut OsEntropy::default())
         .map_err(|e| e.to_string())?;
     for package in &built {
@@ -220,6 +273,27 @@ pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<B
             eprintln!("{}: ids lock updated", package.dir.display());
         }
     }
+    Ok(built)
+}
+
+/// One app of a build, as every delivery takes it.
+struct Assembled {
+    app: String,
+    title: String,
+    meta: PackageMeta,
+    /// Its manifest: the description of the app an install signs, and what identifies it here.
+    manifest: String,
+    bundle: Bundle,
+    /// SHA-256 (hex) of the manifest and the bundle, as an install of the same build gets it.
+    digest: String,
+}
+
+/// Compile the package in `options.dir` and those it uses, its bundle carrying those it uses.
+///
+/// # Errors
+/// A package does not compile (the message lists the errors by file).
+fn assembled(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<Assembled>, String> {
+    let built = compiled(options)?;
     let publisher = hex::encode(identity.public_key_bytes());
     let mut apps = Vec::new();
     for (index, package) in built.iter().enumerate() {
@@ -231,36 +305,49 @@ pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<B
             .map(|earlier| &earlier.compiled)
             .filter(|earlier| used.contains(&earlier.meta.app));
         let bundle = Bundle::new(&package.compiled, imports);
-        let staged = options.out.join(short_name(&meta.app));
-        let payload = staged.join("payload");
-        if payload.exists() {
-            std::fs::remove_dir_all(&payload).map_err(io(&payload))?;
-        }
-        bundle.write(&payload).map_err(|error| error.to_string())?;
-        if let Some(icon) = &meta.icon {
-            let path = payload.join(ICON_FILE);
-            std::fs::write(&path, icon_artwork(icon)?).map_err(io(&path))?;
-        }
-        let text = manifest_text(meta, options, &publisher);
-        let manifest_path = staged.join("manifest.toml");
-        std::fs::write(&manifest_path, &text).map_err(io(&manifest_path))?;
-        let manifest = Manifest::from_toml_str(&text)
-            .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
-        let packed = tilo_app_package::pack::pack(&payload, &manifest, identity)
-            .map_err(|error| format!("{}: {error}", meta.app))?;
-        let tapp = options.out.join(format!("{}.tapp", short_name(&meta.app)));
-        write_tapp(&tapp, &packed)?;
-        apps.push(BuiltApp {
+        let manifest = manifest_text(meta, options, &publisher);
+        let digest = digest(&manifest, &bundle)?;
+        apps.push(Assembled {
             app: meta.app.clone(),
             title: meta.title.clone(),
             meta: meta.clone(),
-            digest: digest(&text, &bundle)?,
-            payload,
-            manifest: manifest_path,
-            tapp,
+            manifest,
+            bundle,
+            digest,
         });
     }
     Ok(apps)
+}
+
+/// A build of one app as the directory a running desktop app follows it takes it: the bundle
+/// itself, and what decides whether the running build takes it in place.
+pub struct Published {
+    pub app: String,
+    pub title: String,
+    pub meta: PackageMeta,
+    pub digest: String,
+    pub bundle: Bundle,
+}
+
+/// Compile the package in `options.dir` and those it uses into the bundles a desktop app reads
+/// from its generations, with nothing staged, packed or signed: a local run signs nothing.
+///
+/// # Errors
+/// A package does not compile (the message lists the errors by file).
+pub fn published(
+    options: &BuildOptions,
+    identity: &SigningIdentity,
+) -> Result<Vec<Published>, String> {
+    Ok(assembled(options, identity)?
+        .into_iter()
+        .map(|app| Published {
+            app: app.app,
+            title: app.title,
+            meta: app.meta,
+            digest: app.digest,
+            bundle: app.bundle,
+        })
+        .collect())
 }
 
 /// SHA-256 (hex) of a manifest and the bundle staged with it.

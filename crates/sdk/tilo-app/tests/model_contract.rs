@@ -300,9 +300,9 @@ const IMPORTABLE_META: &[&str] = &[
     "id",
     "kind",
     "home",
-    "workspace",
-    // A record written before workspaces were called workspaces carries its
-    // workspace under the old key, and a governed import carries it as it is.
+    "room",
+    // A record written while the field was named `workspace` carries it under
+    // that key, and a governed import carries it as it is.
     "workspace",
     "formerly",
     "refs",

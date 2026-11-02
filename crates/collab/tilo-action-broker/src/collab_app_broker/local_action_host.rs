@@ -105,7 +105,13 @@ impl AppBrokerState {
     }
 
     /// Invoke through the native seat's existing palette/control provider.
-    /// This process-owned door is never used by network, MCP or app transports.
+    ///
+    /// Its callers are the seat's own control doors — the owner's control socket, whose peer is
+    /// the account whose desktop this is, and the development test-control socket that drives
+    /// the seat as the person — and the palette itself. Network, MCP and app transports never
+    /// reach it: an agent, or a person acting over one of them, invokes through
+    /// [`Self::action_invoke`] as itself, so the broker's per-action and per-role permissions
+    /// decide, and custody is refused to anything but a person at the native seat.
     pub fn action_invoke_local_person(
         self: &Arc<Self>,
         caller: &Caller,

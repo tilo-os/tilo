@@ -243,9 +243,22 @@ pub(super) fn collect_named_targets(
         id: widget.test_id().map(str::to_owned),
     });
     let mut child_counts = HashMap::new();
-    for child in widget.children() {
+    let mut visit = |child: &dyn Widget| {
         collect_named_targets(child, &path, &mut child_counts, out);
+    };
+    for_each_retained_child(widget, &mut visit);
+}
+
+/// Every child a walk of the retained tree must see, in the order it lists
+/// them: those the widget routes input to, then the ones it hosts without
+/// routing — a subtree it does not own and answers the person's events for
+/// itself, like the chrome's search card. Hosted children come last, so the
+/// paths and sibling indices of everything routed stay as they were.
+fn for_each_retained_child(widget: &dyn Widget, visit: &mut dyn FnMut(&dyn Widget)) {
+    for child in widget.children() {
+        visit(child);
     }
+    widget.for_each_hosted_child(visit);
 }
 
 pub(super) fn collect_inspection(
@@ -269,11 +282,10 @@ pub(super) fn collect_inspection(
     let (name, path, _) = next_widget_path(widget, parent_path, sibling_counts);
     let rect = widget.get_rect();
     let mut child_counts = HashMap::new();
-    let children = widget
-        .children()
-        .into_iter()
-        .map(|child| collect_inspection(child, &path, &mut child_counts))
-        .collect();
+    let mut children = Vec::new();
+    for_each_retained_child(widget, &mut |child| {
+        children.push(collect_inspection(child, &path, &mut child_counts));
+    });
     InspectionNode {
         path,
         widget: name,

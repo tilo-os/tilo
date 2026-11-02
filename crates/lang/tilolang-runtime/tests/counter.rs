@@ -326,3 +326,40 @@ mod cases {
         assert!(plain.poll_patches().unwrap().is_empty());
     }
 }
+
+/// A loaded package's catalogues reach the runtime's words (i18n.md), whichever comes first:
+/// words set before the package loads take them as it loads, words set after take every
+/// catalogue loaded so far.
+#[test]
+fn a_packages_catalogues_reach_the_runtimes_words() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Words};
+
+    #[derive(Clone, Default)]
+    struct Taken(Rc<RefCell<Vec<(String, String)>>>);
+    impl Words for Taken {
+        fn add(&self, catalogues: &[(String, String)]) {
+            self.0.borrow_mut().extend_from_slice(catalogues);
+        }
+        fn word(&self, _key: &str, _args: &[(String, String)], source: &str) -> String {
+            source.to_owned()
+        }
+    }
+
+    let catalogues = vec![("de-DE".to_owned(), "d-inc = Erhöhen\n".to_owned())];
+    let mut wasm = common::counter_wasm();
+    tilolang::meta::append_locales(&mut wasm, &catalogues);
+
+    let before = Taken::default();
+    let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+    rt.set_words(before.clone());
+    rt.load_package(&wasm, common::counter_meta()).unwrap();
+    assert_eq!(*before.0.borrow(), catalogues);
+
+    let after = Taken::default();
+    let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+    rt.load_package(&wasm, common::counter_meta()).unwrap();
+    rt.set_words(after.clone());
+    assert_eq!(*after.0.borrow(), catalogues);
+}

@@ -83,6 +83,7 @@ qs-edit-active-heading = Active controls
 qs-edit-add-a11y = Add Quick Settings control
 qs-edit-available-heading = Available
 qs-edit-controls = Edit controls
+qs-edit-short = Edit
 qs-edit-done = Done
 qs-edit-help = Drag or press Ctrl + Up/Down to reorder, or use a row’s Move up and Move down
 qs-edit-optional-control-a11y = Drag or use Control plus Arrow keys to reorder

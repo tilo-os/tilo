@@ -824,6 +824,7 @@ impl Shared {
                             kind: OsdKind::NoBacklight,
                             on: true,
                             chord: None,
+                            name: None,
                         }));
                     }
                     tracing::debug!(
@@ -866,6 +867,7 @@ impl Shared {
                 kind,
                 on,
                 chord: None,
+                name: None,
             });
         }
         let (level, on, device) = match kind {
@@ -993,6 +995,7 @@ mod tests {
             repeat: false,
             keysym,
             unmodified_keysym: keysym,
+            latin_keysym: keysym,
             text: text.map(String::from),
             modifiers,
         }
@@ -1082,6 +1085,26 @@ mod tests {
             ))
         );
         assert_eq!(keys.resolve(&print, true, false), None);
+    }
+
+    #[test]
+    fn a_chord_on_a_cyrillic_layout_is_the_latin_key_of_that_key() {
+        let keys = keys();
+        let logo = KeyModifiers {
+            logo: true,
+            ..KeyModifiers::default()
+        };
+        // The key a US keyboard labels L types `д` on a Russian layout; the
+        // chord is the Latin letter the same key carries on US.
+        let mut cyrillic = key(keysyms::Cyrillic_de, Some('д'), logo);
+        cyrillic.latin_keysym = u32::from('l');
+        assert_eq!(
+            keys.resolve(&cyrillic, false, false),
+            Some((Invocation::shortcut(ShortcutAction::Lock), KeyClaim::Take))
+        );
+        // Without the Latin key on that layout, it is no chord at all.
+        cyrillic.latin_keysym = keysyms::Cyrillic_de;
+        assert_eq!(keys.resolve(&cyrillic, false, false), None);
     }
 
     #[test]

@@ -324,18 +324,21 @@ fn window(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i3
         .map(|(info, rect)| (info.id, rect))
 }
 
-/// The resource the desk publishes for the window of `app`, its tab.
+/// The resource the desk publishes for the window of `app`, its tab. The
+/// client's window is titled by its own app id, so the desk names it as it
+/// names any window: its title and the app it shows.
 fn window_resource(session: &Session, app: &str) -> Option<ResourceSpec> {
-    fn find(resources: &[ResourceSpec], app: &str) -> Option<ResourceSpec> {
+    fn find(resources: &[ResourceSpec], label: &str) -> Option<ResourceSpec> {
         resources.iter().find_map(|resource| {
-            if resource.kind == WINDOW_KIND && resource.label == app {
+            if resource.kind == WINDOW_KIND && resource.label == label {
                 Some(resource.clone())
             } else {
-                find(&resource.children, app)
+                find(&resource.children, label)
             }
         })
     }
-    find(&session.resources(), app)
+    let label = tilo_desktop_search::names::window_name(app, app);
+    find(&session.resources(), &label)
 }
 
 /// Invoke `action` of `resource` with `arguments`, then let the session run

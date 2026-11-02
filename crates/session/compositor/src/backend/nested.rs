@@ -18,7 +18,9 @@ use smithay::backend::egl::EGLDevice;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::{Bind as _, ExportMem as _, ImportDma as _, Offscreen as _};
-use smithay::backend::winit::{WinitEvent, WinitGraphicsBackend, init_from_attributes};
+use smithay::backend::winit::{
+    WinitEvent, WinitEventLoop, WinitGraphicsBackend, init_from_attributes,
+};
 use smithay::output::{Mode, Output};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::utils::{Buffer, Physical, Point, Rectangle, Size, Transform};
@@ -77,6 +79,22 @@ impl NestedConfig {
     }
 }
 
+/// The session's window on the desktop it runs inside, opened before the
+/// session builds anything else.
+///
+/// A session started in a window is handed the desktop as `WAYLAND_SOCKET`:
+/// one connected socket, which a client takes once (`wl_display_connect`
+/// removes the variable). A session that builds its desk first — the surface
+/// apps' renderers ask Vulkan for an adapter, and Mesa's device-select layer
+/// connects to the desktop to pick it — leaves the window a connection that
+/// is already spent, and the window then opens on no desktop at all. So the
+/// window is opened first, while the handover is still there, and handed over
+/// ([`NestedBackend::start`]).
+pub struct HostWindow {
+    window: WinitGraphicsBackend<GlesRenderer>,
+    events: WinitEventLoop,
+}
+
 /// A scale clients can render at: finite and positive.
 pub(crate) fn usable_scale(scale: f64) -> Option<f64> {
     (scale.is_finite() && scale > 0.0).then_some(scale)
@@ -110,21 +128,34 @@ struct Inner {
     dark: bool,
 }
 
-/// The window backend. Created by [`NestedBackend::start`], which opens the
-/// window and registers the host's event loop in the compositor's.
+/// The window backend. Created by [`NestedBackend::start`] from the window
+/// [`NestedBackend::open_window`] opened: it makes that window the output and
+/// registers the host's event loop in the compositor's.
 pub struct NestedBackend {
     inner: Rc<RefCell<Inner>>,
 }
 
 impl NestedBackend {
-    /// Open the window on the desktop's compositor and make it an output.
+    /// Open the session's window on the desktop it runs inside, to hand to
+    /// [`NestedBackend::start`].
+    ///
+    /// # Errors
+    /// The desktop refused the session, or has no connection for it.
+    pub fn open_window(config: &NestedConfig) -> Result<HostWindow, Error> {
+        let (window, events) = init_from_attributes::<GlesRenderer>(config.attributes())
+            .map_err(|error| failed("window", error))?;
+        Ok(HostWindow { window, events })
+    }
+
+    /// Make a window the desktop opened ([`NestedBackend::open_window`]) an
+    /// output.
     pub fn start(
         handle: &LoopHandle<'static, LoopData>,
         state: &mut State,
         config: &NestedConfig,
+        host: HostWindow,
     ) -> Result<Self, Error> {
-        let (mut window, events) = init_from_attributes::<GlesRenderer>(config.attributes())
-            .map_err(|error| failed("window", error))?;
+        let HostWindow { mut window, events } = host;
         // Clients render on the GPU that draws this window, and hand their
         // frames over as dma-bufs it can import.
         let node = EGLDevice::device_for_display(window.renderer().egl_context().display())

@@ -542,9 +542,9 @@ cleanup() {
     trap '' INT TERM HUP
     stop_groups "${children[@]}"
     rm -f "$pidfile"
-    # The document portal's FUSE mount under the runtime directory goes away
-    # with its process, a moment after the kill.
-    rm -rf "$runtime" 2>/dev/null || { sleep 1; rm -rf "$runtime" 2>/dev/null; } || true
+    # A session ends by unmounting the files it served for apps, and one that
+    # was killed outright leaves a process of its own that does it for it.
+    rm -rf "$runtime" 2>/dev/null || true
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP

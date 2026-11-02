@@ -67,15 +67,15 @@ fn has(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) -> bool {
 #[test]
 fn the_controls_page_has_the_tiles_two_to_a_row_then_the_sliders_then_the_rows_and_the_footer() {
     let mut app = staged("controls");
-    let brightness = target(&mut app, "qs-brightness");
-    let volume = target(&mut app, "qs-volume");
+    let brightness = target(&mut app, "qs-brightness-row");
+    let volume = target(&mut app, "qs-volume-row");
     let wifi = target(&mut app, "qs-tile-wifi");
     let bluetooth = target(&mut app, "qs-tile-bluetooth");
     let vpn = target(&mut app, "qs-tile-vpn");
     let battery = target(&mut app, "qs-row-battery");
-    let mode = target(&mut app, "qs-row-power-mode");
     let notifications = target(&mut app, "qs-row-notifications");
     let power = target(&mut app, "qs-power");
+    let account = target(&mut app, "qs-account");
     let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
     assert!(
         card.width() <= f64::from(VIEWPORT.0) && card.width() > f64::from(VIEWPORT.0) - 1.0,
@@ -93,35 +93,82 @@ fn the_controls_page_has_the_tiles_two_to_a_row_then_the_sliders_then_the_rows_a
     assert!(brightness.y0 >= vpn.y1, "the sliders come under the tiles");
     assert!(volume.y0 >= brightness.y1, "brightness, then volume");
     assert!(battery.y0 >= volume.y1, "the rows come under the sliders");
-    assert!(
-        mode.y0 >= battery.y0,
-        "the power mode stands with the charge"
-    );
-    assert!(notifications.y0 > mode.y0);
+    assert!(notifications.y0 > battery.y0);
     assert!(power.y0 >= notifications.y1, "the footer comes last");
     assert!(
         !has(&mut app, "qs-section-wifi"),
         "nothing is open when the panel opens"
     );
+    // One inset: what a page holds shares one left and one right edge, the
+    // footer's controls with it. (A row's own box bleeds over the page's
+    // padding, so its background reaches the card's edge; what it says
+    // starts on the page's edge like the rest.)
+    for (name, rect) in [
+        ("a tile", wifi),
+        ("a slider", brightness),
+        ("the account", account),
+    ] {
+        assert!(
+            (rect.x0 - wifi.x0).abs() < 0.5,
+            "{name} starts on the page's left edge: {rect:?} against {wifi:?}"
+        );
+    }
+    assert!(
+        (brightness.x1 - (card.x1 - (wifi.x0 - card.x0))).abs() < 0.5,
+        "a slider ends on the page's right edge: {brightness:?} in {card:?}"
+    );
+    assert!(
+        (power.x1 - (card.x1 - (wifi.x0 - card.x0))).abs() < 0.5,
+        "the footer ends on the page's right edge: {power:?} in {card:?}"
+    );
+    // The power mode is chosen on its tile and its page opens from there:
+    // no row says it twice.
+    assert!(
+        !has(&mut app, "qs-row-power-mode"),
+        "one power control, the tile"
+    );
+    assert!(has(&mut app, "qs-tile-power_mode"));
+    // One compact row per slider: its icon, its track and its value, with
+    // the device under the track it belongs to.
+    assert!(
+        brightness.height() <= 48.0,
+        "a slider is one row, not two: {brightness:?}"
+    );
+    let device = target(&mut app, "qs-volume-device");
+    assert!(
+        device.y0 >= volume.y0 - 0.5 && device.y1 <= volume.y1 + 0.5,
+        "the device is said on the slider's own row: {device:?} in {volume:?}"
+    );
 }
 
 /// A detail page closes without leaving room behind: what stood under it
 /// rests exactly where it stood before the section opened.
+/// A section opens its own page in the controls' place, and Back returns
+/// the controls to exactly where they stood.
 #[test]
-fn a_section_leaving_gives_back_its_room_and_the_page_rests_as_it_stood() {
+fn a_section_replaces_the_controls_and_back_returns_them_as_they_stood() {
     let _settled = ui::motion::testing::settled();
-    let (mut app, _host) = hosted("controls");
+    let (mut app, host) = hosted("controls");
     let anchors = [
         "qs-tile-vpn",
-        "qs-brightness",
-        "qs-volume",
+        "qs-brightness-row",
+        "qs-volume-row",
         "qs-row-battery",
     ];
     let before: Vec<Rect> = anchors.iter().map(|name| target(&mut app, name)).collect();
     open_details(&mut app, "qs-tile-wifi");
-    assert!(has(&mut app, "qs-section-wifi"));
-    open_details(&mut app, "qs-tile-wifi");
-    assert!(!has(&mut app, "qs-section-wifi"), "gone at rest");
+    assert!(has(&mut app, "qs-section-wifi"), "the networks show");
+    assert!(
+        !has(&mut app, "qs-tile-vpn"),
+        "and the controls are gone: the page replaces them"
+    );
+    assert_eq!(
+        host.showing().map(|showing| showing.section),
+        Some(Some(QsSection::Wifi))
+    );
+    click(&mut app, "qs-back");
+    assert!(!has(&mut app, "qs-section-wifi"));
+    assert!(has(&mut app, "qs-tile-vpn"), "Back returns the controls");
     for (name, was) in anchors.iter().zip(before) {
         let now = target(&mut app, name);
         assert!(
@@ -131,41 +178,61 @@ fn a_section_leaving_gives_back_its_room_and_the_page_rests_as_it_stood() {
     }
 }
 
-/// Each detail page opens in place and its chevron returns the page: the
-/// Bluetooth devices, then the outputs sound plays on.
+/// Every section opens a page with its own name and Back, in the page slot
+/// the controls stood in.
 #[test]
-fn each_detail_page_opens_in_place_and_returns_the_page() {
+fn every_section_opens_its_page_and_back_returns_the_controls() {
     let _settled = ui::motion::testing::settled();
-    let (mut app, host) = hosted("controls");
-    open_details(&mut app, "qs-tile-bluetooth");
-    assert_eq!(
-        host.showing().map(|showing| showing.section),
-        Some(Some(QsSection::Bluetooth))
-    );
-    assert!(
-        has(&mut app, "qs-accessory-00:1B:66:A1:B2:C3"),
-        "the paired device shows with its row"
-    );
-    let tile = target(&mut app, "qs-tile-bluetooth");
-    let section = target(&mut app, "qs-section-bluetooth");
-    assert!(section.y0 >= tile.y1, "under its own tile");
-    open_details(&mut app, "qs-tile-bluetooth");
-    assert!(!has(&mut app, "qs-section-bluetooth"));
-    click(&mut app, "qs-sound-outputs");
-    assert_eq!(
-        host.showing().map(|showing| showing.section),
-        Some(Some(QsSection::Sound))
-    );
-    let volume = target(&mut app, "qs-volume");
-    let sound = target(&mut app, "qs-section-sound");
-    assert!(sound.y0 >= volume.y1, "under the sliders it belongs to");
-    assert!(has(&mut app, "qs-output-41") && has(&mut app, "qs-output-52"));
-    click(&mut app, "qs-sound-outputs");
-    assert!(!has(&mut app, "qs-section-sound"));
+    for (tile, section, title, shows) in [
+        (
+            "qs-tile-wifi",
+            QsSection::Wifi,
+            "Wi-Fi networks",
+            "qs-network-Home",
+        ),
+        (
+            "qs-tile-bluetooth",
+            QsSection::Bluetooth,
+            "Bluetooth devices",
+            "qs-accessory-00:1B:66:A1:B2:C3",
+        ),
+        (
+            "qs-tile-power_mode",
+            QsSection::PowerMode,
+            "Power mode",
+            "qs-section-power-mode",
+        ),
+    ] {
+        let (mut app, host) = hosted("controls");
+        let top = target(&mut app, "qs-tile-wifi").y0;
+        open_details(&mut app, tile);
+        assert_eq!(
+            host.showing().map(|showing| showing.section),
+            Some(Some(section)),
+            "{tile} opens {section:?}"
+        );
+        assert!(has(&mut app, shows), "{section:?} lists what it is about");
+        assert_eq!(
+            row_words(&mut app, "qs-page-title").and_then(|said| said.0),
+            Some(title.to_owned())
+        );
+        let back = target(&mut app, "qs-back");
+        assert!(
+            (back.y0 - top).abs() < 0.5,
+            "{title}'s page stands in the page slot: {back:?} against {top}"
+        );
+        click(&mut app, "qs-back");
+        assert!(has(&mut app, "qs-tile-vpn"), "Back returns the controls");
+        assert_eq!(
+            host.showing().map(|showing| showing.section),
+            Some(None),
+            "and the host reads the controls"
+        );
+    }
 }
 
 /// The whole panel answers the keyboard: Tab to a tile, Enter toggles it,
-/// Right reaches its details, Enter opens them and the chevron closes them.
+/// Right reaches its details, Enter opens their page and Back returns.
 #[test]
 fn the_keyboard_toggles_a_tile_reaches_its_details_and_opens_them() {
     let _settled = ui::motion::testing::settled();
@@ -204,77 +271,69 @@ fn the_keyboard_toggles_a_tile_reaches_its_details_and_opens_them() {
     assert_eq!(
         host.showing().map(|showing| showing.section),
         Some(Some(QsSection::Wifi)),
-        "Enter opens them in place"
+        "Enter opens the networks' page"
     );
     assert!(has(&mut app, "qs-section-wifi") && has(&mut app, "qs-network-Office"));
-    app.harness().key("ArrowDown");
-    app.settle();
-    assert_ne!(
-        key_on(&mut app).as_deref(),
-        Some("Wi-Fi"),
-        "Down leaves the tile for the next control"
-    );
+    assert!(!has(&mut app, "qs-tile-vpn"), "in the controls' place");
+    click(&mut app, "qs-back");
+    assert!(!has(&mut app, "qs-section-wifi"));
     open_details(&mut app, "qs-tile-wifi");
     assert_eq!(
         host.showing().map(|showing| showing.section),
-        Some(None),
-        "the chevron closes the section again"
+        Some(Some(QsSection::Wifi)),
+        "and a press on its chevron opens it again"
     );
-    assert!(!has(&mut app, "qs-section-wifi"));
 }
 
 #[test]
-fn a_tiles_chevron_opens_its_section_under_its_row_and_the_page_tells_the_host() {
+fn a_tiles_chevron_opens_its_page_and_the_host_reads_it() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("controls");
     open_details(&mut app, "qs-tile-wifi");
-    let wifi = target(&mut app, "qs-tile-wifi");
+    let back = target(&mut app, "qs-back");
     let section = target(&mut app, "qs-section-wifi");
-    let vpn = target(&mut app, "qs-tile-vpn");
-    assert!(section.y0 >= wifi.y1 && vpn.y0 >= section.y1, "{section:?}");
+    assert!(
+        back.y0 < section.y0,
+        "the page's Back stands above what it lists: {back:?} {section:?}"
+    );
     assert_eq!(
         host.showing().map(|showing| showing.section),
         Some(Some(QsSection::Wifi)),
-        "the host reads the networks while their section is open"
+        "the host reads the networks while their page stands"
     );
     // The networks: the one in use first, then the known ones.
     let home = target(&mut app, "qs-network-Home");
     let office = target(&mut app, "qs-network-Office");
     assert!(home.y1 <= office.y0);
-    open_details(&mut app, "qs-tile-wifi");
+    click(&mut app, "qs-back");
     assert!(
         !has(&mut app, "qs-section-wifi"),
-        "the chevron closes it again"
+        "Back returns the controls"
     );
 }
 
 #[test]
-fn a_section_opens_in_place_on_the_disclosure_motion() {
+fn a_section_page_stands_in_the_page_slot_of_the_controls() {
     let (mut app, _host) = hosted("controls");
-    let shut = target(&mut app, "qs-tile-vpn");
-    // The clock stands still where the section starts to open.
+    let top = target(&mut app, "qs-tile-wifi").y0;
+    // The clock stands still where the page changes: the slide paints the
+    // two pages on their way, and neither page is laid out anywhere else.
     let frozen = ui::motion::testing::frozen();
     open_details(&mut app, "qs-tile-wifi");
-    let wifi = target(&mut app, "qs-tile-wifi");
-    let section = target(&mut app, "qs-section-wifi");
-    let vpn = target(&mut app, "qs-tile-vpn");
+    let back = target(&mut app, "qs-back");
     assert!(
-        section.y0 >= wifi.y1,
-        "it unrolls from under its row: {section:?}"
+        (back.y0 - top).abs() < 0.5,
+        "the page it opens stands where the controls stood: {back:?} against {top}"
     );
     assert!(
-        (vpn.y0 - shut.y0).abs() < 0.5,
-        "what follows moves with its edge, not to its end at once: {vpn:?}"
+        has(&mut app, "qs-section-wifi"),
+        "and it lists the networks"
     );
     drop(frozen);
     let _settled = ui::motion::testing::settled();
     app.settle();
-    let section = target(&mut app, "qs-section-wifi");
-    assert!(
-        target(&mut app, "qs-tile-vpn").y0 >= section.y1,
-        "open, it takes its place in the page"
-    );
+    assert!(!has(&mut app, "qs-tile-vpn"), "the controls stay gone");
 }
 
 #[test]
@@ -747,7 +806,8 @@ fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
 fn a_panel_taller_than_its_room_scrolls_rather_than_dropping_a_control() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();
-    let mut app = HeadlessApp::<QuickSettingsApp>::capture_at(Some("battery"), (360, 420)).unwrap();
+    let mut app =
+        HeadlessApp::<QuickSettingsApp>::capture_at(Some("controls"), (360, 420)).unwrap();
     assert!(has(&mut app, "qs-power"), "the footer is still on the page");
     let power = target(&mut app, "qs-power");
     assert!(
@@ -841,4 +901,33 @@ fn tab_walks_the_controls_from_the_tiles() {
         Some("Wi-Fi"),
         "the first Tab reaches the first tile"
     );
+}
+
+/// Every page fits the panel a laptop's session gives it (800 px of output
+/// less the bar and the panel's margin); the page with a song on it has
+/// more than fits, and scrolls inside the panel instead of standing past
+/// the bottom of the output.
+#[test]
+fn every_page_fits_the_panel_a_laptop_gives_it_or_scrolls_inside_it() {
+    for scenario in scenarios::NAMES {
+        let mut app =
+            HeadlessApp::<QuickSettingsApp>::capture_at(Some(scenario), (380, 760)).unwrap();
+        let window = target(&mut app, "BoundComponent[0]/ResourceApp[0]");
+        assert!(
+            (window.height() - 760.0).abs() < 1.0,
+            "{scenario} fills the panel's window: {window:?}"
+        );
+        let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
+        if *scenario == "now-playing" {
+            assert!(
+                card.height() > 760.0,
+                "a song with its transport needs more room than a laptop gives it: {card:?}"
+            );
+        } else {
+            assert!(
+                card.height() <= 760.0,
+                "{scenario} fits the panel whole: {card:?}"
+            );
+        }
+    }
 }

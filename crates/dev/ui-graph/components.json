@@ -383,6 +383,13 @@
           "positional": true
         },
         {
+          "name": "accessible_name",
+          "doc": "How assistive technology names it, where that says more than the label shows: the charge reads \"61%\" beside its charging glyph and is named \"61%, charging\". Unset, the label names it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "icon",
           "doc": "A glyph before the label, or instead of it when `icon_only`.",
           "type": {
@@ -393,6 +400,13 @@
           "name": "icon_only",
           "doc": "Show only the icon, the label naming the button to assistive technology.",
           "type": "bool"
+        },
+        {
+          "name": "faces",
+          "doc": "Who is here, as their faces: up to three faces, then a face counting the rest, and nothing else on the button at any width. `icon_only`'s rule holds for it too: the label is the name assistive technology hears, naming the people (\"Mia Clayton and Sam Okafor are here\"). One press opens the roster of everyone here.",
+          "type": {
+            "list": "text"
+          }
         },
         {
           "name": "role",
@@ -924,6 +938,22 @@
                   "bottom",
                   "leading",
                   "trailing"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "material",
+          "doc": "What the body is made of: the theme's bar body (the default), the theme's glass, or that glass made calm. A shell's bar and dock say which the person chose; every body that leaves it out draws the theme's bar body.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ChromeMaterial",
+                "cases": [
+                  "bar",
+                  "glass",
+                  "calm"
                 ]
               }
             }
@@ -2856,6 +2886,28 @@
       ],
       "semantics": {
         "role": "List"
+      }
+    },
+    {
+      "name": "PageSlide",
+      "doc": "One page of a stack, in the place a view shows it, with the page it replaced leaving while the view swaps the two: a panel that opens a deeper page of its own, and Back that slides it away again.\nA page that goes deeper arrives from the side its level names, and the page it replaced leaves toward the other; a page that goes shallower runs the motion the other way. A view that puts a different page at the same level (a list's item opened in the page the list showed) changes it where it stands, and nothing moves.",
+      "props": [
+        {
+          "name": "level",
+          "doc": "How deep the page stands: 0 the first page, 1 the page it opens.",
+          "type": "int"
+        }
+      ],
+      "slots": [
+        {
+          "name": "page",
+          "doc": "The page it shows.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group"
       }
     },
     {

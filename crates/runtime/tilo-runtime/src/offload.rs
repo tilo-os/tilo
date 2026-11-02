@@ -258,6 +258,9 @@ pub fn own_offering(app: &str, holds: Vec<[u8; 32]>) -> Answer {
             priority: 0,
             power,
             load_permille: load_permille(),
+            // A session runs the work it is handed, one action at a time in
+            // the app that asked: it keeps no queue to be full of.
+            free_slots: None,
             latency_ms: 0,
         },
         holds,
@@ -320,6 +323,10 @@ fn load_permille() -> u32 {
     thousandths.checked_div(cores.max(1)).unwrap_or(0)
 }
 
+/// Whether a device of a workspace is connected here now, as the round asks
+/// it.
+type Reachable = Arc<dyn Fn(&str, [u8; 32]) -> bool + Send + Sync>;
+
 /// [`OffloadPeers`] over a device plane: the round asks the workspace's other
 /// devices through `plane` — who may be asked is what the plane's own roster
 /// says — and the invocation runs on the device that wins it through the same
@@ -332,6 +339,9 @@ pub struct PlanePeers {
     plane: ActionPlane,
     endpoint: Endpoint,
     addresses: Arc<dyn Fn(EndpointId) -> EndpointAddr + Send + Sync>,
+    /// Which devices of a workspace are connected here now: the round asks
+    /// those, and one that is away is not waited for.
+    reachable: Reachable,
     outputs: Arc<dyn OutputContent>,
     runtime: tokio::runtime::Handle,
 }
@@ -353,8 +363,23 @@ impl PlanePeers {
             plane,
             endpoint,
             addresses: Arc::new(addresses),
+            reachable: Arc::new(|_, _| true),
             outputs,
             runtime,
+        }
+    }
+
+    /// Ask only the devices of a workspace that `reachable` says are
+    /// connected here now, in the workspace named: a device that is away is
+    /// not asked, and the round does not wait for it.
+    #[must_use]
+    pub fn reachable(
+        self,
+        reachable: impl Fn(&str, [u8; 32]) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            reachable: Arc::new(reachable),
+            ..self
         }
     }
 
@@ -365,7 +390,14 @@ impl PlanePeers {
 }
 
 impl OffloadPeers for PlanePeers {
-    fn ask(&self, workspace: &str, route: &Route, work: &Work) -> Pending<Choice> {
+    fn ask(
+        &self,
+        workspace: &str,
+        route: &Route,
+        work: &Work,
+        invocation: InvocationId,
+        within: Duration,
+    ) -> Pending<Choice> {
         let (complete, answer) = pending();
         let (plane, endpoint, runtime) = (
             self.plane.clone(),
@@ -373,23 +405,23 @@ impl OffloadPeers for PlanePeers {
             self.runtime.clone(),
         );
         let addresses = Arc::clone(&self.addresses);
+        let reachable = Arc::clone(&self.reachable);
         let (workspace, route, work) = (workspace.to_owned(), route.clone(), work.clone());
         runtime.spawn(async move {
+            // Only the devices that are connected here now: one that is away
+            // has nothing to answer with, and waiting for it costs the run
+            // here more than it could ever save.
             let targets: Vec<EndpointAddr> = plane
                 .participants(&workspace)
                 .await
                 .into_iter()
+                .filter(|key| reachable(&workspace, *key))
                 .filter_map(|key| EndpointId::from_bytes(&key).ok())
                 .map(|id| addresses(id))
                 .collect();
             let chosen = plane
                 .offers(
-                    &endpoint,
-                    targets,
-                    &workspace,
-                    &route,
-                    &work,
-                    OFFER_DEADLINE,
+                    &endpoint, targets, &workspace, &route, &work, invocation, within,
                 )
                 .await;
             // A round the device that asked stopped waiting for is not chosen
@@ -643,9 +675,23 @@ impl OfferOffload {
             request.address.resource.clone(),
             request.address.action.clone(),
         );
+        // The round only pays for itself when there is a run here to beat:
+        // one that was never measured could never lose to a device that is
+        // quicker, so asking is the cost of the round and nothing else. And
+        // it is never waited on longer than the run here takes.
+        let Some(local_ms) = work.local_wall_ms else {
+            return Err("nothing is quicker than a run it knows nothing of".into());
+        };
+        let within = OFFER_DEADLINE.min(Duration::from_millis(local_ms));
         let choice = self
             .peers
-            .ask(&request.workspace, &route, work)
+            .ask(
+                &request.workspace,
+                &route,
+                work,
+                invocation.invocation,
+                within,
+            )
             .await
             .ok_or("the offer round was abandoned before it finished")?;
         let Some(worker) = choice.worker else {

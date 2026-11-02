@@ -11,7 +11,7 @@
 //! that action and follows it until that device answers, so the app observes
 //! it like an invocation of its own.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
@@ -32,7 +32,7 @@ use tilo_peer_state::actions::{
 use tilo_runtime::offload::{PlanePeers, offer_offload, own_offering};
 
 use crate::engine::Engine;
-use neighbour_wire::offer::{Answer, Route, Work};
+use neighbour_wire::offer::{Answer, Query};
 
 /// This device's action plane, as the session serves it and reaches the
 /// person's other devices through it.
@@ -44,8 +44,12 @@ struct Inner {
     /// The endpoint the plane asks from, as this device.
     endpoint: Endpoint,
     /// Where this session was told each of the person's devices is
-    /// ([`crate::sync::Client::connect`]), by its endpoint.
+    /// ([`crate::sync::Client::connect`]), by its endpoint. A device it was
+    /// told of is one it reaches now.
     addresses: Mutex<BTreeMap<EndpointId, EndpointAddr>>,
+    /// The devices of each workspace this session reaches now, as its topic
+    /// and its hosts say ([`Self::here`]): the ones an offer round asks.
+    here: Mutex<BTreeMap<String, BTreeSet<[u8; 32]>>>,
     /// What answers a request that arrived here.
     dispatch: DeviceDispatch,
     /// What this session says of itself when another of the person's devices
@@ -80,6 +84,7 @@ impl DeviceActions {
             plane,
             endpoint,
             addresses: Mutex::default(),
+            here: Mutex::default(),
             dispatch,
             offering,
             runtime: tokio::runtime::Handle::current(),
@@ -102,6 +107,28 @@ impl DeviceActions {
         self.0.addresses.lock_recover().insert(addr.id, addr);
     }
 
+    /// The devices of `workspace` this session reaches now, replacing what it
+    /// knew: those heard on the workspace's topic and its hosts, never this
+    /// device.
+    pub(crate) fn here(&self, workspace: &str, devices: BTreeSet<[u8; 32]>) {
+        self.0
+            .here
+            .lock_recover()
+            .insert(workspace.to_owned(), devices);
+    }
+
+    /// Whether this session reaches the device `device` of `workspace` now:
+    /// the workspace's topic or its hosts reported it connected here. A device
+    /// that is away is not asked to run work, and the round does not wait for
+    /// it, however well this session knows where it lives.
+    pub(crate) fn reachable(&self, workspace: &str, device: [u8; 32]) -> bool {
+        self.0
+            .here
+            .lock_recover()
+            .get(workspace)
+            .is_some_and(|devices| devices.contains(&device))
+    }
+
     /// The content this session keeps, as its offer says: another device
     /// weighs a job whose inputs are already here as moving nothing.
     pub(crate) fn attach_content(&self, content: Arc<crate::content::Plane>) {
@@ -121,13 +148,15 @@ impl DeviceActions {
         let actions = self.clone();
         let media = content.media();
         let outputs: Arc<dyn tilo_runtime::offload::OutputContent> = content;
+        let asking = self.clone();
         let peers = PlanePeers::new(
             self.0.plane.clone(),
             self.0.endpoint.clone(),
             move |id| actions.addr(id),
             outputs,
             self.0.runtime.clone(),
-        );
+        )
+        .reachable(move |workspace, device| asking.reachable(workspace, device));
         offer_offload(media, Arc::new(peers))
     }
 
@@ -343,16 +372,18 @@ impl SessionOffering {
 }
 
 impl Offering for SessionOffering {
-    fn report(&self, workspace: &str, route: &Route, work: &Work) -> Answer {
+    fn report(&self, _from: [u8; 32], offer: &Query) -> Answer {
         let content = self.content.lock_recover().clone();
         let holds = content.map_or_else(Vec::new, |content| {
-            work.inputs
+            offer
+                .work
+                .inputs
                 .iter()
                 .map(|(digest, _)| *digest)
-                .filter(|digest| content.holds(workspace, &route.app, *digest))
+                .filter(|digest| content.holds(&offer.workspace, &offer.route.app, *digest))
                 .collect()
         });
-        own_offering(&route.app, holds)
+        own_offering(&offer.route.app, holds)
     }
 }
 
@@ -374,7 +405,7 @@ mod tests {
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
     use iroh::{Endpoint, RelayMode, SecretKey};
-    use neighbour_wire::offer::{Decline, Power};
+    use neighbour_wire::offer::{Decline, Power, Route, Work};
     use tilo_action_broker::record_content::ContentState;
     use tilo_action_broker::route::CrdtRoute;
     use tilo_actions::offload::{OffloadRequest, Offloaded};
@@ -626,6 +657,7 @@ mod tests {
                 WORKSPACE,
                 &route,
                 &work,
+                tilo_actions::InvocationId::new(),
                 PATIENCE,
             ),
         )
@@ -790,8 +822,8 @@ mod tests {
     struct Willing(SessionOffering);
 
     impl Offering for Willing {
-        fn report(&self, workspace: &str, route: &Route, work: &Work) -> Answer {
-            let mut answer = self.0.report(workspace, route, work);
+        fn report(&self, from: [u8; 32], offer: &Query) -> Answer {
+            let mut answer = self.0.report(from, offer);
             answer.state.app_installed = true;
             answer.state.critical_battery = false;
             answer.state.power = Power::External;
@@ -860,6 +892,12 @@ mod tests {
         let (here_endpoint, here_router, actions) =
             answering(&here.0, &here.1, Some(&there), Arc::new(TestHost::new())).await;
         actions.learn(addr(&there_endpoint));
+        // The workspace's topic reports the other device connected here: it
+        // is one of the devices the round asks.
+        actions.here(
+            WORKSPACE,
+            std::collections::BTreeSet::from([there.1.device_public_key]),
+        );
         let here_content = Content::open(&here.0);
         // The app's photograph is here, and on the other device too: what the
         // round weighs as moving nothing.
@@ -944,6 +982,52 @@ mod tests {
         there_router.shutdown().await.expect("the router stops");
         here_endpoint.close().await;
         there_endpoint.close().await;
+    }
+
+    /// A device of the workspace that is not connected here now is not asked,
+    /// though this session knows where it lives: the round has nobody to ask,
+    /// so the action runs here without waiting.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_device_of_the_workspace_that_is_away_is_not_asked() {
+        let root = SigningKey::from_bytes(&[0x91; 32]);
+        let here = device(&root, 0x92, "This device");
+        let away = device(&root, 0x93, "A device that is away");
+        let (away_endpoint, away_router, _) =
+            answering(&away.0, &away.1, Some(&here), Arc::new(TestHost::new())).await;
+        let (here_endpoint, here_router, actions) =
+            answering(&here.0, &here.1, Some(&away), Arc::new(TestHost::new())).await;
+        // Where the other device is, and nothing saying it is connected.
+        actions.learn(addr(&away_endpoint));
+
+        let content = crate::content::Plane::open(None);
+        let photograph = photograph();
+        let input = hash_bytes(&photograph);
+        content
+            .route()
+            .offer(&CrdtRoute::app(APP, WORKSPACE), &input, &photograph)
+            .expect("the app's photograph is kept here");
+        let door = actions
+            .offload_route(Arc::clone(&content))
+            .expect("offload is on");
+
+        let (request, sent) = offloadable(vec![input.clone()]);
+        let placed = door.offload_invocation(request.clone(), sent).await;
+        assert!(matches!(placed, Offloaded::RunHere { .. }), "{placed:?}");
+        door.ran_here(&request, LOCAL_RUN);
+
+        let (request, sent) = offloadable(vec![input]);
+        let placed = tokio::time::timeout(PATIENCE, door.offload_invocation(request, sent))
+            .await
+            .expect("a device that is away is not waited for");
+        let Offloaded::RunHere { reason } = placed else {
+            panic!("nobody connected was asked: {placed:?}");
+        };
+        assert!(reason.contains("no device offered to run it"), "{reason}");
+
+        here_router.shutdown().await.expect("the router stops");
+        away_router.shutdown().await.expect("the router stops");
+        here_endpoint.close().await;
+        away_endpoint.close().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

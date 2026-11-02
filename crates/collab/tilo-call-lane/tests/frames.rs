@@ -1,7 +1,8 @@
 //! Call frames between the members of one channel, over real MLS groups: a
-//! member's frame seals and opens, a late joiner reads a lagging sender's
-//! older-epoch frame, a removed device derives nothing past its removal, and
-//! nothing else opens.
+//! member's frame seals and opens as the track it names and no other, a late
+//! joiner reads a lagging sender's older-epoch frame, a removed device derives
+//! nothing past its removal, a device outside the channel holds no key of it,
+//! and nothing else opens.
 
 #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 #![allow(
@@ -12,8 +13,10 @@
 
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::ChannelId;
-use tilo_call_lane::{Lane, OVERHEAD, Opener, Refusal, Roster, Sealer, Stream};
+use collab_types::scope::Scope;
+use tilo_call_lane::{Lane, OVERHEAD, Opener, Refusal, Roster, Sealer, Stream, TrackName};
 
+const WORKSPACE: &str = "w1";
 const ALICE: [u8; 32] = [1; 32];
 const BOB: [u8; 32] = [2; 32];
 const CAROL: [u8; 32] = [3; 32];
@@ -21,6 +24,17 @@ const DAVE: [u8; 32] = [4; 32];
 
 fn member(name: &str) -> MemberKey {
     MemberKey::generate(name).unwrap()
+}
+
+/// The scope of the tests' call: the workspace's own, unless a channel's is
+/// named.
+fn scope() -> Scope {
+    Scope::workspace(WORKSPACE)
+}
+
+/// The track `stream`'s frames are named as in `scope`.
+fn track(scope: &Scope, stream: Stream) -> TrackName {
+    TrackName::new(scope, stream.track())
 }
 
 /// A channel Alice owns.
@@ -62,22 +76,43 @@ fn channel_with_two_members() -> (ChannelId, ChannelGroup, ChannelGroup) {
 }
 
 fn sealer(group: &ChannelGroup, device: [u8; 32], stream: Stream) -> Sealer {
-    Sealer::new(&group.content_keys().unwrap(), device, stream).unwrap()
+    Sealer::new(
+        &group.content_keys().unwrap(),
+        device,
+        stream,
+        track(&scope(), stream),
+    )
+    .unwrap()
 }
 
 fn opener(keys: channel_crypto::ChannelContentKeys, roster: &[[u8; 32]]) -> Opener {
     Opener::new(keys, Roster::new(roster.iter().copied()))
 }
 
-/// What a person gets: someone in the call is heard, and only as themselves.
-/// Runs each phase below in order; every phase builds its own members.
+/// What `hearing` opens `frame` as, when it is `stream`'s frame of `scope`.
+fn open(
+    hearing: &Opener,
+    sender: [u8; 32],
+    stream: Stream,
+    scope: &Scope,
+    frame: &[u8],
+) -> Result<Vec<u8>, Refusal> {
+    hearing.open(sender, stream, &track(scope, stream), frame)
+}
+
+/// What a person gets: someone in the call is heard, and only as themselves;
+/// a picture of one window never shows as another's; and a call in a channel
+/// the others are not in is theirs alone. Runs each phase below in order;
+/// every phase builds its own members.
 #[test]
-fn call_frames_seal_and_open_only_for_their_sender_epoch_and_stream() {
+fn call_frames_seal_and_open_only_for_their_sender_epoch_scope_and_track() {
     a_frame_seals_and_opens();
     a_joiner_opens_a_lagging_senders_older_epoch_frame();
     a_joiner_without_history_holds_only_the_epoch_it_joined_at();
     a_removed_device_derives_no_key_past_its_removal();
     a_tampered_or_misfiled_frame_is_refused();
+    a_frame_opens_only_as_its_own_track_in_its_own_scope();
+    a_member_outside_a_channel_holds_no_key_for_its_call_tracks();
     a_frame_from_a_device_off_the_roster_is_refused();
 }
 
@@ -87,6 +122,25 @@ fn a_frame_seals_and_opens() {
     let sealing = sealer(&alice, ALICE, Stream::Microphone);
     assert_eq!(sealing.epoch(), alice.epoch());
     assert_eq!(Stream::Microphone.lane(), Lane::Audio);
+    // Every stream's tag is its own: a key is never one another stream's.
+    let mut tags = std::collections::BTreeSet::new();
+    for stream in [
+        Stream::Microphone,
+        Stream::Camera,
+        Stream::Screen,
+        Stream::Window,
+        Stream::Presence,
+        Stream::Input,
+        Stream::Activity,
+    ] {
+        assert!(tags.insert(stream.tag()), "{stream:?} reuses a tag");
+        assert_eq!(stream.track(), stream.track());
+    }
+    assert_eq!(
+        sealing.track().as_str(),
+        format!("{WORKSPACE}/workspace/audio"),
+        "a frame names its workspace, its scope and its track"
+    );
 
     let frame = sealing.seal(0, body).unwrap();
     assert_eq!(frame.len(), OVERHEAD + body.len());
@@ -99,7 +153,7 @@ fn a_frame_seals_and_opens() {
 
     let hearing = opener(bob.content_keys().unwrap(), &[ALICE, BOB]);
     assert_eq!(
-        hearing.open(ALICE, Stream::Microphone, &frame).unwrap(),
+        open(&hearing, ALICE, Stream::Microphone, &scope(), &frame).unwrap(),
         body
     );
     // Bob's own frames open too, and none of them as Alice's.
@@ -107,11 +161,11 @@ fn a_frame_seals_and_opens() {
         .seal(7, b"hello from bob")
         .unwrap();
     assert_eq!(
-        hearing.open(BOB, Stream::Microphone, &bobs).unwrap(),
+        open(&hearing, BOB, Stream::Microphone, &scope(), &bobs).unwrap(),
         b"hello from bob"
     );
     assert_eq!(
-        hearing.open(BOB, Stream::Microphone, &frame),
+        open(&hearing, BOB, Stream::Microphone, &scope(), &frame),
         Err(Refusal::Unauthenticated),
         "Alice's frame does not speak as Bob"
     );
@@ -131,7 +185,7 @@ fn a_joiner_opens_a_lagging_senders_older_epoch_frame() {
         .unwrap();
     let hearing = opener(carol.content_keys().unwrap(), &[ALICE, BOB, CAROL]);
     assert_eq!(
-        hearing.open(BOB, Stream::Camera, &frame).unwrap(),
+        open(&hearing, BOB, Stream::Camera, &scope(), &frame).unwrap(),
         b"a picture from before the commit",
         "Carol holds every epoch's key her welcome carried"
     );
@@ -151,7 +205,7 @@ fn a_joiner_without_history_holds_only_the_epoch_it_joined_at() {
 
     let hearing = opener(carol.content_keys().unwrap(), &[ALICE, BOB, CAROL]);
     assert_eq!(
-        hearing.open(BOB, Stream::Microphone, &frame),
+        open(&hearing, BOB, Stream::Microphone, &scope(), &frame),
         Err(Refusal::NoKey(bob.epoch()))
     );
 }
@@ -186,7 +240,7 @@ fn a_removed_device_derives_no_key_past_its_removal() {
         .unwrap();
     let hearing = opener(dave_keys, &[ALICE, BOB, CAROL, DAVE]);
     assert_eq!(
-        hearing.open(ALICE, Stream::Microphone, &frame),
+        open(&hearing, ALICE, Stream::Microphone, &scope(), &frame),
         Err(Refusal::NoKey(after)),
         "Dave cannot open what the call says after he was removed"
     );
@@ -198,7 +252,7 @@ fn a_tampered_or_misfiled_frame_is_refused() {
         .seal(9, b"an opus frame")
         .unwrap();
     let hearing = opener(bob.content_keys().unwrap(), &[ALICE, BOB]);
-    assert!(hearing.open(ALICE, Stream::Microphone, &frame).is_ok());
+    assert!(open(&hearing, ALICE, Stream::Microphone, &scope(), &frame).is_ok());
 
     let changed = |at: usize| {
         let mut copy = frame.clone();
@@ -207,43 +261,148 @@ fn a_tampered_or_misfiled_frame_is_refused() {
     };
     let sealed_from = OVERHEAD;
     assert_eq!(
-        hearing.open(ALICE, Stream::Microphone, &changed(sealed_from)),
+        open(
+            &hearing,
+            ALICE,
+            Stream::Microphone,
+            &scope(),
+            &changed(sealed_from)
+        ),
         Err(Refusal::Unauthenticated),
         "a changed body"
     );
     assert_eq!(
-        hearing.open(ALICE, Stream::Microphone, &changed(frame.len() - 1)),
+        open(
+            &hearing,
+            ALICE,
+            Stream::Microphone,
+            &scope(),
+            &changed(frame.len() - 1)
+        ),
         Err(Refusal::Unauthenticated),
         "a changed tag"
     );
     assert_eq!(
-        hearing.open(ALICE, Stream::Microphone, &changed(8)),
+        open(&hearing, ALICE, Stream::Microphone, &scope(), &changed(8)),
         Err(Refusal::Unauthenticated),
         "another sequence under the same key"
     );
     assert_eq!(
-        hearing.open(ALICE, Stream::Microphone, &changed(0)),
+        open(&hearing, ALICE, Stream::Microphone, &scope(), &changed(0)),
         Err(Refusal::NoKey(alice.epoch() + 1)),
         "another epoch"
     );
     assert_eq!(
-        hearing.open(ALICE, Stream::Camera, &frame),
+        open(&hearing, ALICE, Stream::Camera, &scope(), &frame),
         Err(Refusal::Unauthenticated),
         "the microphone's frame does not open as the camera's"
     );
     assert_eq!(
-        hearing.open(BOB, Stream::Microphone, &frame),
+        open(&hearing, BOB, Stream::Microphone, &scope(), &frame),
         Err(Refusal::Unauthenticated),
         "nor as another device's"
     );
     assert_eq!(
-        hearing.open(ALICE, Stream::Microphone, &frame[..11]),
+        hearing.open(
+            ALICE,
+            Stream::Microphone,
+            &track(&scope(), Stream::Microphone),
+            &frame[..11]
+        ),
         Err(Refusal::Truncated)
     );
     assert_eq!(
-        hearing.open(ALICE, Stream::Microphone, &frame[..sealed_from + 8]),
+        open(
+            &hearing,
+            ALICE,
+            Stream::Microphone,
+            &scope(),
+            &frame[..sealed_from + 8]
+        ),
         Err(Refusal::Unauthenticated),
         "a frame cut short of its tag"
+    );
+}
+
+fn a_frame_opens_only_as_its_own_track_in_its_own_scope() {
+    let (_channel, alice, bob) = channel_with_two_members();
+    let hearing = opener(bob.content_keys().unwrap(), &[ALICE, BOB]);
+    let window = |tab: u64| TrackName::new(&scope(), &format!("window/{tab:016x}/low"));
+    let sealing = Sealer::new(
+        &alice.content_keys().unwrap(),
+        ALICE,
+        Stream::Camera,
+        window(1),
+    )
+    .unwrap();
+    let frame = sealing.seal(0, b"one window's picture").unwrap();
+
+    assert_eq!(
+        hearing
+            .open(ALICE, Stream::Camera, &window(1), &frame)
+            .unwrap(),
+        b"one window's picture"
+    );
+    assert_eq!(
+        hearing.open(ALICE, Stream::Camera, &window(2), &frame),
+        Err(Refusal::Unauthenticated),
+        "a window's frame is not another window's, though both are camera pictures"
+    );
+    // The workspace's own record is the same channel: `record/live` and
+    // `workspace` hold the same keys, so only the scope in the name tells the
+    // two apart.
+    let own_record = Scope::record(WORKSPACE, "live");
+    assert_eq!(own_record.channel_id(), scope().channel_id());
+    let in_record = TrackName::new(&own_record, "window/0000000000000001/low");
+    assert_eq!(
+        in_record.as_str(),
+        format!("{WORKSPACE}/record/live/window/0000000000000001/low")
+    );
+    assert_eq!(
+        hearing.open(ALICE, Stream::Camera, &in_record, &frame),
+        Err(Refusal::Unauthenticated),
+        "nor the same track in another scope of the same keys"
+    );
+}
+
+fn a_member_outside_a_channel_holds_no_key_for_its_call_tracks() {
+    // The private channel Alice and Carol talk in, and Bob, a member of the
+    // workspace who was never let into it.
+    let (private, mut alice_private) = channel_with_owner();
+    let carol = join(private, &mut alice_private, &mut [], "carol");
+    let bob = ChannelGroup::create(ChannelId::new(), member("bob")).unwrap();
+    assert_ne!(
+        bob.epoch(),
+        alice_private.epoch(),
+        "Bob's own channel is another channel"
+    );
+
+    let scope = Scope::channel(WORKSPACE, private);
+    let audio = track(&scope, Stream::Microphone);
+    let frame = Sealer::new(
+        &alice_private.content_keys().unwrap(),
+        ALICE,
+        Stream::Microphone,
+        audio.clone(),
+    )
+    .unwrap()
+    .seal(0, b"what the private call sounds like")
+    .unwrap();
+
+    // Bob's keys are the workspace's own channel's: they hold no epoch of
+    // this one, so he derives nothing for its call.
+    let hearing = opener(bob.content_keys().unwrap(), &[ALICE, BOB, CAROL]);
+    assert_eq!(
+        hearing.open(ALICE, Stream::Microphone, &audio, &frame),
+        Err(Refusal::NoKey(alice_private.epoch()))
+    );
+    // Carol is in the channel and hears it.
+    let carols = opener(carol.content_keys().unwrap(), &[ALICE, CAROL]);
+    assert_eq!(
+        carols
+            .open(ALICE, Stream::Microphone, &audio, &frame)
+            .unwrap(),
+        b"what the private call sounds like"
     );
 }
 
@@ -255,21 +414,31 @@ fn a_frame_from_a_device_off_the_roster_is_refused() {
     // He keeps every key he was given, so his frames still authenticate, and
     // the roster is what refuses them.
     let daves = dave.content_keys().unwrap();
-    let frame = Sealer::new(&daves, DAVE, Stream::Screen)
-        .unwrap()
-        .seal(4, b"a shared screen")
-        .unwrap();
+    let frame = Sealer::new(
+        &daves,
+        DAVE,
+        Stream::Screen,
+        track(&scope(), Stream::Screen),
+    )
+    .unwrap()
+    .seal(4, b"a shared screen")
+    .unwrap();
 
     let without_dave = opener(bob.content_keys().unwrap(), &[ALICE, BOB, CAROL]);
     assert_eq!(
-        without_dave.open(DAVE, Stream::Screen, &frame),
+        open(&without_dave, DAVE, Stream::Screen, &scope(), &frame),
         Err(Refusal::OffRoster)
     );
     let while_dave_was_a_member = opener(bob.content_keys().unwrap(), &[ALICE, BOB, CAROL, DAVE]);
     assert_eq!(
-        while_dave_was_a_member
-            .open(DAVE, Stream::Screen, &frame)
-            .unwrap(),
+        open(
+            &while_dave_was_a_member,
+            DAVE,
+            Stream::Screen,
+            &scope(),
+            &frame
+        )
+        .unwrap(),
         b"a shared screen",
         "the frame itself authenticates: the roster refuses it"
     );
