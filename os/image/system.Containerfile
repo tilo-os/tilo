@@ -267,7 +267,7 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 # tmpfiles.d copies it to /var/lib/tilo on first boot, where it can be
 # edited and survives image updates. See fs.service for why the subject
 # is a principal rather than a key.
-# The system interfaces this image serves sit beside it, installed by the shell
+# The system interfaces this image serves sit beside it, installed by the session
 # component (os/components.toml), which judges apps against them: an app from
 # the registry updates past its preinstalled copy only to a build this OS can
 # run, and that copy is the fallback for one it cannot
@@ -768,7 +768,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
 # Boot-time prune. These units sit on the critical chain but their work
 # is either irrelevant to a desktop Tilo (offline man-db caching), or a
 # `Wants=network-online.target` wait we don't need (nothing on the boot
-# path blocks on a routable interface — the shell + peer sync tolerate
+# path blocks on a routable interface — the session + peer sync tolerate
 # late network). Masking (not just disabling) makes them
 # unable to be pulled in by transitive `Wants=`.
 #

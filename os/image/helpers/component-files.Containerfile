@@ -20,7 +20,7 @@ COPY os/usr/lib/systemd/user/tilo-ush.service \
     os/usr/lib/systemd/user/tilo-app-host.service \
     /tilo-components/usr/lib/systemd/user/
 COPY os/usr/share/licenses/tilo-speech-worker/LICENSE /tilo-components/usr/share/licenses/tilo-speech-worker/
-# The interface declaration the shell judges apps against travels with it.
+# The interface declaration the session judges apps against travels with it.
 COPY os/usr/share/tilo/system-interfaces.toml /tilo-components/usr/share/tilo/system-interfaces.toml
 # Relay component metadata travels with the same component in images and updates.
 COPY os/usr/lib/tilo/node-relay.toml /tilo-components/usr/lib/tilo/node-relay.toml
