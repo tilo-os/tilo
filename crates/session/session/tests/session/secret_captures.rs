@@ -113,8 +113,10 @@ fn shell_ui_connection(
     stream
 }
 
-/// Read the next message the session writes on `stream`, stepping it until
-/// one arrives.
+/// Read the answer the session writes on `stream` to what the app said,
+/// stepping it until one arrives. The session also pushes the person's
+/// appearance down the same connection, whenever it changes, so a push that
+/// is not an answer passes by.
 #[track_caller]
 fn answer(
     session: &mut Session,
@@ -127,7 +129,13 @@ fn answer(
         match std::io::BufRead::read_line(&mut reader, &mut line) {
             Ok(0) => panic!("the session closed the connection"),
             Ok(_) => {
-                return serde_json::from_str(line.trim_end()).expect("a message");
+                let message: ui::floating_surface::FloatingSurfaceHostMessage =
+                    serde_json::from_str(line.trim_end()).expect("a message");
+                if message.window_appearance().is_some() {
+                    line.clear();
+                    continue;
+                }
+                return message;
             }
             Err(error)
                 if matches!(
