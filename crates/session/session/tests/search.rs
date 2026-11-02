@@ -620,7 +620,7 @@ fn search_for(session: &mut Session, query: &str) {
     // the first frame, so the field showing rows is not yet the sources
     // having answered: the field is asked until its rows stop changing.
     let mut last: Option<Vec<String>> = None;
-    let mut steady = 0;
+    let mut steady: u32 = 0;
     for _ in 0..400 {
         session.step(Duration::from_millis(1)).expect("step");
         let search = find(&session.resources(), SEARCH_RESOURCE);
