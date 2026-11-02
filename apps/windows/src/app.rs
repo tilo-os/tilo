@@ -2317,7 +2317,9 @@ impl ui::widget::Decorator for WindowsWindow {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dialog_open() || self.shell.needs_redraw()
+        self.dialog_open()
+            || self.shell.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn perform_semantic_action(

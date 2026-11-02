@@ -1182,7 +1182,9 @@ impl ui::widget::Decorator for DisksApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.store.borrow().dirty || self.shell.needs_redraw()
+        self.store.borrow().dirty
+            || self.shell.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

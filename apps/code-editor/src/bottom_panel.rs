@@ -598,6 +598,7 @@ impl Widget for BottomPanel {
                 .empty
                 .as_ref()
                 .is_some_and(|(_, empty)| empty.needs_redraw())
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn needs_animation_frame(&self) -> bool {

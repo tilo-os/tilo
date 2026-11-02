@@ -1674,7 +1674,10 @@ impl ui::widget::Decorator for BackupsWindow {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.repo.borrow().dirty || self.restore.is_some() || self.shell.needs_redraw()
+        self.repo.borrow().dirty
+            || self.restore.is_some()
+            || self.shell.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

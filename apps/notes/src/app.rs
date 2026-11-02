@@ -3212,6 +3212,7 @@ impl Widget for NotesApp {
             || self.outline.needs_redraw()
             || self.main.needs_redraw()
             || self.shortcuts.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

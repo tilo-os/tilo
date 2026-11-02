@@ -799,6 +799,7 @@ impl ui::widget::Decorator for FileDesk {
         self.content.needs_redraw()
             || self.tools.files.with(Option::is_some)
             || self.tools.menu.with(|chosen| !chosen.is_empty())
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn needs_animation_frame(&self) -> bool {

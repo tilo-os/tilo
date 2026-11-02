@@ -4677,7 +4677,9 @@ impl Widget for BrowserWidget {
         let children = self.children();
         children.is_empty()
             || self.side_panel_edge_damage().is_some()
-            || children.iter().any(|child| child.needs_redraw())
+            || children
+                .iter()
+                .any(|child| child.needs_redraw() || child.needs_animation_frame())
     }
 
     fn mark_drawn(&mut self) {

@@ -2844,7 +2844,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.as_dyn().needs_redraw()
+        self.as_dyn().needs_redraw() || crate::widget::Widget::needs_animation_frame(self)
     }
 
     fn needs_animation_frame(&self) -> bool {

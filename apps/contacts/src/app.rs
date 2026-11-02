@@ -2208,6 +2208,7 @@ impl Widget for ContactsApp {
             || self.portal_in_flight()
             || self.shell.needs_redraw()
             || self.dialog.as_ref().is_some_and(|(_, d)| d.needs_redraw())
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

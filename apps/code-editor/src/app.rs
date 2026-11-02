@@ -2806,6 +2806,7 @@ impl Widget for CodeApp {
             || self.code_help_needs_redraw()
             // A live terminal repaints continuously while visible.
             || self.terminal_visible()
+                || ui::widget::Widget::needs_animation_frame(self)
     }
 
     /// Advance the editor and drain the retained terminal before settlement.

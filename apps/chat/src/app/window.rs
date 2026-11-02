@@ -278,7 +278,7 @@ impl Widget for ChatWindow {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.chat.borrow().needs_redraw()
+        self.chat.borrow().needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

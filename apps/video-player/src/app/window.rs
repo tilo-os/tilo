@@ -283,7 +283,7 @@ impl Widget for PlayerApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.state.borrow().needs_redraw()
+        self.state.borrow().needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {
@@ -407,7 +407,7 @@ impl Widget for PlayerHost {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.player().needs_redraw()
+        self.player().needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

@@ -382,6 +382,7 @@ impl ui::widget::Decorator for Shown {
     fn needs_redraw(&self) -> bool {
         self.sheet.with(|sheet| *sheet == Some(self.which)) != self.dialog.is_open()
             || self.dialog.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn concrete_type_name(&self) -> &'static str {

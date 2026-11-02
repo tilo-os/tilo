@@ -280,7 +280,7 @@ impl Widget for WordProcessorWidget {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.editor.borrow().needs_redraw()
+        self.editor.borrow().needs_redraw() || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {

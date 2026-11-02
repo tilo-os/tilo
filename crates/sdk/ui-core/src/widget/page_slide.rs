@@ -319,7 +319,10 @@ impl Decorator for PageSlide {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.leaving.is_some() || self.page.needs_redraw()
+        self.dirty
+            || self.leaving.is_some()
+            || self.page.needs_redraw()
+            || crate::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

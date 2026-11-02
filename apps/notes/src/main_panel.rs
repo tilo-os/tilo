@@ -1099,12 +1099,12 @@ impl MainPanel {
         // that changed in the body is the editor's own redraw.
         let quiet = self.scroll_moved
             && !self.dirty
-            && !self.editor.needs_redraw()
+            && !(self.editor.needs_redraw() || self.editor.needs_animation_frame())
             && !self.has_editor_popup()
             && self
                 .header
                 .built()
-                .is_none_or(|header| !header.needs_redraw());
+                .is_none_or(|header| !(header.needs_redraw() || header.needs_animation_frame()));
         (quiet
             && drawing.clip == presented.clip
             && drawing.track == presented.track
@@ -2734,7 +2734,10 @@ impl Widget for MainPanel {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.scroll_moved || self.editor.needs_redraw()
+        self.dirty
+            || self.scroll_moved
+            || self.editor.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

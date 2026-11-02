@@ -4353,6 +4353,7 @@ impl Widget for CalendarApp {
             || self.timeline.needs_redraw()
             || self.agenda.needs_redraw()
             || self.tasks.needs_redraw()
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     /// Where the view painted differently from the last presented frame.

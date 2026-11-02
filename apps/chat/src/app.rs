@@ -2365,6 +2365,7 @@ impl Widget for ChatApp {
                 .arriving_wake
                 .get()
                 .is_some_and(|at| at <= ui::motion::frame_now())
+            || ui::widget::Widget::needs_animation_frame(self)
     }
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.needs_redraw() || self.paint_damage.is_recorded() {
