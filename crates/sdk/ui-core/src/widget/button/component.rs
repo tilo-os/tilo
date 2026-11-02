@@ -24,6 +24,10 @@ pub struct ButtonProps {
     /// What pressing it does, in a word or two. An icon-only button is still named by it.
     #[component(required, positional)]
     pub label: String,
+    /// How assistive technology names it, where that says more than the label shows: the
+    /// charge reads "61%" beside its charging glyph and is named "61%, charging". Unset, the
+    /// label names it.
+    pub accessible_name: Option<String>,
     /// A glyph before the label, or instead of it when `icon_only`.
     pub icon: Option<Icon>,
     /// Show only the icon, the label naming the button to assistive technology.
@@ -65,6 +69,7 @@ impl Default for ButtonProps {
     fn default() -> Self {
         Self {
             label: String::new(),
+            accessible_name: None,
             icon: None,
             icon_only: false,
             faces: Vec::new(),
@@ -87,6 +92,7 @@ impl Described for Button {
     fn from_props(key: &str, props: ButtonProps) -> Self {
         let ButtonProps {
             label,
+            accessible_name,
             icon,
             icon_only,
             faces,
@@ -110,6 +116,9 @@ impl Described for Button {
             Some(icon) => Self::new(key, &label).with_icon(icon),
             None => Self::new(key, &label),
         };
+        if let Some(name) = accessible_name {
+            button = button.with_accessible_name(&name);
+        }
         if let Some(role) = role {
             button = button.role(role);
         }
@@ -145,10 +154,16 @@ impl Described for Button {
         } else {
             ButtonRole::default()
         });
+        // The name assistive technology hears: what the app stated, else the label an
+        // icon-only or faces button shows to no one, else none.
+        let heard = props
+            .accessible_name
+            .as_deref()
+            .or_else(|| (props.icon_only || faces).then_some(props.label.as_str()));
         let named = if props.icon_only || faces {
-            self.label.is_empty() && self.accessible_name.as_deref() == Some(props.label.as_str())
+            self.label.is_empty() && heard == self.accessible_name.as_deref()
         } else {
-            props.label == self.label
+            props.label == self.label && heard == self.accessible_name.as_deref()
         };
         let same_face = named
             && props.faces == self.faces

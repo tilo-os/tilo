@@ -2273,6 +2273,10 @@ fn the_bar_draws_the_material_of_the_style_the_person_chose() {
     until_settled(&mut session, |session| says(session, &desk(session).clock));
     set_here(&session, 2);
     until_settled(&mut session, |session| says(session, "are here"));
+    // The desk's first frames draw every translucent body before the compositor has handed
+    // it what stands below it; let the session reach its rest before the frame is kept, as
+    // the captures after a setting change do.
+    settle(&mut session);
     let calm = keep(&mut session, "shell-bar-calm");
     session
         .run_shell_setting("set_bar_finish", vec![serde_json::json!("translucent")])

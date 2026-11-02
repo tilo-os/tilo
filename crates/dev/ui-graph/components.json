@@ -383,6 +383,13 @@
           "positional": true
         },
         {
+          "name": "accessible_name",
+          "doc": "How assistive technology names it, where that says more than the label shows: the charge reads \"61%\" beside its charging glyph and is named \"61%, charging\". Unset, the label names it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "icon",
           "doc": "A glyph before the label, or instead of it when `icon_only`.",
           "type": {

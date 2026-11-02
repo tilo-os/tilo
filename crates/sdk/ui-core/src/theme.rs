@@ -850,10 +850,10 @@ impl Theme {
     }
 
     /// The finish the shell's chrome — its bar and its dock — is made of, as the person chose
-    /// it ([`crate::tokens::ChromeMaterial`]): the bar's own body, the theme's glass (its bar
-    /// material, else its floating material, so a theme without a bar material still gives
-    /// the glass style something to be), or that glass with nothing showing through and every
-    /// light off it.
+    /// it ([`crate::tokens::ChromeMaterial`]): the bar's own body (the stock themes' glass),
+    /// the theme's glass (its bar material, else its floating material, so a theme without a
+    /// bar material still gives the glass style something to be), or that glass with nothing
+    /// showing through and every light off it.
     ///
     /// The same rules as [`Self::finish`] apply to each: forced colours draw the toolkit's
     /// own solid, and reduced transparency makes the glass calm.
@@ -1489,7 +1489,8 @@ mod tests {
     /// The person's choice of chrome material is resolved by the theme alone: glass is the
     /// theme's own bar (else floating) material, calm is that same material with nothing
     /// showing through and every light off, and a theme without a bar body paints its flat
-    /// bar for either. A view picks between them and never states a finish.
+    /// bar's body and takes the floating material for its glass. A view picks between them
+    /// and never states a finish.
     #[test]
     fn chrome_material_resolves_to_the_themes_own_finishes() {
         use crate::tokens::ChromeMaterial;
@@ -1512,14 +1513,35 @@ mod tests {
         );
 
         let dark = Theme::dark();
+        let stock_glass = dark.chrome_material(ChromeMaterial::Glass);
         assert_eq!(
-            dark.chrome_material(ChromeMaterial::Glass),
-            dark.tokens.finishes.floating,
-            "without a bar material, glass is the floating material"
+            dark.tokens.finishes.bar.as_ref(),
+            Some(&stock_glass),
+            "the stock themes declare their own glass bar"
         );
+        assert!(
+            stock_glass.translucent() && stock_glass.blur() > 0.0,
+            "the stock glass is glass: {stock_glass:?}"
+        );
+        assert!(stock_glass.hairline(), "and keeps its hairline");
+        let stock_calm = dark.chrome_material(ChromeMaterial::Calm);
+        assert_eq!(stock_calm.painter(), stock_glass.painter());
+        assert_eq!((stock_calm.blur(), stock_calm.tint()), (0.0, 1.0));
         assert_eq!(
             dark.chrome_material(ChromeMaterial::Bar),
             dark.finish(crate::tokens::SurfaceRole::Bar).clone()
+        );
+        assert_ne!(
+            dark.chrome_material(ChromeMaterial::Glass),
+            stock_calm,
+            "glass and calm read differently over the same wallpaper"
+        );
+        let mut without = Theme::preset(Preset::Dark);
+        without.tokens.finishes.bar = None;
+        assert_eq!(
+            without.chrome_material(ChromeMaterial::Glass),
+            without.tokens.finishes.floating,
+            "without a bar material, glass is the floating material"
         );
 
         let mut reduced = Theme::preset(Preset::Glass);

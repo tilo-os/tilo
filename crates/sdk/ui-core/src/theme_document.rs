@@ -307,8 +307,9 @@ pub struct ThemeMaterial {
     /// Floating chrome: menus, popovers, the palette, sheets, notifications.
     #[serde(default = "ThemeMaterial::stock_floating")]
     pub floating: Finish,
-    /// The top bar's body; absent, the bar stands on the desktop.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The top bar's body, stock where a document leaves it out; `null`, the
+    /// bar stands on the desktop.
+    #[serde(default = "ThemeMaterial::stock_bar")]
     pub bar: Option<Finish>,
     /// What the window group's tab strip stands on, and the lit rim and
     /// hover film of the selectors in it and everywhere else.
@@ -355,6 +356,10 @@ impl ThemeMaterial {
 
     fn stock_floating() -> Finish {
         RoleFinishes::stock().floating
+    }
+
+    fn stock_bar() -> Option<Finish> {
+        RoleFinishes::stock().bar
     }
 
     const fn stock_selector() -> SelectorFinish {

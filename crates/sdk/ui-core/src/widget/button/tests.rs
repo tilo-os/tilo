@@ -1565,17 +1565,17 @@ fn accessibility_reports_role_name_state_and_icon_only_naming() {
         assert_eq!(node.name.as_deref(), Some("Confirm"));
     }
 
-    fn accessibility_visible_label_wins_over_accessible_name() {
+    fn accessibility_stated_name_wins_over_the_visible_label() {
         let b = Button::new("id", "Save").with_accessible_name("Persist");
         let node = Widget::accessibility(&b).unwrap();
-        assert_eq!(node.name.as_deref(), Some("Save"));
+        assert_eq!(node.name.as_deref(), Some("Persist"));
     }
 
     accessibility_reports_button_role_name_and_state();
     accessibility_reflects_disabled_and_focus();
     accessibility_icon_only_button_without_name_is_silent();
     accessibility_icon_only_button_uses_accessible_name();
-    accessibility_visible_label_wins_over_accessible_name();
+    accessibility_stated_name_wins_over_the_visible_label();
 }
 
 #[test]
@@ -1617,8 +1617,8 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
         );
         assert_eq!(
             Widget::accessibility(&button).unwrap().name.as_deref(),
-            Some("Publish"),
-            "the visible label again takes precedence after expansion"
+            Some("Publish document"),
+            "the name the app stated still says it after expansion"
         );
         assert_eq!(Widget::tooltip(&button), Some("Publish this document now"));
     }
@@ -1861,5 +1861,23 @@ fn a_count_stands_inside_the_face_and_leaves_its_parents_margins_alone() {
         badge.y0 >= button.rect.y0 && badge.y1 <= button.rect.y1,
         "inside the face down: {badge:?} in {:?}",
         button.rect
+    );
+}
+
+/// A button's visible label may say less than its name: the charge reads "61%" beside the
+/// charging glyph, and assistive technology hears the charging too.
+#[test]
+fn a_button_named_beyond_its_label_is_announced_with_that_name() {
+    use crate::widget::Widget as _;
+    let named = Button::new("charge", "61%").with_accessible_name("61%, charging");
+    let heard = named.accessibility().expect("a button is announced");
+    assert_eq!(heard.name.as_deref(), Some("61%, charging"));
+    let shown = Button::new("charge", "61%");
+    assert_eq!(shown.accessibility().unwrap().name.as_deref(), Some("61%"));
+    let glyph = Button::icon_only("charge", crate::icons::Icon::Battery, "61%, charging");
+    assert_eq!(
+        glyph.accessibility().unwrap().name.as_deref(),
+        Some("61%, charging"),
+        "an icon-only button keeps the name its label only states"
     );
 }

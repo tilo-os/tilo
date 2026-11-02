@@ -316,15 +316,16 @@ impl Button {
     ) -> Self {
         const TYPE_ID: &str = "tilo.ui.control.invoke";
         let resource_id = format!("tilo.control:{}", self.id);
-        // An icon-only button is named by what a screen reader announces.
-        let label = if self.label.is_empty() {
-            self.accessible_name
-                .clone()
-                .or_else(|| self.tooltip.clone())
-                .unwrap_or_default()
-        } else {
-            self.label.clone()
-        };
+        // A button is named by what a screen reader announces: the name its app gave it where
+        // that says more than the visible label, else the label; an icon-only button has only
+        // that name, falling back to the tooltip so the glyph is never silent.
+        let label = self.accessible_name.clone().unwrap_or_else(|| {
+            if self.label.is_empty() {
+                self.tooltip.clone().unwrap_or_default()
+            } else {
+                self.label.clone()
+            }
+        });
         // Pressing the button is the control's own verb: how agents and
         // scripts press what a person presses directly, never a row of its
         // own in people's lists, where it would repeat the app's actions.
@@ -445,10 +446,11 @@ impl Button {
         Some(count.with_origin((left, top)))
     }
 
-    /// The text isn't painted — it's what a screen reader announces in
-    /// place of the empty visible label. Use for every icon-only toolbar
-    /// control so the glyph isn't silent. A button that shows a label
-    /// doesn't need this; the label is its accessible name.
+    /// How a screen reader announces it, where that says more than the
+    /// visible label: the charge shows "61%" beside a charging glyph and is
+    /// announced as "61%, charging". Use it for every icon-only toolbar
+    /// control so the glyph isn't silent; a button whose label already
+    /// names it keeps the label.
     #[must_use]
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
@@ -2413,25 +2415,25 @@ impl Widget for Button {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let label = localized_label(&self.label);
+        let spoken = |text: &str| {
+            let spoken = i18n!(text);
+            (!spoken.is_empty()).then_some(spoken)
+        };
         // The key the name was resolved from: the app's own copy when its
         // catalogue holds it.
-        let mut key = self.label.as_str();
-        let name = if label.is_empty() {
-            // Icon-only: prefer the explicit accessible name, else fall
-            // back to the tooltip text so the glyph is never silent when
-            // a tooltip is set.
-            key = self
-                .accessible_name
-                .as_deref()
-                .or(self.tooltip.as_deref())
-                .unwrap_or_default();
-            self.accessible_name
-                .as_ref()
-                .map(|n| i18n!(n))
-                .or_else(|| self.tooltip.as_ref().map(|t| i18n!(t)))
-                .filter(|n| !n.is_empty())
+        // A name its app states says what the visible label may not (the charge shows "61%"
+        // and is announced with the charging too); an icon-only button has only that name,
+        // falling back to its tooltip so the glyph is never silent.
+        let (key, name) = if let Some(named) = self.accessible_name.as_deref().and_then(spoken) {
+            (
+                self.accessible_name.as_deref().unwrap_or_default(),
+                Some(named),
+            )
+        } else if label.is_empty() {
+            let key = self.tooltip.as_deref().unwrap_or_default();
+            (key, spoken(key))
         } else {
-            Some(label)
+            (self.label.as_str(), Some(label))
         };
         let interface = name.is_some() && crate::i18n::I18nManager::has_message(key);
         let role = if self.toggled.is_some() {

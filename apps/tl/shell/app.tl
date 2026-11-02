@@ -407,19 +407,14 @@ view network_status() {
 /// The pack's charge as a percentage beside the battery, its glyph the charging battery while
 /// the pack takes charge (or waits for it) and the plain battery otherwise — the power
 /// service's own state, not whether the machine happens to run on the pack; nothing on a
-/// machine with no battery. A compact bar shows the glyph alone, its name saying the charge.
+/// machine with no battery. A compact bar shows the glyph alone. The glyph says the charging,
+/// so the reading is the charge alone and the name assistive technology hears says both.
 view battery_status() {
     let b = device.battery
     if b.present {
         let charging = b.state == "charging" or b.state == "pending-charge"
-        let reading = if space.compact {
-            if charging { "Battery, {b.percentage}%, charging" } else { "Battery, {b.percentage}%" }
-        } else if charging {
-            "{b.percentage}%, charging"
-        } else {
-            "{b.percentage}%"
-        }
-        ui.Button(reading, icon: if charging { .battery_charging } else { .battery }, icon_only: space.compact, role: .bar) {
+        let name = if charging { "{b.percentage}%, charging" } else { "{b.percentage}%" }
+        ui.Button("{b.percentage}%", accessible_name: name, icon: if charging { .battery_charging } else { .battery }, icon_only: space.compact, role: .bar) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }
     }

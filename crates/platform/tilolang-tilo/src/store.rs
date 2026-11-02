@@ -839,10 +839,13 @@ impl TiloStore {
             inner.stats.full_syncs = inner.stats.full_syncs.saturating_add(1);
             inner.mirror = Some(Arc::new(mirror_of(record)));
             inner.rescan();
-            // What an origin derives is not the record's: it is written onto the fresh copy.
+            // What an origin derives is not the record's: it is written onto the fresh copy,
+            // and derived again over the indexes the record's changes left, so reads keep the
+            // items it holds where they are.
             inner.reapply_derived();
             let reached = everything(&before, &inner.index);
             inner.derive_all(&reached, None);
+            inner.rebuild_overlay();
             inner.changed();
             inner.notify_all();
             return true;
@@ -866,6 +869,10 @@ impl TiloStore {
             }
         };
         let (moved, wholes) = inner.derive_all(&reached, Some((&from, &ends)));
+        // The overlay was the old transaction's, and what an origin derives was written onto
+        // the mirror again: derive it over the indexes as the record's changes left them, so a
+        // later write into one of its collections sees the items it holds, at their places.
+        inner.rebuild_overlay();
         for (key, ids) in moved {
             items.entry(key).or_default().extend(ids);
         }

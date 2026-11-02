@@ -255,6 +255,31 @@ impl Finish {
         )
     }
 
+    /// The stock glass material: what a bar and the floating chrome are made of where a person
+    /// asks to see what lies below — the backdrop blurred, left mostly to show and a little
+    /// bent and lit at the rim, so a glass bar reads as glass over any wallpaper rather than
+    /// as its ground. Its tint stays high enough that the theme's ink keeps the contrast
+    /// [`material_band`] holds every backdrop to, in light and in dark.
+    #[must_use]
+    pub fn stock_glass() -> Self {
+        const TINT: f32 = 0.3;
+        const SATURATION: f32 = 1.6;
+        const REFRACTION: f32 = 10.0;
+        const EDGE_HIGHLIGHT: f32 = 0.4;
+        const SPECULAR: f32 = 0.14;
+        Self::builtin(
+            builtin::glass_set(),
+            &[
+                ("blur", crate::tokens::colors::MATERIAL_BLUR_PX),
+                ("tint", TINT),
+                ("saturation", SATURATION),
+                ("refraction", REFRACTION),
+                ("edge_highlight", EDGE_HIGHLIGHT),
+                ("specular", SPECULAR),
+            ],
+        )
+    }
+
     /// The set that draws this finish.
     #[must_use]
     pub fn set(&self) -> &PainterSet {
@@ -454,8 +479,8 @@ pub enum SurfaceRole {
 /// knowing what either is made of.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChromeMaterial {
-    /// What the theme gives a bar's body: flat on the stock themes, the theme's own material
-    /// where it declares one.
+    /// What the theme gives a bar's body: the stock glass material on the stock themes, a
+    /// theme's own material where it declares one, flat where it declares none.
     #[default]
     Bar,
     /// The theme's glass: its bar material, else its floating material.
@@ -482,21 +507,22 @@ pub struct RoleFinishes {
     pub control: Finish,
     /// Floating chrome.
     pub floating: Finish,
-    /// The top bar's body. `None`: the bar has no body of its own and
-    /// stands on the desktop, as the stock bar does.
+    /// The top bar's body, and the theme's glass for a chrome the person asked to see what
+    /// lies below: the stock themes give the bar the glass material. `None`: a theme gives
+    /// the bar no body of its own, and it draws flat.
     pub bar: Option<Finish>,
 }
 
 impl RoleFinishes {
     /// The design language's finishes: opaque windows and controls, the
-    /// blurred floating material, a bar with no body.
+    /// blurred floating material, and a glass bar.
     #[must_use]
     pub fn stock() -> Self {
         Self {
             window: Finish::solid(),
             control: Finish::solid(),
             floating: Finish::stock_floating(),
-            bar: None,
+            bar: Some(Finish::stock_glass()),
         }
     }
 
@@ -507,7 +533,7 @@ impl RoleFinishes {
             window: Finish::solid(),
             control: Finish::solid(),
             floating: Finish::solid(),
-            bar: None,
+            bar: Some(Finish::solid()),
         }
     }
 
@@ -881,7 +907,24 @@ mod tests {
         assert_eq!(*glass_with(4.0, 0.1, 1.0).opaque(), Finish::solid());
         assert_eq!(*glass_with(4.0, 0.1, 1.0).forced(), Finish::solid());
         assert_eq!(*Finish::flat().forced(), Finish::flat());
-        assert_eq!(*RoleFinishes::stock().of(SurfaceRole::Bar), Finish::flat());
+        assert_eq!(
+            *RoleFinishes {
+                bar: None,
+                ..RoleFinishes::stock()
+            }
+            .of(SurfaceRole::Bar),
+            Finish::flat(),
+            "a theme without a bar body draws it flat"
+        );
+        let stock = RoleFinishes::stock();
+        let stock_bar = stock.of(SurfaceRole::Bar);
+        assert!(stock_bar.translucent() && stock_bar.blur() > 0.0);
+        assert!(stock_bar.hairline(), "the stock bar keeps its hairline");
+        assert_eq!(
+            stock.opaque().bar.as_ref(),
+            Some(&Finish::solid()),
+            "nothing may be translucent"
+        );
         assert!(!Finish::flat().hairline());
         assert!(Finish::solid().hairline());
         assert!(!Finish::solid().translucent());
