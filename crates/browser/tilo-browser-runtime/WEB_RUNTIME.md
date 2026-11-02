@@ -34,7 +34,7 @@ wasm-bindgen, binaryen, Node.js.
 ## Cargo features of `tilo-browser-runtime`
 
 The crate has no Cargo features: the one wasm32 build carries the toolkit,
-the page host, the catalogue and the canonical desktop over page-owned rooms.
+the page host, the catalogue and the canonical desktop over page-owned workspaces.
 Native builds compile an empty library.
 
 ## Apps outside the Tilo tree
@@ -60,7 +60,7 @@ it in the immutable layout Cloud serves.
 
 ```js
 import {mountDesktop} from './host.mjs';
-const mount = await mountDesktop(element, {app: 'so.tilo.word-processor', profile, device, room});
+const mount = await mountDesktop(element, {app: 'so.tilo.word-processor', profile, device, workspace});
 mount.actions();                                   // what the app publishes now
 mount.invokeAction(resource, action, {/* args */});
 ```
@@ -69,18 +69,18 @@ mount.invokeAction(resource, action, {/* args */});
 compiled into the bundle, or `desktop` (the default) for the
 canonical desktop (`src/desktop.rs`: `tilo-desktop-surface` over a
 `tilo-desktop-model` tree, every tab an in-process application). The tree
-and each tab's record are kept per room in the profile's storage and
+and each tab's record are kept per workspace in the profile's storage and
 committed with the records themselves, so a reload restores the same
 windows on the same documents. With `peer`, a started certified peer, the
-mount's records and desktop replicate through that peer's room, and
-`invokeAction` also takes the room's own membership actions on its
+mount's records and desktop replicate through that peer's workspace, and
+`invokeAction` also takes the workspace's own membership actions on its
 governance resource, which the host decides:
 
 ```js
-await mount.invokeAction(`workspace.permissions:${room}`, 'remove-member', {person}, {confirm: true});
+await mount.invokeAction(`workspace.permissions:${workspace}`, 'remove-member', {person}, {confirm: true});
 ```
 
-Mounts of one profile, device, room and app share a record: another mount
+Mounts of one profile, device, workspace and app share a record: another mount
 passing the same `record` edits the same document and shows the other's
 changes live, each under its own `author`.
 
@@ -96,13 +96,13 @@ budget.
 ## Collaboration end to end
 
 `crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs` puts native macOS
-apps, headless Chrome pages and a host agent in one room of a local
+apps, headless Chrome pages and a host agent in one workspace of a local
 `tilo-relay dev` host on spare ports, and checks what a person would see: the
 same record on every side; edits native to browser, browser to native and
 browser to browser, with the time until the other side shows them; named
 cursors and carets both ways; a page that joins late; an agent's edit and
 cursor on native and in the pages; and a reloaded page that keeps its device
-and room membership. Per app it runs the native shell with `TILO_COLLAB_HOST`
+and workspace membership. Per app it runs the native shell with `TILO_COLLAB_HOST`
 under a throwaway runtime profile that carries the dev host's user root, two
 pages, then a third, and (with `--agents --agent-model scripted`) an agent
 spawned from a page. It writes `summary.json` and `summary.md` (a check-by-app

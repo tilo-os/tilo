@@ -12,7 +12,7 @@ import {createVoiceTransport} from './web/voice-transport.mjs';
 
 const who = new URL(location.href).searchParams.get('who');
 const tokens = new Set();
-const room = await (await fetch('/api/room')).text();
+const workspace = await (await fetch('/api/room')).text();
 const api = (path, method = 'GET') => fetch(`/api/${who}/${path}`, {method, cache: 'no-store'});
 // Only the certified session crosses this fixture proxy. Call control and
 // all audio/capture/codec/transport code are the production browser modules.
@@ -59,10 +59,10 @@ const audio = {start(options) {
     options.onLevels(levels);
   }});
 }};
-const peerVoice = createPeerVoice({peer: () => certified, room, transport, audio, onReport: report => reports.push(`${report.type}: ${report.error?.message ?? ''}`)});
+const peerVoice = createPeerVoice({peer: () => certified, workspace, transport, audio, onReport: report => reports.push(`${report.type}: ${report.error?.message ?? ''}`)});
 const voice = peerVoice.call;
-const controls = createVoiceControls({voice: peerVoice, room});
-const act = command => controls.execute({app: 'so.tilo.chat', room, record: '', instance: '1', command: {version: 1, intent: 0, command}});
+const controls = createVoiceControls({voice: peerVoice, workspace});
+const act = command => controls.execute({app: 'so.tilo.chat', workspace, record: '', instance: '1', command: {version: 1, intent: 0, command}});
 (async () => {
   for (;;) {
     const events = await (await api('events')).json();

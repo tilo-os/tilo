@@ -170,7 +170,7 @@ pub use collection::{
 };
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
 pub use derived::{Bound, Derived};
-pub use effect::{Answers, Effect, EffectDecl, EffectDecodeError, EffectOffload, NoEffect};
+pub use effect::{Answers, Effect, EffectDecl, EffectDecodeError, EffectOffload, NoEffect, offer};
 pub use evolution::Unreadable;
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
@@ -783,21 +783,30 @@ pub mod __private {
 
     pub trait DescribedParam {
         fn param_type(&self) -> ParamType;
+        /// Its type as a surface publishes it, records and enums by name.
+        fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf>;
     }
 
     impl<T: crate::JsonSchema + ?Sized> DescribedParam for ParamOf<T> {
         fn param_type(&self) -> ParamType {
             param_type_of(&T::json_schema())
         }
+        fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf> {
+            Some(T::field_type)
+        }
     }
 
     pub trait UndescribedParam {
         fn param_type(&self) -> ParamType;
+        fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf>;
     }
 
     impl<T: ?Sized> UndescribedParam for &ParamOf<T> {
         fn param_type(&self) -> ParamType {
             ParamType::Object
+        }
+        fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf> {
+            None
         }
     }
 

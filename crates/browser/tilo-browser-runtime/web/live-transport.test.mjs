@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createLiveTransport, validateLiveEndpoint, MAX_OPEN_RECORDS} from './live-transport.mjs';
 import {createFakeRelay} from './live-fake-relay.test.mjs';
 
-const ROOM = 'a'.repeat(64);
+const WORKSPACE = 'a'.repeat(64);
 const A = 'b'.repeat(64);
 const B = 'c'.repeat(64);
 const ENDPOINT = 'https://host.test:19343/moq/live';
@@ -16,14 +16,14 @@ async function until(predicate, label, limit = 200) {
 
 function relay() {
   // The grant bytes in these tests are the publisher hex, standing in for a signed grant.
-  return createFakeRelay({authorize: bytes => ({namespace: `tilo-live/${ROOM}/${new TextDecoder().decode(bytes)}`})});
+  return createFakeRelay({authorize: bytes => ({namespace: `tilo-live/${WORKSPACE}/${new TextDecoder().decode(bytes)}`})});
 }
 async function open(fake, publisher, directions = {publish: true, subscribe: true}) {
   const transport = createLiveTransport({library: fake.library, carrier: fake.carrier});
   return transport.connect({
     endpoint: ENDPOINT,
     authorization: new TextEncoder().encode(publisher),
-    namespace: ['tilo-live', ROOM, publisher],
+    namespace: ['tilo-live', WORKSPACE, publisher],
     directions,
   });
 }
@@ -36,8 +36,8 @@ test('endpoint and namespace validation', async () => {
   assert.equal(validateLiveEndpoint(ENDPOINT).pathname, '/moq/live');
   const fake = relay();
   const transport = createLiveTransport({library: fake.library, carrier: fake.carrier});
-  await assert.rejects(transport.connect({endpoint: ENDPOINT, authorization: new Uint8Array([1]), namespace: ['tilo-voice', ROOM, A], directions: {publish: true, subscribe: true}}));
-  await assert.rejects(transport.connect({endpoint: ENDPOINT, authorization: new Uint8Array(), namespace: ['tilo-live', ROOM, A], directions: {publish: true, subscribe: true}}));
+  await assert.rejects(transport.connect({endpoint: ENDPOINT, authorization: new Uint8Array([1]), namespace: ['tilo-voice', WORKSPACE, A], directions: {publish: true, subscribe: true}}));
+  await assert.rejects(transport.connect({endpoint: ENDPOINT, authorization: new Uint8Array(), namespace: ['tilo-live', WORKSPACE, A], directions: {publish: true, subscribe: true}}));
 });
 
 test('members discover each other and exchange presence datagrams', async () => {
@@ -70,8 +70,8 @@ test('ops frames arrive in order, and a record is an announced broadcast of its 
   const early = [];
   const late = [];
   a.publishOps(track(1), Uint8Array.of(0));
-  await until(() => fake.records.has(`tilo-live/${ROOM}/${A}/${track(1)}`), 'record announced');
-  await until(() => fake.members.get(`tilo-live/${ROOM}/${A}`)?.tracks.has(track(1)), 'record relayed');
+  await until(() => fake.records.has(`tilo-live/${WORKSPACE}/${A}/${track(1)}`), 'record announced');
+  await until(() => fake.members.get(`tilo-live/${WORKSPACE}/${A}`)?.tracks.has(track(1)), 'record relayed');
   b.subscribeOps(A, track(1), bytes => early.push(bytes[0]));
   await tick();
   for (let i = 1; i < 50; i++) a.publishOps(track(1), Uint8Array.of(i));
@@ -79,7 +79,7 @@ test('ops frames arrive in order, and a record is an announced broadcast of its 
   assert.ok(early.every((v, i, list) => i === 0 || v > list[i - 1]), 'ordered');
   assert.equal(early.at(-1), 49);
   for (let i = 0; i < 3; i++) a.publishOps(track(2), Uint8Array.of(100 + i));
-  await until(() => fake.members.get(`tilo-live/${ROOM}/${A}`)?.tracks.has(track(2)), 'second record relayed');
+  await until(() => fake.members.get(`tilo-live/${WORKSPACE}/${A}`)?.tracks.has(track(2)), 'second record relayed');
   b.subscribeOps(A, track(2), bytes => late.push(bytes[0]));
   a.publishOps(track(2), Uint8Array.of(103));
   await until(() => late.length >= 1, 'late ops');
@@ -130,7 +130,7 @@ test('a reset publisher stream (revocation / egress withdrawn) notifies the subs
   let presenceEnded = 0;
   let opsEnded = 0;
   a.publishOps(track(7), Uint8Array.of(1));
-  await until(() => fake.members.get(`tilo-live/${ROOM}/${A}`)?.tracks.has(track(7)), 'record relayed');
+  await until(() => fake.members.get(`tilo-live/${WORKSPACE}/${A}`)?.tracks.has(track(7)), 'record relayed');
   b.subscribePresence(A, () => {}, () => presenceEnded++);
   b.subscribeOps(A, track(7), () => {}, () => opsEnded++);
   await tick();
@@ -145,7 +145,7 @@ test('ops subscriptions ask for 2.5 s of reordering, skip seal frames and keep e
   const b = await open(fake, B);
   // A host-fed author namespace written directly: one-frame groups plus the
   // relay's seal groups (one empty frame each).
-  const ops = fake.hostTrack(`tilo-live/${ROOM}/${A}`, track(9));
+  const ops = fake.hostTrack(`tilo-live/${WORKSPACE}/${A}`, track(9));
   const got = [];
   let ended = 0;
   b.subscribeOps(A, track(9), bytes => got.push(bytes[0]), () => ended++);
@@ -177,12 +177,12 @@ test('a withdrawn member broadcast ends datagram-only subscriptions and a fresh 
   let presenceEnded = 0;
   let opsEnded = 0;
   a.publishOps(track(3), Uint8Array.of(1));
-  await until(() => fake.members.get(`tilo-live/${ROOM}/${A}`)?.tracks.has(track(3)), 'record relayed');
+  await until(() => fake.members.get(`tilo-live/${WORKSPACE}/${A}`)?.tracks.has(track(3)), 'record relayed');
   b.subscribePresence(A, () => {}, () => presenceEnded++);
   b.subscribeOps(A, track(3), () => {}, () => opsEnded++);
   await tick();
   // Relay withdraws the namespace.
-  fake.withdraw(`tilo-live/${ROOM}/${A}`);
+  fake.withdraw(`tilo-live/${WORKSPACE}/${A}`);
   await until(() => presenceEnded === 1 && opsEnded === 1, 'ended on broadcast close');
   // Fresh announcement of the same member.
   a.close();

@@ -432,7 +432,7 @@ impl OverviewPanel {
 
     /// A click or tap away from the pictured windows: a strip's name or
     /// controls, a row that makes or joins a workspace, a site workspace's
-    /// Leave, a room to go to; anything else leaves the overview.
+    /// Leave, a workspace to go to; anything else leaves the overview.
     pub(super) fn click_at(&mut self, p: Point) {
         if self.strip_click(p) {
             return;
@@ -611,8 +611,8 @@ impl OverviewPanel {
     fn drop_window(&mut self, tab: TabId, at: Point) {
         if let Some(card) = self
             .hit_workspace(at)
-            .filter(|room| Some(*room) != self.here_index())
-            .and_then(|room| self.desk.cards.get(room))
+            .filter(|index| Some(*index) != self.here_index())
+            .and_then(|index| self.desk.cards.get(index))
         {
             let to = card.id;
             self.window_selection = None;

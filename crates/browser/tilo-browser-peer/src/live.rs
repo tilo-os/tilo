@@ -50,7 +50,7 @@ pub enum LiveChange {
     Member([u8; 32], bool),
 }
 
-/// Local and remote live state of one room.
+/// Local and remote live state of one workspace.
 #[derive(Default)]
 pub struct LiveState {
     members: BTreeSet<[u8; 32]>,
@@ -75,7 +75,7 @@ impl LiveState {
         Self::new(tilo_clock::unix_now_ms())
     }
 
-    /// A member joined or left the room's live plane.
+    /// A member joined or left the workspace's live plane.
     pub fn member(&mut self, device: [u8; 32], active: bool) -> LiveChange {
         if active {
             self.members.insert(device);

@@ -98,7 +98,7 @@ impl AppBrokerState {
         let CallerPrincipal::Person(person_id) = person.principal() else {
             return None;
         };
-        let workspace = person.room()?;
+        let workspace = person.workspace()?;
         let grants = self.services.app_action_grants.as_ref()?;
         let row = self
             .eager_catalogue(person, RowScope::Provider(&request.target.provider))

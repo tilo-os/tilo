@@ -251,7 +251,7 @@ impl ChatApp {
             .ok_or("This message carries no recording")?;
         let launch = crate::feedback::replay_launch(recording);
         let call = self.resource_navigation.remote.invoke(
-            launch.target(&ui::framework::reference::room()?),
+            launch.target(&ui::framework::reference::workspace()?),
             launch.argument(),
             None,
         );
@@ -287,7 +287,7 @@ impl ChatApp {
             Ok(tilo_reference::link::RecordSegment::Primary) => None,
             _ => Some(record),
         };
-        let target = reference.open_target(&ui::framework::reference::room()?, app, record);
+        let target = reference.open_target(&ui::framework::reference::workspace()?, app, record);
         let call = self
             .resource_navigation
             .remote

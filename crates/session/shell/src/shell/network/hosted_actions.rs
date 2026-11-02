@@ -34,7 +34,7 @@ fn resource_view_answer(
 ) -> Result<(), String> {
     match page.locator.as_ref() {
         Some(locator)
-            if locator.room != room.to_string()
+            if locator.workspace != room.to_string()
                 || locator.host_device != host
                 || locator.provider != provider =>
         {
@@ -188,7 +188,7 @@ mod tests {
     fn locator() -> ResourceViewLocator {
         ResourceViewLocator {
             origin: "https://room.example".into(),
-            room: room().to_string(),
+            workspace: room().to_string(),
             host_device: HOST.into(),
             provider: PROVIDER.into(),
             web_entry: None,
@@ -238,7 +238,7 @@ mod tests {
     fn an_empty_answer_naming_another_source_is_still_refused() {
         for claimed in [
             ResourceViewLocator {
-                room: uuid::Uuid::nil().to_string(),
+                workspace: uuid::Uuid::nil().to_string(),
                 ..locator()
             },
             ResourceViewLocator {

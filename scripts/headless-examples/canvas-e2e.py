@@ -11,7 +11,7 @@ What it sets up:
 
   apps       the tilolang apps Board, Todo and Chat (apps/tl/*), built with `tilolang build`
              and installed with --install-tapp, and native Tasks from the session's build
-  seed       each tilolang app's room holds what its sample scenario shows ("a release
+  seed       each tilolang app's workspace holds what its sample scenario shows ("a release
              board", "a saturday list", "a busy workspace"), made through the apps' public
              actions, as a person or an agent would make it (see seed_* below)
   windows    one window each of Board, Todo and Chat, each presenting a frame
@@ -99,7 +99,7 @@ class CanvasSession:
 
     def start(self, fresh: bool = True) -> "CanvasSession":
         """Start the session on its state; `fresh` forgets the saved desktop (workspaces and
-        windows, so their rooms too), else it comes back as it was left."""
+        windows, so their workspaces too), else it comes back as it was left."""
         if self.proc is not None:
             raise Failed("the session is running already")
         self.starts += 1
@@ -134,7 +134,7 @@ class CanvasSession:
         # A viewer is looking: headless frames are rasterized, so the frame trace measures
         # painting and not layout alone.
         self.control({"op": "watch", "watching": True})
-        # Apps open in the Home workspace once this device's native owner holds its room.
+        # Apps open in the Home workspace once this device's native owner holds its workspace.
         until("the Home workspace to be native", lambda: (self.state / "native-workspace").is_file(), 120, 0.2)
         return self
 
@@ -318,10 +318,10 @@ def open_apps(session: CanvasSession, apps: list[str]) -> dict:
 # --- seeding ---------------------------------------------------------------------------------
 
 # A scenario runs only in captures: its hidden action may act as named people at given times
-# (`as mia at ...`), which nothing a live room offers may do. So the live room gets the same
-# records through what every app publishes to people and agents: its declared actions, and the
-# room's typed field edit (`apply` with `edit-text`, what a bound text input sends) for a field
-# no declared action sets. The door stamps each change with the session's person; nothing here
+# (`as mia at ...`), which nothing a live workspace offers may do. So the live workspace gets the
+# same records through what every app publishes to people and agents: its declared actions, and
+# the workspace's typed field edit (`apply` with `edit-text`, what a bound text input sends) for a
+# field no declared action sets. The door stamps each change with the session's person; nothing here
 # names an author or a time.
 
 TODO_ITEMS = [  # "a saturday list": title, done, notes (due dates have no action to set them)
@@ -407,7 +407,7 @@ class AppActions:
         return seen
 
     def invoke(self, operation: str, args: dict | None = None, key: str | None = None) -> dict:
-        """Invoke the action `operation` (on the resource `key`, else on the app's root or room),
+        """Invoke the action `operation` (on the resource `key`, else on the app's root or workspace),
         listing it again while an id listed a moment ago has moved on."""
         last = None
         for _ in range(20):
@@ -445,7 +445,7 @@ class AppActions:
 
     def edit_item_text(self, collection: str, key: str, field: str, text: str) -> None:
         """Set the text field `field` of the item `key` of the root's `collection`: the typed edit
-        a bound text input sends, applied through the room's `apply`."""
+        a bound text input sends, applied through the workspace's `apply`."""
         item = key.rsplit(":", 1)[-1]
         action = {
             "app": self.app, "kind": self.root_kind, "action_id": "edit-text",
@@ -522,7 +522,7 @@ def seed_board(session: CanvasSession) -> dict:
 
 
 def seed(session: CanvasSession) -> dict:
-    """Fill each tilolang app's room with its scenario's data, through the apps' public actions."""
+    """Fill each tilolang app's workspace with its scenario's data, through the apps' public actions."""
     return {"todo": seed_todo(session), "chat": seed_chat(session), "board": seed_board(session)}
 
 

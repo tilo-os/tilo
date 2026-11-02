@@ -43,7 +43,7 @@ const INK: Color = Color::from_rgb8(0xd0, 0x30, 0x20);
 const SIDE: f32 = 480.0;
 
 /// A surface that draws a great many fine strokes: far more geometry than a
-/// new renderer reserves room for in its first frame.
+/// new renderer reserves workspace for in its first frame.
 #[derive(Default)]
 struct Hatching {
     rect: Rect,

@@ -18,6 +18,8 @@ pub struct RetainedLaunchBinding {
     pub operation_id: String,
     pub app_id: String,
     pub package_sha256: String,
+    /// This workspace's id. The signed claims JSON names it `room`, and other
+    /// crates build and read a binding under that name: kept as it was.
     pub room: String,
     pub resource_record: String,
     pub target_uid: u32,

@@ -72,8 +72,9 @@ pub struct ConfirmationQuestion {
     pub id: [u8; 32],
     /// The device that asks, as it is labelled to the person.
     pub device_label: String,
-    /// The room the invocation runs in.
-    pub room: String,
+    /// The workspace the invocation runs in.
+    #[serde(rename = "workspace", alias = "room")]
+    pub workspace: String,
     /// The action, and what it acts on, as the asking device labels them.
     pub action_label: String,
     pub resource_label: String,

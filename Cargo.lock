@@ -15648,6 +15648,7 @@ dependencies = [
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-frame-metrics",
+ "tilo-identity-authority",
  "tilo-identity-ceremony",
  "tilo-identity-host",
  "tilo-installed-apps",
@@ -15660,7 +15661,6 @@ dependencies = [
  "tilo-messaging",
  "tilo-messaging-service",
  "tilo-model-client",
- "tilo-moq",
  "tilo-nearby-service",
  "tilo-net",
  "tilo-net-answers",
@@ -18145,6 +18145,7 @@ dependencies = [
  "tilo-seal",
  "tilo-test-env",
  "tokio",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -18617,6 +18618,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-emoji-catalogue",
+ "tilo-resource",
  "tilo-sort",
  "tilo-system-stats",
  "tilo-test-env",
@@ -19419,6 +19421,21 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "tempfile",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-identity-authority"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 3.0.0",
+ "tempfile",
+ "tilo-action-broker",
+ "tilo-clock",
+ "tilo-identity-host",
+ "tilo-test-env",
+ "tilo-user-identity",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -21572,6 +21589,7 @@ dependencies = [
  "tilo-audio-service",
  "tilo-auth",
  "tilo-automation",
+ "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-bluetooth-agent",
@@ -21584,6 +21602,7 @@ dependencies = [
  "tilo-color-pipeline",
  "tilo-compositor",
  "tilo-connectivity-service",
+ "tilo-content",
  "tilo-copy-lint",
  "tilo-crash-records",
  "tilo-desktop",
@@ -21599,6 +21618,7 @@ dependencies = [
  "tilo-durable-writer",
  "tilo-endpoint-reachability",
  "tilo-files",
+ "tilo-identity-authority",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-liveness",
@@ -22087,6 +22107,7 @@ dependencies = [
  "tilo-compositor",
  "tilo-desktop",
  "tilo-desktop-model",
+ "tilo-desktop-surface",
  "tilo-session",
  "tilo-test-env",
  "tilo-vello",

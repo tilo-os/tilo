@@ -80,7 +80,7 @@ fn register(path: &Path, user: [u8; 32], workspaces: &[&str]) {
 /// started.
 fn later_workspace_thumbnails() -> tilo_actions::offload::OffloadRequest {
     tilo_actions::offload::OffloadRequest {
-        room: LATER_WORKSPACE.into(),
+        workspace: LATER_WORKSPACE.into(),
         app_id: "so.tilo.photos".into(),
         address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
         offload: tilo_actions::Offload {

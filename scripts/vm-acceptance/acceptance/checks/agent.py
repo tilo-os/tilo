@@ -44,7 +44,7 @@ PROMPT_POLL_S = 0.5
 DOOR_TOOLS = ["tilo_do", "tilo_find", "tilo_ls", "tilo_read", "tilo_status"]
 # The client names itself so (clientInfo), and the door admits it as this agent.
 AGENT = "acceptance-agent"
-# Admission makes the agent an Observer of the room: it may read. Writing to Notes is
+# Admission makes the agent an Observer of the workspace: it may read. Writing to Notes is
 # the person's grant, as the Agents tab gives it, taken back when the session is over.
 GRANT = {"op": "allow", "subject": f"agent:{AGENT}", "node": "app:so.tilo.notes",
          "kinds": ["read", "undoable"], "answer": "allow", "id": "acceptance-agent-notes"}

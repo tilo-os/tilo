@@ -1,4 +1,4 @@
-//! A joining page is replayed a room's eager records and the head of each
+//! A joining page is replayed a workspace's eager records and the head of each
 //! chained record only. It gets an on-demand record, or an earlier part of a
 //! chain, when it opens it, and from then on that record's changes too; a
 //! page that never opened it gets none of them. A page keeps following the
@@ -17,7 +17,7 @@
 mod participant;
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeMap;
@@ -127,7 +127,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
         )
     };
     let author = peer(author);
-    author.join_placed(support::ROOM, "Workspace").unwrap();
+    author.join_placed(support::WORKSPACE, "Workspace").unwrap();
     ready(&[&author]).await;
     let note = route();
     let archive = record(neighbour_wire::on_demand_record("uuid:archive"));
@@ -140,8 +140,8 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     // Two pages join: each is replayed the note and the chain's head only.
     let early = peer(early);
     let reader = peer(reader);
-    early.join_placed(support::ROOM, "Workspace").unwrap();
-    reader.join_placed(support::ROOM, "Workspace").unwrap();
+    early.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    reader.join_placed(support::WORKSPACE, "Workspace").unwrap();
     let (mut at_early, mut at_reader) = (Received::default(), Received::default());
     for (page, received) in [(&early, &mut at_early), (&reader, &mut at_reader)] {
         until("the eager records", page, received, |received| {
@@ -206,7 +206,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
 
     // A page joining now is replayed the new head, not the part before it.
     let late = peer(late);
-    late.join_placed(support::ROOM, "Workspace").unwrap();
+    late.join_placed(support::WORKSPACE, "Workspace").unwrap();
     let mut at_late = Received::default();
     until("the new head", &late, &mut at_late, |received| {
         received.of(&note).len() == 2 && !received.of(&part(2)).is_empty()

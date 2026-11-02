@@ -28,9 +28,9 @@
 //! their own lane, so what one asks for is never what the other sends.
 //!
 //! A record other than the window's own — one of the person's records,
-//! kept in their own room — has a lane of its own that names its route
+//! kept in their own workspace — has a lane of its own that names its route
 //! ([`ContentLane::record_store`]): its content lives where that record
-//! does, on the person's devices, never in the window's room.
+//! does, on the person's devices, never in the window's workspace.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};

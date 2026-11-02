@@ -1,6 +1,6 @@
 //! Two devices of one call, in one process, with no workspace host, relay or
 //! session between them: a tone one device's microphone sends reaches the
-//! other device's ear over the call's lane, a device the workspace never
+//! other device's ear over the call's lane (both at once, as in a call), a device the workspace never
 //! certified gets no lane at all, and audio on a lossy path still plays
 //! because nothing behind a lost datagram waits for it.
 //!
@@ -33,11 +33,11 @@ use collab_types::ChannelId;
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
+use media::voice::{self, JitterBuffer, PublicationId, ReceivedOpus};
 use opus::{Application, Channels, Decoder, Encoder};
 use tilo_call_lane::{
     ALPN, Calls, Failed, Hello, Lane, Microphone, Opener, Peer, Refusal, Roster, heard,
 };
-use tilo_media::voice::{self, JitterBuffer, PublicationId, ReceivedOpus};
 use tokio::sync::mpsc;
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -484,6 +484,77 @@ async fn the_tone_one_device_sends_reaches_the_other() {
          sent",
         steady.len()
     );
+}
+
+/// Both devices of one call talk and listen at once, as they do in a call:
+/// each hears the other's tone, live, and neither waits behind the other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn both_devices_of_a_call_hear_each_other() {
+    let (channel, alice_keys, bob_keys) = call_keys();
+    let mut alice = side([1; 32], channel).await;
+    let bob = side([2; 32], channel).await;
+    trust(&alice, &bob);
+    let (from_alice, from_bob) = lane(&bob, &mut alice).await;
+
+    let frames = tone(440.0, 60);
+    let speak_from =
+        |peer: Peer, keys: ChannelContentKeys, sender: [u8; 32], frames: Vec<Vec<u8>>| {
+            tokio::spawn(async move {
+                let mut microphone = Microphone::new(&keys, sender, 0).unwrap();
+                speak(&peer, &mut microphone, &frames).await
+            })
+        };
+    // Each microphone on its own task, as a call's capture runs on a thread of
+    // its own: neither device's playout waits on the other's capture.
+    let alice_speaking = speak_from(
+        from_bob.clone(),
+        alice_keys.clone(),
+        alice.id,
+        frames.clone(),
+    );
+    let bob_speaking = speak_from(from_alice.clone(), bob_keys.clone(), bob.id, frames.clone());
+    // Alice's ear hears Bob's frames; Bob's ear hears Alice's.
+    let mut alice_ear = Ear::new(bob_keys, bob.id, Roster::new([bob.id]));
+    let mut bob_ear = Ear::new(alice_keys, alice.id, Roster::new([alice.id]));
+    tokio::join!(
+        listen(&from_bob, &mut alice_ear, |_| true),
+        listen(&from_alice, &mut bob_ear, |_| true),
+    );
+    let sent_by_alice = alice_speaking.await.expect("Alice's microphone finished");
+    let sent_by_bob = bob_speaking.await.expect("Bob's microphone finished");
+
+    for (who, ear, sent) in [
+        ("Alice", &alice_ear, &sent_by_bob),
+        ("Bob", &bob_ear, &sent_by_alice),
+    ] {
+        assert_eq!(
+            (ear.datagrams, ear.dropped),
+            (sent.datagrams, 0),
+            "every datagram of the other's tone reached {who}"
+        );
+        assert_eq!(ear.opened.len(), frames.len(), "{who} opened every frame");
+        let steady: Vec<&Played> = ear
+            .played
+            .iter()
+            .filter(|played| played.sequence < frames.len() as u64)
+            .skip(5)
+            .collect();
+        let heard = steady
+            .iter()
+            .filter(|played| share(&played.samples, 440.0) > 0.5)
+            .count();
+        assert!(
+            heard * 100 >= steady.len() * 90,
+            "{who} heard the other's 440 Hz tone in {heard} of {} played frames",
+            steady.len()
+        );
+        let on_time = prompt(&steady, sent);
+        assert!(
+            on_time * 100 >= steady.len() * 95,
+            "{who} heard the other live: {on_time} of {} played frames within the voice budget",
+            steady.len()
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -47,7 +47,7 @@ use tilo_net::Method;
 use tilo_relay::room_bots::discord::{self, DiscordLink};
 use tilo_relay::room_bots::installed::{self, BotRunner};
 use tilo_relay::room_bots::membership::{HostRootCertifier, keep_member};
-use tilo_relay::room_bots::room_record;
+use tilo_relay::room_bots::workspace_record;
 use tilo_relay::rooms::Rooms;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use ui::tilo_actions::ActionContext;
@@ -227,7 +227,7 @@ impl Workspace {
         AutoCommit::load(
             &self
                 .rooms
-                .record_document(&self.id, app, &room_record(&self.catalogue, app))
+                .record_document(&self.id, app, &workspace_record(&self.catalogue, app))
                 .await
                 .unwrap()
                 .unwrap(),
@@ -253,7 +253,7 @@ impl Workspace {
                 &self.cert,
                 &self.catalogue,
                 CHAT,
-                &room_record(&self.catalogue, CHAT),
+                &workspace_record(&self.catalogue, CHAT),
                 change,
             )
             .await

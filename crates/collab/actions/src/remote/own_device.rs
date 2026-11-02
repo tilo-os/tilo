@@ -120,12 +120,12 @@ impl Invocation {
 
 impl Checked {
     /// The request the other device is sent: the application's action in
-    /// workspace `room`, which both devices share, under the original
+    /// workspace `workspace`, which both devices share, under the original
     /// invocation's id so a retry there observes the first run. A
     /// confirmation this device witnessed names an answer only this device
     /// knows, so it is not carried; a person's own word is.
     #[must_use]
-    pub fn forwarded(&self, room: &str, original: &InvokeRequest) -> InvokeRequest {
+    pub fn forwarded(&self, workspace: &str, original: &InvokeRequest) -> InvokeRequest {
         let confirmation = original
             .confirmation
             .clone()
@@ -134,7 +134,7 @@ impl Checked {
             on_behalf_of: None,
             invocation: original.invocation,
             target: super::application_action_target(
-                room,
+                workspace,
                 &self.app,
                 self.address.resource.clone(),
                 self.address.action.clone(),
@@ -207,7 +207,7 @@ mod tests {
                 ..invocation()
             },
             Invocation {
-                app: "room:app".into(),
+                app: "workspace:app".into(),
                 ..invocation()
             },
             Invocation {
@@ -229,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn the_forwarded_request_names_the_app_in_the_shared_room_under_the_same_id() {
+    fn the_forwarded_request_names_the_app_in_the_shared_workspace_under_the_same_id() {
         let checked = Invocation {
             arguments: Some(serde_json::Map::from_iter([(
                 "workspace".into(),
@@ -250,11 +250,11 @@ mod tests {
             wait_ms: Some(1),
             appearance: None,
         };
-        let forwarded = checked.forwarded("room-1", &original);
+        let forwarded = checked.forwarded("workspace-1", &original);
         assert_eq!(forwarded.invocation, original.invocation);
         assert_eq!(
             application_provider(&forwarded.target.provider),
-            Some(("room-1", "so.tilo.settings"))
+            Some(("workspace-1", "so.tilo.settings"))
         );
         assert_eq!(forwarded.target.address.action, "storage-summary");
         assert!(matches!(forwarded.argument, InvokeArgument::Json(_)));

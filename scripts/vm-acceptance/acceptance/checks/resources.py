@@ -1565,13 +1565,14 @@ def sign_in_to_desktop(ctx, res):
 
 # -- an idle shared workspace (R09) ------------------------------------------
 
-# Every new workspace is placed on this device's own host, which governs its room: the
+# Every new workspace is placed on this device's own host, which governs it: the
 # native owner enrolls with that host as a member and the apps' records are sealed with the
 # content keys its steward hands the broker. R09 makes one with `workspace.create`, waits
-# until the workspace is held here, and measures it idle. The room has no other member device:
+# until the workspace is held here, and measures it idle. The workspace has no other member
+# device:
 # the one way to add one on a single VM, having the person's home relay host the workspace
 # too (Settings, Devices & Sync), is a switch bound to its row that the action catalogue
-# does not offer, and its `tilo.hosting` step answers only callers confined to a room.
+# does not offer, and its `tilo.hosting` step answers only callers confined to a workspace.
 SHARED_WORKSPACE = "Acceptance shared"
 # Two apps that read their records through the broker: their reads are what the broker
 # holds a wait for.
@@ -1591,13 +1592,13 @@ SHARED_SESSION_LOG = (
 
 def _select_workspace(ctx, wid) -> None:
     if ctx.state()["workspace_tree"]["active"] != wid:
-        room = next(w["room"] for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == wid)
-        ctx.vm.invoke("actions", f"workspace.select.{room}")
+        workspace_id = next(w["room"] for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == wid)
+        ctx.vm.invoke("actions", f"workspace.select.{workspace_id}")
         ctx.wait_state(lambda s: s["workspace_tree"]["active"] == wid, 8, f"workspace {wid} active")
 
 
 def held_here(state: dict, workspace) -> bool:
-    """Whether this device holds `workspace`: the replica of its room is installed here,
+    """Whether this device holds `workspace`: the replica of it is installed here,
     not merely in flight (the dump's `held_workspaces`)."""
     held = {row["workspace"] for row in state.get("held_workspaces") or []}
     return workspace["id"] in held

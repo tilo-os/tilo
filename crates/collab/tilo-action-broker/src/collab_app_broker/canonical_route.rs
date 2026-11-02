@@ -182,12 +182,16 @@ impl AppBrokerState {
         .map_err(|_| ActionHostError::InvalidRequest {
             reason: "invalid canonical record route".into(),
         })?;
-        if uuid::Uuid::parse_str(&requested.room).is_err() {
+        if uuid::Uuid::parse_str(&requested.workspace).is_err() {
             return Err(ActionHostError::InvalidRequest {
                 reason: "invalid canonical workspace route".into(),
             });
         }
-        let route = CrdtRoute::record(&requested.app_id, &requested.room, &requested.record_id);
+        let route = CrdtRoute::record(
+            &requested.app_id,
+            &requested.workspace,
+            &requested.record_id,
+        );
         let key = route_key(&route);
         let candidates = self.canonical_candidates(&route)?;
         let mut live = candidates
@@ -270,7 +274,7 @@ impl AppBrokerState {
             .iter()
             .find(|(_, selected)| selected.token == uuid)
             .map(|((workspace, app_id, record_id), _)| CanonicalActionRoute {
-                room: workspace.clone(),
+                workspace: workspace.clone(),
                 app_id: app_id.clone(),
                 record_id: record_id.clone(),
             })

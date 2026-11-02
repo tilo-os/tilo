@@ -656,7 +656,7 @@ fn a_post_the_workspace_refuses_comes_back_to_the_composer() {
         action: "post".into(),
         item: None,
         reason: "the workspace is receiving too many changes from you".into(),
-        by_room: true,
+        by_workspace: true,
     }));
     app.settle_refused_post();
     assert_eq!(app.composer_main.value(), "over the budget");

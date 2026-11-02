@@ -69,9 +69,6 @@ impl ShellOverlayHost {
     /// Why no hint may begin now. In a call or following someone, one that
     /// shows goes too.
     fn control_hints_quiet(&self, now: Instant) -> Option<Quiet> {
-        if self.own_voice_call().is_some() {
-            return Some(Quiet::Call);
-        }
         if self.followed_peer.is_some() {
             return Some(Quiet::Following);
         }

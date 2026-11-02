@@ -227,6 +227,17 @@ impl Service for SessionPower {
                 let resolved = self.link.lid(closed).map(|action| self.link.act(action));
                 Ok(done(resolved))
             }
+            SleepAction::SetProfile { profile } => {
+                let offered = self.link.sleep().profiles;
+                if !offered.contains(&profile) {
+                    return Err(DoorError::Unavailable {
+                        code: "no-such-profile".into(),
+                        reason: format!("this machine offers no {profile} power profile"),
+                    });
+                }
+                self.link.set_profile(&profile);
+                Ok(Started::Done(ActionOutput::default()))
+            }
         }
     }
 }

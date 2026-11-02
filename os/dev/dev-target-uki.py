@@ -6,7 +6,7 @@ installer medium deliberately ships no UKI constructor. So the runner that
 assembles a dev installer medium builds the target's UKI once, from the exact
 kernel, initramfs and pinned hardware DTB of the selected image, and carries it
 beside the target's OCI layout. The VM installer only verifies that payload
-against the installed image and writes the installed command line into the room
+against the installed image and writes the installed command line into the space
 reserved here (`tilo-installer-offline-target dev-target-uki`,
 crates/system/install-helpers/src/dev_target_uki.rs).
 

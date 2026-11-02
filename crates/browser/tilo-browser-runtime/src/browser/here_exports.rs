@@ -7,11 +7,11 @@ use wasm_bindgen::prelude::*;
 
 use super::{error, with_mount, with_mount_quietly};
 
-/// Who is in the room's live layer now: `{own: {publisher, label, user},
+/// Who is in the workspace's live layer now: `{own: {publisher, label, user},
 /// members: [{publisher, kind, label, focus, activity, place}] | null}`,
 /// `members` null while the layer is not live. The bar, the People popover
-/// and the windows show them, each in the colour the room settles for them;
-/// nothing is written to the room.
+/// and the windows show them, each in the colour the workspace settles for them;
+/// nothing is written to the workspace.
 ///
 /// # Errors
 ///
@@ -176,7 +176,7 @@ pub fn desktop_set_here(id: u64, lines: &str) -> Result<(), JsValue> {
     })
 }
 
-/// How many spectators follow the room without taking part.
+/// How many spectators follow the workspace without taking part.
 ///
 /// # Errors
 ///

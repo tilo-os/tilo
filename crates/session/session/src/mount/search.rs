@@ -83,7 +83,7 @@ impl Shared {
             seen.insert(*tab, title.clone());
             self.search.record_place(Place {
                 app: app.clone(),
-                room: room.clone(),
+                workspace: room.clone(),
                 tab: *tab,
                 label: title.clone(),
                 value: String::new(),

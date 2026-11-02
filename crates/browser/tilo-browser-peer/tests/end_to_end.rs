@@ -19,7 +19,7 @@
 mod participant;
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use std::time::Duration;
@@ -123,8 +123,12 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
         host_cert,
         laptop.key.clone(),
     );
-    browser.join_placed(support::ROOM, "Workspace").unwrap();
-    laptop_peer.join_placed(support::ROOM, "Workspace").unwrap();
+    browser
+        .join_placed(support::WORKSPACE, "Workspace")
+        .unwrap();
+    laptop_peer
+        .join_placed(support::WORKSPACE, "Workspace")
+        .unwrap();
     laptop_peer.live_join(workspace()).unwrap();
     ready(&[&browser, &laptop_peer]).await;
 
@@ -153,7 +157,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
 
     // 4. Live over WebTransport: the host grants the browser session, the
     // browser's moq-lite participant publishes presence, and a laptop frame
-    // sent over iroh is bridged into the browser's live room.
+    // sent over iroh is bridged into the browser's live workspace.
     let (grant_tx, grant_rx) = tokio::sync::oneshot::channel();
     browser
         .live_grant_then(
@@ -211,7 +215,9 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
         host_device.cert.clone(),
         tablet.key.clone(),
     );
-    tablet_peer.join_placed(support::ROOM, "Workspace").unwrap();
+    tablet_peer
+        .join_placed(support::WORKSPACE, "Workspace")
+        .unwrap();
     ready(&[&tablet_peer]).await;
     let (grant_tx, grant_rx) = tokio::sync::oneshot::channel();
     tablet_peer

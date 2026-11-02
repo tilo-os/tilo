@@ -24,6 +24,9 @@ pub mod direct;
 pub mod document;
 pub mod document_frame;
 pub mod installation;
+/// Running an offloadable invocation on another device, through the offer
+/// round.
+pub mod offload;
 pub mod placement;
 mod postcard_sink;
 mod shared;

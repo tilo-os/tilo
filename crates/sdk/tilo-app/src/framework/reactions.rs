@@ -9,7 +9,7 @@
 //!
 //! The bar shows them while the record is shared with someone else, or
 //! already has reactions: alone in a record of one's own, nobody would see
-//! a reaction. A past version shows none. Someone the room does not let
+//! a reaction. A past version shows none. Someone the workspace does not let
 //! react (a viewer) sees the reactions there are, and no add button; a
 //! commenter may react, as they may comment.
 //!
@@ -89,7 +89,7 @@ fn shown(
         return None;
     }
     let can_react = me.is_some() && input.dispatch.may_react();
-    // Shared with whoever belongs to the room, here now or not.
+    // Shared with whoever belongs to the workspace, here now or not.
     let shared =
         !input.private && (input.dispatch.workspace_has_others() || input.people.others_here());
     let groups = reactions.groups();

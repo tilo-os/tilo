@@ -1,5 +1,5 @@
 //! A browser peer over HTTPS and a native peer over iroh commit concurrently
-//! to one room; a third observer peer sees every change in exactly the
+//! to one workspace; a third observer peer sees every change in exactly the
 //! host's order — the order of the `Committed` sequence numbers both authors
 //! received. One authority orders both carriers.
 
@@ -17,7 +17,7 @@
 mod participant;
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use collab_types::DocumentMutation;
@@ -86,7 +86,7 @@ async fn https_and_iroh_commits_share_one_host_order() {
     );
     let observer_events = observer_peer.events();
     for peer in [&browser_peer, &laptop_peer, &observer_peer] {
-        peer.join_placed(support::ROOM, "Workspace").unwrap();
+        peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
     }
     ready(&[&browser_peer, &laptop_peer, &observer_peer]).await;
 

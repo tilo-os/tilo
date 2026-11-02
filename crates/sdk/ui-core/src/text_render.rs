@@ -594,7 +594,7 @@ impl OpenTypeTag {
 /// | `Url` | slashed or dotted zero, distinct I and l |
 /// | `Code` | none; set in the mono face |
 ///
-/// Identifiers inside `Prose` (links, email addresses, mentions, room
+/// Identifiers inside `Prose` (links, email addresses, mentions, workspace
 /// aliases) are found by [`crate::text_detect`] and set as `Url` or
 /// `Identifier` on their own. A [`TextStyle`] marked
 /// [`TextStyle::on_security_surface`], and all text while the person's
@@ -613,7 +613,7 @@ pub enum TextKind {
     /// licence keys.
     Secret,
     /// Names that must not be mistaken for another: usernames, handles,
-    /// email addresses, invite codes, room names, other people's file
+    /// email addresses, invite codes, workspace names, other people's file
     /// names.
     Identifier,
     /// Web and other links. An identifier that also sets the zero apart:

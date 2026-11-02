@@ -947,7 +947,8 @@ pub fn write_app(start: &Path, saved: Option<&Path>) -> Result<(PathBuf, Surface
 
 /// Add to the manifest's `[resources] kinds`, which the package signs, the
 /// app's own kinds it does not list yet: a resource added or renamed in
-/// code would otherwise be one a governed room never lets the app create.
+/// code would otherwise be one a governed workspace never lets the app
+/// create.
 /// Kinds the manifest names already stay, whether the sources declare them
 /// or not.
 ///

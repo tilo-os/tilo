@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use tilo_accessibility_settings::OnScreenKeyboard;
-use tilo_desktop::desktop_actions::DESK_RESOURCE;
+use tilo_desktop::desk_verbs::DESK_RESOURCE;
 use tilo_session::ActionPlane;
 use tilo_session::keyboard;
 

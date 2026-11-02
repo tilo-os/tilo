@@ -33,7 +33,7 @@ async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
   const calls = [];
   const shown = [];
   let diagnostics;
-  const peer = {origin: ORIGIN, room: 'current', userPublicKey: USER,
+  const peer = {origin: ORIGIN, workspace: 'current', userPublicKey: USER,
     host: {hostCert: {user_public_key: Array(32).fill(170), device_public_key: Array(32).fill(0xcd)}},
     createInvitation: async () => { calls.push('invite'); return 'signed-secret'; },
     // A member, not the owner, of a host that keeps who asks to join to its owner.
@@ -49,7 +49,7 @@ async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
     joinViaHost,
     boot: async options => { diagnostics = options.diagnostics; return boot ? boot(options, page) : page; }};
   rememberEntered({origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'});
-  // Rooms an earlier visit kept as they were stored, whichever host held them.
+  // Workspaces an earlier visit kept as they were stored, whichever host held them.
   if (remembered.length) {
     localStorage.setItem('tilo-entered-workspaces', JSON.stringify([...JSON.parse(localStorage.getItem('tilo-entered-workspaces')), ...remembered]));
   }
@@ -117,9 +117,9 @@ test('the account choice says it is the account choice, and resolves to the acco
   assert.equal(document.body.children.filter(form => form.dataset.card === 'accounts').length, 0, 'taking an account closes the choice');
 });
 
-test('rooms another host held at the origin of the page host are no longer offered', async () => {
+test('workspaces another host held at the origin of the page host are no longer offered', async () => {
   // The host at ORIGIN was set up again on fresh state twice since this
-  // browser entered rooms there; both rooms went with the hosts before.
+  // browser entered workspaces there; both workspaces went with the hosts before.
   const {shown} = await fixture({remembered: [
     {origin: ORIGIN, room: 'gone-1', hostDevice: 'e1'.repeat(32), name: 'Other'},
     {origin: ORIGIN, room: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
@@ -146,7 +146,7 @@ test('the page keeps switch and invitation actions together and dispatches both'
   assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'other'});
 });
 
-test('a room offers the way back to the person’s own desktop, and their own desktop does not offer itself', async () => {
+test('a workspace offers the way back to the person’s own desktop, and their own desktop does not offer itself', async () => {
   const {calls, shown, diagnostics, page} = await fixture();
   page.link.format = route => `https://web.example/#/${route.target.scope.kind === 'own' ? 'me' : route.target.scope.room}`;
   chooseWorkspace({origin: ORIGIN, room: 'other'});
@@ -163,7 +163,7 @@ test('a room offers the way back to the person’s own desktop, and their own de
   assert.ok(!ownShown.flat().some(action => action.title === 'Open your desktop'));
 });
 
-test('creating a workspace stays in the current room when pending work cannot be saved', async () => {
+test('creating a workspace stays in the current workspace when pending work cannot be saved', async () => {
   const {calls, diagnostics, page} = await fixture();
   page.mount.flush = async () => { calls.push('flush'); throw new Error('storage unavailable'); };
   diagnostics.onHostAction('new-workspace');
@@ -197,7 +197,7 @@ test('creating a workspace remembers it and uses the existing save-and-close swi
 test('the person’s own desktop writes as their root identity and shows them by their name', async () => {
   let mountOwn;
   const {calls} = await fixture({own: true, boot: async (options, page) => { mountOwn = options.deps.mountDesktop; return page; }});
-  // No room's peer certifies who writes there: the browser's root identity does.
+  // No workspace's peer certifies who writes there: the browser's root identity does.
   await mountOwn('surface', {onStatus() {}});
   const [[, options]] = globalThis.__entryPageFixture.mounted;
   assert.equal(options.author, USER);
@@ -207,7 +207,7 @@ test('the person’s own desktop writes as their root identity and shows them by
   assert.ok(own[1].label && own[1].label !== 'Guest', own[1].label);
 });
 
-test('the home workspace’s peer that carries reports from another room asks for a background session', async () => {
+test('the home workspace’s peer that carries reports from another workspace asks for a background session', async () => {
   let homePeer;
   await fixture({boot: async (options, page) => { homePeer = options.deps.homePeer; return page; }});
   const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}, admission: 'https://lounge.example/'};
@@ -220,7 +220,7 @@ test('the home workspace’s peer that carries reports from another room asks fo
   assert.equal(await homePeer(home), carrier);
   assert.equal(joined.length, 1);
   // Not online by it: no seat, face or count in the home workspace; and
-  // nothing live or in calls, which only the room in front has.
+  // nothing live or in calls, which only the workspace in front has.
   assert.equal(joined[0].background, true);
   assert.equal(joined[0].live, false);
   assert.equal(joined[0].voice, false);
@@ -228,7 +228,7 @@ test('the home workspace’s peer that carries reports from another room asks fo
   await assert.rejects(joined[0].wait({attempt: 0}), /did not let this device in/, 'it never waits at the door');
 });
 
-test('an embedded room offers no Invite it could not carry out', async () => {
+test('an embedded workspace offers no Invite it could not carry out', async () => {
   let deps;
   await fixture({search: '?embed=1', boot: async (options, page) => { deps = options.deps; return page; }});
   assert.equal(deps.onInvite, undefined);

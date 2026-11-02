@@ -188,9 +188,10 @@ fn signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs
         )
     });
     assert!(exit.matches(&key, &data, PACKAGE));
-    // /run/tilo/app is the canonical package/room projection, not data_home.
+    // /run/tilo/app is the canonical package/workspace projection, not data_home.
     // The worker writes this proof before publishing its verified socket reply.
-    let app = launcher::appdir::host_app_dir(&data, &launcher::appdir::room_slug(None), PACKAGE);
+    let app =
+        launcher::appdir::host_app_dir(&data, &launcher::appdir::workspace_slug(None), PACKAGE);
     assert!(!data.join("worker-proof").exists());
     assert_eq!(
         std::fs::read(app.join("worker-proof")).unwrap(),

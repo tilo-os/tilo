@@ -1,7 +1,7 @@
 //! Which of the page's peers carries a desktop's problem reports. Reports
-//! go to one channel of one room (a web host's home workspace), whichever
-//! room the person is in: a desktop in another workspace (or the person's
-//! own, peerless desktop) hands its reports to a peer the page keeps in that room, and
+//! go to one channel of one workspace (a web host's home workspace), whichever
+//! workspace the person is in: a desktop in another workspace (or the person's
+//! own, peerless desktop) hands its reports to a peer the page keeps in that workspace, and
 //! the windows a report is about stay the desktop's.
 
 use std::cell::RefCell;

@@ -39,7 +39,7 @@ pub fn adopt_workspace(
     }
     changed |= replace_sorted(
         &mut workspace.sandbox,
-        projection::room_sandbox_of(doc),
+        projection::workspace_sandbox_of(doc),
         |cap| cap.id.clone(),
     );
 

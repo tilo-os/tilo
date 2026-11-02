@@ -255,7 +255,7 @@ impl RoomRecords {
         room: RoomId,
     ) -> PathBuf {
         data_root
-            .join(launcher::appdir::ROOMS_DIR)
+            .join(launcher::appdir::WORKSPACES_DIR)
             .join(room.to_string())
             .join(package_id)
             .join(&*SANDBOX_DATA_SUBDIR)
@@ -273,7 +273,7 @@ impl RoomRecords {
         package_id: &str,
         record_dir: &str,
     ) -> PathBuf {
-        root.join(launcher::appdir::ROOMS_DIR)
+        root.join(launcher::appdir::WORKSPACES_DIR)
             .join("room")
             .join(package_id)
             .join(&*SANDBOX_DATA_SUBDIR)
@@ -519,7 +519,7 @@ impl RoomRecords {
     /// no write to the tree and announces none.
     pub fn replication_due(&self, tree: &crate::shell::state::WorkspaceTree) -> bool {
         self.replicated_generation != Some(self.generation)
-            || !tree.desktop.room_records_inbound.is_empty()
+            || !tree.desktop.workspace_records_inbound.is_empty()
     }
 
     /// Exchange this machine's room indexes with the peer-replication
@@ -540,11 +540,11 @@ impl RoomRecords {
                     .into_iter()
                     .map(|c| (c.id.as_str().to_string(), c.kind.as_str().to_string()))
                     .collect();
-                tree.set_room_records(room, held);
+                tree.set_workspace_records(room, held);
             }
         }
 
-        let inbound = tree.take_inbound_room_records();
+        let inbound = tree.take_inbound_workspace_records();
         if inbound.is_empty() {
             return false;
         }
@@ -679,7 +679,7 @@ fn scan_record_stores(root: &Path) -> ScanResult {
     let Ok(scan_root) = root.canonicalize() else {
         return out;
     };
-    let Ok(rooms) = std::fs::read_dir(root.join(launcher::appdir::ROOMS_DIR)) else {
+    let Ok(rooms) = std::fs::read_dir(root.join(launcher::appdir::WORKSPACES_DIR)) else {
         return out;
     };
     for room in rooms.flatten() {
@@ -793,9 +793,11 @@ impl LocalRecordReader {
             return Vec::new();
         };
         let room_key = room.to_string();
-        let Ok(packages) =
-            std::fs::read_dir(data_root.join(launcher::appdir::ROOMS_DIR).join(&room_key))
-        else {
+        let Ok(packages) = std::fs::read_dir(
+            data_root
+                .join(launcher::appdir::WORKSPACES_DIR)
+                .join(&room_key),
+        ) else {
             return Vec::new();
         };
         let mut found = Vec::new();

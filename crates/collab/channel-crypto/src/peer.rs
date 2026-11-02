@@ -1,7 +1,7 @@
 //! One participant device's side of one channel.
 //!
 //! A channel's MLS group holds exactly the devices its membership lets read
-//! it: a projection the caller computes from the room's membership and
+//! it: a projection the caller computes from the workspace's membership and
 //! access policy (`allowed`), never a second record of who belongs. Every
 //! participant device keeps a [`ChannelPeer`] and follows the same rules:
 //!
@@ -264,7 +264,7 @@ impl ChannelPeer {
     /// Create `channel`'s group with this device alone in it, and queue its
     /// genesis. Only for a channel no genesis is known of: a participant
     /// that holds no state for a channel first waits and catches up with
-    /// what its room retains, then creates the group with [`Self::found`].
+    /// what its workspace retains, then creates the group with [`Self::found`].
     ///
     /// # Errors
     ///

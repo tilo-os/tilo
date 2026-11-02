@@ -71,6 +71,9 @@ pub enum PowerCommand {
     LockScreenDrawn,
     /// Settings changed on disk; replace the service's threshold/lid policy.
     UpdatePolicy(PowerPolicy),
+    /// Switch to the power profile `0` names, one of those
+    /// [`PowerBridge::profiles`] offers.
+    SetProfile(String),
 }
 
 #[derive(Default, Debug)]
@@ -79,6 +82,8 @@ struct BridgeInner {
     commands: Vec<PowerCommand>,
     /// power-profiles-daemon's active profile as the service last read it.
     active_profile: Option<String>,
+    /// The profiles power-profiles-daemon offers, in its order.
+    profiles: Vec<String>,
     /// Whether the machine runs on battery, as the service last saw it;
     /// `None` before it first looked.
     on_battery: Option<bool>,
@@ -160,6 +165,18 @@ impl PowerBridge {
         self.lock().active_profile.clone()
     }
 
+    /// Record the power profiles power-profiles-daemon offers, in its order,
+    /// so a caller can say which it may switch to without asking the daemon.
+    pub fn note_profiles(&self, profiles: Vec<String>) {
+        self.lock().profiles = profiles;
+    }
+
+    /// The power profiles the machine offers, in the daemon's order; empty
+    /// where it offers none.
+    pub fn profiles(&self) -> Vec<String> {
+        self.lock().profiles.clone()
+    }
+
     /// Record whether the machine runs on battery, as the service saw it, so
     /// the compositor resolves the source's idle-suspend timer on a settings
     /// reload. Returns whether it changed since the service last looked: the
@@ -197,6 +214,11 @@ impl PowerBridge {
 
     pub fn update_policy(&self, policy: PowerPolicy) {
         self.push_command(PowerCommand::UpdatePolicy(policy));
+    }
+
+    /// Ask the power service to switch to the power profile `profile` names.
+    pub fn set_profile(&self, profile: &str) {
+        self.push_command(PowerCommand::SetProfile(profile.to_owned()));
     }
 
     fn push_command(&self, command: PowerCommand) {

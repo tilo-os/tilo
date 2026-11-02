@@ -387,7 +387,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: RoomId, act
     };
     use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 
-    let mut placed = Workspace::in_room(WorkspaceId(41), workspace, "Execution isolation");
+    let mut placed = Workspace::in_workspace(WorkspaceId(41), workspace, "Execution isolation");
     placed.set_owner(actor.to_owned());
     let workspace_id = workspace.to_string();
     let directory = tempfile::tempdir().unwrap();

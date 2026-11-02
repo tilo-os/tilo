@@ -1,13 +1,13 @@
 /**
- * Who belongs to a room the host governs, administered by a device of the
+ * Who belongs to a workspace the host governs, administered by a device of the
  * host's own person (the owner): invitations, the people waiting to join,
  * members, their roles and removal. Every call is one `/rooms` request over
  * the peer's session; the host authorizes each one.
  *
- * `createMembership({rooms, room, displayName})` takes `rooms(requestJson)`
- * (the wasm peer's `rooms`, resolving to the reply's JSON), the room's uuid
+ * `createMembership({workspaces, workspace, displayName})` takes `workspaces(requestJson)`
+ * (the wasm peer's `workspaces`, resolving to the reply's JSON), the workspace's uuid
  * and the name invitations record as their inviter. `createWorkspaces`
- * lists, creates and enters the rooms the host governs, before a peer is in
+ * lists, creates and enters the workspaces the host governs, before a peer is in
  * one.
  */
 
@@ -81,10 +81,10 @@ const notice = value => {
   };
 };
 
-export function createMembership({rooms, room, displayName = '', preAdmit, now = () => Date.now()}) {
+export function createMembership({workspaces, workspace, displayName = '', preAdmit, now = () => Date.now()}) {
   const ask = async request => {
-    if (!room) throw new Error('this peer joined no room');
-    const reply = JSON.parse(await rooms(JSON.stringify(request)));
+    if (!workspace) throw new Error('this peer joined no workspace');
+    const reply = JSON.parse(await workspaces(JSON.stringify(request)));
     if (reply.Refused !== undefined) throw new Error(reply.Refused);
     return reply;
   };
@@ -96,11 +96,11 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
     room: value.room, name: value.name, generation: value.generation,
     members: value.members.map(member),
   });
-  const roomOf = reply => summary(expect(reply, 'Room'));
+  const summarize = reply => summary(expect(reply, 'Room'));
 
   return {
     /**
-     * Issue an invitation to the room: resolves to its text, which
+     * Issue an invitation to the workspace: resolves to its text, which
      * `inspectInvitation` and `joinWorkspace` take. It names this person
      * (`displayName`) as the inviter; anyone holding it may ask to join, and
      * the owner admits them. For a wait-list entry (`waitListEntry`, its
@@ -113,7 +113,7 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
       }
       const name = displayName.trim().slice(0, 80);
       const issued = expect(await ask({Invite: {
-        room, request_id: requestId(), role: wireRole(role),
+        room: workspace, request_id: requestId(), role: wireRole(role),
         expires_at_ns: Math.floor((now() + expiresIn * 1000)) * 1e6,
         inviter_name: name || null,
         ...(waitListEntry ? {wait_list_entry: bytesOf(waitListEntry)} : {}),
@@ -134,17 +134,17 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
       if (!Number.isFinite(expiresIn) || expiresIn <= 0 || expiresIn > MAX_INVITATION_SECONDS) {
         throw new RangeError(`expiresIn must be 1 to ${MAX_INVITATION_SECONDS} seconds`);
       }
-      if (!room) throw new Error('this peer joined no room');
+      if (!workspace) throw new Error('this peer joined no workspace');
       const name = displayName.trim().slice(0, 80);
       const reply = JSON.parse(await preAdmit(JSON.stringify({
-        requestId: hex(requestId()), room, role: wireRole(role), tokenSha256, label: label.trim(),
+        requestId: hex(requestId()), workspace, role: wireRole(role), tokenSha256, label: label.trim(),
         expiresInSeconds: Math.floor(expiresIn), inviterName: name || null,
       })));
       if (reply.Refused !== undefined) throw new Error(reply.Refused);
       return encodeInvitation(expect(reply, 'Invitation').signed_invitation);
     },
     /**
-     * The room as governance records it: `{room, name, generation, members,
+     * The workspace as governance records it: `{workspace, name, generation, members,
      * waiting, invitations, notices}`. `members` include removed people
      * (`removed`); `waiting` are people who redeemed an invitation and wait
      * for `admit` or `decline`; `invitations` are those still redeemable;
@@ -154,13 +154,13 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
     async list() {
       const [state, requests, pending, notices] = await Promise.all([
         ask('List').then(reply => {
-          const found = expect(reply, 'Rooms').find(value => value.room === room);
-          if (!found) throw new Error('the host does not govern this room');
+          const found = expect(reply, 'Rooms').find(value => value.room === workspace);
+          if (!found) throw new Error('the host does not govern this workspace');
           return summary(found);
         }),
-        ask({Requests: {room}}).then(reply => expect(reply, 'Requests')),
-        ask({Pending: {room}}).then(reply => expect(reply, 'Pending')),
-        ask({Notices: {room}}).then(reply => expect(reply, 'Notices')),
+        ask({Requests: {room: workspace}}).then(reply => expect(reply, 'Requests')),
+        ask({Pending: {room: workspace}}).then(reply => expect(reply, 'Pending')),
+        ask({Notices: {room: workspace}}).then(reply => expect(reply, 'Notices')),
       ]);
       return {
         ...state, waiting: requests.map(waiting), invitations: pending.map(invitation),
@@ -169,92 +169,92 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
     },
     /** Only the people waiting to join, as `list().waiting`: one request. */
     async requests() {
-      return expect(await ask({Requests: {room}}), 'Requests').map(waiting);
+      return expect(await ask({Requests: {room: workspace}}), 'Requests').map(waiting);
     },
     /** Admit a waiting person (`requestId` from `list().waiting`). */
     async admit(requestIdHex) {
-      return roomOf(await ask({Admit: {room, request_id: bytesOf(requestIdHex)}}));
+      return summarize(await ask({Admit: {room: workspace, request_id: bytesOf(requestIdHex)}}));
     },
     /** Turn a waiting person away. */
     async decline(requestIdHex) {
-      expect(await ask({Decline: {room, request_id: bytesOf(requestIdHex)}}), 'Requests');
+      expect(await ask({Decline: {room: workspace, request_id: bytesOf(requestIdHex)}}), 'Requests');
     },
-    /** The addresses left at the room's door without an invitation, oldest
+    /** The addresses left at the workspace's door without an invitation, oldest
      * first: `{requestId, contact, addedAtMs}` each, nobody to admit but an
      * address to send an invitation to. For whoever may invite. */
     async waitList() {
-      return expect(await ask({WaitList: {room}}), 'WaitList').map(listed);
+      return expect(await ask({WaitList: {room: workspace}}), 'WaitList').map(listed);
     },
     /** Take an address off the wait list (`requestId` from `waitList`). */
     async unlist(requestIdHex) {
-      expect(await ask({Unlist: {room, request_id: bytesOf(requestIdHex)}}), 'WaitList');
+      expect(await ask({Unlist: {room: workspace, request_id: bytesOf(requestIdHex)}}), 'WaitList');
     },
     /** Have the host mail the invitation `link`, made for the wait-list
      * entry `requestIdHex` (`createInvitation`'s `waitListEntry`), to its
      * address; rejects where the host sends no mail. */
     async mailInvite(requestIdHex, link) {
-      expect(await ask({MailInvite: {room, wait_list_entry: bytesOf(requestIdHex), link: String(link)}}), 'WaitList');
+      expect(await ask({MailInvite: {room: workspace, wait_list_entry: bytesOf(requestIdHex), link: String(link)}}), 'WaitList');
     },
     /** Change a member's role. */
     async setRole(userPublicKey, role) {
-      return roomOf(await ask({SetRole: {
-        room, request_id: requestId(), user_public_key: bytesOf(userPublicKey), role: wireRole(role),
+      return summarize(await ask({SetRole: {
+        room: workspace, request_id: requestId(), user_public_key: bytesOf(userPublicKey), role: wireRole(role),
       }}));
     },
     /** Remove a member and every device of theirs. */
     async remove(userPublicKey) {
-      return roomOf(await ask({Remove: {room, request_id: requestId(), user_public_key: bytesOf(userPublicKey)}}));
+      return summarize(await ask({Remove: {room: workspace, request_id: requestId(), user_public_key: bytesOf(userPublicKey)}}));
     },
     /** Remove a person and keep them out until `unban`. The owner, or a
      * Moderator for people ranked below Moderator; the host decides. */
     async ban(userPublicKey) {
-      return roomOf(await ask({Ban: {room, request_id: requestId(), user_public_key: bytesOf(userPublicKey)}}));
+      return summarize(await ask({Ban: {room: workspace, request_id: requestId(), user_public_key: bytesOf(userPublicKey)}}));
     },
     /** Let a banned person be admitted again. */
     async unban(userPublicKey) {
-      return roomOf(await ask({Unban: {room, request_id: requestId(), user_public_key: bytesOf(userPublicKey)}}));
+      return summarize(await ask({Unban: {room: workspace, request_id: requestId(), user_public_key: bytesOf(userPublicKey)}}));
     },
     /** Withdraw an invitation nobody redeemed yet. */
     async cancelInvitation(inviteId) {
-      return expect(await ask({Cancel: {room, request_id: requestId(), invite_id: bytesOf(inviteId)}}), 'Pending')
+      return expect(await ask({Cancel: {room: workspace, request_id: requestId(), invite_id: bytesOf(inviteId)}}), 'Pending')
         .map(invitation);
     },
   };
 }
 
 /**
- * The workspaces (rooms) the host governs, for a device of its own person:
- * `list()` resolves to `[{room, name, generation, members}]`,
- * `create(name)` to the new one, `enter(room)` admits this device as the
- * room's owner and resolves to it. A peer connected with `room` then works
+ * The workspaces the host governs, for a device of its own person:
+ * `list()` resolves to `[{workspace, name, generation, members}]`,
+ * `create(name)` to the new one, `enter(workspace)` admits this device as the
+ * workspace's owner and resolves to it. A peer connected with `workspace` then works
  * in it.
  */
-export function createWorkspaces({rooms}) {
+export function createWorkspaces({workspaces}) {
   const ask = async request => {
-    const reply = JSON.parse(await rooms(JSON.stringify(request)));
+    const reply = JSON.parse(await workspaces(JSON.stringify(request)));
     if (reply.Refused !== undefined) throw new Error(reply.Refused);
     return reply;
   };
-  const workspace = value => ({
+  const described = value => ({
     room: value.room, name: value.name, generation: value.generation,
     members: value.members.map(member),
   });
   const one = reply => {
     if (reply.Room === undefined) throw new Error(`the host answered ${Object.keys(reply)[0]}, not Room`);
-    return workspace(reply.Room);
+    return described(reply.Room);
   };
   return {
     async list() {
       const reply = await ask('List');
       if (reply.Rooms === undefined) throw new Error(`the host answered ${Object.keys(reply)[0]}, not Rooms`);
-      return reply.Rooms.map(workspace);
+      return reply.Rooms.map(described);
     },
     async create(name) {
       if (typeof name !== 'string' || !name.trim()) throw new TypeError('a workspace needs a name');
       return one(await ask({Create: {name: name.trim()}}));
     },
-    async enter(room) {
-      return one(await ask({Enter: {room}}));
+    async enter(workspace) {
+      return one(await ask({Enter: {room: workspace}}));
     },
   };
 }

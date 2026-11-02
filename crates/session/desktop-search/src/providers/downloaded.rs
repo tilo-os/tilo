@@ -48,7 +48,7 @@ const ACTION_STEP: i32 = 1;
 /// The registry's reading, and the app rows' name for an app whose file is
 /// gone: the action that asks where it is now, as the session publishes it.
 pub struct Downloaded {
-    room: String,
+    workspace: String,
     reading: wire::DownloadedApps,
     /// Each row's searchable text, and the row itself without its score.
     fields: Vec<Vec<(String, FieldWeight)>>,
@@ -69,15 +69,15 @@ fn kind_label(kind: DownloadedKind) -> String {
 
 impl Downloaded {
     /// The rows of the registry's reading ([`wire::DownloadedApps`]), asked
-    /// for in `room`, with the actions `published` of it (the session's own
+    /// for in `workspace`, with the actions `published` of it (the session's own
     /// published surface): what a row whose file is gone runs.
     #[must_use]
     pub fn new(
-        room: impl Into<String>,
+        workspace: impl Into<String>,
         reading: wire::DownloadedApps,
         published: &[ActionDescriptor],
     ) -> Self {
-        let room = room.into();
+        let workspace = workspace.into();
         let locate: BTreeMap<String, ActionDescriptor> = published
             .iter()
             .filter(|action| action.address.action == wire::LOCATE)
@@ -87,24 +87,24 @@ impl Downloaded {
         let mut hits = Vec::new();
         let mut steps = Vec::new();
         for app in &reading.apps {
-            let (field, hit) = app_row(&room, app, &locate);
+            let (field, hit) = app_row(&workspace, app, &locate);
             fields.push(field);
             hits.push(hit);
             steps.push(0);
-            for (field, hit) in app_action_rows(&room, app) {
+            for (field, hit) in app_action_rows(&workspace, app) {
                 fields.push(field);
                 hits.push(hit);
                 steps.push(ACTION_STEP);
             }
         }
         for offer in &reading.offers {
-            let (field, hit) = offer_row(&room, offer);
+            let (field, hit) = offer_row(&workspace, offer);
             fields.push(field);
             hits.push(hit);
             steps.push(0);
         }
         Self {
-            room,
+            workspace,
             reading,
             fields,
             hits,
@@ -120,10 +120,10 @@ impl Downloaded {
         &self.reading
     }
 
-    /// The room the rows act in.
+    /// The workspace the rows act in.
     #[must_use]
-    pub fn room(&self) -> &str {
-        &self.room
+    pub fn workspace(&self) -> &str {
+        &self.workspace
     }
 
     /// The app rows: what the person added to their apps.
@@ -137,7 +137,7 @@ impl Downloaded {
 /// One app's searchable text and row: it starts the app, or, when its file
 /// is gone, says so and asks where the file is now.
 fn app_row(
-    room: &str,
+    workspace: &str,
     app: &DownloadedApp,
     locate: &BTreeMap<String, ActionDescriptor>,
 ) -> (Vec<(String, FieldWeight)>, Hit) {
@@ -167,7 +167,7 @@ fn app_row(
         });
         Target::Invoke(Box::new(InvokeTarget {
             app: DESKTOP_APP.into(),
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             address,
             arguments: serde_json::Map::new(),
             descriptor,
@@ -199,7 +199,7 @@ fn app_row(
 /// uninstalling it, which asks them on the uninstall sheet first, the one
 /// question every door asks, and taking it off the apps while its file
 /// stays.
-fn app_action_rows(room: &str, app: &DownloadedApp) -> [(Vec<(String, FieldWeight)>, Hit); 2] {
+fn app_action_rows(workspace: &str, app: &DownloadedApp) -> [(Vec<(String, FieldWeight)>, Hit); 2] {
     // Uninstalling goes to the session, whose uninstall sheet holds the
     // question; the answer is the registry's own action, as from the sheet
     // the app list opens.
@@ -210,7 +210,7 @@ fn app_action_rows(room: &str, app: &DownloadedApp) -> [(Vec<(String, FieldWeigh
     );
     let uninstall = Target::Invoke(Box::new(InvokeTarget {
         app: DESKTOP_APP.into(),
-        room: room.to_owned(),
+        workspace: workspace.to_owned(),
         address: ActionAddress::new(APPS_RESOURCE, ASK_UNINSTALL),
         arguments: ask,
         descriptor: None,
@@ -219,7 +219,7 @@ fn app_action_rows(room: &str, app: &DownloadedApp) -> [(Vec<(String, FieldWeigh
     // the registry's own action.
     let remove = Target::Invoke(Box::new(InvokeTarget {
         app: DESKTOP_APP.into(),
-        room: room.to_owned(),
+        workspace: workspace.to_owned(),
         address: ActionAddress::new(wire::app(&app.desktop_id), wire::REMOVE),
         arguments: serde_json::Map::new(),
         descriptor: None,
@@ -283,7 +283,7 @@ fn action_row(
 
 /// One offer's searchable text and row: adding that program to the person's
 /// apps, with the file it runs from.
-fn offer_row(room: &str, offer: &wire::DownloadedOffer) -> (Vec<(String, FieldWeight)>, Hit) {
+fn offer_row(workspace: &str, offer: &wire::DownloadedOffer) -> (Vec<(String, FieldWeight)>, Hit) {
     let kind = kind_label(offer.kind);
     let title = t_args(
         "search-downloaded-add",
@@ -313,7 +313,7 @@ fn offer_row(room: &str, offer: &wire::DownloadedOffer) -> (Vec<(String, FieldWe
         icon: None,
         target: Target::Invoke(Box::new(InvokeTarget {
             app: DESKTOP_APP.into(),
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             address: ActionAddress::new(wire::RESOURCE, wire::ADD),
             arguments,
             descriptor: None,
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn an_app_is_found_by_its_name_and_starts_through_the_host() {
-        let downloaded = Downloaded::new("room", reading(), &locate());
+        let downloaded = Downloaded::new("workspace", reading(), &locate());
         let hits = downloaded.query("dropped");
         assert_eq!(hits.len(), 3, "the app, and what can be done with it");
         assert_eq!(hits[0].title, "Dropped Tool");
@@ -441,7 +441,7 @@ mod tests {
     /// registry's action.
     #[test]
     fn an_app_offers_uninstalling_it_and_taking_it_off_the_apps() {
-        let downloaded = Downloaded::new("room", reading(), &locate());
+        let downloaded = Downloaded::new("workspace", reading(), &locate());
         let hits = downloaded.query("dropped");
         let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
         assert_eq!(
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn an_offer_is_the_row_to_add_that_program() {
-        let downloaded = Downloaded::new("room", reading(), &locate());
+        let downloaded = Downloaded::new("workspace", reading(), &locate());
         let hits = downloaded.query("waiting");
         assert_eq!(hits.len(), 1, "the app it would become is not an app yet");
         assert_eq!(hits[0].title, "Add Waiting to apps");
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn an_app_whose_file_is_gone_says_so_and_asks_where_it_is() {
-        let downloaded = Downloaded::new("room", reading(), &locate());
+        let downloaded = Downloaded::new("workspace", reading(), &locate());
         let hits = downloaded.query("gone");
         assert_eq!(hits[0].subtitle.as_deref(), Some("Can't find this app"));
         assert_eq!(hits[0].facts, ["Program"]);

@@ -253,7 +253,7 @@ pub(crate) fn register_feedback_startup(peer: u32, startup: Startup) -> Result<(
         Ok(())
     })?;
     // A desktop that mounted first takes it up on its next frame, as do
-    // the desktops in other rooms whose reports this peer carries.
+    // the desktops in other workspaces whose reports this peer carries.
     for desktop in std::iter::once(peer).chain(crate::feedback_route::desktops(peer)) {
         if let Some(wake) = WAKES.with_borrow_mut(|wakes| wakes.remove(&desktop)) {
             wake();
@@ -283,7 +283,7 @@ pub(crate) fn take_startup(peer: u32) -> Option<Startup> {
 }
 
 /// Peer `desktop`'s reports go through peer `carrier`, which is in the
-/// destination's room; a desktop already waiting takes up a startup the
+/// destination's workspace; a desktop already waiting takes up a startup the
 /// carrier holds on its next frame.
 pub(crate) fn send_through(desktop: u32, carrier: u32) {
     crate::feedback_route::send_through(desktop, carrier);

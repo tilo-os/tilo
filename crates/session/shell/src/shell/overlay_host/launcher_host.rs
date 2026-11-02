@@ -59,7 +59,7 @@ impl LauncherHost {
                 launcher_app::definition(),
                 room,
                 LAUNCHER_INSTANCE,
-                ui::record::RecordId::room_default(),
+                ui::record::RecordId::workspace_default(),
                 |context| context.lend(lent),
             )
             .inspect_err(|error| tracing::warn!(%error, "the launcher could not be mounted"))

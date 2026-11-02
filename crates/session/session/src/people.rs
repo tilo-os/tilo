@@ -15,7 +15,7 @@ use std::time::Duration;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, SurfaceHost};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::navigation::{ActivityView, Command};
+use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect};
 use tilo_surface_host::{Doors, Placement, Published, WidgetHost};
 use ui::host_operation::ResourceOperationStart;
 use ui::kurbo::{Affine, Point, Rect};
@@ -432,13 +432,12 @@ impl Panel {
         let Some(workspace) = workspace else {
             return;
         };
-        let command = Command::WorkspaceActivity {
-            generation: crate::GENERATION.to_owned(),
+        let command = ChromeEffect::Activity {
             workspace,
             view: ActivityView::CatchUp,
             author: Some(author.to_owned()),
         };
-        if let Err(error) = self.handle.dispatch(&command, crate::GENERATION) {
+        if let Err(error) = self.handle.dispatch(command) {
             tracing::debug!(%error, "activity could not open for that person");
         }
     }

@@ -39,8 +39,8 @@ use std::sync::{
 use std::time::Duration;
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, ROOM_GOVERNANCE_PROVIDER, ReceiptStatus, RemoteActionTarget,
-    room_governance_resource,
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
 };
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_network_actor::workspace_governance::Request;
@@ -372,8 +372,8 @@ impl ShellNetwork {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         let invoke = invocation(
-            ROOM_GOVERNANCE_PROVIDER,
-            room_governance_resource(&target.room.to_string()),
+            WORKSPACE_GOVERNANCE_PROVIDER,
+            workspace_governance_resource(&target.room.to_string()),
             action,
             arguments,
         );
@@ -935,8 +935,8 @@ impl ShellNetwork {
         if let Some(host) = self.host_governor(room)? {
             let (action, arguments) = ask.governance();
             let invoke = invocation(
-                ROOM_GOVERNANCE_PROVIDER,
-                room_governance_resource(&room.to_string()),
+                WORKSPACE_GOVERNANCE_PROVIDER,
+                workspace_governance_resource(&room.to_string()),
                 action,
                 arguments,
             );

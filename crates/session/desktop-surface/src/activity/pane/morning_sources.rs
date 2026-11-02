@@ -20,7 +20,9 @@ impl WorkspaceActivityPane {
     pub fn chosen_morning_sources(&self) -> &[MorningSource] {
         self.morning_sources
             .get(&self.morning_workspace)
-            .map_or(&[], |preferences| preferences.for_room(&self.room))
+            .map_or(&[], |preferences| {
+                preferences.for_workspace(&self.workspace)
+            })
     }
 
     pub(super) fn selected_morning_source(&self) -> Option<MorningSource> {
@@ -58,7 +60,7 @@ impl WorkspaceActivityPane {
             .morning_sources
             .entry(self.morning_workspace)
             .or_default()
-            .toggle(&self.room, source)
+            .toggle(&self.workspace, source)
         {
             self.host.save_morning_sources(&self.morning_sources);
         }
@@ -77,7 +79,7 @@ impl WorkspaceActivityPane {
             .morning_sources
             .entry(self.morning_workspace)
             .or_default()
-            .toggle(&self.room, source)
+            .toggle(&self.workspace, source)
         {
             self.host.save_morning_sources(&self.morning_sources);
         }
@@ -137,7 +139,7 @@ impl WorkspaceActivityPane {
             if self.morning_evidence(key).is_some()
                 && self
                     .host
-                    .submit_morning_command(&self.room, source, super::MorningCommand::Open)
+                    .submit_morning_command(&self.workspace, source, super::MorningCommand::Open)
                     .is_ok()
             {
                 None
@@ -198,7 +200,7 @@ impl WorkspaceActivityPane {
         }
         self.morning_command_message = self
             .host
-            .submit_morning_command(&self.room, &source, command)
+            .submit_morning_command(&self.workspace, &source, command)
             .err();
     }
     pub(super) fn morning_display_label(
@@ -213,7 +215,7 @@ impl WorkspaceActivityPane {
             .chosen_morning_sources()
             .iter()
             .find(|source| source.key() == key)
-            .and_then(|source| self.host.morning_payload(&self.room, source));
+            .and_then(|source| self.host.morning_payload(&self.workspace, source));
         if let (Some(_), Some((target, time))) = (payload, evidence) {
             t_args(
                 "activity-morning-recorded",
@@ -237,13 +239,16 @@ impl WorkspaceActivityPane {
         if self.scope != WorkspaceScope::ThisWorkspace || self.morning_evidence(key).is_none() {
             return t("activity-morning-payload-unavailable");
         }
-        let mut text = self.host.morning_payload(&self.room, source).map_or_else(
-            || t("activity-morning-payload-unavailable"),
-            |payload| payload.text(),
-        );
+        let mut text = self
+            .host
+            .morning_payload(&self.workspace, source)
+            .map_or_else(
+                || t("activity-morning-payload-unavailable"),
+                |payload| payload.text(),
+            );
         if let Some(status) = self
             .host
-            .morning_command_status(&self.room, source)
+            .morning_command_status(&self.workspace, source)
             .or_else(|| self.morning_command_message.clone())
         {
             text.push('\n');

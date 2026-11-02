@@ -41,7 +41,7 @@ impl WorkspaceTree {
         }
         let owner = Some(owner);
         let readers_are_owner = workspace
-            .room_readers_at(tilo_clock::unix_now())
+            .workspace_readers_at(tilo_clock::unix_now())
             .iter()
             .all(|(reader, _)| Some(reader) == owner);
         let nobody_else_here = workspace

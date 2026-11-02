@@ -1,4 +1,4 @@
-//! Where this person's windows are, for the room's presence: the windows of
+//! Where this person's windows are, for the workspace's presence: the windows of
 //! the strip shown, as the desktop surface laid them out, each named by its
 //! app and the short digest of its record only
 //! ([`tilo_relay_protocol::live::LiveLayout`], placed by the rule native
@@ -13,7 +13,7 @@ use ui::kurbo::Rect;
 use super::Mount;
 
 impl Mount {
-    /// Where this person is on the desktop, for the room's presence:
+    /// Where this person is on the desktop, for the workspace's presence:
     /// `{focus, place, layout}`, the record of the focused window (the
     /// desktop's own record where no window is focused or it has none yet),
     /// the strip shown and where its windows are

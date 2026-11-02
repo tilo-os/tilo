@@ -2,7 +2,7 @@
 
 A14 opens Files as the session's first Files launch and times it from the app's own
 startup marks (process start to `first-frame-presented`, written by every Tilo app to
-`<data home>/tilo-rooms/<room>/<package>/.local/state/startup-<N>.json`). A frame alone
+`<data home>/tilo-rooms/<workspace>/<package>/.local/state/startup-<N>.json`). A frame alone
 is not a working window, so it also reads the folder listing off the app's AT-SPI tree
 with the checkout's external AT-SPI client (tools/atspi_external_client.py), copied into
 the guest for the check: it is test tooling and the image does not ship it.

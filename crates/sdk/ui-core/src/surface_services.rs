@@ -14,6 +14,11 @@
 //! [`connect`] runs once, before the app's window opens. A process that is no
 //! surface connects nothing: an app started by the launcher already holds its
 //! connection, and a process started by hand has no session to reach.
+//!
+//! The session records the launch of the surface it starts before the app may
+//! reach it, and releases it only then
+//! (`runtime_portal::registration_gate`): [`connect`] waits for that release,
+//! so its connection is never ahead of the record the broker attests it by.
 
 #[cfg(feature = "broker-transport")]
 use std::path::Path;
@@ -64,6 +69,17 @@ pub fn connect() {
     #[cfg(feature = "broker-transport")]
     {
         if !is_surface() {
+            return;
+        }
+        // The session records this process's launch before it may reach it,
+        // and holds it here until then: the gate is the session's release,
+        // sent once the record exists, so the connection below is one the
+        // broker can attest and never arrives ahead of its record.
+        if std::env::var_os(runtime_portal::registration_gate::LAUNCH_REGISTRATION_STDIN_ENV)
+            .is_some()
+            && let Err(error) = runtime_portal::registration_gate::wait_on_stdin()
+        {
+            tracing::warn!(%error, "a surface app was not registered with its session");
             return;
         }
         let Some(socket) = std::env::var_os(SOCKET_ENV) else {

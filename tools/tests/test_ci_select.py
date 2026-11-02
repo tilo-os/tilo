@@ -1590,19 +1590,19 @@ class DependencyKindTests(unittest.TestCase):
             self.assertLessEqual(selected, ci_select.closure({name}, reverse), name)
 
     def test_the_owner_commit_vocabulary_no_longer_lints_relay_or_the_wasm_crates(self):
-        # The workspace shape around tilo-owner-commit when it moved out of
-        # tilo-peer-state. Every edge kind is the one Cargo metadata reported.
+        # A workspace shape around tilo-owner-commit, with every edge kind
+        # Cargo metadata reports.
         graph = {
             "tilo-owner-commit": [],
             "tilo-action-broker": [("tilo-owner-commit", None)],
-            "tilo-joined-room": [("tilo-owner-commit", None)],
+            "tilo-owner-replica": [("tilo-owner-commit", None)],
             "shell": [("tilo-owner-commit", None)],
             "tilo-runtime": [("tilo-owner-commit", None)],
             "agent": [("shell", "dev")],
-            "tilo-browser-peer": [("tilo-joined-room", "dev")],
+            "tilo-browser-peer": [("tilo-owner-replica", "dev")],
             "tilo-relay": [("tilo-browser-peer", None)],
             "tilo-agent-participant": [("tilo-browser-peer", None), ("agent", None)],
-            "tilo-room-load": [("tilo-browser-peer", None)],
+            "tilo-sync-load": [("tilo-browser-peer", None)],
             "tilo-browser-runtime": [("tilo-browser-peer", None)],
             "tilo-web-desktop": [("tilo-browser-runtime", None)],
             "tilo-relay-shell": [("tilo-relay", "dev")],
@@ -1615,12 +1615,12 @@ class DependencyKindTests(unittest.TestCase):
         plan = ci_select.make_plan(metadata, self.root, ["tilo-owner-commit/src/lib.rs"], 2)
         self.assertEqual(plan["selected_count"], 11)
         self.assertEqual(set(plan["selected"]) - set(self.contracts), {
-            "tilo-owner-commit", "tilo-action-broker", "tilo-joined-room", "shell",
+            "tilo-owner-commit", "tilo-action-broker", "tilo-owner-replica", "shell",
             "tilo-runtime", "agent", "tilo-browser-peer"})
         self.assertEqual(plan["wasm"], [])
         self.assertFalse(plan["wasm_required"])
         # Every direct dependant, the dev one included, is still tested.
-        self.assertLessEqual({"tilo-action-broker", "tilo-joined-room", "shell", "tilo-runtime"},
+        self.assertLessEqual({"tilo-action-broker", "tilo-owner-replica", "shell", "tilo-runtime"},
                              set(plan["tested"]))
         # A change to browser-peer itself still reaches relay and the wasm crates.
         plan = ci_select.make_plan(metadata, self.root, ["tilo-browser-peer/src/lib.rs"], 2)

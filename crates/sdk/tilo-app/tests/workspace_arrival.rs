@@ -45,7 +45,7 @@ impl ResourceApp for Boards {
     type Resource = Board;
     const ID: &'static str = "so.tilo.test-workspace-arrival";
     const TITLE: &'static str = "Boards";
-    const ROOM_RECORD: bool = true;
+    const WORKSPACE_RECORD: bool = true;
 
     fn view(cx: &mut ViewCx<Board>) -> Element {
         VIEWS.with(|views| views.set(views.get().saturating_add(1)));
@@ -131,7 +131,7 @@ impl ResourceApp for ButtonBoards {
     type Resource = Board;
     const ID: &'static str = "so.tilo.test-workspace-arrival";
     const TITLE: &'static str = "Boards";
-    const ROOM_RECORD: bool = true;
+    const WORKSPACE_RECORD: bool = true;
 
     fn view(cx: &mut ViewCx<Board>) -> Element {
         Box::new(cx.button("board-add-card", Board::ADD.with("card".to_owned())))

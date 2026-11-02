@@ -11,7 +11,7 @@ use ui::headless::FrameHarness;
 use ui::permissions::{Actor, KindSet, Role, UserId, policy};
 use ui::record::{RecordCheckout, RecordOwners};
 
-const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const ID: &str = "0123456789abcdef0123456789abcdef";
 
 fn enrollment() -> Enrollment {
@@ -19,14 +19,15 @@ fn enrollment() -> Enrollment {
     let reporter = SigningKey::from_bytes(&[42; 32]);
     Enrollment {
         destination: Destination {
-            room: ROOM.into(),
+            room: WORKSPACE.into(),
             provider: "record:so.tilo.chat:".into(),
             channel: "feedback".into(),
         },
-        owner: Caller::authenticated([11; 32], owner.verifying_key().to_bytes()).in_workspace(ROOM),
+        owner: Caller::authenticated([11; 32], owner.verifying_key().to_bytes())
+            .in_workspace(WORKSPACE),
         reporter: Caller::authenticated([12; 32], reporter.verifying_key().to_bytes())
-            .in_workspace(ROOM),
-        permissions: PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Owner)
+            .in_workspace(WORKSPACE),
+        permissions: PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Owner)
             .at_unix_time(0),
     }
 }
@@ -34,10 +35,10 @@ fn enrollment() -> Enrollment {
 /// `person`, holding no role in the workspace.
 fn no_member(person: &str) -> PermissionContext {
     PermissionContext::new(
-        Actor::person(person).in_workspace(ROOM),
+        Actor::person(person).in_workspace(WORKSPACE),
         vec![],
         ui::permissions::Standing::person(
-            policy::WorkspacePolicy::unowned(ROOM, &policy::Subject::Role(Role::Owner)),
+            policy::WorkspacePolicy::unowned(WORKSPACE, &policy::Subject::Role(Role::Owner)),
             person,
         ),
     )
@@ -48,7 +49,7 @@ fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
     policy::Grant::new(
         "feedback-submit",
         policy::Subject::person(hex::encode([12; 32])),
-        TreePath::workspace(ROOM).join(&chat_action(
+        TreePath::workspace(WORKSPACE).join(&chat_action(
             "channels",
             "feedback",
             Some(destination::SUBMIT_FIELD),
@@ -139,7 +140,7 @@ fn startup(current: Enrollment) -> Startup {
 fn canonical(profile: &Path) -> (RecordStore, FrameHarness) {
     let admitted = enrollment();
     let mut owners = RecordOwners::new(profile.to_owned());
-    let records = owners.open(chat::definition().app_id(), ROOM).unwrap();
+    let records = owners.open(chat::definition().app_id(), WORKSPACE).unwrap();
     let checkout = RecordCheckout::package_primary(chat::definition().record_kind.clone());
     let missing = match records.try_open_record(&checkout) {
         Ok(_) => false,
@@ -167,7 +168,7 @@ fn canonical(profile: &Path) -> (RecordStore, FrameHarness) {
             .unwrap();
     }
     records.try_flush().unwrap();
-    let views = Rc::new(InstanceViewStore::new(profile.to_owned(), "device", ROOM).unwrap());
+    let views = Rc::new(InstanceViewStore::new(profile.to_owned(), "device", WORKSPACE).unwrap());
     let target = LaunchTarget::Record {
         checkout,
         reveal: None,
@@ -397,7 +398,7 @@ fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
         [11; 32],
         SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes(),
     )
-    .in_workspace(ROOM);
+    .in_workspace(WORKSPACE);
     assert!(matches!(
         service.receipt(&report, &wrong_owner),
         Err(Error::ReceiptMismatch)
@@ -407,9 +408,9 @@ fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
         [15; 32],
         SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes(),
     )
-    .in_workspace(ROOM);
+    .in_workspace(WORKSPACE);
     wrong_reporter.permissions =
-        PermissionContext::member_of(ROOM, hex::encode([15; 32]), Role::Owner).at_unix_time(0);
+        PermissionContext::member_of(WORKSPACE, hex::encode([15; 32]), Role::Owner).at_unix_time(0);
     assert!(matches!(
         service.receipt(&report, &wrong_reporter),
         Err(Error::ReceiptMismatch)
@@ -709,7 +710,8 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
     let mut host = Host::open(Rc::new(MemoryStore::new()), setup).unwrap();
     host.receipt(&report).unwrap().unwrap();
     current.borrow_mut().permissions =
-        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Viewer).at_unix_time(0);
+        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer)
+            .at_unix_time(0);
     // Read-only admission can confirm a previous durable report, never resend it.
     host.receipt(&report).unwrap().unwrap();
     assert!(host.send(&report).is_err());
@@ -742,23 +744,27 @@ fn startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_replacement() 
     // Filing feedback is commenting: a commenter files, a viewer cannot.
     let mut commenter = enrollment();
     commenter.permissions =
-        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Commenter).at_unix_time(0);
+        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Commenter)
+            .at_unix_time(0);
     assert!(commenter.authorize().is_ok());
     let mut viewer = enrollment();
     viewer.permissions =
-        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Viewer).at_unix_time(0);
+        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer)
+            .at_unix_time(0);
     assert!(viewer.authorize().is_err());
-    let mut other_room = enrollment();
-    other_room.destination.room = "other".into();
-    assert!(other_room.authorize().is_err());
+    let mut other = enrollment();
+    other.destination.room = "other".into();
+    assert!(other.authorize().is_err());
     // A workspace's owner holds everything; a member's grants can be refused.
     let mut blocked = enrollment();
-    blocked.permissions = PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Editor)
-        .with_grant(submit_grant(KindSet::ALL, Answer::Deny))
-        .at_unix_time(0);
+    blocked.permissions =
+        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Editor)
+            .with_grant(submit_grant(KindSet::ALL, Answer::Deny))
+            .at_unix_time(0);
     let mut editor = blocked.clone();
     editor.permissions =
-        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Editor).at_unix_time(0);
+        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Editor)
+            .at_unix_time(0);
     assert!(editor.authorize().is_ok());
     assert!(blocked.authorize().is_err());
     let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
@@ -803,9 +809,9 @@ fn changed_reporter_before_dispatch_cannot_enqueue_under_another_identity() {
         [15; 32],
         SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes(),
     )
-    .in_workspace(ROOM);
+    .in_workspace(WORKSPACE);
     current.borrow_mut().permissions =
-        PermissionContext::member_of(ROOM, hex::encode([15; 32]), Role::Owner);
+        PermissionContext::member_of(WORKSPACE, hex::encode([15; 32]), Role::Owner);
     assert!(matches!(
         transport.enqueue(&submission()),
         Err(Error::ReceiptMismatch)
@@ -833,12 +839,13 @@ fn expired_snapshot_grants_and_failed_host_clocks_cannot_authorize_send() {
     let now = tilo_clock::try_unix_now().unwrap();
     assert!(now > 0, "execution clock must be observable");
     let mut expired = enrollment();
-    expired.permissions = PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Viewer)
-        .with_grant(
-            submit_grant(KindSet::of(ActionKind::Undoable), Answer::Allow)
-                .with_lifetime(policy::Lifetime::Until(now.saturating_mul(1000))),
-        )
-        .at_unix_time(now.saturating_sub(1));
+    expired.permissions =
+        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer)
+            .with_grant(
+                submit_grant(KindSet::of(ActionKind::Undoable), Answer::Allow)
+                    .with_lifetime(policy::Lifetime::Until(now.saturating_mul(1000))),
+            )
+            .at_unix_time(now.saturating_sub(1));
     assert!(expired.authorize().is_err());
     let mut unavailable = enrollment();
     unavailable.permissions =
@@ -867,7 +874,7 @@ fn persisted_owner_pin_and_current_role_survive_reconnect_without_reauthorizatio
     .unwrap();
     let mut host = Host::open(store.clone(), setup).unwrap();
     current.borrow_mut().permissions =
-        PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Viewer);
+        PermissionContext::member_of(WORKSPACE, hex::encode([12; 32]), Role::Viewer);
     assert!(host.send(&submission()).is_err());
     drop(host);
     let mut changed = enrollment();
@@ -875,7 +882,7 @@ fn persisted_owner_pin_and_current_role_survive_reconnect_without_reauthorizatio
         [11; 32],
         SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes(),
     )
-    .in_workspace(ROOM);
+    .in_workspace(WORKSPACE);
     assert!(matches!(
         Host::open(store, startup(changed)),
         Err(Error::ReceiptMismatch)

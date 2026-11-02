@@ -124,7 +124,7 @@ pub enum Pick {
     /// Who: a person, an agent or an app of the workspace, as a
     /// `tilo_action_policy::Subject`.
     Subject,
-    /// Where: a node of the workspace's tree, as its path below the room.
+    /// Where: a node of the workspace's tree, as its path below the workspace.
     Node,
     /// One of the workspace's grants, by its id.
     Grant,

@@ -14,8 +14,8 @@ use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governan
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CatalogueQuery, Confirmation, InvokeArgument,
-    InvokeRequest, Pending, ROOM_GOVERNANCE_PROVIDER, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget,
+    InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+    WORKSPACE_GOVERNANCE_PROVIDER,
 };
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_protocol::rooms::{JoinReply, JoinStep, join_proof_digest};
@@ -117,7 +117,7 @@ pub(super) fn request(room: &str, verb: &str, argument: Value) -> InvokeRequest 
     };
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget::room_governance(room, verb),
+        target: RemoteActionTarget::workspace_governance(room, verb),
         argument: if argument.is_empty() {
             InvokeArgument::None
         } else {
@@ -144,7 +144,7 @@ pub(super) async fn governed(rooms: &Rooms) -> (String, u64, HostRoomActions) {
 /// The verbs `caller` is offered on the room `workspace_id` carries.
 async fn offered(host: &HostRoomActions, workspace_id: u64, caller: &Caller) -> Vec<String> {
     let query = CatalogueQuery {
-        provider: Some(ROOM_GOVERNANCE_PROVIDER.into()),
+        provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
         max_results: 100,
         ..CatalogueQuery::default()
     };

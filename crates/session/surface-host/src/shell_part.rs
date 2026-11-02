@@ -186,6 +186,21 @@ fn session_addresses() -> BTreeMap<String, String> {
     })
 }
 
+/// The session's loose actions as its description declares them, by id.
+fn session_verbs() -> BTreeMap<String, ui::tilo_actions::surface::VerbSurface> {
+    match tilolang_tilo::catalogue::parse_surfaces(SESSION_DESCRIPTION) {
+        Ok(surfaces) => surfaces
+            .into_iter()
+            .flat_map(|surface| surface.verbs)
+            .map(|verb| (verb.id.clone(), verb))
+            .collect(),
+        Err(error) => {
+            tracing::error!(%error, "the session's description does not read");
+            BTreeMap::new()
+        }
+    }
+}
+
 /// The shell package's ids lock, as it ships.
 #[must_use]
 pub const fn shell_ids() -> &'static str {
@@ -326,6 +341,8 @@ pub struct WindowReading {
     pub origin_app: String,
     pub icon: String,
     pub strip: String,
+    /// Its strip's id, as moving a window there names the strip.
+    pub strip_key: String,
     pub workspace: String,
     /// How recently it was in front: lower is more recent.
     pub recency: i64,
@@ -1112,6 +1129,7 @@ impl SessionOrigin {
                         ("origin_app", text(&w.origin_app)),
                         ("icon", text(&w.icon)),
                         ("strip", text(&w.strip)),
+                        ("strip_key", text(&w.strip_key)),
                         ("workspace", text(&w.workspace)),
                         ("recency", Value::Int(w.recency)),
                         ("focused", Value::Bool(w.focused)),
@@ -1823,6 +1841,7 @@ impl Platform for ShellPlatform {
         host.runtime().set_invoker(PlaceInvoker {
             link: Rc::clone(&self.link),
             session: session_addresses(),
+            verbs: session_verbs(),
         });
         0
     }
@@ -2347,6 +2366,14 @@ impl ShellPart {
             .downcast_mut::<AppWindow>()
     }
 
+    fn window_ref(&self) -> Option<&AppWindow> {
+        self.widgets
+            .host()
+            .root_widget()
+            .as_any()?
+            .downcast_ref::<AppWindow>()
+    }
+
     /// Commit what the instance planned to the shell's record, as the door would, and bring
     /// the instance up to date with it. Whether anything was committed.
     fn commit(&mut self) -> bool {
@@ -2512,14 +2539,15 @@ impl ShellPart {
         &self.refusals
     }
 
-    /// Whether the part owes a turn: input, a turn that ran out of exchanges, the session's
-    /// work, or its window holding something for the instance — a layout at a new size (its
-    /// display told after it settled) gave the bar a new space, which the views read.
-    fn due(&mut self) -> bool {
-        self.input
-            || self.again
-            || self.origin.borrow().due()
-            || self.window().is_some_and(|window| window.telling())
+    /// Whether the window holds something for the instance it has not sent: the space a layout
+    /// gave a view, or what the person did. The part turns to hand it over, so a view is told
+    /// the space it has without anything being touched, rather than at the person's next press.
+    fn owes(&self) -> bool {
+        self.window_ref().is_some_and(AppWindow::owes)
+    }
+
+    fn due(&self) -> bool {
+        self.input || self.again || self.owes() || self.origin.borrow().due()
     }
 }
 
@@ -2706,6 +2734,11 @@ impl SurfaceHost for ShellPart {
     }
 
     fn next_deadline(&self) -> Option<std::time::Instant> {
+        // What the window owes the app goes over before the part settles: it asks for the
+        // frame that hands it over rather than sleeping on it.
+        if self.owes() {
+            return Some(std::time::Instant::now());
+        }
         self.widgets.next_deadline()
     }
 
@@ -2718,6 +2751,12 @@ impl SurfaceHost for ShellPart {
             self.turn();
         }
         let mut drew = self.draw();
+        // The frame's layout gave the views their space: the app hears of it now, so the next
+        // frame shows what a view makes of the space it has, and a part nobody touches is told
+        // it rather than waiting for the person's first press.
+        if self.owes() && self.turn() {
+            drew |= self.draw();
+        }
         // The toolkit takes input in at its frame: what the person pressed reports there, and
         // the instance hears of it now rather than at the next input.
         if input {

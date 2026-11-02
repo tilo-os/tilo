@@ -91,11 +91,14 @@ fn written(tile: &TileContent, tab_title: &str) -> TileContent {
     }
 }
 
-/// The record's workspace for `room`: the one under the room's own id, else
-/// the first.
-fn record_workspace(desktop: SharedDesktop, room: RoomId) -> Option<(Workspace, SharedDesktop)> {
+/// The record's workspace for `identity`: the one under the workspace's own id,
+/// else the first.
+fn record_workspace(
+    desktop: SharedDesktop,
+    identity: RoomId,
+) -> Option<(Workspace, SharedDesktop)> {
     let mut desktop = desktop;
-    let id = WorkspaceId::of_room(room);
+    let id = WorkspaceId::of_room(identity);
     let index = desktop
         .tree
         .workspaces
@@ -135,7 +138,7 @@ impl Writer<'_> {
     pub const NOTHING_CARRIED: &'static dyn Fn(u64) -> bool = &|_| false;
 }
 
-/// Write `workspace`, the layout of `room` as other devices are to see it,
+/// Write `workspace`, the layout of `workspace` as other devices are to see it,
 /// into the record `doc`, changing only what differs from what it holds.
 ///
 /// `workspace` is this device's, with its own legacy windows already turned
@@ -148,11 +151,11 @@ impl Writer<'_> {
 /// The document refused a write.
 pub fn write(
     doc: &mut AutoCommit,
-    room: RoomId,
+    identity: RoomId,
     workspace: &Workspace,
     writer: &Writer<'_>,
 ) -> Result<bool, automerge::AutomergeError> {
-    let held = super::read(&*doc, None).and_then(|desktop| record_workspace(desktop, room));
+    let held = super::read(&*doc, None).and_then(|desktop| record_workspace(desktop, identity));
     let (held_tabs, mut authors, held_records) = match &held {
         Some((record, desktop)) => (
             tabs_of(record),
@@ -173,7 +176,13 @@ pub fn write(
     // by whichever device writes first, and never again from a device's
     // copy, so devices do not take turns rewriting it.
     let mut shared = held.as_ref().map_or_else(
-        || Workspace::in_room(WorkspaceId::of_room(room), room, workspace.name.clone()),
+        || {
+            Workspace::in_workspace(
+                WorkspaceId::of_room(identity),
+                identity,
+                workspace.name.clone(),
+            )
+        },
         |(record, _)| record.clone(),
     );
     shared.strips = workspace
@@ -396,7 +405,7 @@ impl Kept<'_> {
     };
 }
 
-/// Fold the record `doc`'s layout of `workspace`'s room into `workspace`:
+/// Fold the record `doc`'s layout of `workspace`'s workspace into `workspace`:
 /// strips, groups and windows are where the record says, and what this
 /// device decides alone is kept by id. `device` is this device's key; what
 /// `kept` names that the record does not hold stays where it is. Returns

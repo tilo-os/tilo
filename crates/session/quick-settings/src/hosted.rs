@@ -242,8 +242,9 @@ pub fn handoff_targets(devices: &[PersonalDevice]) -> Vec<crate::HandoffTarget> 
 
 /// The Devices section as the session publishes it: the person's devices as
 /// the device fabric reads them, what plays here that one of them can take,
-/// and the sounds the remote audio service sends, receives and is asked for.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// the sounds the remote audio service sends, receives and is asked for, and
+/// the session another of them offers this one.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DevicesReading {
     pub devices: Vec<PersonalDevice>,
     /// What plays here, titled, while media continuity is on: what a press on
@@ -254,6 +255,9 @@ pub struct DevicesReading {
     pub sounds: Vec<SendableSound>,
     pub routes: Vec<SoundRoute>,
     pub asks: Vec<SoundAsk>,
+    /// What another of the person's devices was playing, until the person
+    /// continues it here: the now-playing card offers it.
+    pub offer: Option<crate::MediaOffer>,
 }
 
 impl DevicesReading {

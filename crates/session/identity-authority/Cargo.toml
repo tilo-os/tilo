@@ -1,0 +1,34 @@
+[package]
+name = "tilo-identity-authority"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The device's current certificate authority, as an app broker asks it: the identity store's selected identity, its device fleet and their revocations, at the policy clock the admission is decided at."
+
+[lib]
+name = "tilo_identity_authority"
+path = "src/lib.rs"
+
+# The host's side of the broker's certificate seam. The broker checks the
+# signature, the route and the workspace's policy itself; what it needs from
+# the host is who this device's identity is, which device certificates it
+# currently certifies, and the clock those decisions are taken at. Every
+# process that serves apps on the person's behalf — the desktop session, and
+# the shell it is replacing — asks this one implementation.
+
+[dependencies]
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+uuid.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-test-env = { path = "../../dev/test-env" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

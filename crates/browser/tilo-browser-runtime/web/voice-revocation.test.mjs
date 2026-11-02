@@ -73,7 +73,7 @@ function look(f, ms) {
   return true;
 }
 
-/** The grant deadline an admission the room took away waits on, run on a
+/** The grant deadline an admission the workspace took away waits on, run on a
  * page that runs. */
 function deadlinePasses(f) {
   assert.equal(f.deadlines.filter(timer=>!timer.cancelled && !timer.ran).length,1,'the call waits for a fresh grant');
@@ -95,7 +95,7 @@ test('authenticated carrier revocation closes audio, then ends the call when no 
   f.call.dispose();
 });
 
-test('a call the room took the carrier from goes on with the fresh grant the session brings', async () => {
+test('a call the workspace took the carrier from goes on with the fresh grant the session brings', async () => {
   const f = await connected();
   f.admission.enqueue(Uint8Array.of(STATUS_REVOKED));
   await drain();

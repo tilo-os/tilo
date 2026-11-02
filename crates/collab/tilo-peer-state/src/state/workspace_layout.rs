@@ -2,8 +2,8 @@
 //!
 //! In a personal workspace each member's strips and windows stay on their device;
 //! the workspace shares its apps' records and its people
-//! ([`tilo_desktop_model::projection::RoomLayout`]). Its governor records the
-//! scope ([`tilo_desktop_model::projection::ROOM_LAYOUT_KEY`]) for every
+//! ([`tilo_desktop_model::projection::WorkspaceLayout`]). Its governor records the
+//! scope ([`tilo_desktop_model::projection::WORKSPACE_LAYOUT_KEY`]) for every
 //! member to read. The layout itself is the workspace's shared desktop record; a
 //! workspace document still holds the windows devices from before put there, and
 //! the governor of a personal workspace removes them.
@@ -11,28 +11,28 @@ use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{ROOT, SystemTime, err};
 use automerge::transaction::Transactable as _;
 use ed25519_dalek::SigningKey;
-use tilo_desktop_model::projection::{ROOM_LAYOUT_KEY, RoomLayout};
+use tilo_desktop_model::projection::{WORKSPACE_LAYOUT_KEY, WorkspaceLayout};
 use tilo_desktop_model::shared_record;
 
 impl PeerGovernance<'_> {
     /// The workspace's layout scope, as its governance document records it:
     /// shared unless its governor chose otherwise.
     #[must_use]
-    pub fn workspace_layout(self) -> RoomLayout {
+    pub fn workspace_layout(self) -> WorkspaceLayout {
         self.peer.core.workspace_doc.as_deref().map_or_else(
-            RoomLayout::default,
-            tilo_desktop_model::projection::room_layout,
+            WorkspaceLayout::default,
+            tilo_desktop_model::projection::workspace_layout,
         )
     }
 
     /// The layout scope the governor chose, `None` while it chose none.
     #[must_use]
-    pub fn workspace_layout_choice(self) -> Option<RoomLayout> {
+    pub fn workspace_layout_choice(self) -> Option<WorkspaceLayout> {
         self.peer
             .core
             .workspace_doc
             .as_deref()
-            .and_then(tilo_desktop_model::projection::room_layout_choice)
+            .and_then(tilo_desktop_model::projection::workspace_layout_choice)
     }
 }
 
@@ -42,7 +42,7 @@ impl PeerGovernanceMut<'_> {
     /// whether it changed the workspace.
     pub fn author_workspace_layout(
         self,
-        layout: RoomLayout,
+        layout: WorkspaceLayout,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
@@ -58,7 +58,8 @@ impl PeerGovernanceMut<'_> {
             .ok_or("missing workspace")?;
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
-        doc.put(ROOT, ROOM_LAYOUT_KEY, layout.id()).map_err(err)?;
+        doc.put(ROOT, WORKSPACE_LAYOUT_KEY, layout.id())
+            .map_err(err)?;
         doc.commit();
         self.peer.apply_governance_doc(doc, &before, key, now)
     }
@@ -95,7 +96,7 @@ impl PeerGovernanceMut<'_> {
 #[cfg(test)]
 mod tests {
     use tilo_desktop_model::ids::compose_id;
-    use tilo_desktop_model::projection::RoomLayout;
+    use tilo_desktop_model::projection::WorkspaceLayout;
     use tilo_desktop_model::shared_record::{self, device};
     use tilo_desktop_model::width::WindowWidth;
     use tilo_desktop_model::{
@@ -153,7 +154,7 @@ mod tests {
         doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
         let workspace = RoomId::parse(peer.workspace_id()).ok_or("workspace id")?;
         let mut desktop =
-            Workspace::in_room(WorkspaceId::of_room(workspace), workspace, "Workspace");
+            Workspace::in_workspace(WorkspaceId::of_room(workspace), workspace, "Workspace");
         let mut strip = Strip::new(StripId(compose_id(MEMBER, 1)), "Mine");
         strip.window_groups.push(window(MEMBER, 2, title));
         desktop.strips.push(strip);
@@ -198,7 +199,10 @@ mod tests {
     )]
     fn a_personal_workspace_drops_its_members_windows() -> TestResult {
         let (mut peer, governor, _, caller, now) = crate::admission_tests::seeded();
-        assert_eq!(peer.governance().workspace_layout(), RoomLayout::Shared);
+        assert_eq!(
+            peer.governance().workspace_layout(),
+            WorkspaceLayout::Shared
+        );
         // While the workspace shares its layout, the member's window is admitted.
         let workspace = peer.workspace_id().to_owned();
         let changes = member_windows(&peer, &caller, "~/private")?;
@@ -213,17 +217,22 @@ mod tests {
         assert_eq!(windows(&peer), 1);
 
         assert!(peer.governance_mut().author_workspace_layout(
-            RoomLayout::Personal,
+            WorkspaceLayout::Personal,
             &governor,
             now
         )?);
         assert!(
-            !peer
-                .governance_mut()
-                .author_workspace_layout(RoomLayout::Personal, &governor, now)?,
+            !peer.governance_mut().author_workspace_layout(
+                WorkspaceLayout::Personal,
+                &governor,
+                now
+            )?,
             "choosing it again changes nothing"
         );
-        assert_eq!(peer.governance().workspace_layout(), RoomLayout::Personal);
+        assert_eq!(
+            peer.governance().workspace_layout(),
+            WorkspaceLayout::Personal
+        );
         assert!(peer.governance_mut().drop_member_windows(&governor, now)?);
         assert_eq!(windows(&peer), 0);
         assert!(!peer.governance_mut().drop_member_windows(&governor, now)?);
@@ -250,7 +259,7 @@ mod tests {
             now,
         )?;
         assert!(peer.governance_mut().author_workspace_layout(
-            RoomLayout::Personal,
+            WorkspaceLayout::Personal,
             &governor,
             now
         )?);
@@ -287,7 +296,7 @@ mod tests {
         use automerge::transaction::Transactable as _;
         let (mut peer, governor, _, caller, now) = crate::admission_tests::seeded();
         assert!(peer.governance_mut().author_workspace_layout(
-            RoomLayout::Personal,
+            WorkspaceLayout::Personal,
             &governor,
             now
         )?);
@@ -299,7 +308,7 @@ mod tests {
         doc.set_actor(automerge::ActorId::from(caller.device_public_key.to_vec()));
         doc.put(
             automerge::ROOT,
-            tilo_desktop_model::projection::ROOM_LAYOUT_KEY,
+            tilo_desktop_model::projection::WORKSPACE_LAYOUT_KEY,
             "shared",
         )?;
         doc.commit();
@@ -317,7 +326,10 @@ mod tests {
             },
             now,
         )?;
-        assert_eq!(peer.governance().workspace_layout(), RoomLayout::Shared);
+        assert_eq!(
+            peer.governance().workspace_layout(),
+            WorkspaceLayout::Shared
+        );
         Ok(())
     }
 }

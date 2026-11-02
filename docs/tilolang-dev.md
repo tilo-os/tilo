@@ -57,16 +57,15 @@ On every save `tilolang dev`:
 
 The running app takes the new build in one of two ways:
 
-- **In place.** This is the usual case. Resources live in the room record and view
-  state lives in the runtime, both keyed by declaration id. Scroll, selection and the
-  open item live in the window. So the new module takes them over: the views are opened
-  again on the same windows, under the same shell.
-- **Starting over.** If the new build cannot read what the old one wrote, the tool
-  says why, for example `type Note: the field \`done\` changed from Bool to Int`. The
-  app then starts over on the new build and the room record, as its next start would:
-  every resource is still there. View state and the open item start fresh. Nothing is
-  deleted. A value of the old type stays in the record until something writes the field
-  again.
+- **In place.** This is the usual case. Resources live in the workspace record and view state lives
+  in the runtime, both keyed by declaration id. Scroll, selection and the open item live in the
+  window. So the new module takes them over: the views are opened again on the same windows, under
+  the same shell.
+- **Starting over.** If the new build cannot read what the old one wrote, the tool says why, for
+  example `type Note: the field \`done\` changed from Bool to Int`. The app then starts over on the
+  new build and the workspace record, as its next start would: every resource is still there. View
+  state and the open item start fresh. Nothing is deleted. A value of the old type stays in the
+  record until something writes the field again.
 
 The second case covers:
 

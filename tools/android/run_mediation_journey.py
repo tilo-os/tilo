@@ -63,8 +63,8 @@ def main():
                     (_ for _ in ()).throw(RuntimeError('compositor exited; inspect log')), 'control socket')
                 journey = Journey(socket, output, package, profile)
                 frame = journey.launch()
-                room = journey.workspace()['room']
-                private = profile / 'data/tilo-rooms' / room / package
+                workspace = journey.workspace()['room']
+                private = profile / 'data/tilo-rooms' / workspace / package
                 def accepted():
                     files = list(private.rglob('acceptance.txt'))
                     return files[0] if len(files) == 1 and 'complete=true' in files[0].read_text() else None
@@ -95,7 +95,7 @@ def main():
                     'execution': 'headless production Tilo, actual Android ART, ' + args.architecture + ' software graphics',
                     'production_binaries': {name: digest(REPO / 'target/debug' / name) for name in ('shell', 'tilo-launcher')},
                     'apk_sha256': args.apk_sha256, 'runtime_receipt_sha256': args.runtime_receipt_sha256,
-                    'room': room, 'android_results': expected, 'lifecycle': stages, 'presented_frame': frame,
+                    'workspace': workspace, 'android_results': expected, 'lifecycle': stages, 'presented_frame': frame,
                     'png_sha256': digest(output / 'android-api.png'), 'additional_grants': False,
                     'real_device': False, 'approved_file_access': False, 'notification_delivery': False}
             finally:

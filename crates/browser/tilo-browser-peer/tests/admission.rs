@@ -75,11 +75,11 @@ fn a_page_holding_a_channels_keys_refuses_cleartext_with_no_gate() {
     );
 }
 
-/// Before the host answered `Ready` for a room, the page has not heard its
+/// Before the host answered `Ready` for a workspace, the page has not heard its
 /// governance: cleartext waits rather than opening, whatever the page holds
 /// of the channel so far.
 #[test]
-fn cleartext_before_the_rooms_governance_is_known_is_never_admitted() {
+fn cleartext_before_the_workspaces_governance_is_known_is_never_admitted() {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: "00000000-0000-4000-8000-000000000003".into(),

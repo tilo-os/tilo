@@ -58,7 +58,7 @@ pub fn service_device(principal: &str) -> Option<Ed25519PublicKey> {
 /// The workspace grant that makes `device` a service member, given by
 /// `granted_by`.
 pub fn service_membership(
-    room: &str,
+    workspace: &str,
     device: &Ed25519PublicKey,
     purpose: &str,
     kinds: KindSet,
@@ -77,7 +77,7 @@ pub fn service_membership(
             purpose.trim()
         ),
         Subject::agent(service_principal(device)),
-        TreePath::workspace(room),
+        TreePath::workspace(workspace),
         kinds,
         Answer::Allow,
         granted_by,
@@ -91,10 +91,10 @@ pub fn service_membership(
 /// Every live service member of `workspace` at `now` (Unix seconds).
 pub fn service_members(workspace: &Workspace, now: u64) -> Vec<ServiceMember> {
     let cx = context_at(now);
-    let room = workspace.node();
+    let workspace_node = workspace.node();
     let mut members: Vec<ServiceMember> = Vec::new();
     for grant in &workspace.policy.grants {
-        if grant.answer == Answer::Deny || !grant.is_live(&cx) || grant.node != room {
+        if grant.answer == Answer::Deny || !grant.is_live(&cx) || grant.node != workspace_node {
             continue;
         }
         let Subject::Agent(principal) = &grant.subject else {

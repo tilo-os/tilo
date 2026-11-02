@@ -530,7 +530,7 @@ pub fn targets<A: ResourceApp>(app: &mut HeadlessApp<A>, roles: &[Role]) -> Vec<
 
 /// Wheel steps at `at`: the pointer moves there once, then each step is one
 /// notch, `steps / 2` down and the rest back up, so the content moves at
-/// every step that has room to.
+/// every step that has workspace to.
 pub fn scroll<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), steps: usize) -> Report {
     app.harness()
         .send(&ui_core::synthetic_input::cursor_moved(at.0, at.1));

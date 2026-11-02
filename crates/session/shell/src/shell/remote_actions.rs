@@ -775,7 +775,7 @@ mod tests {
         let room = catalogue(&host, &owner())
             .rows
             .iter()
-            .find_map(|row| tilo_actions::remote::workspace_provider_room(&row.provider))
+            .find_map(|row| tilo_actions::remote::provider_workspace(&row.provider))
             .map(str::to_owned)
             .expect("the workspace is offered");
         let caller = Caller::local_person("a1".repeat(32)).in_workspace(&room);

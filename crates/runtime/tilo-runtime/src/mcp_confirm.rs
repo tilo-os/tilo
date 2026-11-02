@@ -34,7 +34,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // The person confirms the action as the directory is at this
         // revision.
         if request.revision.is_none()
-            && tilo_actions::remote::workspace_provider_room(&request.target.provider).is_none()
+            && tilo_actions::remote::provider_workspace(&request.target.provider).is_none()
         {
             request.revision = Some(self.current_revision(&request.target.provider).await?);
         }

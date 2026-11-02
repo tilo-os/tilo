@@ -1,7 +1,7 @@
 # %i's node session: the headless Tilo session beside the node's relay that
 # runs the person's apps and streams their windows to the person's web pages.
-# As one of the person's devices it enters each room their workspace list
-# names, the node's included, as the list brings it.
+# As one of the person's devices it enters each workspace in their list, the
+# node's included, as the list brings it.
 # Started by tilo-node-session@%i.path once the session is certified.
 [Unit]
 Description=Tilo node session for %i

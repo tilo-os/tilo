@@ -1,5 +1,5 @@
 //! A browser session's part in a governed call, through the session the
-//! page runs (`PeerHandle`): it lists the room's calls, joins one and keeps
+//! page runs (`PeerHandle`): it lists the workspace's calls, joins one and keeps
 //! the participation across a reconnect, and leaving ends its grant: the
 //! others' roster shrinks and its token admits no carrier.
 
@@ -64,20 +64,20 @@ fn granted(event: &VoiceEvent) -> Option<VoiceGrant> {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
-    let room = GovernedCall::start().await;
-    let workspace_id = room.workspace_id;
-    let (_bob, page) = room.invite("bob-browser").await;
+    let workspace = GovernedCall::start().await;
+    let workspace_id = workspace.workspace_id;
+    let (_bob, page) = workspace.invite("bob-browser").await;
     let peer = start_peer(
-        Host::Https(room.https()),
+        Host::Https(workspace.https()),
         page.cert.clone(),
-        room.host.cert.clone(),
+        workspace.host.cert.clone(),
         page.key.clone(),
     );
     peer.join(workspace_id).unwrap();
     ready(&[&peer]).await;
     let mut pending = Vec::new();
 
-    // The room lists its call: active, on the chat's voice channel, empty.
+    // The workspace lists its call: active, on the chat's voice channel, empty.
     peer.voice_calls(workspace_id).unwrap();
     let calls = voice(&peer, &mut pending, "the call list", |event| match event {
         VoiceEvent::Calls { result, .. } => Some(result.clone()),
@@ -86,37 +86,38 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     .await
     .unwrap();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].state, room.call);
+    assert_eq!(calls[0].state, workspace.call);
     // Exactly what the shared voice controls look up to join
     // (`voice-controls.mjs`): Chat's app, its record, and the voice
     // channel's own id, the one the chat minted, active.
     assert!(calls[0].state.active);
     assert_eq!(calls[0].app_id, call::CHAT);
     assert_eq!(calls[0].record_id, "");
-    assert_eq!(calls[0].channel_id, room.channel);
+    assert_eq!(calls[0].channel_id, workspace.channel);
     assert!(calls[0].participants.is_empty());
 
     // Alice joins from her laptop, Bob through his page's session.
-    room.owner
+    workspace
+        .owner
         .send(Envelope::VoiceJoin {
             workspace_id,
-            call: room.call.call,
+            call: workspace.call.call,
             participation: None,
         })
         .unwrap();
-    let alice_alone = native(&room.owner, |envelope| match envelope {
+    let alice_alone = native(&workspace.owner, |envelope| match envelope {
         Envelope::VoiceGranted { grant, .. } => Some(*grant),
         _ => None,
     })
     .await;
-    peer.voice_join(workspace_id, room.call.call).unwrap();
+    peer.voice_join(workspace_id, workspace.call.call).unwrap();
     let bob = voice(&peer, &mut pending, "Bob's grant", granted).await;
     assert_eq!(bob.participants.len(), 2);
     assert_eq!(
         bob.subscriptions,
         vec![alice_alone.publication.clone().unwrap()]
     );
-    let alice = native(&room.owner, |envelope| match envelope {
+    let alice = native(&workspace.owner, |envelope| match envelope {
         Envelope::VoiceGranted { grant, .. } if grant.participants.len() == 2 => Some(*grant),
         _ => None,
     })
@@ -156,7 +157,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
 
     // Bob leaves: Alice's roster shrinks and his token admits no carrier.
     peer.voice_leave(workspace_id).unwrap();
-    let alone_again = native(&room.owner, |envelope| match envelope {
+    let alone_again = native(&workspace.owner, |envelope| match envelope {
         Envelope::VoiceGranted { grant, .. } if grant.participants.len() == 1 => Some(*grant),
         _ => None,
     })
@@ -169,15 +170,15 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     .await;
 
     // Bob joins again; when Alice ends the call his session reports it ended.
-    peer.voice_join(workspace_id, room.call.call).unwrap();
+    peer.voice_join(workspace_id, workspace.call.call).unwrap();
     voice(&peer, &mut pending, "Bob's second grant", granted).await;
     operate(
-        &room.owner,
+        &workspace.owner,
         workspace_id,
         2,
         CallOperation::End {
-            call: room.call.call,
-            epoch: room.call.epoch,
+            call: workspace.call.call,
+            epoch: workspace.call.epoch,
         },
     )
     .await
@@ -209,5 +210,5 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     assert!(!ended[0].state.active);
     assert!(ended[0].participants.is_empty());
     peer.close();
-    room.shutdown().await;
+    workspace.shutdown().await;
 }

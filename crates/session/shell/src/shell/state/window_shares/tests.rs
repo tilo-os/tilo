@@ -44,7 +44,7 @@ fn governed_room(
             false,
         )
         .expect("the owner admits the person");
-    tilo_desktop_model::projection::project_room_policy(&mut room, &policy)
+    tilo_desktop_model::projection::project_workspace_policy(&mut room, &policy)
         .expect("the room's authority");
     let identities = room
         .put_object(

@@ -46,6 +46,8 @@ fn the_reading_is_the_policy_and_what_holds_the_machine_awake() {
             power_key: PowerAction::Lock,
             held_awake: false,
             holds: Vec::new(),
+            profile: None,
+            profiles: Vec::new(),
         }
     );
     let ticket = link.keep_awake("a long download");
@@ -208,6 +210,48 @@ fn the_power_key_and_the_lid_are_actions_too() {
         panic!("resolves at once")
     };
     assert_eq!(none.value, None, "an ignored lid does nothing");
+}
+
+/// The machine's power profiles are the daemon's, so the session offers the
+/// ones it read and asks for a switch rather than writing the profile itself.
+#[test]
+fn a_power_profile_is_switched_through_the_machines_own_daemon() {
+    let link = PowerLink::new(quiet());
+    let mut service = SessionPower::without_daemons(link.clone()).expect("service");
+
+    // A machine whose daemon offers profiles: the reading lists them, and
+    // nothing is asked of a profile the machine does not have.
+    link.bridge().note_profiles(vec![
+        "performance".into(),
+        "balanced".into(),
+        "power-saver".into(),
+    ]);
+    assert_eq!(
+        link.sleep().profiles,
+        ["performance", "balanced", "power-saver"]
+    );
+    assert!(
+        invoke(
+            &mut service,
+            "set-profile",
+            serde_json::json!({ "profile": "turbo" })
+        )
+        .is_err(),
+        "a profile this machine does not offer is refused"
+    );
+    assert!(link.bridge().drain_commands().is_empty());
+
+    invoke(
+        &mut service,
+        "set-profile",
+        serde_json::json!({ "profile": "power-saver" }),
+    )
+    .expect("the profile switch is asked for");
+    assert_eq!(
+        link.bridge().drain_commands(),
+        vec![PowerCommand::SetProfile("power-saver".into())],
+        "the daemon does the switching"
+    );
 }
 
 /// A pack in memory: the limit its driver would offer, and the writes it

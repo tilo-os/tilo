@@ -1,26 +1,26 @@
 //! Content a record references and this page lacks (a picture, by its
-//! hash), asked of the room on its presence as every device asks. The host
+//! hash), asked of the workspace on its presence as every device asks. The host
 //! and any member keeping it answer this device alone, in pieces. Only
 //! pieces of content this page asked for are kept, and the assembled bytes
 //! are handed on only when they hash to what was asked for.
 //!
 //! A page answers such requests too ([`answer`]), from what it keeps: a file
-//! a visitor posted from this page is only here until the room's host has
+//! a visitor posted from this page is only here until the workspace's host has
 //! asked for its own copy.
 
 use std::collections::BTreeMap;
 
-/// Largest content one reference names, as the room's hosts keep it.
+/// Largest content one reference names, as the workspace's hosts keep it.
 const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
 /// Most bytes one piece carries.
 const PIECE_BYTES: usize = 192 * 1024;
 /// How long an unanswered request keeps collecting pieces, and how long
-/// before the same content is asked of the room again.
+/// before the same content is asked of the workspace again.
 const WANT_TTL_MS: u64 = 60_000;
 /// Requests open at once; past it, the oldest goes.
 const MAX_OPEN_WANTS: usize = 256;
 
-/// Content this page asked a room for, and the pieces of it that came.
+/// Content this page asked a workspace for, and the pieces of it that came.
 struct Want<T> {
     /// What the asker names the request by (the record it is for).
     tag: T,
@@ -70,8 +70,8 @@ impl<T> Default for ContentWants<T> {
 }
 
 impl<T> ContentWants<T> {
-    /// The request device `device` sends on the room's presence for content
-    /// `hash` a record of `app_id` in room `cluster_id` references, named
+    /// The request device `device` sends on the workspace's presence for content
+    /// `hash` a record of `app_id` in workspace `cluster_id` references, named
     /// `tag`; `None` when it was asked for within `WANT_TTL_MS`.
     pub fn ask(
         &mut self,
@@ -121,7 +121,7 @@ impl<T> ContentWants<T> {
     }
 
     /// Whether `frame` is a piece of content device `device` asked for and
-    /// is still collecting: what a room's host lets through outside a
+    /// is still collecting: what a workspace's host lets through outside a
     /// member's general content budget, since it asked for it.
     #[must_use]
     pub fn expects(&self, device: &[u8; 32], frame: &[u8]) -> bool {
@@ -197,7 +197,7 @@ impl<T> ContentWants<T> {
 /// The frames that answer `request`, a member's `RecordContentWant` that
 /// device `asker` published, from device `device`, addressed to `asker`: the
 /// `NeighbourMsg::RecordContentPiece`s of what `read` (given the request's
-/// app, room and hash) keeps under it, or one `RecordContentLacks` when it
+/// app, workspace and hash) keeps under it, or one `RecordContentLacks` when it
 /// keeps nothing, so the asker stops counting on this page. Empty when the
 /// request is not one this page answers. What `read` returns is sent only
 /// when it hashes to what was asked for.
@@ -309,18 +309,18 @@ mod tests {
         let bytes = b"a picture someone posted".to_vec();
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let mut wants = ContentWants::default();
-        let room = ("so.tilo.chat", "room");
-        assert!(wants.ask(&device, "general", room, &hash, 0).is_some());
+        let workspace = ("so.tilo.chat", "workspace");
+        assert!(wants.ask(&device, "general", workspace, &hash, 0).is_some());
         assert!(
-            wants.ask(&device, "general", room, &hash, 1).is_none(),
+            wants.ask(&device, "general", workspace, &hash, 1).is_none(),
             "asked once while the request is open"
         );
         let piece = |offset: usize, chunk: &[u8]| {
             postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentPiece {
                 responder: neighbour_wire::peer_handle(&[1; 32]),
                 requester: neighbour_wire::peer_handle(&device),
-                app_id: room.0.into(),
-                cluster_id: room.1.into(),
+                app_id: workspace.0.into(),
+                cluster_id: workspace.1.into(),
                 hash: hash.clone(),
                 total: bytes.len() as u64,
                 offset: offset as u64,
@@ -358,10 +358,10 @@ mod tests {
         let bytes: Vec<u8> = (0..=u8::MAX).cycle().take(PIECE_BYTES * 2 + 5).collect();
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let mut wants = ContentWants::default();
-        let room = ("so.tilo.chat", "room");
-        let request = wants.ask(&host, (), room, &hash, 0).unwrap();
+        let workspace = ("so.tilo.chat", "workspace");
+        let request = wants.ask(&host, (), workspace, &hash, 0).unwrap();
         let kept = |app: &str, cluster: &str, asked: &str| {
-            ((app, cluster) == room && asked == hash).then(|| bytes.clone())
+            ((app, cluster) == workspace && asked == hash).then(|| bytes.clone())
         };
         let pieces = answer(&page, &host, &request, kept);
         assert_eq!(pieces.len(), 3, "a piece per {PIECE_BYTES} bytes");

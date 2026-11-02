@@ -26,7 +26,7 @@ pub use tilo_caps::Target;
 use tilo_caps::{Capability, Finding};
 
 pub use serve::ServeOptions;
-pub mod room;
+pub mod workspace;
 
 /// What to build, for which target.
 #[derive(Clone, Debug)]

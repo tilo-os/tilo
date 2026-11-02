@@ -776,7 +776,7 @@ impl Callers for LaunchedAs {
     fn caller(&self, _sender: Sender<'_>) -> Option<Caller> {
         Some(Caller {
             app_id: self.0.into(),
-            workspace: Some("room".into()),
+            workspace: Some("studio".into()),
         })
     }
 }
@@ -868,7 +868,7 @@ async fn an_app_schedules_reads_and_cancels_its_own_deadlines() {
         .try_into()
         .expect("one");
     assert_eq!(deadline.app_id, "org.example.app");
-    assert_eq!(deadline.room, "7");
+    assert_eq!(deadline.workspace, "7");
     proxy
         .call_method("XTiloCancelScheduledNotification", &("standup",))
         .await

@@ -299,7 +299,7 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     chmod 755 "$payload/$entry_bin"
     # The app's public surface ships at the payload root, as the release
     # packages stage it (dist/apps/package-apps.sh): the shell decides a
-    # room's writes of the app against it and names it in the app's own.
+    # workspace's writes of the app against it and names it in the app's own.
     if [ -f "$(dirname "$manifest")/surface.toml" ]; then
         install -pm 0644 "$(dirname "$manifest")/surface.toml" "$payload/surface.toml"
     fi

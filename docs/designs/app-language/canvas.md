@@ -55,7 +55,7 @@ typing a sentence, it becomes an ask to the agent with that context. So "rename"
 - **The arrangement** is the workspace's (`tilo_desktop_model::arrangement`): its kind (strips or
   canvas) and each window group's place on the canvas, in whole canvas pixels. Groups stay in their
   strips; the canvas only adds where they stand. Commands `SetArrangement` and `PlaceGroup`
-  change it. The room's layout record carries the kind on the workspace entry and each place on
+  change it. The workspace's layout record carries the kind on the workspace entry and each place on
   its group entry, so two people moving different windows both keep their move; the desktop
   document records it for history and undo. Moving someone else's window on the canvas is a move
   for the moderation rule, as moving it along a strip is.

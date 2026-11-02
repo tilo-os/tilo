@@ -254,7 +254,7 @@ struct AskWords {
 }
 
 impl AskWords {
-    /// Fit `ask` into `room` px of bar, or `None` where its question would
+    /// Fit `ask` into `workspace` px of bar, or `None` where its question would
     /// not read.
     fn fit(
         ask: &AvatarAsk,

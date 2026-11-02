@@ -42,7 +42,7 @@ Run these commands from any directory inside the app:
 
 ```sh
 tilo-app dev                       # rebuild on save; retain state after reload
-tilo-app dev --platform web --share  # the app in a room: one browser window per person
+tilo-app dev --platform web --share  # the app in a workspace: one browser window per person
 tilo-app test                      # resource and production-view tests
 tilo-app inspect                   # headless widget/accessibility tree
 tilo-app shot                      # headless image of the production root

@@ -61,7 +61,7 @@ pub(crate) fn profile_root(data_home: &Path, room: RoomId, app_id: &str) -> Path
     let room = room.to_string();
     ::launcher::appdir::host_app_dir(
         data_home,
-        &::launcher::appdir::room_slug(Some(&room)),
+        &::launcher::appdir::workspace_slug(Some(&room)),
         app_id,
     )
     .join(".local/share")
@@ -90,7 +90,7 @@ pub fn serve(
         reason: crate::shell::i18n::t("record-not-kept-here"),
     };
     let workspace = workspace
-        .filter(|workspace| workspace.room().to_string() == query.room)
+        .filter(|workspace| workspace.room().to_string() == query.workspace)
         .ok_or_else(not_kept)?;
     // Only a person the room lets read the app is answered; a room without
     // an owner is nobody else's to read.
@@ -115,7 +115,7 @@ pub fn serve(
     if !root.is_dir() {
         return Err(not_kept());
     }
-    let profile = NativeProfile::open(&root, Some(&query.room)).map_err(|_| not_kept())?;
+    let profile = NativeProfile::open(&root, Some(&query.workspace)).map_err(|_| not_kept())?;
     let mut doc = transfer::read_by_id(profile.store(), &query.app, profile.workspace_id(), &id)
         .map_err(|_| not_kept())?;
     let bytes = doc.save();
@@ -179,7 +179,7 @@ fn ask<L>(
     };
     let correlation = CORRELATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let query = RecordQuery {
-        room: address.room.to_string(),
+        workspace: address.room.to_string(),
         app: address.app_id.clone(),
         record: address.record.as_str().to_owned(),
         offset: u64::try_from(gathered.len()).unwrap_or(u64::MAX),
@@ -795,7 +795,7 @@ mod tests {
         workspace.set_owner(hex::encode([7; 32]));
         let (home, checkout, _) = holder(&workspace);
         let query = RecordQuery {
-            room: workspace.room().to_string(),
+            workspace: workspace.room().to_string(),
             app: APP.into(),
             record: checkout.id.as_str().into(),
             offset: 0,

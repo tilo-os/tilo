@@ -44,7 +44,7 @@ fn framework_edits_finish_before_observation_drain_and_a_full_queue_never_refuse
     let queue = ui_core::local_document_action::Queue::new();
     let _input = queue.enter("published-revision".into());
     // No drain, admission or host response occurs between these real SDK
-    // edits. Every one lands; those beyond the queue's room go unreported.
+    // edits. Every one lands; those beyond the queue's workspace go unreported.
     for value in 0..=128 {
         dispatcher
             .apply_now(&mut Edits::lend(&mut doc), &Put(value))

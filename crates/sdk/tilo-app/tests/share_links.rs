@@ -14,7 +14,7 @@ use tilo_reference::link::{
     WebEntry,
 };
 
-const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
+const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 const ENTRY: &str = "https://tilo.so/";
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -69,7 +69,7 @@ impl ResourceApp for NotebookApp {
     }
 }
 
-/// A room host answering view lookups with its locator, announcing `entry`.
+/// A workspace host answering view lookups with its locator, announcing `entry`.
 struct Host {
     entry: Option<String>,
     asked: Mutex<Vec<CatalogueQuery>>,
@@ -86,7 +86,7 @@ impl ActionHost for Host {
         Pending::ready(Ok(CataloguePage {
             locator: Some(ResourceViewLocator {
                 origin: "https://host.example".into(),
-                room: ROOM.into(),
+                workspace: WORKSPACE.into(),
                 host_device: "ab".repeat(32),
                 provider,
                 web_entry: self.entry.clone(),
@@ -172,7 +172,7 @@ fn expected(app: &TestApp<NotebookApp>, page: &str, mode: Mode, view: Option<&st
         target: LinkTarget {
             scope: Scope::Room {
                 host: HostOrigin::new("https://host.example").unwrap(),
-                room: ROOM.parse().unwrap(),
+                room: WORKSPACE.parse().unwrap(),
                 slug: None,
             },
             app: Some(AppId::new(NotebookApp::ID).unwrap()),

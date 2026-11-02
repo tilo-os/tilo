@@ -17,7 +17,7 @@
  * `pointer` is relative to a window, named by its record: within the window
  * it is over (from its content's top-left corner), or over the empty
  * desktop beside the nearest window (from that window's nearest point,
- * `edge` fractions across it). Strips are personal in many rooms, so only a
+ * `edge` fractions across it). Strips are personal in many workspaces, so only a
  * desk showing no window points in its strip's own coordinates. Each member
  * places it in their own layout (the runtime's `remote_pointers`); `at` and
  * `edge` interpolate while it stays relative to the same thing. `place` is where within its focus the publisher is (on a desktop, the

@@ -42,7 +42,7 @@ pub fn entry_id_from_hash(change_hash_hex: &str) -> HistoryEntryId {
 // them: the toolkit's `groups`, `runs` and `descriptions` read and write it.
 
 /// Namespaced so it cannot collide with an app's own schema: `tilo-doc` uses
-/// `content` / `comments` / `props`, and the shell's room document uses
+/// `content` / `comments` / `props`, and the shell's workspace document uses
 /// `workspaces` / `active`.
 pub const GROUPS_KEY: &str = "tilo:group:";
 

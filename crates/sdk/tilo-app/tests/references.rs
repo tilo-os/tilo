@@ -15,7 +15,7 @@ use tilo_app::a11y::Action as A11yAction;
 use tilo_app::prelude::*;
 use tilo_reference::ResourceRef;
 
-const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
+const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
 const TASKS: &str = "so.tilo.tasks";
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -111,16 +111,16 @@ fn open_chip(door: &Arc<Door>) -> TestApp<NotesApp> {
 #[test]
 fn a_reference_chip_opens_its_resource_in_its_own_app_and_tells_a_refusal() {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("TILO_WORKSPACE_ID", ROOM);
+    env.set("TILO_WORKSPACE_ID", WORKSPACE);
 
     let door = Arc::new(Door::default());
     let _served = RemoteActions::enter(door.clone(), Caller::local_person("ada"));
     let mut app = open_chip(&door);
     let asked = door.asked.lock().unwrap().pop().unwrap();
-    assert_eq!(asked.target, issue().open_target(ROOM, TASKS, None));
+    assert_eq!(asked.target, issue().open_target(WORKSPACE, TASKS, None));
     assert_eq!(
         tilo_actions::remote::application_provider(&asked.target.provider),
-        Some((ROOM, TASKS)),
+        Some((WORKSPACE, TASKS)),
         "the app that keeps it, in this window's workspace"
     );
     assert_eq!(asked.target.address.action, "open");

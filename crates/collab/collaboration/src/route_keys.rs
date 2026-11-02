@@ -35,7 +35,7 @@ const MAX_HELD_INBOUND: usize = 4096;
 pub(super) enum Keys {
     /// No identity service: plaintext.
     Plain,
-    /// The room seals every write and this endpoint has no channel keys to
+    /// The workspace seals every write and this endpoint has no channel keys to
     /// ask for: every write is refused, none is sent unencrypted.
     Unsealable,
     /// Channel keys requested and not held.
@@ -134,7 +134,7 @@ impl RouteKeys {
         Self::with(Keys::Plain)
     }
 
-    /// Keys of a route in a room that seals every write, on an endpoint
+    /// Keys of a route in a workspace that seals every write, on an endpoint
     /// with no identity service to ask for the channel's keys.
     pub(super) fn unsealable() -> Self {
         Self::with(Keys::Unsealable)
@@ -263,7 +263,8 @@ impl RouteKeys {
             Keys::Plain => return Sealed::Ready(cleartext, None),
             Keys::Unsealable => {
                 return Sealed::Refused(
-                    "this room seals every write and this connection holds no channel keys".into(),
+                    "this workspace seals every write and this connection holds no channel keys"
+                        .into(),
                 );
             }
             Keys::Pending(ChannelAccessState::Removed) => {

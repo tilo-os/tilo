@@ -337,7 +337,7 @@ pub enum ManagedLaunchScope {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagedBinding {
-    pub room: String,
+    pub workspace: String,
     pub app: String,
     pub agent: String,
     pub scope: ManagedLaunchScope,
@@ -349,7 +349,7 @@ impl ManagedBinding {
     pub fn validate(&self) -> Result<(), String> {
         if self.app != WORKSPACE_AGENT_PACKAGE_ID
             || self.generation == 0
-            || uuid::Uuid::parse_str(&self.room).is_err()
+            || uuid::Uuid::parse_str(&self.workspace).is_err()
             || [&self.agent, &self.launch]
                 .iter()
                 .any(|value| !valid_label(value))
@@ -1354,7 +1354,7 @@ pub(crate) fn managed_service_argv(binding: &ManagedBinding) -> Vec<String> {
     vec![
         "--task-runs".into(),
         "--workspace".into(),
-        binding.room.clone(),
+        binding.workspace.clone(),
         "--app".into(),
         binding.app.clone(),
         "--agent-id".into(),
@@ -1399,7 +1399,7 @@ impl ManagedLauncher {
             require_runtime_publisher: Some(self.owner.runtime.runtime_publisher.clone()),
             sandbox_shim_bin: Some(self.owner.runtime.sandbox_shim.clone()),
             bwrap_bin: Some(self.owner.runtime.bwrap.clone()),
-            workspace_id: Some(permit.binding.room.clone()),
+            workspace_id: Some(permit.binding.workspace.clone()),
             app_id: Some(permit.binding.app.clone()),
             mode: crate::run::LaunchMode::Service {
                 passthrough_argv: managed_service_argv(&permit.binding),

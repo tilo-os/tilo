@@ -32,7 +32,7 @@ Notification APIs check Tilo's existing provider over the already registered
 GApplication filtered bus. Explicit fixture preparation with `--notifications`
 declares only the existing `notifications = "via-host"` portal; the default declares
 none. The entry selects the freedesktop backend, which remains behind the launcher
-filter. Actual delivery and withdrawal, with authenticated room attribution, are
+filter. Actual delivery and withdrawal, with authenticated workspace attribution, are
 qualified. Notification tags, actions and background persistence are not.
 
 Android content descriptions propagate through GTK's existing AT-SPI tree.
@@ -136,8 +136,8 @@ returning false and both canceled commands reaching `onStartCommand`. The change
 framework must return true, omit those commands, allow a later start before the
 queue drains, and allow another restart after stopping the running service.
 Repeated stops must return false. The runner checks exact callback order,
-main-looper creation/destruction, close/relaunch, private history in two rooms,
-presented frames and mandatory confinement. Use the existing foreground journey
+main-looper creation/destruction, close/relaunch, private history in two
+workspaces, presented frames and mandatory confinement. Use the existing foreground journey
 on the changed runtime to verify open-descriptor interruption and denied relaunch
 after withdrawal of its disposable read/write grants.
 
@@ -252,14 +252,16 @@ grant withdrawal, not withdrawal of the independent exact-record share.
 
 ## Acceptance checklist
 
-- [x] Actual unchanged Arity APK calculation, persistence and separate room state.
+- [x] Actual unchanged Arity APK calculation, persistence and separate workspace
+  state.
 - [x] Actual SDK-built APK sees storage/camera/microphone/location denial.
 - [x] Runtime permission request delivers matching denied callback results.
 - [x] Document intent reaches authenticated chooser; no grant yields cancel/no URI.
 - [x] Actual approved local fixture document read/write through Android ContentResolver.
 - [x] Read-only source write and ungranted sibling access fail with unchanged bytes.
 - [x] Grants revoked; relaunch denies read/write to former URIs and chooser cancels.
-- [x] Filtered notification delivery/withdrawal reaches Tilo with room attribution.
+- [x] Filtered notification delivery/withdrawal reaches Tilo with workspace
+  attribution.
 - [x] External AT-SPI client selects real picker controls and observes Android TextView description.
 - [x] Real close invokes pause, stop and destroy; owned session/bus clean up.
 - [x] Same signed APK reproduces old metadata/mode failures and passes the changed runtime.
@@ -269,7 +271,7 @@ grant withdrawal, not withdrawal of the independent exact-record share.
 - [x] Cold journey denies revoked metadata/reads/writes with the restored source still resident.
 - [ ] Persisted URI authority, already-open FD revocation and native Btrfs projection.
 - [ ] Full notification identity/tags, actions and background persistence.
-- [ ] Compositor loss, room stop, background services and updates.
+- [ ] Compositor loss, workspace stop, background services and updates.
 - [ ] Real-device GPU/DRM, ARM64, touch/IME and complete Android accessibility/resources.
 
 The checked items are bounded x86-64 software/headless execution evidence.

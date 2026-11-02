@@ -1,14 +1,15 @@
 //! `--share` for `run --platform web` and `dev --platform web`: the app in a
-//! room other people join from their own browser.
+//! workspace other people join from their own browser.
 //!
-//! The room is the SDK's own host, `tilo-relay room --persistent`, on this
-//! machine: it governs the room, so it keys every record's channel and what
-//! one person does reaches everyone else, and it admits people one by one
-//! as persons of their own (`tilo_relay_protocol::room_operator`). This
-//! module is that room's operator and door: every browser that opens the
-//! served join page creates a person of its own, asks `/__tilo/room/join`,
-//! and is pre-admitted as an Editor of the room. The app is an author of the
-//! room (`--author-app`), so members write through it.
+//! The workspace's host is the SDK's own, `tilo-relay room --persistent`, on
+//! this machine: it governs the workspace, so it keys every record's channel
+//! and what one person does reaches everyone else, and it admits people one
+//! by one as persons of their own (`tilo_relay_protocol::room_operator`).
+//! This module is that host's operator and the workspace's door: every
+//! browser that opens the served join page creates a person of its own, asks
+//! `/__tilo/room/join`, and is pre-admitted as an Editor of the workspace.
+//! The app is an author of the workspace (`--author-app`), so members write
+//! through it.
 //!
 //! It is for development on this machine. Anyone who reaches the page is
 //! let in; the page server and the host listen on loopback.
@@ -29,19 +30,19 @@ use tilo_lock::MutexRecover as _;
 
 use super::Project;
 
-/// Every line the room host writes for its operator starts with this.
+/// Every line the host writes for its operator starts with this.
 const OPERATOR: &str = "tilo-room-operator ";
 /// How long the host has to start serving.
 const START_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a join waits for the host's pre-admission.
 const ADMIT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// A running shared room.
-pub struct SharedRoom {
-    /// The room host's page-facing origin (plain HTTP on loopback).
+/// A running shared workspace.
+pub struct SharedWorkspace {
+    /// The host's page-facing origin (plain HTTP on loopback).
     pub origin: String,
-    /// The room's UUID.
-    pub room: String,
+    /// The id of the relay room serving it.
+    pub relay_room: String,
     /// The app every page opens.
     pub app_id: String,
     pub name: String,
@@ -49,7 +50,7 @@ pub struct SharedRoom {
     stdin: Mutex<ChildStdin>,
     /// Joins waiting on their pre-admission, by token digest.
     waiting: Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>>,
-    /// The room's record of each app, once a page opened it, kept in
+    /// The workspace's record of each app, once a page opened it, kept in
     /// `records_file` across restarts.
     records: Mutex<Records>,
     records_file: PathBuf,
@@ -96,7 +97,7 @@ impl Records {
 /// How long the page that is opening an app's record has before another may.
 const OPENING_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Where an app's record in the room stands, for a page that opens it.
+/// Where an app's record in the workspace stands, for a page that opens it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RecordClaim {
     pub record: Option<String>,
@@ -111,17 +112,19 @@ pub struct Admission {
     pub admission_token: String,
 }
 
-impl SharedRoom {
-    /// Start the room for `project`, whose pages are served at
+impl SharedWorkspace {
+    /// Start the workspace for `project`, whose pages are served at
     /// `pages_origin`, keeping it under the app's target directory so a
-    /// restart reopens the same room with what was in it. `fresh` starts an
-    /// empty one.
+    /// restart reopens the same workspace with what was in it. `fresh` starts
+    /// an empty one.
     ///
     /// # Errors
     ///
     /// When the host cannot be built or started.
     pub fn start(project: &Project, pages_origin: &str, fresh: bool) -> Result<Self> {
         let relay = relay_binary(project)?;
+        // The state a shared session has already written: kept under the
+        // name it was written with, so a restart reopens it.
         let state = project
             .target_dir
             .join("tilo-app/web")
@@ -161,18 +164,18 @@ impl SharedRoom {
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("starting {}", relay.display()))?;
-        let stdin = child.stdin.take().context("the room host has no stdin")?;
-        let stdout = child.stdout.take().context("the room host has no stdout")?;
+        let stdin = child.stdin.take().context("the host has no stdin")?;
+        let stdout = child.stdout.take().context("the host has no stdout")?;
         let waiting: Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>> = Arc::default();
         let started_rx = follow_operator(stdout, Arc::clone(&waiting))?;
         let started = started_rx.recv_timeout(START_TIMEOUT).map_err(|_| {
             let _ = child.kill();
-            anyhow::anyhow!("the room host did not start in two minutes")
+            anyhow::anyhow!("the host did not start in two minutes")
         })?;
-        let room = started
+        let relay_room = started
             .get("room")
             .and_then(Value::as_str)
-            .context("the room host named no room")?
+            .context("the host named no room")?
             .to_owned();
         let records_file = state.join("records.json");
         let people_file = state.join("people.json");
@@ -186,7 +189,7 @@ impl SharedRoom {
             .unwrap_or_default();
         Ok(Self {
             origin: format!("http://127.0.0.1:{plain}"),
-            room,
+            relay_room,
             app_id,
             name: project.display_name(),
             child: Mutex::new(child),
@@ -202,7 +205,7 @@ impl SharedRoom {
         })
     }
 
-    /// Everyone the room admitted, `[{id, name}]`, `id` the person's key.
+    /// Everyone the workspace admitted, `[{id, name}]`, `id` the person's key.
     pub fn people(&self) -> Value {
         self.people
             .lock_recover()
@@ -236,7 +239,7 @@ impl SharedRoom {
     }
 
     /// Pre-admit the person `user_public_key` (hex), named `label`, as an
-    /// Editor of the room.
+    /// Editor of the workspace.
     pub fn admit(&self, user_public_key: &str, label: &str) -> Result<Admission> {
         if user_public_key.len() != 64 || !user_public_key.bytes().all(|b| b.is_ascii_hexdigit()) {
             bail!("no person to admit");
@@ -252,15 +255,15 @@ impl SharedRoom {
             "label": label,
             "role": "Editor",
         });
-        writeln!(self.stdin.lock_recover(), "{command}").context("asking the room host")?;
+        writeln!(self.stdin.lock_recover(), "{command}").context("asking the host")?;
         let answer = rx
             .recv_timeout(ADMIT_TIMEOUT)
-            .context("the room host did not answer")?;
+            .context("the host did not answer")?;
         let field = |key: &str| answer.get(key).and_then(Value::as_str);
         match field("event") {
             Some("pre_admitted") => {
                 let invitation = field("invitation")
-                    .context("the room host sent no invitation")?
+                    .context("the host sent no invitation")?
                     .to_owned();
                 let people = {
                     let mut people = self.people.lock_recover();
@@ -273,12 +276,12 @@ impl SharedRoom {
                     admission_token: token,
                 })
             }
-            _ => bail!("{}", field("reason").unwrap_or("the room refused")),
+            _ => bail!("{}", field("reason").unwrap_or("the workspace refused")),
         }
     }
 }
 
-impl Drop for SharedRoom {
+impl Drop for SharedWorkspace {
     fn drop(&mut self) {
         let _ = writeln!(self.stdin.lock_recover(), "{}", json!({"op": "shutdown"}));
         let mut child = self.child.lock_recover();
@@ -293,16 +296,16 @@ impl Drop for SharedRoom {
     }
 }
 
-/// Read the room host's operator events from `stdout` on a thread of its
-/// own: hand each pre-admission's answer to the join `waiting` on it, and
-/// answer the host's start on the returned channel.
+/// Read the host's operator events from `stdout` on a thread of its own:
+/// hand each pre-admission's answer to the join `waiting` on it, and answer
+/// the host's start on the returned channel.
 fn follow_operator(
     stdout: std::process::ChildStdout,
     waiting: Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>>,
 ) -> Result<mpsc::Receiver<Value>> {
     let (started_tx, started_rx) = mpsc::channel::<Value>();
     std::thread::Builder::new()
-        .name("tilo-app-room".into())
+        .name("tilo-app-workspace".into())
         .spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let Some(event) = line
@@ -321,12 +324,12 @@ fn follow_operator(
                 }
             }
         })
-        .context("starting the room operator")?;
+        .context("starting the operator")?;
     Ok(started_rx)
 }
 
-/// The SDK's room host, built from the SDK checkout the app builds against
-/// (with its lockfile) the first time and reused after.
+/// The SDK's host, built from the SDK checkout the app builds against (with
+/// its lockfile) the first time and reused after.
 fn relay_binary(project: &Project) -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("TILO_RELAY") {
         return Ok(PathBuf::from(path));
@@ -339,7 +342,7 @@ fn relay_binary(project: &Project) -> Result<PathBuf> {
     };
     let binary = target.join("debug").join(exe("tilo-relay"));
     eprintln!(
-        "[tilo-app] building the room host (tilo-relay); the first build takes a few minutes"
+        "[tilo-app] building the workspace's host (tilo-relay); the first build takes a few minutes"
     );
     let mut command = ProcessCommand::new(super::cargo_program());
     command
@@ -358,9 +361,9 @@ fn relay_binary(project: &Project) -> Result<PathBuf> {
     if !in_workspace {
         command.arg("--target-dir").arg(&target);
     }
-    let status = command.status().context("starting the room host build")?;
+    let status = command.status().context("starting the host build")?;
     if !status.success() {
-        bail!("building the room host failed with {status}");
+        bail!("building the host failed with {status}");
     }
     Ok(binary)
 }

@@ -36,7 +36,7 @@ impl From<collab_types::ContentRetention> for Retention {
 /// The devices a host delivers `msg` to as it arrives, when only they can
 /// use it: the copy of a channel commit carrying what the devices it adds
 /// join from (every other member gets the copy without it). `None` for a
-/// message every member of the room gets. A device catching up replays it
+/// message every member of the workspace gets. A device catching up replays it
 /// like any retained message.
 pub fn audience(msg: &NeighbourMsg) -> Option<&[collab_types::Ed25519PublicKey]> {
     let NeighbourMsg::MlsGovernance { frame, .. } = msg else {
@@ -173,8 +173,8 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
     Some((*blake3::hash(route).as_bytes(), kind))
 }
 
-/// The retained channel of an app record. Room isolation is supplied by the
-/// enclosing authenticated workspace, not by this digest.
+/// The retained channel of an app record. Isolation between workspaces is
+/// supplied by the enclosing authenticated workspace, not by this digest.
 #[must_use]
 pub fn app_document_channel(app: &str, record: &str) -> [u8; 32] {
     *blake3::hash(format!("app\0{app}\0{record}").as_bytes()).as_bytes()
@@ -197,7 +197,7 @@ mod tests {
         NeighbourMsg::AppDocument {
             peer: 1,
             app_id: "app".into(),
-            cluster_id: "room".into(),
+            cluster_id: "workspace".into(),
             record_id: "doc".into(),
             envelope: Box::new(envelope),
         }
@@ -331,7 +331,7 @@ mod tests {
         let other = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let channel = ChannelId::new();
         let genesis = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsGovernance {
-            workspace: "room".into(),
+            workspace: "workspace".into(),
             frame: Box::new(
                 MlsGovernanceFrame::signed(channel, [0; 32], 0, MlsGovernanceAction::Genesis, key)
                     .unwrap(),
@@ -343,7 +343,7 @@ mod tests {
         assert_ne!(first.0, retention(&genesis(&other), false).unwrap().0);
         assert_eq!(first.1, Retention::Checkpoint);
         let change = |epoch: u8| NeighbourMsg::MlsGovernance {
-            workspace: "room".into(),
+            workspace: "workspace".into(),
             frame: Box::new(
                 MlsGovernanceFrame::signed(
                     channel,
@@ -370,7 +370,7 @@ mod tests {
         assert!(audience(&change(2)).is_none());
 
         let request = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsAccessRequest {
-            workspace: "room".into(),
+            workspace: "workspace".into(),
             request: Box::new(MlsAccessRequestV1::signed(channel, vec![1], 1, key).unwrap()),
             delivery: 0,
         };
@@ -380,7 +380,7 @@ mod tests {
         assert_ne!(mine, first.0);
         // The routed form is kept beside the plain one, per device too.
         let routed = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsRoutedAccessRequest {
-            room: "room".into(),
+            room: "workspace".into(),
             request: Box::new(MlsAccessRequestV1::signed(channel, vec![1], 1, key).unwrap()),
             route: Box::new(collab_types::ChannelRoute::new("app", "record")),
             delivery: 0,
@@ -397,7 +397,7 @@ mod tests {
             retention(
                 &NeighbourMsg::SyncResp {
                     changes: vec![vec![1]],
-                    room: "room".into(),
+                    room: "workspace".into(),
                 },
                 true,
             ),
@@ -407,7 +407,7 @@ mod tests {
             retention(
                 &NeighbourMsg::SyncResp {
                     changes: vec![vec![1]],
-                    room: "room".into(),
+                    room: "workspace".into(),
                 },
                 false,
             ),
@@ -443,7 +443,7 @@ mod tests {
             NeighbourMsg::AppPresenceV2 {
                 peer: 1,
                 app_id: "app".into(),
-                cluster_id: "room".into(),
+                cluster_id: "workspace".into(),
                 presence: collab_types::PeerPresence {
                     key: vec![4],
                     payload: collab_types::PeerPresencePayload::Arrived,

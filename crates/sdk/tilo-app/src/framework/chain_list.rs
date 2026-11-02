@@ -5,9 +5,9 @@
 //! back to. A view of the chain opens the part before the oldest it holds
 //! when its reader comes to the top of what it shows, one part at a time:
 //! the next only once the last one opened is here. A part this device has
-//! none of is asked of the room ([`Chain::hold`]); until it is here, the
+//! none of is asked of the workspace ([`Chain::hold`]); until it is here, the
 //! view reserves the place its items will take and shows them arriving
-//! ([`ChainPager::asked`]). When the room's hosts sent everything they hold
+//! ([`ChainPager::asked`]). When the workspace's hosts sent everything they hold
 //! without it, or none is connected, the place says the earlier items are
 //! not available, with nothing spinning ([`ChainPager::unavailable`]), until
 //! it arrives after all. The view keeps the item the reader looks at where
@@ -24,7 +24,7 @@
 //! [`ChainList`] is the same as a [`ListModel`] for a [`VirtualList`].
 //! Nothing here polls: the chain's [`Chain::revision`] moves, and the
 //! store wakes the window ([`ui_core::record::RecordStore::wake_on_arrival`]),
-//! when a part's history arrives or the room says it has none of it, and
+//! when a part's history arrives or the workspace says it has none of it, and
 //! opening a part waits for a pass where the app's records take writes
 //! ([`ChainPager::settle`]).
 //!
@@ -46,7 +46,7 @@ use super::chain::{Chain, Chained, PartArrival};
 pub enum Paged {
     /// Nothing to open, or not now.
     Nothing,
-    /// Opened part `n`: held from this device, or on its way from the room.
+    /// Opened part `n`: held from this device, or on its way from the workspace.
     Opened(u64),
     /// A held part has the item [`ChainPager::seek`] looked for.
     Found,
@@ -64,7 +64,7 @@ pub struct ChainPager<P: Chained> {
     /// The reader came to the top of what is held.
     wanted: bool,
     seeking: Option<Seek<P>>,
-    /// When the part on its way was asked for, from the room.
+    /// When the part on its way was asked for, from the workspace.
     asked: Option<ArrivalClock>,
 }
 
@@ -99,13 +99,13 @@ impl<P: Chained> ChainPager<P> {
         self.oldest().is_some_and(|oldest| oldest > 0)
     }
 
-    /// Whether a part asked for is still on its way from the room.
+    /// Whether a part asked for is still on its way from the workspace.
     #[must_use]
     pub fn arriving(&self) -> bool {
         self.waiting(PartArrival::Arriving)
     }
 
-    /// Whether a part asked for is not available from the room's hosts: it
+    /// Whether a part asked for is not available from the workspace's hosts: it
     /// is not coming until that changes, and nothing before it is asked
     /// for.
     #[must_use]
@@ -135,8 +135,8 @@ impl<P: Chained> ChainPager<P> {
         self.has_earlier() || !self.chain.waited().is_empty()
     }
 
-    /// Whether reading back waits on the room: a part is on its way, or
-    /// the room has none of one.
+    /// Whether reading back waits on the workspace: a part is on its way, or
+    /// the workspace has none of one.
     fn held_up(&self) -> bool {
         !self.chain.waited().is_empty()
     }
@@ -202,7 +202,7 @@ impl<P: Chained> ChainPager<P> {
         let Some(oldest) = self.oldest() else {
             return Paged::Nothing;
         };
-        // Nothing before a part the room has none of is asked for.
+        // Nothing before a part the workspace has none of is asked for.
         if oldest == 0 || self.unavailable() {
             self.wanted = false;
             if self.seeking.take().is_some() {
@@ -245,7 +245,7 @@ type Rows<P, K, T> = Box<dyn Fn(&[(u64, Rc<<P as Resource>::State>)]) -> Vec<(K,
 /// A chain's items as a [`ListModel`]: every held part's items, oldest
 /// first, after a row standing for the earlier parts while there are any
 /// ([`ChainRow::Earlier`], pending while one is on its way, failed with
-/// why when the room's hosts have none of it). Showing that
+/// why when the workspace's hosts have none of it). Showing that
 /// row opens the part before ([`ChainPager::reached_top`]); a
 /// [`VirtualList`](ui_core::widget::virtual_list::VirtualList) keeps the
 /// row the reader looks at in place as items come in above it.
@@ -255,7 +255,7 @@ pub struct ChainList<P: Chained, K, T> {
     items: Vec<(K, T)>,
     index: HashMap<K, usize>,
     earlier: bool,
-    /// Why the earlier parts' row shows no more, while the room's hosts
+    /// Why the earlier parts' row shows no more, while the workspace's hosts
     /// have none of the part before.
     unavailable: Option<String>,
     seen: Option<u64>,

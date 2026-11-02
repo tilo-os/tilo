@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
-use tilo_desktop::desktop_actions::{DESK_RESOURCE, DISPLAY_KIND, WINDOW_KIND};
+use tilo_desktop::desk_verbs::{DESK_RESOURCE, DISPLAY_KIND, WINDOW_KIND};
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use wayland_client::protocol::{
@@ -297,7 +297,7 @@ fn focus_display(session: &mut Session, client: &mut TestClient, index: usize) {
         session,
         client,
         display.as_str(),
-        "focus",
+        "focus-display",
         serde_json::json!({}),
     );
 }

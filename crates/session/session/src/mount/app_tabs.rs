@@ -387,7 +387,7 @@ fn answer(
             // The place it opens into is there from this frame; a launch
             // that starts nothing takes it back.
             let held = desktop.with_policy(|policy| policy.hold_beside(&app, anchor, background));
-            if let Err(error) = apps.start_beside(&launch, &apps.room_named(&room)) {
+            if let Err(error) = apps.start_beside(&launch, &apps.workspace_named(&room)) {
                 if held {
                     desktop.with_policy(|policy| policy.release_held(&app));
                 }
@@ -732,7 +732,7 @@ fn launched_room(launches: &Launches, peer: Option<u32>, app: &str) -> Option<St
         Some(pid) if pid == std::process::id() => launches.take_window_shell_ui(app)?,
         peer => peer?,
     };
-    launches.room_of(pid, app)
+    launches.workspace_of(pid, app)
 }
 
 /// Whether `message` is one this service answers.

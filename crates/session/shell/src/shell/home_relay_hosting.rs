@@ -168,7 +168,7 @@ fn chosen_by(
 ) -> HomeRelayHosting {
     hosting
         .workspaces
-        .retain(|workspace| may_choose(tree, &workspace.room, person));
+        .retain(|workspace| may_choose(tree, &workspace.workspace, person));
     hosting
 }
 

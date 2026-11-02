@@ -71,7 +71,7 @@ pub(super) struct State {
 #[derive(Clone, PartialEq, Eq)]
 struct Placing {
     waiting: BTreeSet<RoomId>,
-    room_epoch: u64,
+    workspace_epoch: u64,
     host_generation: u64,
 }
 
@@ -363,7 +363,7 @@ impl ShellNetwork {
     fn placing_now(&self, tree: &crate::shell::state::WorkspaceTree) -> Placing {
         Placing {
             waiting: tree.pending_placements.clone(),
-            room_epoch: tree.desktop.room_epoch,
+            workspace_epoch: tree.desktop.workspace_epoch,
             host_generation: self.embedded_host.host_generation.load(Ordering::Acquire),
         }
     }

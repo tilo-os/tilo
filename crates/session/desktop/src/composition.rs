@@ -137,7 +137,7 @@ pub fn display_ordered<'a>(partition: &OutputPartition, strip: &'a Strip) -> Vec
 
 pub fn build_group(
     group: &WindowGroup,
-    room: RoomId,
+    workspace: RoomId,
     resolver: &mut dyn TileResolver,
     failures: &mut Vec<ui::launch::LaunchError>,
     wake: &std::sync::Arc<dyn Fn() + Send + Sync>,
@@ -147,7 +147,10 @@ pub fn build_group(
         .iter()
         .map(|tab| {
             let host = resolver
-                .resolve(TileRequest { room, tab })
+                .resolve(TileRequest {
+                    room: workspace,
+                    tab,
+                })
                 .mount(failures, wake.clone());
             (
                 TabDescriptor {
@@ -1135,10 +1138,10 @@ impl DesktopSurface {
             }
         }
         let mut hosts = HashMap::new();
-        if let Some(workspace) = tree
-            .active_workspace()
-            .filter(|w| self.context.is_some_and(|(_, room)| room == w.room()))
-        {
+        if let Some(workspace) = tree.active_workspace().filter(|w| {
+            self.context
+                .is_some_and(|(_, workspace)| workspace == w.room())
+        }) {
             let keep: Vec<u64> = workspace
                 .strips
                 .iter()

@@ -1,4 +1,4 @@
-//! How a room's replication document carries a workspace, and how it is
+//! How a workspace's replication document carries a workspace, and how it is
 //! read back.
 //!
 //! Pure functions over an [`AutoCommit`] the host owns: the workspace's
@@ -24,36 +24,36 @@ use crate::tree::DesktopTree;
 use crate::workspace::Workspace;
 
 /// Key naming the workspace a document describes (a UUID string).
-pub const ROOM_ID_KEY: &str = "room";
+pub const WORKSPACE_ID_KEY: &str = "room";
 /// Key of the workspace's display name.
-pub const ROOM_NAME_KEY: &str = "name";
+pub const WORKSPACE_NAME_KEY: &str = "name";
 /// Key of the workspace owner's user id.
-pub const ROOM_OWNER_KEY: &str = "owner";
+pub const WORKSPACE_OWNER_KEY: &str = "owner";
 /// Key of the next id counter a durable topology owner mints from, so a
 /// restarted owner never reuses an id a closed tab once had.
-pub const ROOM_DESKTOP_COUNTER_KEY: &str = "desktop_counter_v1";
+pub const WORKSPACE_DESKTOP_COUNTER_KEY: &str = "desktop_counter_v1";
 /// Key a workspace document stores its effect receipts under: one slice per
 /// member, `{person → {invocation → JSON receipt}}`, which only that
 /// member's devices write.
-pub const ROOM_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
+pub const WORKSPACE_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
 /// Key a workspace document anchors each member's archived effect receipts
 /// under: `{person → {device → history root}}`, each device's own.
-pub const ROOM_EFFECT_HISTORY_KEY: &str = "effect_history_root_v1";
+pub const WORKSPACE_EFFECT_HISTORY_KEY: &str = "effect_history_root_v1";
 /// Key a workspace document stores its saved shortcuts under.
-pub const ROOM_AUTOMATIONS_KEY: &str = "automations_v1";
+pub const WORKSPACE_AUTOMATIONS_KEY: &str = "automations_v1";
 /// Key a workspace document stores its named grant sets under, by lowercase name.
-pub const ROOM_PRESETS_KEY: &str = "presets_v1";
+pub const WORKSPACE_PRESETS_KEY: &str = "presets_v1";
 /// Key of the map from member person id to the role preset they hold.
-pub const ROOM_MEMBERS_KEY: &str = "members";
+pub const WORKSPACE_MEMBERS_KEY: &str = "members";
 /// Key of the map from member person id to when the workspace admitted them,
 /// Unix milliseconds (JSON bytes). Written once by the admitting authority.
-pub const ROOM_MEMBERS_JOINED_KEY: &str = "members_joined_v1";
+pub const WORKSPACE_MEMBERS_JOINED_KEY: &str = "members_joined_v1";
 /// Key of the map from grant id to the grant (JSON bytes).
-pub const ROOM_GRANTS_KEY: &str = "grants";
+pub const WORKSPACE_GRANTS_KEY: &str = "grants";
 /// Key of the map from sandbox capability id to the capability (JSON bytes).
-pub const ROOM_SANDBOX_KEY: &str = "sandbox";
+pub const WORKSPACE_SANDBOX_KEY: &str = "sandbox";
 /// Key a workspace document stores its schedule claims under.
-pub const ROOM_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
+pub const WORKSPACE_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
 
 /// Project a workspace's shortcuts as one map value per shortcut id, so two
 /// collaborators saving different shortcuts concurrently merge as two keys.
@@ -70,10 +70,10 @@ pub fn project_workspace_shortcuts(
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
-    let map = match doc.get(&ROOT, ROOM_AUTOMATIONS_KEY).ok().flatten() {
+    let map = match doc.get(&ROOT, WORKSPACE_AUTOMATIONS_KEY).ok().flatten() {
         Some((_, id)) => id,
         None if shortcuts.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, ROOM_AUTOMATIONS_KEY, ObjType::Map)?,
+        None => doc.put_object(&ROOT, WORKSPACE_AUTOMATIONS_KEY, ObjType::Map)?,
     };
     let stale: Vec<String> = doc
         .keys(&map)
@@ -180,13 +180,13 @@ pub fn project_workspace_presets(
             ))
         })
         .collect();
-    project_blob_map(doc, ROOM_PRESETS_KEY, entries)
+    project_blob_map(doc, WORKSPACE_PRESETS_KEY, entries)
 }
 
 /// The named grant sets a workspace document carries, by name. A value that does
 /// not decode or validate is skipped.
 pub fn workspace_presets_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Preset> {
-    let mut presets: Vec<tilo_action_policy::Preset> = blob_map_of(doc, ROOM_PRESETS_KEY)
+    let mut presets: Vec<tilo_action_policy::Preset> = blob_map_of(doc, WORKSPACE_PRESETS_KEY)
         .into_iter()
         .map(|(_, preset)| preset)
         .filter(|preset: &tilo_action_policy::Preset| preset.validate().is_ok())
@@ -200,7 +200,7 @@ pub fn workspace_presets_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Preset>
 /// # Errors
 ///
 /// The document's error when a value cannot be written.
-pub fn project_room_policy(
+pub fn project_workspace_policy(
     doc: &mut AutoCommit,
     policy: &tilo_action_policy::WorkspacePolicy,
 ) -> Result<(), automerge::AutomergeError> {
@@ -208,11 +208,11 @@ pub fn project_room_policy(
 
     match &policy.owner {
         Some(owner) => {
-            doc.put_str_if_changed(&ROOT, ROOM_OWNER_KEY, owner)?;
+            doc.put_str_if_changed(&ROOT, WORKSPACE_OWNER_KEY, owner)?;
         }
         None => {
-            if doc.get(&ROOT, ROOM_OWNER_KEY).ok().flatten().is_some() {
-                doc.delete(&ROOT, ROOM_OWNER_KEY)?;
+            if doc.get(&ROOT, WORKSPACE_OWNER_KEY).ok().flatten().is_some() {
+                doc.delete(&ROOT, WORKSPACE_OWNER_KEY)?;
             }
         }
     }
@@ -223,15 +223,15 @@ pub fn project_room_policy(
         .collect();
     // The workspace's members and grants are always present, if empty: readers
     // of the workspace's security basis require both.
-    ensure_map(doc, ROOM_MEMBERS_KEY)?;
-    ensure_map(doc, ROOM_GRANTS_KEY)?;
-    project_blob_map(doc, ROOM_MEMBERS_KEY, members)?;
+    ensure_map(doc, WORKSPACE_MEMBERS_KEY)?;
+    ensure_map(doc, WORKSPACE_GRANTS_KEY)?;
+    project_blob_map(doc, WORKSPACE_MEMBERS_KEY, members)?;
     let joined = policy
         .joined
         .iter()
         .filter_map(|(person, at)| Some((person.clone(), serde_json::to_vec(at).ok()?)))
         .collect();
-    project_blob_map(doc, ROOM_MEMBERS_JOINED_KEY, joined)?;
+    project_blob_map(doc, WORKSPACE_MEMBERS_JOINED_KEY, joined)?;
     let grants = policy
         .grants
         .iter()
@@ -242,30 +242,35 @@ pub fn project_room_policy(
             ))
         })
         .collect();
-    project_blob_map(doc, ROOM_GRANTS_KEY, grants)
+    project_blob_map(doc, WORKSPACE_GRANTS_KEY, grants)
 }
 
-/// The authority a workspace document records for `room`. Values that do not
+/// The authority a workspace document records for `workspace`. Values that do not
 /// decode are skipped; grants on another workspace's nodes are dropped.
-pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::WorkspacePolicy {
+pub fn workspace_policy_of(
+    doc: &AutoCommit,
+    workspace: &str,
+) -> tilo_action_policy::WorkspacePolicy {
     use automerge::{ROOT, ReadDoc};
 
     let owner = doc
-        .get(&ROOT, ROOM_OWNER_KEY)
+        .get(&ROOT, WORKSPACE_OWNER_KEY)
         .ok()
         .flatten()
         .and_then(|(value, _)| value.into_string().ok());
-    let members = blob_map_of(doc, ROOM_MEMBERS_KEY).into_iter().collect();
-    let joined = blob_map_of(doc, ROOM_MEMBERS_JOINED_KEY)
+    let members = blob_map_of(doc, WORKSPACE_MEMBERS_KEY)
         .into_iter()
         .collect();
-    let grants = blob_map_of(doc, ROOM_GRANTS_KEY)
+    let joined = blob_map_of(doc, WORKSPACE_MEMBERS_JOINED_KEY)
+        .into_iter()
+        .collect();
+    let grants = blob_map_of(doc, WORKSPACE_GRANTS_KEY)
         .into_iter()
         .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
-        .filter(|grant| grant.node.workspace_id() == Some(room))
+        .filter(|grant| grant.node.workspace_id() == Some(workspace))
         .collect();
     tilo_action_policy::WorkspacePolicy {
-        workspace: room.to_owned(),
+        workspace: workspace.to_owned(),
         owner,
         members,
         joined,
@@ -279,7 +284,7 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::Works
 /// # Errors
 ///
 /// The document's error when the map cannot be written.
-pub fn project_room_sandbox(
+pub fn project_workspace_sandbox(
     doc: &mut AutoCommit,
     sandbox: &[collab_types::caps::CapOverride],
 ) -> Result<(), automerge::AutomergeError> {
@@ -287,12 +292,12 @@ pub fn project_room_sandbox(
         .iter()
         .filter_map(|cap| Some((cap.id.clone(), serde_json::to_vec(cap).ok()?)))
         .collect();
-    project_blob_map(doc, ROOM_SANDBOX_KEY, entries)
+    project_blob_map(doc, WORKSPACE_SANDBOX_KEY, entries)
 }
 
 /// The sandbox capabilities a workspace document carries.
-pub fn room_sandbox_of(doc: &AutoCommit) -> Vec<collab_types::caps::CapOverride> {
-    blob_map_of(doc, ROOM_SANDBOX_KEY)
+pub fn workspace_sandbox_of(doc: &AutoCommit) -> Vec<collab_types::caps::CapOverride> {
+    blob_map_of(doc, WORKSPACE_SANDBOX_KEY)
         .into_iter()
         .map(|(_, cap)| cap)
         .collect()
@@ -303,7 +308,7 @@ pub fn room_sandbox_of(doc: &AutoCommit) -> Vec<collab_types::caps::CapOverride>
 pub fn workspace_shortcuts_of(doc: &AutoCommit) -> Vec<tilo_automation::SavedShortcut> {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
-    let Some((_, map)) = doc.get(&ROOT, ROOM_AUTOMATIONS_KEY).ok().flatten() else {
+    let Some((_, map)) = doc.get(&ROOT, WORKSPACE_AUTOMATIONS_KEY).ok().flatten() else {
         return Vec::new();
     };
     let mut shortcuts: Vec<tilo_automation::SavedShortcut> = doc
@@ -335,10 +340,10 @@ pub fn project_schedule_claims(
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
-    let map = match doc.get(&ROOT, ROOM_SCHEDULE_CLAIMS_KEY).ok().flatten() {
+    let map = match doc.get(&ROOT, WORKSPACE_SCHEDULE_CLAIMS_KEY).ok().flatten() {
         Some((_, id)) => id,
         None if claims.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, ROOM_SCHEDULE_CLAIMS_KEY, ObjType::Map)?,
+        None => doc.put_object(&ROOT, WORKSPACE_SCHEDULE_CLAIMS_KEY, ObjType::Map)?,
     };
     let stale: Vec<String> = doc
         .keys(&map)
@@ -369,7 +374,7 @@ pub fn project_schedule_claims(
 pub fn schedule_claims_of(doc: &AutoCommit) -> Vec<tilo_automation::ScheduleClaim> {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
-    let Some((_, map)) = doc.get(&ROOT, ROOM_SCHEDULE_CLAIMS_KEY).ok().flatten() else {
+    let Some((_, map)) = doc.get(&ROOT, WORKSPACE_SCHEDULE_CLAIMS_KEY).ok().flatten() else {
         return Vec::new();
     };
     let mut claims: Vec<tilo_automation::ScheduleClaim> = doc
@@ -407,9 +412,9 @@ pub fn project_effect_receipts(
     if receipts.is_empty() {
         return Ok(());
     }
-    let ledger = match doc.get(&ROOT, ROOM_EFFECT_RECEIPTS_KEY)? {
+    let ledger = match doc.get(&ROOT, WORKSPACE_EFFECT_RECEIPTS_KEY)? {
         Some((Value::Object(ObjType::Map), id)) => id,
-        _ => doc.put_object(&ROOT, ROOM_EFFECT_RECEIPTS_KEY, ObjType::Map)?,
+        _ => doc.put_object(&ROOT, WORKSPACE_EFFECT_RECEIPTS_KEY, ObjType::Map)?,
     };
     let slice = match doc.get(&ledger, person)? {
         Some((Value::Object(ObjType::Map), id)) => id,
@@ -437,7 +442,7 @@ pub fn project_effect_receipts(
 pub fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectReceipt> {
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value};
     let Some((Value::Object(ObjType::Map), ledger)) =
-        doc.get(&ROOT, ROOM_EFFECT_RECEIPTS_KEY).ok().flatten()
+        doc.get(&ROOT, WORKSPACE_EFFECT_RECEIPTS_KEY).ok().flatten()
     else {
         return Vec::new();
     };
@@ -525,7 +530,7 @@ pub fn localise_tile(
 /// Key the workspace document stores a workspace's record index under, mirroring
 /// the record index's shape (id -> `kind`) in the document that
 /// crosses the wire.
-pub const ROOM_RECORDS_KEY: &str = "records";
+pub const WORKSPACE_RECORDS_KEY: &str = "records";
 
 /// Project a workspace's record index into that workspace's replication
 /// document. A workspace holds a *reference* (id and type), never the
@@ -540,7 +545,7 @@ pub const ROOM_RECORDS_KEY: &str = "records";
 ///
 /// The document's error when a map this projection needs cannot be
 /// created.
-pub fn project_room_records(
+pub fn project_workspace_records(
     doc: &mut AutoCommit,
     held: &std::collections::BTreeMap<String, String>,
 ) -> Result<(), automerge::AutomergeError> {
@@ -549,9 +554,9 @@ pub fn project_room_records(
     if held.is_empty() {
         return Ok(());
     }
-    let records_id = match doc.get(&ROOT, ROOM_RECORDS_KEY).ok().flatten() {
+    let records_id = match doc.get(&ROOT, WORKSPACE_RECORDS_KEY).ok().flatten() {
         Some((_, id)) => id,
-        None => doc.put_object(&ROOT, ROOM_RECORDS_KEY, ObjType::Map)?,
+        None => doc.put_object(&ROOT, WORKSPACE_RECORDS_KEY, ObjType::Map)?,
     };
     for (id, kind) in held {
         let entry = match doc.get(&records_id, id.as_str()).ok().flatten() {
@@ -570,7 +575,7 @@ pub fn project_room_records(
 
 /// Read a workspace document's record index back as `(record id, kind)`
 /// pairs, sorted by id so two peers read one document the same way.
-pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
+pub fn workspace_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
     use automerge::{ObjType, ROOT, ReadDoc, Value};
 
     // `records` is created on first projection, so two peers whose workspace
@@ -578,10 +583,10 @@ pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
     // where a plain `get` hides one peer's index. Join every candidate
     // map (the `get` winner first; the first copy of a record wins).
     let mut candidates: Vec<automerge::ObjId> = Vec::new();
-    if let Ok(Some((Value::Object(ObjType::Map), winner))) = doc.get(&ROOT, ROOM_RECORDS_KEY) {
+    if let Ok(Some((Value::Object(ObjType::Map), winner))) = doc.get(&ROOT, WORKSPACE_RECORDS_KEY) {
         candidates.push(winner);
     }
-    if let Ok(values) = doc.get_all(&ROOT, ROOM_RECORDS_KEY) {
+    if let Ok(values) = doc.get_all(&ROOT, WORKSPACE_RECORDS_KEY) {
         for (value, id) in values {
             if matches!(value, Value::Object(ObjType::Map)) && !candidates.contains(&id) {
                 candidates.push(id);
@@ -610,8 +615,8 @@ pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
 /// The workspace a candidate document says it describes, when it names a valid
 /// one. A payload naming a different workspace than the one it answers must be
 /// refused before anything else reads it.
-pub fn declared_room(candidate: &AutoCommit) -> Option<RoomId> {
-    RoomId::parse(&candidate.str_at(&automerge::ROOT, ROOM_ID_KEY)?)
+pub fn declared_workspace(candidate: &AutoCommit) -> Option<RoomId> {
+    RoomId::parse(&candidate.str_at(&automerge::ROOT, WORKSPACE_ID_KEY)?)
 }
 
 /// Apply one already-admitted workspace document to `tree`: create the workspace's
@@ -622,16 +627,16 @@ pub fn declared_room(candidate: &AutoCommit) -> Option<RoomId> {
 ///
 /// # Errors
 ///
-/// A description when the document does not declare exactly `room`, or
+/// A description when the document does not declare exactly `identity`, or
 /// another workspace already holds the id derived from it.
-pub fn apply_admitted_room(
+pub fn apply_admitted_workspace(
     tree: &mut DesktopTree,
-    room: RoomId,
+    identity: RoomId,
     doc: &AutoCommit,
 ) -> Result<bool, String> {
     use automerge::ROOT;
-    if declared_room(doc) != Some(room) {
-        return Err("admitted room identity mismatch".into());
+    if declared_workspace(doc) != Some(identity) {
+        return Err("admitted workspace identity mismatch".into());
     }
     let text = |key: &str| -> Result<Option<String>, String> {
         Ok(doc
@@ -639,23 +644,23 @@ pub fn apply_admitted_room(
             .map_err(|e| e.to_string())?
             .and_then(|(v, _)| v.as_str().map(str::to_owned)))
     };
-    let name = text(ROOM_NAME_KEY)?.unwrap_or_default();
-    if !tree.workspaces.iter().any(|w| w.room() == room) {
-        let id = WorkspaceId::of_room(room);
+    let name = text(WORKSPACE_NAME_KEY)?.unwrap_or_default();
+    if !tree.workspaces.iter().any(|w| w.room() == identity) {
+        let id = WorkspaceId::of_room(identity);
         if tree.workspaces.iter().any(|w| w.id == id) {
-            return Err("another workspace holds the room's workspace id".into());
+            return Err("another workspace holds that workspace id".into());
         }
-        let workspace = Workspace::in_room(id, room, &name);
+        let workspace = Workspace::in_workspace(id, identity, &name);
         if tree.workspaces.is_empty() {
             tree.active = workspace.id;
         }
         tree.workspaces.push(workspace);
     }
-    let owner = text(ROOM_OWNER_KEY)?;
+    let owner = text(WORKSPACE_OWNER_KEY)?;
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|w| w.room() == room)
+        .find(|w| w.room() == identity)
         .ok_or("workspace missing")?;
     let renamed = workspace.name != name;
     workspace.name = name;
@@ -676,8 +681,8 @@ pub fn apply_admitted_room(
 }
 
 /// Key of the workspace's layout scope in its governance document
-/// ([`RoomLayout`]), which only the workspace's governor writes.
-pub const ROOM_LAYOUT_KEY: &str = "layout_v1";
+/// ([`WorkspaceLayout`]), which only the workspace's governor writes.
+pub const WORKSPACE_LAYOUT_KEY: &str = "layout_v1";
 
 /// Whether a workspace shares its members' strips and windows: a field of the
 /// workspace's governance, written by its governor alone, that every member reads.
@@ -689,7 +694,7 @@ pub const ROOM_LAYOUT_KEY: &str = "layout_v1";
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum RoomLayout {
+pub enum WorkspaceLayout {
     /// The namespaced layout model: each member's windows are published into
     /// the workspace, and every member shows everyone's.
     #[default]
@@ -700,7 +705,7 @@ pub enum RoomLayout {
     Personal,
 }
 
-impl RoomLayout {
+impl WorkspaceLayout {
     /// The word the governance document stores.
     #[must_use]
     pub const fn id(self) -> &'static str {
@@ -728,18 +733,20 @@ impl RoomLayout {
 }
 
 /// The layout scope `doc`'s governor chose, `None` when it chose none (a
-/// room from before the field, or an invite-only room left at the
+/// workspace from before the field, or an invite-only workspace left at the
 /// default). A value this build does not read is personal: what a workspace may
 /// not share is never shared by a device that misreads it.
 #[must_use]
-pub fn room_layout_choice(doc: &AutoCommit) -> Option<RoomLayout> {
+pub fn workspace_layout_choice(doc: &AutoCommit) -> Option<WorkspaceLayout> {
     use automerge::{ROOT, ScalarValue, Value};
-    match doc.get(&ROOT, ROOM_LAYOUT_KEY).ok().flatten()? {
+    match doc.get(&ROOT, WORKSPACE_LAYOUT_KEY).ok().flatten()? {
         (Value::Scalar(value), _) => match value.as_ref() {
-            ScalarValue::Str(id) => Some(RoomLayout::from_id(id).unwrap_or(RoomLayout::Personal)),
-            _ => Some(RoomLayout::Personal),
+            ScalarValue::Str(id) => {
+                Some(WorkspaceLayout::from_id(id).unwrap_or(WorkspaceLayout::Personal))
+            }
+            _ => Some(WorkspaceLayout::Personal),
         },
-        _ => Some(RoomLayout::Personal),
+        _ => Some(WorkspaceLayout::Personal),
     }
 }
 
@@ -748,15 +755,15 @@ pub fn room_layout_choice(doc: &AutoCommit) -> Option<RoomLayout> {
 /// ([`crate::ownership::released`]). `None` when `doc` lists nobody (not
 /// heard yet), so nothing is taken as released before the list arrives.
 #[must_use]
-pub fn room_members(doc: &AutoCommit) -> Option<std::collections::BTreeSet<String>> {
+pub fn workspace_members(doc: &AutoCommit) -> Option<std::collections::BTreeSet<String>> {
     use automerge::{ROOT, ReadDoc};
     let owner = doc
-        .get(&ROOT, ROOM_OWNER_KEY)
+        .get(&ROOT, WORKSPACE_OWNER_KEY)
         .ok()
         .flatten()
         .and_then(|(value, _)| value.into_string().ok());
     let people: std::collections::BTreeSet<String> =
-        blob_map_of::<serde_json::Value>(doc, ROOM_MEMBERS_KEY)
+        blob_map_of::<serde_json::Value>(doc, WORKSPACE_MEMBERS_KEY)
             .into_iter()
             .map(|(person, _)| person)
             .chain(owner)
@@ -765,24 +772,24 @@ pub fn room_members(doc: &AutoCommit) -> Option<std::collections::BTreeSet<Strin
 }
 
 /// The layout scope of the workspace `doc` governs: its governor's choice, else
-/// [`RoomLayout::Shared`], an invite-only workspace's default.
+/// [`WorkspaceLayout::Shared`], an invite-only workspace's default.
 #[must_use]
-pub fn room_layout(doc: &AutoCommit) -> RoomLayout {
-    room_layout_choice(doc).unwrap_or_default()
+pub fn workspace_layout(doc: &AutoCommit) -> WorkspaceLayout {
+    workspace_layout_choice(doc).unwrap_or_default()
 }
 
-/// In the workspace addressing `room`, remove every window `foreign` names
+/// In the workspace with `identity`, remove every window `foreign` names
 /// (someone else's, mirrored here while the workspace shared its layout), then
 /// the window groups left with none, and the strips left with none that this
 /// machine (`local_salt`) did not make. Every window of this machine's own
 /// stays where it is. Reports whether anything changed.
 pub fn drop_windows_of_others(
     desktop: &mut DesktopTree,
-    room: RoomId,
+    identity: RoomId,
     local_salt: u16,
     foreign: &impl Fn(&Tab) -> bool,
 ) -> bool {
-    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room() == room) else {
+    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room() == identity) else {
         return false;
     };
     let mut changed = false;
@@ -840,20 +847,20 @@ mod tests {
     /// the grant is in it under its id while it stands, gone once revoked,
     /// signed by whoever gave it, and with it a member's role preset.
     #[test]
-    fn a_grant_and_its_revocation_are_what_the_room_document_carries() {
+    fn a_grant_and_its_revocation_are_what_the_workspace_document_carries() {
         use tilo_action_policy::{Answer, Grant, KindSet, Level, Subject, TreePath};
 
         let mut policy = tilo_action_policy::WorkspacePolicy::new("r", "owner");
         let mut doc = AutoCommit::new();
-        project_room_policy(&mut doc, &policy).expect("projected");
-        let roles = room_policy_of(&doc, "r");
+        project_workspace_policy(&mut doc, &policy).expect("projected");
+        let roles = workspace_policy_of(&doc, "r");
         assert_eq!(roles.owner.as_deref(), Some("owner"));
         assert!(
             roles
                 .grants
                 .iter()
                 .any(|grant| grant.subject == Subject::role(tilo_action_policy::Role::Editor)),
-            "a room document carries its roles' presets"
+            "a workspace document carries its roles' presets"
         );
 
         let grant = Grant::new(
@@ -868,22 +875,22 @@ mod tests {
             Subject::person("owner"),
         );
         policy.grants.push(grant.clone());
-        project_room_policy(&mut doc, &policy).expect("projected");
-        let held = room_policy_of(&doc, "r");
+        project_workspace_policy(&mut doc, &policy).expect("projected");
+        let held = workspace_policy_of(&doc, "r");
         let recorded = held
             .grants
             .iter()
             .find(|held| held.id == grant.id)
-            .expect("the room document carries the grant");
+            .expect("the workspace document carries the grant");
         assert_eq!(recorded, &grant);
         assert_eq!(recorded.granted_by, Subject::person("owner"));
 
         policy.grants.retain(|held| held.id != grant.id);
-        project_room_policy(&mut doc, &policy).expect("projected");
-        let revoked = room_policy_of(&doc, "r");
+        project_workspace_policy(&mut doc, &policy).expect("projected");
+        let revoked = workspace_policy_of(&doc, "r");
         assert!(
             revoked.grants.iter().all(|held| held.id != grant.id),
-            "a revoked grant leaves the room document"
+            "a revoked grant leaves the workspace document"
         );
     }
 
@@ -974,10 +981,13 @@ mod tests {
             base.commit();
             let mut a = base.fork();
             let mut b = base.fork();
-            project_room_records(&mut a, &held(("file:/a.md", "document"))).unwrap();
-            project_room_records(&mut b, &held(("file:/b.md", "document"))).unwrap();
+            project_workspace_records(&mut a, &held(("file:/a.md", "document"))).unwrap();
+            project_workspace_records(&mut b, &held(("file:/b.md", "document"))).unwrap();
             a.merge_incoming(&mut b).unwrap();
-            let ids: Vec<String> = room_records_of(&a).into_iter().map(|(id, _)| id).collect();
+            let ids: Vec<String> = workspace_records_of(&a)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
             assert_eq!(ids, ["file:/a.md", "file:/b.md"]);
         }
     }
@@ -1003,10 +1013,18 @@ mod tests {
         }
     }
 
-    /// A desktop with one workspace in `room` holding `strips`.
-    fn room_desktop(room: RoomId, workspace: u64, strips: Vec<Strip>) -> crate::tree::DesktopTree {
-        let mut w =
-            crate::workspace::Workspace::in_room(crate::ids::WorkspaceId(workspace), room, "Team");
+    /// A desktop with one workspace under local id `workspace`, holding `strips`
+    /// in the workspace with `identity`.
+    fn workspace_desktop(
+        identity: RoomId,
+        workspace: u64,
+        strips: Vec<Strip>,
+    ) -> crate::tree::DesktopTree {
+        let mut w = crate::workspace::Workspace::in_workspace(
+            crate::ids::WorkspaceId(workspace),
+            identity,
+            "Team",
+        );
         w.strips = strips;
         crate::tree::DesktopTree {
             active: w.id,
@@ -1016,23 +1034,25 @@ mod tests {
     }
 
     #[test]
-    fn a_rooms_layout_is_what_its_governor_wrote_and_shared_by_default() {
+    fn a_workspaces_layout_is_what_its_governor_wrote_and_shared_by_default() {
         use automerge::transaction::Transactable as _;
         let mut doc = AutoCommit::new();
-        assert_eq!(room_layout_choice(&doc), None);
-        assert_eq!(room_layout(&doc), RoomLayout::Shared);
-        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, "personal")
+        assert_eq!(workspace_layout_choice(&doc), None);
+        assert_eq!(workspace_layout(&doc), WorkspaceLayout::Shared);
+        doc.put(automerge::ROOT, WORKSPACE_LAYOUT_KEY, "personal")
             .unwrap();
-        assert_eq!(room_layout(&doc), RoomLayout::Personal);
-        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, "shared").unwrap();
-        assert_eq!(room_layout_choice(&doc), Some(RoomLayout::Shared));
-        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, "by-invitation")
+        assert_eq!(workspace_layout(&doc), WorkspaceLayout::Personal);
+        doc.put(automerge::ROOT, WORKSPACE_LAYOUT_KEY, "shared")
             .unwrap();
-        assert_eq!(room_layout(&doc), RoomLayout::Personal);
-        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, 3_u64).unwrap();
-        assert_eq!(room_layout(&doc), RoomLayout::Personal);
-        for layout in [RoomLayout::Shared, RoomLayout::Personal] {
-            assert_eq!(RoomLayout::from_id(layout.id()), Some(layout));
+        assert_eq!(workspace_layout_choice(&doc), Some(WorkspaceLayout::Shared));
+        doc.put(automerge::ROOT, WORKSPACE_LAYOUT_KEY, "by-invitation")
+            .unwrap();
+        assert_eq!(workspace_layout(&doc), WorkspaceLayout::Personal);
+        doc.put(automerge::ROOT, WORKSPACE_LAYOUT_KEY, 3_u64)
+            .unwrap();
+        assert_eq!(workspace_layout(&doc), WorkspaceLayout::Personal);
+        for layout in [WorkspaceLayout::Shared, WorkspaceLayout::Personal] {
+            assert_eq!(WorkspaceLayout::from_id(layout.id()), Some(layout));
         }
     }
 
@@ -1043,7 +1063,7 @@ mod tests {
     fn dropping_others_windows_keeps_every_window_of_ones_own() {
         const MINE: u16 = 0x1111;
         const THEIRS: u16 = 0x2222;
-        let room = RoomId::new();
+        let identity = RoomId::new();
         // My strip, holding my window and one of theirs side by side; their
         // strip, holding only theirs; their strip I moved a window of mine
         // into.
@@ -1057,12 +1077,12 @@ mod tests {
             .push(canvas_group(THEIRS, 5, "~/private"));
         let mut shared = Strip::new(StripId(compose_id(THEIRS, 6)), "Shared");
         shared.window_groups.push(canvas_group(MINE, 7, "Notes"));
-        let mut tree = room_desktop(room, 1, vec![mine, theirs, shared]);
+        let mut tree = workspace_desktop(identity, 1, vec![mine, theirs, shared]);
         let ws = tree.workspaces[0].id;
         tree.active_strip.insert(ws, StripId(compose_id(THEIRS, 4)));
 
         let foreign = |tab: &Tab| peer_salt_of(tab.id) == THEIRS;
-        assert!(drop_windows_of_others(&mut tree, room, MINE, &foreign));
+        assert!(drop_windows_of_others(&mut tree, identity, MINE, &foreign));
         let titles: Vec<(&str, Vec<&str>)> = tree.workspaces[0]
             .strips
             .iter()
@@ -1087,7 +1107,7 @@ mod tests {
             "no pointer at a strip that went"
         );
         assert!(
-            !drop_windows_of_others(&mut tree, room, MINE, &foreign),
+            !drop_windows_of_others(&mut tree, identity, MINE, &foreign),
             "nothing more to drop"
         );
     }

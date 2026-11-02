@@ -57,7 +57,8 @@ impl ExecutionPins {
         recheck: impl FnOnce() -> Result<(), String>,
     ) -> Result<ExecutionRegistration, String> {
         let result = (|| {
-            if caller.room() != Some(workspace.to_string().as_str()) || !caller.execution_is_live()
+            if caller.workspace() != Some(workspace.to_string().as_str())
+                || !caller.execution_is_live()
             {
                 return Err("execution audience or lifetime unavailable".into());
             }

@@ -426,7 +426,7 @@ impl ComputeSandbox for LauncherComputeSandbox {
                 .map(|data_home| {
                     launcher::appdir::host_app_dir(
                         &data_home,
-                        &launcher::appdir::room_slug(Some(invocation.workspace_slug)),
+                        &launcher::appdir::workspace_slug(Some(invocation.workspace_slug)),
                         &invocation.manifest.package_id,
                     )
                 })

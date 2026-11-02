@@ -315,7 +315,7 @@ impl Parts {
     /// A page that publishes before the workspace's desktop reached it writes
     /// its own fresh one (a workspace named after the workspace, a "Main"
     /// strip) into maps of its own, concurrent with the workspace's; read side
-    /// by side, every such page added another workspace of the workspace's
+    /// by side, every such page added another workspace under the workspace's
     /// name. A workspace or strip written blind like that folds into the
     /// one of its name the workspace has, and what it held moves there.
     fn assemble(mut self) -> Option<SharedDesktop> {
@@ -430,7 +430,7 @@ pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesk
 /// `heads`, as [`read`] gives a record: read with the document's own reader,
 /// so a record that became the desk's document loses nothing of the desk.
 ///
-/// A room's record is the record this module writes until a desk kept as one
+/// A workspace's record is the record this module writes until a desk kept as one
 /// document is published over it, and every change after that builds on the
 /// document.
 fn desk_of(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {

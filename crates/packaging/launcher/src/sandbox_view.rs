@@ -1105,7 +1105,7 @@ mod tests {
     fn a_launch_binds_the_view_tops_instead_of_each_profile_path() {
         let dir = tempfile::tempdir().unwrap();
         let view = fake_view(dir.path());
-        let mut argv = launch(false, &["--bind", "/srv/room", "/run/tilo/app"]);
+        let mut argv = launch(false, &["--bind", "/srv/workspace", "/run/tilo/app"]);
         let before = argv.clone();
         view.compose(&mut argv).unwrap();
 
@@ -1171,7 +1171,7 @@ mod tests {
         assert_eq!(argv.last(), before.last());
         assert!(
             argv.windows(3)
-                .any(|w| w[0] == "--bind" && w[1] == "/srv/room" && w[2] == "/run/tilo/app")
+                .any(|w| w[0] == "--bind" && w[1] == "/srv/workspace" && w[2] == "/run/tilo/app")
         );
         assert!(binds(&argv).len() < binds(&before).len());
     }

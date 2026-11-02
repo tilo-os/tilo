@@ -167,7 +167,7 @@ pub(crate) fn shown(
     notification.scheduled_target = sent
         .scheduled
         .map(|occurrence| ScheduledNotificationTarget {
-            room: occurrence.room,
+            workspace: occurrence.workspace,
             token: occurrence.token,
             occurrence_ms: occurrence.occurrence_ms,
             calendar_alarm: occurrence.calendar_alarm,
@@ -306,6 +306,9 @@ pub(crate) struct SessionNotifications {
     signals: Rc<NoticeSignals>,
     /// What choosing a scheduled notification opens.
     opened: Opened,
+    /// The kept notifications the person chose to open, waiting for the loop
+    /// that opens their apps.
+    opening: RefCell<Vec<u64>>,
     /// The senders whose notification the person chose, waiting to be
     /// answered with an activation token.
     chosen: Chosen,
@@ -353,7 +356,7 @@ impl SessionNotifications {
             {
                 choosing
                     .borrow_mut()
-                    .push((target.room.clone(), target.uri.clone()));
+                    .push((target.workspace.clone(), target.uri.clone()));
             }
             // Choosing answers the sender, with a token its app may raise
             // its window by: the loop mints it.
@@ -371,6 +374,7 @@ impl SessionNotifications {
             badges: BTreeMap::new(),
             signals,
             opened,
+            opening: RefCell::new(Vec::new()),
             chosen,
             by_sender: BTreeMap::new(),
             up: BTreeSet::new(),
@@ -509,6 +513,18 @@ impl SessionNotifications {
     /// Choose a retained notification in the centre, as the panel asks.
     pub(crate) fn open(&self, id: u64) -> notifications::HistoryActivation {
         self.desktop.activate_history(id)
+    }
+
+    /// Open the retained notification `id` in the app that sent it: what a
+    /// press on it in the centre asks, carried out by the loop that opens
+    /// apps.
+    pub(crate) fn ask_open(&self, id: u64) {
+        self.opening.borrow_mut().push(id);
+    }
+
+    /// The notifications the person chose to open since the last look.
+    pub(crate) fn take_opening(&self) -> Vec<u64> {
+        std::mem::take(&mut *self.opening.borrow_mut())
     }
 
     /// Dismiss a retained notification, or every one an app grouped: the
@@ -820,6 +836,20 @@ pub enum CentreAction {
     /// Bring back what the last Clear all took
     #[effect(own_device, idempotent)]
     UndoClear,
+    /// Open one of the notifications the centre kept
+    #[effect(own_device)]
+    Open {
+        /// The notification's id, as the rows carry it.
+        #[param("The notification")]
+        notification: u64,
+    },
+    /// Hold fresh banners back until turned off again
+    #[effect(own_device, idempotent)]
+    SetQuiet {
+        /// Whether to hold them back
+        #[param("Whether to hold banners back")]
+        on: bool,
+    },
 }
 
 /// The centre as the session's services publish it: what it keeps, why fresh
@@ -856,6 +886,7 @@ impl Service for Served {
                 "act" => t("session-notifications-act"),
                 "clear" => t("session-notifications-clear"),
                 "undo-clear" => t("session-notifications-undo-clear"),
+                "open" => t("session-notifications-open"),
                 _ => continue,
             };
             spec.type_mut().label = label;
@@ -899,6 +930,14 @@ impl Service for Served {
                 .run_action(notification, &action),
             CentreAction::Clear => self.notifications.borrow().clear(),
             CentreAction::UndoClear => self.notifications.borrow().undo_clear(),
+            CentreAction::Open { notification } => {
+                self.notifications.borrow().ask_open(notification);
+            }
+            CentreAction::SetQuiet { on } => {
+                if let Err(error) = self.notifications.borrow().set_do_not_disturb(on) {
+                    tracing::warn!(%error, "do not disturb was not kept");
+                }
+            }
         }
         Ok(Started::Done(ActionOutput::default()))
     }
@@ -911,6 +950,36 @@ impl Service for Served {
         }
         *published = Some(now);
         true
+    }
+}
+
+impl crate::Shared {
+    /// Open what the person chose on a scheduled notification, in the
+    /// workspace that scheduled it, and the centre's kept ones in the app
+    /// that sent them: the app that takes its scheme.
+    pub(crate) fn open_notifications(&self) {
+        for (room, uri) in self.notifications.borrow().take_opened() {
+            self.search.perform(
+                &room,
+                tilo_desktop_search::Target::Open {
+                    uri,
+                    fallback: None,
+                },
+                &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
+            );
+        }
+        for id in self.notifications.borrow().take_opening() {
+            let room = self.active_room();
+            let activation = self.notifications.borrow().open(id);
+            match activation {
+                notifications::HistoryActivation::OpenApp { app_id, .. } => self.search.perform(
+                    &room,
+                    tilo_desktop_search::Target::Launch { app: app_id },
+                    &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
+                ),
+                other => tracing::debug!(?other, "notification chosen"),
+            }
+        }
     }
 }
 

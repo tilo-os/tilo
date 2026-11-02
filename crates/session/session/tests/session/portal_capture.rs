@@ -123,7 +123,7 @@ fn channels(pixel: [u8; 4]) -> (f64, f64, f64) {
 fn focus_display(session: &mut Session, index: usize) {
     fn collect(resources: &[tilo_actions::ResourceSpec], displays: &mut Vec<String>) {
         for resource in resources {
-            if resource.kind == tilo_desktop::desktop_actions::DISPLAY_KIND {
+            if resource.kind == tilo_desktop::desk_verbs::DISPLAY_KIND {
                 displays.push(resource.id.as_str().to_owned());
             }
             collect(&resource.children, displays);
@@ -131,7 +131,7 @@ fn focus_display(session: &mut Session, index: usize) {
     }
     let mut displays = Vec::new();
     collect(&session.resources(), &mut displays);
-    invoke(session, &displays[index], "focus");
+    invoke(session, &displays[index], "focus-display");
 }
 
 /// What the client of `mapped` draws.

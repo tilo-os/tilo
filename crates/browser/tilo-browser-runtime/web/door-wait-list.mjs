@@ -1,5 +1,5 @@
 /**
- * The wait list at the door of a room that takes people by invitation
+ * The wait list at the door of a workspace that takes people by invitation
  * (index.html, `#arrival-wait` and the lines around it), as this browser
  * stands with it:
  *

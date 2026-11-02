@@ -213,7 +213,7 @@ fn a_press_on_the_bar_hands_its_effect_to_the_session() {
     );
     assert_eq!(
         link.asked.borrow().front().map(|ask| ask.action.clone()),
-        Some("toggle-quick-settings".to_owned())
+        Some("quick-settings".to_owned())
     );
 }
 
@@ -599,6 +599,7 @@ fn overview_with(strips: &[&str]) -> DeskReading {
                 origin_app: "so.tilo.notes".to_owned(),
                 icon: "app_window".to_owned(),
                 strip: (*strip).to_owned(),
+                strip_key: at.to_string(),
                 workspace: "Desk".to_owned(),
                 recency: i64::try_from(at).unwrap(),
                 focused: at == 0,
@@ -631,7 +632,7 @@ fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
             link.asked.borrow().front().cloned(),
             Some(Ask {
                 resource: "desktop:tab:7".to_owned(),
-                action: "close".to_owned(),
+                action: "close-tab".to_owned(),
                 arguments: BTreeMap::new(),
             }),
             "with strips {strips:?}"
@@ -641,6 +642,58 @@ fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
             "the menu closed with strips {strips:?}"
         );
     }
+}
+
+/// A window's menu carries it to another strip of its workspace by the chrome's `move-tab`,
+/// the strip named by its id in the destination the chrome reads.
+#[test]
+fn moving_a_window_to_another_strip_names_the_strip_by_its_id() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, link) = part_with(overview_with(&["Main", "Research"]));
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    click(&mut part, "This window");
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    // The menu open is either window's: each offers the other's strip.
+    let labels = crate::Published::accessible_labels(&mut part);
+    let (item, tab, strip) = if labels.iter().any(|label| label == "Move to Research") {
+        ("Move to Research", "7", "1")
+    } else {
+        assert!(
+            labels.iter().any(|label| label == "Move to Main"),
+            "the menu offers the other strip: {labels:?}"
+        );
+        ("Move to Main", "8", "0")
+    };
+    click(&mut part, item);
+    assert!(part.refusals().is_empty(), "{:?}", part.refusals());
+    let asked = link
+        .asked
+        .borrow()
+        .front()
+        .cloned()
+        .expect("the move is asked");
+    assert_eq!(
+        (asked.resource.as_str(), asked.action.as_str()),
+        ("desktop:chrome", "move-tab")
+    );
+    assert_eq!(asked.arguments.get("tab").map(String::as_str), Some(tab));
+    let to: tilo_desktop_surface::navigation::Destination = serde_json::from_str(
+        asked.arguments.get("to").expect("the destination"),
+    )
+    .unwrap_or_else(|why| panic!("the destination reads as the chrome's: {why}: {asked:?}"));
+    assert_eq!(
+        to,
+        tilo_desktop_surface::navigation::Destination {
+            strip: Some(strip.to_owned()),
+            ..Default::default()
+        }
+    );
 }
 
 /// Type `text` into the field that has the keyboard, a key at a time.
@@ -738,7 +791,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
         link.asked.borrow().front().cloned(),
         Some(Ask {
             resource: "desktop:desk".to_owned(),
-            action: "open-search".to_owned(),
+            action: "search".to_owned(),
             arguments: BTreeMap::from([("query".to_owned(), "quarterly".to_owned())]),
         }),
     );
@@ -815,4 +868,26 @@ fn with_a_short_surface_up_the_dock_rides_the_outputs_bottom_edge() {
             "at {width}x{height} the dock ends at {bottom}, not at the bottom edge"
         );
     }
+}
+
+/// A display wide enough for every part: the bar names the strip and shows the person the
+/// session publishes with nothing touching the desk. The part hands the app the space the
+/// frame gave its view the moment it is laid out, so the bar is full rather than waiting for
+/// the person's first press to hear how much space it has.
+#[test]
+fn a_wide_bar_shows_the_strip_and_the_person_with_nothing_touched() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, _link) = part();
+    for _ in 0..8 {
+        part.prepare_frame();
+    }
+    let labels: Vec<String> = crate::Published::accessible_labels(&mut part);
+    assert!(
+        labels.iter().any(|label| label == "Main"),
+        "the bar names the strip: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == "Pat"),
+        "the bar shows the person: {labels:?}"
+    );
 }

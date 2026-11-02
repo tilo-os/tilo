@@ -352,7 +352,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
     }
 }
 
-// Superseded by `tests/room_confinement.rs`, which starts the real
+// Superseded by `tests/workspace_confinement.rs`, which starts the real
 // thing under bwrap and has it try the reads/writes — the assertion is
 // on a syscall's answer, not an argv or an exit code that was never at
 // risk.

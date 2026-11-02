@@ -132,7 +132,7 @@ impl ResourceApp for JobApp {
     const ID: &'static str = "so.tilo.model-contract";
     const TITLE: &'static str = "Job";
     // Each window holds a job of its own, a document that can move into
-    // another room; the workspace's own record never leaves its room.
+    // another workspace; the workspace's own record never leaves its workspace.
     const WINDOW_RESOURCE: bool = true;
 
     fn view(_cx: &mut ViewCx<Job>) -> Element {
@@ -295,7 +295,7 @@ fn version_summaries(app: &TestApp<JobApp>) -> Vec<String> {
 }
 
 /// What #1300's `validate_import` allows in a record's meta map. A resource
-/// document that grows any other key cannot be carried into a governed room.
+/// document that grows any other key cannot be carried into a governed workspace.
 const IMPORTABLE_META: &[&str] = &[
     "id",
     "kind",
@@ -303,14 +303,14 @@ const IMPORTABLE_META: &[&str] = &[
     "workspace",
     // A record written before workspaces were called workspaces carries its
     // workspace under the old key, and a governed import carries it as it is.
-    "room",
+    "workspace",
     "formerly",
     "refs",
     "blobs",
 ];
 
 #[test]
-fn collaboration_and_history_survive_a_move_into_another_room() {
+fn collaboration_and_history_survive_a_move_into_another_workspace() {
     let mut app = TestApp::<JobApp>::new().unwrap();
     app.invoke(create("local")).unwrap();
     let mut peer = app.peer_document();
@@ -343,13 +343,13 @@ fn collaboration_and_history_survive_a_move_into_another_room() {
         .collect();
     assert!(!carried.is_empty());
     let origin = tilo_app::record::identity(&source).expect("record identity");
-    let from = tilo_app::record::workspace_scope(&source).expect("room scope");
+    let from = tilo_app::record::workspace_scope(&source).expect("workspace scope");
     let target = RecordId::minted();
     let mut arrived = tilo_app::record::transfer::rehome(
         &source,
         &Origin::Record(origin.clone()),
         &from,
-        "governed-room",
+        "governed-workspace",
         &target,
     )
     .expect("a resource document moves with its history");
@@ -364,7 +364,7 @@ fn collaboration_and_history_survive_a_move_into_another_room() {
     assert!(tilo_app::record::references(&arrived).is_empty());
     assert!(
         arrived.get(ROOT, "tilo:records").unwrap().is_none(),
-        "a document listing other records cannot join a room"
+        "a document listing other records cannot join a workspace"
     );
     let (_, meta) = arrived.get(ROOT, "tilo:record").unwrap().expect("meta");
     let foreign: Vec<_> = arrived

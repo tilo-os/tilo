@@ -68,7 +68,7 @@ impl KeyRound {
 ///
 /// A route the channel service answered as waiting or unavailable is told
 /// as well when that answer may change: the service follows a member's
-/// access request to a participant's welcome, re-checks a room whose
+/// access request to a participant's welcome, re-checks a workspace whose
 /// governance is unknown whenever the workspace tree announces a change of its authority
 /// or governance, and retries a channel it failed to open on its own
 /// backoff, resolving the route's `channelKeysChanged` each time. So it is

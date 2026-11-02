@@ -55,8 +55,10 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
     // The password is no setting of the account's.
     assert!(!account.config.to_string().contains("app-password"));
 
-    // A Mail window opens no vault: custody releases it the secret.
-    let mut mail = TestApp::<MailShell>::new().unwrap();
+    // A Mail window opens no vault: custody releases it the secret. The
+    // window has a root of its own, as one in a session does.
+    let mail_root = tempfile::tempdir().unwrap();
+    let mut mail = TestApp::<MailShell>::open_data_dir(mail_root.path()).unwrap();
     {
         let app = mail.surface_mut::<crate::app::MailApp>();
         app.custody = Some(crate::custody::SecretRelease::kept_under(
@@ -72,6 +74,14 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
         app.state().engine = Some(crate::app::EngineHandle { tx, rx });
         app.follow_person_accounts(record);
     }
+    wait_signed_in_with_the_inbox(&mut mail);
+    the_choice_is_kept_and_the_secret_stays_custodys(&mut mail, mail_root.path());
+    drop(imap);
+}
+
+/// The window signs in with the secret custody released and the inbox
+/// arrives: the account on show is the person's, its password held in memory.
+fn wait_signed_in_with_the_inbox(mail: &mut TestApp<MailShell>) {
     let held = 1;
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -99,7 +109,33 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    drop(imap);
+}
+
+/// The account chosen again is kept in the person's record; its secret stays
+/// custody's, released into memory and never into a vault of Mail's own.
+fn the_choice_is_kept_and_the_secret_stays_custodys(
+    mail: &mut TestApp<MailShell>,
+    mail_root: &std::path::Path,
+) {
+    mail.surface_mut::<crate::app::MailApp>()
+        .persisted_active_account = None;
+    mail.settle();
+    let status = mail
+        .surface_mut::<crate::app::MailApp>()
+        .nav
+        .toast_text()
+        .map(str::to_owned);
+    assert!(
+        !status
+            .as_deref()
+            .is_some_and(|text| text.contains("could not save")),
+        "the choice is kept: {status:?}"
+    );
+    let own = accounts::AccountCredentials::open_in(mail_root).unwrap();
+    assert!(
+        own.get(&accounts::AccountId::from(ME)).is_none(),
+        "Mail keeps no copy of a secret custody released"
+    );
 }
 
 /// Custody releases nothing for an account of a type Mail does not keep, and

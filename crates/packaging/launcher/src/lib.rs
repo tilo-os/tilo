@@ -4,7 +4,7 @@
 //! in `main.rs` is just argv parsing + orchestration.
 //!
 //! - [`sandbox`] — bubblewrap argv construction.
-//! - [`appdir`] — the one directory an app may write to, per room and
+//! - [`appdir`] — the one directory an app may write to, per workspace and
 //!   package; no manifest field feeds it.
 //! - [`profile`] — the fixed set of host paths every app may read.
 //! - [`sandbox_view`] — that set pre-built once as a read-only view, so a
@@ -77,8 +77,10 @@ pub mod priority;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod provider_sandbox;
+// Where it lives: hosts that start no launcher hold the same gate over the
+// apps they start themselves (`runtime_portal::registration_gate`).
 #[cfg(unix)]
-pub mod registration_gate;
+pub use runtime_portal::registration_gate;
 #[cfg(target_os = "linux")]
 pub mod retained_view;
 #[cfg(target_os = "linux")]

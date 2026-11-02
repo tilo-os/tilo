@@ -35,6 +35,7 @@ pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, RoomContent};
 mod desktop_writes;
 mod device_keys;
+mod device_plane;
 #[cfg(test)]
 mod device_rejoin_tests;
 #[cfg(test)]
@@ -920,7 +921,10 @@ impl WeakRooms {
 struct RoomsInner {
     host: RoomServices,
     dir: PathBuf,
-    rooms: AsyncMutex<BTreeMap<String, Arc<AsyncMutex<GovernedRoom>>>>,
+    rooms: Arc<device_plane::RoomsMap>,
+    /// The plane the workspaces answer their members' devices on, as this
+    /// host's own device ([`device_plane`]).
+    plane: tilo_peer_state::actions::ActionPlane,
     /// Held while a room is created: two devices placing the same room at
     /// once create it once.
     creating: AsyncMutex<()>,
@@ -1122,10 +1126,12 @@ impl Rooms {
     pub(crate) async fn open(host: RoomServices, dir: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         let listings = listing::Listings::open(&dir);
+        let rooms = Arc::new(device_plane::RoomsMap::default());
         let this = Self {
             inner: Arc::new(RoomsInner {
                 dir: dir.clone(),
-                rooms: AsyncMutex::new(BTreeMap::new()),
+                plane: device_plane::plane(Arc::clone(&rooms), host.key.clone()),
+                rooms,
                 calls: Arc::default(),
                 creating: AsyncMutex::new(()),
                 page_joins: std::sync::Mutex::default(),
@@ -1402,6 +1408,14 @@ impl Rooms {
     #[must_use]
     pub fn join_service(&self) -> tilo_peer_state::join_answer::JoinAnswer<Self> {
         tilo_peer_state::join_answer::JoinAnswer(self.clone())
+    }
+
+    /// The plane the host answers its workspaces' member devices on, as its
+    /// own device: what another device of a workspace asks it where no member
+    /// session runs in between ([`device_plane`]).
+    #[must_use]
+    pub fn plane(&self) -> tilo_peer_state::actions::ActionPlane {
+        self.inner.plane.clone()
     }
 
     /// The current role of `device` only when room Write permission is allowed,

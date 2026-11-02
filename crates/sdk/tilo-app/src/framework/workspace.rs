@@ -1,8 +1,8 @@
-//! The records every app of the window's room opens beside its own
+//! The records every app of the window's workspace opens beside its own
 //! ([`ui_core::record::workspace`]): the workspace's emoji among them,
 //! which any view of any app draws for `:name:`.
 //!
-//! Such a record is its owner's resource: the room's grants on the owner's
+//! Such a record is its owner's resource: the workspace's grants on the owner's
 //! node decide every change, here at the door as on the relay, whichever
 //! app's window makes it. The window opens it on first use, follows it
 //! change by change, and reports its route so the runtime syncs it; only
@@ -24,7 +24,7 @@ use ui_core::wake::WakeHandle;
 
 use super::live::Live;
 
-/// A record every app of the window's room opens, held for the window
+/// A record every app of the window's workspace opens, held for the window
 /// ([`RecordEnv::workspace`](super::RecordEnv::workspace)).
 pub struct WorkspaceRecord<P: Resource> {
     shared: Rc<Shared<P>>,
@@ -40,7 +40,7 @@ impl<P: Resource> Clone for WorkspaceRecord<P> {
 
 struct Shared<P: Resource> {
     record: StoredRecord,
-    /// The app that keeps it: whose node the room's grants decide on.
+    /// The app that keeps it: whose node the workspace's grants decide on.
     owner: &'static str,
     app_id: &'static str,
     app_title: &'static str,
@@ -163,13 +163,13 @@ impl<P: Resource> Shared<P> {
 }
 
 impl<P: Resource> WorkspaceRecord<P> {
-    /// The record `P` that `owner` keeps in the room `records` opens,
+    /// The record `P` that `owner` keeps in the workspace `records` opens,
     /// created with the resource's genesis where nothing holds it yet and
     /// brought to its version: what an app window holds
     /// ([`RecordEnv::workspace`](super::RecordEnv::workspace)), and what a
     /// host that is no app window (the session's workspace settings) opens
     /// the same way. Changes are attributed to `app` (its id and title) and,
-    /// where the host knows the room's grants as `permissions`, decided by
+    /// where the host knows the workspace's grants as `permissions`, decided by
     /// them first; `wake` is woken when another replica's change arrives.
     pub fn open(
         records: &WorkspaceRecords,
@@ -232,9 +232,9 @@ impl<P: Resource> WorkspaceRecord<P> {
         &self.shared.me
     }
 
-    /// Whether the room's grants let the person invoke the verb `verb` of
+    /// Whether the workspace's grants let the person invoke the verb `verb` of
     /// the record, as its owner publishes it. A window that knows nothing
-    /// of the room's grants (a test host) lets the record decide.
+    /// of the workspace's grants (a test host) lets the record decide.
     pub fn may(&self, verb: &str) -> bool {
         let Some(permissions) = &self.shared.permissions else {
             return true;
@@ -255,7 +255,7 @@ impl<P: Resource> WorkspaceRecord<P> {
         })
     }
 
-    /// Apply the action `invoke` names: decided by the room's grants on the
+    /// Apply the action `invoke` names: decided by the workspace's grants on the
     /// owner's node, then one change of the record, attributed to the
     /// person, in its history and one undo step of theirs.
     ///
@@ -309,7 +309,7 @@ impl<P: Resource> WorkspaceRecord<P> {
         }
     }
 
-    /// The action `invoke` names, once the room's grants admit it.
+    /// The action `invoke` names, once the workspace's grants admit it.
     fn admit(&self, invoke: &Invoke<P>) -> Result<P::Action, ActionError> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
@@ -347,7 +347,7 @@ fn verb_of<P: Resource>(action: &P::Action) -> Option<String> {
 /// A record open in a window: its owner and kind.
 type OpenKey = (&'static str, &'static str);
 
-/// The records every app of the room opens that a window's views opened:
+/// The records every app of the workspace opens that a window's views opened:
 /// one [`WorkspaceRecord`] per kind.
 pub(crate) struct WorkspaceState {
     records: WorkspaceRecords,
@@ -392,7 +392,7 @@ impl WorkspaceState {
         self.app_id
     }
 
-    /// The record `P` that `owner` keeps in the room, opened on first use
+    /// The record `P` that `owner` keeps in the workspace, opened on first use
     /// and created with the resource's genesis where it does not exist yet.
     pub(crate) fn open<P: Resource>(&self, owner: &'static str) -> Option<WorkspaceRecord<P>> {
         if let Some(open) = self.opened.borrow().get(&(owner, P::KIND)) {
@@ -404,7 +404,7 @@ impl WorkspaceState {
         // The owner's own window lists the record in its surface: its
         // changes are decided against the owner's surface.
         if owner == self.app_id {
-            super::controls::opened_in_room::<P>();
+            super::controls::opened_in_workspace::<P>();
         }
         let WorkspaceRecord { shared } = WorkspaceRecord::<P>::open(
             &self.records,

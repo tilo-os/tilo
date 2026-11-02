@@ -11,7 +11,7 @@ const NOTES: &str = "so.tilo.notes";
 
 fn chrome() -> (Chrome, String) {
     let mut tree = WorkspaceTree::default();
-    let workspace = Workspace::in_room(WorkspaceId::new(), RoomId::new(), "Home");
+    let workspace = Workspace::in_workspace(WorkspaceId::new(), RoomId::new(), "Home");
     let room = workspace.room().to_string();
     tree.desktop.active = workspace.id;
     tree.desktop.workspaces.push(workspace);

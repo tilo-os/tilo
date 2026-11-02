@@ -141,12 +141,12 @@ fn typed_field(
 /// host, starting an app, opening an address.
 pub trait SearchHost {
     /// What to search beyond the desktop's own, in the workspace
-    /// `room`, narrowed to it unless `scope` is
+    /// `workspace`, narrowed to it unless `scope` is
     /// [`SearchScope::All`](ui::search::system::SearchScope::All): then the
     /// rows of every workspace are offered too, each saying which workspace
     /// it is in. Called as search opens, inside the desktop's update pass: it
     /// reads what the host keeps, never the desktop's own tree.
-    fn feed(&self, room: &str, scope: SearchScope) -> SearchHostFeed;
+    fn feed(&self, workspace: &str, scope: SearchScope) -> SearchHostFeed;
     /// Whether the host carries out `target` itself; the desktop then hands
     /// it back through [`DesktopHandle::take_search_choices`].
     fn performs(&self, target: &Target) -> bool;
@@ -175,7 +175,7 @@ const CLOSE_WINDOW: &str = "desktop.close-window";
 const MAXIMIZE_WINDOW: &str = "desktop.maximize-window";
 /// Search command ids and banner action keys of the host's own actions.
 const HOST_PREFIX: &str = "host:";
-/// The least room the palette keeps from the surface's sides.
+/// The least workspace the palette keeps from the surface's sides.
 const PALETTE_EDGE: f64 = 8.0;
 
 /// An action only the host that embeds the desktop can perform (in a
@@ -527,7 +527,7 @@ fn windows(
     out
 }
 
-/// The people in the active workspace, as search finds them, and its room.
+/// The people in the active workspace, as search finds them, and its workspace.
 fn people(
     tree: &DesktopTree,
 ) -> (
@@ -617,7 +617,7 @@ impl DesktopSurface {
         query: Option<String>,
         every_workspace: bool,
     ) {
-        let (windows, commands, (room, people), host) = {
+        let (windows, commands, (workspace, people), host) = {
             let shared = self.shared.borrow();
             (
                 windows(&shared.tree, &shared.holders),
@@ -633,13 +633,15 @@ impl DesktopSurface {
         } else {
             SearchScope::Workspace
         };
-        let mut feed = host.map(|host| host.feed(&room, scope)).unwrap_or_default();
+        let mut feed = host
+            .map(|host| host.feed(&workspace, scope))
+            .unwrap_or_default();
         let usage = feed.usage.take();
         let mut applications = self.tiles.search_applications();
         applications.extend(feed.applications);
         let mut sources = feed.sources;
         sources.push(Box::new(
-            tilo_desktop_search::providers::people::People::new(room, people),
+            tilo_desktop_search::providers::people::People::new(workspace, people),
         ));
         let mut data = SearchData {
             applications,

@@ -24,9 +24,10 @@ fn document_of(
     document
         .put(automerge::ROOT, "name", workspace.name.clone())
         .expect("name");
-    tilo_desktop_model::projection::project_room_policy(&mut document, &workspace.policy)
+    tilo_desktop_model::projection::project_workspace_policy(&mut document, &workspace.policy)
         .expect("policy");
-    tilo_desktop_model::projection::project_room_sandbox(&mut document, sandbox).expect("sandbox");
+    tilo_desktop_model::projection::project_workspace_sandbox(&mut document, sandbox)
+        .expect("sandbox");
     for receipt in receipts {
         tilo_desktop_model::projection::project_effect_receipts(
             &mut document,
@@ -130,7 +131,7 @@ fn a_capability_taken_back_stays_taken_back_until_the_room_carries_it() {
 
     // The revocation lands.
     let mut revoked = after_another_commit(&granted, "Late");
-    tilo_desktop_model::projection::project_room_sandbox(&mut revoked, &[]).expect("sandbox");
+    tilo_desktop_model::projection::project_workspace_sandbox(&mut revoked, &[]).expect("sandbox");
     handle.write().admit_room_document_for_test(room, &revoked);
     assert!(!workspace_of(&handle, room).sandbox.contains(&capability()));
     assert!(
@@ -144,7 +145,7 @@ fn a_capability_taken_back_stays_taken_back_until_the_room_carries_it() {
         access: Access::Write,
         ..capability()
     };
-    tilo_desktop_model::projection::project_room_sandbox(
+    tilo_desktop_model::projection::project_workspace_sandbox(
         &mut regranted,
         std::slice::from_ref(&again),
     )

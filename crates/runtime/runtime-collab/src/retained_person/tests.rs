@@ -435,7 +435,7 @@ fn correctly_signed_other_workspace_binding_cannot_borrow_personal_source_contex
         personal_cluster(&cert.user_public_key)
     );
     resign(&mut foreign, &device);
-    // Expected request agrees with the foreign room and the outer signature is
+    // Expected request agrees with the foreign workspace and the outer signature is
     // genuine. Rejection must come from the person's own cluster.
     assert!(
         foreign

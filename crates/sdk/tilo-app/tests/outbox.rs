@@ -404,7 +404,7 @@ fn entry_of(app: &TestApp<AwaitedApp>, text: &str) -> Id {
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Meeting {
     pub title: String,
-    pub room: String,
+    pub workspace: String,
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -418,8 +418,8 @@ pub struct Agenda {
 impl Agenda {
     /// Move the meeting and rename it at once.
     #[action]
-    pub fn reschedule(&mut self, title: String, room: String) {
-        self.meeting = Meeting { title, room };
+    pub fn reschedule(&mut self, title: String, workspace: String) {
+        self.meeting = Meeting { title, workspace };
     }
 
     fn queue(&mut self, before: &Self, cx: &mut ActionCx) {
@@ -450,7 +450,7 @@ fn sent(app: &TestApp<AgendaApp>) -> Vec<(String, String)> {
     app.state()
         .uploads
         .entries()
-        .map(|(_, entry)| (entry.value.title.clone(), entry.value.room.clone()))
+        .map(|(_, entry)| (entry.value.title.clone(), entry.value.workspace.clone()))
         .collect()
 }
 
@@ -469,7 +469,7 @@ fn undoing_a_field_edit_that_queued_queues_the_restored_value() {
     assert!(app.undo());
     app.settle();
     assert_eq!(app.state().meeting.title, "Review");
-    assert_eq!(app.state().meeting.room, "");
+    assert_eq!(app.state().meeting.workspace, "");
     assert_eq!(
         sent(&app).last(),
         Some(&("Review".to_owned(), String::new()))

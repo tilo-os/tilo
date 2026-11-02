@@ -553,7 +553,7 @@ fn mount_in_memory(
         action_context: tilo_actions::ActionContext::default(),
     };
     let mut context =
-        HostContext::prepare_new_record(definition, inputs, RecordId::room_default())?;
+        HostContext::prepare_new_record(definition, inputs, RecordId::workspace_default())?;
     lend(&mut context);
     definition.instantiate(context, LaunchTarget::New, RestoreInput::None)
 }

@@ -29,8 +29,9 @@ use std::time::Duration;
 
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
 use tilo_actions::remote::{
-    CatalogueQuery, InvokeArgument, InvokeRequest, ROOM_GOVERNANCE_PROVIDER, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, room_governance_resource,
+    CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
+    RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
+    workspace_governance_resource,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
@@ -343,7 +344,7 @@ fn invite_action(room: &str) -> RemoteActionMessage {
     argument.insert("role".into(), "viewer".into());
     RemoteActionMessage::Invoke(InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget::room_governance(room, "invite"),
+        target: RemoteActionTarget::workspace_governance(room, "invite"),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,
@@ -367,7 +368,7 @@ async fn governance_resources(
         RemoteActionMessage::CatalogueRequest {
             correlation: 1,
             query: CatalogueQuery {
-                provider: Some(ROOM_GOVERNANCE_PROVIDER.into()),
+                provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
                 ..CatalogueQuery::default()
             },
         },
@@ -484,8 +485,8 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
 
     // Positive control: Ann governs her own room through the same actions.
     let own = invocation(
-        ROOM_GOVERNANCE_PROVIDER,
-        room_governance_resource(&t.acme.room),
+        WORKSPACE_GOVERNANCE_PROVIDER,
+        workspace_governance_resource(&t.acme.room),
         "invitation.list",
         serde_json::json!({}),
     );
@@ -501,26 +502,26 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
     let globex = t.globex.room.as_str();
     let probes = [
         (
-            ROOM_GOVERNANCE_PROVIDER,
-            room_governance_resource(globex),
+            WORKSPACE_GOVERNANCE_PROVIDER,
+            workspace_governance_resource(globex),
             "invite",
             serde_json::json!({ "role": "viewer" }),
         ),
         (
-            ROOM_GOVERNANCE_PROVIDER,
-            room_governance_resource(globex),
+            WORKSPACE_GOVERNANCE_PROVIDER,
+            workspace_governance_resource(globex),
             "invitation.list",
             serde_json::json!({}),
         ),
         (
-            ROOM_GOVERNANCE_PROVIDER,
-            room_governance_resource(globex),
+            WORKSPACE_GOVERNANCE_PROVIDER,
+            workspace_governance_resource(globex),
             "invitation.cancel",
             serde_json::json!({ "invite": hex::encode(t.carol_invitation.invite_id) }),
         ),
         (
-            ROOM_GOVERNANCE_PROVIDER,
-            room_governance_resource(globex),
+            WORKSPACE_GOVERNANCE_PROVIDER,
+            workspace_governance_resource(globex),
             governance::UNBAN,
             serde_json::json!({ "person": hex::encode(t.bob.user_pk) }),
         ),
@@ -636,11 +637,11 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room(
     let ann_in_acme = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
     let resources = governance_resources(&ann_in_acme, &t.host, t.acme.workspace_id).await;
     assert!(
-        resources.contains(&room_governance_resource(&t.acme.room)),
+        resources.contains(&workspace_governance_resource(&t.acme.room)),
         "Ann's own room offers her its governance: {resources:?}"
     );
     assert!(
-        !resources.contains(&room_governance_resource(&t.globex.room)),
+        !resources.contains(&workspace_governance_resource(&t.globex.room)),
         "Ann's catalogue enumerates Globex: {resources:?}"
     );
     to_host(

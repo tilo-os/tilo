@@ -23,7 +23,7 @@ pub enum FrameworkChange {
     /// An empty container or the initial text every member derives the
     /// same way, made the first time the record needs it.
     Structure,
-    /// The record leaving its room for another, or arriving in one.
+    /// The record leaving its workspace for another, or arriving in one.
     Transfer,
     /// A newer package of the record's app now decides its changes: the
     /// record's identity names that package's surface.

@@ -293,7 +293,7 @@ impl ShellActionsHost {
                 &DEFINITION,
                 room,
                 0,
-                ui::record::RecordId::room_default(),
+                ui::record::RecordId::workspace_default(),
                 |context| context.lend(lent),
             )
             .inspect_err(|error| tracing::warn!(%error, "the shell's actions could not be mounted"))

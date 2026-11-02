@@ -1,11 +1,11 @@
 //! A workspace's activity as the session serves it: what changed since this
 //! device last looked, the full history, and the replay of its layout.
 //!
-//! The session keeps the history index of every room on this device and
+//! The session keeps the history index of every workspace on this device and
 //! serves it under [`PROVIDER`] as resource [`RESOURCE`]. Its reads are live
 //! views ([`crate::ExecutionMode::Live`]): an app follows [`FEED`],
 //! [`SUMMARY`], [`REPLAY`] and [`DETAIL`] and gets a new result whenever the
-//! room's history moves. Its writes are ordinary actions on the same
+//! workspace's history moves. Its writes are ordinary actions on the same
 //! resource: naming, splitting and merging work groups, undoing and
 //! restoring, opening what a change touched, and marking what was seen.
 //!
@@ -28,11 +28,11 @@ pub const APP_ID: &str = "so.tilo.activity";
 /// The resource every action is an action of.
 pub const RESOURCE: &str = "workspace.activity";
 
-/// Live: the room's history, filtered by a [`FeedQuery`]; answers [`Feed`].
+/// Live: the workspace's history, filtered by a [`FeedQuery`]; answers [`Feed`].
 pub const FEED: &str = "feed";
 /// Live: what changed since this device last looked; answers [`Summary`].
 pub const SUMMARY: &str = "summary";
-/// Live: the room's layout at each recent change; answers [`Replay`].
+/// Live: the workspace's layout at each recent change; answers [`Replay`].
 pub const REPLAY: &str = "replay";
 /// Live: what a run of changes did and what can be done with it, given a
 /// [`DetailQuery`]; answers [`Detail`].
@@ -55,7 +55,7 @@ pub const MERGE: &str = "merge";
 pub const MOVE_BOUNDARY: &str = "move-boundary";
 /// Undo a [`Range`] of changes.
 pub const UNDO: &str = "undo";
-/// Restore the room to before a [`Range`] of changes.
+/// Restore the workspace to before a [`Range`] of changes.
 pub const RESTORE: &str = "restore";
 /// Undo the agent's task run a [`Range`] belongs to.
 pub const UNDO_RUN: &str = "undo-run";
@@ -91,7 +91,7 @@ pub fn argument(value: &impl Serialize) -> InvokeArgument {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Scope {
-    /// The room's own changes, and ones belonging to no single workspace.
+    /// The workspace's own changes, and ones belonging to no single workspace.
     #[default]
     ThisWorkspace,
     /// Every workspace on this device, each change labelled with its own.
@@ -249,7 +249,7 @@ pub struct Lens {
     pub label: String,
 }
 
-/// The room's history, as a [`FeedQuery`] narrows it.
+/// The workspace's history, as a [`FeedQuery`] narrows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Feed {
@@ -425,7 +425,7 @@ pub struct Frame {
     pub pointers: Vec<ReplayPointer>,
 }
 
-/// The room's layout at each recent change.
+/// The workspace's layout at each recent change.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Replay {
@@ -464,7 +464,7 @@ impl Range {
 #[serde(default, deny_unknown_fields)]
 pub struct DetailQuery {
     pub range: Range,
-    /// Also compare the room before and after the run.
+    /// Also compare the workspace before and after the run.
     pub compare: bool,
 }
 
@@ -570,13 +570,13 @@ pub struct RecordQuery {
     pub id: String,
 }
 
-/// What comparing the room before and after a run found.
+/// What comparing the workspace before and after a run found.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum Comparison {
     /// What changed, one line each.
     Changes { lines: Vec<String> },
-    /// The room's state either side could not be read.
+    /// The workspace's state either side could not be read.
     Unavailable,
 }
 

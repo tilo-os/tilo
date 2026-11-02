@@ -210,7 +210,7 @@ async fn call(
 ) -> Result<Value, String> {
     let request = RemoteActionMessage::Invoke(InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget::room_governance(room, action),
+        target: RemoteActionTarget::workspace_governance(room, action),
         argument: if argument.is_empty() {
             InvokeArgument::None
         } else {

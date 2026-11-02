@@ -9,7 +9,7 @@ use tilo_agent_participant::AppCatalogue;
 use tilo_resource::Replica;
 use tilo_user_identity::DeviceCert;
 
-use super::room_record;
+use super::workspace_record;
 use crate::rooms::Rooms;
 
 /// The Discord connector's app id, whose records the bridge keeps.
@@ -105,7 +105,10 @@ pub async fn connect(
 ) -> Result<(), String> {
     let catalogue = AppCatalogue::native();
     let owner = hex::encode(host.user_public_key);
-    let (chat_record, guild_record) = (room_record(&catalogue, CHAT), room_record(&catalogue, APP));
+    let (chat_record, guild_record) = (
+        workspace_record(&catalogue, CHAT),
+        workspace_record(&catalogue, APP),
+    );
     rooms
         .prepare_application(room, host, &catalogue, APP, &guild_record)
         .await
@@ -348,7 +351,11 @@ mod tests {
         connect(&rooms, &room, &cert, &link).await.unwrap();
         let catalogue = AppCatalogue::native();
         let read = |app: &'static str| {
-            let (rooms, room, record) = (rooms.clone(), room.clone(), room_record(&catalogue, app));
+            let (rooms, room, record) = (
+                rooms.clone(),
+                room.clone(),
+                workspace_record(&catalogue, app),
+            );
             async move {
                 automerge::AutoCommit::load(
                     &rooms

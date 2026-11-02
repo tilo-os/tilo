@@ -868,7 +868,7 @@ fn kind_shown(english: &str) -> String {
 }
 
 /// Project one stored capability into a display capability, or `None` when it
-/// is not an app grant this pane renders (role/room/resource overrides and
+/// is not an app grant this pane renders (role/workspace/resource overrides and
 /// restrictions are enforcement plumbing, not app permissions).
 fn cap_view(cap: &CapOverride) -> Option<CapView> {
     if cap.effect != Effect::Grant {
@@ -1799,7 +1799,7 @@ mod tests {
             let person = Grant::new(
                 "alice",
                 ui::tilo_actions::policy::Subject::person("alice"),
-                ui::tilo_actions::policy::TreePath::workspace("room-1"),
+                ui::tilo_actions::policy::TreePath::workspace("workspace-1"),
                 ui::tilo_actions::policy::KindSet::ALL,
                 ui::tilo_actions::policy::Answer::Allow,
                 ui::tilo_actions::policy::Subject::person("owner"),

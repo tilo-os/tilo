@@ -18,7 +18,7 @@ use ui_core::record::RecordId;
 use tilo_resource::Resource;
 
 use super::app::{ResourceApp, definition, prepare_on, role_permissions};
-use super::headless::{AUTHOR, INSTANCE, TEST_ROOM, operation, profile_directory, surface_of};
+use super::headless::{AUTHOR, INSTANCE, TEST_WORKSPACE, operation, profile_directory, surface_of};
 use super::root::ResourceRoot;
 
 pub use super::headless::{HeadlessApp, HostedApp, surface_in};
@@ -173,7 +173,7 @@ pub fn drive_live_window_writing_after<A: ResourceApp, T>(
     Ok(seen)
 }
 
-/// The record window `instance` of `A` kept in the test room while `A` kept
+/// The record window `instance` of `A` kept in the test workspace while `A` kept
 /// one per window: stamped with that window's default identity, initialized
 /// as `A` creates a record, then edited with `actions`. Open the app over
 /// such records with [`HeadlessApp::with_window_records`].
@@ -187,8 +187,8 @@ pub fn window_record<A: ResourceApp>(
         &mut doc,
         &RecordId::window_default(instance),
         &kind,
-        TEST_ROOM,
-        Some(TEST_ROOM),
+        TEST_WORKSPACE,
+        Some(TEST_WORKSPACE),
     ) {
         return Err(operation("the window record could not be stamped"));
     }

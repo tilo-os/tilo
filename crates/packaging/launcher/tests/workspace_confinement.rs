@@ -24,9 +24,9 @@ use launcher::appdir;
 use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
 use launcher::run::{RunError, RunOptions, run_with_captured};
 
-use crate::support::{isolated_options, roomtest_payload};
+use crate::support::{isolated_options, workspacetest_payload};
 
-const PACKAGE: &str = "so.tilo.roomtest";
+const PACKAGE: &str = "so.tilo.workspacetest";
 
 fn manifest() -> ManifestView {
     ManifestView {
@@ -44,7 +44,7 @@ fn manifest() -> ManifestView {
         runtime: None,
         required_runtimes: Vec::new(),
         entrypoint: Entrypoint {
-            bin: "bin/roomtest".to_string(),
+            bin: "bin/workspacetest".to_string(),
             r#type: launcher::manifest::EntrypointType::Gui,
             gui_bin: None,
             cli_bin: None,
@@ -84,14 +84,14 @@ fn bwrap() -> PathBuf {
     p
 }
 
-/// Run the fixture in `room` with `argv`, returning its stdout.
-fn run_in_room(data: &DataHome, room: Option<&str>, argv: &[&str]) -> String {
-    run_in_room_with_landlock(data, room, argv, false)
+/// Run the fixture in `workspace` with `argv`, returning its stdout.
+fn run_in_workspace(data: &DataHome, workspace: Option<&str>, argv: &[&str]) -> String {
+    run_in_workspace_with_landlock(data, workspace, argv, false)
 }
 
-fn run_in_room_with_landlock(
+fn run_in_workspace_with_landlock(
     data: &DataHome,
-    room: Option<&str>,
+    workspace: Option<&str>,
     argv: &[&str],
     landlock_enforce: bool,
 ) -> String {
@@ -100,14 +100,15 @@ fn run_in_room_with_landlock(
         bwrap_bin: Some(bwrap()),
         landlock_enforce,
         sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
-        workspace_id: room.map(str::to_string),
+        workspace_id: workspace.map(str::to_string),
         mode: launcher::run::LaunchMode::Cli {
-            command: "roomtest".to_string(),
+            command: "workspacetest".to_string(),
             passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
         },
         ..isolated_options(&data.path)
     };
-    let (status, out) = run_with_captured(&manifest(), roomtest_payload(), &opts).expect("launch");
+    let (status, out) =
+        run_with_captured(&manifest(), workspacetest_payload(), &opts).expect("launch");
     let text = String::from_utf8_lossy(&out).trim().to_string();
     assert!(
         status.success(),
@@ -116,7 +117,7 @@ fn run_in_room_with_landlock(
     text
 }
 
-/// The host data home a test's launches keep their rooms tree in, handed
+/// The host data home a test's launches keep their workspaces tree in, handed
 /// to the launcher rather than set in the environment, so these tests run
 /// side by side.
 struct DataHome {
@@ -133,22 +134,22 @@ impl DataHome {
 }
 
 #[test]
-fn rooms_and_apps_cannot_read_each_others_directories() {
-    // Phase `an_app_cannot_read_across_rooms`.
+fn workspaces_and_apps_cannot_read_each_others_directories() {
+    // Phase `an_app_cannot_read_across_workspaces`.
     // The claim in `docs/architecture/workspace.md` — "an app opened in a new workspace
     // starts empty" — as observable behaviour rather than a design statement.
     //
-    // One app, two rooms: it writes a record in room A, and the same app
-    // in room B cannot read it. Both halves matter — without the read
-    // succeeding in room A, "not found in B" would be equally consistent
+    // One app, two workspaces: it writes a record in workspace A, and the same app
+    // in workspace B cannot read it. Both halves matter — without the read
+    // succeeding in workspace A, "not found in B" would be equally consistent
     // with a fixture that never wrote anything.
     {
         let data = DataHome::new();
 
-        let wrote = run_in_room(
+        let wrote = run_in_workspace(
             &data,
-            Some("room-a"),
-            &["write", "record.txt", "room-A-secret"],
+            Some("workspace-a"),
+            &["write", "record.txt", "workspace-A-secret"],
         );
         assert!(
             wrote.starts_with("WROTE "),
@@ -157,26 +158,30 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
 
         let host_file = data
             .path
-            .join("tilo-rooms/room-a")
+            .join("tilo-rooms/workspace-a")
             .join(PACKAGE)
             .join("record.txt");
         assert_eq!(
             std::fs::read_to_string(&host_file).expect("record on the host"),
-            "room-A-secret",
-            "the write must have reached room A's directory at {}",
+            "workspace-A-secret",
+            "the write must have reached workspace A's directory at {}",
             host_file.display()
         );
 
-        let from_b = run_in_room(&data, Some("room-b"), &["read", "/run/tilo/app/record.txt"]);
+        let from_b = run_in_workspace(
+            &data,
+            Some("workspace-b"),
+            &["read", "/run/tilo/app/record.txt"],
+        );
         assert_eq!(
             from_b, "ERR /run/tilo/app/record.txt ENOENT",
-            "an app in room B must not find a record it wrote in room A"
+            "an app in workspace B must not find a record it wrote in workspace A"
         );
 
-        // Nor by naming room A's host path — the sandbox has no such path.
-        let by_host_path = run_in_room(
+        // Nor by naming workspace A's host path — the sandbox has no such path.
+        let by_host_path = run_in_workspace(
             &data,
-            Some("room-b"),
+            Some("workspace-b"),
             &["read", &host_file.display().to_string()],
         );
         assert!(
@@ -184,41 +189,45 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
             "naming the host path must not reach it either: {by_host_path}"
         );
 
-        // The room-B directory is genuinely empty of the record, rather than
+        // The workspace-B directory is genuinely empty of the record, rather than
         // holding a copy the app happened not to open.
-        let listing = run_in_room(&data, Some("room-b"), &["readdir", "/run/tilo/app"]);
+        let listing = run_in_workspace(&data, Some("workspace-b"), &["readdir", "/run/tilo/app"]);
         assert!(
             !listing.contains("record.txt"),
-            "room B's directory must not contain room A's record: {listing}"
+            "workspace B's directory must not contain workspace A's record: {listing}"
         );
 
-        let from_a = run_in_room(&data, Some("room-a"), &["read", "/run/tilo/app/record.txt"]);
+        let from_a = run_in_workspace(
+            &data,
+            Some("workspace-a"),
+            &["read", "/run/tilo/app/record.txt"],
+        );
         assert_eq!(
-            from_a, "OK /run/tilo/app/record.txt room-A-secret",
-            "room A must still see its own record — otherwise the failure in \
-             room B proves nothing about rooms"
+            from_a, "OK /run/tilo/app/record.txt workspace-A-secret",
+            "workspace A must still see its own record — otherwise the failure in \
+             workspace B proves nothing about workspaces"
         );
     }
-    // Phase `a_workspace_cannot_read_the_personal_room`.
-    // The personal room is a room, not a bypass — an app launched into a
+    // Phase `a_workspace_cannot_read_the_personal_workspace`.
+    // The personal workspace is a workspace, not a bypass — an app launched into a
     // workspace must not reach it either.
     {
         let data = DataHome::new();
 
-        run_in_room(&data, None, &["write", "diary.txt", "personal"]);
-        let from_workspace = run_in_room(
+        run_in_workspace(&data, None, &["write", "diary.txt", "personal"]);
+        let from_workspace = run_in_workspace(
             &data,
             Some("some-workspace"),
             &["read", "/run/tilo/app/diary.txt"],
         );
         assert_eq!(
             from_workspace, "ERR /run/tilo/app/diary.txt ENOENT",
-            "the personal room must be as unreachable from a workspace as any \
-             other room"
+            "the personal workspace must be as unreachable from a workspace as any \
+             other workspace"
         );
     }
     // Phase `one_app_cannot_read_another_apps_directory`.
-    // One app's directory is not another's: two packages in one room are
+    // One app's directory is not another's: two packages in one workspace are
     // two directories, so a package can't read the state of the app whose
     // id it happens to know.
     {
@@ -226,7 +235,7 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
 
         let victim = data
             .path
-            .join("tilo-rooms/room-a")
+            .join("tilo-rooms/workspace-a")
             .join("so.tilo.totp")
             .join("seeds.bin");
         std::fs::create_dir_all(victim.parent().unwrap()).unwrap();
@@ -237,7 +246,7 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
             "/run/tilo/app/../so.tilo.totp/seeds.bin".to_string(),
             "/run/tilo/../tilo/app/../so.tilo.totp/seeds.bin".to_string(),
         ] {
-            let line = run_in_room(&data, Some("room-a"), &["read", &attempt]);
+            let line = run_in_workspace(&data, Some("workspace-a"), &["read", &attempt]);
             assert!(
                 line.starts_with("ERR "),
                 "another package's state must be unreachable via {attempt}: {line}"
@@ -271,7 +280,7 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
             "XDG_CACHE_HOME",
             "TILO_APP_DIR",
         ] {
-            let line = run_in_room(&data, Some("room-a"), &["env", var]);
+            let line = run_in_workspace(&data, Some("workspace-a"), &["env", var]);
             let value = line.split_once('=').expect("ENV k=v").1;
             assert!(
                 value.starts_with(appdir::SANDBOX_APP_DIR),
@@ -281,10 +290,10 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
         }
 
         // `cli::standalone_state_dir` is `$XDG_DATA_HOME/<package id>`. An
-        // app using it must end up in the room's directory on the host.
-        let wrote = run_in_room(
+        // app using it must end up in the workspace's directory on the host.
+        let wrote = run_in_workspace(
             &data,
-            Some("room-a"),
+            Some("workspace-a"),
             &[
                 "write",
                 &format!(".local/share/{PACKAGE}/state.bin"),
@@ -294,7 +303,7 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
         assert!(wrote.starts_with("WROTE "), "{wrote}");
         let host = data
             .path
-            .join("tilo-rooms/room-a")
+            .join("tilo-rooms/workspace-a")
             .join(PACKAGE)
             .join(".local/share")
             .join(PACKAGE)
@@ -302,7 +311,7 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
         assert_eq!(
             std::fs::read_to_string(&host).expect("state on the host"),
             "app-state",
-            "standalone_state_dir must resolve inside the room at {}",
+            "standalone_state_dir must resolve inside the workspace at {}",
             host.display()
         );
     }
@@ -330,7 +339,7 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
         ]
         .into();
         for outside in &outside_the_profile {
-            let line = run_in_room(&data, Some("room-a"), &["read", outside]);
+            let line = run_in_workspace(&data, Some("workspace-a"), &["read", outside]);
             assert!(
                 line.starts_with("ERR "),
                 "{outside} must not be readable without a capability: {line}"
@@ -348,18 +357,22 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
         let expected_account = format!(
             "OK /etc/passwd app:x:{uid}:{gid}:Sandbox application:/run/tilo/app:/sbin/nologin"
         );
-        let account = run_in_room(&data, Some("room-a"), &["read", "/etc/passwd"]);
+        let account = run_in_workspace(&data, Some("workspace-a"), &["read", "/etc/passwd"]);
         assert_eq!(
             account, expected_account,
             "only the synthetic account is visible"
         );
-        let write = run_in_room(&data, Some("room-a"), &["writeabs", "/etc/passwd", "owned"]);
+        let write = run_in_workspace(
+            &data,
+            Some("workspace-a"),
+            &["writeabs", "/etc/passwd", "owned"],
+        );
         assert!(
             write.starts_with("ERR "),
             "the synthetic account is read-only: {write}"
         );
         assert_eq!(
-            run_in_room(&data, Some("room-a"), &["read", "/etc/passwd"]),
+            run_in_workspace(&data, Some("workspace-a"), &["read", "/etc/passwd"]),
             expected_account,
             "the denied write must not change sandbox account bytes"
         );
@@ -370,7 +383,7 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
         );
 
         // Inside the profile: readable.
-        let read = run_in_room(&data, Some("room-a"), &["readdir", "/usr/share/fonts"]);
+        let read = run_in_workspace(&data, Some("workspace-a"), &["readdir", "/usr/share/fonts"]);
         assert!(
             read.starts_with("OK "),
             "the profile must actually deliver fonts: {read}"
@@ -385,7 +398,7 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
             "/etc/ld.so.cache",
             "/usr/lib64/tilo-confinement-probe.so",
         ] {
-            let line = run_in_room(&data, Some("room-a"), &["writeabs", target, "owned"]);
+            let line = run_in_workspace(&data, Some("workspace-a"), &["writeabs", target, "owned"]);
             assert!(
                 line.starts_with("ERR "),
                 "{target} must not be writable: {line}"
@@ -400,9 +413,9 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
 
         // The app's own directory is writable, so the failures above are the
         // read-only mount, not a fixture that can't write at all.
-        let ok = run_in_room(
+        let ok = run_in_workspace(
             &data,
-            Some("room-a"),
+            Some("workspace-a"),
             &["writeabs", "/run/tilo/app/probe", "owned"],
         );
         assert!(
@@ -436,7 +449,7 @@ fn the_sandbox_filesystem_is_the_app_directory_plus_the_read_only_profile() {
                 bwrap_bin: Some(bwrap()),
                 ..isolated_options(&data.path)
             };
-            let err = run_with_captured(&m, roomtest_payload(), &opts)
+            let err = run_with_captured(&m, workspacetest_payload(), &opts)
                 .err()
                 .unwrap_or_else(|| panic!("{field} = {entry:?} must be refused"));
             assert!(
@@ -468,10 +481,11 @@ fn fedora_nss_trust_module_resolves_inside_the_app_sandbox() {
         "the host must supply an actual trust module"
     );
     let data = DataHome::new();
-    let observed = run_in_room_with_landlock(&data, Some("room-a"), &["elf", library], true);
+    let observed =
+        run_in_workspace_with_landlock(&data, Some("workspace-a"), &["elf", library], true);
     assert_eq!(observed, format!("ELF {library} [127, 69, 76, 70]"));
     let unrelated =
-        run_in_room_with_landlock(&data, Some("room-a"), &["read", "/etc/shadow"], true);
+        run_in_workspace_with_landlock(&data, Some("workspace-a"), &["read", "/etc/shadow"], true);
     assert!(
         unrelated.starts_with("ERR "),
         "TLS trust must not expose private host configuration: {unrelated}"
@@ -510,12 +524,13 @@ fn run_with_grants(
         sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
         capabilities_path: Some(caps_file),
         mode: launcher::run::LaunchMode::Cli {
-            command: "roomtest".to_string(),
+            command: "workspacetest".to_string(),
             passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
         },
         ..isolated_options(&data.path)
     };
-    let (status, out) = run_with_captured(&manifest(), roomtest_payload(), &opts).expect("launch");
+    let (status, out) =
+        run_with_captured(&manifest(), workspacetest_payload(), &opts).expect("launch");
     let text = String::from_utf8_lossy(&out).trim().to_string();
     assert!(
         status.success(),
@@ -534,7 +549,7 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
 
     // Built before the home is replaced: the fixture compiles with `rustc`
     // from the developer's toolchain, which lives under the real `HOME`.
-    let _ = roomtest_payload();
+    let _ = workspacetest_payload();
     let home = tilo_test_env::TestHome::new().expect("temporary home");
     let store = home.config().join("tilo");
     let secret = store.join("identity/secrets/0123abcd.key");
@@ -678,12 +693,13 @@ fn run_as_settings(data: &DataHome, argv: &[&str]) -> String {
         landlock_enforce: true,
         sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
         mode: launcher::run::LaunchMode::Cli {
-            command: "roomtest".to_string(),
+            command: "workspacetest".to_string(),
             passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
         },
         ..isolated_options(&data.path)
     };
-    let (status, out) = run_with_captured(&manifest, roomtest_payload(), &opts).expect("launch");
+    let (status, out) =
+        run_with_captured(&manifest, workspacetest_payload(), &opts).expect("launch");
     let text = String::from_utf8_lossy(&out).trim().to_string();
     assert!(
         status.success(),
@@ -700,7 +716,7 @@ fn run_as_settings(data: &DataHome, argv: &[&str]) -> String {
 fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     // Built before the home is replaced: the fixture compiles with `rustc`
     // from the developer's toolchain, which lives under the real `HOME`.
-    let _ = roomtest_payload();
+    let _ = workspacetest_payload();
     let home = tilo_test_env::TestHome::new().expect("temporary home");
     let host = home.config().join("tilo");
     let attestors = host.join("trusted-attestors.toml");
@@ -844,7 +860,7 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
 #[test]
 fn an_app_can_neither_see_nor_reach_the_cgroup_hierarchy() {
     let data = DataHome::new();
-    let run = |argv: &[&str]| run_in_room(&data, Some("room-a"), argv);
+    let run = |argv: &[&str]| run_in_workspace(&data, Some("workspace-a"), argv);
     assert_eq!(
         run(&["read", "/proc/self/cgroup"]),
         "OK /proc/self/cgroup 0::/",

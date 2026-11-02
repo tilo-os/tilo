@@ -1,6 +1,6 @@
 //! A browser that stops reading keeps its session: the host holds a bounded
 //! number of event bytes for it, leaves the rest on disk while it lags, and
-//! resumes its room from its position once it reads again.
+//! resumes its workspace from its position once it reads again.
 
 #![allow(
     clippy::unwrap_used,
@@ -15,7 +15,7 @@
 mod participant;
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeSet;
@@ -136,8 +136,10 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
         host_device.cert.clone(),
         observer.key,
     );
-    author.join_placed(support::ROOM, "Workspace").unwrap();
-    observer.join_placed(support::ROOM, "Workspace").unwrap();
+    author.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    observer
+        .join_placed(support::WORKSPACE, "Workspace")
+        .unwrap();
     ready(&[&author, &observer]).await;
     // Both hold the channel's keys before the flood: what follows measures
     // the host's queue, not admission.
@@ -198,7 +200,7 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
     })
     .await;
     let caught_up = resumed.elapsed();
-    // The room delivers in commit order: a change sent twice would arrive
+    // The workspace delivers in commit order: a change sent twice would arrive
     // before the next live one.
     author
         .publish(route(), &DocumentMutation::Incremental(b"live".to_vec()))

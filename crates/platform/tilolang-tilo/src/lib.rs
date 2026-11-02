@@ -55,7 +55,7 @@ pub use tilolang::HOST_APP;
 pub use tilolang_runtime as runtime;
 
 /// The record kind of an app's record in a workspace: every tilolang package keeps its resources
-/// in one.
+/// in one. The spelling is what records already on disk carry, so it stays.
 pub const RECORD_KIND: &str = "tilolang.room";
 
 /// Where `meta`'s package keeps its resources for `person` (the lowercase hex of their user root

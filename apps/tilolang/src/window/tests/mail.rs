@@ -451,8 +451,7 @@ fn hold_for(workspace: &mut Workspace, secs: i64) {
         .expect("Mail keeps a hold")
         .id
         .clone();
-    use ui::tilo_resource::Edit;
-    let edit = Edit::new(
+    let edit = ui::tilo_resource::Edit::new(
         vec![ui::tilo_resource::Segment::Field(field)],
         ui::tilo_resource::EditOp::Set {
             value: serde_json::json!(secs),
@@ -1012,13 +1011,14 @@ fn every_account_shows_in_the_sidebar_and_opens_its_own_mail() {
         .into_iter()
         .find(|a| workspace.text(a, "address") == "work@rivera.example")
         .expect("the second account");
-    let shown = conversation_titles(&mut workspace, &work);
+    let shown = conversation_titles(&workspace, &work);
     assert!(
         shown.iter().any(|text| text == "Inbox"),
         "the account's window shows its mailboxes: {shown:#?}"
     );
     assert!(
-        workspace.refs(&work, "threads")
+        workspace
+            .refs(&work, "threads")
             .iter()
             .any(|t| workspace.text(t, "subject") == "Team holiday"),
         "the second account holds its own mail"
@@ -1026,7 +1026,7 @@ fn every_account_shows_in_the_sidebar_and_opens_its_own_mail() {
 }
 
 /// The subjects a mail window over `of` lists, its root view's texts walked.
-fn conversation_titles(workspace: &mut Workspace, of: &ResourceRef) -> Vec<String> {
+fn conversation_titles(workspace: &Workspace, of: &ResourceRef) -> Vec<String> {
     let view = workspace
         .host()
         .open_resource(of, None)
@@ -1309,7 +1309,8 @@ fn a_new_message_and_an_answer_carry_the_accounts_signature() {
     );
 
     // A new message starts with it.
-    let RtValue::Ref(draft) = workspace.press("new_message", vec![RtValue::resource(&account)]) else {
+    let RtValue::Ref(draft) = workspace.press("new_message", vec![RtValue::resource(&account)])
+    else {
         panic!("a new message is a draft");
     };
     assert_eq!(
@@ -1398,7 +1399,10 @@ fn a_message_sent_later_waits_for_its_moment_and_is_cancelled_before_it() {
                 RtValue::text("2026-06-30T18:00:00Z"),
             ],
         );
-        assert!(workspace.flag(&draft, "sent"), "it is on its way, at a moment");
+        assert!(
+            workspace.flag(&draft, "sent"),
+            "it is on its way, at a moment"
+        );
         assert_eq!(
             workspace.text(&draft, "send_at"),
             "2026-06-30T18:00:00Z",
@@ -1410,7 +1414,8 @@ fn a_message_sent_later_waits_for_its_moment_and_is_cancelled_before_it() {
             "a message sent later does not go yet"
         );
         // The window waits for its moment, and no longer.
-        workspace.window
+        workspace
+            .window
             .instance()
             .wakes_in()
             .expect("a message sent later sets the window's next wake")
@@ -1468,7 +1473,8 @@ fn a_conversation_shows_its_subject_senders_recipients_and_attachments() {
         &[],
     );
     workspace.until("the message with the lease", |workspace| {
-        workspace.threads()
+        workspace
+            .threads()
             .iter()
             .any(|t| workspace.text(t, "subject") == "Your lease renewal")
     });

@@ -1,7 +1,7 @@
 //! The browser as a participant device of `channel-crypto` channels.
 //!
-//! Every document route of a room is an encrypted channel whose MLS group
-//! holds the room's participant devices ([`channel_crypto::peer`]). The
+//! Every document route of a workspace is an encrypted channel whose MLS group
+//! holds the workspace's participant devices ([`channel_crypto::peer`]). The
 //! browser takes part through the host:
 //!
 //! - it asks the participants for access to each channel it opens, with a
@@ -12,9 +12,9 @@
 //!   history, then commits), keeps of two commits on one epoch the one with
 //!   the lower digest, and hands the session the route's content keys
 //!   whenever they change;
-//! - it checks every commit against the room's governance as its replica of
-//!   the room admits it ([`crate::replica`]): a commit may add only a device
-//!   the governance lets read the channel's record, the room's governor or
+//! - it checks every commit against the workspace's governance as its replica of
+//!   the workspace admits it ([`crate::replica`]): a commit may add only a device
+//!   the governance lets read the channel's record, the workspace's governor or
 //!   this device, and must be signed by one of them, the participants a
 //!   native device admits ([`tilo_peer_state::PeerGovernance::channel_readers`]).
 //!
@@ -39,8 +39,8 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 /// First and longest wait before a waiting device asks again. An answer
 /// takes the request's turn in the host's order and then a participant's
-/// commit's: in a public room a crowd is joining, seconds. Every ask is a
-/// retained write the host fans out to the whole room, so asking again
+/// commit's: in a public workspace a crowd is joining, seconds. Every ask is a
+/// retained write the host fans out to the whole workspace, so asking again
 /// before an answer could arrive only lengthened that wait.
 const REQUEST_FIRST_MS: u64 = 8_000;
 const REQUEST_LONGEST_MS: u64 = 120_000;
@@ -52,14 +52,14 @@ const REQUEST_LONGEST_MS: u64 = 120_000;
 /// took longer to arrive, it replaced them faster than they arrived.
 const REQUEST_FRESH_MS: u64 = 60_000;
 /// Frames kept for a channel no route of this page has opened yet, and for
-/// an open one whose signer the room's governance does not admit yet.
+/// an open one whose signer the workspace's governance does not admit yet.
 const MAX_UNOPENED_FRAMES: usize = 256;
 /// Channels whose frames are kept before a route opens them.
 const MAX_UNOPENED_CHANNELS: usize = 256;
 
-/// Who may sign and be added to a route's channel, as the room's
+/// Who may sign and be added to a route's channel, as the workspace's
 /// governance says now; `None` while this page holds no governance of the
-/// route's room.
+/// route's workspace.
 pub(crate) type Vouch<'a> = dyn Fn(&DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> + 'a;
 
 /// A governance message this device has to sign and send: the device key
@@ -69,7 +69,7 @@ pub(crate) enum Outgoing {
     /// carries so they can decide Read on it.
     Request {
         workspace_id: u64,
-        room: String,
+        cluster_id: String,
         request: MlsAccessRequestV1,
         route: collab_types::ChannelRoute,
     },
@@ -101,7 +101,7 @@ impl Changes {
 /// ([`channel_crypto::admission`]). A page that holds the channel's content
 /// keys (`sealed`) knows the channel requires them, as a broker that
 /// registered its gate does. `governance_known`: the host answered `Ready`
-/// for the route's room, after the governance it holds, so a channel the
+/// for the route's workspace, after the governance it holds, so a channel the
 /// page has no state of requires nothing; before that, cleartext waits.
 pub fn document_admission(
     gate: Option<channel_crypto::ChannelGate>,
@@ -144,7 +144,7 @@ struct Route {
     document: DocumentRoute,
     workspace_id: u64,
     peer: ChannelPeer,
-    /// Frames refused for a signer the room's governance does not admit
+    /// Frames refused for a signer the workspace's governance does not admit
     /// yet, applied again when it changes.
     early: Vec<MlsGovernanceFrame>,
     /// The pending request, re-sent until a participant answers it.
@@ -280,7 +280,7 @@ impl Channels {
         document_admission(gate, governance_known, sealed, route, encryption)
     }
 
-    /// Apply again the frames held for a signer the room's governance did
+    /// Apply again the frames held for a signer the workspace's governance did
     /// not admit yet, now that it changed.
     pub(crate) fn retry_early(&mut self, vouch: &Vouch<'_>, now_ms: u64) -> Changes {
         let mut changes = Changes::default();
@@ -354,10 +354,10 @@ impl Channels {
         changes
     }
 
-    /// Apply one governance frame of `room` the host delivered.
+    /// Apply one governance frame of `workspace` the host delivered.
     pub(crate) fn receive_frame(
         &mut self,
-        room: &str,
+        workspace: &str,
         frame: MlsGovernanceFrame,
         vouch: &Vouch<'_>,
         now_ms: u64,
@@ -376,7 +376,7 @@ impl Channels {
         if self
             .routes
             .get(&channel)
-            .is_some_and(|route| route.document.cluster_id == room)
+            .is_some_and(|route| route.document.cluster_id == workspace)
         {
             self.apply(channel, frame, vouch, now_ms, &mut changes);
         }
@@ -394,7 +394,7 @@ impl Channels {
         let Some(route) = self.routes.get_mut(&channel) else {
             return;
         };
-        // A commit of a room whose governance this page does not hold yet,
+        // A commit of a workspace whose governance this page does not hold yet,
         // or naming a device that governance does not admit yet, waits for
         // the governance to change.
         let Some(allowed) = vouch(&route.document) else {
@@ -451,8 +451,8 @@ impl Channels {
     }
 
     /// Ask at once wherever a channel of `workspace_id` awaits its keys: the
-    /// host admitted this session to the room just now, and a request is
-    /// sent only to a room that admitted the session, so what was asked
+    /// host admitted this session to the workspace just now, and a request is
+    /// sent only to a workspace that admitted the session, so what was asked
     /// meanwhile went nowhere and is owed now, not after its backoff.
     pub(crate) fn ask_now(&mut self, workspace_id: u64, now_ms: u64) -> Changes {
         let mut changes = Changes::default();
@@ -530,7 +530,7 @@ impl Channels {
             .min(REQUEST_LONGEST_MS);
         changes.outgoing.push(Outgoing::Request {
             workspace_id: route.workspace_id,
-            room: route.document.cluster_id.clone(),
+            cluster_id: route.document.cluster_id.clone(),
             request,
             route: collab_types::ChannelRoute::new(
                 route.document.app_id.as_str(),
@@ -545,9 +545,9 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer as _, SigningKey};
 
-    const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
-    /// The room's governance admitting exactly `devices`.
+    /// The workspace's governance admitting exactly `devices`.
     fn admitting(
         devices: &[&SigningKey],
     ) -> impl Fn(&DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> + use<> {
@@ -558,7 +558,7 @@ mod tests {
     fn route(record: &str) -> DocumentRoute {
         DocumentRoute {
             app_id: "so.tilo.notes".into(),
-            cluster_id: ROOM.into(),
+            cluster_id: WORKSPACE.into(),
             record: record.into(),
         }
     }
@@ -598,21 +598,21 @@ mod tests {
     }
 
     /// Hand the page what `committer` queued, as the host would, with the
-    /// room's governance admitting `vouch`.
+    /// workspace's governance admitting `vouch`.
     fn deliver(channels: &mut Channels, committer: &mut ChannelPeer, vouch: &Vouch<'_>) -> Changes {
         let mut changes = Changes::default();
         for frame in committer.outbox().to_vec() {
-            changes.extend(channels.receive_frame(ROOM, frame, vouch, 0));
+            changes.extend(channels.receive_frame(WORKSPACE, frame, vouch, 0));
         }
         committer.published(&VaultKey::new([9; 32])).unwrap();
         changes
     }
 
-    /// A request asked before the host admitted the session to its room
-    /// went nowhere: the room's admission asks again at once, for that
-    /// room's channels only, not after the request's backoff.
+    /// A request asked before the host admitted the session to its workspace
+    /// went nowhere: the workspace's admission asks again at once, for that
+    /// workspace's channels only, not after the request's backoff.
     #[test]
-    fn a_rooms_admission_asks_again_at_once_for_its_channels() {
+    fn a_workspaces_admission_asks_again_at_once_for_its_channels() {
         let browser = SigningKey::from_bytes(&[3; 32]);
         let laptop_key = SigningKey::from_bytes(&[4; 32]);
         let note = route("note-before-admission");
@@ -627,10 +627,13 @@ mod tests {
         let workspace_id = note.workspace_id().unwrap();
         assert!(
             requests(&channels.ask_now(workspace_id.wrapping_add(1), 1)).is_empty(),
-            "another room's admission asks nothing of this one"
+            "another workspace's admission asks nothing of this one"
         );
         let again = requests(&channels.ask_now(workspace_id, 1));
-        assert_eq!(again, asked, "the room's admission asks the same again");
+        assert_eq!(
+            again, asked,
+            "the workspace's admission asks the same again"
+        );
     }
 
     #[test]
@@ -733,8 +736,8 @@ mod tests {
         );
     }
 
-    /// The page follows a commit whoever of the room's devices wrote it, and
-    /// holds one adding a device the room's governance does not admit until
+    /// The page follows a commit whoever of the workspace's devices wrote it, and
+    /// holds one adding a device the workspace's governance does not admit until
     /// it does.
     #[test]
     fn commits_of_any_participant_are_followed_and_checked() {
@@ -757,7 +760,7 @@ mod tests {
         let joined = channels.routes[&Channels::channel(&note)].peer.access();
         assert_eq!(joined, Access::Ready { epoch: 1 });
 
-        // The laptop admits the phone, which the room's governance does not
+        // The laptop admits the phone, which the workspace's governance does not
         // admit as the page holds it: the commit waits, and applies once it
         // does.
         let mut phone = ChannelPeer::waiting(

@@ -190,7 +190,7 @@ impl RelayWitness {
             return Err(ActionHostError::NotPermitted);
         }
         let room = caller
-            .room()
+            .workspace()
             .filter(|room| agent.scope.rooms.iter().any(|granted| granted == room))
             .ok_or(ActionHostError::NotPermitted)?;
         let mut id = [0_u8; 32];
@@ -406,7 +406,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         let origin = self.browser_origin.read().ok()?.clone()?;
         Some(tilo_actions::remote::ResourceViewLocator {
             origin: (*origin).clone(),
-            room: room.to_owned(),
+            workspace: room.to_owned(),
             host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
             provider: provider.to_owned(),
             web_entry: self.web_entry.clone(),

@@ -3965,16 +3965,16 @@ mod tests {
                 ui::RemoteActions::with_host(
                     session.clone(),
                     ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
-                        .in_workspace("room"),
+                        .in_workspace("workspace"),
                 ),
-                Some("room".into()),
+                Some("workspace".into()),
             );
             app.harness().press_window_action("Open Photos").unwrap();
             let asked = session.take_asked();
             assert_eq!(asked.len(), 1, "Photos browse hands off to Photos");
             assert_eq!(
                 asked[0].target,
-                ui::tilo_actions::remote::application_open_target("room", "so.tilo.photos")
+                ui::tilo_actions::remote::application_open_target("workspace", "so.tilo.photos")
             );
             assert_eq!(
                 ui::window_toolbar::notice().map(|notice| notice.text),
@@ -5142,9 +5142,10 @@ mod tests {
         app.harness().set_session_door(
             ui::RemoteActions::with_host(
                 session.clone(),
-                ui::tilo_actions::remote::Caller::local_app("so.tilo.camera").in_workspace("room"),
+                ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
+                    .in_workspace("workspace"),
             ),
-            Some("room".into()),
+            Some("workspace".into()),
         );
         app.harness()
             .invoke_published("camera.capture", "open-photos", &serde_json::Map::new())
@@ -5153,7 +5154,7 @@ mod tests {
         assert_eq!(asked.len(), 1);
         assert_eq!(
             asked[0].target,
-            ui::tilo_actions::remote::application_open_target("room", "so.tilo.photos")
+            ui::tilo_actions::remote::application_open_target("workspace", "so.tilo.photos")
         );
     }
 

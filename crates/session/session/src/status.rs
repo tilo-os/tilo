@@ -27,6 +27,7 @@ use tilo_desktop::chrome::{
 use tilo_power_mgmt::BatteryState;
 use tilo_service::Services;
 use tilo_session_power::{BATTERY, Battery};
+use ui::widget::TransportArt;
 
 use crate::i18n::{t, t_args};
 use crate::keys::{MEDIA, NETWORK, SOUND};
@@ -52,6 +53,12 @@ pub(crate) struct Readings {
     /// When what plays was read: the service publishes the playhead as it
     /// stood at its last event, so a hand-over advances it from here.
     media_at: Option<Instant>,
+    /// What plays, as the player in front last drew it: its cover, made once
+    /// per cover, so no frame decodes one.
+    art: TransportArt,
+    /// The cover of what plays, with the cover it was made from, so the same
+    /// cover is the same picture and a frame never decodes one.
+    cover: Option<(String, ui::vello::peniko::ImageData)>,
 }
 
 /// The machine as the bar, the lock screen and the desk read it, shared
@@ -65,25 +72,44 @@ impl crate::Shared {
     pub(crate) fn follow_status(&self) {
         let services = self.services.borrow();
         self.readings.borrow_mut().follow(&services);
+        drop(services);
+        // What plays reaches the desk from the same reading every other
+        // surface shows, so the widget and the panel never disagree and
+        // neither reads the players again.
+        let playing = self
+            .readings
+            .borrow()
+            .playing()
+            .map(|playing| crate::desk::playing(&playing));
+        self.music.set(playing);
     }
 }
 
-/// What plays, as the now-playing card and the lock screen show it. The
-/// cover, the queue and the seek bar stay the panel's.
+/// What plays, as the now-playing card, the lock screen and the desk's music
+/// widget show it. The queue, the choice of player and the seek bar stay the
+/// panel's.
 #[expect(
     clippy::struct_excessive_bools,
     clippy::struct_field_names,
     reason = "what a player is doing and what it offers, as MPRIS states them: independent flags"
 )]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Playing {
     pub title: String,
     /// Who it is by, else the app, when that is not the title.
     pub subtitle: String,
+    /// The app that plays it.
+    pub player: String,
+    /// Its cover, or the cover the desk draws for a song without one.
+    pub art: TransportArt,
     pub playing: bool,
     pub can_toggle: bool,
     pub can_previous: bool,
     pub can_next: bool,
+    /// Where the song is, and how long it is; the length is zero when the
+    /// player does not say.
+    pub position_ms: f64,
+    pub duration_ms: f64,
 }
 
 impl Readings {
@@ -100,6 +126,35 @@ impl Readings {
         self.battery = read(services, BATTERY);
         self.media = read(services, MEDIA);
         self.media_at = self.media.as_ref().map(|_| Instant::now());
+        self.art = self.cover();
+    }
+
+    /// The cover of the player in front, made into a picture: the same cover
+    /// is the same picture, so it is decoded once and kept.
+    fn cover(&mut self) -> TransportArt {
+        let Some(image) = self
+            .media
+            .as_ref()
+            .and_then(Media::front)
+            .and_then(|front| front.art.clone())
+        else {
+            return TransportArt::Placeholder;
+        };
+        if let Some((made, picture)) = &self.cover
+            && *made == image.rgba
+        {
+            return TransportArt::Image(picture.clone());
+        }
+        let Some(art) = tilo_audio_service::client::decode_artwork(image.clone()) else {
+            return TransportArt::Placeholder;
+        };
+        let picture = ui::raster::rgba8(
+            ui::vello::peniko::Blob::new(art.rgba.clone()),
+            art.width,
+            art.height,
+        );
+        self.cover = Some((image.rgba, picture.clone()));
+        TransportArt::Image(picture)
     }
 
     /// What plays now, in the words the lock screen uses; `None` while no
@@ -128,9 +183,29 @@ impl Readings {
             .filter(|artist| !artist.trim().is_empty())
             .or_else(|| (title != name).then(|| name.clone()))
             .unwrap_or_default();
+        // The playhead moves from where the service read it while a player
+        // plays, so every surface drawing it shows the same point.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a playhead in a recording needs no more than f64's 52-bit mantissa"
+        )]
+        let position_ms = playhead_at(front, self.media_at, Instant::now()) as f64;
+        // A player that cannot be taken to a point does not say how long what
+        // it plays is, so the widget shows no progress.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a recording's length needs no more than f64's 52-bit mantissa"
+        )]
+        let duration_ms = if front.can_seek {
+            front.duration_ms.map_or(0.0, |duration| duration as f64)
+        } else {
+            0.0
+        };
         Some(Playing {
             title,
             subtitle,
+            player: name,
+            art: self.art.clone(),
             playing: front.playing,
             can_toggle: if front.playing {
                 front.can_pause
@@ -139,6 +214,8 @@ impl Readings {
             },
             can_previous: front.can_previous,
             can_next: front.can_next,
+            position_ms,
+            duration_ms,
         })
     }
 
@@ -578,6 +655,21 @@ mod tests {
         assert!(now.can_toggle, "the middle control pauses what plays");
         assert!(now.can_next);
         assert!(!now.can_previous);
+        // The desk's widget shows the same reading, so the song, who plays it
+        // and where it stands are the panel's, not a copy of them.
+        let desk = crate::desk::playing(&now);
+        assert_eq!(desk.title, "Tea");
+        assert_eq!(desk.subtitle, "Kettle");
+        assert_eq!(desk.player, "Music");
+        assert_eq!(desk.playing, now.playing);
+        assert_eq!(desk.can_next, now.can_next);
+        assert_eq!(
+            desk.progress(),
+            now.duration_ms
+                .gt(&0.0)
+                .then(|| now.position_ms / now.duration_ms),
+            "the widget shows the point the reading stands at"
+        );
         let handover = playing.handover().expect("another device may continue it");
         assert_eq!(handover.title, "Tea");
         assert_eq!(handover.app_id, "so.tilo.music");

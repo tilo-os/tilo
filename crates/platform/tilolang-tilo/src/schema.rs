@@ -335,9 +335,9 @@ thread_local! {
 
 /// Every schema any package registered here, by type id, whichever table did: what a caller
 /// that holds no table of its own reads — a compiler tool, a layout check, a peer reading a
-/// room's record without its app's host. Every `register` fills it as well as its own table, so
-/// a record read through no host resolves the last version registered for its type; a store,
-/// which holds one version, reads through its own and never through this.
+/// workspace's record without its app's host. Every `register` fills it as well as its own
+/// table, so a record read through no host resolves the last version registered for its type;
+/// a store, which holds one version, reads through its own and never through this.
 ///
 /// One for the process, not one per thread: a caller with no table of its own (a view opened
 /// from a thread the store was not installed on) reads what any package loaded here registered.

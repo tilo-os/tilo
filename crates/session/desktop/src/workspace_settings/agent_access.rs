@@ -194,13 +194,13 @@ pub fn set_agent_answers(
     agent: &str,
     answers: &[(AnswerScope, ActionKind, Option<Answer>)],
 ) -> PolicyEdit {
-    let room = ws.policy.workspace.clone();
+    let root = ws.policy.workspace.clone();
     let by = Subject::Person(actor.clone());
     let changes: Vec<_> = answers
         .iter()
         .flat_map(|(scope, kind, answer)| {
             agent_answers::set(
-                &room,
+                &root,
                 agent,
                 (scope, *kind),
                 *answer,

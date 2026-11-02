@@ -34,7 +34,7 @@ use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{CertificationPolicy, UserIdentity};
 
-use support::{ROOM as WORKSPACE, enrol, start_host, wait_for};
+use support::{WORKSPACE, enrol, start_host, wait_for};
 
 const VIDEO: &str = "so.tilo.video-editor";
 

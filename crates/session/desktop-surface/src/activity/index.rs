@@ -42,11 +42,11 @@ pub trait PersistedRecordHistory {
         None
     }
 
-    /// The documents apps keep for `room` itself rather than as records
+    /// The documents apps keep for `workspace` itself rather than as records
     /// (Notes keeps its notebook there), as this device holds them: they
     /// are part of the workspace's history as much as its records are. None by
     /// default.
-    fn workspace_documents(&self, _room: RoomId) -> Vec<RecordCheckout> {
+    fn workspace_documents(&self, _workspace: RoomId) -> Vec<RecordCheckout> {
         Vec::new()
     }
 }
@@ -194,16 +194,20 @@ impl WorkspaceSeenFrontier {
     /// A workspace-scoped tree is only a projection of the global tree document, so
     /// its visible changes are exceptions rather than an unsafe global head.
     pub fn mark_seen(&mut self, index: &WorkspaceHistoryIndex) {
-        let room_scoped = index.query.as_ref().is_some_and(|query| {
-            query.room.is_some() || query.rooms.as_ref().is_some_and(|rooms| rooms.len() == 1)
+        let workspace_scoped = index.query.as_ref().is_some_and(|query| {
+            query.workspace.is_some()
+                || query
+                    .workspaces
+                    .as_ref()
+                    .is_some_and(|workspaces| workspaces.len() == 1)
         });
         for (origin, heads) in &index.document_heads {
             let state = self.documents.entry(origin.clone()).or_default();
-            if !(room_scoped && origin == "workspace-tree") {
+            if !(workspace_scoped && origin == "workspace-tree") {
                 state.heads = heads.iter().map(ToString::to_string).collect();
             }
         }
-        if room_scoped {
+        if workspace_scoped {
             for row in &index.entries {
                 if row.id.origin == HistoryOrigin::DesktopTree {
                     self.acknowledge(&row.id);
@@ -254,38 +258,38 @@ impl WorkspaceHistoryEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceHistoryQuery {
     /// `Some` includes only records held by, or originally minted in, this
-    /// workspace. `None` defers scope to `rooms`.
-    pub room: Option<RoomId>,
+    /// workspace. `None` defers scope to `workspaces`.
+    pub workspace: Option<RoomId>,
     /// When set, restrict a multi-workspace query to this exact union instead
-    /// of treating `room: None` as unrestricted device history.
-    pub rooms: Option<Vec<RoomId>>,
+    /// of treating `workspace: None` as unrestricted device history.
+    pub workspaces: Option<Vec<RoomId>>,
     pub limit: usize,
 }
 
 impl Default for WorkspaceHistoryQuery {
     fn default() -> Self {
         Self {
-            room: None,
-            rooms: None,
+            workspace: None,
+            workspaces: None,
             limit: 500,
         }
     }
 }
 
 impl WorkspaceHistoryQuery {
-    pub fn for_room(room: RoomId) -> Self {
+    pub fn for_room(workspace: RoomId) -> Self {
         Self {
-            room: Some(room),
+            workspace: Some(workspace),
             ..Self::default()
         }
     }
 
-    pub fn for_rooms(rooms: impl IntoIterator<Item = RoomId>) -> Self {
-        let mut rooms: Vec<_> = rooms.into_iter().collect();
-        rooms.compact_sort();
-        rooms.dedup();
+    pub fn for_rooms(workspaces: impl IntoIterator<Item = RoomId>) -> Self {
+        let mut workspaces: Vec<_> = workspaces.into_iter().collect();
+        workspaces.compact_sort();
+        workspaces.dedup();
         Self {
-            rooms: Some(rooms),
+            workspaces: Some(workspaces),
             ..Self::default()
         }
     }
@@ -821,12 +825,12 @@ impl WorkspaceHistoryIndex {
         query: &WorkspaceHistoryQuery,
         local: Option<&dyn PersistedRecordHistory>,
     ) -> IndexedRecords {
-        let referenced = query.rooms.as_ref().map_or_else(
-            || referenced_records(tree, query.room),
-            |rooms| {
-                rooms
+        let referenced = query.workspaces.as_ref().map_or_else(
+            || referenced_records(tree, query.workspace),
+            |workspaces| {
+                workspaces
                     .iter()
-                    .flat_map(|room| referenced_records(tree, Some(*room)))
+                    .flat_map(|workspace| referenced_records(tree, Some(*workspace)))
                     .collect()
             },
         );
@@ -844,12 +848,12 @@ impl WorkspaceHistoryIndex {
                 .or_insert_with(|| checkout.clone());
         }
         if let Some(local) = local {
-            let rooms = query
-                .rooms
+            let workspaces = query
+                .workspaces
                 .clone()
-                .unwrap_or_else(|| query.room.into_iter().collect());
-            for room in rooms {
-                for checkout in local.workspace_documents(room) {
+                .unwrap_or_else(|| query.workspace.into_iter().collect());
+            for workspace in workspaces {
+                for checkout in local.workspace_documents(workspace) {
                     candidates.entry(checkout.id.clone()).or_insert(checkout);
                 }
             }
@@ -893,17 +897,21 @@ impl WorkspaceHistoryIndex {
         if referenced_ids.contains(id) {
             return true;
         }
-        let Some(rooms) = query.rooms.as_ref() else {
-            return query.room.is_none()
+        let Some(workspaces) = query.workspaces.as_ref() else {
+            return query.workspace.is_none()
                 || records.read(id, |doc| {
                     home(doc).and_then(|value| value.parse::<uuid::Uuid>().ok())
-                        == query.room.map(|room| room.as_uuid())
+                        == query.workspace.map(|workspace| workspace.as_uuid())
                 }) == Some(true);
         };
         records.read(id, |doc| {
             home(doc)
                 .and_then(|value| value.parse::<uuid::Uuid>().ok())
-                .is_some_and(|home| rooms.iter().any(|room| room.as_uuid() == home))
+                .is_some_and(|home| {
+                    workspaces
+                        .iter()
+                        .any(|workspace| workspace.as_uuid() == home)
+                })
         }) == Some(true)
     }
 
@@ -1085,12 +1093,12 @@ fn insert_rows(
     }
 }
 
-fn referenced_records(tree: &impl ActivityTree, room: Option<RoomId>) -> Vec<RecordCheckout> {
-    let Some(room) = room else {
+fn referenced_records(tree: &impl ActivityTree, workspace: Option<RoomId>) -> Vec<RecordCheckout> {
+    let Some(workspace) = workspace else {
         return Vec::new();
     };
-    tree.room_records_held
-        .get(&room)
+    tree.workspace_records_held
+        .get(&workspace)
         .into_iter()
         .flat_map(|records| records.iter())
         .filter_map(|(id, kind)| {

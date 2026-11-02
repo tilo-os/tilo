@@ -1799,7 +1799,7 @@ impl ChatApp {
         let reason = refused.with(|refused| {
             refused
                 .as_ref()
-                .filter(|refused| refused.by_room && refused.action == "post")
+                .filter(|refused| refused.by_workspace && refused.action == "post")
                 .map(|refused| refused.reason.clone())
         });
         let Some(reason) = reason else {

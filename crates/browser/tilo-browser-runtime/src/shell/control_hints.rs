@@ -9,7 +9,7 @@ use ui::control_hints::Quiet;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Rect};
+use ui::vello::kurbo::Affine;
 use ui::widget::Widget;
 
 /// The hints over the person's record as this browser last kept it.
@@ -29,10 +29,9 @@ impl BrowserShell {
                 ui::platform::Platform::Linux
             },
         ));
-        let avatar = self.top.bar().map_or(
-            Rect::ZERO,
-            tilo_desktop::topbar::TopBarChrome::own_avatar_rect,
-        );
+        // The bar is always there; its avatar is not drawn on a page that
+        // shows none, and says so with a zero-area rect.
+        let avatar = self.top.bar().own_avatar_rect();
         HintFrame {
             row: self.handle.hint_places(),
             area,

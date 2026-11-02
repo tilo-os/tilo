@@ -10,7 +10,7 @@ use tilo_lock::MutexRecover as _;
 /// `A`'s resource type as a kind a host can look up: hosted by `A`, and an
 /// open resource named as `A` names it ([`ResourceApp::label`]). Every
 /// framework app gets its kind from here, so a host working with whatever a
-/// room holds reads, publishes and replays it without any of the app's own
+/// workspace holds reads, publishes and replays it without any of the app's own
 /// code.
 #[must_use]
 pub const fn resource_kind<A: ResourceApp>() -> ResourceKind {
@@ -58,13 +58,13 @@ fn seed<A: ResourceApp>(
     doc: &mut Doc,
     me: &str,
     device: &str,
-    room: Option<&str>,
+    workspace: Option<&str>,
 ) -> Result<(), String> {
     let seed = A::seed(&SeedCx {
         me,
         device,
         host: None,
-        room,
+        workspace,
     });
     apply_seed::<A>(doc, me, &seed)
 }
@@ -76,16 +76,16 @@ pub fn seed_record(kind: &str, doc: &mut Doc, me: &str, device: &str) -> Result<
     seed_scoped(kind, doc, me, device, None)
 }
 
-/// Seed a new room record in its host-selected creation scope, without lending
+/// Seed a new workspace record in its host-selected creation scope, without lending
 /// ambient device services. The route supplies context, not permission.
-pub fn seed_record_in_room(
+pub fn seed_record_in_workspace(
     kind: &str,
     doc: &mut Doc,
     me: &str,
     device: &str,
-    room: &str,
+    workspace: &str,
 ) -> Result<(), String> {
-    seed_scoped(kind, doc, me, device, Some(room))
+    seed_scoped(kind, doc, me, device, Some(workspace))
 }
 
 fn seed_scoped(
@@ -93,7 +93,7 @@ fn seed_scoped(
     doc: &mut Doc,
     me: &str,
     device: &str,
-    room: Option<&str>,
+    workspace: Option<&str>,
 ) -> Result<(), String> {
     let seed = HOSTED
         .lock_recover()
@@ -101,12 +101,12 @@ fn seed_scoped(
         .iter()
         .find(|(known, _)| *known == kind)
         .map(|(_, seed)| *seed);
-    seed.map_or(Ok(()), |seed| seed(doc, me, device, room))
+    seed.map_or(Ok(()), |seed| seed(doc, me, device, workspace))
 }
 
 /// The resource type of every framework app this process has the definition
 /// of ([`definition`](super::definition)): what a host that holds records
-/// of those apps without mounting them — an agent, a room service — reads,
+/// of those apps without mounting them — an agent, a workspace service — reads,
 /// publishes and edits them by. Look one up by the kind a record names
 /// ([`Kinds::get`]) or by its app ([`Kinds::hosted_by`]).
 #[must_use]

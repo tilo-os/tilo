@@ -286,7 +286,7 @@ impl WorkspaceTree {
             // A window that arrived is in the tree now but not on screen
             // yet: only the frame thread splices the widget tree, on chrome
             // revision bumps.
-            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+            self.desktop.workspace_epoch = self.desktop.workspace_epoch.wrapping_add(1);
             self.seed_doc_from_cache();
         }
         changed
@@ -584,8 +584,8 @@ impl WorkspaceTree {
         LayoutJudge {
             room: room.to_string(),
             decides: false,
-            policy: room_doc.map(|doc| projection::room_policy_of(doc, &room.to_string())),
-            members: room_doc.and_then(projection::room_members),
+            policy: room_doc.map(|doc| projection::workspace_policy_of(doc, &room.to_string())),
+            members: room_doc.and_then(projection::workspace_members),
             persons: HashMap::new(),
             authenticated: HashMap::new(),
         }

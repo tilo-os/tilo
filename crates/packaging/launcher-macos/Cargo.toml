@@ -10,7 +10,7 @@ description = "Confinement for Tilo apps on stock macOS: the kernel's App Sandbo
 
 # The Linux launcher (`crates/packaging/launcher`) is bubblewrap, Landlock and
 # seccomp; its binary and integration tests do not build on macOS. This crate
-# reuses its policy types (capability grants, egress decision, the per-room app
+# reuses its policy types (capability grants, egress decision, the per-workspace app
 # directory) so both platforms confine from one decision, and keeps the
 # Apple-specific mechanism apart.
 #

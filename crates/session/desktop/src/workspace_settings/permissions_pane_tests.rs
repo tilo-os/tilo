@@ -904,11 +904,11 @@ fn the_permissions_pane_draws_every_state_and_fits_its_rows() {
 /// first, then the broad grant it narrows, named in the words people know the
 /// workspace's parts by.
 #[test]
-fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
+fn a_grant_set_reads_back_as_the_grants_the_workspace_holds() {
     use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
 
     let ws = ws_with_grants();
-    let room = TreePath::workspace(ws.policy.workspace.clone());
+    let root = TreePath::workspace(ws.policy.workspace.clone());
     let grant = |id: &str, node: TreePath, kinds: KindSet, answer: Answer| {
         Grant::new(
             id,
@@ -920,16 +920,16 @@ fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
         )
     };
     let grants = [
-        grant("room", room.clone(), KindSet::READ_UNDOABLE, Answer::Allow),
+        grant("room", root.clone(), KindSet::READ_UNDOABLE, Answer::Allow),
         grant(
             "mail",
-            room.clone().app("mail"),
+            root.clone().app("mail"),
             KindSet::ALL,
             Answer::Allow,
         ),
         grant(
             "mail-send",
-            room.clone().app("mail").rest().action("send"),
+            root.clone().app("mail").rest().action("send"),
             KindSet::OUTSIDE,
             Answer::Ask,
         ),
@@ -951,7 +951,7 @@ fn a_grant_set_reads_back_as_the_grants_the_room_holds() {
     );
 
     // The one-grant view the Permissions rows show is the same sentence.
-    let single = grant("mail", room.app("mail"), KindSet::READ, Answer::Deny);
+    let single = grant("mail", root.app("mail"), KindSet::READ, Answer::Deny);
     assert_eq!(
         grant_allows(&single, &NoAppDirectory),
         format!(

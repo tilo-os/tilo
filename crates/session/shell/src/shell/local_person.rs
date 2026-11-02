@@ -8,40 +8,13 @@ pub(crate) struct NativeLocalPerson {
     pub tree: WeakWorkspaceTreeHandle,
 }
 
-fn current_certificate(room: &str, person: &str) -> Result<DeviceCert, String> {
-    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
-    // The certificate the room's selected identity presents for this device:
-    // the one its apps join the room with and the room admitted. The device
-    // owner's system-facing certificate is issued separately for the same
-    // key, so comparing a session's admission against it refused every
-    // native action ("native seat differs from original certified
-    // admission").
-    let (_, certificate) = tilo_identity_host::broker::trusted_current_device(room)
-        .map_err(|error| error.to_string())?;
-    if tilo_action_broker::collab_app_broker::principal_id_for_root(certificate.user_public_key)
-        != person
-    {
-        return Err("native caller does not match the device person".into());
-    }
-    // A selected alternate workspace identity cannot borrow this device's
-    // primary person. The certificate's fleet revocation is checked afresh.
-    tilo_identity_host::certificates::authorize(room, &certificate)?;
-    let registry = crate::identity_registry::IdentityRegistryStore::from_env()
-        .map_err(|error| error.to_string())?;
-    if !tilo_identity_host::provisioning::active_identity_owns_device(
-        registry.identity_dir(),
-        &paths,
-    )
-    .map_err(|error| error.to_string())?
-    {
-        return Err("native device identity is not currently claimed".into());
-    }
-    Ok(certificate)
-}
-
 impl LocalPersonServices for NativeLocalPerson {
     fn certificate(&self, room: &str, person: &str) -> Result<DeviceCert, String> {
-        let certificate = current_certificate(room, person)?;
+        // Which certificate this device acts under is the identity store's
+        // answer, the one the session that replaces this shell asks for too;
+        // what this shell adds is that the room it acts in still admits the
+        // device, read from the room it holds here.
+        let certificate = tilo_identity_authority::device_certificate(room, person)?;
         let room = RoomId::parse(room).ok_or("native caller room is invalid")?;
         let tree = self.tree.upgrade().ok_or("native caller owner retired")?;
         let owner = tree

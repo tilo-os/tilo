@@ -1,15 +1,15 @@
 /**
- * `peer.actions`: the room's app actions, listed and invoked from the page.
+ * `peer.actions`: the workspace's app actions, listed and invoked from the page.
  *
  * The host answers `tilo_actions::remote` frames addressed to its own device
- * for every record of the room, open or not (`RoomActions` in
+ * for every record of the workspace, open or not (`RoomActions` in
  * `tilo-agent-participant`): it mounts the record headless, runs the action
  * through the app's own door and commits the change as its own, so every page
  * receives it as an ordinary durable change. This module speaks those frames
  * over the peer's remote-action path; it knows nothing of the carrier.
  *
  * - `catalogue(query)` → `CataloguePage`: a provider per record
- *   (`record:<app>:<record>`) and the room's (`workspace:<room>`); with no
+ *   (`record:<app>:<record>`) and the workspace's (`workspace:<workspace>`); with no
  *   provider named, rows for the records open on the desktop.
  * - `invoke(target, argument, {confirmation, invocation, label})` → a ticket
  *   (actionsV2): `{id, done, status(), cancel()}`. The intent is saved before
@@ -36,7 +36,7 @@ const STALL_GRACE_MS = 1_000;
 const CATALOGUE_REFRESH_MS = 15_000;
 const HISTORY_LIMIT = 50;
 const PALETTE_ROWS = 50;
-export const ROOM_ACTIONS_PROVIDER = 'room-actions';
+export const RECORD_ACTIONS_PROVIDER = 'room-actions';
 
 /** An error from the host (`code` is its `ActionHostError` code) or the transport. */
 export class ActionsError extends Error {
@@ -131,8 +131,8 @@ function score(needle, fields) {
 }
 
 /**
- * @param options.peer           `{sendRemoteAction(room, to, frame), takeRemoteActionEvents()}`
- * @param options.room           room uuid
+ * @param options.peer           `{sendRemoteAction(workspace, to, frame), takeRemoteActionEvents()}`
+ * @param options.workspace      workspace uuid
  * @param options.hostDevice     the host's device key (hex)
  * @param options.device         this page's device key (hex), for the v1 binding
  * @param options.userPublicKey  the user root (hex), for the v1 binding
@@ -140,7 +140,7 @@ function score(needle, fields) {
  * @param options.now            a monotonic clock (ms) that tells a late reply timer from a silent host
  */
 export function createActions({
-  peer, room, hostDevice, device = '', userPublicKey = '', store,
+  peer, workspace, hostDevice, device = '', userPublicKey = '', store,
   newId = () => globalThis.crypto.randomUUID(),
   wallNow = () => Date.now(),
   now = () => globalThis.performance?.now() ?? Date.now(),
@@ -149,8 +149,8 @@ export function createActions({
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
 }) {
-  if (!peer || !room || !hostDevice) throw new TypeError('peer, room and hostDevice are required');
-  const historyKey = `tilo.actions.v2:${room}`;
+  if (!peer || !workspace || !hostDevice) throw new TypeError('peer, workspace and hostDevice are required');
+  const historyKey = `tilo.actions.v2:${workspace}`;
   const pending = new Map(); // `invoke:<id>` | `observe:<id>` | `cancel:<id>` | `catalogue:<n>` -> waiter
   const listeners = new Set();
   const entries = new Map(); // invocation id -> entry, oldest first
@@ -244,7 +244,7 @@ export function createActions({
       waiting.timer = setTimer(expire, timeoutMs);
       pending.set(key, [...(pending.get(key) ?? []), waiting]);
       try {
-        peer.sendRemoteAction(room, hostDevice, frame);
+        peer.sendRemoteAction(workspace, hostDevice, frame);
       } catch (error) {
         settle(key, ({reject: fail}) => fail(error), waiting);
       }
@@ -324,7 +324,7 @@ export function createActions({
   function invoke(target, argument, {confirmation = null, invocation, label, resourceLabel, appId} = {}) {
     // An empty resource names a record's own, which the record's host
     // resolves: a page holding none of the app's code still reaches it (the
-    // profile card reading and linking the person's account on the room's
+    // profile card reading and linking the person's account on the workspace's
     // Discord).
     const resource = target?.address?.resource;
     const recordsOwn = resource === '' && String(target?.provider).startsWith('record:');
@@ -336,7 +336,7 @@ export function createActions({
     if (existing && !existing.terminal) return ticket(existing, send(existing));
     if (existing) return ticket(existing, Promise.resolve(existing));
     const entry = record({
-      invocation: id, room, host: hostDevice,
+      invocation: id, workspace: workspace, host: hostDevice,
       target: {provider: target.provider, address: {resource: target.address.resource, action: target.address.action}},
       argument: invokeArgument(argument), confirmation,
       label: label ?? null, resourceLabel: resourceLabel ?? null, appId: appId ?? null,
@@ -376,14 +376,14 @@ export function createActions({
 
   // --- actionsV1: the frozen contract Cloud reads -----------------------
 
-  const binding = () => ({room, sender: device, senderRoot: userPublicKey, target: hostDevice, targetRoot: userPublicKey, certificate: hostDevice});
+  const binding = () => ({workspace: workspace, sender: device, senderRoot: userPublicKey, target: hostDevice, targetRoot: userPublicKey, certificate: hostDevice});
 
   function surfaces(page) {
     const byProvider = new Map();
     for (const row of page.rows ?? []) {
       if (!row.action) continue;
       const provider = page.providers?.find(candidate => candidate.provider === row.provider);
-      const surface = byProvider.get(row.provider) ?? {peer_id: row.provider, app_id: row.app_id, cluster_id: room,
+      const surface = byProvider.get(row.provider) ?? {peer_id: row.provider, app_id: row.app_id, cluster_id: workspace,
         record_id: provider?.record_id ?? '', actions: []};
       const {address, ...descriptor} = row.action;
       surface.actions.push({...descriptor, resource: address.resource, action: address.action, revision: null, label: row.action.action_label});
@@ -460,14 +460,14 @@ export function createActions({
   // --- search palette provider ---------------------------------------------
 
   const provider = {
-    id: ROOM_ACTIONS_PROVIDER,
+    id: RECORD_ACTIONS_PROVIDER,
     /** Hits for `needle`: one per action, `target.kind` `action`. */
     async query(needle = '') {
       if (!needle.trim()) return [];
       const page = await catalogue({needle, max_results: PALETTE_ROWS});
       return (page.rows ?? []).filter(row => row.action).map(row => ({
         kind: 'Action',
-        provider: ROOM_ACTIONS_PROVIDER,
+        provider: RECORD_ACTIONS_PROVIDER,
         id: `${row.provider}#${row.action.address.resource}#${row.action.address.action}`,
         title: row.action.action_label,
         subtitle: row.action.resource_label || row.resource?.label || row.app_id,

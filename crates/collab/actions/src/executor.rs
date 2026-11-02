@@ -506,7 +506,7 @@ pub fn apply_local(
 }
 
 /// [`apply_local`], attributing the resulting change to `actor`: the
-/// Automerge change commits under *their* actor so the room's history
+/// Automerge change commits under *their* actor so the workspace's history
 /// names them the way it names a typing person. `None` keeps the
 /// [`ActionId`]-derived actor, as before.
 ///

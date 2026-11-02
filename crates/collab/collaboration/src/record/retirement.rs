@@ -1,4 +1,4 @@
-//! Whether a record left its room: moving a record to another room stamps
+//! Whether a record left its workspace: moving a record to another workspace stamps
 //! its last change here retired (the toolkit's `ui::record::transfer`), and
 //! a retired record is never opened as a live document again.
 
@@ -6,7 +6,7 @@ use automerge::{AutoCommit, ObjType};
 
 use super::fields::{ObjectAt, StringAt, meta_ro, object_at, string_at};
 
-/// Key, in a record's meta map, marking a record that left its room.
+/// Key, in a record's meta map, marking a record that left its workspace.
 pub const RETIRED: &str = "retired";
 
 /// Where a moved record went and who moved it, as its retirement records.
@@ -15,7 +15,7 @@ pub use collab_types::handoff::Successor;
 /// Why a record is retired, as stamped into its last change.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Retirement {
-    /// Moved to another room; the successor there carries its history.
+    /// Moved to another workspace; the successor there carries its history.
     /// `None` only for a stamp that no longer says where.
     Moved(Option<Successor>),
     /// Imported for a transfer that did not complete; nothing ever opened it.
@@ -33,7 +33,7 @@ impl Retirement {
     }
 }
 
-/// The retirement stamped into `doc`, when it has left its room.
+/// The retirement stamped into `doc`, when it has left its workspace.
 #[must_use]
 pub fn retirement(doc: &AutoCommit) -> Option<Retirement> {
     let meta = meta_ro(doc)?;
@@ -53,14 +53,19 @@ pub fn retirement(doc: &AutoCommit) -> Option<Retirement> {
     if field("reason").as_deref() == Some("abandoned") {
         return Some(Retirement::Abandoned);
     }
-    let successor = match (field("room"), field("record"), field("by")) {
+    // A stamp written before the rename says `room`; both read.
+    let successor = match (
+        field("workspace").or_else(|| field("room")),
+        field("record"),
+        field("by"),
+    ) {
         (Some(room), Some(record), Some(by)) => Some(Successor { room, record, by }),
         _ => None,
     };
     Some(Retirement::Moved(successor))
 }
 
-/// Whether `doc` is a record that left its room.
+/// Whether `doc` is a record that left its workspace.
 #[must_use]
 pub fn is_retired(doc: &AutoCommit) -> bool {
     retirement(doc).is_some()

@@ -107,7 +107,7 @@ impl RecordSegment {
     }
 }
 
-/// The origin of a room's host: `https://<authority>`, or `http://` for this
+/// The origin of a workspace's host: `https://<authority>`, or `http://` for this
 /// computer's loopback names, where local review relays listen. A loopback
 /// host served over TLS (a test relay with its own certificate) is written
 /// `https:<authority>`, so a link never changes the scheme it is reached by.
@@ -240,7 +240,7 @@ impl HostOrigin {
 }
 
 /// A workspace name for people to read in the link. Nothing resolves,
-/// compares or routes on it; the page rewrites it once the room is known.
+/// compares or routes on it; the page rewrites it once the workspace is known.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Slug(String);
 
@@ -292,12 +292,15 @@ impl Slug {
     }
 }
 
-/// Which room a link opens in.
+/// Which workspace a link opens in.
 #[derive(Clone, Debug, Eq)]
 pub enum Scope {
     /// The workspace the person is in (`/me`).
     Own,
-    /// A workspace room on `host`.
+    /// A workspace on `host`.
+    ///
+    /// The variant keeps its name: the desktop shell matches it by name and
+    /// is deleted whole when its windows move onto the new session.
     Room {
         host: HostOrigin,
         room: Uuid,
@@ -448,7 +451,7 @@ pub struct LinkTarget {
     /// A `ResourceViewSpec::id`; `None` is the primary view.
     pub view: Option<String>,
     /// The published text a reader arrived from (`?discuss=<slug>`), which
-    /// the room keeps a discussion thread for. A link carrying it and naming
+    /// the workspace keeps a discussion thread for. A link carrying it and naming
     /// no place of its own opens that thread (see `discuss_thread` in the
     /// strict reader); beside an app, record or item it only says where the
     /// reader came from, and the link points where it was written.
@@ -527,7 +530,11 @@ impl LinkTarget {
     fn write_scope(&self, omit_host: Option<&HostOrigin>, out: &mut String) {
         match &self.scope {
             Scope::Own => out.push_str("/me"),
-            Scope::Room { host, room, slug } => {
+            Scope::Room {
+                host,
+                room: workspace,
+                slug,
+            } => {
                 if omit_host != Some(host) {
                     out.push_str("/@");
                     out.push_str(&host.route());
@@ -537,7 +544,7 @@ impl LinkTarget {
                     out.push_str(slug.as_str());
                     out.push('~');
                 }
-                out.push_str(&room.hyphenated().to_string());
+                out.push_str(&workspace.hyphenated().to_string());
             }
         }
     }
@@ -660,16 +667,16 @@ impl Link {
 mod tests {
     use super::*;
 
-    const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
+    const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 
     fn tilo() -> WebEntry {
         WebEntry::new("https://tilo.so/").unwrap()
     }
 
-    fn room(host: &str) -> Scope {
+    fn workspace(host: &str) -> Scope {
         Scope::Room {
             host: HostOrigin::new(host).unwrap(),
-            room: ROOM.parse().unwrap(),
+            room: WORKSPACE.parse().unwrap(),
             slug: None,
         }
     }
@@ -789,7 +796,7 @@ mod tests {
 
     #[test]
     fn formats_the_spec_examples() {
-        let mut target = LinkTarget::new(room("https://ada.tilo.cloud"));
+        let mut target = LinkTarget::new(workspace("https://ada.tilo.cloud"));
         if let Scope::Room { slug, .. } = &mut target.scope {
             *slug = Slug::from_name("Reading Group");
         }
@@ -802,7 +809,7 @@ mod tests {
             span: Some(Span::chars(40, 96)),
         });
         let route = format!(
-            "/@ada.tilo.cloud/w/reading-group~{ROOM}/so.tilo.word-processor/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/word_processor.block/b12?chars=40-96"
+            "/@ada.tilo.cloud/w/reading-group~{WORKSPACE}/so.tilo.word-processor/uuid:3e0d5a1c-7b2f-4e8a-9c6d-1a2b3c4d5e6f/word_processor.block/b12?chars=40-96"
         );
         let link = plain(Mode::Desktop, target);
         assert_eq!(
@@ -819,10 +826,10 @@ mod tests {
             plain(Mode::App, calculator).to_url(&tilo()).unwrap(),
             "https://tilo.so/app/#/me/so.tilo.calculator"
         );
-        let same_origin = plain(Mode::Desktop, LinkTarget::new(room("https://tilo.so")));
+        let same_origin = plain(Mode::Desktop, LinkTarget::new(workspace("https://tilo.so")));
         assert_eq!(
             same_origin.to_url(&tilo()).unwrap(),
-            format!("https://tilo.so/#/w/{ROOM}")
+            format!("https://tilo.so/#/w/{WORKSPACE}")
         );
     }
 
@@ -830,9 +837,9 @@ mod tests {
     /// thread: the chat's channel named by the text's slug.
     #[test]
     fn a_discuss_alone_opens_that_text_s_thread() {
-        let room = ROOM;
+        let workspace = WORKSPACE;
         let arrived = Link::parse(
-            &format!("https://tilo.so/#/w/{room}?discuss=quiet-software"),
+            &format!("https://tilo.so/#/w/{workspace}?discuss=quiet-software"),
             &WebEntries::new(vec![tilo()]),
         )
         .unwrap();
@@ -860,26 +867,26 @@ mod tests {
     /// carries it.
     #[test]
     fn a_discuss_parameter_names_the_published_text_a_reader_came_from() {
-        let mut target = LinkTarget::new(room("https://tilo.so"));
+        let mut target = LinkTarget::new(workspace("https://tilo.so"));
         target.discuss = Some(Slug::parse("quiet-software").unwrap());
         let link = plain(Mode::Desktop, target);
         let url = link.to_url(&tilo()).unwrap();
         assert!(url.ends_with("?discuss=quiet-software"), "{url}");
         assert_eq!(
             link.to_native().unwrap(),
-            format!("tilo://open#/@tilo.so/w/{ROOM}?discuss=quiet-software")
+            format!("tilo://open#/@tilo.so/w/{WORKSPACE}?discuss=quiet-software")
         );
         let read = Link::parse(&url, &WebEntries::new(vec![tilo()])).unwrap();
         assert_eq!(
             read.target.discuss.as_ref().map(Slug::as_str),
             Some("quiet-software")
         );
-        let bare = plain(Mode::Desktop, LinkTarget::new(room("https://tilo.so")));
+        let bare = plain(Mode::Desktop, LinkTarget::new(workspace("https://tilo.so")));
         assert!(!bare.to_url(&tilo()).unwrap().contains("discuss"));
-        // Its spelling is presentation, as a room's slug is: not any text.
+        // Its spelling is presentation, as a workspace's slug is: not any text.
         assert!(
             Link::parse(
-                &format!("https://tilo.so/#/w/{ROOM}?discuss=Quiet Software"),
+                &format!("https://tilo.so/#/w/{WORKSPACE}?discuss=Quiet Software"),
                 &WebEntries::new(vec![tilo()])
             )
             .is_err()
@@ -887,13 +894,13 @@ mod tests {
         // And it comes before a view, its only place among the params.
         assert!(
             Link::parse(
-                &format!("https://tilo.so/#/w/{ROOM}?view=x&discuss=a"),
+                &format!("https://tilo.so/#/w/{WORKSPACE}?view=x&discuss=a"),
                 &WebEntries::new(vec![tilo()])
             )
             .is_err()
         );
         let ordered = plain(Mode::Desktop, {
-            let mut target = LinkTarget::new(room("https://tilo.so"));
+            let mut target = LinkTarget::new(workspace("https://tilo.so"));
             target.app = Some(AppId::new("so.tilo.chat").unwrap());
             target.record = Some(RecordSegment::Primary);
             target.discuss = Some(Slug::parse("a-post").unwrap());

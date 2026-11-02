@@ -54,11 +54,12 @@ fn the_desktop_sends_a_window_whose_id_is_past_an_integer() {
     );
 
     add_strip(&session, "Second");
+    let second = strip_id(&session, "Second");
     invoke_with(
         &mut session,
         CHROME_RESOURCE,
-        "move-tab-to-strip",
-        &serde_json::json!({"tab": tab.to_string(), "strip": "Second"}),
+        "move-tab",
+        &serde_json::json!({"tab": tab.to_string(), "to": {"strip": second}}),
     );
     let holding = strips_holding(&session, tab);
     assert_eq!(
@@ -83,7 +84,7 @@ fn the_desktop_sends_a_window_whose_id_is_past_an_integer() {
         &mut session,
         CHROME_RESOURCE,
         "move-tab",
-        &serde_json::json!({"tab": tab.to_string(), "workspace": other.to_string()}),
+        &serde_json::json!({"tab": tab.to_string(), "to": {"workspace": other.to_string()}}),
     );
     assert_eq!(
         tabs_in(&session, other),
@@ -94,9 +95,9 @@ fn the_desktop_sends_a_window_whose_id_is_past_an_integer() {
     // What no window answers to is refused: neither a tab's id spelled as
     // something else, nor a call that names none.
     for arguments in [
-        serde_json::json!({"tab": "not a tab", "workspace": other.to_string()}),
-        serde_json::json!({"workspace": other.to_string()}),
-        serde_json::json!({"tab": serde_json::json!(tab), "workspace": other.to_string()}),
+        serde_json::json!({"tab": "not a tab", "to": {"workspace": other.to_string()}}),
+        serde_json::json!({"to": {"workspace": other.to_string()}}),
+        serde_json::json!({"tab": serde_json::json!(tab), "to": {"workspace": other.to_string()}}),
     ] {
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         let refused = session.invoke(CHROME_RESOURCE, "move-tab", &arguments);

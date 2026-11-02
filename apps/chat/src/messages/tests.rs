@@ -264,7 +264,7 @@ impl TwoDevices {
             Chain::detached_in(guest_store.clone(), "so.tilo.chat", "u_aria", base()).unwrap();
         assert_eq!(guest.head(), None, "a fresh workspace has no part yet");
         let shown = ui::record::RecordCheckout::new(
-            ui::record::RecordId::derived("shown", &ui::record::RecordId::room_default()),
+            ui::record::RecordId::derived("shown", &ui::record::RecordId::workspace_default()),
             ui::record::RecordKind::new("test.shown"),
         );
         guest_store

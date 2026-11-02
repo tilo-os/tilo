@@ -1,10 +1,10 @@
 //! The moderation agent: on a report (or a burst of deletions), it reads the
 //! person's recent actions, asks the model, and carries the verdict out
-//! through the room's own doors.
+//! through the workspace's own doors.
 //!
-//! Every effect goes through what the room already has. A restriction or a
+//! Every effect goes through what the workspace already has. A restriction or a
 //! ban is a governance change ([`Change::Restrict`], [`Change::Ban`]) the
-//! room's policy checks like anyone's. Taking back what the person did is
+//! workspace's policy checks like anyone's. Taking back what the person did is
 //! the published `undo` action of each record they touched, with `by` naming
 //! them and `to` the version before their first change in the window, run
 //! as one history run per decision, so overturning takes the take-back back
@@ -26,20 +26,20 @@ pub const LOOKBACK_MS: i64 = 30 * 60 * 1000;
 pub const BURST_COUNT: usize = 8;
 pub const BURST_WINDOW_MS: i64 = 60 * 1000;
 
-/// The room as the moderation agent reaches it. The host implements it over
-/// the room it governs; every call acts as [`crate::AGENT`].
-pub trait RoomDoor {
+/// The workspace as the moderation agent reaches it. The host implements it over
+/// the workspace it governs; every call acts as [`crate::AGENT`].
+pub trait WorkspaceDoor {
     /// Unix milliseconds now.
     fn now_ms(&self) -> i64;
 
-    /// `person`'s changes across the room's records since `since_ms`,
+    /// `person`'s changes across the workspace's records since `since_ms`,
     /// oldest first ([`crate::activity_of`] over each record).
     fn activity(&mut self, person: &str, since_ms: i64) -> Vec<Activity>;
 
-    /// A governance change on the room.
+    /// A governance change on the workspace.
     ///
     /// # Errors
-    /// The room's policy refused it.
+    /// The workspace's policy refused it.
     fn govern(&mut self, change: Change) -> Result<(), String>;
 
     /// Runs `action` of a record with `args`, in history run `run`.
@@ -55,7 +55,7 @@ pub trait RoomDoor {
         run: &str,
     ) -> Result<(), String>;
 
-    /// Writes a decision into the room's moderation record.
+    /// Writes a decision into the workspace's moderation record.
     ///
     /// # Errors
     /// The record refused it.
@@ -110,16 +110,16 @@ impl<J: Judge> ModerationAgent<J> {
 
     /// Whether `person`'s recent actions are a burst of deletions worth a
     /// look without a report.
-    pub fn bursting(door: &mut impl RoomDoor, person: &str) -> bool {
+    pub fn bursting(door: &mut impl WorkspaceDoor, person: &str) -> bool {
         let since = door.now_ms().saturating_sub(BURST_WINDOW_MS);
         burst(&door.activity(person, since), BURST_COUNT, BURST_WINDOW_MS)
     }
 
     /// Looks into `person`: their open reports, their recent actions and
     /// earlier decisions. The host asks [`Self::verdict`] on it away from the
-    /// room, then [`Self::enforce`]s the answer, so the room is never held
+    /// workspace, then [`Self::enforce`]s the answer, so the workspace is never held
     /// while the model thinks.
-    pub fn look(door: &mut impl RoomDoor, moderation: &Moderation, person: &str) -> Look {
+    pub fn look(door: &mut impl WorkspaceDoor, moderation: &Moderation, person: &str) -> Look {
         let now = door.now_ms();
         let reports: Vec<_> = moderation.open_reports_on(person).collect();
         let activity = door.activity(person, now.saturating_sub(LOOKBACK_MS));
@@ -174,7 +174,7 @@ impl<J: Judge> ModerationAgent<J> {
                     outcome: Outcome::NoAction,
                     minutes: None,
                     revert: false,
-                    reasoning: "They made no changes in the room in the last 30 minutes, so \
+                    reasoning: "They made no changes in the workspace in the last 30 minutes, so \
                                 there is nothing to act on."
                         .to_owned(),
                 },
@@ -187,9 +187,9 @@ impl<J: Judge> ModerationAgent<J> {
         ))
     }
 
-    /// Carries `verdict` out on the room and records it with its reasoning.
+    /// Carries `verdict` out on the workspace and records it with its reasoning.
     pub fn enforce(
-        door: &mut impl RoomDoor,
+        door: &mut impl WorkspaceDoor,
         look: Look,
         verdict: Verdict,
         model: String,
@@ -256,7 +256,7 @@ impl<J: Judge> ModerationAgent<J> {
     ///
     /// # Errors
     /// Each part that failed, with why; the others are still done.
-    pub fn restore(door: &mut impl RoomDoor, decision: &Decision) -> Result<(), Vec<String>> {
+    pub fn restore(door: &mut impl WorkspaceDoor, decision: &Decision) -> Result<(), Vec<String>> {
         let mut failures = Vec::new();
         let person = decision.person.clone();
         let lifted = match decision.outcome {
@@ -299,7 +299,7 @@ impl<J: Judge> ModerationAgent<J> {
 /// history names, `undo { by, to }` back to the version before their first
 /// change there, or `undo { by, steps }` when that change began the record.
 fn revert(
-    door: &mut impl RoomDoor,
+    door: &mut impl WorkspaceDoor,
     activity: &[Activity],
     run: &str,
     failures: &mut Vec<String>,
@@ -314,7 +314,7 @@ fn revert(
     let mut reverted: BTreeMap<(String, String), u32> = BTreeMap::new();
     for ((app, record, actor), changes) in by_record {
         // Only content is taken back: joining, presence and read marks stay,
-        // so the person keeps their place in the room's roster. An undo goes
+        // so the person keeps their place in the workspace's roster. An undo goes
         // back to a version, so it stops at their newest such change and
         // leaves content older than it alone.
         let kept = changes.iter().rposition(|change| !change.content);

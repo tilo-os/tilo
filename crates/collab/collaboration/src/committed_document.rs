@@ -1303,7 +1303,7 @@ enum CaptureFailure {
     Rejected(String),
     /// This process's committed read budget had no room for a capture of
     /// this many bytes. The broker's capture was cancelled; the read waits
-    /// for room ([`ByteBudget::until_room`]) and Opens again.
+    /// for workspace ([`ByteBudget::until_capacity`]) and Opens again.
     Capacity(usize),
 }
 impl std::fmt::Display for CaptureFailure {
@@ -1624,9 +1624,9 @@ async fn until_merged(read: &CommittedDocument, live: impl Fn() -> bool) {
 /// committed document. The broker serves committed reads only to a process
 /// the launcher holds custody of for that app, which an agent never is, so it
 /// refuses an agent's open. An agent works through actions and task runs, not
-/// its own document; asking would fail its whole connection in a native room.
+/// its own document; asking would fail its whole connection in a native workspace.
 /// A headless service (`CollaborationManager::for_service`) holds no document
-/// either: it publishes actions and answers them, and its room never holds a
+/// either: it publishes actions and answers them, and its workspace never holds a
 /// record of it to read.
 fn opens_committed_document(participant_kind: &str) -> bool {
     !matches!(participant_kind, "agent" | super::SERVICE_PARTICIPANT)
@@ -1659,9 +1659,9 @@ pub(super) async fn install(
     }
     let mut ready = inbound.state.document_reads.pending(&key)?;
     // What the first read waits for before it Opens again, when it could
-    // not be read yet: its turn in the broker's queue, or room here.
+    // not be read yet: its turn in the broker's queue, or workspace here.
     let mut waiting = None;
-    // The room's hosts have none of this on-demand record: the app shows it
+    // The workspace's hosts have none of this on-demand record: the app shows it
     // unavailable, said once each time it becomes so.
     let mut absent = false;
     let (initial, revision) = match first {
@@ -1669,7 +1669,7 @@ pub(super) async fn install(
             match read_capture(channel, first, CaptureWait::Join).await {
                 Ok((read, revision)) => (Some(read), Some(revision)),
                 Err(CaptureFailure::Capacity(bytes)) => {
-                    waiting = Some(Waiting::Room(bytes));
+                    waiting = Some(Waiting::Capacity(bytes));
                     (None, None)
                 }
                 Err(error) => return Err(error.to_string()),
@@ -1714,7 +1714,9 @@ pub(super) async fn install(
             Some(Waiting::Turn) => {
                 until_stale(&channel, None, &inbound, &key, &ready).await;
             }
-            Some(Waiting::Room(bytes)) => capture_budget().until_room(bytes, CAPTURE_LIMIT).await,
+            Some(Waiting::Capacity(bytes)) => {
+                capture_budget().until_capacity(bytes, CAPTURE_LIMIT).await
+            }
             None => {}
         }
         'read: loop {
@@ -1811,7 +1813,7 @@ pub(super) async fn install(
                             // Load, not a failure: wait for this process
                             // to release committed bytes, then Open again.
                             drop(turn);
-                            capture_budget().until_room(bytes, CAPTURE_LIMIT).await;
+                            capture_budget().until_capacity(bytes, CAPTURE_LIMIT).await;
                             continue;
                         }
                         Err(error) => {
@@ -1967,7 +1969,7 @@ enum Waiting {
     /// which the channel's `Await` announces.
     Turn,
     /// This process had no room for a capture of this many bytes.
-    Room(usize),
+    Capacity(usize),
 }
 
 /// Give up `channel`'s place in the broker's byte budget queue: this reader

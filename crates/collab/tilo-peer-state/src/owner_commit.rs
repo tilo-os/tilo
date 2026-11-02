@@ -152,7 +152,7 @@ impl OwnerCommitRequest {
             } => {
                 let placement_independent = command.command.is_placement_independent();
                 if invocation.is_nil()
-                    || command.source.room != self.workspace
+                    || command.source.workspace != self.workspace
                     || (command.source.heads.is_empty() && !placement_independent)
                     || command.source.heads.len() > 128
                     || caller.capabilities.can_act_as_host

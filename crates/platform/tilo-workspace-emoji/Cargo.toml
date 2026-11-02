@@ -7,7 +7,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "A workspace's own emoji: the room record every app of the workspace draws `:name:` from"
+description = "A workspace's own emoji: the workspace record every app draws `:name:` from"
 
 [dependencies]
 automerge.workspace = true

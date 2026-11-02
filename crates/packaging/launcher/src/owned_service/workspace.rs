@@ -165,9 +165,9 @@ pub(super) fn prepare(layout: Layout, path: &Path, owner: Owner) -> io::Result<W
             format!("{} work root must be fresh", layout.label),
         ));
     }
-    let rooms = child(held, c"tilo-rooms")?;
-    let room = child(&rooms, c"personal")?;
-    let app = child(&room, c"so.tilo.imager.home-export")?;
+    let workspaces = child(held, c"tilo-rooms")?;
+    let workspace = child(&workspaces, c"personal")?;
+    let app = child(&workspace, c"so.tilo.imager.home-export")?;
     let local = child(&app, c".local")?;
     for directory in [
         &app,

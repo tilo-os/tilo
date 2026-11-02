@@ -1,4 +1,4 @@
-// Fixture for `tests/room_confinement.rs`. Does real file I/O rather
+// Fixture for `tests/workspace_confinement.rs`. Does real file I/O rather
 // than reporting its config — every line printed is the answer a
 // syscall gave, since a bind list is not proof.
 //

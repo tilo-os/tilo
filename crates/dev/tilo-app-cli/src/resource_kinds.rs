@@ -36,8 +36,8 @@ pub(crate) fn declared_with_metadata(app_dir: &Path, metadata: &Value) -> Result
 /// The kinds that are the app's own: declared in its sources or in a local
 /// crate it depends on directly, such as a shared model, and not by the SDK,
 /// whose kinds are the framework's. They are what the app's manifest must
-/// list in `[resources] kinds`, so a governed room lets the app create its
-/// records.
+/// list in `[resources] kinds`, so a governed workspace lets the app create
+/// its records.
 ///
 /// # Errors
 ///
@@ -476,7 +476,7 @@ mod tests {
     }
 
     /// The image installs each app with the `[resources] kinds` of its
-    /// authored `tilo-app.toml`, and a governed room lets an app create only
+    /// authored `tilo-app.toml`, and a governed workspace lets an app create only
     /// records of a kind its signed manifest declares. A kind the app's code
     /// holds but its manifest omits leaves the app unable to create its first
     /// record there, so every kind declared in the app's sources, or in a

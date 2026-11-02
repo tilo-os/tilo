@@ -103,7 +103,7 @@ pub const NETWORK_READ_PATHS: &[&str] = &["/etc/resolv.conf", "/etc/hosts"];
 /// GPU device nodes, bound with `--dev-bind-try` for an app granted the
 /// `gpu` capability ([`crate::gpu::granted`]) and for no other.
 ///
-/// A toolkit app does not open the GPU: its room's render service draws its
+/// A toolkit app does not open the GPU: its workspace's render service draws its
 /// frames (`tilo-render-service`). The GPU kernel driver is among the most
 /// exploited kernel surfaces, so an app reaches it only when it declares it
 /// needs to (a web engine, video, games, 3D, ML). `--dev /dev` mounts a
@@ -348,7 +348,7 @@ mod tests {
                 );
             }
             // The GPU is not part of what every app gets: an app draws
-            // through its room's render service unless it declares `gpu`.
+            // through its workspace's render service unless it declares `gpu`.
             assert!(
                 !argv
                     .iter()

@@ -490,7 +490,7 @@ impl OverviewPanel {
             self.choose(OverviewPick::NewWorkspace);
         } else if target == "overview-join-workspace" && self.desk.can_join {
             self.choose(OverviewPick::JoinWorkspace);
-        } else if let Some(id) = number("overview-room:") {
+        } else if let Some(id) = number("overview-workspace:") {
             self.choose(OverviewPick::Workspace(WorkspaceId(id)));
         } else if let Some(id) = number("overview-leave:") {
             self.choose(OverviewPick::LeaveWorkspace(WorkspaceId(id)));
@@ -539,7 +539,7 @@ impl OverviewPanel {
             }
             self.select_window(tab);
         } else if let Some(index) =
-            number("overview-room:").and_then(|id| self.card_index(WorkspaceId(id)))
+            number("overview-workspace:").and_then(|id| self.card_index(WorkspaceId(id)))
         {
             self.focus_row(index);
         } else if target == "overview-new-workspace" && self.can_add() {
@@ -710,7 +710,7 @@ impl Widget for OverviewPanel {
             .children
             .extend(self.desk.cards.iter().enumerate().map(|(index, card)| {
                 AccessNode::new(Role::Button)
-                    .with_action_target(format!("overview-room:{}", card.id.raw()))
+                    .with_action_target(format!("overview-workspace:{}", card.id.raw()))
                     .with_name(card.name.clone())
                     .with_bounds(self.row_rect(index))
                     .with_state(
@@ -947,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn the_room_you_are_in_heads_the_panel_and_the_others_follow_in_order() {
+    fn the_workspace_you_are_in_heads_the_panel_and_the_others_follow_in_order() {
         let panel = opened_in(NARROW, desk());
         let here = panel.row_rect(0);
         let research = panel.row_rect(1);
@@ -996,7 +996,7 @@ mod tests {
     #[test]
     fn a_long_list_is_capped_and_scrolls_to_the_keyboard() {
         let mut cards = vec![card(1, "Acme", true, &["Notes"])];
-        cards.extend((2..30).map(|i| card(i, &format!("Room {i}"), false, &[])));
+        cards.extend((2..30).map(|i| card(i, &format!("Design {i}"), false, &[])));
         let mut panel = opened_in(NARROW, OverviewDesk::of(cards));
         assert!(panel.panel_rect().height() <= NARROW.height());
         assert!(panel.max_scroll_y() > 0.0);
@@ -1006,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn keys_walk_the_rooms_and_enter_goes_to_one() {
+    fn keys_walk_the_workspaces_and_enter_goes_to_one() {
         let mut panel = opened_in(NARROW, desk());
         assert_eq!(panel.selection(), Some(0), "the keyboard starts here");
         assert!(press(&mut panel, NamedKey::ArrowDown));
@@ -1205,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn a_carried_window_moves_to_the_room_it_is_let_go_on() {
+    fn a_carried_window_moves_to_the_workspace_it_is_let_go_on() {
         let mut panel = opened_in(NARROW, desk());
         let tile = panel.window_tile_rect(0);
         let research = panel.row_rect(1);
@@ -1227,14 +1227,14 @@ mod tests {
     #[test]
     fn semantic_actions_reach_what_the_rows_do() {
         let mut panel = opened_in(WIDE, desk());
-        assert!(panel.activate("overview-room:2"));
+        assert!(panel.activate("overview-workspace:2"));
         assert_eq!(
             panel.take_pick(),
             Some(OverviewPick::Workspace(WorkspaceId(2)))
         );
         assert!(panel.focus("overview-window:1001"));
         assert_eq!(panel.window_selection(), Some(1001));
-        assert!(!panel.activate("overview-room:x"));
+        assert!(!panel.activate("overview-workspace:x"));
         let node = panel.accessibility().unwrap();
         assert_eq!(node.name.as_deref(), Some(t("overview-title").as_str()));
         assert!(node.children.iter().any(|child| child.role == Role::List));

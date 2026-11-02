@@ -30,8 +30,8 @@ const MAX_PER_APP: usize = 64;
 const MAX_STORE_BYTES: u64 = 2 * 1024 * 1024;
 /// How long a snooze puts an alarm off.
 pub const SNOOZE_MS: i64 = 300_000;
-/// The room of an app the session knows no workspace of.
-pub const LOCAL_ROOM: &str = "local";
+/// The workspace of an app the session knows none of.
+pub const LOCAL_WORKSPACE: &str = "local";
 /// The action key of a ringing alarm's Snooze.
 pub const SNOOZE: &str = "snooze";
 /// The action key of a ringing alarm's Dismiss.
@@ -44,11 +44,11 @@ const MAX_RUNG: usize = 256;
 /// last_rung)`: one alarm's state as `XTiloScheduledAlarms` answers it.
 pub type AlarmStateWire = (String, (u8, u8, u8, i64), Vec<i64>, Vec<i64>, String);
 
-/// Who a deadline belongs to: the app and the workspace (room) it runs in.
+/// Who a deadline belongs to: the app and the workspace it runs in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Owner {
     pub app: String,
-    pub room: String,
+    pub workspace: String,
 }
 
 impl Owner {
@@ -57,11 +57,11 @@ impl Owner {
     pub fn of(caller: &Caller) -> Self {
         Self {
             app: caller.app_id.clone(),
-            room: caller
+            workspace: caller
                 .workspace
                 .clone()
-                .filter(|room| !room.is_empty())
-                .unwrap_or_else(|| LOCAL_ROOM.to_owned()),
+                .filter(|workspace| !workspace.is_empty())
+                .unwrap_or_else(|| LOCAL_WORKSPACE.to_owned()),
         }
     }
 }
@@ -150,8 +150,10 @@ impl ScheduleRequest {
 /// it from the notification centre.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Occurrence {
-    /// The workspace the deadline belongs to.
-    pub room: String,
+    /// The workspace the deadline belongs to. Written as `room`: it travels
+    /// in a notification's published data, which apps already read that way.
+    #[serde(rename = "room")]
+    pub workspace: String,
     /// The deadline's own token, never reused.
     pub token: String,
     /// The occurrence, in milliseconds since the epoch.
@@ -195,7 +197,9 @@ struct Rung {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Entry {
-    room: String,
+    /// Written as `room`: an existing ledger keeps its exact bytes on save.
+    #[serde(rename = "room")]
+    workspace: String,
     app: String,
     tag: String,
     title: String,
@@ -217,7 +221,7 @@ struct Entry {
 
 impl Entry {
     fn owned(&self, owner: &Owner) -> bool {
-        self.app == owner.app && self.room == owner.room
+        self.app == owner.app && self.workspace == owner.workspace
     }
 
     fn next_at_ms(&self) -> Option<i64> {
@@ -245,7 +249,7 @@ impl Entry {
 pub struct Deadline {
     pub token: String,
     pub app_id: String,
-    pub room: String,
+    pub workspace: String,
     pub tag: String,
     pub title: String,
     pub body: String,
@@ -357,7 +361,7 @@ impl Ledger {
             return Err("invalid scheduled notification".into());
         }
         let entry = Entry {
-            room: owner.room.clone(),
+            workspace: owner.workspace.clone(),
             app: owner.app.clone(),
             tag,
             title,
@@ -456,7 +460,7 @@ impl Ledger {
         }
         let entry = entries.iter_mut().find(|entry| {
             entry.app == app_id
-                && entry.room == target.room
+                && entry.workspace == target.workspace
                 && entry.token == target.token
                 && entry.activation == target.uri
         });
@@ -571,7 +575,7 @@ impl Ledger {
             .map(|entry| Deadline {
                 token: entry.token.clone(),
                 app_id: entry.app.clone(),
-                room: entry.room.clone(),
+                workspace: entry.workspace.clone(),
                 tag: entry.tag.clone(),
                 title: entry.title.clone(),
                 body: entry.body.clone(),
@@ -598,7 +602,7 @@ fn ringing(id: u32, entry: &Entry, at_ms: i64) -> Notification {
         category: calendar_alarm.then(|| "alarm.ringing".to_owned()),
         caller: Some(Caller {
             app_id: entry.app.clone(),
-            workspace: (entry.room != LOCAL_ROOM).then(|| entry.room.clone()),
+            workspace: (entry.workspace != LOCAL_WORKSPACE).then(|| entry.workspace.clone()),
         }),
         // The labels are the session's to say in the person's language.
         actions: if calendar_alarm {
@@ -610,7 +614,7 @@ fn ringing(id: u32, entry: &Entry, at_ms: i64) -> Notification {
             Vec::new()
         },
         scheduled: Some(Occurrence {
-            room: entry.room.clone(),
+            workspace: entry.workspace.clone(),
             token: entry.token.clone(),
             occurrence_ms: at_ms,
             calendar_alarm,
@@ -730,7 +734,7 @@ impl Schedules {
                     (
                         Owner {
                             app: entry.app.clone(),
-                            room: entry.room.clone(),
+                            workspace: entry.workspace.clone(),
                         },
                         entry.tag.clone(),
                     )
@@ -759,7 +763,7 @@ impl Schedules {
                     Some((
                         entry.app.clone(),
                         Occurrence {
-                            room: entry.room.clone(),
+                            workspace: entry.workspace.clone(),
                             token: entry.token.clone(),
                             occurrence_ms: entry.active.as_ref()?.at_ms,
                             calendar_alarm: true,
