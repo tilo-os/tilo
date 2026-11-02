@@ -158,6 +158,19 @@ pub enum Request {
         id: u64,
         purpose: String,
     },
+    /// Retired: an app asked to hear when its workspace had an identity
+    /// selected. A workspace's identity is the person the device's
+    /// certificate names, so nothing asks this and no shell answers it; it
+    /// stays so a message an older build wrote still reads.
+    AwaitIdentity {
+        id: u64,
+    },
+    /// Retired: an app asked the shell to show its identity chooser. There
+    /// is nothing to choose; kept for the same reason as
+    /// [`Self::AwaitIdentity`].
+    ChooseIdentity {
+        id: u64,
+    },
 }
 
 /// The app the person chose in the shell's app chooser.
@@ -216,6 +229,11 @@ pub enum Reply {
         id: u64,
         app: ChosenApp,
     },
+    /// Retired: the answer to [`Request::AwaitIdentity`], which nothing asks.
+    /// Kept so a message an older shell wrote still reads.
+    IdentitySelected {
+        id: u64,
+    },
 }
 
 impl Reply {
@@ -230,6 +248,7 @@ impl Reply {
             | Reply::Nobody { id }
             | Reply::Opened { id }
             | Reply::Unclaimed { id }
+            | Reply::IdentitySelected { id }
             | Reply::AppChosen { id, .. }
             | Reply::Failed { id, .. } => *id,
         }
@@ -900,7 +919,9 @@ mod tests {
             | Request::PickContents { id, .. }
             | Request::ReadContents { id, .. }
             | Request::ReleaseContents { id, .. }
-            | Request::ChooseApp { id, .. } => *id,
+            | Request::ChooseApp { id, .. }
+            | Request::AwaitIdentity { id }
+            | Request::ChooseIdentity { id } => *id,
         }
     }
 
