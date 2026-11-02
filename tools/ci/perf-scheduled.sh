@@ -75,7 +75,9 @@ case $group in
     # trip of the calls an agent makes (list, state, invoke) and a whole task
     # an agent in the login runs — find a notebook, make a note, write and
     # read it back — through tilo-runtime-mcp and the agent door, on a
-    # headless session this build starts for the run.
+    # headless session this build starts for the run. tilo-runtime's
+    # dev-overrides carry the throwaway identity the run's session mints for
+    # the desk it opens.
     cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp \
       --features dev-overrides
     test -r "$VK_DRIVER_FILES"
@@ -94,7 +96,7 @@ case $group in
     ;;
   agent-native)
     # The agent's own task pipeline, without the desktop: a release build of the agent's
-    # tests, which shares nothing with the shell's build above, so it runs as a check of its
+    # tests, which shares nothing with the session's build above, so it runs as a check of its
     # own beside it. Its records are the agent group's.
     env_json release none kvm > "$out/env-pipeline.json"
     TILO_AGENT_NATIVE_REPS=30 TILO_AGENT_NATIVE_SAMPLES="$out/native" \
