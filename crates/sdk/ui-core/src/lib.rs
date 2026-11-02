@@ -228,6 +228,7 @@ pub mod ime;
 pub mod input;
 pub mod interaction;
 pub mod keycaps;
+pub mod keys;
 pub mod latin_chord;
 pub mod launch;
 pub mod live_collaboration;
