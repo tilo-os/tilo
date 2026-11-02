@@ -60,11 +60,18 @@ pub fn sibling_binary(package: &str, bin: &str) -> PathBuf {
 }
 
 /// Where the run built this binary already: `NEXTEST_BIN_EXE_<bin>` when the
-/// run moved its binaries, else `CARGO_BIN_EXE_<bin>` when `package` is the
-/// package under test.
+/// run moved its binaries, `TILO_SIBLING_BIN_<bin>` (`-` as `_`) when the run's setup
+/// built it before any test started (`tools/build-sibling-binaries.sh`),
+/// else `CARGO_BIN_EXE_<bin>` when `package` is the package under test.
 fn built_by_the_run(package: &str, bin: &str) -> Option<PathBuf> {
-    if let Some(relocated) = env::var_os(format!("NEXTEST_BIN_EXE_{bin}")) {
-        return Some(PathBuf::from(relocated));
+    for name in [
+        format!("NEXTEST_BIN_EXE_{bin}"),
+        // An environment file's keys are letters, digits and underscores.
+        format!("TILO_SIBLING_BIN_{}", bin.replace('-', "_")),
+    ] {
+        if let Some(built) = env::var_os(name) {
+            return Some(PathBuf::from(built));
+        }
     }
     if env::var("CARGO_PKG_NAME").as_deref() != Ok(package) {
         return None;
