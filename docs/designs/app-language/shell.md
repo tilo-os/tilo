@@ -262,8 +262,9 @@ a panel beside the strips or the whole screen of the conversation shell.
 
 ## 8.2 Steps
 
-Each step deletes the Rust part it replaces once the tilolang one passes that part's tests,
-screenshots and frame budgets.
+The tilolang shell is developed beside the Rust shell, not in place of it. No step removes or
+reshapes a Rust shell or session part; where the session's published resources change, the
+tilolang shell follows them.
 
 1. *(landed; `shell_bar` off by default, bar only)* The tilolang surface host and system resources, with
    the top bar as a tilolang view: one bar per display, following hotplug, each stepping aside
@@ -286,8 +287,9 @@ screenshots and frame budgets.
 ## 8.3 One model
 
 The shell is held to AGENTS.md's first principle: one type per concept and one declaration per
-action, owned by whoever owns the state. This section fixes how the shell's pieces fit, and it
-overrides any earlier sketch above that disagrees.
+action, owned by whoever owns the state. This section is the working model for the tilolang
+shell's code. Its arrangement and workspace parts are not settled (§9): they wait on what people
+learn using a shared arrangement in the Rust shell.
 
 ### The session's resources
 
@@ -376,6 +378,26 @@ type Pin     { place: Place, x: Int, y: Int, width: Int, height: Int }
   live from `Window` and `Notice`, never saved in the person's record.
 
 ## 9. Open
+
+- Shared or personal arrangement. A workspace whose arrangement everyone shares gives presence
+  for free (cursors, viewports, following); a personal arrangement gives each person their own
+  layout and makes presence something to rebuild per view. Which one, or which mix, is learned
+  by using the shared arrangement in the Rust shell first.
+- Canvas or scrolling strips as the native form of a shared workspace.
+- What a workspace is: an audience and agent scope, a place people share, or a person's focus
+  on one piece of work; and where things that are a person's own (music playing, device
+  settings) stand while they work in a shared one.
+- State that follows a person between devices: resources and their types everywhere; a
+  person's position and progress in a resource (reading position, where they are in a chat),
+  expressed as a reference into the resource so another view can show it; pending actions
+  (a draft is a `send` not yet run, a half-typed search a `search` not yet run), kept while
+  what they were typed into is open. Device classes that show different things are a person's
+  setting.
+- Sharing a view in a call: followers see the sharer's open things, layout, position and
+  pointer in their own theme, pointers placed by the element under them; their own state is
+  untouched and moving their view ends following.
+- Agents' presence derived from their actions (the element an action targets, the range an
+  edit changed), never from driving a pointer.
 
 - Whether a person can give one app or type a different frame (a minimal frame around a video
   editor in an otherwise classic desktop): mechanically a per-type frame rule, so cheap; the
