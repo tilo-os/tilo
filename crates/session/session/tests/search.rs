@@ -635,7 +635,7 @@ fn search_for(session: &mut Session, query: &str) {
             search.label == query && (!search.children.is_empty() || query.is_empty())
         });
         if relevant && labels == last {
-            steady += 1;
+            steady = steady.saturating_add(1);
             if steady == 5 {
                 break;
             }
