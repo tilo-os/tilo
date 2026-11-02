@@ -13,7 +13,13 @@
     reason = "test fixtures: a failed lookup is the assertion"
 )]
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
-use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowGroup, WindowWidth, Workspace};
+use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
+use tilo_desktop::topbar::TopBarChrome;
+use tilo_desktop_model::commands::DesktopCommand;
+use tilo_desktop_model::{
+    DesktopTree, IdMinter, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+};
 use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, SearchHost, SearchHostFeed, TileSource, seed_tree,
 };
@@ -24,11 +30,13 @@ use ui::automerge::{ROOT, transaction::Transactable};
 use ui::kurbo::{Point, Rect};
 use ui::owner_wake::OwnerWakeQueue;
 use ui::search::Scope;
+use ui::synthetic_input::{char_key, named_key};
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::widget::{
     AppKind, AppWidget, EventCtx, IconDescriptor, TaffyTreeExt as _, TileHost, Widget,
 };
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
+use ui::winit::keyboard::NamedKey;
 
 const APP: &str = "so.tilo.keyboard-test";
 /// An app the desk has installed and not opened.
@@ -430,6 +438,8 @@ impl tilo_desktop_search::Source for Plan {
             facts: Vec::new(),
             score: ui::search::system::MAX_PROVIDER_SCORE,
             icon: None,
+            row: None,
+            preview: None,
             target: tilo_desktop_search::Target::Window { tab: 0, app: None },
         }]
     }
@@ -614,12 +624,40 @@ fn notes_tab(id: u64) -> Tab {
     }
 }
 
+/// The desk's rules, as the session's own say who may change it.
+struct ChromeRules {
+    handle: DesktopHandle,
+}
+
+impl DesktopRules for ChromeRules {
+    fn tree(&self) -> DesktopTree {
+        self.handle.read(Clone::clone)
+    }
+
+    fn author(&self) -> String {
+        "Ada".into()
+    }
+
+    fn may(&self, _: &DesktopCommand) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn may_create_workspace(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 struct Desk {
     driver: ui::headless::FrameHarness,
     handle: DesktopHandle,
     typed: Typed,
     tabs: Vec<u64>,
     root: std::path::PathBuf,
+    /// The tree the desk shows, as the chrome over it reads it.
+    tree: DesktopTree,
+    /// The chrome the session draws over the windows, holding search's card,
+    /// made when a test first reaches it.
+    chrome: Option<ui::headless::FrameHarness>,
 }
 
 impl Desk {
@@ -671,7 +709,7 @@ impl Desk {
             queue: queue.clone(),
             typed: Rc::clone(&typed),
         };
-        let (surface, handle) = DesktopSurface::new(tree, 29, Box::new(source));
+        let (surface, handle) = DesktopSurface::new(tree.clone(), 29, Box::new(source));
         handle.set_viewport_width(1200.0);
         let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
             ui::state::State::new(),
@@ -689,6 +727,8 @@ impl Desk {
             typed,
             tabs: ids,
             root,
+            tree,
+            chrome: None,
         };
         desk.settle();
         desk
@@ -698,7 +738,55 @@ impl Desk {
         for _ in 0..4 {
             self.driver.relayout();
             self.driver.service_pending_owner_models().unwrap();
+            // The chrome stands over the windows, as the compositor draws it
+            // after the desk.
+            if let Some(chrome) = self.chrome.as_mut() {
+                chrome.relayout();
+            }
         }
+    }
+
+    /// The chrome over the desk, as the session's chrome layer shows it.
+    fn chrome(&mut self) -> &mut ui::headless::FrameHarness {
+        let tree = self.tree.clone();
+        let handle = self.handle.clone();
+        self.chrome.get_or_insert_with(|| {
+            let chrome = DesktopChrome::new(
+                handle.clone(),
+                "g".into(),
+                Rc::new(ChromeRules {
+                    handle: handle.clone(),
+                }),
+                TopBarChrome::from_tree(&tree),
+                TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+                false,
+            );
+            let mut frame = ui::headless::FrameHarness::for_root(
+                ui::state::State::new(),
+                chrome,
+                (1200, 800),
+                ui::Theme::dark(),
+            );
+            frame.relayout();
+            frame
+        })
+    }
+
+    /// What the person types into the open palette's field: search's card is
+    /// the chrome's, over the windows, so the keys go there.
+    fn type_search(&mut self, text: &str) {
+        for character in text.chars() {
+            let event = char_key(&character.to_string());
+            self.chrome().send_host_event(&event);
+        }
+        self.settle();
+    }
+
+    /// A named key pressed in the open palette's field.
+    fn key_search(&mut self, key: NamedKey) {
+        let event = named_key(key);
+        self.chrome().send_host_event(&event);
+        self.settle();
     }
 
     /// The retained path of the widget holding keyboard focus.
@@ -881,8 +969,7 @@ fn search_an_app_opened_asks_it_and_follows_its_answer_once_it_is_in() {
     desk.driver.click_named("search-open").unwrap();
     desk.settle();
     assert!(desk.handle.search_open());
-    desk.driver.type_text("lofi");
-    desk.settle();
+    desk.type_search("lofi");
     let asked = SEARCH.with_borrow(|search| search.asked.clone());
     assert_eq!(
         asked.last().map(String::as_str),
@@ -910,10 +997,8 @@ fn a_hit_chosen_in_an_apps_search_opens_inside_that_app() {
     let mut desk = Desk::new(1, 450);
     desk.driver.click_named("search-open").unwrap();
     desk.settle();
-    desk.driver.type_text("lofi");
-    desk.settle();
-    desk.driver.key("Enter");
-    desk.settle();
+    desk.type_search("lofi");
+    desk.key_search(NamedKey::Enter);
     assert_eq!(
         SEARCH.with_borrow(|search| search.opened.clone()),
         ["videos.search:lofi"],
@@ -939,14 +1024,11 @@ fn an_apps_action_chosen_in_search_over_everything_runs_in_its_window() {
     desk.handle.open_search(Scope::Workspace, None);
     desk.settle();
     assert!(desk.handle.search_open());
-    desk.driver.type_text("open archive");
-    desk.settle();
-    desk.driver.key("Enter");
-    desk.settle();
+    desk.type_search("open archive");
+    desk.key_search(NamedKey::Enter);
     // `open` asks for the item; it runs once that is given.
-    desk.driver.type_text("clip");
-    desk.driver.key("Enter");
-    desk.settle();
+    desk.type_search("clip");
+    desk.key_search(NamedKey::Enter);
     assert_eq!(
         SEARCH.with_borrow(|search| search.opened.clone()),
         ["clip"],
@@ -983,8 +1065,7 @@ fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
         "an app's search is its window's: the host was asked {:?}",
         host.scopes.borrow()
     );
-    desk.driver.type_text("lofi");
-    desk.settle();
+    desk.type_search("lofi");
     let (_, rows) = desk.handle.search_rows();
     assert!(
         rows.iter().any(|row| row.title.contains("lofi")),
@@ -994,8 +1075,7 @@ fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
         rows.iter().all(|row| row.title != "Close window"),
         "the desk's own commands are not the window's: {rows:?}"
     );
-    desk.driver.key("Enter");
-    desk.settle();
+    desk.key_search(NamedKey::Enter);
     assert_eq!(
         SEARCH.with_borrow(|search| search.opened.clone()),
         ["videos.search:lofi"],
@@ -1037,10 +1117,8 @@ fn a_window_groups_new_tab_lists_the_applications_and_opens_the_one_chosen_there
         rows.iter().all(|row| row.title != "Quarterly plan"),
         "and nothing the desk's host holds: {rows:?}"
     );
-    desk.driver.type_text("notes");
-    desk.settle();
-    desk.driver.key("Enter");
-    desk.settle();
+    desk.type_search("notes");
+    desk.key_search(NamedKey::Enter);
     let after = desk.windows();
     assert_eq!(
         after.len(),
@@ -1078,8 +1156,7 @@ fn search_over_the_workspace_asks_the_host_and_opens_an_app_as_its_own_window() 
     desk.handle
         .open_search(Scope::Workspace, Some("notes".into()));
     desk.settle();
-    desk.driver.key("Enter");
-    desk.settle();
+    desk.key_search(NamedKey::Enter);
     assert_eq!(
         *host.scopes.borrow(),
         [Scope::Workspace, Scope::Workspace],

@@ -80,8 +80,8 @@ pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, 
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
 pub use personal_ask::PersonalAsk;
 pub use search::{
-    HostAction, HostActionSource, SearchHost, SearchHostFeed, SearchRow, TypedField,
-    TypedInsertion, TypedRefusal, is_host_offer, search_chord_keys,
+    HostAction, HostActionSource, PALETTE_EDGE, SearchHost, SearchHostFeed, SearchRow, TypedField,
+    TypedInsertion, TypedRefusal, is_escape, is_host_offer, is_search_chord, search_chord_keys,
 };
 pub use seed::seed_tree;
 pub use tile_content::tile_app_kind;
@@ -211,6 +211,18 @@ struct Shared {
     rebuild: Vec<TabId>,
     search_request: Option<search::SearchRequest>,
     search_open: bool,
+    /// The search palette itself, shared with the host that draws it over
+    /// the windows (`DesktopHandle::search_palette`): the desk feeds it what
+    /// its windows hold and carries out what is chosen there, while the
+    /// host above the windows draws it and routes the person's input to it.
+    search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
+    /// Bumped whenever what the palette shows or what opening it asks of the
+    /// desk changes, so the desk takes up what the host above it did and the
+    /// host above it draws what the desk published.
+    search_revision: u64,
+    /// Where search stands when it was opened for one window: under that
+    /// window's bar, over the rest of it, as the desk last laid it out.
+    search_area: Option<Rect>,
     /// What the host offers to do for the person, and what they chose.
     host_actions: Vec<search::HostAction>,
     host_choices: Vec<String>,
@@ -714,7 +726,10 @@ pub struct DesktopSurface {
     /// without panning it into view: the strip stays where the person left
     /// it, however little a lone wheel notch moved it.
     settle: Option<GroupId>,
-    search: tilo_desktop_search::LazyDesktopSearch,
+    search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
+    /// The `Shared::search_revision` this surface last took up: what the
+    /// host above the windows changed since then is work for the next pass.
+    seen_search: u64,
     /// The window a group's new-tab control opened search for: the
     /// application chosen there opens as its tab, as in the native shell.
     new_tab_into: Option<(StripId, GroupId)>,
@@ -820,6 +835,8 @@ impl DesktopSurface {
     pub fn new(tree: DesktopTree, salt: u16, tiles: Box<dyn TileSource>) -> (Self, DesktopHandle) {
         let mut minter = IdMinter::new(salt);
         observe_ids(&mut minter, &tree);
+        let search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>> =
+            Rc::new(RefCell::new(tilo_desktop_search::LazyDesktopSearch::new()));
         let shared = Rc::new(RefCell::new(Shared {
             tree,
             holders: HashMap::new(),
@@ -839,6 +856,9 @@ impl DesktopSurface {
             rebuild: Vec::new(),
             search_request: None,
             search_open: false,
+            search: Rc::clone(&search),
+            search_revision: 0,
+            search_area: None,
             host_actions: Vec::new(),
             host_choices: Vec::new(),
             menus: Vec::new(),
@@ -880,7 +900,8 @@ impl DesktopSurface {
             unbuilt: Vec::new(),
             swipe: None,
             settle: None,
-            search: tilo_desktop_search::LazyDesktopSearch::new(),
+            search: Rc::clone(&search),
+            seen_search: 0,
             new_tab_into: None,
             search_window: None,
             search_owners: HashMap::new(),
@@ -2371,7 +2392,7 @@ impl Widget for DesktopSurface {
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         let before = self.shared.borrow().revision;
-        let search_was_open = self.search.is_open();
+        let search_was_open = self.search.borrow().is_open();
         self.end_idle_swipe(ui::time::now());
         self.reconcile();
         self.harvest();
@@ -2394,7 +2415,7 @@ impl Widget for DesktopSurface {
         self.present();
         let held = self.apply_holders();
         let changed = self.shared.borrow().revision != before
-            || search_was_open != self.search.is_open()
+            || search_was_open != self.search.borrow().is_open()
             || held;
         #[cfg(not(target_arch = "wasm32"))]
         let changed = changed || peers_changed;
@@ -2417,6 +2438,7 @@ impl Widget for DesktopSurface {
         // Last, so a row this pass rebuilt shows its windows' own artwork in
         // the same frame it appeared in.
         let artwork = self.sync_window_artwork();
+        self.seen_search = self.shared.borrow().search_revision;
         changed
             || row_changed
             || bars_changed
@@ -2447,19 +2469,18 @@ impl Widget for DesktopSurface {
             let _ = taffy.set_style(node, style);
             node
         });
-        let search = self.search_layout(taffy, theme, node_map);
         let notices = self
             .notices
             .as_mut()
             .map(|layer| layer.build_layout(taffy, theme, node_map));
         let arrivals = self.arrival_hints.build_layout(taffy, theme, node_map);
         let acknowledgement = self.acknowledgement.build_layout(taffy, theme, node_map);
-        // The row, when shown, is always the first child, then search and
-        // the notifications, each when present, and the arrival hints and
-        // the acknowledgement last.
+        // The row, when shown, is always the first child, then the
+        // notifications, when present, and the arrival hints and the
+        // acknowledgement last. Search is drawn over the windows, by the
+        // host above them, not in this tree.
         let children: Vec<NodeId> = row
             .into_iter()
-            .chain(search)
             .chain(notices)
             .chain([arrivals, acknowledgement])
             .collect();
@@ -2485,15 +2506,7 @@ impl Widget for DesktopSurface {
         } else {
             None
         };
-        let mut next = usize::from(has_row);
-        if self.search.is_open() {
-            if let Some(&palette) = nodes.get(next)
-                && let Some(search) = self.search.palette_mut()
-            {
-                search.apply_layout(taffy, palette, inner);
-            }
-            next = next.saturating_add(1);
-        }
+        let next = usize::from(has_row);
         if let Some(layer) = self.notices.as_mut()
             && let Some(&notices) = nodes.get(next)
         {
@@ -2522,6 +2535,19 @@ impl Widget for DesktopSurface {
             }
         }
         self.reveal = pending;
+        let search_area = self
+            .search
+            .borrow()
+            .is_open()
+            .then(|| self.searched_window_rect())
+            .flatten();
+        {
+            let mut shared = self.shared.borrow_mut();
+            if shared.search_area != search_area {
+                shared.search_area = search_area;
+                shared.search_revision = shared.search_revision.wrapping_add(1);
+            }
+        }
         let shown_tabs = self
             .shown_row()
             .map_or_else(ShownTabs::default, |row| ShownTabs::of_row(row));
@@ -2573,18 +2599,14 @@ impl Widget for DesktopSurface {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // Where the pointer is, read before anything answers the event: search
-        // asks it whether the press it is handed landed on its card.
+        // Where the pointer is, read before anything answers the event: the
+        // strip asks it which window a press landed in.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if let Some(layer) = self.notices.as_mut()
             && layer.route(event, ctx.scale_factor)
         {
-            *ctx.handled = true;
-            return;
-        }
-        if self.search_event(event, ctx) {
             *ctx.handled = true;
             return;
         }
@@ -2661,7 +2683,7 @@ impl Widget for DesktopSurface {
             return false;
         };
         self.notices.as_ref().is_none_or(|layer| !layer.visible())
-            && !self.search.is_open()
+            && !self.search.borrow().is_open()
             && self.pans_strip(*delta, ui::time::now())
     }
 
@@ -2691,17 +2713,11 @@ impl Widget for DesktopSurface {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let search = self
-            .search
-            .is_open()
-            .then(|| self.search.palette())
-            .flatten();
         let notices = self.notices.as_ref().map(|l| l as &dyn Widget);
         self.shown
             .and_then(|strip| self.rows.get(&strip))
             .map(|row| row as &dyn Widget)
             .into_iter()
-            .chain(search)
             .chain(notices)
             .chain([
                 &self.arrival_hints as &dyn Widget,
@@ -2717,12 +2733,6 @@ impl Widget for DesktopSurface {
         for row in self.rows.values_mut() {
             request.visit(row)?;
         }
-        // Retain original visible overlay callback reach after the retained rows.
-        if self.search.is_open()
-            && let Some(search) = self.search.palette_mut()
-        {
-            request.visit(search)?;
-        }
         if let Some(notices) = &mut self.notices {
             request.visit(notices)?;
         }
@@ -2730,17 +2740,14 @@ impl Widget for DesktopSurface {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let open = self.search.is_open();
         let row = self
             .shown
             .and_then(|strip| self.rows.get_mut(&strip))
             .map(|row| row as &mut (dyn Widget + '_));
-        let search = open.then(|| self.search.palette_mut()).flatten();
         let notices = self.notices.as_mut().map(|l| l as &mut (dyn Widget + '_));
         let arrivals = &mut self.arrival_hints as &mut (dyn Widget + '_);
         let acknowledgement = &mut self.acknowledgement as &mut (dyn Widget + '_);
         row.into_iter()
-            .chain(search)
             .chain(notices)
             .chain([arrivals, acknowledgement])
             .collect()
@@ -2779,6 +2786,7 @@ impl Widget for DesktopSurface {
         // shortly, as its rows show once it is in.
         let answer = self
             .search
+            .borrow()
             .waiting()
             .then(|| ui::time::now().checked_add(SEARCH_ANSWER_POLL))
             .flatten();
@@ -2794,10 +2802,17 @@ impl Widget for DesktopSurface {
     /// A queued command or a request the host made is work to draw: it asks
     /// for the frame that applies it rather than waiting for an unrelated
     /// one, so a host that only draws what asks needs no separate schedule.
+    /// What the host above the windows did with the search palette since the
+    /// last pass is work for this one: a row it chose, a scope it widened, a
+    /// query field it typed into.
     fn needs_redraw(&self) -> bool {
-        self.shared.borrow().search_request.is_some()
-            || !self.shared.borrow().queue.is_empty()
-            || self.children().into_iter().any(Widget::needs_redraw)
+        let work = {
+            let shared = self.shared.borrow();
+            shared.search_request.is_some()
+                || !shared.queue.is_empty()
+                || shared.search_revision != self.seen_search
+        };
+        work || self.children().into_iter().any(Widget::needs_redraw)
     }
 
     fn has_pending_visual_work(&self) -> bool {
@@ -2914,7 +2929,8 @@ impl ui::widget::controls::ActionControls for DesktopSurface {
 }
 
 impl DesktopSurface {
-    /// The search palette, then the banners and centre over everything.
+    /// The arrival hints, the banners and the centre over everything the
+    /// desk draws.
     fn draw_overlays(
         &mut self,
         scene: &mut Scene,
@@ -2925,7 +2941,6 @@ impl DesktopSurface {
     ) {
         self.arrival_hints
             .draw(scene, transform, text, theme, presence);
-        self.draw_search(scene, transform, text, theme, presence);
         if let Some(layer) = self.notices.as_mut() {
             layer.draw(scene, transform, text, theme, presence);
         }
