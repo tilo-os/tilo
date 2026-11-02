@@ -35,7 +35,7 @@ use crate::voice;
 pub const MAX_ADMITTING: usize = 16;
 pub const MAX_AUTHORIZATION_BYTES: usize = carrier::MAX_GRANT_BYTES;
 /// Exact WebTransport path of the voice relay.
-pub const VOICE_PATH: &str = "/moq/voice";
+pub const VOICE_PATH: &str = crate::preface::PATH;
 /// The one track a voice broadcast carries.
 pub const VOICE_TRACK: &str = "audio";
 /// Longest an offered namespace whose publisher authority lapsed may stay

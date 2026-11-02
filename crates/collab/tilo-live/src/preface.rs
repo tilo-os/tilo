@@ -25,6 +25,9 @@
 /// The WebTransport subprotocol and `moq-lite` draft every Tilo `MoQ` route
 /// negotiates. No other version is offered or accepted.
 pub const PROTOCOL: &str = "moq-lite-06";
+/// The one path a carrier's WebTransport listener serves. A session on any
+/// other path, or behind a query, is refused before the preface.
+pub const PATH: &str = "/moq/voice";
 /// Admission preface version byte.
 pub const PREFACE_VERSION: u8 = 1;
 /// Largest grant the preface carries. Routes may apply a smaller ceiling.

@@ -189,8 +189,9 @@ fn lock<T>(slot: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl LiveSession {
     /// Dial the relay's WebTransport listener at `origin` (the
     /// [`LiveInfo::webtransport_origin`](tilo_relay_protocol::web::LiveInfo)
-    /// that `/live` answered), accepting exactly the certificate whose SHA-256
-    /// is `certificate_sha256` (base64, as that route reports it), and join
+    /// that `/live` answered), on the carrier's one path and subprotocol,
+    /// accepting exactly the certificate whose SHA-256 is
+    /// `certificate_sha256` (base64, as that route reports it), and join
     /// `scope` with `grant` (the page's session token and workspace).
     ///
     /// # Errors
@@ -209,7 +210,7 @@ impl LiveSession {
         let certificate = decode_sha256(certificate_sha256).ok_or(LiveError::Unavailable)?;
         let options = tilo_net::webtransport::Options::pinned(vec![certificate])
             .with_protocols(vec![tilo_live::preface::PROTOCOL.to_owned()]);
-        let transport = tilo_net::webtransport::connect(origin, options)
+        let transport = tilo_net::webtransport::connect(&dial_url(origin), options)
             .await
             .map_err(|error| match error {
                 tilo_net::NetError::Unsupported(_) => LiveError::Unsupported,
@@ -637,6 +638,16 @@ async fn read_audio_bundles(
     }
 }
 
+/// Where a page dials a relay's live listener: the origin `/live` answered,
+/// on the carrier's one path.
+fn dial_url(origin: &str) -> String {
+    format!(
+        "{}{}",
+        origin.trim_end_matches('/'),
+        tilo_live::preface::PATH
+    )
+}
+
 /// The gate on the session's negotiated subprotocol: the page joins only a
 /// carrier that speaks the live plane, and a browser that negotiated none has
 /// no fallback.
@@ -659,7 +670,19 @@ fn decode_sha256(digest: &str) -> Option<[u8; 32]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LiveError, UNSUPPORTED, protocol_gate};
+    use super::{LiveError, UNSUPPORTED, dial_url, protocol_gate};
+
+    #[test]
+    fn a_page_dials_the_carriers_one_path() {
+        assert_eq!(
+            dial_url("https://relay.example:4443"),
+            "https://relay.example:4443/moq/voice"
+        );
+        assert_eq!(
+            dial_url("https://relay.example:4443/"),
+            "https://relay.example:4443/moq/voice"
+        );
+    }
 
     #[test]
     fn a_browser_that_negotiates_no_subprotocol_cannot_join() {

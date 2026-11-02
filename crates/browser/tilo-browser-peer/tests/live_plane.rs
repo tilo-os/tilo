@@ -158,8 +158,12 @@ fn certificate(relay: &LoopbackRelay) -> String {
 
 /// A page that joins the relay's listener as its own device.
 async fn page(relay: &LoopbackRelay, keys: ChannelContentKeys, roster: Roster) -> LiveSession {
+    let origin = relay
+        .endpoint
+        .strip_suffix(tilo_live::preface::PATH)
+        .expect("the loopback relay serves the carrier's path");
     LiveSession::open(
-        &relay.endpoint,
+        origin,
         &certificate(relay),
         page_grant(PAGE),
         Scope::workspace(WORKSPACE),
