@@ -134,13 +134,13 @@ files = [
   # The PAM entry point and compositor share the session-recovery contract.
   # A fresh slot login must run this source's wrapper, not the base image's.
   { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },
-  # The interface versions this image serves. The launcher, tilo-install and
-  # the app host of a session judge apps by this file, so the file a slot
-  # reads must come from the same source as those: a session swapped onto an
-  # older image otherwise reads a declaration in another format and judges
-  # nothing. One component owns it, so tilo-vmd refuses a generation in which
-  # any member of the session set was built for another declaration
-  # (crates/dev/tilo-vmd/src/interfaces.rs).
+  # The interface versions this image serves. The session serves its
+  # interfaces and judges apps against this file, so the file it reads must
+  # come from the same source: a session swapped onto an older image otherwise
+  # reads a declaration in another format and judges nothing. The session is
+  # its one owner: the launcher, tilo-install, the app host and the runtime
+  # services read it too, so tilo-vmd refuses a generation in which any of them
+  # was built for another declaration (crates/dev/tilo-vmd/src/interfaces.rs).
   { from = "@manifest/usr/share/tilo/system-interfaces.toml", to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" },
   # Source swaps materialize the pinned OS catalog; images already assemble
   # this direct tree with the runtime payload, sharing its font bytes.
@@ -155,6 +155,22 @@ files = [
   # store also ships as an app.
   { from = "tilo-lock-screen", to = "/usr/bin/tilo-lock-screen", mode = "0755" },
   { from = "osk", to = "/usr/bin/tilo-osk", mode = "0755" },
+]
+
+# The old compositor. The production image never ships it — a login starts the
+# session above — but a developer VM still swaps and drives it, so the dev
+# image builds it until the shell's crate is deleted, together with this
+# component.
+[[component]]
+name = "shell"
+kind = "userspace"
+scope = "session"
+packages = ["shell"]
+bins = ["shell"]
+dev_features = ["shell/dev-overrides"]
+layer = "dev-desktop-binaries"
+files = [
+  { from = "shell", to = "/usr/bin/shell", mode = "0755" },
 ]
 
 # The network-answers helper: search's one door to the network (exchange

@@ -1475,7 +1475,7 @@ inputs = [
   # the session package test checks the session's committed description.
   "apps/tl/notes/",
   "apps/tl/session/",
-  "os/usr/lib/systemd/system/shell-firstboot.service",
+  "os/usr/lib/systemd/system/tilo-firstboot.service",
   "os/components.toml",
   # The registry both vaults decode, as builds that kept lifecycle records wrote it.
   "crates/session/fixtures/",

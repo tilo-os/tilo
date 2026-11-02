@@ -70,17 +70,6 @@ grep -Fq '"--bin" "tilo"' "$repo_root/dist/nix/package.nix" || {
     exit 1
 }
 
-# Host packages ship only the compositor from the shell crate. Keep every FHS
-# builder explicit so adding another developer binary to that crate cannot
-# multiply release build time and disk use again.
-for builder in dist/build-binaries.sh dist/rpm/build-rpm.sh dist/arch/PKGBUILD; do
-    grep -Eq 'cargo build .*(-p shell.*--bin shell|--bin shell.*-p shell)' \
-        "$repo_root/$builder" || {
-        echo "$builder builds every shell binary instead of only the packaged compositor" >&2
-        exit 1
-    }
-done
-
 # A local Atomic trial must install only the runtime RPM unless the developer
 # entry is explicitly requested; a broad tilo-session*.rpm glob regresses that
 # contract by silently layering tilo-session-devel too.
@@ -96,7 +85,7 @@ fi
 
 fhs=$work/fhs
 mkdir -p "$fhs"/{usr/bin,usr/libexec/tilo,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
-for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
               "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
               "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
@@ -106,7 +95,6 @@ install -m755 "$repo_root/dist/session/tilo-session" "$fhs/usr/libexec/tilo-sess
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$fhs/usr/libexec/tilo-session-runner"
 install -m755 "$repo_root/dist/session/tilo-session-dev" "$fhs/usr/libexec/tilo-session-dev"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$fhs/usr/share/wayland-sessions/tilo.desktop"
-install -m644 "$repo_root/dist/session/tilo-shell.desktop" "$fhs/usr/share/wayland-sessions/tilo-shell.desktop"
 install -m644 "$repo_root/dist/session/tilo-app.desktop" "$fhs/usr/share/wayland-sessions/tilo-app.desktop"
 install -m644 "$repo_root/dist/session/tilo-unlock.pam" "$fhs/etc/pam.d/tilo-unlock"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \
@@ -174,7 +162,7 @@ void _start(void) {
 EOF
 for link_mode in -static -static-pie; do
     cc -nostdlib "$link_mode" -Wl,-e,_start "$work/static.c" -o "$work/static"
-    for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+    for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
                   "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
                   "$fhs/usr/libexec/tilo-session-report"; do
         install -m755 "$work/static" "$target"
@@ -203,13 +191,13 @@ grep -Fq 'ELF dependency inspection failed' "$work/verifier-readelf.log"
 # because it has neither an interpreter nor shared-library dependencies.
 for object_mode in -shared -c; do
     cc -nostdlib -fPIC "$object_mode" "$work/static.c" -o "$work/not-executable"
-    install -m755 "$work/not-executable" "$fhs/usr/bin/tilo-shell"
+    install -m755 "$work/not-executable" "$fhs/usr/bin/tilo-session"
     if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
         echo "payload verifier accepted $object_mode output as a static executable" >&2
         exit 1
     fi
 done
-for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+for target in "$fhs/usr/bin/tilo-session" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
               "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
               "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
@@ -270,7 +258,7 @@ fi
 
 nix=$work/nix-result
 mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/pipewire,share/licenses/tilo-session}
-for target in "$nix/bin/tilo-session" "$nix/bin/tilo-shell" "$nix/bin/tilo" "$nix/bin/tilo-launcher" "$nix/bin/tilo-import-folders" \
+for target in "$nix/bin/tilo-session" "$nix/bin/tilo" "$nix/bin/tilo-launcher" "$nix/bin/tilo-import-folders" \
               "$nix/libexec/tilo-unlock-helper" "$nix/libexec/tilo-flight-recorder" \
               "$nix/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
@@ -279,7 +267,6 @@ sed "s#/usr/bin/tilo-import-folders#$nix/bin/tilo-import-folders#g" "$repo_root/
 install -m755 "$repo_root/dist/session/tilo-session" "$nix/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$nix/libexec/tilo-session-runner"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$nix/share/wayland-sessions/tilo.desktop"
-install -m644 "$repo_root/dist/session/tilo-shell.desktop" "$nix/share/wayland-sessions/tilo-shell.desktop"
 install -m644 "$repo_root/dist/session/tilo-unlock.pam" "$nix/etc/pam.d/tilo-unlock"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \
     "$nix/share/xdg-desktop-portal/portals/tilo.portal"
@@ -292,7 +279,6 @@ install -m644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target"
 install -m644 "$repo_root/LICENSE" "$nix/share/licenses/tilo-session/LICENSE"
 sed -i \
     -e "s#TILO_SESSION=/usr/bin/tilo-session#TILO_SESSION=$nix/bin/tilo-session#" \
-    -e "s#TILO_SHELL=/usr/bin/tilo-shell#TILO_SHELL=$nix/bin/tilo-shell#" \
     -e "s#SESSION_RUNNER=/usr/libexec/tilo-session-runner#SESSION_RUNNER=$nix/libexec/tilo-session-runner#" \
     "$nix/libexec/tilo-session"
 sed -i \
@@ -301,13 +287,10 @@ sed -i \
     -e 's#DBUS_UPDATE=/usr/bin/dbus-update-activation-environment#DBUS_UPDATE=/nix/store/fixture-dbus/bin/dbus-update-activation-environment#' \
     -e "s#FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder#FLIGHT_RECORDER=$nix/libexec/tilo-flight-recorder#" \
     "$nix/libexec/tilo-session-runner"
-for entry in tilo tilo-shell; do
-    sed -i \
-        -e "s#Exec=/usr/libexec/tilo-session#Exec=$nix/libexec/tilo-session#" \
-        -e "s#TryExec=/usr/bin/tilo-session#TryExec=$nix/bin/tilo-session#" \
-        -e "s#TryExec=/usr/bin/tilo-shell#TryExec=$nix/bin/tilo-shell#" \
-        "$nix/share/wayland-sessions/$entry.desktop"
-done
+sed -i \
+    -e "s#Exec=/usr/libexec/tilo-session#Exec=$nix/libexec/tilo-session#" \
+    -e "s#TryExec=/usr/bin/tilo-session#TryExec=$nix/bin/tilo-session#" \
+    "$nix/share/wayland-sessions/tilo.desktop"
 "$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$package_arch"
 if "$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$other_arch" >/dev/null 2>&1; then
     echo "Nix verifier accepted the other architecture's native binaries" >&2
@@ -318,7 +301,7 @@ fi
 # produced by the distro package lane.
 payload_bin=$work/payload-bin
 mkdir -p "$payload_bin" "$work/payload-a" "$work/payload-b"
-for binary in shell tilo-launcher tilo-runtime-mcp tilo-unlock-helper; do
+for binary in tilo-session tilo-launcher tilo-runtime-mcp tilo-unlock-helper; do
     install -m755 "$true_bin" "$payload_bin/$binary"
 done
 SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \

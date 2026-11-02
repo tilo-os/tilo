@@ -14,16 +14,15 @@
 # ends the session as before, so a compositor that cannot start never loops.
 # That includes one whose main loop hung: its watchdog records every thread's
 # stack and exits with status 70, which releases DRM master and the VT, and
-# the person is back at the greeter instead of in front of a frozen screen
-# (crates/session/shell/src/compositor/watchdog.rs). A hang that recurs right
-# after login therefore cannot become a restart loop either.
+# the person is back at the greeter instead of in front of a frozen screen.
+# A hang that recurs right after login therefore cannot become a restart loop
+# either.
 set -euo pipefail
 ulimit -c 0
 
 readonly SYSTEMCTL=/usr/bin/systemctl
 readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment
-readonly SHELL_BIN=/usr/bin/shell
-readonly NATIVE_SESSION_BIN=/usr/bin/tilo-session
+readonly COMPOSITOR_BIN=/usr/bin/tilo-session
 readonly MKDTEMP=/usr/bin/mktemp
 readonly RM=/usr/bin/rm
 readonly RMDIR=/usr/bin/rmdir
@@ -54,13 +53,12 @@ if [[ $(uname -m) == aarch64 ]]; then
   done
 fi
 
-# A login runs the native session. `--shell` runs the old shell compositor
-# instead while it is still shipped; `--native` still names the default, so an
-# entry or a script written before the flip keeps starting the native session.
-compositor_bin=$NATIVE_SESSION_BIN
+# A login runs the one compositor this image installs. `--native` still names
+# it, so an entry or a script written before the old shell was dropped keeps
+# starting the same session.
+compositor_bin=$COMPOSITOR_BIN
 case "${1:-}" in
   --native) shift ;;
-  --shell) compositor_bin=$SHELL_BIN; shift ;;
 esac
 if [ ! -x "$compositor_bin" ]; then
   echo "tilo-session: $compositor_bin is missing or not executable" >&2

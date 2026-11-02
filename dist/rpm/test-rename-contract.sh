@@ -55,7 +55,6 @@ for path in \
     /usr/share/wayland-sessions/tilo.desktop \
     /usr/share/wayland-sessions/tilo-dev.desktop \
     /usr/share/xdg-desktop-portal/portals/tilo.portal \
-    /usr/libexec/tilo-session \
-    /usr/bin/tilo-shell; do
+    /usr/libexec/tilo-session; do
     test ! -e "$root$path" || { echo "stale Tilo path after rename: $path" >&2; exit 1; }
 done

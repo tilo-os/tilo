@@ -5,13 +5,12 @@ existing Linux system. RPM, Debian and Arch packages should install the same
 wrapper and `tilo.desktop` entry; the package format is not a runtime signal.
 
 A login starts the native session, `/usr/bin/tilo-session`: `tilo.desktop` is
-the plain default entry. The package ships the shell it replaces beside it, as
-`tilo-shell.desktop`, which asks the wrapper for it with `--shell` for as long
-as that binary is installed.
+the only entry the package installs, and the wrapper starts that one binary
+for every login. `--native` is accepted as the name of the default, so an
+entry or a script written before the shell was dropped keeps working.
 
-The wrapper passes `--host-desktop` to the native session and
-`--host-desktop-session` to the shell. This explicit bit is the only supported
-way to select host-install behaviour. Do not infer it from
+The wrapper passes `--host-desktop` to the session. This explicit bit is the
+only supported way to select host-install behaviour. Do not infer it from
 `/etc/os-release`, `XDG_CURRENT_DESKTOP`, `DESKTOP_SESSION`, the display
 manager, or `--backend`: those describe the distribution, portal routing, or
 render topology, and none reliably says whether the complete Tilo system owns
@@ -34,10 +33,10 @@ A host package must start the compositor from a display-manager session:
 first-identity setup runs in its trusted chrome, and the former `--mode hosted`
 development window is refused at startup.
 
-Package checks should assert that the installed wrapper contains both
-`--host-desktop` and `--host-desktop-session`, starts the native session for a
-login with no flag, and that the Wayland desktop entries execute that wrapper
-rather than a compositor binary directly.
+Package checks should assert that the installed wrapper names
+`/usr/bin/tilo-session` as the one binary it starts, passes `--host-desktop`,
+and that the Wayland desktop entries execute that wrapper rather than a
+compositor binary directly.
 
 ## Crash and performance records
 

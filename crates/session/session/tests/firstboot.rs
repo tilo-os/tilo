@@ -23,7 +23,7 @@ use tilo_session::{BeforeDesk, Options, Session};
 use tilo_user_identity::{DeviceCertError, IdentityPaths, persist};
 
 /// The unit the image ships for the machine's own first-boot setup.
-const UNIT: &str = include_str!("../../../../os/usr/lib/systemd/system/shell-firstboot.service");
+const UNIT: &str = include_str!("../../../../os/usr/lib/systemd/system/tilo-firstboot.service");
 
 /// The image's components, which say where each binary is installed.
 const COMPONENTS: &str = include_str!("../../../../os/components.toml");

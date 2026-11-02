@@ -6,14 +6,14 @@
 # wlroots compositor — which provides the Wayland display the greeter draws
 # into. `cage -s` makes cage exit when its child exits; on successful auth
 # the greeter speaks greetd IPC, calls StartSession, and exits, at which
-# point greetd execs the chosen session (`/usr/bin/shell --backend drm`)
+# point greetd execs the chosen session (`/usr/bin/tilo-session --backend drm`)
 # from /usr/share/wayland-sessions.
 #
-# Note the session compositor (`shell`) runs in `--mode native` and binds
-# the wayland-N socket itself — it is NOT wrapped in cage. Only the greeter
+# Note the session compositor (`tilo-session`) runs in `--mode native` and
+# binds the wayland-N socket itself — it is NOT wrapped in cage. Only the greeter
 # needs cage, because greetd has no display for it.
 #
-# Chain: greetd → cage → tilo-greeter → (greetd StartSession) → shell.
+# Chain: greetd → cage → tilo-greeter → (greetd StartSession) → tilo-session.
 #
 # tilo-cage-session chooses cage's renderer and cursor for the display: the
 # hardware cursor plane on physical GPUs, where wlroots' composited software

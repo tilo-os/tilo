@@ -54,7 +54,7 @@ echo "PASS: FUSE mount + content"
 
 # --- 2. Binaries ----------------------------------------------------
 echo "--- [2/4] OS binaries ---"
-for bin in /usr/bin/shell /usr/bin/fs; do
+for bin in /usr/bin/tilo-session /usr/bin/fs; do
     if [ ! -x "$bin" ]; then
         echo "FAIL: $bin missing or not executable"
         exit 1
@@ -112,22 +112,14 @@ echo "--- [4/4] Compositor wayland-N binding ---"
 # A headless TTY won't have a GPU but native mode falls back to the
 # winit backend when no DRM device is available, and winit itself
 # needs a display server. In QEMU without a graphical session we
-# only assert the binary *starts* and exits cleanly when given a
-# bad CLI — proving the binary isn't corrupted. Real binding
-# verification happens in a graphical boot of the test image.
-if timeout 5 /usr/bin/shell --version >/dev/null 2>&1 ||
-   timeout 5 /usr/bin/shell --help     >/dev/null 2>&1; then
-    echo "PASS: shell binary executes (CLI surface reachable)"
+# only assert the binary links against its runtime libraries —
+# proving the binary isn't corrupted. Real binding verification
+# happens in a graphical boot of the test image.
+if ldd /usr/bin/tilo-session >/dev/null 2>&1; then
+    echo "PASS: tilo-session binary is dynamically linkable"
 else
-    # `--help` may exit non-zero in current builds; fall back to
-    # confirming the binary is at least dynamically linkable.
-    if ldd /usr/bin/shell >/dev/null 2>&1; then
-        echo "PASS: shell binary is dynamically linkable"
-        echo "      (CLI surface check skipped — no --help/--version yet)"
-    else
-        echo "FAIL: shell binary is broken (ldd failed)"
-        exit 1
-    fi
+    echo "FAIL: tilo-session binary is broken (ldd failed)"
+    exit 1
 fi
 
 echo

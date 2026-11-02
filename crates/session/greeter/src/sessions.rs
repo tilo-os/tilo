@@ -187,13 +187,13 @@ DesktopNames=tilo
 X-Tilo-Session-Default=true
 ";
 
-    // The old shell entry shipped beside it, while the shell is still carried.
-    const OLD_SHELL: &str = "\
+    // A second Tilo entry someone wrote by hand, carrying an extra argument.
+    const SECONDARY: &str = "\
 [Desktop Entry]
-Name=Tilo (old shell)
+Name=Tilo (headless)
 GenericName=Desktop
-Comment=Collaborative spatial desktop environment, previous session
-Exec=/usr/libexec/tilo-session --shell --backend drm
+Comment=Collaborative spatial desktop environment, headless backend
+Exec=/usr/libexec/tilo-session --backend headless
 Type=Application
 DesktopNames=tilo
 ";
@@ -221,11 +221,11 @@ Type=Application
             assert!(s.default);
         }
         {
-            let s = parse_desktop_entry(OLD_SHELL).expect("should parse");
-            assert_eq!(s.name, "Tilo (old shell)");
+            let s = parse_desktop_entry(SECONDARY).expect("should parse");
+            assert_eq!(s.name, "Tilo (headless)");
             assert_eq!(
                 s.argv,
-                vec!["/usr/libexec/tilo-session", "--shell", "--backend", "drm"]
+                vec!["/usr/libexec/tilo-session", "--backend", "headless"]
             );
             assert!(!s.default);
         }
@@ -277,14 +277,15 @@ Type=Application
 
     #[test]
     fn the_default_session_is_offered_first() {
-        // The two entries the image ships, in the directory the greeter reads:
-        // signing in without touching the picker starts the native session.
+        // The shipped entry beside one written by hand, in the directory the
+        // greeter reads: signing in without touching the picker starts the
+        // native session.
         let dir = std::env::temp_dir().join(format!(
             "tilo-greeter-default-session-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("shell.desktop"), OLD_SHELL).unwrap();
+        std::fs::write(dir.join("tilo-headless.desktop"), SECONDARY).unwrap();
         std::fs::write(dir.join("tilo-session.desktop"), NATIVE).unwrap();
 
         let sessions = read_sessions(&dir);
@@ -295,7 +296,7 @@ Type=Application
             sessions[0].argv,
             vec!["/usr/libexec/tilo-session", "--backend", "drm"]
         );
-        assert_eq!(sessions[1].name, "Tilo (old shell)");
+        assert_eq!(sessions[1].name, "Tilo (headless)");
 
         // Name order does not decide it: an entry whose name sorts first still
         // comes after the one that declares itself the default, and those
@@ -308,7 +309,7 @@ Type=Application
         let sessions = read_sessions(&dir);
         let _ = std::fs::remove_dir_all(&dir);
         let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Tilo", "Aardvark", "Tilo (old shell)"]);
+        assert_eq!(names, ["Tilo", "Aardvark", "Tilo (headless)"]);
     }
 
     #[test]

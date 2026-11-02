@@ -5,7 +5,7 @@ ConditionPathExists=/etc/tilo/install-user.conf
 After=local-fs.target systemd-sysusers.service systemd-tmpfiles-setup.service
 # Must finish before the login greeter so the new account is loginable,
 # and before shell first-boot reads the enrolled device key.
-Before=greetd.service shell-firstboot.service
+Before=greetd.service tilo-firstboot.service
 
 [Service]
 Type=oneshot

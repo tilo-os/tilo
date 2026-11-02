@@ -9,8 +9,6 @@
 #
 # `Exec` starts the packaged native session; `X-Tilo-Session-Default=true` is
 # what the Tilo greeter offers first (crates/session/greeter/src/sessions.rs).
-# `Tilo (old shell)` beside it, in tilo-shell.desktop, starts the compositor
-# this one replaces while both are shipped.
 #
 # DesktopNames=tilo is what the xdg-desktop-portal `tilo.portal` file
 # matches via UseIn=tilo to activate the Tilo portal backend.
