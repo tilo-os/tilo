@@ -1718,6 +1718,35 @@ impl Persistence {
         Ok(())
     }
 
+    /// Write what `write` decides into the desk's document — a description of
+    /// a change, a name over a run of them — as this page's own change, and
+    /// keep it. Whether anything was written.
+    ///
+    /// Only where this page's copy is the desk: in a workspace the desk is
+    /// the workspace's document, and its history metadata reaches everyone
+    /// from the device that writes it there.
+    pub fn write_metadata(&self, write: impl FnOnce(&mut AutoCommit) -> bool) -> bool {
+        if self.peer.is_some() {
+            return false;
+        }
+        let mut document = self.document.borrow_mut();
+        if !write(&mut document) {
+            document.rollback();
+            return false;
+        }
+        if document.pending_ops() == 0 {
+            return false;
+        }
+        tilo_desktop_surface::history_log::commit(
+            &mut document,
+            &self.author,
+            ui::time::unix_now_i64(),
+        );
+        self.store
+            .write(&self.key, WriteOp::Replace(document.save()), None)
+            .is_ok()
+    }
+
     /// Take the workspace's desk document into the profile's copy, once the page's
     /// desk is the workspace's: a reload opens the desk as the workspace has it, and
     /// what the workspace changed reaches the file as the desk's own history.

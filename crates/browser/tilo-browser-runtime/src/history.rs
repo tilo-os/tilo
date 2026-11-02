@@ -22,6 +22,7 @@ use tilo_sort::CompactSort as _;
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceId};
+use tilo_desktop_surface::activity::describer::{self, Describer, Job};
 use tilo_desktop_surface::activity::{
     ActivityHost, ActivitySnapshot, DetachedRecordHistory, WorkspaceDeparture,
     WorkspaceSeenFrontier,
@@ -184,6 +185,18 @@ pub(crate) struct PageHistory {
     /// Who each actor of the desk's document is, from the last read.
     authors: BTreeMap<String, String>,
     person_of: PersonOf,
+    /// Where the desk's document is kept, so what a model says about its
+    /// changes is written into it and stays.
+    writer: Rc<crate::desktop::Persistence>,
+    /// The model this page may ask, when it has one: without one nothing is
+    /// asked and the history keeps its deterministic digest.
+    models: Option<ui::models::Models>,
+    /// What this page asked the model, and what it wrote.
+    describer: Describer,
+    /// A request is with the model right now: one at a time.
+    describing: Rc<std::cell::Cell<bool>>,
+    /// Answers waiting for the page's thread to write them.
+    answers: Rc<RefCell<Vec<(Job, String)>>>,
 }
 
 /// The name and colour presence shows for a person, by the principal they
@@ -215,14 +228,15 @@ impl PageHistory {
         author: String,
         store: Rc<dyn DurableStore>,
         shared: crate::desktop::Shared,
-        document: Rc<RefCell<AutoCommit>>,
         person_of: PersonOf,
+        writer: Rc<crate::desktop::Persistence>,
+        models: Option<ui::models::Models>,
     ) -> Self {
         Self {
             peer,
             author: author.clone(),
+            document: Rc::clone(&writer.document),
             shared,
-            document,
             host: Rc::new(PageActivityHost {
                 author,
                 store,
@@ -230,7 +244,63 @@ impl PageHistory {
             }),
             authors: BTreeMap::new(),
             person_of,
+            writer,
+            describer: Describer::new(models.is_some()),
+            models,
+            describing: Rc::default(),
+            answers: Rc::default(),
         }
+    }
+
+    /// Say what the desk's changes were, and name the runs of them: one
+    /// request at a time, asked off the page's thread through the model the
+    /// page injects, written into the desk's document as it answers so every
+    /// member reads the same words. Whether the document changed.
+    fn describe(&mut self) {
+        let answers = std::mem::take(&mut *self.answers.borrow_mut());
+        for (job, answer) in answers {
+            if answer.is_empty() {
+                self.describer.failed(&job);
+                continue;
+            }
+            let wrote = self
+                .writer
+                .write_metadata(|doc| self.describer.apply(doc, &job, &answer));
+            if wrote {
+                self.shared.wake();
+                crate::browser::wake_desktops();
+            }
+        }
+        if self.describing.get() || self.peer.is_some() {
+            return;
+        }
+        let job = {
+            let mut document = self.document.borrow_mut();
+            self.describer.next(&mut document)
+        };
+        let Some(job) = job else {
+            return;
+        };
+        let Some(models) = self.models.clone() else {
+            self.describer.failed(&job);
+            return;
+        };
+        self.describing.set(true);
+        let describing = Rc::clone(&self.describing);
+        let answers = Rc::clone(&self.answers);
+        let shared = self.shared.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let request = job.request();
+            let answer = models
+                .complete(&request)
+                .await
+                .map(|response| describer::answer_text(&response))
+                .unwrap_or_default();
+            answers.borrow_mut().push((job, answer));
+            describing.set(false);
+            shared.wake();
+            crate::browser::wake_desktops();
+        });
     }
 
     /// The workspace's replicated copy of the desk's document when the page has
@@ -514,6 +584,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
         // The workspace the pane was opened on, not the one the desk has in
         // front.
         snapshot.desktop.active = workspace;
+        self.describe();
         Some(snapshot)
     }
 

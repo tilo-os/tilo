@@ -493,7 +493,7 @@ struct Mount {
 struct Desktop {
     handle: tilo_desktop_surface::DesktopHandle,
     shared: crate::desktop::Shared,
-    persistence: crate::desktop::Persistence,
+    persistence: Rc<crate::desktop::Persistence>,
     /// Navigation commands name the mount generation they were issued for.
     generation: String,
     /// What the desktop asked of the page since its last status.
@@ -1125,6 +1125,13 @@ fn present_desktop(
         }),
     )
     .map_err(error)?;
+    let persistence = Rc::new(persistence);
+    // The model the history asks, when this page has one: the host's, else a
+    // provider the person set up here. Without one nothing is asked and the
+    // history keeps its deterministic digest.
+    let models = (config.models.is_some() || crate::host_services::page_models_set_up())
+        .then(|| config.models().ok())
+        .flatten();
     let here = tilo_desktop::here::Here::default();
     let people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>> = Rc::default();
     surface.set_history_source(Box::new(crate::history::PageHistory::new(
@@ -1133,8 +1140,9 @@ fn present_desktop(
         config.author(),
         Rc::clone(&dyn_history_store),
         shared.clone(),
-        Rc::clone(&persistence.document),
         crate::history::person_of(&here, &people, config.author()),
+        Rc::clone(&persistence),
+        models,
     )));
     let (session, openings) =
         tilo_desktop_surface::session::serve(config.workspace.clone(), Arc::clone(&shared.woken));
