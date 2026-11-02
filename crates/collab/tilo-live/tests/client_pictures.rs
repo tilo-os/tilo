@@ -12,7 +12,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_live::client::{Client, ClientAuthority, Connection, ConnectionScope, Status};
-use tilo_live::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
+use tilo_live::relay::{
+    Denied, Direction, LoopbackRelay, Peer, RelayAuthority, SessionAuthorization,
+};
 use tilo_live::video::{Codec, Layer, Source, VideoObject};
 
 fn call() -> String {
@@ -42,7 +44,7 @@ impl SessionAuthorization for Permit {
 /// `camera` publishes `b`; `viewer` publishes `c` and hears `b`.
 struct Roles;
 impl RelayAuthority for Roles {
-    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit(&self, _peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let (publish, subscribe) = match proof {
             b"camera" => (name('b'), vec![]),
             b"viewer" => (name('c'), vec![name('b')]),

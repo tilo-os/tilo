@@ -13,7 +13,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_live::client::{Client, ClientAuthority, Connection, ConnectionScope, Status};
-use tilo_live::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
+use tilo_live::relay::{
+    Denied, Direction, LoopbackRelay, Peer, RelayAuthority, SessionAuthorization,
+};
 use tilo_live::video::{Codec, Layer, VideoObject};
 
 const TAB: u64 = 7;
@@ -45,7 +47,7 @@ impl SessionAuthorization for Permit {
 /// The host publishes `a`; each member publishes its own and reads `a`.
 struct Members;
 impl RelayAuthority for Members {
-    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit(&self, _peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let own = match proof {
             b"host" => 'a',
             b"first" => 'b',

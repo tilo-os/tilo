@@ -92,6 +92,9 @@ pub enum Lane {
 
 /// One media stream of a call: what its frames carry, and the lane they
 /// travel on.
+///
+/// The tags are keys: one derived key per tag, so a stream's frames are never
+/// another's. New streams are appended; an existing tag is never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stream {
     /// The person's microphone.
@@ -100,6 +103,15 @@ pub enum Stream {
     Camera,
     /// A screen the person shares.
     Screen,
+    /// A window's pictures: the same objects as a screen layer, sealed apart
+    /// so no window's frame opens as another's.
+    Window,
+    /// Who is here, and what they are doing.
+    Presence,
+    /// One window's input events.
+    Input,
+    /// A low-rate note of what this device is doing.
+    Activity,
 }
 
 impl Stream {
@@ -108,7 +120,12 @@ impl Stream {
     pub const fn lane(self) -> Lane {
         match self {
             Self::Microphone => Lane::Audio,
-            Self::Camera | Self::Screen => Lane::Video,
+            Self::Camera
+            | Self::Screen
+            | Self::Window
+            | Self::Presence
+            | Self::Input
+            | Self::Activity => Lane::Video,
         }
     }
 
@@ -118,10 +135,15 @@ impl Stream {
     pub const fn tag(self) -> [u8; MEDIA_STREAM_TAG_LEN] {
         const AUDIO: u8 = 0;
         const VIDEO: u8 = 1;
+        const PLANE: u8 = 2;
         match self {
             Self::Microphone => [AUDIO, 0],
             Self::Camera => [VIDEO, 0],
             Self::Screen => [VIDEO, 1],
+            Self::Presence => [AUDIO, 1],
+            Self::Window => [PLANE, 0],
+            Self::Input => [PLANE, 1],
+            Self::Activity => [PLANE, 2],
         }
     }
 
@@ -134,6 +156,10 @@ impl Stream {
             Self::Microphone => "audio",
             Self::Camera => "camera",
             Self::Screen => "screen",
+            Self::Window => "window",
+            Self::Presence => "presence",
+            Self::Input => "input",
+            Self::Activity => "activity",
         }
     }
 }

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_live::relay::{
-    Denied, Direction, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH,
+    Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH,
 };
 
 struct Options {
@@ -132,7 +132,7 @@ impl ProofAuthority {
 }
 
 impl RelayAuthority for ProofAuthority {
-    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit(&self, _peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         if proof.len() != 32 {
             return Err(Denied);
         }
