@@ -309,6 +309,21 @@ impl Widget for SearchOverlay {
         Vec::new()
     }
 
+    fn for_each_hosted_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        // The card is in the tree as what stands over the windows, for
+        // inspection, named controls and assistive technology: the overlay
+        // routes the person's input to it itself, so it is no child of
+        // [`Self::children`].
+        if !self.is_open() {
+            return;
+        }
+        let search = self.handle.search_palette();
+        let search = search.borrow();
+        if let Some(palette) = search.palette() {
+            visitor(palette);
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         Vec::new()
     }

@@ -1588,6 +1588,13 @@ pub trait Widget {
     fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         self.for_each_child(visitor);
     }
+    /// Children this widget keeps in the retained tree but does not route
+    /// input to: a subtree it does not own and answers the person's events
+    /// for itself, like a host drawing another widget's card over the
+    /// windows. Inspection, named controls and the accessibility tree walk
+    /// these after the children [`Self::children`] lists, so what is walked
+    /// there keeps the paths, sibling indices and registry entries it had.
+    fn for_each_hosted_child(&self, _visitor: &mut dyn FnMut(&dyn Widget)) {}
     /// Every child this widget's [`Self::build_layout`] gives a layout node,
     /// also those [`Self::for_each_child`] keeps from routing (a hidden
     /// pane, a title, a spacer). A retained layout is checked against this

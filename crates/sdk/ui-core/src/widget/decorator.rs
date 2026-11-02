@@ -457,6 +457,7 @@ decorator_trait! {
         fn children() -> Vec<&dyn Widget>;
         fn for_each_child(visitor: &mut dyn FnMut(&dyn Widget));
         fn for_each_child_in_clip(visitor: &mut dyn FnMut(&dyn Widget));
+        fn for_each_hosted_child(visitor: &mut dyn FnMut(&dyn Widget));
         fn name() -> &str;
         fn test_id() -> Option<&str>;
         fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
