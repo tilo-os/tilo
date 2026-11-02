@@ -16,12 +16,13 @@ other push runs of this workflow on main, and answers with two outputs:
   are that one's business, so this run skips its jobs: a clean success, since
   nothing was tested here and nothing was lost.
 * `base` -- where this run's plan starts: the head of the newest earlier push
-  run whose window was measured (it finished, successfully or not, and its
-  `select` job planned it). A run that skipped, was cancelled, or broke while
-  planning measured nothing and is not a base. A window's plan always starts
-  below every run that was dropped before it, so the chain of measured windows
-  leaves no commit unmeasured: a run that finds nothing to drop plans from the
-  newest window that ran, and a run that drops older runs plans from below them.
+  run whose window was measured (it finished, successfully or not, its `select`
+  job planned it, and its builder job gave the checks their image). A run that
+  skipped, was cancelled, broke while planning, or never got a builder checked
+  nothing and is not a base. A window's plan always starts below every run that
+  was dropped before it, so the chain of measured windows leaves no commit
+  unmeasured: a run that finds nothing to drop plans from the newest window that
+  ran, and a run that drops older runs plans from below them.
 
 Being the newest is not enough to be the window; it also has to stop the runs
 that will never get a slot. An older run that has not started a single job is
@@ -54,6 +55,8 @@ import urllib.request
 # The job of this workflow that plans a run. A run whose `select` job succeeded
 # has a window of commits this workflow measured.
 SELECT_JOB = "select"
+# The job that resolves and starts the image every other job runs in.
+BUILDER_JOB = "builder"
 # A job in one of these states has not begun; a run holding only these has not
 # started and costs nothing to drop.
 UNSTARTED_JOB = ("waiting", "blocked")
@@ -78,14 +81,30 @@ def select_status(jobs):
     return None
 
 
+def builder_status(jobs):
+    """The status of a run's builder job, or None when the list has no such job."""
+    for job in jobs:
+        if job.get("name") == BUILDER_JOB:
+            return job.get("status")
+    return None
+
+
 def started(jobs):
     """Whether any job of the run has left the queue."""
     return any(job.get("status") not in UNSTARTED_JOB for job in jobs)
 
 
 def measured(run, jobs):
-    """Whether this run finished and its window of commits was planned."""
-    return run.get("status") in FINISHED_RUN and select_status(jobs) == "success"
+    """Whether this run finished and acted on the window it planned.
+
+    Planning is only half of it: every job that checks a window - the test
+    shards, Clippy, the architecture checks - runs in the builder's image, so a
+    run whose builder job failed skipped all of them. Its commits were not
+    checked, and the next window has to plan them again.
+    """
+    return (run.get("status") in FINISHED_RUN
+            and select_status(jobs) == "success"
+            and builder_status(jobs) in (None, "success"))
 
 
 def coming(run, jobs):
