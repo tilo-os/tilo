@@ -239,6 +239,7 @@ mod tests {
             priority: 0,
             power: Power::External,
             load_permille: 0,
+            free_slots: Some(1),
             latency_ms: 20,
         }
     }

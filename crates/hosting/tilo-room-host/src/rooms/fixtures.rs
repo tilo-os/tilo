@@ -205,12 +205,27 @@ pub async fn restricted_until(
 /// The grant cannot be digested.
 #[must_use]
 pub fn signed_pre_admission(room: &str, token: &[u8]) -> tilo_relay_protocol::rooms::PreAdmission {
+    signed_pre_admission_as(room, token, tilo_relay_protocol::rooms::RoomRole::Editor)
+}
+
+/// A pre-admission of person "Ada" to `room` with `role` for `token`, signed
+/// by the owner whose root is `[1; 32]`.
+///
+/// # Panics
+///
+/// The grant cannot be digested.
+#[must_use]
+pub fn signed_pre_admission_as(
+    room: &str,
+    token: &[u8],
+    role: tilo_relay_protocol::rooms::RoomRole,
+) -> tilo_relay_protocol::rooms::PreAdmission {
     use ed25519_dalek::Signer as _;
     use sha2::Digest as _;
     let owner = SigningKey::from_bytes(&[1; 32]);
     let mut grant = tilo_relay_protocol::rooms::PreAdmission {
         room: room.to_owned(),
-        role: tilo_relay_protocol::rooms::RoomRole::Editor,
+        role,
         token_sha256: sha2::Sha256::digest(token).into(),
         label: "Ada".into(),
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
@@ -238,6 +253,28 @@ pub async fn door_join(
     tilo_peer_state::join::JoinTransportRequest,
     tilo_peer_state::join::JoinTransportResponse,
 ) {
+    let role = tilo_relay_protocol::rooms::RoomRole::Editor;
+    door_join_as(rooms, host, room, (device, device_cert), seed, role).await
+}
+
+/// One person's device joining `room` through its door with `role`, as a Tilo
+/// computer does: the challenge, the door's admission spent with the proof,
+/// then the Complete. Answers the Complete it sent and the host's answer.
+///
+/// # Panics
+///
+/// The door does not admit the device.
+pub async fn door_join_as(
+    rooms: &Rooms,
+    host: &DeviceCert,
+    room: &str,
+    (device, device_cert): (&SigningKey, &DeviceCert),
+    seed: u8,
+    role: tilo_relay_protocol::rooms::RoomRole,
+) -> (
+    tilo_peer_state::join::JoinTransportRequest,
+    tilo_peer_state::join::JoinTransportResponse,
+) {
     use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
     use tilo_peer_state::join::{
         JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
@@ -250,7 +287,7 @@ pub async fn door_join(
             host,
             PreAdmitRequest {
                 request_id: [seed; 32],
-                grant: signed_pre_admission(room, &token),
+                grant: signed_pre_admission_as(room, &token, role),
                 recipient_user_public_key: Some(device_cert.user_public_key),
                 inviter_name: None,
             },
