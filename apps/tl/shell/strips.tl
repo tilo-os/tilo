@@ -198,7 +198,7 @@ view place_controls(a: Arrangement, p: ArrangementPlace) {
                 for r in a.rows {
                     if r.key != strip_row(a, p.strip) {
                         ui.MenuItem(r.name) {
-                            on choose: session.move_place(place: arranged(p.key), row: arranged(r.key), before: .none)
+                            on choose: session.move_place(place: arranged(p.key), row: arranged(r.key))
                         }
                     }
                 }

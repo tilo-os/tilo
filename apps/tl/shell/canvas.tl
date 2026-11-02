@@ -75,7 +75,7 @@ view space_content(a: Arrangement, p: ArrangementPlace) {
 view canvas_entry(a: Arrangement) {
     lens typed: Text = ""
     ui.TextInput(value: typed, placeholder: "Find something and place it here") {
-        on submit: session.place_found(text: typed, view: .none, x: .some(here_x(a)), y: .some(here_y(a)))
+        on submit: session.place_found(text: typed, x: here_x(a), y: here_y(a))
     }
 }
 

@@ -22,7 +22,7 @@ view composer(d: Desk) {
         }
         body: {
             ui.TextInput(value: words, placeholder: "What should it do?", lines: 3) {
-                on submit: session.ask(id: .none, title: words, body: .none, agent: agent_key(agents), quick: .none)
+                on submit: session.ask(title: words, agent: agent_key(agents))
             }
             if live.is_empty() {
                 ui.EmptyState("No task is running", message: "What you ask becomes one, and its log stays here", icon: .bot, inline: true)
@@ -44,7 +44,7 @@ view composer(d: Desk) {
         footer: {
             row(gap: .related, align: .center, wrap: true) {
                 ui.Button("Send", icon: .send, role: .primary) {
-                    on press: session.ask(id: .none, title: words, body: .none, agent: agent_key(agents), quick: .none)
+                    on press: session.ask(title: words, agent: agent_key(agents))
                 }
                 ui.Button("What I am on", icon: .paperclip, role: .plain, size: .small) {
                     on press: device.show_surface(device.desk, surface: "overview")

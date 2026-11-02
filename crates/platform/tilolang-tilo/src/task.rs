@@ -27,6 +27,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
+use tilolang_runtime::catalogue::SignatureKind;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::flow::Journal;
 use tilolang_runtime::ids::{DocId, RunId, TypeId};
@@ -225,21 +226,72 @@ impl TaskSession {
     }
 
     /// Every installed app the task's programs may name, by the name they name it with: its
-    /// id and its declarations (`{alias: {app, signatures: [{name, signature}]}}`), read from
-    /// the packages alone, whether or not any app runs.
+    /// id and its declarations (`{alias: {app, signatures: [{name, id, kind, signature,
+    /// call}]}}`), read from the packages alone, whether or not any app runs. `call` is how a
+    /// program writes it: an action called (`session.place(resource: host.Resource, x:
+    /// Option<Int> = .none)`), a type by its name (`notes.Note`), every type in it named as a
+    /// program names it. An action says what it acts on, so a listing tells it from another
+    /// app's action of the same id: `on`, the package's own type its first parameter takes (a
+    /// resource of that type), or `at`, the resource the session publishes a loose one on.
     #[must_use]
     pub fn catalogue(&self) -> Json {
+        let signatures = self.runtime.catalogue();
+        let mut named: Vec<String> = signatures.iter().map(|s| s.app.clone()).collect();
+        named.sort_by_key(|app| std::cmp::Reverse(app.len()));
+        named.dedup();
+        let in_programs = |text: &str| {
+            let mut text = text.replace("enum ", "");
+            for app in &named {
+                let alias = tilolang::resolve::default_alias(app);
+                text = text.replace(&format!("{app}."), &format!("{alias}."));
+            }
+            text
+        };
+        let own_types: std::collections::HashSet<(String, String)> = signatures
+            .iter()
+            .filter(|s| s.kind == SignatureKind::Type)
+            .map(|s| (s.app.clone(), s.name.clone()))
+            .collect();
+        // optional-decode: a session without its description lists its actions by their ids
+        let addresses = crate::platform_apps::session_addresses().unwrap_or_default();
         let mut apps = serde_json::Map::new();
-        for signature in self.runtime.catalogue() {
+        for signature in signatures {
             if signature.app == tilolang::HOST_APP {
                 continue;
             }
             let alias = tilolang::resolve::default_alias(&signature.app);
+            let (kind, call) = match signature.kind {
+                SignatureKind::Action => (
+                    "action",
+                    signature.text.strip_prefix("action ").map(&in_programs),
+                ),
+                SignatureKind::Type => ("type", Some(format!("{alias}.{}", signature.name))),
+                SignatureKind::Enum => ("enum", Some(format!("{alias}.{}", signature.name))),
+                SignatureKind::View => ("view", None),
+                SignatureKind::Flow => ("flow", None),
+                SignatureKind::Fn => ("fn", None),
+            };
+            let action = signature.kind == SignatureKind::Action;
+            let on = action
+                .then(|| first_param_type(&signature.text))
+                .flatten()
+                .filter(|ty| own_types.contains(&(signature.app.clone(), (*ty).to_owned())));
+            let at = (action && on.is_none() && signature.app == crate::platform_apps::SESSION_APP)
+                .then(|| addresses.get(&signature.id))
+                .flatten();
             let app = apps
                 .entry(alias)
                 .or_insert_with(|| json!({"app": signature.app, "signatures": []}));
-            if let Some(signatures) = app["signatures"].as_array_mut() {
-                signatures.push(json!({"name": signature.name, "signature": signature.render()}));
+            if let Some(listed) = app["signatures"].as_array_mut() {
+                listed.push(json!({
+                    "name": signature.name,
+                    "id": signature.id,
+                    "kind": kind,
+                    "signature": signature.render(),
+                    "call": call,
+                    "on": on,
+                    "at": at,
+                }));
             }
         }
         Json::Object(apps)
@@ -351,6 +403,16 @@ pub fn wants_preview(planned: &[Json]) -> bool {
         || planned.iter().any(|step| step["destructive"] == true)
 }
 
+/// The type of the first parameter of the action declared as `text` (`action a.b(w: Window,
+/// ...)` is `Window`).
+fn first_param_type(text: &str) -> Option<&str> {
+    let (_, params) = text.split_once('(')?;
+    let first = params.split([',', ')']).next()?;
+    let (_, ty) = first.split_once(':')?;
+    let ty = ty.split(" =").next()?.trim();
+    (!ty.is_empty()).then_some(ty)
+}
+
 /// Sends a program's invocations through the door, or in a provisional run lists them.
 struct DoorInvoker {
     door: Rc<dyn TaskDoor>,
@@ -362,6 +424,28 @@ struct DoorInvoker {
     steps: Rc<RefCell<Steps>>,
 }
 
+impl DoorInvoker {
+    /// The id the session publishes the resource `r` under, as a published action takes it: a
+    /// resource of one of the platform's apps (a window) by its own id, a tilolang app's by its
+    /// app and its id in its record (`tl:so.tilo.lang.notes:<id>`). `r`'s type names the app:
+    /// a type of a package this task holds by its id, any other as `<app>#<Type>`.
+    fn published_id(&self, r: &ResourceRef) -> String {
+        let id = r.id_string();
+        let app = match r.ty.as_str().split_once('#') {
+            Some((app, _)) => Some(app.to_owned()),
+            None => self
+                .apps
+                .values()
+                .find(|meta| meta.types.iter().any(|ty| ty.id == r.ty.as_str()))
+                .map(|meta| meta.app.clone()),
+        };
+        match app {
+            Some(app) if !self.published.contains(&app) => resource_id(&app, &id),
+            _ => id,
+        }
+    }
+}
+
 impl Invoker for DoorInvoker {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
         let app = invocation.app();
@@ -370,7 +454,7 @@ impl Invoker for DoorInvoker {
         };
         let published = self.published.contains(app);
         let call = if published {
-            published_call(meta, invocation, &self.addresses)
+            published_call(meta, invocation, &self.addresses, |r| self.published_id(r))
         } else {
             call_of(&self.apps, meta, invocation)
         };
@@ -409,7 +493,10 @@ impl Invoker for DoorInvoker {
                 if !steps.apps.iter().any(|known| known == app) {
                     steps.apps.push(app.to_owned());
                     let resource = if published {
-                        call["resource"].as_str().unwrap_or_default().to_owned()
+                        call.get("resource")
+                            .and_then(Json::as_str)
+                            .unwrap_or_default()
+                            .to_owned()
                     } else {
                         package_resource_id(app)
                     };
@@ -434,13 +521,14 @@ impl Invoker for DoorInvoker {
 
 /// The door's call for `invocation` of the platform's package `meta`: its declared verb on the
 /// resource the session publishes it as (`shell:arrangement`), with every other argument as the
-/// published action takes it, by name. The call says it is the session's (`published`), which the
-/// door sends to the session's own provider. A loose action (the session's `place`) goes to the
-/// resource `addresses` says it is published on.
+/// published action takes it, by name, a resource by the id `published_id` gives it. The call
+/// says it is the session's (`published`), which the door sends to the session's own provider. A
+/// loose action (the session's `place`) goes to the resource `addresses` says it is published on.
 fn published_call(
     meta: &Meta,
     invocation: &Invocation,
     addresses: &std::collections::BTreeMap<String, String>,
+    published_id: impl Fn(&ResourceRef) -> String,
 ) -> Result<Json, String> {
     let Invocation::Action {
         app,
@@ -477,7 +565,7 @@ fn published_call(
             other => other,
         };
         let json = match value {
-            Value::Ref(r) => json!(r.target.id_string()),
+            Value::Ref(r) => json!(published_id(&r.target)),
             other => tilolang_runtime::value::to_json(other)
                 .map_err(|error| format!("`{name}` does not send: {error}"))?,
         };

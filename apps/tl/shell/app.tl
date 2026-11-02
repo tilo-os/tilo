@@ -352,7 +352,7 @@ view workspace_menu(d: Desk) {
             }
         }
         ui.MenuItem("New workspace", icon: .plus) {
-            on choose: session.new_workspace(room: .none, name: .none)
+            on choose: session.new_workspace()
         }
         ui.MenuItem("Join a workspace", icon: .users) {
             on choose: session.join_workspace()

@@ -341,6 +341,29 @@ pub struct DefaultMeta {
     pub text: String,
 }
 
+impl DefaultMeta {
+    /// The default `.none` as written.
+    pub const NONE: &str = ".none";
+
+    /// `= .none`, the default of an optional parameter of an app that publishes its actions
+    /// without a module (a native app's, the session's): no code computes it, so it has no
+    /// export.
+    #[must_use]
+    pub fn none() -> Self {
+        Self {
+            export: String::new(),
+            text: Self::NONE.to_owned(),
+        }
+    }
+
+    /// Whether the default is `.none`: a constant, which needs no code to compute. A call that
+    /// leaves the parameter out passes `.none`, wherever the parameter stands.
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        self.text == Self::NONE
+    }
+}
+
 /// An action or flow that code can reach, with its effect class. `own` is relative to the
 /// package whose metadata lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
