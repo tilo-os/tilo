@@ -4797,6 +4797,13 @@
           "type": "bool"
         },
         {
+          "name": "tail_title",
+          "doc": "The title over the list's tail group: the rows whose item says it is one of those done with ([`ListItemProps::tail`]) stand after every group, under it, closed until the person opens them. `None` leaves those rows among the others.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "unread",
           "doc": "The item a conversation's reader had not seen when they opened it (`first_unseen(c)`): the \"New messages\" divider stands over the row that shows it, and while that is above the view a pill at the foot offers to take the reader back to it. `None` draws neither. The list works out the row as it builds, so the same list keeps its rows and only the two the divider moved between build again.",
           "type": {
@@ -6458,6 +6465,18 @@
           "type": {
             "option": "time"
           }
+        },
+        {
+          "name": "group",
+          "doc": "The group the row is in, as the platform reads it over the group's first row: a day for a date. Rows of one group stand together under its heading, in the order they come.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "tail",
+          "doc": "The row is one of the items done with: they stand after every group, under the list's tail title, closed until the person opens them.",
+          "type": "bool"
         },
         {
           "name": "removed",

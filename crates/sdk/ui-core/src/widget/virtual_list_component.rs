@@ -77,6 +77,12 @@ pub struct ListItemProps {
     /// it, in their colour, on its trailing edge. The UI host places it (task-legibility §3).
     #[component(slot)]
     pub change: Option<ChangeMarkProps>,
+    /// The group the row is in, as the platform reads it over the group's first row: a day
+    /// for a date. Rows of one group stand together under its heading, in the order they come.
+    pub group: Option<String>,
+    /// The row is one of the items done with: they stand after every group, under the list's
+    /// tail title, closed until the person opens them.
+    pub tail: bool,
     /// The item was removed and the person has not seen it go: the row stands in for it, its
     /// title struck through, at the row's own height. The UI host places such rows.
     pub removed: bool,
@@ -150,6 +156,10 @@ pub struct VirtualListProps {
     /// A conversation: each row stands in the page column, the list opens at its newest row
     /// and follows it.
     pub transcript: bool,
+    /// The title over the list's tail group: the rows whose item says it is one of those done
+    /// with ([`ListItemProps::tail`]) stand after every group, under it, closed until the
+    /// person opens them. `None` leaves those rows among the others.
+    pub tail_title: Option<String>,
     /// The item a conversation's reader had not seen when they opened it (`first_unseen(c)`):
     /// the "New messages" divider stands over the row that shows it, and while that is above
     /// the view a pill at the foot offers to take the reader back to it. `None` draws neither.
@@ -357,7 +367,6 @@ impl DescribedRows {
         }
     }
 
-    /// The key of the item showing the resource `id`.
     fn key_presenting(&self, id: &str) -> Option<String> {
         match &self.held {
             Held::Nothing => None,
@@ -404,6 +413,8 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
             },
         },
         change: item.change.as_ref().map(ChangeMarkProps::again),
+        group: item.group.clone(),
+        tail: item.tail,
         removed: item.removed,
         row,
     })
@@ -471,6 +482,23 @@ impl ListModel for DescribedRows {
             _ => false,
         };
         waiting || !self.restyled.borrow().is_empty()
+    }
+
+    /// What the row is grouped by: its item's heading, or the list's tail for an item done
+    /// with.
+    fn group_at(&self, index: usize) -> Option<super::RowGroup> {
+        let key = self.key_at(index)?;
+        self.with_item(&key, |item| {
+            if item.tail {
+                Some(super::RowGroup::Tail)
+            } else {
+                item.group
+                    .as_deref()
+                    .filter(|heading| !heading.is_empty())
+                    .map(|heading| super::RowGroup::Heading(heading.to_owned()))
+            }
+        })
+        .flatten()
     }
 
     fn label(&self, index: usize) -> Option<String> {
@@ -846,6 +874,7 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             transcript,
+            tail_title,
             unread,
             mut rows,
             removed,
@@ -891,6 +920,9 @@ impl Described for DescribedList {
             VirtualList::with_selection_delegate(rows, ROW_ESTIMATE, |rows, _, key, _| {
                 row_of(rows, key)
             });
+        if let Some(title) = tail_title {
+            list = list.with_tail_title(title);
+        }
         // A column's one list takes the column's height and scrolls its rows; a list among a
         // page's other content is as tall as its rows, and the page scrolls them with the rest.
         list = if in_column {
@@ -963,6 +995,7 @@ impl Described for DescribedList {
             // the rows it left and arrived at build again.
             if let Some(list) = self.list_mut() {
                 list.set_unread(props.unread.as_ref().map(|item| item.0.clone()));
+                list.set_tail_title(props.tail_title.clone());
             }
             return true;
         }

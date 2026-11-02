@@ -677,9 +677,13 @@ impl Printer {
 
     fn ui_stmt(&mut self, s: &UiStmt) {
         match &s.kind {
-            UiKind::Let { name, value } => {
+            UiKind::Let { name, ty, value } => {
                 let v = self.ex(value);
-                self.line(&format!("let {} = {v}", name.name));
+                let ty = ty
+                    .as_ref()
+                    .map(|t| format!(": {}", print_type(t)))
+                    .unwrap_or_default();
+                self.line(&format!("let {}{ty} = {v}", name.name));
             }
             UiKind::State(d) => {
                 let default = d

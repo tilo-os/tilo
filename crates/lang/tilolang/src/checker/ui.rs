@@ -156,8 +156,15 @@ impl Checker<'_> {
                 UiKind::Call(c) => {
                     self.ui_call(c, Some(parent));
                 }
-                UiKind::Let { name, value } => {
-                    let v = self.expr(value, None);
+                UiKind::Let { name, ty, value } => {
+                    let v = match ty {
+                        Some(written) => {
+                            let types = self.st.types.clone();
+                            let want = self.type_in(written, &types);
+                            self.expr_as(value, &want)
+                        }
+                        None => self.expr(value, None),
+                    };
                     let id = self.declare(&name.name, v.ty.clone());
                     self.emit(Stmt::Set(id, v));
                 }

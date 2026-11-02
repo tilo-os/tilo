@@ -289,7 +289,7 @@ view home(t: Tasks) {
     lens draft: Text
     // The named filters are the places; a priority is picked in search.
     let places = filters(Task).filter(f -> f.toggle and f.key != "priority")
-    let shown = t.items.matching(place)
+    let shown = t.items.matching(place).sort_by(.due)
     let title = places.find(p -> p.query == place)?.label ?? "Tasks"
     ui.NavShell(content_kind: .document, sidebar_title: "Tasks", overview_title: title, overview_count: shown.len()) {
         sidebar: {
@@ -325,7 +325,7 @@ view home(t: Tasks) {
                         }
                     }
                 }
-                std.rows(shown, "No tasks here", .none, .some("list-checks")) { x ->
+                std.rows(shown, "No tasks here", .none, .some("list-checks"), group: .due, closed: .done) { x ->
                     task_row(x)
                 }
             }

@@ -277,6 +277,15 @@ impl SectionHeader {
     }
 }
 
+/// The room a group's heading takes over the rows it holds: one small control's height around
+/// the heading's line.
+#[must_use]
+pub fn band_height(theme: &Theme) -> f64 {
+    let m = HeaderMetrics::new(theme);
+    let line = f64::from(theme.text(Level::Group.role()).line_height_px());
+    m.height(line)
+}
+
 /// An immediate-mode section header for a painted host, with the retained
 /// [`SectionHeader`]'s geometry: the title on the content edge, the count
 /// after it, the action's label on the trailing edge, one fixed height.
