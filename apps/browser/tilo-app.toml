@@ -73,7 +73,7 @@ mode = "host"
 [sandbox.services]
 collab = "optional@14"
 tilo-fs = "optional@14"
-shell-ui = "optional@19"
+shell-ui = "optional@20"
 
 [entrypoint]
 bin             = "bin/browser"

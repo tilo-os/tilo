@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 19
+version = 20
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -500,11 +500,8 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "SearchRequest.action" = "Option<String> optional"
 "SearchRequest.anchor" = "Option<Anchor> optional"
 "SearchRequest.offer" = "Option<SearchOffer> optional"
+"SearchRequest.part" = "Option<ScopeDecl> optional"
 "SearchRequest.query" = "Option<String> optional"
-"SearchRequest.scope" = "SearchRequestScope optional"
-"SearchRequestScope" = "enum internal tag=kind"
-"SearchRequestScope::resource" = "tuple(ScopeDecl)"
-"SearchRequestScope::this_app" = "unit"
 "SelectionAnchor" = "struct"
 "SelectionAnchor.excerpt" = "Option<String> optional"
 "SelectionAnchor.interaction" = "Option<InteractionAnchor> optional"
