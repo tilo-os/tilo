@@ -920,7 +920,12 @@ fn a_grant_set_reads_back_as_the_grants_the_workspace_holds() {
         )
     };
     let grants = [
-        grant("room", root.clone(), KindSet::READ_UNDOABLE, Answer::Allow),
+        grant(
+            "workspace",
+            root.clone(),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+        ),
         grant(
             "mail",
             root.clone().app("mail"),
