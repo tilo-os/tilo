@@ -21,13 +21,13 @@ Each adapter reads what a benchmark already prints and emits records through
   (`libruntime_dylib.so`) of each architecture. Each of its numbers is one
   sample of `footprint.runtime.<metric>.<arch>`: `bytes`, `relocation_bytes`,
   `relocated_bytes` (bytes) and `symbol_relocations` (count).
-- `workspace-switch LOG...`: the compositor's `WORKSPACE-SWITCH` session-log
-  lines (`crates/session/compositor/src/pacing.rs`), one per
-  switch, become `latency.workspace_switch.first_frame` (chord to the first
-  frame shown), `.settled` (chord to the resting frame shown after the frame
-  run) and `.dropped_frames` (refresh intervals in the run that showed no new
-  frame). `scripts/perf/device_latency_bench.py` (the reference-hardware lane)
-  calls it.
+- `workspace_switch`: the compositor's `WORKSPACE-SWITCH` session-log lines
+  (`crates/session/compositor/src/pacing.rs`), one per switch, become the
+  caller's KPI ids' `first_frame` (chord to the first frame shown), `settled`
+  (chord to the resting frame shown after the frame run) and `dropped_frames`
+  (refresh intervals in the run that showed no new frame).
+  `scripts/perf/device_latency_bench.py` (the reference-hardware lane) calls it
+  for `hw.workspace_switch.*`.
 - `framework-open LOG...`: the `FRAMEWORK-OPEN tasks=<n> samples_ms=<a,b,...>
   allocations=<x> heap_per_task=<y>` lines of
   `crates/sdk/tilo-app/examples/framework-scaling.rs`, one per list
@@ -87,7 +87,6 @@ Usage:
     python3 tools/perf/adapters.py fs-gate --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py tapp-sizes --env-json env.json entries.json >> results.jsonl
     python3 tools/perf/adapters.py runtime-sizes --env-json env.json runtime.json >> results.jsonl
-    python3 tools/perf/adapters.py workspace-switch --env-json env.json session.log >> results.jsonl
     python3 tools/perf/adapters.py framework-open --env-json env.json framework-open.log >> results.jsonl
     python3 tools/perf/adapters.py framework-scroll --env-json env.json framework-scroll.log >> results.jsonl
     python3 tools/perf/adapters.py framework-focus --env-json env.json framework-focus.log >> results.jsonl
@@ -215,7 +214,7 @@ def switch_samples(text: str) -> list[dict[str, int]]:
 
 
 def workspace_switch(samples: list[dict[str, int]], env: dict[str, Any],
-                     kpi: str = "latency.workspace_switch.{}") -> list[record.Record]:
+                     kpi: str) -> list[record.Record]:
     """Records for the workspace switches of one run; `kpi` names them from the metric."""
     if not samples:
         raise ValueError("no `WORKSPACE-SWITCH` lines: did the compositor switch workspace, and is it "
@@ -522,9 +521,6 @@ def main(argv: list[str] | None = None) -> int:
     runtime = commands.add_parser("runtime-sizes", help="records from the published runtime's measurements")
     runtime.add_argument("--env-json", required=True, type=Path)
     runtime.add_argument("measurements", type=Path)
-    switch = commands.add_parser("workspace-switch", help="records from WORKSPACE-SWITCH session-log lines")
-    switch.add_argument("--env-json", required=True, type=Path)
-    switch.add_argument("logs", nargs="+", type=Path)
     opening = commands.add_parser("framework-open", help="records from framework-scaling's FRAMEWORK-OPEN lines")
     opening.add_argument("--env-json", required=True, type=Path)
     opening.add_argument("logs", nargs="+", type=Path)
@@ -562,10 +558,6 @@ def main(argv: list[str] | None = None) -> int:
                           f"bound by {item.meta['binding']})", file=sys.stderr)
         elif args.command == "fs-gate":
             records = fs_gate([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
-        elif args.command == "workspace-switch":
-            samples = [sample for path in args.logs
-                       for sample in switch_samples(path.read_text(encoding="utf-8", errors="replace"))]
-            records = workspace_switch(samples, env)
         elif args.command == "runtime-sizes":
             records = runtime_sizes(json.loads(args.measurements.read_text(encoding="utf-8")), env)
         elif args.command == "framework-open":
