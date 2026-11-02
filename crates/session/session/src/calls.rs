@@ -411,6 +411,9 @@ async fn open(
     };
     let workspace_id = RoomId::parse(&target.workspace).ok_or(Issue::Unavailable)?;
     let channel = collab_types::document_channel_id(&target.app, &target.workspace, &target.record);
+    // The call is one channel of one workspace: that scope's keys seal its
+    // tracks, and its id names them.
+    let scope = collab_types::scope::Scope::channel(target.workspace.clone(), channel);
     let (access, keys) = call_keys(sources, workspace_id, channel)?;
     let roster = admitted(sources, &target.workspace);
     let own = *endpoint.id().as_bytes();
@@ -426,12 +429,12 @@ async fn open(
     );
     let video = tilo_call_lane::Video::new(own);
     if let Some(keys) = &keys {
-        video.set_keys(keys, roster.clone());
+        video.set_keys(keys, roster.clone(), &scope);
     }
     let (voice, microphones, offered) = opened_microphones(sources.audio).await?;
     let microphone = keys
         .as_ref()
-        .and_then(|keys| tilo_call_lane::Microphone::new(keys, own, REPEATS).ok());
+        .and_then(|keys| tilo_call_lane::Microphone::new(keys, own, &scope, REPEATS).ok());
     let live = keys.is_some();
     let current = keys.map(|keys| Current {
         opener: tilo_call_lane::Opener::new(keys.clone(), roster.clone()),
@@ -453,6 +456,7 @@ async fn open(
         access,
         workspace_id,
         channel,
+        scope,
         workspace: target.workspace.clone(),
         admitted: sources.roster.clone(),
         current: Mutex::new(current),
@@ -673,6 +677,8 @@ struct Shared {
     /// The workspace id the channel's keys and governance are read by.
     workspace_id: RoomId,
     channel: collab_types::ChannelId,
+    /// The channel's scope: what its tracks are sealed under and named as.
+    scope: collab_types::scope::Scope,
     workspace: String,
     /// The workspace's admitted devices, re-read while the call lasts.
     admitted: Option<Admitted>,
@@ -765,7 +771,8 @@ impl Shared {
         };
         let mut side = self.side.lock_recover();
         side.voice.start(&source, still_current)?;
-        side.microphone = tilo_call_lane::Microphone::new(&keys, self.own, REPEATS).ok();
+        side.microphone =
+            tilo_call_lane::Microphone::new(&keys, self.own, &self.scope, REPEATS).ok();
         drop(side);
         Ok(())
     }
@@ -1039,9 +1046,9 @@ impl Shared {
         }
         let heard = {
             let held = self.current.lock_recover();
-            let heard = held
-                .as_ref()
-                .map(|current| tilo_call_lane::heard(&current.opener, sender, datagram));
+            let heard = held.as_ref().map(|current| {
+                tilo_call_lane::heard(&current.opener, sender, &self.scope, datagram)
+            });
             drop(held);
             heard
         };
@@ -1153,7 +1160,8 @@ impl Shared {
                         tilo_call_lane::Opener::new(current.keys.clone(), current.roster.clone());
                     // The pictures seal with the epoch's keys as the audio
                     // does, from this epoch on.
-                    self.video.set_keys(&current.keys, current.roster.clone());
+                    self.video
+                        .set_keys(&current.keys, current.roster.clone(), &self.scope);
                     rekeyed = true;
                 }
                 (Some(current), _) => {
@@ -1166,13 +1174,14 @@ impl Shared {
                             current.keys.clone(),
                             current.roster.clone(),
                         );
-                        self.video.set_keys(&current.keys, current.roster.clone());
+                        self.video
+                            .set_keys(&current.keys, current.roster.clone(), &self.scope);
                     }
                 }
                 (None, Some(keys)) => {
                     let roster = roster.unwrap_or_default();
                     self.calls.set_roster(roster.clone());
-                    self.video.set_keys(&keys, roster.clone());
+                    self.video.set_keys(&keys, roster.clone(), &self.scope);
                     *held = Some(Current {
                         opener: tilo_call_lane::Opener::new(keys.clone(), roster.clone()),
                         keys,
@@ -1193,7 +1202,7 @@ impl Shared {
             let mut side = self.side.lock_recover();
             if side.microphone.is_some() {
                 side.microphone = keys.and_then(|keys| {
-                    tilo_call_lane::Microphone::new(&keys, self.own, REPEATS).ok()
+                    tilo_call_lane::Microphone::new(&keys, self.own, &self.scope, REPEATS).ok()
                 });
             }
         }

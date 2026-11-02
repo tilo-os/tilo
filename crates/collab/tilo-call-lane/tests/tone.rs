@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::ChannelId;
+use collab_types::scope::Scope;
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
@@ -77,6 +78,11 @@ fn call_keys() -> (ChannelId, ChannelContentKeys, ChannelContentKeys) {
 // ---------------------------------------------------------------------------
 // The devices of a call.
 // ---------------------------------------------------------------------------
+
+/// The scope of the test's call: the channel it is in.
+fn scope(channel: ChannelId) -> Scope {
+    Scope::channel(WORKSPACE, channel)
+}
 
 /// One device in a call: its endpoint, the lanes it accepts, and the lanes
 /// that arrive on it.
@@ -227,6 +233,8 @@ struct Played {
 struct Ear {
     opener: Opener,
     sender: [u8; 32],
+    /// The call's scope: the channel whose tracks it opens.
+    scope: Scope,
     jitter: JitterBuffer,
     decoder: Decoder,
     publisher: PublicationId,
@@ -238,10 +246,11 @@ struct Ear {
 }
 
 impl Ear {
-    fn new(keys: ChannelContentKeys, sender: [u8; 32], roster: Roster) -> Self {
+    fn new(keys: ChannelContentKeys, sender: [u8; 32], roster: Roster, scope: Scope) -> Self {
         Self {
             opener: Opener::new(keys, roster),
             sender,
+            scope,
             jitter: JitterBuffer::default(),
             decoder: Decoder::new(48_000, Channels::Mono).unwrap(),
             publisher: PublicationId {
@@ -263,7 +272,9 @@ impl Ear {
     fn hear(&mut self, datagram: &[u8]) {
         self.datagrams += 1;
         let now = Instant::now();
-        for frame in heard(&self.opener, self.sender, datagram).expect("the call's frames open") {
+        for frame in
+            heard(&self.opener, self.sender, &self.scope, datagram).expect("the call's frames open")
+        {
             self.opened.insert(frame.sequence);
             self.jitter
                 .push(
@@ -409,7 +420,7 @@ async fn the_tone_one_device_sends_reaches_the_other() {
     let (from_alice, from_bob) = lane(&bob, &mut alice).await;
 
     let frames = tone(440.0, 60);
-    let mut ear = Ear::new(bob_keys, alice.id, Roster::new([alice.id]));
+    let mut ear = Ear::new(bob_keys, alice.id, Roster::new([alice.id]), scope(channel));
     // A's microphone on its own task, as a call's capture runs on a thread of
     // its own: B's playout never waits on it.
     let sending = tokio::spawn({
@@ -418,7 +429,7 @@ async fn the_tone_one_device_sends_reaches_the_other() {
         let keys = alice_keys.clone();
         let sender = alice.id;
         async move {
-            let mut microphone = Microphone::new(&keys, sender, 0).unwrap();
+            let mut microphone = Microphone::new(&keys, sender, &scope(channel), 0).unwrap();
             speak(&peer, &mut microphone, &frames).await
         }
     });
@@ -500,7 +511,7 @@ async fn both_devices_of_a_call_hear_each_other() {
     let speak_from =
         |peer: Peer, keys: ChannelContentKeys, sender: [u8; 32], frames: Vec<Vec<u8>>| {
             tokio::spawn(async move {
-                let mut microphone = Microphone::new(&keys, sender, 0).unwrap();
+                let mut microphone = Microphone::new(&keys, sender, &scope(channel), 0).unwrap();
                 speak(&peer, &mut microphone, &frames).await
             })
         };
@@ -514,8 +525,13 @@ async fn both_devices_of_a_call_hear_each_other() {
     );
     let bob_speaking = speak_from(from_alice.clone(), bob_keys.clone(), bob.id, frames.clone());
     // Alice's ear hears Bob's frames; Bob's ear hears Alice's.
-    let mut alice_ear = Ear::new(bob_keys, bob.id, Roster::new([bob.id]));
-    let mut bob_ear = Ear::new(alice_keys, alice.id, Roster::new([alice.id]));
+    let mut alice_ear = Ear::new(bob_keys, bob.id, Roster::new([bob.id]), scope(channel));
+    let mut bob_ear = Ear::new(
+        alice_keys,
+        alice.id,
+        Roster::new([alice.id]),
+        scope(channel),
+    );
     tokio::join!(
         listen(&from_bob, &mut alice_ear, |_| true),
         listen(&from_alice, &mut bob_ear, |_| true),
@@ -579,12 +595,13 @@ async fn a_device_off_the_workspace_roster_gets_no_lane() {
     );
     // Nor does a frame claiming to be from Carol open anything, however well
     // it is sealed: the roster is checked before anything is decrypted.
-    let mut microphone = Microphone::new(&alice_keys, alice.id, 0).unwrap();
+    let mut microphone = Microphone::new(&alice_keys, alice.id, &scope(channel), 0).unwrap();
     let datagram = microphone.frame(0, b"an opus frame").unwrap().unwrap();
     assert_eq!(
         heard(
             &Opener::new(alice_keys.clone(), Roster::new([bob.id])),
             carol.id,
+            &scope(channel),
             &datagram
         ),
         Err(Refusal::OffRoster)
@@ -609,7 +626,7 @@ async fn audio_plays_through_a_lossy_path_without_waiting_behind_it() {
     let (from_alice, from_bob) = lane(&bob, &mut alice).await;
 
     let frames = tone(440.0, 100);
-    let mut ear = Ear::new(bob_keys, alice.id, Roster::new([alice.id]));
+    let mut ear = Ear::new(bob_keys, alice.id, Roster::new([alice.id]), scope(channel));
     let sending = tokio::spawn({
         let peer = from_alice.clone();
         let frames = frames.clone();
@@ -618,7 +635,7 @@ async fn audio_plays_through_a_lossy_path_without_waiting_behind_it() {
         async move {
             // Every datagram repeats the two frames before its newest one:
             // what a sender on a path it has measured loss on sends.
-            let mut microphone = Microphone::new(&keys, sender, 2).unwrap();
+            let mut microphone = Microphone::new(&keys, sender, &scope(channel), 2).unwrap();
             speak(&peer, &mut microphone, &frames).await
         }
     });

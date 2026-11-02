@@ -35,8 +35,10 @@ use media::realtime::{EncoderConfig, InputFormat, InputFrame, RealtimeEncoder, S
 use tilo_lock::MutexRecover as _;
 use tokio::sync::mpsc;
 
+use collab_types::scope::Scope;
+
 use crate::carrier::Peer;
-use crate::frame::{OVERHEAD, Opener, Sealer, Stream};
+use crate::frame::{OVERHEAD, Opener, Sealer, Stream, TrackName};
 use crate::roster::Roster;
 
 pub use crate::picture::{Layer, Source};
@@ -951,10 +953,13 @@ struct Sealing {
 }
 
 impl Sealing {
-    fn of(keys: &ChannelContentKeys, own: [u8; 32]) -> Option<Self> {
+    /// What seals `own`'s pictures under the epoch `keys` is at, each source's
+    /// frames named as its track in `scope`.
+    fn of(keys: &ChannelContentKeys, own: [u8; 32], scope: &Scope) -> Option<Self> {
+        let track = |stream: Stream| TrackName::new(scope, stream.track());
         Some(Self {
-            camera: Sealer::new(keys, own, Stream::Camera).ok()?,
-            screen: Sealer::new(keys, own, Stream::Screen).ok()?,
+            camera: Sealer::new(keys, own, Stream::Camera, track(Stream::Camera)).ok()?,
+            screen: Sealer::new(keys, own, Stream::Screen, track(Stream::Screen)).ok()?,
             camera_next: AtomicU32::new(0),
             screen_next: AtomicU32::new(0),
         })
@@ -1018,10 +1023,11 @@ impl Video {
         Arc::new(Self { inner })
     }
 
-    /// The channel's keys from now on: what seals the pictures this device
-    /// sends, and what opens the ones that arrive.
-    pub fn set_keys(&self, keys: &ChannelContentKeys, roster: Roster) {
-        let sealing = Sealing::of(keys, self.inner.own);
+    /// The keys of `scope`, the channel this call is in, from now on: what
+    /// seals the pictures this device sends, and what opens the ones that
+    /// arrive.
+    pub fn set_keys(&self, keys: &ChannelContentKeys, roster: Roster, scope: &Scope) {
+        let sealing = Sealing::of(keys, self.inner.own, scope);
         let mut current = self.inner.current.lock_recover();
         *current = sealing.map(|sealing| Together {
             opener: Opener::new(keys.clone(), roster),
@@ -1217,10 +1223,13 @@ impl Inner {
     /// for the call or the picture is not for it.
     fn opened(&self, peer: &PicturePeer, source: Source, sealed: &[u8]) -> Option<Vec<u8>> {
         let current = self.current.lock_recover();
-        let opened = current
-            .as_ref()?
+        let together = current.as_ref()?;
+        // The track this device seals `source` as is the one it opens: both
+        // ends of the lane name a source's pictures the same way.
+        let track = together.sealing.sealer(source).0.track();
+        let opened = together
             .opener
-            .open(peer.remote(), stream_of(source), sealed)
+            .open(peer.remote(), stream_of(source), track, sealed)
             .ok();
         drop(current);
         opened

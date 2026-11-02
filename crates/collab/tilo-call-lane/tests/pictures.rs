@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::ChannelId;
+use collab_types::scope::Scope;
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
@@ -66,6 +67,8 @@ struct Side {
     calls: Calls,
     video: Arc<Video>,
     keys: ChannelContentKeys,
+    /// The channel the call is sealed in.
+    scope: Scope,
     arrivals: tokio::sync::mpsc::UnboundedReceiver<tilo_call_lane::Peer>,
     _router: Router,
 }
@@ -91,7 +94,8 @@ async fn side(secret: [u8; 32], channel: ChannelId, keys: &ChannelContentKeys) -
         Roster::default(),
     );
     let video = Video::new(id);
-    video.set_keys(keys, Roster::new([id]));
+    let scope = Scope::channel(WORKSPACE, channel);
+    video.set_keys(keys, Roster::new([id]), &scope);
     let router = Router::builder(endpoint.clone())
         .accept(tilo_call_lane::ALPN, calls.clone())
         .spawn();
@@ -101,6 +105,7 @@ async fn side(secret: [u8; 32], channel: ChannelId, keys: &ChannelContentKeys) -
         calls,
         video,
         keys: keys.clone(),
+        scope,
         arrivals,
         _router: router,
     }
@@ -122,8 +127,8 @@ fn trust(a: &Side, b: &Side) {
     let roster = Roster::new([a.id, b.id]);
     a.calls.set_roster(roster.clone());
     b.calls.set_roster(roster.clone());
-    a.video.set_keys(&a.keys, roster.clone());
-    b.video.set_keys(&b.keys, roster);
+    a.video.set_keys(&a.keys, roster.clone(), &a.scope);
+    b.video.set_keys(&b.keys, roster, &b.scope);
 }
 
 /// Bob dials Alice, and both sides take the lane that results.

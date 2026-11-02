@@ -4,11 +4,17 @@
 use crate::voice::{self, Rebundler, VoiceObject};
 use channel_crypto::ChannelContentKeys;
 
-use crate::frame::{self, Opener, Refusal, Sealer, Stream};
+use crate::frame::{self, Opener, Refusal, Sealer, Stream, TrackName};
+use collab_types::scope::Scope;
 
 /// One more object than the profile puts in a datagram can repeat: a
 /// datagram is always the newest object plus the ones before it.
 const MAX_REPEATS: usize = voice::MAX_BUNDLE_OBJECTS - 1;
+
+/// The microphone's track in `scope`.
+fn track(scope: &Scope) -> TrackName {
+    TrackName::new(scope, Stream::Microphone.track())
+}
 
 /// One device's microphone on a lane.
 ///
@@ -28,12 +34,12 @@ pub struct Microphone {
 }
 
 impl Microphone {
-    /// Seal `sender`'s microphone frames under the epoch `keys` is at, each
-    /// datagram repeating the `repeats` frames sealed just before its newest
-    /// one.
+    /// Seal `sender`'s microphone frames as the audio track of `scope`, under
+    /// the epoch `keys` is at, each datagram repeating the `repeats` frames
+    /// sealed just before its newest one.
     ///
-    /// The channel's epoch moves when its membership does, and with it the
-    /// key: a sender that sees a new epoch seals with a new [`Microphone`].
+    /// The scope's epoch moves when its membership does, and with it the key:
+    /// a sender that sees a new epoch seals with a new [`Microphone`].
     ///
     /// # Errors
     ///
@@ -41,10 +47,11 @@ impl Microphone {
     pub fn new(
         keys: &ChannelContentKeys,
         sender: [u8; 32],
+        scope: &Scope,
         repeats: usize,
     ) -> Result<Self, Refusal> {
         Ok(Self {
-            sealer: Sealer::new(keys, sender, Stream::Microphone)?,
+            sealer: Sealer::new(keys, sender, Stream::Microphone, track(scope))?,
             next: 0,
             bundles: Rebundler::default(),
             repeats: repeats.min(MAX_REPEATS),
@@ -121,14 +128,21 @@ pub struct Heard {
 /// for a frame sealed under an epoch this device holds no key for,
 /// [`Refusal::Truncated`] for a datagram that is not a bundle of complete
 /// objects, and [`Refusal::Unauthenticated`] for a frame that does not
-/// authenticate, or whose clear sequence is not the one it was sealed as.
-pub fn heard(opener: &Opener, sender: [u8; 32], datagram: &[u8]) -> Result<Vec<Heard>, Refusal> {
+/// authenticate, or whose clear sequence is not the one it was sealed as, or
+/// which was sealed for another track.
+pub fn heard(
+    opener: &Opener,
+    sender: [u8; 32],
+    scope: &Scope,
+    datagram: &[u8],
+) -> Result<Vec<Heard>, Refusal> {
+    let track = track(scope);
     let objects = voice::bundle_objects(datagram).map_err(|_| Refusal::Truncated)?;
     let mut heard = Vec::with_capacity(objects.len());
     for object in objects {
         // `bundle_objects` validated the object's header without copying it.
         let object = VoiceObject::decode(object).map_err(|_| Refusal::Truncated)?;
-        let opus = opener.open(sender, Stream::Microphone, &object.payload)?;
+        let opus = opener.open(sender, Stream::Microphone, &track, &object.payload)?;
         let sealed_sequence = frame::sequence(&object.payload).ok_or(Refusal::Truncated)?;
         if u64::from(sealed_sequence) != object.sequence {
             return Err(Refusal::Unauthenticated);
@@ -147,11 +161,22 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::{Microphone, heard};
-    use crate::frame::{Opener, Refusal, Sealer, Stream};
+    use crate::frame::{Opener, Refusal, Sealer, Stream, TrackName};
     use crate::roster::Roster;
     use crate::voice;
     use channel_crypto::ChannelContentKeys;
     use collab_types::ChannelId;
+    use collab_types::scope::Scope;
+
+    /// The workspace the test's call is in: its scope is the call's.
+    fn scope() -> Scope {
+        Scope::workspace("w1")
+    }
+
+    /// The same call's camera, which the microphone's frames must not open as.
+    fn camera() -> TrackName {
+        TrackName::new(&scope(), Stream::Camera.track())
+    }
 
     const ALICE: [u8; 32] = [1; 32];
     const BOB: [u8; 32] = [2; 32];
@@ -169,12 +194,12 @@ mod tests {
     #[test]
     fn a_microphones_frames_open_at_the_place_and_time_they_were_sent() {
         let keys = keys(7);
-        let mut microphone = Microphone::new(&keys, ALICE, 0).unwrap();
+        let mut microphone = Microphone::new(&keys, ALICE, &scope(), 0).unwrap();
         let opener = ear(keys, &[ALICE, BOB]);
         let first = microphone.frame(960, b"one opus frame").unwrap().unwrap();
         let second = microphone.frame(1_920, b"another").unwrap().unwrap();
         assert_eq!(
-            heard(&opener, ALICE, &first).unwrap(),
+            heard(&opener, ALICE, &scope(), &first).unwrap(),
             vec![super::Heard {
                 sequence: 0,
                 timestamp_48k: 960,
@@ -182,7 +207,7 @@ mod tests {
             }]
         );
         assert_eq!(
-            heard(&opener, ALICE, &second).unwrap(),
+            heard(&opener, ALICE, &scope(), &second).unwrap(),
             vec![super::Heard {
                 sequence: 1,
                 timestamp_48k: 1_920,
@@ -194,14 +219,14 @@ mod tests {
     #[test]
     fn a_datagram_repeats_the_frames_just_before_its_newest_one() {
         let keys = keys(7);
-        let mut microphone = Microphone::new(&keys, ALICE, 2).unwrap();
+        let mut microphone = Microphone::new(&keys, ALICE, &scope(), 2).unwrap();
         let opener = ear(keys, &[ALICE]);
         for sequence in 0..3 {
             microphone.frame(sequence * 960, b"frame").unwrap().unwrap();
         }
         let datagram = microphone.frame(2_880, b"newest").unwrap().unwrap();
         assert!(datagram.len() <= voice::MAX_BUNDLE_BYTES);
-        let newest_first = heard(&opener, ALICE, &datagram).unwrap();
+        let newest_first = heard(&opener, ALICE, &scope(), &datagram).unwrap();
         assert_eq!(
             newest_first
                 .iter()
@@ -215,21 +240,35 @@ mod tests {
     #[test]
     fn a_third_devices_frames_and_another_streams_frames_open_nothing() {
         let keys = keys(7);
-        let mut microphone = Microphone::new(&keys, ALICE, 0).unwrap();
+        let mut microphone = Microphone::new(&keys, ALICE, &scope(), 0).unwrap();
         let datagram = microphone.frame(0, b"hello").unwrap().unwrap();
         let opener = ear(keys.clone(), &[ALICE]);
-        assert_eq!(heard(&opener, STRANGER, &datagram), Err(Refusal::OffRoster));
+        assert_eq!(
+            heard(&opener, STRANGER, &scope(), &datagram),
+            Err(Refusal::OffRoster)
+        );
         // Alice's voice does not open as her camera, nor under other keys.
-        let mouth = Sealer::new(&keys, ALICE, Stream::Microphone).unwrap();
+        let mouth = Sealer::new(
+            &keys,
+            ALICE,
+            Stream::Microphone,
+            TrackName::new(&scope(), Stream::Microphone.track()),
+        )
+        .unwrap();
         let camera_only = Opener::new(keys, Roster::new([ALICE]));
         let as_camera = mouth.seal(0, b"hello").unwrap();
         assert_eq!(
-            camera_only.open(ALICE, Stream::Camera, &as_camera),
+            camera_only.open(ALICE, Stream::Camera, &camera(), &as_camera),
             Err(Refusal::Unauthenticated)
         );
         // Another device's key ring at the same epoch derives another key.
         assert_eq!(
-            heard(&ear(keys_of_someone_else(), &[ALICE]), ALICE, &datagram),
+            heard(
+                &ear(keys_of_someone_else(), &[ALICE]),
+                ALICE,
+                &scope(),
+                &datagram
+            ),
             Err(Refusal::Unauthenticated)
         );
     }
@@ -241,12 +280,12 @@ mod tests {
     #[test]
     fn a_frame_too_large_for_a_datagram_is_refused_rather_than_delayed() {
         let keys = keys(7);
-        let mut microphone = Microphone::new(&keys, ALICE, 0).unwrap();
+        let mut microphone = Microphone::new(&keys, ALICE, &scope(), 0).unwrap();
         assert_eq!(microphone.frame(0, &[0; voice::MAX_BUNDLE_BYTES]), Ok(None));
         // The refusal does not consume the frame's place: the next one is 1.
         let datagram = microphone.frame(960, b"small").unwrap().unwrap();
         assert_eq!(
-            heard(&ear(keys, &[ALICE]), ALICE, &datagram).unwrap()[0].sequence,
+            heard(&ear(keys, &[ALICE]), ALICE, &scope(), &datagram).unwrap()[0].sequence,
             1
         );
     }
@@ -255,9 +294,12 @@ mod tests {
     fn a_datagram_that_is_not_a_bundle_of_frames_is_refused() {
         let keys = keys(7);
         let opener = ear(keys, &[ALICE]);
-        assert_eq!(heard(&opener, ALICE, &[]), Err(Refusal::Truncated));
         assert_eq!(
-            heard(&opener, ALICE, b"not a voice object at all"),
+            heard(&opener, ALICE, &scope(), &[]),
+            Err(Refusal::Truncated)
+        );
+        assert_eq!(
+            heard(&opener, ALICE, &scope(), b"not a voice object at all"),
             Err(Refusal::Truncated)
         );
     }

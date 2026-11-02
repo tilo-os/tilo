@@ -17,11 +17,18 @@
 //! | .. | body sealed with XChaCha20-Poly1305, 16-byte tag appended |
 //!
 //! The epoch and the sequence travel in the clear — a receiver picks the key
-//! by them — and both, with the stream, are the tag's associated data, so a
-//! frame does not authenticate as another stream's, another position's, or
-//! another epoch's. The sender is not in the frame: the lane knows which
-//! device it is talking to, and the check that the device is on the roster
-//! happens before anything is decrypted ([`Roster`]).
+//! by them — and both, with the stream and the full name of the track
+//! ([`TrackName`]: the workspace, the scope within it and the track), are the
+//! tag's associated data, so a frame does not authenticate as another
+//! stream's, another position's, another epoch's, or another track's: a
+//! window's frame never opens as another window's. The sender is not in the
+//! frame: the lane knows which device it is talking to, and the check that the
+//! device is on the roster happens before anything is decrypted ([`Roster`]).
+//!
+//! A track is sealed under the content keys of its scope
+//! ([`collab_types::scope::Scope`]): the workspace, one channel, or one
+//! record. So a call in a private channel is sealed under that channel's keys,
+//! and a member the channel does not hold derives nothing for it.
 //!
 //! Sealing derives the key once per stream ([`Sealer`]); opening derives it
 //! per frame from whichever epoch the frame names, which is what lets a
@@ -66,7 +73,7 @@ pub use audio::{Heard, Microphone, heard};
 pub use bridge::Bridge;
 #[cfg(feature = "lanes")]
 pub use carrier::{ALPN, Calls, Failed, Hello, Peer};
-pub use frame::{Lane, OVERHEAD, Opener, Refusal, Sealer, Stream};
+pub use frame::{Lane, OVERHEAD, Opener, Refusal, Sealer, Stream, TrackName};
 pub use page::Page;
 pub use picture::{Layer, Source};
 pub use roster::Roster;

@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn a_channel_scope_has_its_own_namespace() {
         let route = collab_types::ChannelRoute::new("so.tilo.sheets", "payroll");
-        let scope = Scope::channel("w1", route);
+        let scope = Scope::channel("w1", route.channel("w1"));
         let path = Namespace::new(&scope, DEVICE).path();
         assert!(path.contains(&format!("/scope/{}/", scope.id())));
         assert_ne!(path, Namespace::new(&Scope::workspace("w1"), DEVICE).path());
