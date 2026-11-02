@@ -102,6 +102,7 @@ pub mod shell;
 mod shortcut_guide;
 mod slot_binding;
 mod slot_views;
+pub mod startup;
 mod status;
 pub mod surfaces;
 pub mod sync;

@@ -336,7 +336,7 @@ if [ "$mode" = runtime ]; then
   done
   [ ! -e /var/lib/tilo/user-identity/privkey.bin ] \
     || die "personal root private key is duplicated into shared system identity storage"
-  /usr/bin/shell --verify-collaboration-identity >/dev/null \
+  /usr/bin/tilo-session --verify-collaboration-identity >/dev/null \
     || die "installed collaboration identity chain does not verify"
 
   for attempt in $(seq 1 30); do

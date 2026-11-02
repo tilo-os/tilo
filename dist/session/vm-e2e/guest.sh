@@ -240,8 +240,8 @@ step_identity() {
     # The entry point package CI uses for host provisioning; it mints through
     # the same ensure_collaboration_identity_for_legacy_linux_host the
     # host-desktop setup screen calls, with the platform secret store.
-    as_user /usr/bin/tilo-shell --host-desktop-session --provision-identity
-    as_user /usr/bin/tilo-shell --host-desktop-session --verify-collaboration-identity
+    as_user /usr/bin/tilo-session --host-desktop --provision-identity
+    as_user /usr/bin/tilo-session --host-desktop --verify-collaboration-identity
     local record=/home/$user/.config/tilo/identity/primary.json
     [[ -s $record ]] || die "no identity record at $record"
     grep -q '"secret-service-v1"' "$record" \
