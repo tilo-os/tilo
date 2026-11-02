@@ -1,12 +1,12 @@
-//! What an app writes on one device reaches the room's other devices: the
-//! broker commits it to this device's owner, the canonical copy of the room
-//! here, and the owner's outgoing custody leaves on the plane's session with
-//! the room's host, which hands it to every other member.
+//! What an app writes on one device reaches the workspace's other devices:
+//! the broker commits it to this device's owner, the canonical copy of the
+//! workspace here, and the owner's outgoing custody leaves on the plane's
+//! session with the workspace's host, which hands it to every other member.
 //!
 //! Two sessions' planes on this machine's loopback, each with its own
-//! engine, join one room governed by a host on this machine whose
-//! certificate takes part in no channels: the room's records are documents
-//! the owner commits.
+//! engine, join one workspace governed by a host on this machine whose
+//! certificate takes part in no channels: the workspace's records are
+//! documents the owner commits.
 
 tilo_automerge_isolate::test_worker!();
 
@@ -43,13 +43,14 @@ fn certified(
     cert
 }
 
-/// A host on this machine governing one room, certified so that it takes
-/// part in no channels: what its members record is committed in the clear.
+/// A host on this machine governing one workspace, certified so that it
+/// takes part in no channels: what its members record is committed in the
+/// clear.
 struct Host {
     relay: Option<tilo_relay::daemon::Relay>,
     rooms: tilo_relay::rooms::Rooms,
     cert: DeviceCert,
-    room: String,
+    workspace: String,
     runtime: tokio::runtime::Runtime,
     _state: tempfile::TempDir,
 }
@@ -81,7 +82,7 @@ impl Host {
                 ..tilo_user_identity::cloud_enrollment::host_capabilities()
             },
         );
-        let (relay, rooms, room) = runtime.block_on(async {
+        let (relay, rooms, workspace) = runtime.block_on(async {
             let relay = tilo_relay::daemon::Relay::start(
                 tilo_relay::RelayConfig {
                     state_root: state.path().join("host"),
@@ -96,26 +97,26 @@ impl Host {
             )
             .await
             .expect("the host starts");
-            let rooms = relay.rooms().expect("the host governs rooms").clone();
-            let room = rooms.create("Notes").await.expect("the room").room;
-            (relay, rooms, room)
+            let rooms = relay.rooms().expect("the host governs workspaces").clone();
+            let workspace = rooms.create("Notes").await.expect("the workspace").room;
+            (relay, rooms, workspace)
         });
         Self {
             relay: Some(relay),
             rooms,
             cert,
-            room,
+            workspace,
             runtime,
             _state: state,
         }
     }
 
-    /// An invitation to the room that only `person`'s devices redeem.
+    /// An invitation to the workspace that only `person`'s devices redeem.
     fn invitation(&self, person: [u8; 32], request: u8) -> String {
         let issued = self
             .runtime
             .block_on(self.rooms.issue(
-                &self.room,
+                &self.workspace,
                 &self.cert,
                 tilo_workspace_join::invitations::IssueInvitationRequest {
                     request_id: [request; 32],
@@ -126,12 +127,12 @@ impl Host {
                     inviter_name: None,
                 },
             ))
-            .expect("an invitation to the room");
+            .expect("an invitation to the workspace");
         tilo_workspace_join::encode_invitation_text(&issued.signed_invitation)
     }
 }
 
-/// One session's side of the room: its engine, and its plane.
+/// One session's side of the workspace: its engine, and its plane.
 struct Device {
     engine: std::sync::Arc<Engine>,
     plane: Client,
@@ -140,7 +141,7 @@ struct Device {
 
 impl Device {
     /// A session of its own person's device, whose plane runs with its
-    /// rooms' channel link as the session's does.
+    /// workspaces' channel link as the session's does.
     fn start(seed: u8, label: &str) -> Self {
         let root = SigningKey::from_bytes(&[seed; 32]);
         let key = SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
@@ -178,37 +179,37 @@ impl Device {
         self.engine.identity().device_cert.user_public_key
     }
 
-    /// Join the host's room with an invitation for this person, and wait
-    /// until the room is held here.
+    /// Join the host's workspace with an invitation for this person, and
+    /// wait until the workspace is held here.
     fn join(&self, host: &Host, request: u8) -> RoomId {
-        let room = RoomId::parse(&host.room).expect("a room");
-        let workspace = WorkspaceId::of_room(room);
-        self.engine.bind(workspace, room);
+        let workspace_id = RoomId::parse(&host.workspace).expect("a workspace id");
+        let workspace = WorkspaceId::of_room(workspace_id);
+        self.engine.bind(workspace, workspace_id);
         self.plane
             .enroll(Enrolling {
                 workspace,
-                workspace_id: room,
+                workspace_id,
                 invitation: host.invitation(self.person(), request),
             })
             .expect("the plane takes the enrollment");
         let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Some(enrolled) = self.plane.take_enrolled().pop() {
-                enrolled.result.expect("the room admits this device");
-                return room;
+                enrolled.result.expect("the workspace admits this device");
+                return workspace_id;
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "the room's host answers the enrollment"
+                "the workspace's host answers the enrollment"
             );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
 }
 
-/// The receipt of an effect this device's app had in `room`, as the broker
-/// records it: redacted, its actor this device's person.
-fn receipt(device: &Device, room: RoomId, invocation: uuid::Uuid) -> OwnerCommitRequest {
+/// The receipt of an effect this device's app had in `workspace`, as the
+/// broker records it: redacted, its actor this device's person.
+fn receipt(device: &Device, workspace_id: RoomId, invocation: uuid::Uuid) -> OwnerCommitRequest {
     let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
         tilo_actions::InvocationId(invocation),
         &hex::encode(device.person()),
@@ -218,7 +219,7 @@ fn receipt(device: &Device, room: RoomId, invocation: uuid::Uuid) -> OwnerCommit
     );
     effect.completed_at = 100;
     OwnerCommitRequest {
-        workspace: room.to_string(),
+        workspace: workspace_id.to_string(),
         operation: CommitOperation::EffectReceipt {
             invocation,
             redacted: serde_json::to_vec(&effect).expect("a redacted receipt"),
@@ -226,12 +227,12 @@ fn receipt(device: &Device, room: RoomId, invocation: uuid::Uuid) -> OwnerCommit
     }
 }
 
-/// Whether `device`'s copy of `room` holds the receipt of `invocation`.
-fn holds_receipt(device: &Device, room: RoomId, invocation: uuid::Uuid) -> bool {
+/// Whether `device`'s copy of `workspace` holds the receipt of `invocation`.
+fn holds_receipt(device: &Device, workspace_id: RoomId, invocation: uuid::Uuid) -> bool {
     device
         .engine
         .owner()
-        .with_current(room, |view| {
+        .with_current(workspace_id, |view| {
             Ok(view.peer().admitted_workspace().is_some_and(|workspace| {
                 tilo_desktop_model::projection::workspace_effect_receipts_of(workspace)
                     .iter()
@@ -241,23 +242,23 @@ fn holds_receipt(device: &Device, room: RoomId, invocation: uuid::Uuid) -> bool 
         .unwrap_or(false)
 }
 
-/// An effect an app had in a room this session holds: the broker the
+/// An effect an app had in a workspace this session holds: the broker the
 /// session serves its apps from commits its receipt to the session's owner,
-/// and the owner's custody leaves for the room's other session, which then
-/// holds it too.
+/// and the owner's custody leaves for the workspace's other session, which
+/// then holds it too.
 #[test]
-fn a_receipt_the_owner_commits_reaches_the_rooms_other_session() {
+fn a_receipt_the_owner_commits_reaches_the_workspaces_other_session() {
     let host = Host::start();
     let writer = Device::start(0x51, "The writing device");
     let reader = Device::start(0x61, "The reading device");
-    let room = writer.join(&host, 0x01);
-    assert_eq!(reader.join(&host, 0x02), room);
+    let workspace = writer.join(&host, 0x01);
+    assert_eq!(reader.join(&host, 0x02), workspace);
 
     // The broker the writer's session serves its apps from.
     let publisher = crate::plane::owner_publisher(Some(std::sync::Arc::clone(&writer.engine)));
     assert!(
-        publisher.records_effects_for(&room.to_string()),
-        "the room's effect receipts are the owner's to commit"
+        publisher.records_effects_for(&workspace.to_string()),
+        "the workspace's effect receipts are the owner's to commit"
     );
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -266,18 +267,18 @@ fn a_receipt_the_owner_commits_reaches_the_rooms_other_session() {
         .expect("the broker's runtime");
     let invocation = uuid::Uuid::new_v4();
     runtime
-        .block_on(publisher.commit_owner(receipt(&writer, room, invocation), None))
+        .block_on(publisher.commit_owner(receipt(&writer, workspace, invocation), None))
         .expect("the owner commits the app's receipt");
     assert!(
-        holds_receipt(&writer, room, invocation),
+        holds_receipt(&writer, workspace, invocation),
         "the receipt is the writer's owner's"
     );
 
     let deadline = tilo_test_env::hang_deadline();
-    while !holds_receipt(&reader, room, invocation) {
+    while !holds_receipt(&reader, workspace, invocation) {
         assert!(
             std::time::Instant::now() < deadline,
-            "the receipt reaches the room's other session"
+            "the receipt reaches the workspace's other session"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

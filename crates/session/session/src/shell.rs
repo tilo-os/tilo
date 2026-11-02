@@ -668,7 +668,7 @@ impl crate::Session {
         }
         let doors = &self.shared.doors;
         let search = &self.shared.search;
-        let room = self.shared.handle.read(|tree| {
+        let workspace = self.shared.handle.read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.room().to_string())
                 .unwrap_or_default()
@@ -689,7 +689,7 @@ impl crate::Session {
                 {
                     return search
                         .perform_checked(
-                            &room,
+                            &workspace,
                             tilo_desktop_search::Target::Launch {
                                 app: app.to_owned(),
                             },

@@ -412,8 +412,9 @@ pub fn serve(
 }
 
 /// Where the broker's writes go beyond this device's own apps: into the
-/// engine's owner, which publishes what it committed to each room's peers.
-/// A session that holds no rooms keeps its apps' writes among them.
+/// engine's owner, which publishes what it committed to each workspace's
+/// peers. A session that holds no workspaces keeps its apps' writes among
+/// them.
 pub(crate) fn owner_publisher(
     engine: Option<std::sync::Arc<crate::engine::Engine>>,
 ) -> std::sync::Arc<PeerPublisher> {

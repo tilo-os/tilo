@@ -251,8 +251,7 @@ struct Shared {
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
     services: Rc<RefCell<Services>>,
-    /// The windows this session shares with its workspaces, and the streams
-    /// it receives from them.
+    /// The windows this session shares with its workspaces, and the streams it receives from them.
     window_shares: Rc<RefCell<window_share::WindowShares>>,
     /// The runs of what people ask this session's agents to do, fed every
     /// pass who sits here and what the workspace in front admits.
@@ -345,8 +344,7 @@ struct Shared {
     /// Who is here: this session's membership of each workspace, when it
     /// takes part in the collaboration plane.
     sync: Option<Rc<sync::Client>>,
-    /// This device's workspaces: what the desk shows of them, and what a
-    /// join takes in.
+    /// This device's workspaces: what the desk shows of them, and what a join takes in.
     engine: Option<std::sync::Arc<engine::Engine>>,
     /// The engine revision the desk's copy of each workspace's people was
     /// last taken from: what nothing new of a workspace's governance has
@@ -1245,8 +1243,8 @@ impl Session {
                 .map(|workspace| workspace.id.0.to_string())
         }));
         wallpapers.start(&settings_store::load());
-        // The apps the person opens read their workspace from this desktop
-        // and leave their notice in it.
+        // The apps the person opens read their workspace from this desktop and leave
+        // their notice in it.
         if let Some(launch) = &options.launch {
             launch.attach(desktop.clone());
         }
@@ -1369,8 +1367,7 @@ impl Session {
         let fullscreen: Rc<RefCell<Vec<String>>> = Rc::default();
         // The windows this session shares with its workspaces: a share's
         // encoder wakes the loop when it has a frame, and the bar reads them.
-        // A
-        // window another device shares is decoded on the same waker, so a
+        // A window another device shares is decoded on the same waker, so a
         // picture that comes out late lands without waiting for the next
         // frame the desk draws for something else.
         let window_shares = window_share::WindowShares::new(
@@ -1664,8 +1661,7 @@ impl Session {
         services
             .borrow_mut()
             .add(Box::new(lock_service::LockService::new(lock.clone())));
-        // A window shared with a workspace, and the windows its members
-        // share.
+        // A window shared with a workspace, and the windows its members share.
         services
             .borrow_mut()
             .add(Box::new(window_share::WindowShareService::new(Rc::clone(
@@ -1792,8 +1788,7 @@ impl Session {
         };
         shared.start_search();
         // What the person copied is personal: the clipboard publishes the
-        // copies itself, as a reading only a caller the workspace grants
-        // reads.
+        // copies itself, as a reading only a caller the workspace grants reads.
         shared
             .services
             .borrow_mut()
@@ -2500,8 +2495,8 @@ impl Session {
         // The menu the reading says is up has its view over the desk, and
         // the view goes when the menu does.
         self.follow_window_menu();
-        // Each open window takes the temperature of the room it is in, as
-        // this pass left it.
+        // Each open window takes the temperature of the workspace it is in,
+        // as this pass left it.
         self.follow_window_warmth();
         self.shared.clipboard.serve_asks(&mut self.compositor);
         // One file of a paste in flight per turn, so a folder of files does
