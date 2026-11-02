@@ -28,6 +28,10 @@ pub struct AppLists {
     /// Every app that opens a kind of file or link here, and which kinds:
     /// what workspace settings offer as default openers.
     pub candidates: Vec<desktop_policy::AppCandidate>,
+    /// What each installed app declared it may do on the action door under
+    /// its own identity, by package id: the ceiling the broker admits an
+    /// app's query and invoke against, never a grant.
+    pub declared: BTreeMap<String, tilo_action_broker::app_actions::AppActionAccess>,
 }
 
 impl AppLists {
@@ -54,6 +58,21 @@ impl AppLists {
         let icons = installed
             .iter()
             .filter_map(|app| Some((app.package_id.clone(), app.icon_path()?)))
+            .collect();
+        // Each app's declared reach of the action door, from its signed
+        // manifest: the ceiling the broker admits its calls against.
+        let declared = installed
+            .iter()
+            .map(|app| {
+                let declared = app.declared_actions();
+                (
+                    app.package_id.clone(),
+                    tilo_action_broker::app_actions::AppActionAccess {
+                        query: declared.query,
+                        invoke: declared.invoke,
+                    },
+                )
+            })
             .collect();
         // The machine's entries through the memoised scan, whose watch this
         // first read starts: what later asks for an entry's icon or name on
@@ -134,6 +153,7 @@ impl AppLists {
             catalogue,
             icons,
             candidates,
+            declared,
         }
     }
 

@@ -302,6 +302,9 @@ pub(crate) fn start_action_plane(
             // ones its collaboration plane holds.
             engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
             journal_root: options.state.as_deref().map(plane::journal_root),
+            // What each installed app declares it may do on the action door,
+            // read by search's own worker off the session's thread.
+            lists: options.search.lists.clone(),
         },
     )?;
     // What arrives on this device's action plane is answered by the broker
