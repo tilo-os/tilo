@@ -77,7 +77,7 @@ def prepare(output, feature, env, build_only=False):
     for name in ('TILO_CAPTURE_PINS', 'TILO_CAPTURE_SIDECAR', 'TILO_REQUIRE_CAPTURE'):
         clean.pop(name, None)
     run(['bash', HERE / 'capture-native-preflight.sh'], clean)
-    run([recorder, 'build', '--locked', '--release', '-p', 'shell', '--bin', 'shell',
+    run([recorder, 'build', '--locked', '--release', '-p', 'tilo-session', '--bin', 'tilo-session',
          '-p', 'tilo-fs', '--bin', 'fs', '-p', 'tilo-control', '--bin', 'tilo-control',
          '-p', 'account-custody', '--bin', 'tilo-account-credential',
          '-p', 'tilo-install-helpers', '--bin', 'tilo-staging-handoff', '--bin', 'tilo-install-handoff-copy',

@@ -486,19 +486,19 @@ pub(super) fn trusted_identity_complete() -> Result<(), String> {
     let parent = executable
         .parent()
         .ok_or("Import executable has no installed directory")?;
-    // Nix seals its actual wrapped ELF path at build time. FHS packages keep
-    // the root-owned shell ELF beside this installed import executable.
-    let trusted_shell = option_env!("TILO_DESKTOP_TRUSTED_SHELL_PATH")
+    // Nix seals the session's ELF path at build time. FHS packages keep the
+    // root-owned session ELF beside this installed import executable.
+    let trusted_session = option_env!("TILO_DESKTOP_TRUSTED_SESSION_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| parent.join("tilo-shell"));
-    authenticated_session_ready(&runtime, &display, &trusted_shell)
+        .unwrap_or_else(|| parent.join("tilo-session"));
+    authenticated_session_ready(&runtime, &display, &trusted_session)
 }
 
 #[cfg(target_os = "linux")]
 fn authenticated_session_ready(
     runtime: &Path,
     display: &std::ffi::OsStr,
-    trusted_shell: &Path,
+    trusted_session: &Path,
 ) -> Result<(), String> {
     use std::io::Read;
     use std::os::unix::ffi::OsStrExt;
@@ -518,14 +518,18 @@ fn authenticated_session_ready(
     if !wayland.file_type().is_socket() || wayland.uid() != uid {
         return Err("Untrusted session display".into());
     }
-    let key = hex::encode(bytes);
-    let socket = runtime.join(format!("tilo-import-{key}-{}.sock", wayland.ino()));
+    let socket = tilo_paths::login::import_readiness_socket(
+        Some(runtime.as_os_str().to_owned()),
+        display,
+        wayland.ino(),
+    )
+    .ok_or("Invalid session display")?;
     let mut stream = connect_readiness(&socket)
         .map_err(|_| "Waiting for trusted Tilo identity setup to finish".to_string())?;
     stream
         .set_read_timeout(Some(std::time::Duration::from_millis(250)))
         .map_err(|e| e.to_string())?;
-    authenticate_session_peer(&stream, trusted_shell, uid)?;
+    authenticate_session_peer(&stream, trusted_session, uid)?;
     pin.validate().map_err(|e| e.to_string())?;
     let mut response = [0_u8; 21];
     stream
@@ -549,7 +553,7 @@ fn authenticated_session_ready(
 #[cfg(target_os = "linux")]
 fn authenticate_session_peer(
     stream: &std::os::unix::net::UnixStream,
-    trusted_shell: &Path,
+    trusted_session: &Path,
     uid: u32,
 ) -> Result<(), String> {
     use cap_fs_ext::OpenOptionsFollowExt;
@@ -581,17 +585,17 @@ fn authenticate_session_peer(
         .read(true)
         .follow(cap_primitives::fs::FollowSymlinks::No);
     let trusted_parent = PinnedDirectory::open_absolute(
-        trusted_shell
+        trusted_session
             .parent()
-            .ok_or("trusted shell has no parent")?,
+            .ok_or("the trusted session has no parent")?,
     )
     .map_err(|e| e.to_string())?;
     let expected = cap_primitives::fs::open(
         &trusted_parent.file,
         Path::new(
-            trusted_shell
+            trusted_session
                 .file_name()
-                .ok_or("trusted shell has no name")?,
+                .ok_or("the trusted session has no name")?,
         ),
         &options,
     )
@@ -606,7 +610,7 @@ fn authenticate_session_peer(
         || expected.ino() != actual.ino()
         || expected.dev() != actual.dev()
     {
-        return Err("Readiness peer is not the installed trusted Tilo shell".into());
+        return Err("Readiness peer is not the installed Tilo session".into());
     }
     trusted_parent.validate().map_err(|e| e.to_string())?;
     Ok(())
@@ -752,15 +756,18 @@ mod tests {
                     .is_err()
             );
             let ino = fs::symlink_metadata(root.join("wayland-1")).unwrap().ino();
-            let socket = root.join(format!("tilo-import-7761796c616e642d31-{ino}.sock"));
+            fs::create_dir(root.join(tilo_paths::login::SESSION_DIR)).unwrap();
+            let socket = tilo_paths::login::import_readiness_socket(
+                Some(root.as_os_str().to_owned()),
+                std::ffi::OsStr::new("wayland-1"),
+                ino,
+            )
+            .unwrap();
             let _fake = UnixListener::bind(socket).unwrap();
             let error =
                 authenticated_session_ready(root, std::ffi::OsStr::new("wayland-1"), trusted)
                     .unwrap_err();
-            assert!(
-                error.contains("not the installed trusted Tilo shell"),
-                "{error}"
-            );
+            assert!(error.contains("not the installed Tilo session"), "{error}");
             assert!(
                 authenticated_session_ready(root, std::ffi::OsStr::new("../escape"), trusted)
                     .is_err()

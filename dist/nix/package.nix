@@ -106,9 +106,11 @@ rustPlatform.buildRustPackage rec {
   # platform is ARM, so it must load the build-platform libclang.
   LIBCLANG_PATH = "${lib.getLib buildPackages.libclang}/lib";
   # The FHS packages use /usr/libexec. Nix must seal the immutable store path
-  # into the compositor or locking the session could never invoke PAM.
+  # into the compositor or locking the session could never invoke PAM, and the
+  # session's own path into the folder importer, which trusts only the session
+  # binary installed beside it.
   preBuild = ''
-    export TILO_DESKTOP_TRUSTED_SHELL_PATH="$out/bin/.tilo-shell-wrapped"
+    export TILO_DESKTOP_TRUSTED_SESSION_PATH="$out/bin/tilo-session"
     export TILO_UNLOCK_HELPER_PATH="$out/libexec/tilo-unlock-helper"
     export TILO_FONT_ASSET_CACHE="$TMPDIR/font-artifacts"
     cp -r --no-preserve=mode ${fontAssetCache} "$TILO_FONT_ASSET_CACHE"

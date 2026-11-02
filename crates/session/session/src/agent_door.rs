@@ -731,7 +731,7 @@ pub(crate) fn bind_private(path: &Path) -> io::Result<UnixListener> {
     if path.file_name().is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "the agent door's path names no file",
+            "a private socket path names no file",
         ));
     }
     if !parent.exists() {

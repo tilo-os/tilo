@@ -15,7 +15,7 @@ qualifier never downloads an image, builds with Cargo, signs artifacts, changes
 caller Home or starts a graphical desktop.
 
 The native image is a current-artifact environment: full mode checks its
-installed `/usr/bin/shell`, `/usr/bin/fs`, `/usr/bin/tilo-control`,
+installed `/usr/bin/tilo-session`, `/usr/bin/fs`, `/usr/bin/tilo-control`,
 `/usr/libexec/tilo-prepared-setup` and `/usr/libexec/tilo-account-credential`
 against the measured cohort. An old image may be a base for a current verified
 artifact layer, but its historical receipt is not that layer's proof. Do not
