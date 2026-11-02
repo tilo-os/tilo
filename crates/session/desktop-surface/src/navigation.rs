@@ -194,8 +194,9 @@ pub enum DeskEffect {
 
     /// Search the desktop
     ///
-    /// Open the desktop's search, with `query` typed when given, or type it
-    /// into the search already open.
+    /// Open the desktop's search, or close it when it is already open, as
+    /// its key does; with `query` typed when given, into the search already
+    /// open instead.
     #[effect(own_device)]
     Search {
         /// What to type.

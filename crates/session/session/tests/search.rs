@@ -223,10 +223,11 @@ fn typing_after_the_search_chord_reaches_its_query() {
     });
 }
 
-/// Pressing the chord again over the open search leaves it open: the chord
-/// opens search, and nothing the desk's own keyboard answers closes it.
+/// The same a moment later: the field keeps the keyboard while search stays
+/// open and the desk redraws under it, so a person who takes their time
+/// before typing loses nothing.
 #[test]
-fn the_search_chord_over_the_open_search_leaves_it_open() {
+fn typing_once_search_has_settled_reaches_its_query() {
     let _settled = ui::motion::testing::settled();
     let mut session = session(Rc::new(Host::default()));
     session.compositor().set_key_repeat(KeyRepeat {
@@ -234,7 +235,141 @@ fn the_search_chord_over_the_open_search_leaves_it_open() {
         rate: 0,
     });
     session.step(Duration::from_millis(1)).expect("step");
-    for _ in 0..2 {
+    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
+        session
+            .compositor()
+            .input(InputEvent::Key { keycode, pressed })
+            .expect("input");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+    for _ in 0..40 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    for keycode in [46, 30, 38] {
+        type_key(&mut session, keycode);
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| search.label == "cal")
+    });
+}
+
+/// Letters a fast typist sends close together reach the query all the same:
+/// three keys land in one batch, with no frame between press and release.
+#[test]
+fn typing_letters_in_one_batch_reaches_the_query() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
+        session
+            .compositor()
+            .input(InputEvent::Key { keycode, pressed })
+            .expect("input");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+    for _ in 0..20 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    for keycode in [46, 30, 38] {
+        for pressed in [true, false] {
+            session
+                .compositor()
+                .input(InputEvent::Key { keycode, pressed })
+                .expect("input");
+        }
+    }
+    session.step(Duration::from_millis(12)).expect("step");
+    for _ in 0..20 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label.clone());
+    assert_eq!(
+        label.as_deref(),
+        Some("cal"),
+        "every letter reaches the query"
+    );
+}
+
+/// Clearing the query by hand does not end the typing: what is typed after
+/// the last letter is deleted reaches the query as the first letters did.
+#[test]
+fn typing_after_deleting_the_whole_query_reaches_it_again() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
+        session
+            .compositor()
+            .input(InputEvent::Key { keycode, pressed })
+            .expect("input");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+    for _ in 0..20 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    // Letters and deletions alike arrive a frame apart, as a person's do.
+    fn keys(session: &mut Session, keycodes: &[u32]) {
+        for keycode in keycodes {
+            for pressed in [true, false] {
+                session
+                    .compositor()
+                    .input(InputEvent::Key {
+                        keycode: *keycode,
+                        pressed,
+                    })
+                    .expect("input");
+                session.step(Duration::from_millis(12)).expect("step");
+            }
+        }
+        for _ in 0..20 {
+            session.step(Duration::from_millis(16)).expect("step");
+        }
+    }
+    let untyped = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label.clone());
+    keys(&mut session, &[46, 30, 38]);
+    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label.clone());
+    assert_eq!(label.as_deref(), Some("cal"), "the first letters reach it");
+    keys(&mut session, &[14, 14, 14]);
+    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label.clone());
+    assert_eq!(label, untyped, "the query is empty again");
+    keys(&mut session, &[48, 24, 24]);
+    let label = find(&session.resources(), SEARCH_RESOURCE).map(|search| search.label.clone());
+    assert_eq!(
+        label.as_deref(),
+        Some("boo"),
+        "typing after deleting still lands"
+    );
+}
+
+/// The chord toggles: a press over the open search closes it, and the next
+/// one brings it back, as the shell's own search key does.
+#[test]
+fn the_search_chord_closes_the_open_search_and_opens_it_again() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    fn chord(session: &mut Session) {
         for (keycode, pressed) in [(125, true), (57, true), (57, false), (125, false)] {
             session
                 .compositor()
@@ -242,17 +377,22 @@ fn the_search_chord_over_the_open_search_leaves_it_open() {
                 .expect("input");
             session.step(Duration::from_millis(1)).expect("step");
         }
+        for _ in 0..10 {
+            session.step(Duration::from_millis(16)).expect("step");
+        }
     }
+    chord(&mut session);
     until(&mut session, |session| {
         find(&session.resources(), SEARCH_RESOURCE).is_some()
     });
-    for _ in 0..10 {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    assert!(
-        find(&session.resources(), SEARCH_RESOURCE).is_some(),
-        "the search is still up after the chord is pressed over it"
-    );
+    chord(&mut session);
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_none()
+    });
+    chord(&mut session);
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
 }
 
 #[test]

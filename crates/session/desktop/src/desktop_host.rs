@@ -394,7 +394,14 @@ impl DeskLayer {
                 };
                 close_tab(&self.handle, tab);
             }
-            DeskEffect::Search { query } => self.handle.open_search(query.clone()),
+            // With nothing typed the effect is the search key itself: it
+            // opens search, and a press over the open search closes it, as
+            // the shell's own search key does. A query is typed into the
+            // search already open instead.
+            DeskEffect::Search { query } => match query {
+                None => self.handle.toggle_search(),
+                Some(_) => self.handle.open_search(query.clone()),
+            },
             DeskEffect::ChooseSearchRow { row, argument } => self.handle.choose_search_row(
                 usize::try_from(*row).unwrap_or(usize::MAX),
                 argument.clone(),
