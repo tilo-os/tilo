@@ -139,13 +139,10 @@ impl Session {
         stage("hosting the workspace on this device");
         peer_sync.host(workspace_room)?;
         stage("starting the collaboration broker");
-        let broker = collab_broker::spawn_native_offloading(
+        let broker = collab_broker::spawn_native(
             root.join(COLLAB_SOCKET),
             &Some(Arc::clone(&peer_sync.network)),
             tree.clone(),
-            // Offloadable actions of the room may run on a better-placed
-            // device of this person, over the room's media in this store.
-            tilo_runtime::offload::action_offload(&[room_id.as_str()], media.store()),
         )?;
         channel_keys.set(broker.channel_encryption());
         let writer = tree.read().native_runtime.clone();

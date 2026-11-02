@@ -170,6 +170,36 @@ impl ShellNetwork {
         self.native_owner_status().open()
     }
 
+    /// How this device asks the other devices of its workspaces whether they
+    /// would run an offloadable action sooner: a plane signed as this device,
+    /// at the endpoint they reach it on, and the runtime that carries the
+    /// asks. `None` when this device has no network identity yet.
+    ///
+    /// Answers to what it asks arrive on the answering device's host plane;
+    /// this one is never served, and hands every request it is given to no
+    /// app, so a caller that asked it in turn hears that nothing is served
+    /// here.
+    pub(crate) fn offer_plane(
+        network: &Arc<Self>,
+    ) -> Option<(
+        tilo_peer_state::actions::ActionPlane,
+        iroh::Endpoint,
+        tokio::runtime::Handle,
+    )> {
+        let identity = network.host_identity.as_ref()?;
+        let endpoint = network.private_chat_endpoint.clone()?;
+        let runtime = network.runtime_handle().ok()?;
+        let plane = {
+            let _entered = runtime.enter();
+            tilo_peer_state::actions::ActionPlane::over(
+                identity.device_signing_key.clone(),
+                Arc::new(tilo_peer_state::actions::NoActions),
+                Arc::new(crate::shell::device_plane::OfferWorkspaces::new(network)),
+            )
+        };
+        Some((plane, endpoint, runtime))
+    }
+
     /// Why the last open of the owner failed, when one did: what a
     /// diagnostic that found no owner must print.
     #[cfg(test)]

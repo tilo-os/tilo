@@ -208,6 +208,21 @@ impl Plane {
     }
 }
 
+/// What this session's plane holds of a record's content, as an offload round
+/// that ran its invocation on another device reads what that device produced:
+/// [`Plane::fetch`] from the devices that have it.
+impl tilo_runtime::offload::OutputContent for Plane {
+    fn content<'a>(
+        &'a self,
+        workspace: &'a str,
+        app: &'a str,
+        digest: [u8; 32],
+        within: Duration,
+    ) -> MediaFuture<'a, Option<Vec<u8>>> {
+        Box::pin(self.fetch(workspace, app, digest, within))
+    }
+}
+
 /// What a message from a workspace's member says about content, when it says
 /// anything about it: the record's route, and the ask or answer it carries.
 fn inbound(

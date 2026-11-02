@@ -263,6 +263,17 @@ fn broker_services(
     parts: BrokerParts<'_>,
     policy_time: tilo_action_broker::policy_clock::PolicyTime,
 ) -> io::Result<HostServices> {
+    let record_content = joined::record_content(parts.joined, &parts.root.join(BLOB_SOCKET));
+    // Where this workspace's offloadable actions may run instead of here: the
+    // other devices of the invoking workspace answer an offer round over the
+    // endpoint this profile syncs on, and the content an offloaded run reads
+    // and answers with is the content this broker routes.
+    let action_offload = parts
+        .joined
+        .offer_plane()
+        .and_then(|(plane, endpoint, runtime)| {
+            crate::offload::offer_door(plane, endpoint, runtime, Arc::clone(&record_content))
+        });
     Ok(HostServices {
         native_certificates: Some(Arc::new(Certificates {
             workspace: parts.workspace_id.to_owned(),
@@ -279,16 +290,11 @@ fn broker_services(
         })),
         legacy_workspace: Some(Arc::clone(parts.workspace) as Arc<dyn LegacyWorkspaceProjection>),
         workspace_governance: Some(media_import::service(parts.workspace, parts.media)?),
-        record_content: Some(joined::record_content(
-            parts.joined,
-            &parts.root.join(BLOB_SOCKET),
-        )),
+        record_content: Some(record_content),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
         channel_keys: Some(parts.keys.clone()),
-        // Offloadable actions of the workspace may run on a better-placed
-        // device of this person, over the workspace's media in this store.
-        action_offload: crate::offload::action_offload(&[parts.workspace_id], parts.media.store()),
+        action_offload,
         personal: Some(parts.personal),
         ..HostServices::default()
     })

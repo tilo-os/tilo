@@ -76,6 +76,9 @@ tilo-os-search = { path = "../os-search" }
 # The native request an app hands a host search result back with.
 tilo-host-search = { path = "../../platform/tilo-host-search" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
+# What a device says of itself when another device of its workspace offers it
+# work: whether it runs the app, and how it is powered.
+tilo-power-mgmt = { path = "../../system/power" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The neighbour wire messages joined rooms exchange.
 neighbour-wire = { path = "../../collab/neighbour-wire" }

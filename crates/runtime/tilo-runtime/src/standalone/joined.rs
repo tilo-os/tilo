@@ -167,6 +167,33 @@ impl Joined {
         self.endpoint.clone()
     }
 
+    /// How this profile asks the other devices of its workspaces whether they
+    /// would run an offloadable action sooner: a plane signed as this device,
+    /// at the endpoint they reach it on, reading the joined workspaces as this
+    /// profile's owner holds them, and the runtime that carries the asks.
+    /// `None` when no runtime runs.
+    ///
+    /// What it is asked in turn is answered by the host this profile runs
+    /// ([`super::joined_hosted`]); this plane only asks.
+    pub(super) fn offer_plane(
+        &self,
+    ) -> Option<(
+        tilo_peer_state::actions::ActionPlane,
+        iroh::Endpoint,
+        tokio::runtime::Handle,
+    )> {
+        let runtime = tilo_rt::try_app().ok()?.handle().clone();
+        let plane = {
+            let _entered = runtime.enter();
+            tilo_peer_state::actions::ActionPlane::over(
+                self.custody.device_signing_key.clone(),
+                Arc::new(tilo_peer_state::actions::NoActions),
+                Arc::new(self.owner.clone()),
+            )
+        };
+        Some((plane, self.endpoint(), runtime))
+    }
+
     /// Redeem `invitation` with the host it names and start syncing the workspace.
     ///
     /// # Errors

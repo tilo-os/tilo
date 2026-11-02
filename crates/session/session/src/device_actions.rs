@@ -13,7 +13,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_action_broker::services::{OwnDeviceActions, OwnDeviceOutcome};
@@ -28,19 +27,12 @@ use tilo_desktop_model::RoomId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{
-    ActionPlane, FOLLOW_DEADLINE, OFFER_DEADLINE, Offering, ReadFuture, RemoteDevice, Workspaces,
+    ActionPlane, FOLLOW_DEADLINE, Offering, ReadFuture, RemoteDevice, Workspaces,
 };
-use tilo_peer_state::offload::{OffloadPeers, RanAway};
-use tilo_peer_state::placement::Choice;
-use tilo_runtime::offload::offer_offload;
+use tilo_runtime::offload::{PlanePeers, offer_offload, own_offering};
 
 use crate::engine::Engine;
-use neighbour_wire::offer::{Answer, Power, Route, State, Work};
-
-/// How long the content a device that ran an invocation produced has to reach
-/// this device: it was produced for this workspace's app, which the invoking
-/// device is a member of.
-const CONTENT_WAIT: Duration = Duration::from_secs(10);
+use neighbour_wire::offer::{Answer, Route, Work};
 
 /// This device's action plane, as the session serves it and reaches the
 /// person's other devices through it.
@@ -126,13 +118,17 @@ impl DeviceActions {
         &self,
         content: Arc<crate::content::Plane>,
     ) -> Option<Arc<dyn ActionOffload>> {
-        offer_offload(
-            content.media(),
-            Arc::new(WorkspaceDevices {
-                actions: self.clone(),
-                content,
-            }),
-        )
+        let actions = self.clone();
+        let media = content.media();
+        let outputs: Arc<dyn tilo_runtime::offload::OutputContent> = content;
+        let peers = PlanePeers::new(
+            self.0.plane.clone(),
+            self.0.endpoint.clone(),
+            move |id| actions.addr(id),
+            outputs,
+            self.0.runtime.clone(),
+        );
+        offer_offload(media, Arc::new(peers))
     }
 
     /// Where `id` of the person's devices is reached: the address this
@@ -144,19 +140,6 @@ impl DeviceActions {
             .get(&id)
             .cloned()
             .unwrap_or_else(|| EndpointAddr::new(id))
-    }
-
-    /// Where this session reaches each device of `workspace` that may be
-    /// offered work, as this device's own plane resolves them.
-    async fn reach(&self, workspace: &str) -> Vec<EndpointAddr> {
-        self.0
-            .plane
-            .participants(workspace)
-            .await
-            .into_iter()
-            .filter_map(|key| EndpointId::from_bytes(&key).ok())
-            .map(|id| self.addr(id))
-            .collect()
     }
 
     /// The device an app's action is for, with where it is reached.
@@ -240,123 +223,6 @@ fn outcome_of(answer: Option<Result<InvocationUpdate, ActionHostError>>) -> OwnD
             "the device's answer was dropped before it arrived".into(),
         )),
     }
-}
-
-/// The devices of one of the person's workspaces, as an offload route asks
-/// them: this session's plane resolves who may be offered work and runs the
-/// invocation on the device that wins, and this workspace's content hands over
-/// what that device produced.
-struct WorkspaceDevices {
-    actions: DeviceActions,
-    content: Arc<crate::content::Plane>,
-}
-
-impl OffloadPeers for WorkspaceDevices {
-    fn ask(&self, workspace: &str, route: &Route, work: &Work) -> Pending<Choice> {
-        let (complete, answer) = pending();
-        let actions = self.actions.clone();
-        let run = self.actions.0.runtime.clone();
-        let workspace = workspace.to_owned();
-        let (route, work) = (route.clone(), work.clone());
-        run.spawn(async move {
-            let targets = actions.reach(&workspace).await;
-            let chosen = actions
-                .0
-                .plane
-                .offers(
-                    &actions.0.endpoint,
-                    targets,
-                    &workspace,
-                    &route,
-                    &work,
-                    OFFER_DEADLINE,
-                )
-                .await;
-            // A round the device that asked stopped waiting for is not
-            // chosen on: nothing would run there.
-            if let Some(chosen) = chosen {
-                complete.complete(chosen);
-            }
-        });
-        answer
-    }
-
-    fn run(
-        &self,
-        workspace: &str,
-        device: [u8; 32],
-        invocation: InvokeRequest,
-    ) -> Pending<Result<RanAway, String>> {
-        let (complete, answer) = pending();
-        let Ok(id) = EndpointId::from_bytes(&device) else {
-            complete.complete(Err("that is not a device key".into()));
-            return answer;
-        };
-        let remote = Arc::new(self.actions.0.plane.remote(
-            &self.actions.0.endpoint,
-            &self.actions.addr(id),
-            workspace,
-        ));
-        let content = Arc::clone(&self.content);
-        let run = self.actions.0.runtime.clone();
-        let workspace = workspace.to_owned();
-        run.spawn(async move {
-            let ran = run_away(&content, &workspace, device, remote, invocation).await;
-            complete.complete(ran);
-        });
-        answer
-    }
-}
-
-/// Run the person's `invocation` on `remote` and follow it until it settles,
-/// with the bytes of the content it produced in `workspace`.
-async fn run_away(
-    content: &crate::content::Plane,
-    workspace: &str,
-    device: [u8; 32],
-    remote: Arc<RemoteDevice>,
-    invocation: InvokeRequest,
-) -> Result<RanAway, String> {
-    // The app whose content the output is: the one whose action was invoked,
-    // as the device that ran it kept what it produced.
-    let Some((_, app)) = tilo_actions::remote::application_provider(&invocation.target.provider)
-    else {
-        return Err("the invocation names no app, so its output content cannot be read".into());
-    };
-    let app = app.to_owned();
-    let output = match remote
-        .invoke_until_settled(invocation, FOLLOW_DEADLINE)
-        .await
-    {
-        Some(Ok(InvocationUpdate::Succeeded { output, .. })) => output,
-        Some(Ok(InvocationUpdate::Failed { error, .. })) => return Err(error.message),
-        Some(Ok(InvocationUpdate::Cancelled { message, .. })) => {
-            return Err(message.unwrap_or_else(|| "the action was cancelled there".into()));
-        }
-        Some(Ok(update)) => {
-            return Err(format!("the action there did not settle: {update:?}"));
-        }
-        Some(Err(error)) => return Err(error.to_string()),
-        None => return Err("the device stopped following the invocation".into()),
-    };
-    let mut outputs = Vec::new();
-    for address in &output.resources {
-        let Some(named) = tilo_actions::content_hash(address) else {
-            continue;
-        };
-        let mut digest = [0; 32];
-        hex::decode_to_slice(named, &mut digest)
-            .map_err(|_| "the output names a malformed content address".to_owned())?;
-        let Some(bytes) = content.fetch(workspace, &app, digest, CONTENT_WAIT).await else {
-            return Err("the content it produced did not reach this device".into());
-        };
-        outputs.push(bytes);
-    }
-    Ok(RanAway {
-        device,
-        output,
-        outputs,
-    })
 }
 
 /// The one place a request that arrived on this device is handed to: the
@@ -478,94 +344,16 @@ impl SessionOffering {
 
 impl Offering for SessionOffering {
     fn report(&self, workspace: &str, route: &Route, work: &Work) -> Answer {
-        let (critical_battery, power) = power();
         let content = self.content.lock_recover().clone();
-        Answer {
-            state: State {
-                requester: false,
-                online: true,
-                holds_workspace: true,
-                app_installed: installed(&route.app),
-                store_role: false,
-                // Nothing here asks a device to keep off its discretionary
-                // work; a person's own settings do not reach this far yet.
-                data_saving: false,
-                critical_battery,
-                priority: 0,
-                power,
-                load_permille: load_permille(),
-                latency_ms: 0,
-            },
-            holds: content.map_or_else(Vec::new, |content| {
-                work.inputs
-                    .iter()
-                    .map(|(digest, _)| *digest)
-                    .filter(|digest| content.holds(workspace, &route.app, *digest))
-                    .collect()
-            }),
-        }
+        let holds = content.map_or_else(Vec::new, |content| {
+            work.inputs
+                .iter()
+                .map(|(digest, _)| *digest)
+                .filter(|digest| content.holds(workspace, &route.app, *digest))
+                .collect()
+        });
+        own_offering(&route.app, holds)
     }
-}
-
-/// Whether this device runs `app`: its stores hold the signed package.
-fn installed(app: &str) -> bool {
-    tilo_installed_apps::read_one_from_env(app).is_ok_and(|row| row.is_some())
-}
-
-/// Battery share at or below which a device takes on nobody else's work
-/// while it drains.
-const CRITICAL_BATTERY_PERCENT: u8 = 10;
-
-/// How this device is powered, and whether its battery is too low to take
-/// on anyone else's work.
-fn power() -> (bool, Power) {
-    let snapshot = tilo_power_mgmt::sysfs::battery_snapshot();
-    if !snapshot.present {
-        return (false, Power::External);
-    }
-    let draining = matches!(
-        snapshot.state,
-        tilo_power_mgmt::BatteryState::Discharging
-            | tilo_power_mgmt::BatteryState::PendingDischarge
-    );
-    let critical = draining && snapshot.percent <= CRITICAL_BATTERY_PERCENT;
-    let power = match snapshot.state {
-        tilo_power_mgmt::BatteryState::Charging | tilo_power_mgmt::BatteryState::PendingCharge => {
-            Power::Charging
-        }
-        tilo_power_mgmt::BatteryState::Full => Power::External,
-        tilo_power_mgmt::BatteryState::Discharging
-        | tilo_power_mgmt::BatteryState::PendingDischarge => Power::Battery,
-        tilo_power_mgmt::BatteryState::Empty | tilo_power_mgmt::BatteryState::Unknown => {
-            Power::Unknown
-        }
-    };
-    (critical, power)
-}
-
-/// What share of this device is already busy, per thousand, from the load
-/// the machine reports against the processors it has.
-fn load_permille() -> u32 {
-    let cores =
-        u32::try_from(std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get))
-            .unwrap_or(u32::MAX);
-    let Some(load) = std::fs::read_to_string("/proc/loadavg").ok() else {
-        return 0;
-    };
-    let Some(one) = load.split_whitespace().next() else {
-        return 0;
-    };
-    // The kernel reports the one-minute load in hundredths; read it as
-    // thousandths so that dividing by the processors stays whole numbers.
-    let (whole, fraction) = one.split_once('.').unwrap_or((one, ""));
-    let whole: u32 = whole.parse().unwrap_or(0);
-    let mut fraction = fraction.chars().take(3).collect::<String>();
-    while fraction.len() < 3 {
-        fraction.push('0');
-    }
-    let fraction: u32 = fraction.parse().unwrap_or(0);
-    let thousandths = whole.saturating_mul(1_000).saturating_add(fraction);
-    thousandths.checked_div(cores.max(1)).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -586,7 +374,7 @@ mod tests {
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
     use iroh::{Endpoint, RelayMode, SecretKey};
-    use neighbour_wire::offer::Decline;
+    use neighbour_wire::offer::{Decline, Power};
     use tilo_action_broker::record_content::ContentState;
     use tilo_action_broker::route::CrdtRoute;
     use tilo_actions::offload::{OffloadRequest, Offloaded};
