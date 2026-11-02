@@ -203,6 +203,9 @@ tilo-runtime = { path = "../../runtime/tilo-runtime" }
 # connection that sends one, and the sealed memfd its modules come in.
 tilolang-host = { path = "../../platform/tilolang-host" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+# The render service an app hands its frames to, started by this session as
+# a mode of its own binary.
+tilo-render-service = { path = "../render-service" }
 uuid.workspace = true
 # The kernel-attested custody of an executing app process a launch is
 # admitted by.

@@ -513,6 +513,17 @@ impl Compositor {
         xwayland::start(&self.event_loop.handle(), &self.data.state)
     }
 
+    /// The GPU clients import their dma-bufs on, as the render node a
+    /// process that allocates for them opens (`/dev/dri/renderD128`):
+    /// `None` on a backend with no GPU to import from.
+    pub fn render_node(&self) -> Option<PathBuf> {
+        self.data
+            .state
+            .render_node
+            .as_ref()
+            .and_then(smithay::backend::drm::DrmNode::dev_path)
+    }
+
     /// Whether the session is locked.
     pub fn locked(&self) -> bool {
         self.data.state.locked()

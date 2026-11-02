@@ -20839,6 +20839,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-render-service"
+version = "0.1.0"
+dependencies = [
+ "gbm",
+ "libc",
+ "pollster",
+ "rustix 1.1.4",
+ "serde",
+ "skrifa 0.44.0",
+ "thiserror 2.0.21",
+ "tilo-font-catalog",
+ "tilo-render-protocol",
+ "tilo-rt",
+ "tilo-sandbox-core",
+ "tilo-ui",
+ "tilo-vello",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-resource"
 version = "0.1.0"
 dependencies = [
@@ -21372,6 +21393,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-relay-session",
  "tilo-render-protocol",
+ "tilo-render-service",
  "tilo-resource",
  "tilo-rt",
  "tilo-runtime",

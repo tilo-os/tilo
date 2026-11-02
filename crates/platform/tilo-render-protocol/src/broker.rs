@@ -1,16 +1,16 @@
-//! How an app gets its channel to its room's render service.
+//! How an app gets its channel to its workspace's render service.
 //!
-//! The launcher connects the compositor's render broker
+//! The launcher connects the session's render broker
 //! (`$XDG_RUNTIME_DIR/tilo/services/render.sock`) on the app's behalf and
-//! writes [`handshake`] — the app and its room — before the sandboxed app
-//! holds the connection, then hands it in as `TILO_SVC_RENDER_FD`. The app
-//! asks on it for a channel ([`request_channel`]): one byte out, one byte
-//! and the channel's descriptor back. It asks again when a channel breaks
-//! (the service restarted), and once per window, so every window renders on
-//! a channel of its own.
+//! writes [`handshake`] — the app and its workspace — before the sandboxed
+//! app holds the connection, then hands it in as `TILO_SVC_RENDER_FD`. The
+//! app asks on it for a channel ([`request_channel`]): one byte out, one
+//! byte and the channel's descriptor back. It asks again when a channel
+//! breaks (the service restarted), and once per window, so every window
+//! renders on a channel of its own.
 //!
-//! The broker, not the app, chose the room: the app can only ever reach the
-//! service of the room it was launched into.
+//! The broker, not the app, chose the workspace: the app can only ever reach
+//! the service of the workspace it was launched into.
 
 use std::io::{self, IoSlice, IoSliceMut, Write};
 use std::mem::MaybeUninit;
@@ -41,13 +41,13 @@ pub const PROTOCOL: u16 = 1;
 const REQUEST: u8 = b'C';
 /// The answer byte with a channel.
 const GRANTED: u8 = b'K';
-/// The answer byte without one (no service for this room right now).
+/// The answer byte without one (no service for this workspace right now).
 const REFUSED: u8 = b'N';
 
 /// Longest handshake line the broker reads.
 pub const MAX_HANDSHAKE: usize = 4096;
 
-/// The line that names an app and its room on a new broker connection.
+/// The line that names an app and its workspace on a new broker connection.
 ///
 /// # Errors
 ///
@@ -139,7 +139,7 @@ pub fn request_channel(broker: BorrowedFd<'_>) -> io::Result<Channel> {
         (1, [GRANTED], Some(fd)) => Channel::from_socket(fd),
         (1, [REFUSED], _) => Err(io::Error::new(
             io::ErrorKind::ConnectionRefused,
-            "no render service for this room",
+            "no render service for this workspace",
         )),
         (0, _, _) => Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
         _ => Err(io::Error::from(io::ErrorKind::InvalidData)),

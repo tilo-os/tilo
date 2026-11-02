@@ -507,6 +507,9 @@ impl ShortcutLibraryServices for ShortcutLibrary {
 /// moved, and the broker reads the copy.
 pub struct DeskAuthority {
     tree: Mutex<tilo_desktop_model::DesktopTree>,
+    /// Counts the desk's publications, so a reader that only cares whether
+    /// the desk changed since it last looked asks one atomic.
+    generation: std::sync::atomic::AtomicU64,
     revocations: crate::engine::Revocations,
     journal: Option<std::path::PathBuf>,
 }
@@ -524,6 +527,7 @@ impl DeskAuthority {
     ) -> Self {
         Self {
             tree: Mutex::new(tree),
+            generation: std::sync::atomic::AtomicU64::new(0),
             revocations,
             journal,
         }
@@ -532,6 +536,14 @@ impl DeskAuthority {
     /// The desk as the loop shows it now, for the broker's next decision.
     pub fn publish(&self, tree: tilo_desktop_model::DesktopTree) {
         *self.tree.lock_recover() = tree;
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// How many times the desk was published; equal values mean the desk
+    /// did not change between the two reads.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 

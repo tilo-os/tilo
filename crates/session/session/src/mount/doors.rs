@@ -41,6 +41,8 @@ use tilo_system_stats::server::{Prompter, Server};
 
 use crate::plane::DeskAuthority;
 
+use super::render;
+
 /// How a client reaches a service of this session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reach {
@@ -80,6 +82,9 @@ pub(crate) enum Service {
     SystemInfo,
     /// This device's data usage, counted into the person's settings.
     DataUsage,
+    /// The apps' render services: a toolkit app hands its frame to the
+    /// service of its workspace, which draws it on the GPU.
+    Render,
 }
 
 /// One service of this desktop: its name, how it is reached, and what
@@ -149,10 +154,7 @@ pub(crate) const TABLE: &[Door] = &[
     Door {
         name: tilo_render_protocol::broker::SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Nothing(
-            "a session that serves no render broker is a supported degradation: the app draws \
-             on its own device, and the launcher hands it no connection",
-        ),
+        owner: Owner::Session(Service::Render),
     },
     Door {
         name: launcher::services::MESSAGING_SERVICE,
@@ -200,14 +202,22 @@ pub(crate) struct Doors {
     system_info: Option<Server>,
     /// What this device's traffic counters said since the last pass.
     usage: Option<data_usage::Counting>,
+    /// The apps' render services, one per workspace, and their supervision.
+    render: Option<render::Broker>,
 }
 
 /// What a session serves its services with.
 pub(crate) struct Serving {
     /// The desk the session's apps act on, and the workspace their identity
     /// is signed in: a session that serves no action plane serves no
-    /// identity either.
+    /// identity either. Its apps still render, all in the private service.
     pub desk: Option<Arc<DeskAuthority>>,
+    /// The person at this device: whose workspaces are theirs alone, so
+    /// their apps share one render service.
+    pub person: String,
+    /// The render node the compositor composites on: what a render service
+    /// draws on, and opens for its buffers.
+    pub render_node: Option<std::path::PathBuf>,
     /// Where the identity service finds this device's channel keys.
     pub keys: ChannelKeyProvider,
     /// What a capability is asked through, when there is anyone to ask.
@@ -238,7 +248,21 @@ pub(crate) fn start(mut serving: Serving) -> Doors {
         };
         match service {
             Service::Identity => {
-                doors.identity = identity(serving.desk.take(), std::mem::take(&mut serving.keys));
+                doors.identity = identity(
+                    serving.desk.as_ref().map(Arc::clone),
+                    std::mem::take(&mut serving.keys),
+                );
+            }
+            Service::Render => {
+                let desk = serving.desk.as_ref().map(Arc::clone);
+                match render::Broker::start(
+                    desk,
+                    serving.person.clone(),
+                    serving.render_node.take(),
+                ) {
+                    Ok(broker) => doors.render = Some(broker),
+                    Err(error) => tracing::warn!(%error, "the apps' render broker is unavailable"),
+                }
             }
             Service::SystemInfo => {
                 doors.system_info = system_info(serving.questions.take(), serving.consents.take());
@@ -256,6 +280,9 @@ impl Doors {
     pub(crate) fn follow(&self, services: &mut Services) {
         if let Some(usage) = &self.usage {
             usage.count(services);
+        }
+        if let Some(render) = &self.render {
+            render.sync_workspaces();
         }
     }
 }
@@ -940,7 +967,12 @@ mod tests {
     /// what a client's reader sees, and nothing is started outside it.
     #[test]
     fn every_started_service_has_a_row() {
-        for service in [Service::Identity, Service::SystemInfo, Service::DataUsage] {
+        for service in [
+            Service::Identity,
+            Service::SystemInfo,
+            Service::DataUsage,
+            Service::Render,
+        ] {
             assert!(
                 TABLE
                     .iter()

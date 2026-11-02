@@ -58,6 +58,11 @@ fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // An app's workspace render service is this binary in its own mode: it
+    // opens no display and starts no session (`tilo-render-service`).
+    if let Some(code) = tilo_render_service::dispatch(&args) {
+        return code;
+    }
     let (ours, command) = split_command(&args);
     // `--firstboot` is the host package's wrapper hook, which goes on to the
     // session it was starting.
@@ -567,6 +572,7 @@ fn run(
             x11_display.clone().map(|display| (display, None)),
             session_bus.map(str::to_owned),
         );
+        launch.set_render_node(session.compositor().render_node());
     }
     let environment = SessionEnvironment {
         wayland_display: socket,

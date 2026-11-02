@@ -1367,6 +1367,8 @@ impl Session {
             desk: action_plane
                 .as_ref()
                 .map(|plane| std::sync::Arc::clone(&plane.desk)),
+            person: options.person.clone(),
+            render_node: compositor.render_node(),
             keys: engine
                 .as_ref()
                 .map_or_else(Default::default, |engine| engine.keys()),

@@ -172,6 +172,10 @@ pub struct State {
     pub(crate) pointer: Point<f64, Logical>,
     pointer_target: PointerTarget,
     pub(crate) protocols: crate::protocols::Protocols,
+    /// The GPU clients import their dma-bufs on, as `linux-dmabuf` told
+    /// them ([`crate::State::enable_dmabuf`]); a render service allocates
+    /// there too, so the compositor imports its frames like any client's.
+    pub(crate) render_node: Option<smithay::backend::drm::DrmNode>,
     /// The icon each window shows, by window id.
     pub(crate) icons: crate::toplevel_icon::Icons,
     pub(crate) lock: crate::lock::Lock,
@@ -309,6 +313,7 @@ impl State {
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
             protocols,
+            render_node: None,
             icons: crate::toplevel_icon::Icons::default(),
             exited: Arc::default(),
             lock: crate::lock::Lock::new(display),
