@@ -1767,6 +1767,9 @@ impl XdgShellHandler for State {
             self.keep_closing(&window);
             self.space.unmap_elem(&window);
             self.rearrange();
+            // Its frames are gone for good: the heap they were in is handed
+            // back to the kernel once the closes have settled.
+            crate::heap_trim::window_closed();
         }
     }
 }

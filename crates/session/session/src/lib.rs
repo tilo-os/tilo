@@ -60,6 +60,7 @@ mod desk_restore;
 pub mod desktop_services;
 mod device_actions;
 mod devices;
+mod diagnostics;
 mod dictation;
 mod directory;
 mod display_confirm;
@@ -891,6 +892,11 @@ impl Session {
         // The words a notice or a query resolves later, in the person's
         // language, are read now: the loop that shows them reads no file.
         i18n::ensure();
+        // Startup frees its scratch at no single moment: one trim collects it
+        // once startup is over, and the log says where the heap stood at the
+        // start.
+        tilo_compositor::heap_trim::log_milestone("start");
+        tilo_compositor::heap_trim::request_after(tilo_compositor::heap_trim::STARTUP_SETTLED);
         // Who sits here, as the one id the session acts as: the person their
         // workspaces' governance names, which this device's certificate
         // carries. Everything the person does here — the workspaces they
@@ -1747,6 +1753,12 @@ impl Session {
             .add(Box::new(notifications::Served::new(Rc::clone(
                 &shared.notifications,
             ))));
+        // The session's own diagnostics: the profiler and the heap trim, which
+        // the device admin and a person's own scripts read and drive.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(diagnostics::Served));
         // The person's devices are what their other machines say of
         // themselves, which is nobody's personal content: their reading is
         // published for any app that may read the session's resources.
@@ -3004,6 +3016,13 @@ impl Session {
             (Some(timeout), Some(due)) => Some(timeout.min(due.saturating_duration_since(now))),
             (timeout, due) => timeout.or_else(|| due.map(|due| due.saturating_duration_since(now))),
         };
+        // A profile the owner asked for ends on time even while nothing else
+        // wakes the loop.
+        let timeout = match tilo_frame_metrics::profile::deadline() {
+            Some(due) => timeout.min(due.saturating_duration_since(Instant::now())),
+            None => timeout,
+        };
+        tilo_frame_metrics::profile::expire(Instant::now());
         self.compositor.dispatch(timeout)?;
         // What the session itself does before the frame: the desk, the apps
         // and the overlays this pass lays out.
@@ -3080,10 +3099,17 @@ impl Session {
         // The desk's windows are drawn as far as they have come; an animated
         // switch owns its frames until they rest.
         self.compositor.set_switch_holding(self.windows.animating());
+        let drawn = self.compositor.frames_presented();
         self.compositor.render()?;
+        if self.compositor.frames_presented() == drawn {
+            // The desk stayed as it was: a compositor that has gone quiet
+            // after work gets freed heap back once it stays quiet a moment.
+            tilo_compositor::heap_trim::request_when_quiet();
+        }
         if !self.first_frame && self.compositor.frames_presented() > 0 {
             // The person's login is over: the first frame is on the display.
             tilo_startup_metrics::mark("first-frame-presented");
+            tilo_compositor::heap_trim::log_milestone("first-frame");
             tilo_startup_metrics::close_startup();
             self.first_frame = true;
         }
@@ -3211,6 +3237,9 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // A profile still recording is completed, its files written, before
+        // the process goes.
+        tilo_frame_metrics::profile::shutdown();
         // The desk the person left, written whatever ended the session.
         self.shared.keep_desk_now();
         // Its apps' display goes with it, and so do they: the apps outlive

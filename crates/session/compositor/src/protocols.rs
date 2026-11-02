@@ -148,7 +148,7 @@ impl State {
         };
         self.protocols.dmabuf_global = Some(global);
         // Where clients allocate is what `tilo system health --gpu` reads.
-        let node = device.and_then(smithay::utils::DevPath::dev_path);
+        let node = device.and_then(|node| node.dev_path());
         crate::gpu_health::record_dmabuf(node.as_deref());
     }
 

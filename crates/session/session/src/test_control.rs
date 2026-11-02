@@ -17,11 +17,12 @@
 //! The owner's door serves what a person's own scripts need to drive their desktop through
 //! the model it publishes — the action model (`actions_enumerate`, `actions_invoke`,
 //! `actions_status` and `actions_cancel`), the state it shows (`state_dump`, `watch` and
-//! `windows`) — and refuses every other op with `not_permitted` ([`Op::owner_serves`],
-//! [`served`]). Injected input, screenshots of the person's screen, hosted surfaces'
-//! controls, fixtures and the test identity live on a development session's socket only.
-//! Nothing is invoked there while the screen is locked, and the state it shows carries
-//! nothing the lock hides.
+//! `windows`) — and the session's own diagnostics (`process_memory`, and the profiler's
+//! `profile_start`, `profile_status` and `profile_stop`) — and refuses every other op with
+//! `not_permitted` ([`Op::owner_serves`], [`served`]). Injected input, screenshots of the
+//! person's screen, hosted surfaces' controls, fixtures and the test identity live on a
+//! development session's socket only. Nothing is invoked there while the screen is locked,
+//! and the state it shows carries nothing the lock hides.
 //!
 //! What it answers, as the tools that drive a desktop need it:
 //!
@@ -49,7 +50,11 @@
 //!   action: a listing is a catalogue page, and an invocation the action model's own request;
 //! - `watch`: the desk's state as it changes, streamed off the session's own change signal — no
 //!   polling, and nothing is dumped while nobody watches;
-//! - `state_dump` and `windows`: the desk as it is now, and one row per open window.
+//! - `state_dump` and `windows`: the desk as it is now, and one row per open window;
+//! - `process_memory`: the session's own memory by kind of mapping, read with `mincore` as
+//!   Tilo's kernel has no `smaps`, and `profile_start`/`profile_status`/`profile_stop`: the
+//!   session profiled with its own instruments, frames, phases and threads, for a length the
+//!   owner asks for.
 //!
 //! Each connection is read on a thread of its own. What a request asks of the compositor, the
 //! desk or the hosted surfaces is answered on the loop's pass, the only place that may touch
@@ -309,7 +314,11 @@ enum Op {
     Pinch,
     PointerButton,
     PointerMove,
+    ProfileStart,
+    ProfileStatus,
+    ProfileStop,
     ProvisionTestIdentity,
+    ProcessMemory,
     Scroll,
     SearchRows,
     Snapshot,
@@ -322,7 +331,7 @@ enum Op {
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 24] = [
+    const ALL: [Self; 28] = [
         Self::ActionsCancel,
         Self::ActionsEnumerate,
         Self::ActionsInvoke,
@@ -338,6 +347,10 @@ impl Op {
         Self::Pinch,
         Self::PointerButton,
         Self::PointerMove,
+        Self::ProcessMemory,
+        Self::ProfileStart,
+        Self::ProfileStatus,
+        Self::ProfileStop,
         Self::ProvisionTestIdentity,
         Self::Scroll,
         Self::SearchRows,
@@ -367,6 +380,10 @@ impl Op {
             "pinch" => Self::Pinch,
             "pointer_button" => Self::PointerButton,
             "pointer_move" => Self::PointerMove,
+            "process_memory" => Self::ProcessMemory,
+            "profile_start" => Self::ProfileStart,
+            "profile_status" => Self::ProfileStatus,
+            "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
             "scroll" => Self::Scroll,
             "search_rows" => Self::SearchRows,
@@ -398,6 +415,10 @@ impl Op {
             Self::Pinch => "pinch",
             Self::PointerButton => "pointer_button",
             Self::PointerMove => "pointer_move",
+            Self::ProcessMemory => "process_memory",
+            Self::ProfileStart => "profile_start",
+            Self::ProfileStatus => "profile_status",
+            Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
             Self::Scroll => "scroll",
             Self::SearchRows => "search_rows",
@@ -421,6 +442,10 @@ impl Op {
                 | Self::ActionsEnumerate
                 | Self::ActionsInvoke
                 | Self::ActionsStatus
+                | Self::ProcessMemory
+                | Self::ProfileStart
+                | Self::ProfileStatus
+                | Self::ProfileStop
                 | Self::StateDump
                 | Self::Watch
                 | Self::Windows
@@ -442,10 +467,12 @@ fn not_this_doors(op: Op) -> Json {
     refusal(
         "not_permitted",
         &format!(
-            "the owner's control door serves the action model and the state it shows \
-             (`actions_cancel`, `actions_enumerate`, `actions_invoke`, `actions_status`, \
-             `state_dump`, `watch` and `windows`), not `{}`; synthetic input and screenshots \
-             exist only on a development session's test-control socket",
+            "the owner's control door serves the action model, the state it shows and the \
+             session's own diagnostics (`actions_cancel`, `actions_enumerate`, \
+             `actions_invoke`, `actions_status`, `process_memory`, `profile_start`, \
+             `profile_status`, `profile_stop`, `state_dump`, `watch` and `windows`), not \
+             `{}`; synthetic input and screenshots exist only on a development session's \
+             test-control socket",
             op.name()
         ),
     )
@@ -906,6 +933,10 @@ fn asked_of_desk(
                 .collect();
             json!({"answer": {"query": query, "rows": rows}})
         }
+        Op::ProcessMemory => json!({"answer": tilo_compositor::memory_report::report()}),
+        Op::ProfileStart => profile_start(request),
+        Op::ProfileStatus => json!({"answer": {"profile": tilo_frame_metrics::profile::status()}}),
+        Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
         Op::StateDump => owner_shown(gate, desk.handle.read(|tree| state_dump(tree, desk))),
         Op::Windows => {
             // Nothing shows a window while the screen is locked.
@@ -918,6 +949,43 @@ fn asked_of_desk(
         }
         _ => return None,
     })
+}
+
+/// Start profiling the session for `seconds` (default [`profile::DEFAULT_SECONDS`], at most
+/// [`profile::MAX_SECONDS`]) into the session's profile directory: the loop records its own
+/// frame rows, phases and threads there, and the summary is written last.
+fn profile_start(request: &Json) -> Json {
+    use tilo_frame_metrics::profile;
+    let Some(root) = profile::default_root() else {
+        return refusal(
+            "unavailable",
+            "there is no state directory to keep the profile in",
+        );
+    };
+    let seconds = match request.get("seconds").map(Json::as_u64) {
+        None => profile::DEFAULT_SECONDS,
+        Some(Some(seconds)) if (1..=profile::MAX_SECONDS).contains(&seconds) => seconds,
+        Some(_) => {
+            return refusal(
+                "invalid_arguments",
+                &format!(
+                    "`profile_start` takes `seconds` from 1 to {}",
+                    profile::MAX_SECONDS
+                ),
+            );
+        }
+    };
+    match profile::start(&root, std::time::Duration::from_secs(seconds)) {
+        Ok(status) => json!({"answer": {"profile": status}}),
+        Err(profile::StartError::AlreadyRecording(path)) => refusal(
+            "action_failed",
+            &format!("a profile is already recording into {}", path.display()),
+        ),
+        Err(profile::StartError::Io(error)) => refusal(
+            "action_failed",
+            &format!("the profile directory could not be created: {error}"),
+        ),
+    }
 }
 
 /// The answer to what `op` asks of the pointer, when it asks of it.
@@ -2032,6 +2100,12 @@ fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
             "lock_screen_drawn": desk.lock_screen_drawn,
             "in_transition": false,
             "overlays": open,
+            // Whether freed heap is still to be handed back to the kernel
+            // (a close asked for a trim), and how many trims have run.
+            "heap_trim": {
+                "pending": tilo_compositor::heap_trim::close_trim_pending(),
+                "trims": tilo_compositor::heap_trim::trims_completed(),
+            },
         },
         "peers": Json::Null,
         "sharing": Json::Null,
@@ -2366,6 +2440,10 @@ mod tests {
             Op::ActionsEnumerate,
             Op::ActionsInvoke,
             Op::ActionsStatus,
+            Op::ProcessMemory,
+            Op::ProfileStart,
+            Op::ProfileStatus,
+            Op::ProfileStop,
             Op::StateDump,
             Op::Watch,
             Op::Windows,
@@ -2387,7 +2465,7 @@ mod tests {
         }
         // Every op the protocol answers is in the list, each once.
         let mut names: Vec<&str> = Op::ALL.iter().map(|op| op.name()).collect();
-        assert_eq!(names.len(), 24, "the protocol's ops");
+        assert_eq!(names.len(), 28, "the protocol's ops");
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), Op::ALL.len(), "{names:?}");

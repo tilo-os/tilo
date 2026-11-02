@@ -18132,6 +18132,7 @@ name = "tilo-compositor"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "libc",
  "neighbour-wire",
  "qcms",
  "rustix 1.1.4",
@@ -21367,6 +21368,7 @@ dependencies = [
  "tilo-durable-writer",
  "tilo-endpoint-reachability",
  "tilo-files",
+ "tilo-frame-metrics",
  "tilo-identity-authority",
  "tilo-identity-host",
  "tilo-installed-apps",
