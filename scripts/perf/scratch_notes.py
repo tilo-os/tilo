@@ -19,6 +19,10 @@ import time
 from typing import Any, Callable
 
 NOTES_APP = "so.tilo.notes"
+# The session's own services are offered on its door under this provider.
+SESSION_PROVIDER = "so.tilo.session"
+# The desk's "New workspace" (`tilo_session::desktop_surface::ChromeEffect`).
+NEW_WORKSPACE = "desktop:chrome\u001fnew-workspace"
 
 
 class ScratchWorkspaceError(RuntimeError):
@@ -76,7 +80,7 @@ def open_scratch_notes(state: Callable[[], dict[str, Any]],
     id appeared, it is the active workspace, and Notes there publishes actions
     for exactly one record."""
     protected = workspace_ids(state())
-    invoke("actions", "workspace.create", {"name": name})
+    invoke(SESSION_PROVIDER, NEW_WORKSPACE, {"name": name})
     deadline = time.monotonic() + timeout
     while True:
         current = state()

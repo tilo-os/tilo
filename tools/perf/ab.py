@@ -394,13 +394,6 @@ def run_agent(ctx: RunContext) -> list[record.Record]:
           "--transport", "test-control socket, headless, release + dev-overrides, thin LTO",
           "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "compositor.log"],
          ctx.dir / "bench.log", ctx.repo)
-    call(["bash", "tools/with-test-environment.sh", sys.executable, "scripts/perf/agent_task.py",
-          "--spawn", ctx.bins["session"], "--mcp", ctx.bins["tilo-runtime-mcp"],
-          "--repetitions", "30", "--warmup", "3",
-          "--transport", "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO",
-          "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "task-session.log",
-          "--client-log", ctx.dir / "task-client.log"],
-         ctx.dir / "task.log", ctx.repo)
     return record.read(records)
 
 
@@ -433,9 +426,9 @@ def run_fs(ctx: RunContext) -> list[record.Record]:
     return adapters.fs_gate([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
-# The session and the agent task's client, as tools/ci/perf-scheduled.sh builds
-# them: tilo-runtime's dev-overrides turn on the throwaway identity a
-# development login opens its desk with, which the task's spawned session mints.
+# The session and its MCP server, as tools/ci/perf-scheduled.sh builds them:
+# tilo-runtime's dev-overrides turn on the throwaway identity a development
+# login opens its desk with, which the run's spawned session mints.
 RELEASE_SESSION = ("cargo", "build", "--locked", "--release", "-p", "tilo-session", "--bin", "tilo-session",
                  "-p", "tilo-runtime", "--bin", "tilo-runtime-mcp", "--features", "dev-overrides")
 

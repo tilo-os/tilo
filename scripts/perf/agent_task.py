@@ -9,16 +9,21 @@ key:
 
   agent loop  --HTTP, Anthropic Messages streaming-->  fake model (loopback)
   agent loop  --MCP stdio-->  tilo-runtime-mcp --connect
-              --agent.sock-->  compositor (as the admitted agent) -> Notes
+              --agent.sock-->  compositor (as the admitted client) -> Notes
 
 `tilo-runtime-mcp --connect` is the program `tilo agent connect claude`
-registers. Inside the login it relays to the session's agent door, so the
-agent is admitted by the person (here: the `permission-prompts` decision on
-the control socket, as the owner answers remotely), is an agent member of
-the workspace, is granted Notes like Settings → Agents grants it, and every
-call passes the broker's gate as that agent. Its tools are the door's own
-path-addressed ones (`tilo_find`, `tilo_do`, `tilo_ls`, `tilo_read`), and
-the fake model is offered exactly what the door's `tools/list` answers.
+registers. Inside the login it relays to the session's agent door, and the
+door asks the person, on the sheet it opens, whether the client may work
+there. A headless run has nobody to press that sheet: the client asks to
+work as the person, as a REPL does, and the run answers the question the
+way the sheet's first choice does (allow once) through the question's own
+published action on the control socket. So the calls are the person's own
+authority, not an agent member's; every one still passes the same door, the
+broker's gate and the app, and an agent member's grants are what a person
+grants on Settings → Agents, which no headless run can press. The client's
+tools are the door's own path-addressed ones (`tilo_find`, `tilo_do`,
+`tilo_ls`, `tilo_read`), and the fake model is offered exactly what the
+door's `tools/list` answers.
 
 The fake model is a loopback HTTP server that answers each turn with a
 streamed `tool_use` (server-sent events, as the Messages API streams them).
@@ -60,15 +65,17 @@ Records (tools/perf/record.py), one sample per repetition:
 The desktop is `crates/session/session` (`--spawn`): a release build with the
 test-control socket, started headless on a scratch profile, its desk opened
 with the throwaway identity a development login mints, and its agent door
-served in the profile's runtime directory. The session, its profile, its
+served in the profile's runtime directory. The session needs Notes installed
+and starts apps: a dev session on a machine, never a builder, whose containers
+start no app. The session, its profile, its
 sockets and the client are removed on exit, whatever happens. Against a
 running desktop (`--socket`, a device's admin-control.sock, with its
 `agent.sock` beside it) the person's workspace is left as it was found, though
 the run's own workspace stays. Either way the task never touches a notebook a
 person already has: the run first
 creates a workspace of its own and opens Notes there
-(`scratch_notes.py`), so the agent is admitted to that workspace and its
-`notes` is that workspace's notebook; the agent is removed again at the end.
+(`scratch_notes.py`), so `notes` is that workspace's notebook; the client
+leaves with the session.
 """
 
 from __future__ import annotations
@@ -96,16 +103,14 @@ sys.path.insert(0, str(REPO / "tools" / "perf"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import record  # noqa: E402
 from agent_rtt import (  # noqa: E402
-    MCP_PROTOCOL, BenchError, Connection, answer_of, receipt_state, request, spawned)
+    MCP_PROTOCOL, BenchError, Connection, answer_of, desk_session, receipt_state, request)
 from scratch_notes import NOTES_APP, ScratchWorkspaceError, open_scratch_notes  # noqa: E402
 
 # Generous: each answer leaves as soon as its invocation settles.
 WAIT_MS = 5000
 STEPS = ("discover", "create", "locate", "write", "read")
-# The client the person admits; the door names the agent after it.
+# The client the person admits.
 CLIENT_NAME = "Agent task bench"
-AGENT = "agent-task-bench"
-GRANT_ID = "agent-task-bench-notes"
 # The fake model's name, echoed in records.
 MODEL_NAME = "tilo-scripted-notes-task"
 # Rough characters per token, to pace a streamed answer at --tokens-per-s.
@@ -672,43 +677,43 @@ def control(conn: Connection, payload: dict[str, Any], what: str) -> Any:
     return answer_of(line, what)
 
 
-def waiting_prompt(conn: Connection, timeout: float) -> str:
-    """The agent admission the person is asked, as its decision rows name it."""
+def waiting_prompt(conn: Connection, timeout: float) -> tuple[str, str]:
+    """The door's question on the session's sheets, as (provider, its answer action)."""
     deadline = time.monotonic() + timeout
     while True:
-        listed = control(conn, {"op": "actions_enumerate", "query": "permission-prompts",
-                                "limit": 2000}, "list the person's prompts")
+        listed = control(conn, {"op": "actions_enumerate", "query": "agent-door",
+                                "limit": 2000}, "list the person's questions")
         for row in listed.get("actions", []) if isinstance(listed, dict) else []:
             ident = str(row.get("id", ""))
-            if row.get("provider") == "permission-prompts" and ident.startswith("deny@"):
-                return ident.removeprefix("deny@")
+            if (isinstance(row.get("provider"), str)
+                    and ident.startswith("question:agent-door:") and ident.endswith("\u001fanswer")):
+                return row["provider"], ident
         if time.monotonic() >= deadline:
-            raise BenchError(f"the person was never asked to admit the agent within {timeout:.0f} s")
+            raise BenchError(f"the person was never asked to admit the client within {timeout:.0f} s")
         time.sleep(0.1)
 
 
 def admit(conn: Connection, door: Door, timeout: float) -> list[dict[str, Any]]:
-    """Connect as an agent, have the person admit it and grant it Notes; the door's tools."""
+    """Connect as an agent acting for the person, and answer the door's question; the door's tools."""
     door.next_id += 1
     ident = door.next_id
     door.send({"jsonrpc": "2.0", "id": ident, "method": "initialize", "params": {
-        "protocolVersion": MCP_PROTOCOL, "capabilities": {},
+        "protocolVersion": MCP_PROTOCOL,
+        # A REPL's request, [`tilo_runtime::session_door::ACTS_AS`]: the person at this
+        # seat is the client's own program, and no agent member's grants are needed.
+        "capabilities": {"experimental": {"so.tilo": {"actsAs": "person"}}},
         "clientInfo": {"name": CLIENT_NAME, "version": "1"}}})
-    prompt = waiting_prompt(conn, timeout)
-    answer = control(conn, {"op": "actions_invoke", "provider": "permission-prompts",
-                            "id": f"allow-once@{prompt}", "args": {"confirm": True},
-                            "wait_ms": WAIT_MS}, "admit the agent")
+    provider, question = waiting_prompt(conn, timeout)
+    # The sheet's first choice, Allow once (tilo_portal::consent::ALLOW_ONCE).
+    answer = control(conn, {"op": "actions_invoke", "provider": provider, "id": question,
+                            "args": {"choice": 0}, "wait_ms": WAIT_MS}, "admit the client")
     state = receipt_state(answer)
     if state not in (None, "succeeded"):
-        raise BenchError(f"admitting the agent ended {state}: {json.dumps(answer)[:400]}")
+        raise BenchError(f"admitting the client ended {state}: {json.dumps(answer)[:400]}")
     initialized, _ = door.reply(ident, timeout)
     if "error" in initialized or not isinstance(initialized.get("result", {}).get("serverInfo"), dict):
-        raise BenchError(f"the door did not serve the admitted agent: {json.dumps(initialized)[:600]}")
+        raise BenchError(f"the door did not serve the admitted client: {json.dumps(initialized)[:600]}")
     door.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-    # The agent holds no role of its own: the person grants it Notes.
-    control(conn, {"op": "allow", "subject": f"agent:{AGENT}", "node": f"app:{NOTES_APP}",
-                   "kinds": ["read", "undoable"], "answer": "allow", "id": GRANT_ID},
-            "grant the agent Notes")
     listed, _, _ = door.request("tools/list")
     tools = (listed.get("result") or {}).get("tools")
     names = sorted(t.get("name") for t in tools or [])
@@ -780,44 +785,6 @@ def describe_desktop(conn: Connection, path: Path | None) -> str:
     return (f"whole listing: {len(listing)} rows, applications "
             f"{sorted({str(r.get('application')) for r in listing})}\n"
             f"targets ({len(targets)}): {names}" + (f"\nfull probes: {path}" if path else ""))
-
-
-@contextlib.contextmanager
-def spawned_desktop(shell: Path, log: Path, timeout: int) -> Iterator[tuple[str, Path]]:
-    """A headless session through spawn-headless.sh, serving its agent door:
-    (control socket, runtime directory). Its profile is removed on exit.
-
-    A session with no identity opens setup instead of a desk, so a first pass
-    mints the throwaway identity a development login opens its desk with and
-    exits; the pass that is measured starts on it.
-    """
-    if not shell.is_file() or not os.access(shell, os.X_OK):
-        raise BenchError(f"no session at {shell}")
-    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-    cache.mkdir(parents=True, exist_ok=True)
-    profile = Path(tempfile.mkdtemp(prefix="agent-task.", dir=cache))
-    try:
-        for sub in ("config", "data", "state", "cache", "home", "run"):
-            (profile / sub).mkdir(parents=True, exist_ok=True, mode=0o700)
-        runtime = profile / "run"
-        env = {"TILO_HEADLESS_PROFILE": str(profile),
-               # spawn-headless.sh runs the session with XDG_RUNTIME_DIR=<profile>/run;
-               # the door goes where a client in that login looks for it.
-               "TILO_AGENT_DOOR": str(runtime / "tilo-session" / "agent.sock"),
-               "RUST_LOG": os.environ.get("RUST_LOG", "info")}
-        with spawned(shell, profile / "identity.log", timeout, env) as socket_path:
-            conn = Connection(socket_path, timeout=60)
-            try:
-                minted = control(conn, {"op": "provision_test_identity"}, "provision the test identity")
-            finally:
-                conn.close()
-            if not isinstance(minted, dict) or minted.get("throwaway") is not True:
-                raise BenchError(f"no throwaway identity for the measured session: "
-                                 f"{json.dumps(minted)[:400]} (see {profile / 'identity.log'})")
-        with spawned(shell, log, timeout, env) as socket_path:
-            yield socket_path, runtime
-    finally:
-        shutil.rmtree(profile, ignore_errors=True)
 
 
 def client_env(runtime: Path, scratch: Path | None) -> dict[str, str]:
@@ -942,8 +909,7 @@ def what_the_agent_sees(door: Door, title: str) -> str:
 
 def session(socket_path: str, runtime: Path, args: argparse.Namespace,
             scratch: Path | None) -> list[TaskRun]:
-    """Admit the agent on this desktop, run the task, and take the agent back
-    out afterwards."""
+    """Admit the client on this desktop, run the task, and leave the session with it."""
     conn = Connection(socket_path, timeout=60)
     door: Door | None = None
     try:
@@ -959,11 +925,6 @@ def session(socket_path: str, runtime: Path, args: argparse.Namespace,
     finally:
         if door is not None:
             door.close()
-        # The agent leaves the desktop as it found it.
-        with contextlib.suppress(OSError, BenchError):
-            control(conn, {"op": "actions_invoke", "provider": "actions", "id": "agent.remove",
-                           "args": {"name": AGENT, "confirm": True}, "wait_ms": WAIT_MS},
-                    "remove the agent")
         conn.close()
 
 
@@ -1007,7 +968,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.spawn:
             log = args.log or Path(tempfile.gettempdir()) / "agent-task-session.log"
             args.log = log
-            with spawned_desktop(args.spawn, log, args.startup_timeout) as (socket_path, runtime):
+            with desk_session(args.spawn, log, args.startup_timeout) as (socket_path, runtime):
                 runs = session(socket_path, runtime, args, runtime.parent)
         else:
             runs = session(str(args.socket), args.socket.resolve().parent.parent, args, None)

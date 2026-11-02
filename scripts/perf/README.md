@@ -68,15 +68,18 @@ executable stand-alone; the higher-level flow is described below.
   `wait_ms`), throughput under eight clients and the no-op through the MCP
   server. Each is timed from the client's side of the control socket, after
   100 warm-up calls, with 1,000 samples. `--app PROVIDER:ID` adds an app
-  action. With `--env-json` it writes `tools/perf/record.py` records.
-  The performance run runs it as the `agent` group.
+  action. With `--env-json` it writes `tools/perf/record.py` records. A
+  spawned session starts on a desk, the throwaway identity a development
+  login opens it with minted first. The performance run runs it as the
+  `agent` group.
 
 - `agent_task.py (--socket PATH | --spawn SHELL [--mcp CLIENT])` —
   a whole agent task the way an agent in a terminal of a Tilo login runs it:
   a scripted model, streamed like the Messages API from a loopback fake,
   drives `tilo-runtime-mcp --connect`, which relays to the session's agent
-  door. The person admits the agent (the `permission-prompts` decision on
-  the control socket) and grants it Notes; then, one tool call per turn,
+  door. The person admits the client (the session asks on a sheet; the run
+  answers that question's published action, allow once, on the control
+  socket) and it works as them, as a REPL does; then, one tool call per turn,
   the agent finds Notes' new-note, creates a note, finds the note by its
   title, appends its body and reads it back. Records the task's wall time,
   the time in Tilo, in the (fake) model and in the agent loop, the turns,
@@ -86,8 +89,10 @@ executable stand-alone; the higher-level flow is described below.
   throwaway identity a development login opens its desk with, and serves its
   agent door in the profile; `--socket` takes a device's admin-control.sock
   (its agent.sock beside it). Either way the task works in a workspace of its
-  own and removes the agent afterwards. The performance run runs it in the
-  `agent` group.
+  own and the client leaves with the session. It needs a session where apps
+  start, with Notes installed: a dev session on a machine, not a builder,
+  whose containers start no app. The scheduled lane therefore times the
+  agent's calls (`agent_rtt.py`) and the agent's own task loop (`agent-native`).
 
 ## Optimise (three-step PGO + optional BOLT)
 
@@ -124,12 +129,12 @@ does not enable GPU timestamp queries.
 
 The capture never touches the person's notebook. Every Notes window in a
 workspace opens that workspace's one notebook, so the capture first creates a
-workspace of its own (`workspace.create`, which mints a new id), opens Notes
-there (`applications so.tilo.notes`) and addresses every Notes action by that
-id and its record (`scratch_notes.py`). A workspace that existed before the run
-is refused, and so is any Notes row outside the scratch workspace. In that
-notebook it
-creates and opens a fresh scratch note. Before every kernel key it checks the
+workspace of its own (`so.tilo.session` `desktop:chrome␟new-workspace`, which
+mints a new id), opens Notes there (`applications so.tilo.notes`) and
+addresses every Notes action by that id and its record (`scratch_notes.py`). A
+workspace that existed before the run is refused, and so is any Notes row
+outside the scratch workspace. In that notebook it creates and opens a fresh
+scratch note. Before every kernel key it checks the
 actual selected/bound page, adopted canonical and rendered hashes, caret,
 editor focus and that the keyboard goes to the scratch workspace's one Notes
 surface. The workspace, named `Notes latency scratch <time>`, and its note

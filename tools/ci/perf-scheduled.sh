@@ -72,12 +72,14 @@ case $group in
     ;;
   agent)
     # What a person waits for when an agent works in their session: the round
-    # trip of the calls an agent makes (list, state, invoke) and a whole task
-    # an agent in the login runs — find a notebook, make a note, write and
-    # read it back — through tilo-runtime-mcp and the agent door, on a
-    # headless session this build starts for the run. tilo-runtime's
-    # dev-overrides carry the throwaway identity the run's session mints for
-    # the desk it opens.
+    # trip of the calls an agent makes — list the actions, read the state,
+    # invoke one, and the same through the MCP server — and how many complete
+    # at once. A whole app task (Notes) cannot be timed here: a builder starts
+    # no app, its sandboxes needing a /proc of their own, so such a step would
+    # measure nothing. `scripts/perf/agent_task.py` times that on a session
+    # where apps start, and the agent's own task pipeline is the
+    # `agent-native` group's. tilo-runtime's dev-overrides carry the throwaway
+    # identity the run's session mints for the desk it opens.
     cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp \
       --features dev-overrides
     test -r "$VK_DRIVER_FILES"
@@ -86,13 +88,6 @@ case $group in
       --spawn "$target/release/tilo-session" --samples 1000 --warmup 100 \
       --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
       --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/compositor.log"
-    # A whole task as an agent in the login runs it: a scripted, streamed
-    # model at 0 ms think time, through tilo-runtime-mcp and the agent door.
-    bash tools/with-test-environment.sh python3 scripts/perf/agent_task.py \
-      --spawn "$target/release/tilo-session" --repetitions 30 --warmup 3 \
-      --transport "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO" \
-      --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/task-compositor.log" \
-      --client-log "$out/task-client.log"
     ;;
   agent-native)
     # The agent's own task pipeline, without the desktop: a release build of the agent's

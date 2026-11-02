@@ -355,10 +355,11 @@ release build serves the socket only with `--features dev-overrides`.
 login runs it: a scripted, streamed fake model drives `tilo-runtime-mcp
 --connect` through the session's agent door, creates a note in Notes,
 writes its body, finds it by its title and reads it back, and the record
-splits the time between Tilo, the model and the agent loop. Its `--spawn`
-session starts headless on a scratch profile, mints the throwaway identity a
-development login opens its desk with, and serves the door
-(`TILO_AGENT_DOOR`) in that profile.
+splits the time between Tilo, the model and the agent loop. It needs a
+session where apps start, with Notes installed (a dev session on a machine;
+a builder starts no app). Its `--spawn` session starts headless on a scratch
+profile, mints the throwaway identity a development login opens its desk
+with, and serves the door (`TILO_AGENT_DOOR`) in that profile.
 
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash

@@ -36,9 +36,11 @@ the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `browser`, which measures a clean checkout of a commit. `render` also holds the session's
 own desktop surface to its budgets (`session_perf`, `[devices.<class>.session.*]`), and
 `search` runs the palette search's own measurement test, which fails over its budget and
-writes no record. A group's numbers are compared with the store without writing to it by
-`python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups
-<group>` on the records it wrote to `/target/perf/<group>/`.
+writes no record. `agent` times what an agent's calls cost through the session's agent
+door, and `agent-native` the agent's own task loop; a whole app task is not this lane's,
+because a builder starts no app. A group's numbers are compared with the store without
+writing to it by `python3 tools/perf/compare.py --results <records.jsonl> --store
+https://code.tilo.so --groups <group>` on the records it wrote to `/target/perf/<group>/`.
 `compare.py`'s `--accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `--synthetic` with `--synthetic-factor` multiplies a run's values to prove
