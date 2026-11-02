@@ -112,6 +112,22 @@ impl AppConnection {
             }
             None => RouteAccess::Own,
         };
+        let person = matches!(participant, Participant::Person { .. });
+        // The app a person's launcher started is the worker of that app's
+        // routes on this device: the launcher verified which app it released
+        // and who it released it for, which is the same durable admission a
+        // host-mounted worker's private descriptor carries. Decided here,
+        // before the route is held, so a durable broker refuses an
+        // unattested application instead of admitting it and withdrawing it.
+        let packaged_app = (self.worker.is_none() && person)
+            .then(|| {
+                host_workers::packaged_app_registration(
+                    self.app_worker.as_ref(),
+                    &route,
+                    &verified_identity,
+                )
+            })
+            .flatten();
         if let Some(worker) = &self.worker {
             if record_route != worker.route
                 || verified_identity.verified.user_public_key != worker.root
@@ -131,7 +147,8 @@ impl AppConnection {
                 }
                 verified_identity.worker_registration = Some(registration.clone());
             }
-        } else if state.durable_owner_required && !route.app_id.is_empty() {
+        } else if state.durable_owner_required && !route.app_id.is_empty() && packaged_app.is_none()
+        {
             return Err(BrokerError::failed(
                 "application requires host-owned worker descriptor admission".into(),
             ));
@@ -140,7 +157,9 @@ impl AppConnection {
             &record_route,
             joined_record_kind(record_kind.as_deref().unwrap_or_default())?,
         )?;
-        let person = matches!(participant, Participant::Person { .. });
+        if let Some(registration) = packaged_app {
+            verified_identity.worker_registration = Some(registration);
+        }
         if (verified_identity.host_scope.is_some()
             || verified_identity.worker_registration.is_some())
             && !person
@@ -257,16 +276,6 @@ impl AppConnection {
             },
             "PROBE join_channel",
         );
-        if self.worker.is_none()
-            && person
-            && let Some(registration) = host_workers::packaged_app_registration(
-                self.app_worker.as_ref(),
-                &route,
-                &verified_identity,
-            )
-        {
-            verified_identity.worker_registration = Some(registration);
-        }
         phases.mark("admit");
         let ensured = channel_id.clone();
         let retained = verified_identity.clone();
