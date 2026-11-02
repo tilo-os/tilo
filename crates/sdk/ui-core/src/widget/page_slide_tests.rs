@@ -6,7 +6,6 @@ use crate::component::Described;
 use crate::headless::FrameHarness;
 use crate::state::State;
 use crate::time::testing::with_monotonic_time;
-use crate::widget::Widget as _;
 use crate::widget::{Column, Text};
 
 fn rooted(column: Column) -> FrameHarness {
