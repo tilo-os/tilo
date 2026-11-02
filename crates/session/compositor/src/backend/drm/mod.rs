@@ -1451,6 +1451,9 @@ fn open_gpu(
         .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
                 vblank(&vblank_inner, &data.state, dev_id, crtc, metadata.as_ref());
+                // A frame drawn when a display's vertical blank arrives starts
+                // and ends the visual alert as the session's own frames do.
+                crate::a11y::begin_frame(&mut data.state, Instant::now());
                 render_ready(&vblank_inner, &mut data.state);
             }
             DrmEvent::Error(error) => tracing::warn!(?error, "DRM device error"),

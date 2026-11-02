@@ -1629,9 +1629,10 @@ impl Compositor {
     pub fn render(&mut self) -> Result<(), Error> {
         self.sync_text_input();
         self.seed_visuals();
-        // A frame drawn after the alert's run shows the scene without it, and
-        // is the frame that puts it away.
-        a11y::finish_flash(&mut self.data.state, Instant::now());
+        // An alert asked for between frames runs from the frame that shows it,
+        // however late that frame is, and an alert whose run is over goes away
+        // on the frame that draws the scene without it.
+        a11y::begin_frame(&mut self.data.state, Instant::now());
         // The visual alert fades frame by frame, so each frame it covers is
         // a new one to draw.
         if a11y::flashing(&self.data.state, Instant::now()) {
