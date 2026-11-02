@@ -4197,7 +4197,8 @@ impl Widget for WindowGroup {
             || group_close_in_flight
             || rect_in_flight
             || width_in_flight
-            || (self.navigation_bar_visible() && self.bar.needs_animation_frame())
+            || (self.navigation_bar_visible()
+                && (self.bar.needs_animation_frame() || self.search.needs_animation_frame()))
             || host
     }
 }
