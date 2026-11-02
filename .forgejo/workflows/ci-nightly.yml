@@ -256,6 +256,15 @@ jobs:
           bash scripts/ci-run.sh "cargo clippy --workspace --all-targets" --
           cargo clippy --workspace --locked --all-targets --keep-going -- -D warnings
 
+      # Push runs lint wasm32 only when selection judges a change browser-facing,
+      # so a shared crate can break the page build unseen. Lint every browser
+      # crate and the page builds nightly.
+      - name: Lint every browser crate for wasm32
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        run: |
+          rustup target add wasm32-unknown-unknown
+          bash tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)
+
       # Source-level protocol checks prevent an app from opting out, but only
       # the laid-out production root can prove that visible effect controls
       # resolve to live resources/actions (and that no stale or legacy binding
