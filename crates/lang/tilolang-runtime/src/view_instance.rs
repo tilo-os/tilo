@@ -233,6 +233,9 @@ impl ViewInstance {
         if !self.live.is_dirty() {
             return Ok(Vec::new());
         }
+        // What this turn fails to read for want of a reading that has not arrived is what it
+        // gathers now: the last turn's waiting errors are done with.
+        self.core.foreign.borrow_mut().take_waiting();
         let patches = self.live.poll(&self.core);
         self.subscribe_new();
         patches

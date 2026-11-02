@@ -67,6 +67,11 @@ pub struct Foreign {
     wanted: BTreeMap<String, (String, String)>,
     /// Every resource asked for, by key: asked again only once forgotten.
     asked: std::collections::BTreeSet<String>,
+    /// Whether a field was read from a reading that has not arrived yet (or a record of one):
+    /// the errors those reads gave. Kept per message, not as one flag, so several places each
+    /// waiting on their own reading are all read as waiting, and a fault beside them is still
+    /// a fault.
+    waiting: std::cell::RefCell<std::collections::BTreeSet<String>>,
 }
 
 impl Foreign {
@@ -102,6 +107,34 @@ impl Foreign {
     /// How many resources of other apps have a reading here.
     pub(crate) fn known(&self) -> usize {
         self.readings.len()
+    }
+
+    /// Whether `error` — a field read's failure — was waiting on a reading that has not
+    /// arrived yet (a place whose app publishes nothing yet, or whose record the session has
+    /// not published): the read failed for want of data, not for a fault. A host shows the
+    /// call that read it its waiting state and draws the rest of the screen, and the call runs
+    /// again when the reading comes ([`Runtime::set_reading`]). Every such error since the last
+    /// [`Foreign::take_waiting`] is kept, so each of several places waiting on their own
+    /// reading is read as waiting, not only the first.
+    pub(crate) fn waiting(&self, error: &str) -> bool {
+        // The host wraps what a read said in the import's name (`res_get_h: …`), and the view
+        // call may wrap it further: the remembered message is the read's own, so it is enough
+        // that the error holds it.
+        self.waiting
+            .borrow()
+            .iter()
+            .any(|waited| error.contains(waited.as_str()))
+    }
+
+    /// Forget the waiting errors gathered so far: a turn's tree is built afresh, and what it
+    /// gathers is what it failed for.
+    pub(crate) fn take_waiting(&self) {
+        self.waiting.borrow_mut().clear();
+    }
+
+    /// Keep `error` as one a read gave for want of a reading that has not arrived yet.
+    fn remember_waiting(&mut self, error: &str) {
+        self.waiting.borrow_mut().insert(error.to_owned());
     }
 
     /// The resources a view read before their readings came in, each its id and type, since
@@ -215,19 +248,31 @@ impl Foreign {
                     self.wanted
                         .insert(at, (target.id_string(), target.ty.clone()));
                 }
-                return pending(&field.ty, field.default.as_ref()).map_err(|why| {
+                // The record reads as it would start, and the read is one waiting on its
+                // reading where that has no start to give (`Step`'s `task`, a required
+                // record): the turn's caller shows the place its waiting state, not a fault.
+                let value = pending(&field.ty, field.default.as_ref()).map_err(|why| {
                     format!(
                         "`{}` of `{}` before its reading came in: {why}",
                         field.name,
                         target.id_string()
                     )
                 });
+                match value {
+                    Ok(value) => return Ok(value),
+                    Err(why) => {
+                        self.remember_waiting(&why);
+                        return Err(why);
+                    }
+                }
             }
             None => {
-                return Err(format!(
+                let why = format!(
                     "no reading of `{}` arrived yet: its app publishes it through the session",
                     target.id_string()
-                ));
+                );
+                self.remember_waiting(&why);
+                return Err(why);
             }
         };
         let Some((step, json)) = found else {
@@ -339,6 +384,19 @@ pub fn reading_key(target: &ResourceRef) -> StateKey {
         window: crate::platform::LENS_WINDOW.to_owned(),
         principal: None,
         state: format!("$reading:{}", Foreign::key(target)),
+    }
+}
+
+/// The view state slot that moves every time any reading of another app is set here: what a
+/// view call waiting on a reading it does not yet know runs again on. A placeholder reads it,
+/// so it re-runs and draws its record the moment that reading arrives, whatever resource it is
+/// (a call that failed does not know which of the resources it read was missing).
+#[must_use]
+pub fn arrived_key() -> StateKey {
+    StateKey {
+        window: crate::platform::LENS_WINDOW.to_owned(),
+        principal: None,
+        state: "$readings-arrived".to_owned(),
     }
 }
 

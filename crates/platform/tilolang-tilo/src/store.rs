@@ -2217,10 +2217,16 @@ impl Store for TiloStore {
             let (app, ty) = inner.locate(at)?;
             if let Some(view) = inner.view(&app) {
                 let resource = at.id_string();
-                let stored = view
-                    .type_of(&resource)
-                    .map_err(backend)?
-                    .ok_or_else(|| not_found(format!("resource {resource}")))?;
+                let Some(stored) = view.type_of(&resource).map_err(backend)? else {
+                    // A record the index cannot name yet: an origin's write is derived, and the
+                    // record it makes (or moves on) is read here before the next derivation
+                    // names it. The overlay the write made holds its fields, so a field it
+                    // wrote reads from there rather than as if the record were gone.
+                    if let Ok(Some(written)) = view.field(&resource, &field.id) {
+                        return Ok(written);
+                    }
+                    return Err(not_found(format!("resource {resource}")));
+                };
                 let schema = lookup(&stored).ok_or_else(|| not_found(format!("type {stored}")))?;
                 let spec = schema
                     .field(&field.id)

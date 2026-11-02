@@ -21,9 +21,9 @@ mod common;
 
 use std::time::Duration;
 
-use serde_json::{Map, json};
+use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
-use tilo_service::Questions;
+use tilo_service::{Questions, Service as _, Started};
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 use tilo_surface_host::shell_part::ShellLayer;
@@ -791,4 +791,175 @@ fn seeded_thread(session: &Session, id: &str) -> bool {
             .any(|r| (r.id.as_str() == id && r.kind == kind) || find(&r.children, id, kind))
     }
     find(&session.resources(), id, &format!("tl.{MAIL}.Thread"))
+}
+
+/// A service publishing the seeded apps' records, but withholding the readings of every
+/// resource of the kind `withheld` (the app that publishes it never does, or the session's
+/// watch has not seen it): what a place whose data never arrives meets.
+struct Withholding {
+    inner: RecordService,
+    withheld: &'static str,
+    /// The ids of the resources of that kind, found once.
+    ids: std::cell::RefCell<Option<std::collections::BTreeSet<String>>>,
+}
+
+impl Withholding {
+    fn withheld_ids(&self) -> std::cell::Ref<'_, std::collections::BTreeSet<String>> {
+        {
+            let mut ids = self.ids.borrow_mut();
+            if ids.is_none() {
+                fn walk(
+                    resources: &[tilo_actions::ResourceSpec],
+                    kind: &str,
+                    out: &mut std::collections::BTreeSet<String>,
+                ) {
+                    for resource in resources {
+                        if resource.kind == kind {
+                            out.insert(resource.id.as_str().to_owned());
+                        }
+                        walk(&resource.children, kind, out);
+                    }
+                }
+                let mut found = std::collections::BTreeSet::new();
+                walk(&self.inner.resources(), self.withheld, &mut found);
+                *ids = Some(found);
+            }
+        }
+        std::cell::Ref::map(self.ids.borrow(), |ids| {
+            ids.as_ref().expect("the kind's ids were found")
+        })
+    }
+}
+
+impl tilo_service::Service for Withholding {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        self.inner.resources()
+    }
+
+    fn read(&self, resource: &str) -> Option<Value> {
+        if self.withheld_ids().contains(resource) {
+            None
+        } else {
+            self.inner.read(resource)
+        }
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, tilo_actions::DoorError> {
+        self.inner.invoke(resource, action, arguments)
+    }
+
+    fn settle(&mut self) {
+        self.inner.settle();
+    }
+
+    fn moved(&mut self) -> Option<Vec<String>> {
+        self.inner.moved()
+    }
+
+    fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
+        self.inner.module(app)
+    }
+}
+
+/// A place whose data never arrives does not freeze the screen. A task is placed whose record's
+/// reading the session withholds (the `Step`s the task's window lists): the place shows the
+/// toolkit's waiting state, and the rest of the shell keeps working — a note placed after it
+/// shows on screen, and the overview opens and closes. One place's missing reading never fails
+/// the whole screen's view.
+#[test]
+fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_works() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let program = std::env::current_exe().expect("this test's program");
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: Some(ShellLayer::Screen),
+            collab: false,
+            services: vec![Box::new(Withholding {
+                inner: apps,
+                // The steps of the seeded task the task's own window lists: their reading never
+                // comes, and the view that draws them waits on it.
+                withheld: "tl.so.tilo.lang.tasks.Step",
+                ids: std::cell::RefCell::new(None),
+            })],
+            questions: Some(Questions::new()),
+            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            agent_door: Some(root.path().join("agent.sock")),
+            admit_repl: vec![program],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, "the preset switch", |session| {
+        on_screen(session, "Frames").is_some()
+    });
+    press(&mut session, "Frames");
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, "Typed").is_some()
+    });
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+
+    let (answer, failed) = repl.call(
+        &mut session,
+        "tilo",
+        &json!({"program": "session.place_found(text: \"Pack the books\", view: .none, x: .some(80), y: .some(60))"}),
+    );
+    assert!(!failed, "the task is placed: {answer}");
+    // The place shows the waiting state, not an error: the shell says "Loading" where the
+    // place stands, and refuses nothing.
+    until(&mut session, "the place's waiting state", |session| {
+        session.shell_says("Loading")
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the place waiting is no refusal: {:?}",
+        session.shell_refusals()
+    );
+
+    // The rest of the shell works: a note placed after it shows on the canvas.
+    let (answer, failed) = repl.call(
+        &mut session,
+        "tilo",
+        &json!({"program": "session.place_found(text: \"Groceries\", view: .none, x: .some(600), y: .some(60))"}),
+    );
+    assert!(!failed, "the note is placed: {answer}");
+    until(&mut session, "the note's title on the canvas", |session| {
+        session.shell_says(NOTE_TITLE)
+    });
+
+    // And the overview opens and closes, as it does on a screen all of whose places have
+    // arrived.
+    then_the_overview_opens_and_closes(&mut session, &mut repl);
+}
+
+/// The overview opens over the desk and closes again, through the door as an agent asks it.
+fn then_the_overview_opens_and_closes(session: &mut Session, repl: &mut Repl) {
+    let (answer, failed) = repl.call(
+        session,
+        "tilo",
+        &json!({"program": "session.overview(open: .some(true))"}),
+    );
+    assert!(!failed, "the overview opens: {answer}");
+    until(session, "the shell's overview", |session| {
+        on_screen(session, "Overview").is_some()
+    });
+    let (answer, failed) = repl.call(
+        session,
+        "tilo",
+        &json!({"program": "session.overview(open: .some(false))"}),
+    );
+    assert!(!failed, "the overview closes: {answer}");
+    until(session, "the overview closed", |session| {
+        on_screen(session, "Overview").is_none()
+    });
 }

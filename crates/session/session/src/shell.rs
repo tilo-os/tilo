@@ -1127,25 +1127,67 @@ impl crate::Session {
 
 #[cfg(test)]
 mod tests {
+    /// What the shell runs — its views and the session's and the platform's descriptions, with
+    /// no scenarios, which are fixtures for its shots and tests — compiles, and every id it
+    /// declares is in the lock. What it shows.
     #[test]
-    fn the_shell_package_compiles_and_its_ids_lock_holds_every_declaration() {
-        let packages = super::compile().unwrap_or_else(|why| panic!("{why}"));
-        let compiled = packages.last().expect("the shell package compiles last");
-        // The session compiles the package without its scenarios, so the lock it compiles to
-        // retires theirs; every declaration it does compile keeps the id the package's lock holds.
-        let committed =
-            tilolang_tilo::tilolang::IdsLock::parse(tilo_surface_host::shell_part::shell_ids())
-                .expect("apps/tl/shell/app.ids reads");
-        let unheld: Vec<String> = compiled
-            .ids
-            .entries()
-            .filter(|(name, id)| committed.get(name) != Some(*id))
-            .map(|(name, id)| format!("{name} = {id}"))
-            .collect();
-        assert!(
-            unheld.is_empty(),
-            "apps/tl/shell/app.ids does not hold these declarations; run `tilolang check --write-ids apps/tl/shell`: {unheld:?}"
+    fn the_shell_the_session_runs_compiles() {
+        super::compile().unwrap_or_else(|why| panic!("{why}"));
+    }
+
+    /// `apps/tl/shell/app.ids` is the lock of the *whole* shell package, scenarios included:
+    /// `tilolang check` (which layout-check and the shots compile the package with) holds, and a
+    /// declaration the session's compile leaves out — a scenario's, its helpers' — keeps its id
+    /// in the lock, because a lock names every declaration the package has ever had.
+    #[test]
+    fn the_shells_ids_lock_holds_every_declaration_the_whole_package_has() {
+        use tilolang_tilo::tilolang::ids::IdsLock;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
+        // The packages the shell's scenarios reach (`use so.tilo.lang.notes as notes`), each
+        // compiled before the shell as `tilolang check` compiles it.
+        let published = tilolang_tilo::catalogue::published_packages(&[dir
+            .parent()
+            .expect("apps/tl")
+            .to_path_buf()])
+        .unwrap_or_else(|why| panic!("{why}"));
+        let built = tilolang_tilo::tilolang::source::compile_package(
+            &dir,
+            &[],
+            &published,
+            &mut tilolang_tilo::tilolang::ids::SeededEntropy(0),
+        )
+        .unwrap_or_else(|why| panic!("{why}"));
+        let compiled = built.last().expect("the shell package compiles last");
+        let lock = compiled.compiled.ids.to_text();
+        let on_disk = std::fs::read_to_string(dir.join("app.ids")).expect("app.ids reads");
+        assert_eq!(
+            on_disk, lock,
+            "apps/tl/shell/app.ids is not the lock the whole package (scenarios included) \
+             compiles to; write:\n{lock}"
         );
+        // Every scenario the package declares keeps the id the lock gives it, in the lock's
+        // live entries and never among the retired: a scenario's id is as real as a type's.
+        let parsed = IdsLock::parse(&on_disk).expect("the lock parses");
+        let retired: std::collections::BTreeMap<(&str, &str), ()> = parsed
+            .retired()
+            .map(|(name, id)| ((name, id), ()))
+            .collect();
+        let scenarios = &compiled.compiled.meta.scenarios;
+        assert!(
+            scenarios.len() > 20,
+            "the whole package's scenarios are compiled, as `tilolang check` compiles them: {}",
+            scenarios.len()
+        );
+        for scenario in scenarios {
+            let name = tilolang_tilo::tilolang::ids::scenario_key(&scenario.name);
+            let held = parsed
+                .get(&name)
+                .unwrap_or_else(|| panic!("scenario {name:?} has no id in app.ids"));
+            assert!(
+                !retired.contains_key(&(name.as_str(), held)),
+                "{name} is retired"
+            );
+        }
     }
 
     /// The device's surface the shell compiles against is the one the session publishes.
