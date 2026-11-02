@@ -609,11 +609,6 @@ impl Printer {
                 }
                 SearchEntryKind::Hide { field } => format!("hide {}", field.name),
                 SearchEntryKind::MarkOthers => "mark others".to_owned(),
-                SearchEntryKind::Noun { one, many } => match many {
-                    Some(many) => format!("noun {} {}", quote(one), quote(many)),
-                    None => format!("noun {}", quote(one)),
-                },
-                SearchEntryKind::Primary { expr } => format!("primary {}", self.ex(expr)),
             };
             self.line(&text);
         }

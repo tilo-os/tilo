@@ -383,20 +383,20 @@ pub fn without_filler(needle: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// What a query naming a resource's type rather than its title scores on the
-/// provider scale, by how it named it and whether the resource is its type's
-/// primary. Above a loose match (a typo, words spread over fields) and below
+/// provider scale, by how it named it and whether the resource is its app's
+/// root. Above a loose match (a typo, words spread over fields) and below
 /// any real match of a title, so "Groceries" finds the note called that
-/// before the grocery lists, and "my mails" finds mail's Inbox before a
-/// conversation that only resembles the word.
+/// before the grocery lists, and "my mails" finds Mail's root (drawn as its
+/// inbox) before a conversation that only resembles the word.
 const TYPE_MATCH_SCORE: i32 = 20;
 
 /// What naming a resource's type rather than its app adds: "mailboxes" is
 /// closer to a mailbox than "mail" is.
 const TYPE_NOUN_BONUS: i32 = 1;
 
-/// What each step of [`tilo_actions::Primary`] adds: a type's declared
-/// primary leads the app's root, which leads the rest of its type.
-const PRIMARY_STEP: i32 = 3;
+/// What being the app's root adds: a query naming the app means its root,
+/// which its app draws as it chooses (Mail's as the inbox).
+const ROOT_BONUS: i32 = 3;
 
 /// What a query that names a type and matches the rest by text adds to the
 /// text's own score: "mail inbox" is the inbox more surely than "inbox".
@@ -430,8 +430,8 @@ fn named_at(words: &[String], name: &str, out: &mut Vec<usize>) -> bool {
 /// match either: "videos of <channel>" finds the channel by its name. `None`
 /// when no word names what it is, or the rest names nothing of it.
 ///
-/// What only names a type scores below any title match, its type's primary
-/// first: "my mails" is mail's Inbox, "notes" the notebook. A query that
+/// What only names a type scores below any title match, the app's root
+/// first: "my mails" is Mail's root, "notes" the notebook. A query that
 /// names the type and matches the rest by text ("mail inbox") scores a
 /// little above the text alone.
 pub fn type_match_score<'k>(
@@ -482,14 +482,9 @@ pub fn type_match_score<'k>(
         if own.is_empty() || (kin_named && !by_noun) {
             return None;
         }
-        let primary: i32 = match ty.primary {
-            tilo_actions::Primary::No => 0,
-            tilo_actions::Primary::Root => 1,
-            tilo_actions::Primary::Declared => 2,
-        };
         return Some(
             TYPE_MATCH_SCORE
-                .saturating_add(primary.saturating_mul(PRIMARY_STEP))
+                .saturating_add(if ty.root { ROOT_BONUS } else { 0 })
                 .saturating_add(if by_noun { TYPE_NOUN_BONUS } else { 0 }),
         );
     }

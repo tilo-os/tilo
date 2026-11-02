@@ -2041,13 +2041,13 @@ mod tests {
     }
 
     /// A resource of `app`'s type `noun` (plural `nouns`) labelled `label`, opened by its
-    /// `open`, standing `primary` among its type, with the actions `more` on it.
+    /// `open`, the app's `root` or not, with the actions `more` on it.
     fn typed(
         id: &str,
         label: &str,
         (noun, nouns): (&str, &str),
         (app, apps): (&str, &str),
-        primary: tilo_actions::Primary,
+        root: bool,
         more: &[(&str, &str)],
     ) -> ResourceSpec {
         let action = |id: &str, label: &str| {
@@ -2066,7 +2066,7 @@ mod tests {
             .with_type(tilo_actions::ResourceType {
                 noun: tilo_actions::Noun::new(noun, nouns),
                 app: tilo_actions::Noun::new(app, apps),
-                primary,
+                root,
             });
         for (id, label) in more {
             resource = resource.with_action(action(id, label));
@@ -2090,29 +2090,27 @@ mod tests {
             .collect()
     }
 
-    /// Mail as a workspace holds it: the app's root, its mailboxes (the Inbox its declared
-    /// primary) and conversations, each conversation offering to move it to the inbox.
+    /// Mail as a workspace holds it: the app's root (which Mail draws as the inbox), its
+    /// mailboxes and conversations, each conversation offering to move it to the inbox.
     fn mail() -> Vec<ResourceSpec> {
-        use tilo_actions::Primary;
         let app = ("Mail", "mails");
-        let mailbox = |id: &str, label: &str, primary| {
-            typed(id, label, ("mailbox", "mailboxes"), app, primary, &[])
-        };
+        let mailbox =
+            |id: &str, label: &str| typed(id, label, ("mailbox", "mailboxes"), app, false, &[]);
         let thread = |id: &str, label: &str| {
             typed(
                 id,
                 label,
                 ("thread", "threads"),
                 app,
-                Primary::No,
+                false,
                 &[("to_inbox", "Move to inbox")],
             )
         };
         vec![
-            typed("mail", "Mail", ("mail", "mails"), app, Primary::Root, &[])
-                .with_child(mailbox("mail/archive", "Archive", Primary::No))
-                .with_child(mailbox("mail/inbox", "Inbox", Primary::Declared))
-                .with_child(mailbox("mail/sent", "Sent", Primary::No))
+            typed("mail", "Mail", ("mail", "mails"), app, true, &[])
+                .with_child(mailbox("mail/archive", "Archive"))
+                .with_child(mailbox("mail/inbox", "Inbox"))
+                .with_child(mailbox("mail/sent", "Sent"))
                 .with_child(thread("mail/launch", "Launch plan for the autumn release"))
                 .with_child(thread("mail/lease", "Your lease renewal")),
         ]
@@ -2121,52 +2119,25 @@ mod tests {
     /// Notes as a workspace holds it: the app's root, the notebook its person renamed, and
     /// its notes.
     fn notes() -> Vec<ResourceSpec> {
-        use tilo_actions::Primary;
         let app = ("Notes", "notes");
-        let note =
-            |id: &str, label: &str| typed(id, label, ("note", "notes"), app, Primary::No, &[]);
+        let note = |id: &str, label: &str| typed(id, label, ("note", "notes"), app, false, &[]);
         vec![
-            typed(
-                "notebook",
-                "Journal",
-                ("notes", "noteses"),
-                app,
-                Primary::Root,
-                &[],
-            )
-            .with_child(note("notebook/groceries", "Groceries"))
-            .with_child(note("notebook/trip", "Trip plan")),
+            typed("notebook", "Journal", ("notes", "noteses"), app, true, &[])
+                .with_child(note("notebook/groceries", "Groceries"))
+                .with_child(note("notebook/trip", "Trip plan")),
         ]
     }
 
+    /// "my mails" means Mail's root, which Mail draws as its inbox: what an app shows of
+    /// itself first is its root's default view, which the app decides.
     #[test]
-    fn my_mails_opens_the_inbox() {
-        let found = opened("my mails", &mail());
-        assert_eq!(
-            found.first().map(String::as_str),
-            Some("mail/inbox"),
-            "mail's declared primary leads what its name finds: {found:?}"
-        );
-        assert_eq!(
-            found.get(1).map(String::as_str),
-            Some("mail"),
-            "the app's root follows its declared primary: {found:?}"
-        );
-        for asked in ["mails", "all the mailboxes"] {
-            assert_eq!(
-                opened(asked, &mail()).first().map(String::as_str),
-                Some("mail/inbox"),
-                "{asked:?} names mail's resources, the Inbox first"
-            );
-        }
-        // The app's name is the root's title as well: the title leads, and every other
-        // resource of the app is still found by it, the Inbox first among them.
-        for asked in ["mail", "Mail"] {
+    fn my_mails_opens_mails_root() {
+        for asked in ["my mails", "mails", "mail", "Mail"] {
             let found = opened(asked, &mail());
             assert_eq!(
-                found.get(..2),
-                Some(&["mail".to_owned(), "mail/inbox".to_owned()][..]),
-                "{asked:?}: {found:?}"
+                found.first().map(String::as_str),
+                Some("mail"),
+                "{asked:?} names Mail, its root first: {found:?}"
             );
             assert_eq!(
                 found.len(),
@@ -2192,13 +2163,12 @@ mod tests {
 
     #[test]
     fn a_title_beats_a_type_named_like_it() {
-        use tilo_actions::Primary;
         let shopping = typed(
             "shop",
             "Weekly shop",
             ("grocery", "groceries"),
             ("Shopping", "shoppings"),
-            Primary::Declared,
+            true,
             &[],
         );
         let found = opened("Groceries", &[notes(), vec![shopping]].concat());
@@ -2214,23 +2184,15 @@ mod tests {
     /// publishes is found by it, and the video that names it; a video that does not is not.
     #[test]
     fn a_query_naming_an_apps_things_finds_the_channel_by_its_name() {
-        use tilo_actions::Primary;
         let app = ("YouTube", "youtubes");
         let resources = [
-            typed(
-                "channel",
-                "MKBHD",
-                ("channel", "channels"),
-                app,
-                Primary::No,
-                &[],
-            ),
+            typed("channel", "MKBHD", ("channel", "channels"), app, false, &[]),
             typed(
                 "tour",
                 "Studio tour with MKBHD",
                 ("video", "videos"),
                 app,
-                Primary::No,
+                false,
                 &[],
             ),
             typed(
@@ -2238,7 +2200,7 @@ mod tests {
                 "Bread at home",
                 ("video", "videos"),
                 app,
-                Primary::No,
+                false,
                 &[],
             ),
         ];

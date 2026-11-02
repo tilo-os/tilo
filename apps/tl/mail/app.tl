@@ -23,10 +23,6 @@ type Mailbox (origin: imap.mailbox) {
     role: Text merge register
     unread: Int
     total: Int
-
-    search {
-        primary role == "inbox"
-    }
 }
 
 /// A conversation: messages that answer each other, newest last.

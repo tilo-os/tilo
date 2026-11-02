@@ -209,116 +209,48 @@ type Person {
     assert_eq!(keys, ["n"]);
 }
 
-/// What a type is called and which of its resources a search naming it means: `noun` and
-/// `primary` in its `search` block, which leave its default filters as they are.
+/// What a type is called is its name in words, its plural as English writes most; a search
+/// block says nothing about it, and no resource is singled out by a declaration: a query naming
+/// an app means its root, drawn as its app's default view.
 #[test]
-fn a_type_says_what_it_is_called_and_which_one_is_its_primary() {
-    let src = r#"/// A mailbox of an account.
+fn a_type_is_called_by_its_name() {
+    let src = r#"/// A mailbox.
 type Mailbox {
     name: Text (title)
-    role: Text
-    unread: Int
-
-    search {
-        primary role == "inbox"
-    }
 }
 
-/// Someone on the team.
-type TeamMember {
+/// A list of things to do.
+type TodoList {
     name: Text (title)
-
-    search {
-        noun "person" "people"
-    }
 }
 
-/// A conversation.
-type Thread {
-    subject: Text (title)
-    unread: Bool = true
-
-    search {
-        noun "Conversation"
-        filter unread
-    }
-}
-
-/// A reminder.
-type Reminder {
+/// A box of entries.
+type Entry {
     text: Text (title)
 }"#;
     let meta = compile_body(src).meta;
-    let mailbox = type_meta(&meta, "Mailbox");
-    assert_eq!(
-        mailbox.search.primary,
-        Some(Pred::Cmp(
-            CmpOp::Eq,
-            Operand::Field(field_id(mailbox, "role")),
-            Operand::Lit(Lit::Text("inbox".into())),
-        ))
-    );
-    assert!(
-        !mailbox.search.declared
-            && mailbox
-                .search
-                .filters
-                .iter()
-                .map(|f| f.key.as_str())
-                .eq(["unread"]),
-        "a block of only a primary keeps the default filters: {:?}",
-        mailbox.search
-    );
     let nouns = |name: &str| {
         let ty = type_meta(&meta, name);
         (ty.noun(), ty.plural())
     };
     assert_eq!(nouns("Mailbox"), ("mailbox".into(), "mailboxes".into()));
-    assert_eq!(nouns("TeamMember"), ("person".into(), "people".into()));
-    assert_eq!(
-        nouns("Thread"),
-        ("conversation".into(), "conversations".into())
-    );
-    assert_eq!(nouns("Reminder"), ("reminder".into(), "reminders".into()));
-    assert!(type_meta(&meta, "Thread").search.declared);
-    // It prints as it was written.
-    let printed = print_module(&parse(&format!("app t.x \"X\"\n\n{src}")).expect("parses"));
-    assert!(
-        printed.contains("        primary role == \"inbox\"\n"),
-        "{printed}"
-    );
-    assert!(
-        printed.contains("        noun \"person\" \"people\"\n"),
-        "{printed}"
-    );
-    assert_eq!(print_module(&parse(&printed).expect("parses")), printed);
-    // A primary reads the resource's own fields, once.
-    let ty = |search: &str| {
-        format!(
-            "/// A mailbox.\ntype Box {{\n    role: Text\n    other: Option<Box>\n\n    search {{\n{search}\n    }}\n}}"
-        )
-    };
-    for (search, code, says) in [
-        (
-            "        primary other.role == \"x\"",
-            "E102",
-            "not a test over its own fields",
-        ),
-        (
-            "        primary role == \"a\"\n        primary role == \"b\"",
-            "E104",
-            "has a `primary` already",
-        ),
-        (
-            "        noun \"box\"\n        noun \"crate\"",
-            "E104",
-            "it has one noun",
-        ),
-    ] {
-        let got = first_message(&ty(search));
+    assert_eq!(nouns("TodoList"), ("todo list".into(), "todo lists".into()));
+    assert_eq!(nouns("Entry"), ("entry".into(), "entries".into()));
+    for line in ["noun \"person\" \"people\"", "primary name == \"Inbox\""] {
+        let body = format!(
+            "type Box {{\n    name: Text (title)\n\n    search {{\n        {line}\n    }}\n}}"
+        );
+        let err = match compile_with(&format!("app t.x \"X\"\n{body}\n"), &[]) {
+            Ok(_) => String::new(),
+            Err(diags) => diags
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
         assert!(
-            got.contains(code) && got.contains(says),
-            "{search}: expected {code} saying {says:?}, got:\n{got}"
+            err.contains("a search block holds `filter`, `sort`, `hide` and `mark` lines"),
+            "`{line}` is not a search line: {err}"
         );
     }
 }

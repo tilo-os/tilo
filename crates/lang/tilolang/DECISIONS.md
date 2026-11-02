@@ -381,22 +381,11 @@ search.md, "What a type declares" and "Types, references and paths".
   (`boxes.contains("inbox")`), the index's run of that value.
 - **`outside` capabilities are a checked list** (`crate::origin::CAPABILITIES`: `post`,
   `smtp.send`), in the compiler and the runtime alike.
-- **What a type is called, and its primary, are `search` lines** (search.md, "What a query
-  names"). `noun "conversation"` or `noun "person" "people"` names one, and several where
-  English does not add an `s`; without it the noun is the type's name in words and the plural
-  derived (`TypeMeta::noun`, `::plural`, also what `meta(r).noun` and `.plural` say).
-  `primary role == "inbox"` is the test the one a search naming the type means passes. The
-  language had no means for either. A type option (`type Mailbox (primary: ...)`) would make
-  `origin:` one of several and put a predicate in a header; a new top-level declaration would
-  repeat the type's name for a line about it. The `search` block is where a type already says
-  how it is found, its lines are a word and their operand (`filter`, `sort`, `hide`), and
-  `primary` takes the predicate a named filter takes, lowered the same way (E102 for one that
-  reads another resource, E104 for a second). `primary` was already a word of the language
-  (`primary action`); here it means the same, the one that stands first. A block of only
-  `noun` and `primary` lines keeps the type's default filters: they say nothing of filters.
-- **A root is its type's primary unless a type of the app declares one.** A root is the app's
-  one resource of its type, so it is published as `Primary::Root`, below a declared primary:
-  "my mails" is the Inbox, the Mail root second; "notes" is the notebook, which declares
-  nothing. Whether a resource passes its `primary` is read where it is published, from the
-  fields the index holds; a change to a field the `primary` reads rebuilds that resource (a
-  record's whole tree), so the published answer is never stale.
+- **A type is called by its name; nothing is declared to be "the one".** A type's noun is its
+  name in words and its plural derived (`TypeMeta::noun`, `::plural`, what `meta(r).noun` and
+  `.plural` say); what other languages call it is the package's translations' job, not a search
+  line. A query naming an app means its root (`ResourceType::root`), and what the person then
+  sees is the app's default view of its root: Mail's is the inbox, so "my mails" is the inbox with
+  no further declaration. `noun "…" "…"` and `primary <test>` were search lines for this and are
+  removed: `noun` was used by no app, and `primary` repeated the word `primary action` already
+  means for something else, to say what the root's default view already says.

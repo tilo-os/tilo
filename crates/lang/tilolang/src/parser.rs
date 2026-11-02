@@ -1023,7 +1023,7 @@ impl<'a> Parser<'a> {
 
     fn search_entry(&mut self) -> PResult<SearchEntry> {
         let start = self.span();
-        let word = self.ident("`filter`, `sort`, `hide`, `mark`, `noun` or `primary`")?;
+        let word = self.ident("`filter`, `sort`, `hide` or `mark`")?;
         let kind = match word.name.as_str() {
             "filter" => {
                 if matches!(self.peek(), Tok::Str(_)) {
@@ -1070,21 +1070,11 @@ impl<'a> Parser<'a> {
                 }
                 SearchEntryKind::MarkOthers
             }
-            "noun" => {
-                let one = self.plain_string("what one is called: `noun \"conversation\"`")?;
-                let many = if matches!(self.peek(), Tok::Str(_)) {
-                    Some(self.plain_string("what several are called")?)
-                } else {
-                    None
-                };
-                SearchEntryKind::Noun { one, many }
-            }
-            "primary" => SearchEntryKind::Primary { expr: self.expr()? },
             other => {
                 return self.fail(
                     word.span,
                     format!(
-                        "a search block holds `filter`, `sort`, `hide`, `mark`, `noun` and `primary` lines; `{other}` is none of them"
+                        "a search block holds `filter`, `sort`, `hide` and `mark` lines; `{other}` is none of them"
                     ),
                 );
             }
