@@ -272,6 +272,8 @@ pub(crate) struct Control {
 /// One socket: where it listens, whose it is, and what its connections answer from.
 struct Socket {
     listener: UnixListener,
+    /// What ends the loop's wait while a client connects.
+    watch: Option<tilo_compositor::ReadableWatch>,
     path: PathBuf,
     gate: Gate,
     door: Arc<Door>,
@@ -523,6 +525,18 @@ impl Control {
         })
     }
 
+    /// End the loop's wait when a client connects on any of its sockets, so what it asks is
+    /// answered on the pass that follows.
+    ///
+    /// # Errors
+    /// The loop took no more sources.
+    pub(crate) fn wake_on(&mut self, compositor: &mut Compositor) -> std::io::Result<()> {
+        for socket in &mut self.sockets {
+            socket.watch = Some(crate::sockets::watch(compositor, &socket.listener)?);
+        }
+        Ok(())
+    }
+
     /// Take the connections waiting, publish the state its watchers read, and answer what was
     /// asked of the loop since the last pass.
     fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
@@ -575,6 +589,7 @@ impl Socket {
         listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
+            watch: None,
             path: path.to_path_buf(),
             gate,
             door,

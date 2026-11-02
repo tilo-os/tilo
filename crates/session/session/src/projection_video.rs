@@ -176,6 +176,21 @@ impl ProjectionVideo {
         }
     }
 
+    /// When a live projection next needs a frame of the desk: the profile's
+    /// frame rate, from the last frame drawn.
+    pub(crate) fn next_deadline(&self, stream: Option<&VideoStream>) -> Option<Instant> {
+        let stream = stream?;
+        let asked = stream.asked.unwrap_or_else(|| stream.policy.ceiling(None));
+        let profile = clamp_profile(self.profile, asked);
+        let interval = Duration::from_secs_f64(1.0 / f64::from(profile.fps.max(1)));
+        let now = Instant::now();
+        Some(
+            self.last_frame
+                .and_then(|last| last.checked_add(interval))
+                .unwrap_or(now),
+        )
+    }
+
     /// Send the desktop to `stream`'s receiver, if a projection is live: the
     /// next frame is drawn once the profile's frame rate allows it.
     pub(crate) fn follow(&mut self, compositor: &mut Compositor, stream: Option<&VideoStream>) {

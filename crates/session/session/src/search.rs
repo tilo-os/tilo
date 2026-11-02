@@ -165,6 +165,9 @@ pub(crate) struct SessionSearch {
     /// kept across the builds of the rows so what arrives stays where the
     /// person asked it.
     ask: crate::search_ask::Shared,
+    /// What wakes the session's loop as an answer is written, so the row
+    /// shows it as it lands.
+    wake: Option<tilo_service::Wake>,
 }
 
 /// The resource of the section keeping search's history.
@@ -181,7 +184,11 @@ fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, 
 }
 
 impl SessionSearch {
-    pub(crate) fn new(options: SearchOptions, apps: Option<Rc<dyn AppActions>>) -> Self {
+    pub(crate) fn new(
+        options: SearchOptions,
+        apps: Option<Rc<dyn AppActions>>,
+        wake: Option<tilo_service::Wake>,
+    ) -> Self {
         let SearchOptions {
             lists,
             content,
@@ -215,6 +222,7 @@ impl SessionSearch {
             here: RefCell::default(),
             downloaded: RefCell::default(),
             ask: crate::search_ask::Shared::default(),
+            wake,
         }
     }
 
@@ -671,6 +679,7 @@ impl SearchHost for SessionSearch {
         sources.push(Box::new(crate::search_ask::Ask::new(
             std::sync::Arc::clone(&self.ask),
             workspace,
+            self.wake.clone(),
         )));
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
@@ -833,6 +842,7 @@ mod tests {
                 ..SearchOptions::default()
             },
             None,
+            None,
         );
         assert_eq!(
             found(&search, "viewer"),
@@ -883,6 +893,7 @@ mod tests {
                 records: Some(crate::records::Records::of(home.data().to_path_buf())),
                 ..SearchOptions::default()
             },
+            None,
             None,
         );
         let row = Target::Invoke(Box::new(
@@ -935,6 +946,7 @@ mod tests {
                 ..SearchOptions::default()
             },
             Some(Rc::new(Opening(Rc::clone(&opened)))),
+            None,
         );
         let row = Target::Invoke(Box::new(
             InvokeTarget::action(
@@ -1023,6 +1035,7 @@ mod tests {
                 ..SearchOptions::default()
             },
             None,
+            None,
         );
         search.set_workspaces(vec![
             ("here".into(), "Main".into()),
@@ -1058,7 +1071,7 @@ mod tests {
 
     #[test]
     fn fixed_lists_keep_what_search_built_from_them() {
-        let search = SessionSearch::new(SearchOptions::default(), None);
+        let search = SessionSearch::new(SearchOptions::default(), None, None);
         let before = Rc::clone(&search.kept.borrow().host_apps);
         let _ = search.feed("workspace", &Scope::Workspace);
         assert!(Rc::ptr_eq(&before, &search.kept.borrow().host_apps));

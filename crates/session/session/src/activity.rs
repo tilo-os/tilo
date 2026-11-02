@@ -113,6 +113,8 @@ struct Inner {
     /// When a model was last looked for: a provider the person configures
     /// while the session runs is taken up without a frame per lookup.
     looked_for_model: Cell<Option<Instant>>,
+    /// What wakes the session's loop when a model answered off this thread.
+    wake: Option<tilo_service::Wake>,
 }
 
 /// How often a session with nothing new on its desk looks again for a model
@@ -130,6 +132,7 @@ impl Activity {
         person: String,
         store: Option<PathBuf>,
         lists: Lists,
+        wake: Option<tilo_service::Wake>,
     ) -> Self {
         let woken = Arc::new(AtomicBool::new(false));
         let requests = activity_requests(Arc::clone(&woken));
@@ -155,6 +158,7 @@ impl Activity {
             describing: Arc::default(),
             described_heads: RefCell::default(),
             looked_for_model: Cell::default(),
+            wake,
         }))
     }
 
@@ -221,6 +225,15 @@ impl Activity {
         self.0.woken.swap(false, Ordering::AcqRel)
     }
 
+    /// When this session next looks for a model, so a provider the person
+    /// configures while it runs is taken up with no pass in between.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.0
+            .looked_for_model
+            .get()
+            .and_then(|at| at.checked_add(LOOK_FOR_MODEL))
+    }
+
     /// Say what the desk's changes were, and name the runs of them, when the
     /// desk moved since they were last read: one request at a time, off the
     /// desk's thread, written into the desk's document when the answer comes
@@ -268,12 +281,16 @@ impl Activity {
         let answers = Arc::clone(&self.0.described);
         let describing = Arc::clone(&self.0.describing);
         let woken = Arc::clone(&self.0.woken);
+        let wake = self.0.wake.clone();
         std::thread::spawn(move || {
             let answer = crate::activity_models::ask(&job).unwrap_or_default();
             answers.lock_recover().push((job, answer));
             describing.store(false, Ordering::Release);
             // The desk draws a frame to write the answer where it belongs.
             woken.store(true, Ordering::Release);
+            if let Some(wake) = &wake {
+                wake();
+            }
         });
         wrote
     }
@@ -697,7 +714,7 @@ mod tests {
             let tree = seed_tree(&mut minter, "Studio", vec![notes]);
             let workspace = tree.active;
             let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
-            let activity = Activity::new(None, None, "ada".to_string(), None, Lists::default());
+            let activity = Activity::new(None, None, "ada".to_string(), None, Lists::default(), None);
             surface.set_history_source(Box::new(activity.clone()));
             surface.serve_activity(activity.requests());
             Self {

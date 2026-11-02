@@ -63,6 +63,7 @@ use tilo_actions::remote::{
     ConfirmedInvocation, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_clock::unix_now;
+use tilo_compositor::ReadableWatch;
 use tilo_desktop::workspace_settings as domain;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
@@ -219,6 +220,8 @@ pub(crate) struct Mounted {
 pub(crate) struct Loop {
     questions: Option<Questions>,
     listener: UnixListener,
+    /// What ends the loop's wait while a client connects.
+    watch: Option<ReadableWatch>,
     requests: Sender<Request>,
     asked: Receiver<Request>,
     /// The broker admitted agents are served from, once the session starts
@@ -334,6 +337,7 @@ pub(crate) fn mount(
     let door = Loop {
         questions,
         listener,
+        watch: None,
         requests,
         asked,
         broker: None,
@@ -356,6 +360,19 @@ pub(crate) fn mount(
 }
 
 impl Loop {
+    /// End the loop's wait when a client connects, so it is asked about on the
+    /// pass that follows.
+    ///
+    /// # Errors
+    /// The loop took no more sources.
+    pub(crate) fn wake_on(
+        &mut self,
+        compositor: &mut tilo_compositor::Compositor,
+    ) -> io::Result<()> {
+        self.watch = Some(crate::sockets::watch(compositor, &self.listener)?);
+        Ok(())
+    }
+
     /// Take the connections waiting, ask the person about each, and settle
     /// those they answered: the agent becomes a member of the workspace in
     /// front, and the client is served as that agent.

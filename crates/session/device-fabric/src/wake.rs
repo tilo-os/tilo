@@ -330,6 +330,21 @@ impl WakeWatch {
         true
     }
 
+    /// When the next probe is due, or the next watch runs out of time: what
+    /// the loop sleeps until, so a watch never waits for another event.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.watching
+            .values()
+            .filter_map(|watch| {
+                let probe = watch.last_probe.map_or(Some(watch.started), |last| {
+                    last.checked_add(WAKE_PROBE_INTERVAL)
+                });
+                let timeout = watch.started.checked_add(WAKE_REJOIN_TIMEOUT);
+                [probe, timeout].into_iter().flatten().min()
+            })
+            .min()
+    }
+
     /// Probes that are due and watches that ran out of time.
     pub fn poll(&mut self, now: Instant) -> Vec<WatchStep> {
         let mut steps = Vec::new();
@@ -452,6 +467,20 @@ impl Waker {
     /// the device this one woke.
     pub fn answered(&mut self, from: &DeviceId, nonce: [u8; 16]) -> Option<WatchStep> {
         self.watch.answered(from, nonce)
+    }
+
+    /// When this device next has something to do about a wake: the next
+    /// probe, the end of a watch, or a wake another device never answered.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        let reported = self
+            .requested
+            .values()
+            .filter_map(|(_, asked)| asked.checked_add(WAKE_REPORT_TIMEOUT))
+            .min();
+        [self.watch.next_deadline(), reported]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// Probes that are due, and watches that ran out of time.

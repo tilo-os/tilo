@@ -120,6 +120,7 @@ pub mod shell;
 mod shortcut_guide;
 mod slot_binding;
 mod slot_views;
+mod sockets;
 pub mod startup;
 mod status;
 pub mod surfaces;
@@ -808,7 +809,7 @@ pub struct Session {
     controllers: Option<controllers::Controllers>,
     /// The controllers' descriptors, polled by the loop so their input ends
     /// its wait, by the key the controller source gave each.
-    controller_wakes: std::collections::BTreeMap<u64, tilo_compositor::InputWatch>,
+    controller_wakes: std::collections::BTreeMap<u64, tilo_compositor::ReadableWatch>,
 }
 
 /// The lock screen's passwords being checked, off the loop.
@@ -941,6 +942,7 @@ impl Session {
             options.person.clone(),
             options.search.records.as_ref().map(records::Records::root),
             options.search.lists.clone(),
+            Some(options.wake.handle()),
         );
         // When each display's bar shows over the window covering it: the desk's
         // band, the chrome and the input that reaches for the bar read the one
@@ -1439,6 +1441,7 @@ impl Session {
                 .as_ref()
                 .and_then(|desktop| desktop.consents())
                 .cloned(),
+            wake: options.wake.handle(),
         });
         let session_doors = std::sync::Arc::new(agent_door::SessionDoors::new(
             options.wake.handle(),
@@ -1501,6 +1504,7 @@ impl Session {
         surfaces.lend(
             std::sync::Arc::clone(&options.launches),
             action_plane.as_ref().map(|plane| plane.path.clone()),
+            options.wake.handle(),
         );
         // The lock, and the screen that shows it: the session keeps what the
         // screen shows and publishes it, so the screen is an app of the
@@ -1555,7 +1559,11 @@ impl Session {
         let app_sheets =
             app_sheets::AppSheets::new(add_app, uninstall, Rc::clone(&services), notices.clone());
 
-        let search = Rc::new(SessionSearch::new(options.search, options.apps));
+        let search = Rc::new(SessionSearch::new(
+            options.search,
+            options.apps,
+            Some(options.wake.handle()),
+        ));
         session_search.get_or_init(|| Rc::clone(&search));
         let asker = questions::Asker::new(
             questions,
@@ -1640,7 +1648,7 @@ impl Session {
             membership_fed: Cell::new(None),
             _channels: channels,
             personal,
-            clipboard: Rc::new(mount::clipboard::Clipboard::new()),
+            clipboard: Rc::new(mount::clipboard::Clipboard::new(options.wake.handle())),
             arrangement,
             underway: busy,
             kept_arrangement: RefCell::new(None),
@@ -1720,7 +1728,7 @@ impl Session {
         // where every tree and every action lives.
         let wake = loop_wake.clone();
         let a11y = a11y::Accessibility::new(Arc::new(move || wake.wake_by_ref()), aside);
-        Ok(Self {
+        let mut session = Self {
             compositor,
             shared,
             banners,
@@ -1790,7 +1798,32 @@ impl Session {
                 .take()
                 .map(controllers::Controllers::mount),
             controller_wakes: std::collections::BTreeMap::new(),
-        })
+        };
+        session.watch_sockets()?;
+        session.shared.directory_store.waking(options.wake.handle());
+        Ok(session)
+    }
+
+    /// Make every socket this session serves end its loop's wait: an app that
+    /// connects, an importer that asks, a program that drives the desktop is
+    /// answered on the pass that follows, not on a tick of the loop.
+    ///
+    /// # Errors
+    /// The loop took no more sources.
+    fn watch_sockets(&mut self) -> Result<(), Error> {
+        if let Some(tabs) = &mut self.tabs {
+            tabs.wake_on(&mut self.compositor)?;
+        }
+        if let Some(door) = self.shared.agent_door.get_mut() {
+            door.wake_on(&mut self.compositor)?;
+        }
+        if let Some(control) = &mut self.control {
+            control.wake_on(&mut self.compositor)?;
+        }
+        if let Some(import) = self.shared.folder_import.get_mut().as_mut() {
+            import.wake_on(&mut self.compositor)?;
+        }
+        Ok(())
     }
 
     /// A session whose outputs have no display: for tests and screenshots.
@@ -2327,7 +2360,10 @@ impl Session {
     /// # Errors
     /// There is no runtime directory, or the socket cannot be bound.
     pub fn serve_folder_import(&mut self, display: &std::ffi::OsStr) -> std::io::Result<()> {
-        let continuation = import_readiness::Continuation::serve(display)?;
+        let mut continuation = import_readiness::Continuation::serve(display)?;
+        // The importer asks as the person clicks Add folders: its socket ends
+        // the loop's wait, so the answer is drawn at once.
+        continuation.wake_on(&mut self.compositor)?;
         *self.shared.folder_import.borrow_mut() = Some(continuation);
         Ok(())
     }
@@ -2869,20 +2905,24 @@ impl Session {
     }
 
     /// One turn of the loop: wait up to `timeout` for clients and devices,
-    /// carry out what the desktop asked, and draw.
+    /// carry out what the desktop asked, and draw. What arrives on a socket,
+    /// a controller or a surface ends the wait however long `timeout` is;
+    /// `None` waits for one of them with no limit.
     ///
     /// # Errors
     /// The compositor failed.
-    pub fn step(&mut self, timeout: Duration) -> Result<(), Error> {
+    pub fn step(&mut self, timeout: impl Into<Option<Duration>>) -> Result<(), Error> {
         // A held direction repeats on its own clock, and a controller with
         // more waiting than one pass read is read again at once.
-        let timeout = match self
-            .controllers
-            .as_ref()
-            .and_then(|controllers| controllers.next_deadline(Instant::now()))
-        {
-            Some(due) => timeout.min(due.saturating_duration_since(Instant::now())),
-            None => timeout,
+        let now = Instant::now();
+        let timeout = match (
+            timeout.into(),
+            self.controllers
+                .as_ref()
+                .and_then(|controllers| controllers.next_deadline(now)),
+        ) {
+            (Some(timeout), Some(due)) => Some(timeout.min(due.saturating_duration_since(now))),
+            (timeout, due) => timeout.or_else(|| due.map(|due| due.saturating_duration_since(now))),
         };
         self.compositor.dispatch(timeout)?;
         // Add folders: answered whether the identity ceremony is over, and the
@@ -2995,13 +3035,56 @@ impl Session {
         Ok(())
     }
 
+    /// When something of the session's next needs a pass with no event in
+    /// between: a frame a projection or a shared screen is due, a minute of
+    /// the desk's clock, a banner leaving, a presence beat, a listing asked
+    /// again, a frame of a recording, a probe of a device being woken, a
+    /// saved window giving up. `None` when nothing does, and the loop waits
+    /// for an event alone.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        let locked = self.compositor.locked();
+        let stream = self.display_sheet.video_stream();
+        let video = (!locked)
+            .then(|| self.projection_video.next_deadline(stream.as_ref()))
+            .flatten();
+        let shared_screen = (!locked).then(crate::calls::next_screen_frame).flatten();
+        let deadlines = vec![
+            video,
+            shared_screen,
+            self.shared.notifications.borrow().next_deadline(),
+            self.shared
+                .sync
+                .as_ref()
+                .and_then(|sync| sync.next_deadline()),
+            self.shared.activity.next_deadline(),
+            self.surfaces.next_deadline(),
+            self.shared.restore.borrow().next_deadline(),
+            self.shared.waking.next_deadline(),
+            self.capture_studio
+                .as_ref()
+                .and_then(capture_studio::CaptureStudio::next_deadline),
+            self.automation.next_deadline(),
+        ];
+        deadlines.into_iter().flatten().min()
+    }
+
     /// Run until `stop` holds or the backend is done.
     ///
     /// # Errors
     /// The compositor failed.
     pub fn run(&mut self, mut stop: impl FnMut(&Compositor) -> bool) -> Result<(), Error> {
         while !self.ended && !self.compositor.closed() && !stop(&self.compositor) {
-            let timeout = self.compositor.next_wait();
+            // Whatever comes first: a client, a device, a due frame of the
+            // compositor's own, or an instant something of the session's needs
+            // a pass for. With nothing due, the loop waits for the person.
+            let timeout = match (self.compositor.next_wait(), self.next_deadline()) {
+                (Some(frame), Some(due)) => {
+                    Some(frame.min(due.saturating_duration_since(std::time::Instant::now())))
+                }
+                (frame, due) => frame.or_else(|| {
+                    due.map(|due| due.saturating_duration_since(std::time::Instant::now()))
+                }),
+            };
             self.step(timeout)?;
         }
         self.shared.keep_desk_now();

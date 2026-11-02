@@ -257,6 +257,31 @@ impl Automation {
         self.observe(tick, desk);
     }
 
+    /// When this session next has time to show the schedules or report a
+    /// file that settled: the next fire time of an armed schedule, or the
+    /// settle of the last change a watched folder saw.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        let clock = self.triggers.clock();
+        let now = clock.now();
+        let fire = self
+            .armed_now
+            .iter()
+            .flat_map(|armed| armed.shortcut.triggers.iter())
+            .filter_map(|trigger| match trigger {
+                TriggerSpec::Schedule { schedule, .. } => {
+                    triggers::next_fire_time(schedule, now, clock)
+                }
+                _ => None,
+            })
+            .min()
+            .and_then(|due| due.signed_duration_since(now).to_std().ok())
+            .and_then(|wait| Instant::now().checked_add(wait));
+        [fire, self.folders.next_deadline()]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
     /// A chord was pressed that nothing else of the desktop's answers: it
     /// starts every shortcut whose keyboard trigger names it, once.
     pub fn press(&mut self, chord: &KeyChord) {

@@ -163,7 +163,7 @@ fn files_on(mount: &std::path::Path) -> Launch {
 /// The follower runs on a thread of its own, so the session's loop never
 /// waits on the bus.
 #[must_use]
-pub fn udisks(connection: zbus::Connection) -> std::rc::Rc<dyn Media> {
+pub fn udisks(connection: zbus::Connection, wake: tilo_service::Wake) -> std::rc::Rc<dyn Media> {
     let (appearing, fresh) = mpsc::channel();
     let (ejections, ejected) = tokio::sync::mpsc::unbounded_channel();
     let started = std::thread::Builder::new()
@@ -179,7 +179,7 @@ pub fn udisks(connection: zbus::Connection) -> std::rc::Rc<dyn Media> {
                     return;
                 }
             };
-            runtime.block_on(follow(connection, appearing, ejected));
+            runtime.block_on(follow(connection, appearing, ejected, wake));
         });
     if let Err(error) = started {
         tracing::warn!(%error, "removable drives are not watched");
@@ -231,6 +231,7 @@ async fn follow(
     connection: zbus::Connection,
     appearing: Sender<Medium>,
     mut ejections: tokio::sync::mpsc::UnboundedReceiver<Medium>,
+    wake: tilo_service::Wake,
 ) {
     use futures_util::StreamExt as _;
 
@@ -246,7 +247,7 @@ async fn follow(
     // the sweep and the signal from telling twice.
     let mut seen = BTreeMap::new();
     for device in attached(&connection).await {
-        announce(&connection, &device, &mut seen, &appearing).await;
+        announce(&connection, &device, &mut seen, &appearing, &wake).await;
     }
     loop {
         tokio::select! {
@@ -260,7 +261,7 @@ async fn follow(
                             name == block_devices::udisks::IFACE_FILESYSTEM
                                 || name == block_devices::udisks::IFACE_DRIVE
                         }) {
-                            announce(&connection, &device, &mut seen, &appearing).await;
+                            announce(&connection, &device, &mut seen, &appearing, &wake).await;
                         }
                     }
                 }
@@ -357,6 +358,7 @@ async fn announce(
     device: &str,
     seen: &mut BTreeMap<String, Medium>,
     appearing: &Sender<Medium>,
+    wake: &tilo_service::Wake,
 ) {
     let Some(medium) = medium_of(connection, device).await else {
         return;
@@ -367,6 +369,7 @@ async fn announce(
     if appearing.send(medium.clone()).is_err() {
         return;
     }
+    wake();
     seen.insert(device.to_owned(), medium);
 }
 

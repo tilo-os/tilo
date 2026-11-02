@@ -14,7 +14,40 @@ fn a_settled_desk_asks_for_no_frame() {
     settle(&mut session, 300);
     let wait = session.compositor().next_wait();
     assert!(
-        wait >= Duration::from_millis(100),
-        "an idle desk waits for the person, not for a frame: {wait:?}"
+        wait.is_none_or(|wait| wait >= Duration::from_secs(1)),
+        "an idle desk waits for the person or a minute of its own, not for a frame: {wait:?}"
+    );
+    // What the session itself needs a pass for is minutes apart, not a poll
+    // per quarter second: a clock, a presence beat, a look for a model.
+    let left = session
+        .next_deadline()
+        .map(|due| due.saturating_duration_since(Instant::now()));
+    assert!(
+        left.is_none_or(|left| left >= Duration::from_secs(1)),
+        "an idle session waits for the person or a minute of its own, not for a tick: {left:?}"
+    );
+}
+
+/// A desk nobody touches is passed when something of the session's own comes
+/// due, not four times a second: nothing of it asks to be looked at.
+#[test]
+fn an_idle_desk_wakes_for_nothing() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    settle(&mut session, 60);
+    let window = Duration::from_secs(2);
+    let started = Instant::now();
+    let mut turns = 0_u32;
+    while started.elapsed() < window {
+        let left = window.checked_sub(started.elapsed()).unwrap_or_default();
+        let wait = wait_for(&mut session).map(|wait| wait.min(left));
+        session.step(wait).expect("step");
+        turns += 1;
+    }
+    let per_second = f64::from(turns) / started.elapsed().as_secs_f64();
+    eprintln!("an idle desk's turns: {per_second:.2}/s");
+    assert!(
+        turns <= 2,
+        "an idle desk is passed {turns} times in {window:?}, not once"
     );
 }

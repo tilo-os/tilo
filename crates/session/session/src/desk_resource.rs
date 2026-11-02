@@ -338,9 +338,20 @@ impl Desk {
     }
 
     /// When the desk has something to draw that it has not drawn yet, without a frame in
-    /// between: the instant the switcher's panel comes up while Alt is held on it.
+    /// between: the instant the switcher's panel comes up while Alt is held on it, or
+    /// the minute the bar's clock shows next.
     pub(crate) fn next_deadline(&self) -> Option<std::time::Instant> {
-        self.overlays.deadline(std::time::Instant::now())
+        let now = std::time::Instant::now();
+        let second = ui::clock::local_now().timestamp().rem_euclid(60);
+        let minute = now
+            .checked_add(std::time::Duration::from_secs(
+                60_u64.saturating_sub(u64::try_from(second).unwrap_or(0)),
+            ))
+            .unwrap_or(now);
+        [self.overlays.deadline(now), Some(minute)]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// The desk's windows, with the one the switcher's walk has reached marked focused while

@@ -1086,6 +1086,12 @@ impl Client {
         changed
     }
 
+    /// When this person next says again where they are, so the workspaces
+    /// hear they are still here with no pass in between.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.said_at.get().checked_add(PRESENCE_AGAIN)
+    }
+
     /// Hear everything that reached the plane since the last call. Whether
     /// anything did.
     pub fn follow(&self) -> bool {

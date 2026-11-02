@@ -419,7 +419,7 @@ fn start(
     // A drive the person plugs in is announced like any other news, and the
     // eject the notice offers goes over the system bus the desktop services
     // already hold.
-    let drives = drives(backend, desktop.as_ref());
+    let drives = drives(backend, desktop.as_ref(), &wake);
     let mut options = Options {
         services,
         wake,
@@ -649,6 +649,7 @@ fn tell_the_person(
 fn drives(
     backend: Backend,
     desktop: Option<&std::rc::Rc<tilo_session::desktop_services::DesktopServices>>,
+    wake: &tilo_service::LoopWake,
 ) -> Option<std::rc::Rc<tilo_session::mount::drives::Drives>> {
     if backend != Backend::Drm {
         return None;
@@ -656,7 +657,7 @@ fn drives(
     let desktop = desktop?;
     let connection = desktop.system_bus()?.clone();
     Some(std::rc::Rc::new(tilo_session::mount::drives::Drives::new(
-        tilo_session::mount::drives::udisks(connection),
+        tilo_session::mount::drives::udisks(connection, wake.handle()),
         desktop.notifications().clone(),
     )))
 }

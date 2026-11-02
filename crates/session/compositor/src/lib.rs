@@ -413,12 +413,10 @@ impl Compositor {
         self.data.backend.closed()
     }
 
-    /// How long a loop may wait for clients and devices before the next
-    /// frame is due.
-    pub fn next_wait(&self) -> Duration {
-        /// The longest the loop sleeps with nothing due, so a caller's own
-        /// checks still run.
-        const IDLE: Duration = Duration::from_millis(250);
+    /// How long a loop may wait for clients, devices and its own work before
+    /// the next frame is due; `None` when nothing is due, and it waits for an
+    /// event.
+    pub fn next_wait(&self) -> Option<Duration> {
         let now = std::time::Instant::now();
         let backend = self.data.backend.next_deadline(&self.data.state);
         // A running visual alert fades frame by frame.
@@ -436,7 +434,7 @@ impl Compositor {
             .chain(self.keys.next_deadline())
             .chain(alert)
             .min()
-            .map_or(IDLE, |at| at.saturating_duration_since(now).min(IDLE))
+            .map(|at| at.saturating_duration_since(now))
     }
 
     /// Add an output the backend simulates.
@@ -564,19 +562,20 @@ impl Compositor {
     }
 
     /// Wake [`Compositor::dispatch`] when `fd` is readable, so what arrives
-    /// on it (a controller's presses, a device's hotplug) ends the wait
-    /// rather than waiting for the next turn. Dropping the watch stops it.
+    /// on it (a controller's presses, a device's hotplug, a socket a client
+    /// connects to or writes on) ends the wait rather than waiting for the
+    /// next turn. Dropping the watch stops it.
     ///
     /// What the descriptor says is read by the caller's own source, not
     /// here: this only ends the wait.
-    pub fn watch_input(&mut self, fd: std::os::fd::OwnedFd) -> Result<InputWatch, Error> {
+    pub fn watch_readable(&mut self, fd: std::os::fd::OwnedFd) -> Result<ReadableWatch, Error> {
         let handle = self.event_loop.handle();
         let token = handle
             .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
                 Ok(PostAction::Continue)
             })
             .map_err(io)?;
-        Ok(InputWatch {
+        Ok(ReadableWatch {
             handle: handle.clone(),
             token,
         })
@@ -671,18 +670,21 @@ impl Compositor {
     }
 
     /// Wait up to `timeout` for client requests or backend events, handle
-    /// them and flush the answers.
-    pub fn dispatch(&mut self, timeout: Duration) -> Result<(), Error> {
+    /// them and flush the answers; with `None`, wait for an event however
+    /// long that takes.
+    pub fn dispatch(&mut self, timeout: impl Into<Option<Duration>>) -> Result<(), Error> {
+        let timeout: Option<Duration> = timeout.into();
         // A held key's next repeat for a hosted surface wakes the loop.
         let timeout = self.data.state.host_keys.next_due().map_or(timeout, |due| {
-            timeout.min(due.saturating_duration_since(std::time::Instant::now()))
+            let held = due.saturating_duration_since(std::time::Instant::now());
+            Some(timeout.map_or(held, |timeout| timeout.min(held)))
         });
         if let Some(turns) = &self.turns {
             turns.parking();
         }
         let dispatched = self
             .event_loop
-            .dispatch(Some(timeout), &mut self.data)
+            .dispatch(timeout, &mut self.data)
             .map_err(io);
         if let Some(turns) = &self.turns {
             turns.unparked();
@@ -1845,15 +1847,15 @@ impl Compositor {
     }
 }
 
-/// A descriptor [`Compositor::watch_input`] polled for the loop: its
+/// A descriptor [`Compositor::watch_readable`] polls for the loop: its
 /// readiness ends the wait, and dropping the watch stops the polling.
 #[derive(Debug)]
-pub struct InputWatch {
+pub struct ReadableWatch {
     handle: LoopHandle<'static, LoopData>,
     token: smithay::reexports::calloop::RegistrationToken,
 }
 
-impl Drop for InputWatch {
+impl Drop for ReadableWatch {
     fn drop(&mut self) {
         self.handle.remove(self.token);
     }

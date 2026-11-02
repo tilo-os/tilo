@@ -14,7 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{Datelike as _, Timelike as _};
 use serde_json::{Map, Value};
@@ -591,6 +591,12 @@ impl SessionNotifications {
             // lost.
             None => notice.tell_desk(&self.desktop),
         }
+    }
+
+    /// When the desk's banners next change with no one asking: one running
+    /// out, or a Clear all's undo closing.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.desktop.next_deadline()
     }
 
     /// Take in what arrived and what the banners asked, and hand the
