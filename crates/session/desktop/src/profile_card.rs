@@ -1622,7 +1622,7 @@ impl Widget for LazyProfileCard {
             || self
                 .card
                 .as_ref()
-                .is_some_and(|card| (card.needs_redraw() || card.needs_animation_frame()))
+                .is_some_and(|card| card.needs_redraw() || card.needs_animation_frame())
     }
 
     // Before its code is in, the card is an empty leaf whose size never

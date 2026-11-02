@@ -2357,7 +2357,7 @@ impl Widget for DesktopChrome {
             self.emoji.note_delivered(&text, sensitive);
             changed = true;
         }
-        changed |= (self.emoji.needs_redraw() || self.emoji.needs_animation_frame());
+        changed |= self.emoji.needs_redraw() || self.emoji.needs_animation_frame();
         changed |= self.search.update(state, path);
         self.observe_navigation();
         self.publish_overlays();
