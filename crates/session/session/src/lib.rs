@@ -786,9 +786,16 @@ impl Session {
         let sources = config::Sources::from_config(&options.config);
         let mut doors = Doors::default();
         // The device VPN runs for the session's lifetime: the profiles' kill
-        // switches from the start, and the route through another of the
+        // switches from the start, the route through another of the
         // person's devices as the session's passes find this device's
-        // endpoint. What both do is published for Settings.
+        // endpoint, and this device as an exit for their other devices. What
+        // all of it does is published for Settings, and the exit is served
+        // on the endpoint the session binds next.
+        let beside = options
+            .vpn
+            .as_ref()
+            .map(mount::vpn::Vpn::served)
+            .unwrap_or_default();
         let vpn = options.vpn.take().map(mount::vpn::Vpn::start);
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
@@ -1019,7 +1026,7 @@ impl Session {
             .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
             .ok()
         });
-        let sync = start_collaboration(&options, media, engine.clone());
+        let sync = start_collaboration(&options, media, engine.clone(), beside);
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
         // other devices on the topic the records travel.
@@ -2232,7 +2239,7 @@ impl Session {
             self.shared.settings.sync(fabric.as_ref());
             // The person's sleeping devices, and the probes that follow them.
             self.shared.waking.follow(&self.shared);
-            self.follow_device_vpn(fabric);
+            self.shared.follow_device_vpn(fabric);
             // What this pass offered the clipboard, and what the pumps just
             // changed, is this device's next word to its other devices.
             if let Some(sync) = &self.shared.sync {
@@ -2240,18 +2247,6 @@ impl Session {
             }
         }
         Ok(())
-    }
-
-    /// Follow where this device routes through another of the person's
-    /// devices, and which of them could carry it: the route follows what they
-    /// chose on the pass they chose it on.
-    fn follow_device_vpn(&self, fabric: &tilo_device_fabric::link::SharedLink) {
-        if let Some(vpn) = &self.shared.vpn {
-            vpn.follow(
-                Some(fabric),
-                self.shared.sync.as_ref().and_then(|sync| sync.endpoint()),
-            );
-        }
     }
 
     /// Keep the workspaces this session takes part in current with the

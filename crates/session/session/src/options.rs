@@ -238,10 +238,15 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// Who is here: this session's membership of each workspace, over the
 /// collaboration plane. `None` when the session takes no part in it, or the
 /// device's endpoint did not bind: a desktop with no one else on it.
+///
+/// `beside` is what else this device answers on its endpoint — its exit for
+/// the person's other devices. A caller that hands its own client
+/// ([`Options::sync`]) has already said what that endpoint serves.
 pub(crate) fn start_collaboration(
     options: &Options,
     media: fabric::MediaContinuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
+    beside: tilo_network_actor::local_host::Protocols,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -264,6 +269,7 @@ pub(crate) fn start_collaboration(
         sync::configured_hosts(),
         media,
         options.wake.handle(),
+        beside,
     ) {
         Ok(sync) => Some(Rc::new(sync)),
         Err(error) => {

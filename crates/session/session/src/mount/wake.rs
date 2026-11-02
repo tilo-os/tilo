@@ -393,7 +393,7 @@ fn scan_interfaces() -> Vec<WakeRoute> {
 
 /// Each interface's first IPv4 subnet.
 #[cfg(target_os = "linux")]
-fn ipv4_subnets() -> std::collections::BTreeMap<String, Ipv4Subnet> {
+pub(crate) fn ipv4_subnets() -> std::collections::BTreeMap<String, Ipv4Subnet> {
     let mut subnets = std::collections::BTreeMap::new();
     let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: `getifaddrs` fills `head` with a list we free below.

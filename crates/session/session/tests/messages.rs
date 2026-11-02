@@ -82,6 +82,7 @@ impl Other {
             Vec::new(),
             tilo_session::fabric::MediaContinuity::default(),
             Arc::new(|| {}),
+            Vec::new(),
         )
         .expect("an endpoint binds");
         let messages = Messages::new(&LoopWake::default()).expect("private messages start");

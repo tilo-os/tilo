@@ -171,6 +171,7 @@ impl Device {
             Vec::new(),
             MediaContinuity::default(),
             std::sync::Arc::new(|| ()),
+            Vec::new(),
         )
         .expect("the session's plane starts");
         Self {
