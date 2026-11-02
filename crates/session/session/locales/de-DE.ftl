@@ -143,6 +143,9 @@ drives-eject = Auswerfen
 app-list-app-name = Apps
 app-list-gone-title = App nicht gefunden
 app-list-gone-body = Sie ist nicht mehr unter deinen Apps.
+
+lock-screen-failed-title = Sperrbildschirm startete nicht
+lock-screen-failed-body = Tilo zeichnet die Sperre selbst: dasselbe Passwort entsperrt diesen Rechner.
 app-list-uninstalled = { $name } deinstalliert
 app-list-uninstalled-file = Ihre Datei liegt im Papierkorb.
 app-list-uninstalled-files = Alle ihre Kopien liegen im Papierkorb.

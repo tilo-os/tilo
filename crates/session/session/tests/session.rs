@@ -1163,6 +1163,88 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
     );
 }
 
+/// A logout asked through the login wrapper's channel — what the power menu
+/// and the session's services ask of it — ends the session in order: the
+/// wrapper tears the login down once this process is gone, and the request it
+/// already holds is not written again.
+#[test]
+fn a_logout_asked_through_the_login_wrapper_ends_the_session() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let _settled = ui::motion::testing::settled();
+    let channel = tempfile::tempdir().expect("a channel");
+    std::fs::set_permissions(channel.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the channel is this person's");
+    let request = channel.path().join("logout-request");
+    let mut environment = ScopedEnv::new();
+    environment.set("TILO_SESSION_LOGOUT_REQUEST", request.as_os_str());
+    let mut session = session();
+    assert!(!session.ended(), "the session runs on");
+    os_actions::request_logout().expect("the logout is asked for");
+    session
+        .step(Duration::from_millis(1))
+        .expect("a turn of the session");
+    assert!(session.ended(), "the asked logout ends the session");
+    assert!(
+        request.exists(),
+        "the wrapper's request stays for the wrapper to act on"
+    );
+}
+
+/// Beside the development control socket, the session serves the liveness
+/// door: the loop answers a heartbeat asked from outside it, so a session
+/// whose loop has stopped can be told apart from a slow machine.
+#[test]
+fn the_liveness_door_beside_the_control_socket_answers_a_heartbeat() {
+    let _settled = ui::motion::testing::settled();
+    let directory = tempfile::tempdir().expect("a directory");
+    let control = directory.path().join("control.sock");
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
+            test_control: Some(control.clone()),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    let mut client = std::os::unix::net::UnixStream::connect(tilo_liveness::socket_path(&control))
+        .expect("the door is bound beside the control socket");
+    client
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .expect("a read deadline");
+    client
+        .write_all(b"{\"op\":\"heartbeat\",\"budget_ms\":5000}\n")
+        .expect("the heartbeat is asked for");
+    let mut reader = std::io::BufReader::new(&mut client);
+    let mut answer = String::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the door answers: {answer:?}"
+        );
+        session
+            .step(Duration::from_millis(1))
+            .expect("a turn of the session");
+        match std::io::BufRead::read_line(&mut reader, &mut answer) {
+            Ok(0) => panic!("the door hung up: {answer:?}"),
+            Ok(_) => break,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => panic!("the door does not answer: {error}"),
+        }
+    }
+    assert!(
+        answer.contains("\"alive\""),
+        "the loop acknowledged the heartbeat: {answer}"
+    );
+}
+
 /// A session that cannot check a password never locks: the lock screen
 /// could not be left again. Locking stays on offer where a password does
 /// unlock it.

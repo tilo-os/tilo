@@ -84,6 +84,10 @@ pub enum SessionCommand {
     /// name they know it by: the question stands on the uninstall sheet
     /// until they answer it, as it does when the app list asks.
     AskUninstall { app: String },
+    /// Switch the machine to virtual terminal `vt`, numbered from 1, as
+    /// `Ctrl+Alt+F1..F12` asks: the way out to a text console when the
+    /// desktop cannot give the machine back.
+    SwitchVt { vt: i32 },
 }
 
 /// A step of the magnifier.
@@ -357,6 +361,7 @@ impl crate::Session {
     pub(crate) fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
         match command {
             SessionCommand::Lock => self.lock_by_person(),
+            SessionCommand::SwitchVt { vt } => self.switch_vt(vt),
             SessionCommand::OpenPowerMenu => {
                 if let Some(power) = &self.shared.power {
                     power.presentation().open(false);

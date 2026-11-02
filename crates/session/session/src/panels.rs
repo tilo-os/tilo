@@ -424,6 +424,10 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow().above_lock()
     }
 
+    fn drawn_over_lock(&self) -> bool {
+        self.0.borrow().drawn_over_lock()
+    }
+
     fn withholds_captures(&self) -> bool {
         self.0.borrow().withholds_captures()
     }

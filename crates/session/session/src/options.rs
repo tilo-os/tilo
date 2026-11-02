@@ -83,6 +83,10 @@ pub struct Options {
     pub user: String,
     /// Whether a password unlocks the session; without one nothing does.
     pub verifier: std::sync::Arc<dyn unlock::PasswordVerifier>,
+    /// The login's lock record, when a session wrapper started this session:
+    /// the lock a crashed session left in force comes back with it, and the
+    /// state this one ends in is published for the next.
+    pub recovery: Option<crate::recovery::Recovery>,
     /// What the services were handed to wake the session's loop when
     /// something lands: the session binds it to its loop once started.
     pub wake: tilo_service::LoopWake,
@@ -339,6 +343,7 @@ impl Default for Options {
             session_actions: no_session_actions,
             user: String::new(),
             verifier: std::sync::Arc::new(unlock::Unavailable),
+            recovery: None,
             wake: tilo_service::LoopWake::default(),
             captures: None,
             projector: None,

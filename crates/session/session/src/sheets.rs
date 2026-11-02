@@ -34,6 +34,10 @@ pub(crate) struct Sheet<S: Seat> {
     /// and leaves the keyboard where it was: it takes Enter and Escape, and
     /// every other key reaches the field under it.
     typing_through: bool,
+    /// The sheet stands over the session's lock: it is drawn and takes the
+    /// keyboard and the pointer while the session is locked, as the lock
+    /// screen's own process would. Only the session's lock view is.
+    over_lock: bool,
 }
 
 impl<S: Seat> Sheet<S> {
@@ -62,6 +66,7 @@ impl<S: Seat> Sheet<S> {
             outputs: Vec::new(),
             always_serving: false,
             typing_through: false,
+            over_lock: false,
         })
     }
 
@@ -78,6 +83,14 @@ impl<S: Seat> Sheet<S> {
     /// person's typing where it was.
     pub(crate) const fn typing_through(mut self) -> Self {
         self.typing_through = true;
+        self
+    }
+
+    /// The sheet stands over the session's lock: while the session is
+    /// locked it is the one thing drawn and the one that takes the
+    /// keyboard and the pointer. The lock view is.
+    pub(crate) const fn standing_over_lock(mut self) -> Self {
+        self.over_lock = true;
         self
     }
 
@@ -227,6 +240,13 @@ impl<S: Seat> Published for Sheet<S> {
     fn wants_keyboard(&self) -> bool {
         SurfaceHost::wants_keyboard(self)
     }
+
+    /// The lock view is the one sheet that shows while the session is
+    /// locked, so its actions (and what assistive technology reads of it)
+    /// are offered then, as the lock screen's own process offers none.
+    fn serves_while_locked(&self) -> bool {
+        self.over_lock && self.drawn()
+    }
 }
 
 impl<S: Seat> SurfaceHost for Sheet<S> {
@@ -276,6 +296,16 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
 
     fn wants_keyboard(&self) -> bool {
         self.open() && !self.typing_through
+    }
+
+    /// The lock view shows over the session's lock while it is up.
+    fn above_lock(&self) -> bool {
+        self.over_lock && self.drawn()
+    }
+
+    /// What shows the lock is this view while the lock screen's app cannot.
+    fn drawn_over_lock(&self) -> bool {
+        self.above_lock()
     }
 
     fn claim_key(&mut self, key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {

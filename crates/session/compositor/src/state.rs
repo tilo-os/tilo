@@ -669,8 +669,13 @@ impl State {
     /// windows where it drew, else, where no window is, one beneath them.
     pub(crate) fn host_under(&self, point: Point<f64, Logical>) -> Option<usize> {
         if self.locked() {
-            // Only the lock client shows, and it is not a hosted surface.
-            return None;
+            // Only what stands over the lock shows, and it takes the pointer
+            // where it drew: the session's own lock view, when the lock
+            // screen's app is not there to show the lock.
+            return self
+                .hosts
+                .iter()
+                .rposition(|host| host.above_lock() && host.accepts_pointer(point.x, point.y));
         }
         // The last host draws on top, so it is asked first.
         let under = |below: bool| {
@@ -937,7 +942,11 @@ impl State {
             .iter()
             .enumerate()
             .rev()
-            .find(|(index, host)| !locked && Some(*index) != composing && host.wants_keyboard())
+            .find(|(index, host)| {
+                (!locked || host.above_lock())
+                    && Some(*index) != composing
+                    && host.wants_keyboard()
+            })
             .map(|(index, _)| index)?;
         self.host_keys.press(wanting, key, repeats, now);
         Some(wanting)

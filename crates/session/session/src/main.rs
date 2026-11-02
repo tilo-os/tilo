@@ -460,6 +460,19 @@ fn start(
     if let Err(error) = tilo_session::termination::install(options.wake.handle()) {
         eprintln!("tilo-session: a signal ends this session without its cleanup: {error}");
     }
+    // The lock record is the login's, kept by the session that owns the
+    // machine: one in a window of another desktop, or a headless one, keeps no
+    // record of its host's login. A record that cannot be armed stops the
+    // login rather than start one that a crash would leave unlocked.
+    if backend == Backend::Drm {
+        match tilo_session::recovery::Recovery::from_environment() {
+            Ok(recovery) => options.recovery = recovery,
+            Err(error) => {
+                eprintln!("tilo-session: cannot establish the login's lock recovery: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     let agent_door = options.agent_door.clone();
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();

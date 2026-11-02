@@ -139,6 +139,9 @@ drives-eject = Eject
 app-list-app-name = Apps
 app-list-gone-title = App not found
 app-list-gone-body = It's no longer in your apps.
+
+lock-screen-failed-title = Lock screen did not start
+lock-screen-failed-body = Tilo draws the lock itself: the same password unlocks this computer.
 app-list-uninstalled = Uninstalled { $name }
 app-list-uninstalled-file = Its file is in the Trash.
 app-list-uninstalled-files = All its copies are in the Trash.

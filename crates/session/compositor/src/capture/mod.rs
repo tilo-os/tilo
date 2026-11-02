@@ -823,7 +823,7 @@ where
     // The lock screen asks for the password the whole time it is up: a
     // capture of a locked display is the placeholder over the whole of it,
     // while the person's own display keeps showing their lock screen.
-    if state.lock_shows(output) {
+    if state.lock_shows(output) || state.lock_view_shows() {
         let size = geometry.size.to_physical_precise_round(scale);
         placeholders.push(placeholder::<R>(Point::default(), size, 1.0));
     }

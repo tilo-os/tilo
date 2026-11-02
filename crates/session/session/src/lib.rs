@@ -112,6 +112,7 @@ mod projection_video;
 mod questions;
 pub mod quick_settings;
 mod records;
+pub mod recovery;
 mod rotation;
 pub mod run;
 mod run_programs;
@@ -149,7 +150,6 @@ mod workspaces;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
 
 use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
@@ -223,10 +223,11 @@ pub use tilo_onboarding_host::view::OnboardingView;
 /// an older one is stale.
 const GENERATION: &str = "session";
 
-/// How many times the session starts its lock screen for one lock before it
-/// lifts the lock: a screen whose app goes is started again, and one that
-/// keeps going is not staying up at all — the machine is better unlocked
-/// than locked behind it.
+/// How many times the session starts the lock screen's app for one lock
+/// before it draws the lock itself: a screen whose app goes is started
+/// again, and one that keeps going is not staying up at all. The lock stays,
+/// and the session's own view of it takes over, because a lock is never
+/// lifted for anything but the right password.
 const LOCK_SCREEN_TRIES: u32 = 3;
 
 /// How warm the night light makes the displays, in kelvin.
@@ -401,7 +402,7 @@ struct Shared {
     /// The workspaces' shared desktops, as their records hold them: what each
     /// device that shows a workspace puts on its own desk, and what this one
     /// writes back.
-    shared_desktops: shared_desktop::SharedDesktops,
+    desktops: shared_desktop::SharedDesktops,
     /// The engine revision the desk's copy of each workspace's people was
     /// last taken from: what nothing new of a workspace's governance has
     /// passed since.
@@ -509,23 +510,22 @@ impl Shared {
         // Every workspace this device holds has had its record read, and
         // nothing of the workspaces moved since: there is nothing to read,
         // lay out or write.
-        if self.shared_desktops.settled(
-            engine.owner().revision(),
-            &self.handle.read(|tree| tree.clone()),
-        ) {
+        if self
+            .desktops
+            .settled(engine.owner().revision(), &self.handle.read(Clone::clone))
+        {
             return;
         }
         // What the records hold, folded into a copy of the desk: what this
         // device opened or moved since was written first, so the fold comes
         // back with this device's own change in it and nothing is undone.
         let mut tree = self.handle.read(Clone::clone);
-        self.shared_desktops
-            .capture(engine, self.sync.as_deref(), &tree);
+        self.desktops.capture(engine, self.sync.as_deref(), &tree);
         let device = self
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
-        if self.shared_desktops.follow(engine, &device, &mut tree) {
+        if self.desktops.follow(engine, &device, &mut tree) {
             // The tree this device drew is the tree it shows: what the record
             // holds is already placed, and swapping it in whole keeps the
             // windows this device shows where its own view left them.
@@ -533,7 +533,7 @@ impl Shared {
         }
         // A window the person opens here is this device's to place: the
         // record lacks it until the next write, and folding keeps it.
-        self.shared_desktops.note_unrecorded(engine, &tree);
+        self.desktops.note_unrecorded(engine, &tree);
     }
 
     /// Keep the person's arrangement in step with their desk: what the desk
@@ -738,10 +738,20 @@ pub struct Session {
     comforts: Option<mount::comforts::Mirror>,
     /// Checking the passwords the lock screen was given.
     unlocking: Unlocking,
-    /// How many times the session started its lock screen for the lock in
-    /// force: a screen that keeps going is not staying up at all, and the
-    /// lock is lifted rather than left with nothing able to unlock it.
+    /// How many times the session started the lock screen's app for the
+    /// lock in force: a screen that keeps going is not staying up at all,
+    /// and the session draws the lock itself from then on.
     lock_starts: u32,
+    /// The lock drawn in this process, for the locks the lock screen's app
+    /// cannot show.
+    lock_view: Option<lock_screen::LockView>,
+    /// What shows the lock in force: the lock screen's app, or, when that app
+    /// cannot show it, [`Session::lock_view`] — nothing but this process then
+    /// draws and unlocks it.
+    lock_shown: lock_screen::LockShown,
+    /// The login's lock record: the state this session ends in is published
+    /// to it, and a session that ends without doing so comes back locked.
+    recovery: Option<recovery::Recovery>,
     /// The screenshots asked for.
     captures: Option<capture::Captures>,
     /// The capture studio the session shows, and answers the asks of.
@@ -785,6 +795,14 @@ pub struct Session {
     /// development and the device admin's sockets, when the launcher names
     /// them, and the one a program inside an app reaches.
     control: test_control::Control,
+    /// The liveness door beside the development control socket: whether the
+    /// loop still turns, and where its threads are when it does not. Kept for
+    /// as long as the session runs: dropping it takes the door down.
+    #[allow(
+        dead_code,
+        reason = "held for the session's life: dropping it takes the door down"
+    )]
+    liveness: Option<tilo_liveness::Server>,
     /// The shortcuts the person saved, started by their triggers.
     automation: automation::Automation,
     /// The runtime the shortcuts' runs execute on, which the apps' broker
@@ -1382,6 +1400,7 @@ impl Session {
             shortcut_guide: guide_seat,
             add_app,
             uninstall,
+            lock_view,
         } = mount::sheets::mount_sheets(&mut compositor, &mut doors, &options);
 
         // The capture studio, over everything it captures.
@@ -1542,6 +1561,13 @@ impl Session {
             control.door(),
             std::sync::Arc::clone(&seats),
         );
+        // Beside the harness's control socket: whether the loop still turns,
+        // and where every thread stands when it does not. A session without
+        // one serves no such door, and no other session does either.
+        let liveness = options
+            .test_control
+            .as_deref()
+            .and_then(|control| compositor.serve_liveness(control, agent_door::bind_private));
         let agent_door = door.map(|door| {
             door.serve(
                 action_plane.as_ref().and_then(Plane::agent_broker),
@@ -1742,7 +1768,7 @@ impl Session {
             folder_import: RefCell::new(None),
             sync,
             engine,
-            shared_desktops: shared_desktop::SharedDesktops::default(),
+            desktops: shared_desktop::SharedDesktops::default(),
             membership_fed: Cell::new(None),
             _channels: channels,
             personal,
@@ -1833,6 +1859,12 @@ impl Session {
         // where every tree and every action lives.
         let wake = loop_wake.clone();
         let a11y = a11y::Accessibility::new(Arc::new(move || wake.wake_by_ref()), aside);
+        // A session left locked by one that did not end in order comes back
+        // locked, as the person left it.
+        let starts_locked = options
+            .recovery
+            .as_ref()
+            .is_some_and(recovery::Recovery::starts_locked);
         let mut session = Self {
             compositor,
             shared,
@@ -1847,6 +1879,9 @@ impl Session {
                 wake: loop_wake,
             },
             lock_starts: 0,
+            lock_view: lock_view.map(lock_screen::LockView::new),
+            lock_shown: lock_screen::LockShown::App,
+            recovery: options.recovery.take(),
             captures: options.captures,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
@@ -1861,6 +1896,7 @@ impl Session {
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
             control,
+            liveness,
             automation,
             automation_runtime,
             screen_locked: false,
@@ -1908,6 +1944,9 @@ impl Session {
         };
         session.watch_sockets()?;
         session.shared.directory_store.waking(options.wake.handle());
+        if starts_locked {
+            session.compositor.lock_now()?;
+        }
         Ok(session)
     }
 
@@ -2718,11 +2757,37 @@ impl Session {
             tracing::warn!("no password can be checked here: not locking");
             return false;
         }
-        if self.lock_screen().is_none() {
-            tracing::warn!("no lock screen is installed: not locking");
+        // A session whose lock screen's app is not there still locks: the
+        // session draws the lock itself.
+        if self.lock_screen().is_none() && self.lock_view.is_none() {
+            tracing::warn!("nothing here shows the lock: not locking");
             return false;
         }
         true
+    }
+
+    /// Paste what was copied into `destination`, beside what is already there.
+    pub(crate) fn paste_files(&self, destination: &str) {
+        self.shared.clipboard.paste_files(
+            std::path::Path::new(destination),
+            crate::mount::clipboard_files::Conflict::KeepBoth,
+        );
+    }
+
+    /// Switch the machine to virtual terminal `vt`, as `Ctrl+Alt+F1..F12`
+    /// asks. A desktop cannot give the machine back any other way: the
+    /// terminal is where the person logs in, ends a stuck program or starts
+    /// Tilo again. A backend without virtual terminals has nothing to switch,
+    /// and the session stays.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "every arm of the command match answers with one result"
+    )]
+    fn switch_vt(&mut self, vt: i32) -> Result<(), Error> {
+        if let Err(error) = self.compositor.change_vt(vt) {
+            tracing::info!(%error, vt, "the virtual terminal was not switched");
+        }
+        Ok(())
     }
 
     /// Show a mode change in the readout, said in words: a switch flipped by
@@ -2739,85 +2804,6 @@ impl Session {
     /// Show `hint` in the readout.
     pub(crate) fn show_hint(&self, hint: Hint) {
         self.shared.show_readout(&Osd::from(hint));
-    }
-
-    /// Paste what was copied into `destination`, beside what is already there.
-    pub(crate) fn paste_files(&self, destination: &str) {
-        self.shared.clipboard.paste_files(
-            std::path::Path::new(destination),
-            crate::mount::clipboard_files::Conflict::KeepBoth,
-        );
-    }
-
-    /// Answer the installed folder importer this pass, and open the review it
-    /// saved once the person's first use is over: the Add folders click they
-    /// left for after setup rather than one they must remember.
-    fn follow_folder_import(&self) {
-        let first_use_over = !self.setup_up();
-        let opens_now = self
-            .shared
-            .folder_import
-            .borrow_mut()
-            .as_mut()
-            .is_some_and(|import| import.follow(first_use_over));
-        if !opens_now {
-            return;
-        }
-        let Some(apps) = &self.shared.launch else {
-            return;
-        };
-        let launch = tilo_app_launch::Launch::Host {
-            desktop_id: import_readiness::IMPORT_DESKTOP_ID.to_owned(),
-            open: None,
-        };
-        if let Err(error) = apps.open(&launch) {
-            tracing::warn!(
-                %error,
-                "the saved folder import did not open; Add folders opens it"
-            );
-        }
-    }
-
-    /// What the person is writing with besides the keyboard: dictation and
-    /// the emoji picker, both through the field they are typing in.
-    fn follow_text_inputs(&mut self) {
-        // Dictation writes into the field the person is typing in, so it runs
-        // before the frame rather than with the sheets.
-        let locked = self.compositor.locked();
-        self.shared.dictation.step(
-            &mut self.compositor,
-            &self.shared.handle,
-            &self.shared.clipboard,
-            locked,
-            Instant::now(),
-        );
-        quick_settings::follow_dictation(&self.shared);
-        // The picker's picks go into the field the person was typing in,
-        // through the same text-input door dictation writes through.
-        let origin = self
-            .shared
-            .desktop
-            .with_widgets(|host| host.placement().origin);
-        self.shared
-            .emoji
-            .step(&mut self.compositor, origin, Instant::now());
-    }
-
-    /// The notifications that arrived this pass, and the flash a person who
-    /// asked for visual alerts sees for them.
-    fn follow_notifications(&mut self) {
-        let compositor = &mut self.compositor;
-        let appeared = self
-            .shared
-            .notifications
-            .borrow_mut()
-            .step(&mut || Some(compositor.activation_token()));
-        // What the person was just told flashes the screen when they asked
-        // for a visual alert: a person who cannot hear the alert sound is
-        // told of it the same way.
-        if appeared && compositor.a11y().visual_alerts {
-            compositor.flash();
-        }
     }
 }
 
