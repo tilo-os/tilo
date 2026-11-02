@@ -81,6 +81,7 @@ mod import_readiness;
 mod input_method;
 mod input_sources;
 pub mod keyboard;
+mod keyboard_shortcuts;
 mod keys;
 mod launches;
 mod lists;

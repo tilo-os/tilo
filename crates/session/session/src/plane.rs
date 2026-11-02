@@ -770,9 +770,10 @@ fn seams(
         // A shortcut a person saves lands on the desk, and a shortcut's run
         // executes on the session's runtime.
         shortcut_library: Seam::served(shortcut_library),
-        keyboard_shortcuts: Seam::unserved(
-            "the shortcut catalogue is not published on this session's action door",
-        ),
+        // The device's shortcut catalogue, as the shortcut guide and
+        // Settings read it: the broker hands over the keymap, and only this
+        // machine's callers are offered it.
+        keyboard_shortcuts: Seam::served(crate::keyboard_shortcuts::servable()),
         continuations: Seam::unserved(
             "this session offers no app's unfinished work to another app",
         ),
@@ -1303,6 +1304,27 @@ mod tests {
             services.display_control.is_some(),
             services.settings.is_some(),
             "a display change is written where this person's settings are kept"
+        );
+        let keys = services
+            .keyboard_shortcuts
+            .expect("apps on this machine ask the door for the shortcut catalogue");
+        let listed = keys
+            .apply(
+                &settings_store::hardware::ShortcutConfig::default(),
+                &tilo_actions::ActionAddress::new(
+                    tilo_sheets::keyboard_shortcuts::RESOURCE,
+                    tilo_sheets::keyboard_shortcuts::LIST_ACTION,
+                ),
+                None,
+            )
+            .expect("the catalogue is answered")
+            .value
+            .expect("the catalogue is the answer");
+        assert!(
+            listed["shortcuts"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty()),
+            "every shortcut of this desktop is listed"
         );
         assert!(
             services.drives.is_none() && services.applications.is_none(),
