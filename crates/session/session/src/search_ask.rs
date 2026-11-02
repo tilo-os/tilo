@@ -193,6 +193,11 @@ fn answer(question: String, deltas: Sender<Chunk>) {
         )));
         return;
     };
+    answer_with(&models, question, deltas);
+}
+
+/// [`answer`] against a model capability, wherever it comes from.
+fn answer_with(models: &ui::models::Models, question: String, deltas: Sender<Chunk>) {
     let Ok(runtime) = tilo_rt::try_app() else {
         let _ = deltas.send(Chunk::Failed(tilo_desktop_search::i18n::t(
             "search-ask-no-gateway",
@@ -370,6 +375,78 @@ mod tests {
             panic!("choosing the row copies the answer");
         };
         assert_eq!(text, "A conflict-free replicated data type.");
+    }
+
+    /// A provider that writes its answer a piece at a time, as a streaming
+    /// gateway does.
+    struct Writing(Vec<&'static str>);
+
+    impl agent_provider_config::protocol::ModelBackend for Writing {
+        fn complete<'a>(
+            &'a self,
+            _request: &'a ModelRequest,
+        ) -> agent_provider_config::protocol::CompletionFuture<'a> {
+            Box::pin(async {
+                Err(agent_provider_config::protocol::ModelError::new(
+                    agent_provider_config::protocol::ErrorKind::Unavailable,
+                ))
+            })
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _request: &'a ModelRequest,
+            mut sink: agent_provider_config::protocol::StreamSink<'a>,
+        ) -> agent_provider_config::protocol::CompletionFuture<'a> {
+            Box::pin(async move {
+                for piece in &self.0 {
+                    sink(StreamEvent::TextDelta {
+                        text: (*piece).to_owned(),
+                    });
+                }
+                Ok(agent_provider_config::protocol::ModelResponse {
+                    message: Message::text(Role::Assistant, self.0.concat()),
+                    stop_reason: agent_provider_config::protocol::StopReason::EndTurn,
+                    usage: agent_provider_config::protocol::Usage::default(),
+                })
+            })
+        }
+    }
+
+    /// The answer arrives a piece at a time and the row shows it as it is
+    /// written, then stops asking.
+    #[test]
+    fn a_streamed_answer_writes_itself_into_the_row() {
+        let ask = setup("workspace");
+        let (sender, receiver) = mpsc::channel();
+        {
+            let mut state = ask.answered();
+            *state = Answering {
+                question: "what is a CRDT?".into(),
+                provider: "Anthropic".into(),
+                model: "Claude".into(),
+                streaming: true,
+                deltas: Some(receiver),
+                ..Answering::default()
+            };
+        }
+        let models = ui::models::Models::new(std::rc::Rc::new(Writing(vec![
+            "A conflict-free ",
+            "replicated data type.",
+        ])));
+        answer_with(&models, "what is a CRDT?".into(), sender);
+        let changed = ask.poll();
+        assert!(changed, "what arrived is worth drawing");
+        let row = ask.row("what is a CRDT?");
+        assert_eq!(
+            row.preview
+                .as_ref()
+                .and_then(|preview| preview.body.as_deref()),
+            Some("A conflict-free replicated data type."),
+            "the row says what is written so far, and keeps it"
+        );
+        assert!(!ask.poll(), "a finished answer changes nothing more");
+        assert!(!ask.answered().streaming);
     }
 
     #[test]
