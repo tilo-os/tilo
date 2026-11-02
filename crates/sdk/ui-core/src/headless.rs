@@ -2650,9 +2650,12 @@ impl FrameHarness {
         })
     }
 
-    /// The roots [`Self::frame_schedule`] reads demand from.
+    /// The roots [`Self::frame_schedule`] reads demand from, with this
+    /// workspace's presence lent for the pass: a widget that paints from the
+    /// people on the document answers whether they changed ([`crate::widget::Widget::needs_redraw`])
+    /// before anything draws, not only when it draws.
     fn with_schedule_roots<R>(&self, visit: impl FnOnce(Vec<&dyn Widget>) -> R) -> R {
-        visit(self.presentation_roots())
+        crate::presence::frame::lend(&self.presence, || visit(self.presentation_roots()))
     }
 
     /// The widgets behind [`Self::frame_schedule`]'s animation demand and due

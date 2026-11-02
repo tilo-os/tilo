@@ -353,6 +353,7 @@ fn an_idle_desktop_asks_its_host_for_no_frame() {
         let schedule = driver.frame_schedule();
         !schedule.queued_work
             && !schedule.needs_animation_frame
+            && !schedule.needs_redraw
             && schedule.next_wake_deadline.is_none()
     };
     assert!(idle(&driver), "{:?}", driver.frame_schedule());
@@ -2569,3 +2570,26 @@ fn a_wheel_scrolls_the_window_under_the_pointer_not_the_one_before_it() {
 
 #[path = "surface/actions.rs"]
 mod actions;
+
+/// A desk nobody touches has nothing to draw: a settled desk declines the
+/// frame its host offers, so a window's bar and its search lane paint nothing
+/// until what they show changes — and then they ask for that frame.
+#[test]
+fn a_settled_idle_desk_repaints_nothing() {
+    let (mut driver, handle, _) = mount();
+    driver.relayout();
+    driver.settle_for_capture(Duration::from_millis(2000));
+    let schedule = driver.frame_schedule();
+    assert!(
+        !schedule.needs_redraw,
+        "an idle desk needs no repaint: {schedule:?} from {:?}",
+        driver.redraw_sources()
+    );
+
+    // And nothing below it asks either: no bar, no search lane, no window.
+    assert!(
+        !driver.frame_schedule().needs_redraw,
+        "nothing on the desk is dirty: {:?}",
+        driver.redraw_sources()
+    );
+}

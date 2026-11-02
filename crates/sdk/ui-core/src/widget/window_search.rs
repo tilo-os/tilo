@@ -1859,6 +1859,18 @@ impl Widget for WindowSearch {
             .paint(scene, transform, text, theme, presence, shown);
     }
 
+    /// A resting search is clean: its field draws only while the search is
+    /// open, and an open one repaints off its own motion, its panel and the
+    /// caret in its field. A search that opens or closes, or whose resting
+    /// control changes, moves, and motion already answers here.
+    /// What the search holds is clean once the frame drew it, or once the
+    /// frame chose not to: a closed search draws nothing, so what its field
+    /// and panel hold was not shown and is made again when it opens.
+    fn mark_drawn(&mut self) {
+        crate::widget::Widget::mark_drawn(&mut self.field);
+        crate::widget::Widget::mark_drawn(&mut self.panel.replace_field);
+    }
+
     fn needs_redraw(&self) -> bool {
         self.presence.is_moving(crate::motion::frame_now())
             || self.field.needs_redraw()
