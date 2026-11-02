@@ -274,8 +274,6 @@ pub mod desk_widgets {
         DeskWidgetPrefs, DockEdge, Place, ShowMode, WidgetId, WidgetPrefs, prefs_key,
     };
 }
-#[cfg(any(test, feature = "ux-bench"))]
-pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod deferred;
 pub mod lazy_code;

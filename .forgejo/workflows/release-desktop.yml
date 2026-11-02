@@ -272,7 +272,6 @@ jobs:
           PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           VARIABLE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           # Keep future chaining available, but never publish OS versions automatically.
-          CONTINUOUS_OS_RELEASE: "0"
         shell: bash
         run: |
           set -euo pipefail
@@ -334,15 +333,6 @@ jobs:
             fi
           done
           [[ $found == 1 ]]
-          if [[ ${CONTINUOUS_OS_RELEASE:-0} == 1 ]]; then
-            dispatch_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/workflows/build-image.yml/dispatches"
-            curl --fail --silent --show-error --request POST \
-              --header "Authorization: token $VARIABLE_TOKEN" \
-              --header 'Content-Type: application/json' \
-              --data '{"ref":"stable","inputs":{"with_browser":"1","release":"true"}}' \
-              "$dispatch_api"
-            echo '::notice::requested continuous desktop/OS integration release'
-          fi
 
   release:
     if: startsWith(github.ref, 'refs/tags/desktop-v')

@@ -6,8 +6,7 @@
 //! The component gallery mounted in a [`FrameHarness`], rendered in **dark
 //! and light** at 1× on the theme's own background, with the harness's
 //! inspection snapshot beside each PNG — the pair the 1× review batch reads:
-//! the picture for the eye, the rects for `scripts/ux-bench/usability.py`'s
-//! `geometry_audit` (overlap / touching lint).
+//! the picture for the eye, the rects for a geometry (overlap / touching) audit.
 //!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- gallery_harness [OUT_DIR]`
 //! Out:  `$GALLERY_HARNESS_OUT` or the first argument (default

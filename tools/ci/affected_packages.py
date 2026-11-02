@@ -160,10 +160,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ".forgejo/workflows/build-kernel.yml": (
         "os/tests/workflow_dependency_invariants.sh",
     ),
-    ".forgejo/workflows/dev-disk.yml": (
-        "tools/tests/test_dev_disk_workflow.py",
-        "os/tests/workflow_dependency_invariants.sh",
-    ),
     ".forgejo/workflows/check.yml": (
         "tools/tests/test_ci_check_aggregate.py",
         "tools/tests/test_ci_queue_relief.py",

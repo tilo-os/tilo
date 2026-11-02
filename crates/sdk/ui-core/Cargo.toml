@@ -60,10 +60,6 @@ broker-transport = ["local-daemons", "collaboration/broker-transport", "runtime-
 # fixtures a test draws with ([`headless::HeadlessApp`], the pinned font
 # catalogue) come with it.
 test-support = ["tilo-host/test-support", "collaboration/test-support", "dep:tilo-test-env"]
-# The UX benchmark runner (`ui::ux_bench`): scenarios, checks and the HTML
-# report the `ux-bench` tool drives. Off by default, so the shared
-# runtime apps load does not ship it.
-ux-bench = []
 # Hyphenation patterns (hypher) are not linked into text layout: the program
 # fetches their code the first time text hyphenates and hands it over
 # (`defer_hyphenation`, `install_hyphenation`); until then text breaks only
