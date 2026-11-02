@@ -21,26 +21,33 @@ There are two ways to run them:
 
 ## On this desktop
 
-Build the tool:
+Build the tool with the workspace's `fast` profile, the one it names for the desktop:
 
 ```sh
-cargo build -p tilolang-cli --bin tilolang
+cargo build --profile fast -p tilolang-cli --bin tilolang
 ```
 
 and start the loop:
 
 ```sh
-tilolang dev apps/tl/tasks --search apps/tl
+target/fast/tilolang dev apps/tl/tasks --search apps/tl
 ```
 
-The first start builds `tilolang-app` from the checkout with cargo (an ordinary build; a
-thin build runs only against a session's runtime library) and opens the package's window.
-`--runtime BIN` runs a binary you built yourself instead, and a new build of it restarts
-the window on it.
+The first start builds `tilolang-app` from the checkout in the same profile (an ordinary
+build; a thin build runs only against a session's runtime library) and opens the package's
+window. `--runtime BIN` runs a binary you built yourself instead, and a new build of it
+restarts the window on it.
+
+The profile is not a detail of this loop: it compiles each saved package, interprets it and
+draws every frame of its window, and an unoptimised build of it does each of those several
+times slower. `fast` is the workspace's answer for a local build that must run at
+near-release speed.
 
 The loop is a directory protocol (`tilo_app_module`, `TILO_APP_MODULE_UPDATES`): the tool
 publishes each build as a numbered generation and names the current one in a `current`
-file; the app watches that file. Nothing else can reach the window.
+file; the app watches that file. Nothing else can reach the window. A generation holds the
+compiled bundle itself: a local build stages no payload, packs no `.tapp` and signs nothing,
+because nothing installs it.
 
 - The app is a plain process the tool starts and stops: it has no session, no launcher and
   no sandbox around it.
@@ -166,11 +173,11 @@ way.
 Let `tilolang dev` build the runtime (or give `--runtime BIN` a binary of your own):
 
 ```sh
-tilolang dev apps/tl/tasks --search apps/tl
+target/fast/tilolang dev apps/tl/tasks --search apps/tl
 ```
 
 On every change of `apps/tilolang`, `tilolang-tilo`, `tilolang-runtime` or `tilolang` it
-runs `cargo build --locked -p tilolang-app --bin tilolang-app`, and when the build
+runs `cargo build --locked --profile fast -p tilolang-app --bin tilolang-app`, and when the build
 succeeds it stops the running app (`SIGTERM`, so it flushes its checkpoint) and starts it
 again on the new binary. The resources are in its local store; the scroll, selection and
 open item come back from the checkpoint.
@@ -209,11 +216,18 @@ the session runs: start the session on a build of the same checkout.
 ## Measuring
 
 ```sh
-scripts/headless-examples/tilolang-dev-loops.py --runs 5
+scripts/headless-examples/tilolang-dev-loops.py --runs 5              # in a session
+scripts/headless-examples/tilolang-dev-loops.py --desktop --runs 5    # on this desktop
 ```
 
-The script edits, waits for the change on screen, and prints the medians. Medians of 5 runs on 2026-10-27,
-headless on lavapipe, laptop load average around 12:
+The script edits, waits for the change on screen, and prints the medians. Both runs are
+headless, on lavapipe, under a session's compositor; the desktop run is the tool's own
+window, with no session, as a plain client of that compositor. `--busy N` keeps N
+CPU-bound processes running, so a run shows the loop under load too, and every sample
+prints the load average it saw.
+
+In a session, medians of 5 runs on 2026-10-27, headless on lavapipe, laptop load average
+around 12:
 
 | Loop | Median | Runs |
 |---|---|---|
@@ -223,20 +237,27 @@ headless on lavapipe, laptop load average around 12:
 | Runtime, of which the build | 63.6 s | 35.1, 95.6, 81.9, 63.6, 57.0 s |
 | Runtime, after the build: bake, install, restart | 3.1 s | |
 
-On this desktop, saving `apps/tl/tasks/app.tl` in `tilolang dev apps/tl/tasks
---search apps/tl`, measured in the same session from the file's write to the app's
-`draws build N at <ms>` line:
+On this desktop, saving the script's copy of `apps/tl/tasks` in `tilolang dev OUT/src/tasks
+--search OUT/src`, medians of 5 runs on 2026-11-02, in the same session, laptop load
+average around 23 (the host is shared):
 
-| Desktop loop | Save to the app's frame | Of which: build | Of which: read to draw |
-|---|---|---|---|
-| First save (cold) | 462 ms | 241 ms | 166 ms |
-| Second save | 200 ms | 137 ms | 60 ms |
+| Desktop loop | Save to the app's frame | Of which: the tool's build | Of which: read to draw | Save to the presented frame |
+|---|---|---|---|---|
+| Warm saves, load 23.2 | 31 ms | 14 ms | 11 ms | 43 ms |
+| First save after start, load 23.2 | 38 ms | 22 ms | 12 ms | 69 ms |
+| Warm saves, 8 CPU-bound processes more, load 25.4 | 36 ms | 24 ms | 12 ms | 69 ms |
 
-The tool reported each as `built in 241 ms, published in 243 ms; the running app takes
-it with its state`, and the app logged `draws build 1 at <ms>, 166 ms after it
-arrived`. Both processes were cargo debug builds rendering on lavapipe under a headless
-compositor, so this is the slowest case; there is no install here, only a published
-generation.
+The tool reported each as `built in 14 ms, published in 15 ms; the running app takes it
+with its state`, and the app logged `draws build 2 at <ms>, 11 ms after it arrived`. The
+first save is the app's first take-over, so its module is interpreted and drawn for the
+first time; every warm save takes the build in place with its state.
+
+Before, with cargo debug builds of the tool and the runtime, the same loop took 174 ms at
+the median from the save to the app's frame and 274 ms to the presented frame (load 34);
+a debug tool on a `fast` runtime still took 122 ms (load 21). The tool's build and the
+app's read to draw were each several times what they are now, and a local build staged a
+payload, packed a `.tapp` and signed it for nothing, then read the platform's packages
+again on every build.
 
 In the app loop, compiling and packing take 1 to 2 ms. `tilo-install` takes
 140 to 170 ms, but the app takes the build as soon as the install commits its
@@ -246,10 +267,13 @@ that waited on the disk.
 - **The app loop** is timed from the save to two points:
   - the app's own first frame of the new build: the app logs `draws build N at <ms>`
     when it draws it;
-  - the first new frame of the app that the nested compositor received after that.
+  - the first frame after it that the compositor presented, which the app logs as a
+    `tilo-display-frame` row with `TILO_PROFILE_PRESENTATION=1`.
 
-  The second adds the app's rendering of the frame and its hand-over to the
-  compositor: 7 ms at the median here, since a changed placeholder repaints little.
+  The second adds the app's rendering of the frame, its hand-over and the compositor's
+  presentation: 12 ms at the median here, since a changed placeholder repaints little.
+  The session table above is from before these rows: its second row is the compositor's
+  own frame counter, which added 7 ms then.
 - **The runtime loop** is timed end to end: from the edit of a runtime source, through
   the build, the bake, the install and the restart, to the restarted app's first
   presented frame.
