@@ -1245,6 +1245,18 @@ fn calls(phases: &[tilo_resource::profiling::Sample], name: &str) -> usize {
         .map_or(0, |phase| phase.calls)
 }
 
+/// What a rich field holds once `text` was typed into it: one paragraph of it.
+fn typed_rich(text: &str) -> patch::rich::RichText {
+    patch::rich::RichText {
+        blocks: vec![patch::rich::Block {
+            kind: "paragraph".to_owned(),
+            text: text.to_owned(),
+            ..patch::rich::Block::default()
+        }],
+        embeds: Vec::new(),
+    }
+}
+
 /// What the instance did while the person typed into a note, and what it publishes then.
 struct Typed {
     /// How often it built its whole surface to publish it.
@@ -1273,6 +1285,37 @@ fn broker_labels(sent: &Sent) -> Vec<String> {
         .into_iter()
         .map(|action| action.resource_label)
         .collect()
+}
+
+/// The event that puts `shown` into the field `input`: a rich field is edited whole, as the
+/// toolkit sends what the person typed into it, a text field by the splice each key is.
+fn key_edit(
+    rich: bool,
+    target: &patch::ResourceRef,
+    input: &str,
+    seq: usize,
+    at: u32,
+    shown: &str,
+    key: char,
+) -> ToApp {
+    if rich {
+        ToApp::EditRich {
+            lane: Lane::Detail,
+            target: target.clone(),
+            key: input.to_owned(),
+            rich: typed_rich(shown),
+        }
+    } else {
+        ToApp::Splice {
+            lane: Lane::Detail,
+            target: target.clone(),
+            key: input.to_owned(),
+            seq: (seq as u64).saturating_add(1),
+            at,
+            delete: 0,
+            insert: key.to_string(),
+        }
+    }
 }
 
 /// A notebook of `held` notes, the first of them open in the window as the person made it; what
@@ -1316,32 +1359,26 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
         deliver(&inbox, (id as u64).saturating_add(100), &new_note, "ada");
     }
     settle(&mut host, &mut window);
-    let input = node_with(
+    let field_node = node_with(
         window.detail.as_ref().expect("the note is open"),
         "placeholder",
         field,
     )
-    .unwrap_or_else(|| panic!("the open note has a field `{field}`"))
-    .key
-    .clone();
+    .unwrap_or_else(|| panic!("the open note has a field `{field}`"));
+    let input = field_node.key.clone();
+    let rich = field_node.kind == "ui.RichInput";
     let target = window.detail_target.clone().expect("the note is open");
     let documents = documents_sent(&sent);
     let (mut built, mut relabeled) = (0, 0);
     let mut shown = String::new();
     for (seq, key) in typed.chars().enumerate() {
+        let at = u32::try_from(shown.len()).unwrap();
+        shown.push(key);
+        let edit = key_edit(rich, &target, &input, seq, at, &shown, key);
         let ((), phases) = tilo_resource::profiling::observe(|| {
-            window.send(&[ToApp::Splice {
-                lane: Lane::Detail,
-                target: target.clone(),
-                key: input.clone(),
-                seq: (seq as u64).saturating_add(1),
-                at: u32::try_from(shown.len()).unwrap(),
-                delete: 0,
-                insert: key.to_string(),
-            }]);
+            window.send(&[edit]);
             settle(&mut host, &mut window);
         });
-        shown.push(key);
         built = calls(&phases, "tl.host.publish").saturating_add(built);
         relabeled = calls(&phases, "tl.host.relabel").saturating_add(relabeled);
     }
@@ -1892,8 +1929,10 @@ fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_wh
     let documents: Rc<dyn durable_store::DurableStore> =
         Rc::new(durable_store::MemoryStore::default());
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-    // The record as the store wrote it before a record's first change named itself.
+    // The record as the store wrote it before a record's first change named itself: its layout
+    // version, put on the root by the store that created it, and nothing else.
     let stamp = {
+        use automerge::transaction::Transactable as _;
         let mut store = collaboration::record::save::workspace_document(
             &documents,
             APP,
@@ -1901,6 +1940,8 @@ fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_wh
         )
         .unwrap();
         let mut doc = store.new_document();
+        doc.put(automerge::ROOT, "tilo:schema_version", 1_u64)
+            .unwrap();
         let stamp = doc.commit().unwrap();
         store.save(&mut doc).unwrap();
         stamp

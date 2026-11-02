@@ -36,7 +36,13 @@ const BO: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
 /// What only Ada's mail says: in her conversations' list and search, and on the door, which
 /// names a conversation by its newest words.
 const ADAS: [&str; 3] = ["Launch plan", "Grace Hopper", "lease renewal"];
-const ON_HER_DOOR: [&str; 2] = ["Agreed on the twelfth", "The new lease is attached"];
+/// Subjects her inbox's messages are published under: the launch thread's replies are its own
+/// messages, and the lease's is its one, so the door offers Ada's messages and not only the
+/// conversations they are in.
+const ON_HER_DOOR: [&str; 2] = [
+    "Re: Launch plan for the autumn release",
+    "Your lease renewal",
+];
 
 fn compiled(dir: &str, source: &str, ids: &str) -> Bundle {
     let lock = tilolang::IdsLock::parse(ids).unwrap();
@@ -375,7 +381,11 @@ fn mail_is_each_members_own_record_of_the_workspace() {
         assert!(ada.found().contains(what), "Ada's search finds {what}");
     }
     for what in ON_HER_DOOR {
-        assert!(ada.published().contains(what), "Ada's door offers {what}");
+        assert!(
+            ada.published().contains(what),
+            "Ada's door offers {what}: {}",
+            ada.published()
+        );
     }
 
     // None of it reaches Bo: not his record, his window, his search or his door.
