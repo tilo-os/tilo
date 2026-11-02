@@ -33,7 +33,7 @@ zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"]
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-rustix = { workspace = true, features = ["fs", "process"] }
+rustix = { workspace = true, features = ["event", "fs", "process"] }
 
 # The workspace-hack's native feature set does not build for wasm32, and the
 # browser builds the desktop, and so this service, for it.
