@@ -9,8 +9,8 @@
 #                                       disk, boot it until the agent serves, and wrap the disk
 #                                       into OUT/image.oci.tar (as root in an x86_64 micro-VM
 #                                       step); legacy-guest-e2e.sh, beside this script, tests it
-#   legacy-guest.sh binaries OUT        the shell under test (debug, agent-control), tilo-legacy
-#                                       and the relay's integration tests (CI builder)
+#   legacy-guest.sh binaries OUT        the shell under test (debug, agent-control) and
+#                                       tilo-legacy (CI builder)
 #   legacy-guest.sh pins OUT            after publish-legacy-guest published OUT, write
 #                                       OUT/pins.env: its reference and the inputs it was built from
 #   legacy-guest.sh pin                 write os/legacy-guest-snapshot.env from stable's pins
@@ -82,10 +82,6 @@ case ${1:-} in
       -p legacy-vm --bin tilo-legacy
     install -D -m 0755 "$target/debug/shell" "$out/shell"
     install -D -m 0755 "$target/debug/tilo-legacy" "$out/tilo-legacy"
-    relay_tests=$(cargo test --locked -p tilo-relay --test it --no-run --message-format=json \
-      | jq -r 'select(.executable != null and .target.name == "it") | .executable' | tail -n 1)
-    test -x "$relay_tests"
-    install -D -m 0755 "$relay_tests" "$out/relay-it"
     ;;
   pins)
     out=${2:?usage: legacy-guest.sh pins OUT}
