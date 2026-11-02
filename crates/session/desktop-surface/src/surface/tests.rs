@@ -317,6 +317,34 @@ fn a_press_off_the_open_palette_leaves_search() {
     assert!(!handle.search_open(), "a press off the card leaves search");
 }
 
+/// What the person types reaches the open search's query however long the
+/// desk has been drawn: the query field keeps the keyboard while the card
+/// shows, and redrawing the desk does not take it away.
+#[test]
+fn typing_reaches_the_open_palettes_query_after_frames() {
+    let (surface, handle) = desktop(1);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1000, 700),
+        Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    handle.open_search(None);
+    for _ in 0..8 {
+        frame.relayout();
+    }
+    assert!(handle.search_open(), "search opened");
+    for letter in ["c", "a", "l"] {
+        frame.send(&ui::synthetic_input::char_key(letter));
+        frame.relayout();
+    }
+    let (query, _) = handle.search_rows();
+    assert_eq!(query, "cal", "what was typed is the open search's query");
+}
+
 /// A window's search control opens search, over what that window shows:
 /// the control is never a dead one in this desktop.
 #[test]
