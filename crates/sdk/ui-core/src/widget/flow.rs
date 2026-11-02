@@ -49,6 +49,11 @@ pub(super) struct Flow {
     /// moves no child's size and dirties no child, yet every pixel of the
     /// cache is in the old theme, so a differing theme redraws it.
     cache_theme: Option<Box<DrawnTheme>>,
+    /// The shared-permission generation the cache was painted under
+    /// ([`crate::presence::PresenceCtx::paint_permission_generation`]): a
+    /// permission change moves what a gated child paints with nothing in
+    /// the tree marking it, so a cache from another generation is stale.
+    cache_permissions: u64,
     cache_present: bool,
     descendant_caches_released: bool,
     /// The cache holds floating surfaces over the blurred material. A reused
@@ -147,6 +152,7 @@ impl Flow {
             subtree_cache: Scene::new(),
             cache_rect: Rect::ZERO,
             cache_theme: None,
+            cache_permissions: 0,
             cache_present: false,
             descendant_caches_released: false,
             cache_carries_material: false,
@@ -472,9 +478,11 @@ impl Flow {
             .as_deref()
             .is_none_or(|drawn| !drawn.is(theme));
         let tracked = crate::scene_parts::is_tracked(scene);
+        let permissions_moved = self.cache_permissions != presence.paint_permission_generation();
         let needs_rebuild = !self.cache_present
             || size_changed
             || theme_changed
+            || permissions_moved
             || any_child_dirty
             || self.cache_carries_material
             || self.drawn_shifted
@@ -584,6 +592,7 @@ impl Flow {
             if theme_changed {
                 self.cache_theme = Some(Box::new(DrawnTheme::of(theme)));
             }
+            self.cache_permissions = presence.paint_permission_generation();
             self.cache_present = true;
             self.descendant_caches_released = false;
             presence.viewport.set(prev_vp);

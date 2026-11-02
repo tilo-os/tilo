@@ -571,6 +571,11 @@ pub struct PresenceCtx {
     /// and read by gated widgets through [`Self::permits`]. `None` gates
     /// nothing.
     permissions: std::cell::RefCell<Option<crate::permissions::PermissionContext>>,
+    /// [`crate::permissions::shared_revision`] as the drawing in progress
+    /// sees it. A retained drawing made under another revision is stale:
+    /// what a gated widget paints follows permissions that moved with
+    /// nothing in the tree marking it.
+    paint_permissions: std::cell::Cell<u64>,
     /// Each peer's last broadcast [`ViewSubset`](crate::view::ViewSubset) —
     /// where they're looking, distinct from their cursor. Read by
     /// **attach/follow** to bind the local viewport to a chosen peer.
@@ -636,9 +641,21 @@ impl PresenceCtx {
         draw: impl FnOnce() -> R,
     ) -> R {
         let outer = self.permissions.replace(Some(permissions));
+        let outer_revision = self
+            .paint_permissions
+            .replace(crate::permissions::shared_revision());
         let out = draw();
+        self.paint_permissions.set(outer_revision);
         self.permissions.replace(outer);
         out
+    }
+
+    /// What [`crate::permissions::shared_revision`] was when the drawing in
+    /// progress was lent its authority: a retained drawing from another
+    /// generation paints what the permissions no longer allow, or not what
+    /// they now do.
+    pub fn paint_permission_generation(&self) -> u64 {
+        self.paint_permissions.get()
     }
 
     /// Whether the authority of the subtree being drawn covers `scope`.

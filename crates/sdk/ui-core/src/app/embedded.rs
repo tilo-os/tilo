@@ -654,7 +654,9 @@ impl Widget for EmbeddedApp {
         self.app.layout.structure_dirty |= self.app.take_root_structure_dirty();
         let visible = presentation_changed
             || self.app.unsettled()
-            || (woken && self.app.root_widget.needs_redraw())
+            // A wake from outside may be an authority that moved what the
+            // app paints (a grant, a policy clock): that frame draws again.
+            || (woken && (self.app.root_widget.needs_redraw() || self.app.permissions_moved()))
             || self.app.root_widget.needs_animation_frame()
             || self.app.permissions_walk_due(crate::time::now())
             || crate::motion::frames_wanted(crate::time::now());
