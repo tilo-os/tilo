@@ -30,15 +30,15 @@
 # `--update` (dev and quick only) brings an OUTPUT_DIR this script built
 # before up to date, step by step: the module is bound and split again only
 # when the linked module changed, the page's modules and entry pages are
-# copied again, and fonts, data, the compute module and the MoQ library are
-# kept. A loop that edits only web/*.mjs takes seconds; one that edits Rust,
+# copied again, and fonts, data and the compute module are kept. A loop that
+# edits only web/*.mjs takes seconds; one that edits Rust,
 # the compile, wasm-bindgen and, unless `--no-split`, the split.
 # `--wasm-only` builds only what Cargo compiles (pkg/ with the compute module,
 # data/ and apps.json) and records how in wasm.json; it reads no git
 # metadata, so a build cache can key it by its sources alone. `--wasm-from`
 # assembles the bundle around such a directory instead of compiling: the
-# pages, locales, fonts and MoQ library from this tree, and build.json for
-# this tree's revision. A change to the pages alone then compiles nothing.
+# pages, locales and fonts from this tree, and build.json for this tree's
+# revision. A change to the pages alone then compiles nothing.
 # Needs the wasm32-unknown-unknown target and a wasm-bindgen CLI matching the
 # crate's pinned wasm-bindgen.
 set -euo pipefail
@@ -266,24 +266,13 @@ PY
 fi
 bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --assets-only
 mkdir -p "$out/fonts"
-moq_kept=0
-kept media-moq-library.mjs && moq_kept=1
-find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' ! -name media-moq-library.mjs -exec cp {} "$out/" \;
+find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' -exec cp {} "$out/" \;
 cp "$crate/web/index.html" "$out/index.html"
 cp "$crate/web/apple-touch-icon.png" "$out/apple-touch-icon.png"
 mkdir -p "$out/locales"
 cp "$crate"/web/locales/*.ftl "$out/locales/"
 mkdir -p "$out/app"
 cp "$crate/web/app/index.html" "$out/app/index.html"
-# The live plane's MoQ library is bundled from the published @moq/net pinned
-# in scripts/moq-browser/package-lock.json, never committed, never from a
-# local development copy in web/. npm ci writes node_modules beside the lock
-# file: TILO_MOQ_BROWSER_DIR names a writable copy of scripts/moq-browser for
-# builds whose source tree is read-only (t's checks).
-if [[ $moq_kept == 0 ]]; then
-  (cd "${TILO_MOQ_BROWSER_DIR:-$repo/scripts/moq-browser}" && npm ci --no-audit --no-fund --silent && node build.mjs "$out/media-moq-library.mjs")
-fi
-
 kept fonts.json || python3 - "$repo" "$out" <<'PY'
 import importlib.util, json, pathlib, re, shutil, sys
 repo, out = map(pathlib.Path, sys.argv[1:])

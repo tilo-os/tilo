@@ -235,12 +235,13 @@ view clock(d: Desk) {
 /// The top bar: the parts the person put on it, in their order, each a view of its own, so a change
 /// runs only the part that reads it. The bar is a run the person reorders by dragging a part, and a
 /// part dragged onto it from the settings lands where it is dropped; letting go runs one action,
-/// `place_part`. Who is here takes no room on a phone with no question waiting, where it shows
-/// nobody.
+/// `place_part`. A compact bar keeps the clock, the workspace, the connection, the charge, the
+/// notifications and the person's own face; who is here and the sound give way there, and a
+/// question put to the person always keeps its seat.
 view bar(d: Desk) {
     let s = shell
     let roomy = space.width_class == .expanded or space.width_class == .wide
-    let nobody = d.ask == "" and (d.person == "" or space.compact) and (not space.wide or d.people.is_empty())
+    let nobody = d.ask == "" and space.compact
     ui.DragRun(axis: .horizontal, name: "Top bar") {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
@@ -256,11 +257,9 @@ view bar(d: Desk) {
 /// Whether a part of the bar gives way on a bar narrower than a wide one: the strip and the
 /// focused window's menu below an expanded bar (a phone, a tablet, or large text), and the
 /// tasks and the agents, which run longest, below a wide one. The menu, the workspace, the clock,
-/// the status and a question put to the person always keep their room; of the people part, the
-/// faces of who is here and, on a phone, the person's own avatar give way, the chip that names
-/// them and opens the roster staying (`bar_part`). The bar decides by its width, so a part that
-/// gives way leaves no room behind; the bar's parts must never press into each other (the
-/// overview shows what gave way).
+/// the status and a question put to the person always keep their room. The bar decides by its
+/// width, so a part that gives way leaves no room behind; the bar's parts must never press into
+/// each other (the overview shows what gave way).
 fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
     if part.slot == .tasks or part.slot == .agent {
         return true
@@ -268,13 +267,14 @@ fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
     return not roomy and (part.slot == .strip or part.slot == .app_menu)
 }
 
-/// One part of the bar, drawn from what it is. The person's own avatar carries the question put
-/// to them: their answer or their putting it off, never a banner over their windows, so the
-/// question stands on every bar; with no question the avatar gives way on a phone, as the
-/// traditional bar's does, where the time and the notifications keep the room. Who else is here
-/// shows as their faces on a wide bar, the chip beside them naming them and opening the roster.
-/// The status part leads with the running applications' tray items, each under the app's own
-/// words for it, then the device's own status (`status_icons`), the notifications last.
+/// One part of the bar, drawn from what it is. Who is here is its faces alone, one button that
+/// opens the roster of everyone here and names them to assistive technology (`people_button`);
+/// a question put to the person stands beside them, their answer or their putting it off, never
+/// a banner over their windows. The status part leads with the running applications' tray
+/// items, each under the app's own words for it, then the device's own status
+/// (`status_icons`), the notifications, and the person's own face at the far end. On a compact
+/// bar the tray items and the sound give way: what a glance needs — the clock, the workspace,
+/// the connection, the charge, the notifications and the person's own face — keeps its room.
 view bar_part(d: Desk, part: BarPart) {
     if part.slot == .space {
         spacer
@@ -300,19 +300,14 @@ view bar_part(d: Desk, part: BarPart) {
         }
     } else if part.slot == .people {
         row(gap: .tight, align: .center) {
-            if space.wide {
-                for p in d.people {
-                    ui.Avatar(name: .some(p.name))
-                }
+            if not space.compact {
+                people_button(d)
             }
-            people_button(d)
             if d.ask != "" {
                 ui.Button(d.ask, role: .bar)
                 if d.ask_answer != "" {
                     ui.Button(d.ask_answer, role: .bar)
                 }
-            } else if d.person != "" and not space.compact {
-                ui.Avatar(name: .some(d.person))
             }
         }
     } else if part.slot == .agent {
@@ -320,12 +315,19 @@ view bar_part(d: Desk, part: BarPart) {
             agent_chip(d, a)
         }
     } else if part.slot == .status {
-        row(gap: .tight, align: .center) {
-            for item in d.tray {
-                ui.Button(item.title, role: .bar)
+        row(gap: .sibling, align: .center) {
+            if not space.compact and not d.tray.is_empty() {
+                row(gap: .tight, align: .center) {
+                    for item in d.tray {
+                        ui.Button(item.title, role: .bar)
+                    }
+                }
             }
             status_icons()
             bell(d)
+            if d.person != "" {
+                ui.Avatar(name: .some(d.person))
+            }
         }
     }
 }
@@ -362,7 +364,7 @@ view workspace_menu(d: Desk) {
 /// the one place a person changes them. A device that publishes none of them shows none.
 view status_icons() {
     row(gap: .tight, align: .center) {
-        // A phone's bar keeps the connection and the charge, what a glance looks for; the sound
+        // A compact bar keeps the connection and the charge, what a glance looks for; the sound
         // is a key away and a press on the others opens it (`volume_status`).
         if not space.compact {
             volume_status()
@@ -402,12 +404,17 @@ view network_status() {
     }
 }
 
-/// The pack's charge as a percentage beside the battery, its glyph saying whether it charges;
-/// nothing on a machine with no battery.
+/// The pack's charge as a percentage beside the battery, its glyph the charging battery while
+/// the pack takes charge (or waits for it) and the plain battery otherwise — the power
+/// service's own state, not whether the machine happens to run on the pack; nothing on a
+/// machine with no battery. A compact bar shows the glyph alone. The glyph says the charging,
+/// so the reading is the charge alone and the name assistive technology hears says both.
 view battery_status() {
     let b = device.battery
     if b.present {
-        ui.Button("{b.percentage}%", icon: if b.on_battery { .battery } else { .battery_charging }, role: .bar) {
+        let charging = b.state == "charging" or b.state == "pending-charge"
+        let name = if charging { "{b.percentage}%, charging" } else { "{b.percentage}%" }
+        ui.Button("{b.percentage}%", accessible_name: name, icon: if charging { .battery_charging } else { .battery }, icon_only: space.compact, role: .bar) {
             on press: device.show_surface(device.desk, surface: "quick-settings")
         }
     }
@@ -417,9 +424,9 @@ view battery_status() {
 /// unread, or that they are silenced), with the count on the bell's corner. Pressing it opens or
 /// closes the device's status: the quick settings, or the notifications.
 ///
-/// The count is the button's own (`count:`): it stands centred on the bell's top trailing
-/// corner, and the button keeps room for it, so it covers neither the bell nor the control
-/// beside it.
+/// The count is the button's own (`count:`): it stands on the bell's top trailing corner and
+/// wholly inside the button's face, so the bar's own edge never cuts it and it covers neither
+/// the bell nor the control beside it.
 view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
     let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }

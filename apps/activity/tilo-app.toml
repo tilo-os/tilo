@@ -33,7 +33,7 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@14"
+collab = "optional@16"
 
 [entrypoint]
 bin = "bin/activity"

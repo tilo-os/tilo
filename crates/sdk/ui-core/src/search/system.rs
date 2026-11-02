@@ -241,7 +241,7 @@ pub trait SearchRow {
 }
 /// One contiguous run of same-kind results, as [`group_by_kind`] arranges
 /// them.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct KindGroup<Row> {
     pub kind: ResourceKind,
     /// The rows to render — at most the cap the caller asked for.
@@ -881,34 +881,80 @@ pub fn group_by_kind<T>(
     trim_groups(groups, row_budget, &[])
 }
 
-/// Keep each group to a fair share of `row_budget` rows, front to back,
-/// except the kinds in `expanded`, which keep every row. A group that lost
-/// rows keeps its `total`, so its header and its [`show_all_entry`] can say
-/// how many there are. A lone group, or a zero budget, keeps everything.
+/// Keep each group to a fair share of `row_budget` rows, round-robin from
+/// the front, except the kinds in `expanded`, which keep every row. A group
+/// that lost rows keeps its `total`, so its header and its
+/// [`show_all_entry`] can say how many there are. A lone group, or a zero
+/// budget, keeps everything.
+///
+/// The row offering a cut group's rest is drawn in the same list as the
+/// rows, so `row_budget` is what stays for rows once those rows are paid for:
+/// cutting to the whole budget would push the last group's rows — and the
+/// row that offers them — off the card.
 pub fn trim_groups<T>(
-    mut groups: Vec<KindGroup<T>>,
+    groups: Vec<KindGroup<T>>,
     row_budget: usize,
     expanded: &[ResourceKind],
 ) -> Vec<KindGroup<T>> {
-    let rows: usize = groups.iter().map(|g| g.results.len()).sum();
+    let rows: usize = groups.iter().map(|group| group.results.len()).sum();
     if row_budget == 0 || groups.len() < 2 || rows <= row_budget {
         return groups;
     }
-    // Fair share, front to back: each group takes an equal cut of whatever
-    // budget remains, and what it can't fill rolls forward (never backward,
-    // or later headers push further down the card).
-    let n = groups.len();
-    let mut remaining = row_budget;
-    for (i, group) in groups.iter_mut().enumerate() {
-        if expanded.contains(&group.kind) {
-            remaining = remaining.saturating_sub(group.results.len());
-            continue;
+    let mut budget = row_budget;
+    let mut trimmed = groups;
+    loop {
+        trimmed = keep_each_group(trimmed, budget, expanded);
+        let offered = trimmed.iter().filter(|group| group.is_capped()).count();
+        let fits = row_budget.saturating_sub(offered).max(1);
+        if fits >= budget || !trimmed.iter().any(KindGroup::is_capped) {
+            return trimmed;
         }
-        let groups_left = n.saturating_sub(i).max(1);
-        let share = remaining.checked_div(groups_left).unwrap_or(1).max(1);
-        let keep = share.min(group.results.len());
+        budget = fits;
+    }
+}
+
+/// One row each, round-robin from the front, until `budget` rows are kept:
+/// every group is seen before any group is seen twice, so a group cannot
+/// reach the top of the list and starve the ones behind it.
+fn keep_each_group<T>(
+    mut groups: Vec<KindGroup<T>>,
+    budget: usize,
+    expanded: &[ResourceKind],
+) -> Vec<KindGroup<T>> {
+    let mut kept: Vec<usize> = groups.iter().map(|_| 0).collect();
+    let mut left = budget;
+    for (group, kept) in groups.iter().zip(&mut kept) {
+        if expanded.contains(&group.kind) {
+            *kept = group.results.len();
+            left = left.saturating_sub(*kept);
+        }
+    }
+    // A group the person did not ask to see whole still gets its first row:
+    // seeing one group whole does not hide the others.
+    let rest = groups
+        .iter()
+        .filter(|group| !expanded.contains(&group.kind))
+        .count();
+    left = left.max(rest);
+    while left > 0 {
+        let mut took = false;
+        for (index, group) in groups.iter().enumerate() {
+            if left == 0 {
+                break;
+            }
+            if expanded.contains(&group.kind) || kept[index] >= group.results.len() {
+                continue;
+            }
+            kept[index] += 1;
+            left -= 1;
+            took = true;
+        }
+        if !took {
+            break;
+        }
+    }
+    for (group, keep) in groups.iter_mut().zip(kept) {
         group.results.truncate(keep);
-        remaining = remaining.saturating_sub(keep);
     }
     groups
 }

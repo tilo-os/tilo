@@ -21,14 +21,19 @@ usage:
       (dist/dev/nested-session-build.sh target/nested-session) and open it there; from then on
       as `tilolang dev`. --software renders with lavapipe only and never opens this machine's
       GPU.
+  tilolang dev [DIR] [--search DIR]... [--runtime BIN | --build-runtime] [--repo DIR]
   tilolang dev [DIR] --session SESSION [--search DIR]... [--runtime BIN | --build-runtime]
                [--runtime-identity FILE] [--repo DIR]
-      develop the package in a running nested session (SESSION: its --ready file, runtime
-      directory or control socket): every saved .tl file is compiled, installed and taken over
-      by the running app with its state; a compile error is printed and the app keeps running.
-      --runtime BIN runs the apps on a tilolang runtime binary of your own build, and a new
-      build of it restarts them on it; --build-runtime builds it from the checkout and again
-      on every change of its sources with cargo. See docs/tilolang-dev.md.
+      develop the package as an ordinary window on this desktop: every saved .tl file is
+      compiled, published to the running app and taken over with its state (the same window,
+      its records, scroll and selection); a compile error is printed and the app keeps running.
+      The app's records persist across runs. Without --runtime the tool builds tilolang-app
+      from the checkout with cargo, and again on every change of its sources, restarting the
+      window on it with its state.
+      With --session, develop it in a running nested session instead (SESSION: its --ready
+      file, runtime directory or control socket): every saved .tl file is compiled, installed
+      and taken over by the app there, and --runtime BIN bakes the runtime binary into a signed
+      runtime bundle installed in that session. See docs/tilolang-dev.md.
   tilolang describe [DIR] [--search DIR]...
       print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
       a native app (its committed surface.toml) and a tilolang package alike
@@ -236,7 +241,7 @@ fn run_command(args: &[String]) -> Result<(), String> {
 fn dev_command(args: &[String]) -> Result<(), String> {
     let mut dir = PathBuf::from(".");
     let mut search = Vec::new();
-    let mut session = None;
+    let mut session: Option<PathBuf> = None;
     let mut runtime = None;
     let mut build_runtime = false;
     let mut runtime_identity = None;
@@ -254,9 +259,11 @@ fn dev_command(args: &[String]) -> Result<(), String> {
             named => dir = named.into(),
         }
     }
-    let session = session.ok_or_else(|| {
-        format!("tilolang dev needs --session (or start one with `tilolang run`)\n{USAGE}")
-    })?;
+    if runtime_identity.is_some() && session.is_none() {
+        return Err(format!(
+            "--runtime-identity signs a session's runtime bundle: give --session too\n{USAGE}"
+        ));
+    }
     if runtime.is_some() && build_runtime {
         return Err(format!(
             "--runtime names a binary built by hand, --build-runtime builds one: give one\n{USAGE}"

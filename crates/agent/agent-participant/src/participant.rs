@@ -636,6 +636,69 @@ impl AgentParticipant {
         pumped
     }
 
+    /// A durable change from the workspace: news for a running task, and merged into the record
+    /// it changes, held until opened when no app holds it yet.
+    fn document_said(&mut self, document: &tilo_peer_state::document_frame::OpenedDocument) {
+        if document.author != self.identity.cert.device_public_key
+            && document.route.cluster_id == self.workspace
+            && MESSAGE_APPS.contains(&document.route.app_id.as_str())
+            && self.identity.delegation.permits_app(&document.route.app_id)
+            && (self.running.is_some() || self.planning.busy() || self.coordinator.is_some())
+        {
+            self.news_from
+                .insert(document.route.clone(), document.author);
+            if !self.news.contains(&document.route) {
+                // Read before the change merges below.
+                let before = self.record_messages(&document.route).unwrap_or_default();
+                self.news_before.insert(document.route.clone(), before);
+                self.news.push(document.route.clone());
+            }
+            // What a coordinated task's waits look for, whatever
+            // takes the news.
+            self.before_others_change(&document.route);
+        }
+        if document.route.cluster_id != self.workspace {
+            return;
+        }
+        if document.author != self.identity.cert.device_public_key {
+            self.others_wrote.insert(document.route.clone());
+        }
+        let Some(mutation) = document.mutation() else {
+            return;
+        };
+        let route = document.route.clone();
+        if parts::is_part(&route.record)
+            && let Some(holder) = self.merge_part(&route, &mutation)
+        {
+            self.generation = self.generation.wrapping_add(1);
+            self.last_merge = Some(Instant::now());
+            self.live.durable_changed(&LiveRecord {
+                app: holder.app_id,
+                record: holder.record,
+            });
+        } else if let Some(app) = self.apps.get_mut(&route) {
+            self.generation = self.generation.wrapping_add(1);
+            self.last_merge = Some(Instant::now());
+            if let Err(error) = app.apply(&mutation) {
+                tracing::warn!(%error, "agent: a durable change did not merge");
+            }
+            self.live.durable_changed(&LiveRecord {
+                app: route.app_id,
+                record: route.record,
+            });
+        } else {
+            let (collab_types::DocumentMutation::Snapshot(bytes)
+            | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
+            if self.settling.is_some()
+                && self.identity.delegation.permits_app(&route.app_id)
+                && !self.unopened.routes().contains(&route)
+            {
+                self.settling = Some(Instant::now());
+            }
+            self.unopened.receive(route, bytes);
+        }
+    }
+
     fn receive(&mut self, event: PeerEvent, now: u64) {
         match event {
             PeerEvent::Ready { workspace_id } if workspace_id == self.workspace_id => {
@@ -647,68 +710,7 @@ impl AgentParticipant {
                     self.control.set_status(AgentStatus::Waiting);
                 }
             }
-            PeerEvent::Document(document) => {
-                if document.author != self.identity.cert.device_public_key
-                    && document.route.cluster_id == self.workspace
-                    && MESSAGE_APPS.contains(&document.route.app_id.as_str())
-                    && self.identity.delegation.permits_app(&document.route.app_id)
-                    && (self.running.is_some()
-                        || self.planning.busy()
-                        || self.coordinator.is_some())
-                {
-                    self.news_from
-                        .insert(document.route.clone(), document.author);
-                    if !self.news.contains(&document.route) {
-                        // Read before the change merges below.
-                        let before = self.record_messages(&document.route).unwrap_or_default();
-                        self.news_before.insert(document.route.clone(), before);
-                        self.news.push(document.route.clone());
-                    }
-                    // What a coordinated task's waits look for, whatever
-                    // takes the news.
-                    self.before_others_change(&document.route);
-                }
-                if document.route.cluster_id != self.workspace {
-                    return;
-                }
-                if document.author != self.identity.cert.device_public_key {
-                    self.others_wrote.insert(document.route.clone());
-                }
-                let Some(mutation) = document.mutation() else {
-                    return;
-                };
-                let route = document.route.clone();
-                if parts::is_part(&route.record)
-                    && let Some(holder) = self.merge_part(&route, &mutation)
-                {
-                    self.generation = self.generation.wrapping_add(1);
-                    self.last_merge = Some(Instant::now());
-                    self.live.durable_changed(&LiveRecord {
-                        app: holder.app_id,
-                        record: holder.record,
-                    });
-                } else if let Some(app) = self.apps.get_mut(&route) {
-                    self.generation = self.generation.wrapping_add(1);
-                    self.last_merge = Some(Instant::now());
-                    if let Err(error) = app.apply(&mutation) {
-                        tracing::warn!(%error, "agent: a durable change did not merge");
-                    }
-                    self.live.durable_changed(&LiveRecord {
-                        app: route.app_id,
-                        record: route.record,
-                    });
-                } else {
-                    let (collab_types::DocumentMutation::Snapshot(bytes)
-                    | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
-                    if self.settling.is_some()
-                        && self.identity.delegation.permits_app(&route.app_id)
-                        && !self.unopened.routes().contains(&route)
-                    {
-                        self.settling = Some(Instant::now());
-                    }
-                    self.unopened.receive(route, bytes);
-                }
-            }
+            PeerEvent::Document(document) => self.document_said(&document),
             PeerEvent::Live {
                 workspace_id,
                 from,

@@ -813,7 +813,7 @@ d-iwv7cd5i = Network status
     .doc = The connection the machine's traffic leaves on: Wi-Fi under its network's name, a cable, or offline; nothing on a device that publishes no connection at all.
 
 d-agni63m4 = Battery status
-    .doc = The pack's charge as a percentage beside the battery, its glyph saying whether it charges; nothing on a machine with no battery.
+    .doc = The pack's charge as a percentage beside the battery, its glyph the charging battery while the pack takes charge (or waits for it) and the plain battery otherwise — the power service's own state, not whether the machine happens to run on the pack; nothing on a machine with no battery.
 
 d-moh3hzne = Bell
     .doc = The notifications: an icon button named with what it shows ("Notifications", how many are unread, or that they are silenced), with the count on the bell's corner.
@@ -1095,15 +1095,13 @@ d-cijhlzxf = Window commands
     .doc = The shell's own commands on a window whose record it cannot read (a foreign surface): its name, moving it to another row, and closing it.
 
 d-yx7doxgr = Traditional bar
-    .doc = The desktop's top bar, one row edge to edge: the system menu and the focused window's commands leading, and the tasks running, the time, the person and the notifications flush at the trailing edge, as a macOS or GNOME bar has them.
+    .doc = The desktop's top bar, one row edge to edge: the system menu and the focused window's commands leading, and the tasks running, the time, who is here, the status, the notifications and the person's own face flush at the trailing edge, as a macOS or GNOME bar has them.
 
 d-3ezewqgy~row0 = Bar for part
 
 d-pvl6wwx6~row0 = Bar part for t
 
-d-pvl6wwx6~row1 = Bar part for p
-
-d-pvl6wwx6~row2 = Bar part for item
+d-pvl6wwx6~row1 = Bar part for item
 
 d-vidcax4k~row0 = Workspace menu for w
 

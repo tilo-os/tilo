@@ -398,8 +398,36 @@ impl ActionPalette {
     /// for, so the first screen is full.
     #[must_use]
     pub fn entry_row_capacity(&self) -> usize {
-        let row = self.row_height().max(1.0);
-        crate::num::usize_of_f64((self.list_cap() / row).floor()).max(1)
+        self.entry_row_capacity_with(0)
+    }
+
+    /// How many result rows a full list holds under the headers of `groups`
+    /// groups: a header takes room a row would have held, so a list with
+    /// four groups holds fewer rows than one with two.
+    #[must_use]
+    pub fn entry_row_capacity_with(&self, groups: usize) -> usize {
+        self.entry_row_capacity_for(groups, self.show_two_lines())
+    }
+
+    /// How many rows a full list holds under the headers of `groups` groups
+    /// when its rows are `two_line` tall: for the rows a query is about to
+    /// put there, which the palette does not hold yet.
+    #[must_use]
+    pub fn entry_row_capacity_for(&self, groups: usize, two_line: bool) -> usize {
+        self.results.row_capacity(self.list_cap(), groups, two_line)
+    }
+
+    /// Whether the rows `entries` stand inside the list, under the headers
+    /// of `groups` groups: every line at its own band, against the cap the
+    /// card gives its rows. A list that holds more is cut at the card's
+    /// edge, so a host asks this before it hands its rows over.
+    #[must_use]
+    pub fn entries_fit(&self, entries: &[CommandEntry], groups: usize) -> bool {
+        let two_lines: Vec<bool> = entries
+            .iter()
+            .map(|entry| entry.description.is_some())
+            .collect();
+        self.results.height_for(&two_lines, groups) <= self.list_cap() + 0.5
     }
 
     /// The result list's rect (the card under its field and band, with the
@@ -472,11 +500,15 @@ impl ActionPalette {
     /// The list's nominal row: what capacity, the default cap and a wheel
     /// notch count in. Each row is as tall as its own lines.
     fn row_height(&self) -> f64 {
-        let any_subtitle = self
-            .visible_entries()
+        self.results.row_band(self.show_two_lines())
+    }
+
+    /// Whether the rows the palette shows stand two lines tall: one of them
+    /// says something under its name.
+    fn show_two_lines(&self) -> bool {
+        self.visible_entries()
             .iter()
-            .any(|entry| entry.description.is_some());
-        self.results.row_band(any_subtitle)
+            .any(|entry| entry.description.is_some())
     }
 
     fn band_height(&self) -> f64 {

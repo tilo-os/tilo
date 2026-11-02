@@ -166,6 +166,7 @@ pub mod component;
 pub mod component_lifecycle;
 pub mod content;
 pub mod content_layout;
+mod cpu_raster;
 pub mod damage;
 pub mod date;
 pub mod device_local_door;

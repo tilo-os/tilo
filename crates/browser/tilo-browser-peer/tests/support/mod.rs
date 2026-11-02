@@ -1,6 +1,5 @@
-//! Fixtures shared by the end-to-end tests: a host serving browsers on
-//! HTTPS + WebTransport with a development certificate, and certified
-//! devices.
+//! Fixtures shared by the end-to-end tests: a host serving browsers over
+//! HTTPS with a development certificate, and certified devices.
 
 #![allow(
     dead_code,
@@ -293,7 +292,6 @@ pub async fn start_host_serving(
             allowed_origins: Vec::new(),
             plain_listen,
             public_origin: None,
-            live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy,
@@ -362,7 +360,6 @@ pub async fn start_workspace_host(
                 allowed_origins: Vec::new(),
                 plain_listen: None,
                 public_origin: None,
-                live_origin: None,
                 limits: tilo_relay::web::WebLimits::default(),
                 country: None,
                 fetch_proxy: None,

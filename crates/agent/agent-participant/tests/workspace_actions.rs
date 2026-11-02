@@ -565,7 +565,6 @@ async fn start_lending(
             allowed_origins: page.into_iter().map(str::to_owned).collect(),
             plain_listen: None,
             public_origin: None,
-            live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,

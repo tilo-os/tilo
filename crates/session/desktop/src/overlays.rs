@@ -38,6 +38,9 @@ use crate::topbar::TOPBAR_HEIGHT_PX;
 /// reads them in it, and Escape closes the first open one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Slot {
+    /// The search palette: over everything, the window it was opened from
+    /// under it.
+    Search,
     /// The emoji picker.
     Emoji,
     /// A window's menu: the rows the desk offers that window.
@@ -58,7 +61,8 @@ pub enum Slot {
 
 impl Slot {
     /// Every slot, topmost first.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
+        Self::Search,
         Self::Emoji,
         Self::WindowMenu,
         Self::WorkspaceMenu,
@@ -72,6 +76,7 @@ impl Slot {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Search => "search",
             Self::Emoji => "emoji",
             Self::WindowMenu => "window-menu",
             Self::WorkspaceMenu => "workspace-menu",
@@ -92,6 +97,7 @@ impl Slot {
     #[must_use]
     pub const fn role(self) -> Role {
         match self {
+            Self::Search => Role::Dialog,
             Self::Emoji | Self::Overview | Self::Strips => Role::Overlay,
             Self::WindowMenu | Self::WorkspaceMenu | Self::TiloMenu | Self::QuickSettings => {
                 Role::Popup
@@ -118,7 +124,7 @@ impl Slot {
     pub const fn anchor(self) -> Anchor {
         match self {
             Self::Overview | Self::Strips => Anchor::Fill,
-            Self::Emoji => Anchor::Center,
+            Self::Search | Self::Emoji => Anchor::Center,
             Self::WindowMenu => Anchor::At(Point::ZERO),
             Self::WorkspaceMenu | Self::TiloMenu => Anchor::TopLeading(0.0),
             Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),

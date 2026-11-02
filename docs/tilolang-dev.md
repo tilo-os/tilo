@@ -1,16 +1,54 @@
 # Iterating on a tilolang app
 
-Two loops, both against a real Tilo session: the app runs as an installed app, launched
-by the launcher, in its sandbox, under its own id and custody.
+Two loops:
 
 - **The app loop.** Save a `.tl` file. The running app shows the change in about
   50 ms, with its state: its resources, its window and lens state, the scroll,
   the selection and the open item.
 - **The runtime loop.** Change the runtime (`apps/tilolang`, `tilolang-tilo`,
-  `tilolang-runtime`) and build it. The running apps restart on the new runtime in
-  about 70 s, almost all of it the build. The session keeps running.
+  `tilolang-runtime`) and build it. The running app restarts on the new runtime,
+  almost all of it the build. Its resources are still there.
 
-## Start
+There are two ways to run them:
+
+- **On this desktop.** `tilolang dev DIR` runs the package as an ordinary window, with no
+  Tilo session: it is the developer's own app, and its records are its local store. This
+  is the everyday loop.
+- **In a real session.** `tilolang dev DIR --session SESSION` develops the package inside
+  a running nested session, where it runs as an installed app: launched by the launcher,
+  in its sandbox, under its own id and custody. Use it to test a change against a real
+  session.
+
+## On this desktop
+
+Build the tool:
+
+```sh
+cargo build -p tilolang-cli --bin tilolang
+```
+
+and start the loop:
+
+```sh
+tilolang dev apps/tl/tasks --search apps/tl
+```
+
+The first start builds `tilolang-app` from the checkout with cargo (an ordinary build; a
+thin build runs only against a session's runtime library) and opens the package's window.
+`--runtime BIN` runs a binary you built yourself instead, and a new build of it restarts
+the window on it.
+
+The loop is a directory protocol (`tilo_app_module`, `TILO_APP_MODULE_UPDATES`): the tool
+publishes each build as a numbered generation and names the current one in a `current`
+file; the app watches that file. Nothing else can reach the window.
+
+- The app is a plain process the tool starts and stops: it has no session, no launcher and
+  no sandbox around it.
+- Its record is the framework's local store (`$XDG_DATA_HOME/tilo`), so resources persist
+  across saves, across a process restart and across later `tilolang dev` runs.
+- `Ctrl-C` stops the tool and the window. Closing the window stops the loop.
+
+## In a real session
 
 You need a nested-session build (`dist/dev/nested-session-build.sh
 target/nested-session`, which `dist/dev/nested-session.sh` builds) and the tool, built
@@ -44,9 +82,7 @@ tilolang dev apps/tl/notes --search apps/tl --session /tmp/s.json
 `--session` takes the `--ready` file, the session's runtime directory or its control
 socket.
 
-## The app loop
-
-On every save `tilolang dev`:
+There, on every save `tilolang dev`:
 
 1. compiles the package in-process (tens of milliseconds);
 2. on an error, prints the diagnostics and stops: the app keeps running the last good
@@ -55,7 +91,9 @@ On every save `tilolang dev`:
    install;
 4. says in one line what the running app does with it.
 
-The running app takes the new build in one of two ways:
+## The app loop
+
+Both ways of running take a new build the same way, in one of two ways:
 
 - **In place.** This is the usual case. Resources live in the workspace record and view state lives
   in the runtime, both keyed by declaration id. Scroll, selection and the open item live in the
@@ -82,7 +120,7 @@ record, unread. Renaming keeps state too, because the ids lock keeps each id
 (`tilolang ids --rename`). tilolang has no migration rules yet. When it does, this is
 where they run.
 
-### How the swap stays inside custody
+### How the swap stays inside custody in a session
 
 A dev-mode swap installs a package exactly as any install does: verified by
 `tilo-install`, its old version kept while it runs. Then the session's launcher hands
@@ -115,11 +153,29 @@ the new module to the process it launched. Nothing else can.
 The app's process, its sandbox, its grants and its custody record stay as they were
 launched. The only thing that changes is which verified module the runtime interprets.
 The code is in `crates/packaging/launcher/src/live_module.rs` and
-`apps/tilolang/src/updates.rs`.
+`apps/tilolang/src/updates.rs`; the generation protocol is `crates/platform/tilo-app-module`.
+
+On the desktop there is no launcher to hand anything over: the tool runs the app itself and
+publishes into a directory of its own, private to the person, which the app reads the same
+way.
 
 ## The runtime loop
 
-Let `tilolang dev` build the runtime from the checkout:
+### On this desktop
+
+Let `tilolang dev` build the runtime (or give `--runtime BIN` a binary of your own):
+
+```sh
+tilolang dev apps/tl/tasks --search apps/tl
+```
+
+On every change of `apps/tilolang`, `tilolang-tilo`, `tilolang-runtime` or `tilolang` it
+runs `cargo build --locked -p tilolang-app --bin tilolang-app`, and when the build
+succeeds it stops the running app (`SIGTERM`, so it flushes its checkpoint) and starts it
+again on the new binary. The resources are in its local store; the scroll, selection and
+open item come back from the checkpoint.
+
+### In a session
 
 ```sh
 tilolang dev apps/tl/notes --search apps/tl --session /tmp/s.json --build-runtime
@@ -167,6 +223,21 @@ headless on lavapipe, laptop load average around 12:
 | Runtime, of which the build | 63.6 s | 35.1, 95.6, 81.9, 63.6, 57.0 s |
 | Runtime, after the build: bake, install, restart | 3.1 s | |
 
+On this desktop, saving `apps/tl/tasks/app.tl` in `tilolang dev apps/tl/tasks
+--search apps/tl`, measured in the same session from the file's write to the app's
+`draws build N at <ms>` line:
+
+| Desktop loop | Save to the app's frame | Of which: build | Of which: read to draw |
+|---|---|---|---|
+| First save (cold) | 462 ms | 241 ms | 166 ms |
+| Second save | 200 ms | 137 ms | 60 ms |
+
+The tool reported each as `built in 241 ms, published in 243 ms; the running app takes
+it with its state`, and the app logged `draws build 1 at <ms>, 166 ms after it
+arrived`. Both processes were cargo debug builds rendering on lavapipe under a headless
+compositor, so this is the slowest case; there is no install here, only a published
+generation.
+
 In the app loop, compiling and packing take 1 to 2 ms. `tilo-install` takes
 140 to 170 ms, but the app takes the build as soon as the install commits its
 registry row, before the installer has finished. The one slow run was an install
@@ -183,20 +254,11 @@ that waited on the disk.
   the build, the bake, the install and the restart, to the restarted app's first
   presented frame.
 
-## On an installed desktop
+## Running a change in a real session
 
-The end state is the same loop on the person's own installed Tilo desktop, with no
-nested session: a tilolang app running on a runtime they just built. `tilolang dev`
-already uses the path that carries over:
-
-- **Runtime selection.** The launcher picks the runtime bundle by the version the app
-  names (`[entrypoint] runtime = "tilolang/<version>"`). It looks in the person's own
-  store first (`$XDG_DATA_HOME/tilo-runtime`). A development runtime is a runtime
-  package with a version of its own (`tilolang/0.1.0+dev`) and a package id of its own,
-  installed with `tilo-install` like any runtime. Only the apps that name it run on it.
-- **Installs.** App builds are signed `.tapp`s installed with `tilo-install`.
-
-What the launcher and the desktop still need:
+The desktop loop is the person's own: the tool starts the app from their terminal and the
+app's record is its local store. A tilolang app inside a Tilo session is an installed app,
+so a changed build there still needs two things a release launcher does not grant:
 
 1. **A runtime key the person authorizes.** A release launcher trusts only the image's
    runtime publishers. Today the session points it at its own list, which is a

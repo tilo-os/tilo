@@ -186,6 +186,9 @@ tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentatio
 # everywhere.
 tilo-render-protocol = { version = "0.1.0", path = "../../platform/tilo-render-protocol" }
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
+# A software adapter's frames are rasterized on the CPU and uploaded, native
+# or in a page (`crate::cpu_raster`).
+tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 # The content store a host lends a component (`HostContext::content`), in every
 # build.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
@@ -520,8 +523,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 
 # Private files need an OS; the browser supplies them through its host instead.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The public native render worker is also available to hosts without OS services.
-tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 # The paint stream's host side turns SVG images into vector items, so a page's
 # logos reach every client as paths rather than as bytes it cannot decode.
 tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream", features = ["svg"] }

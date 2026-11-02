@@ -35,12 +35,14 @@ mod glyph;
 mod image;
 mod record;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use vello_cpu::color::{AlphaColor, Srgb};
 use vello_cpu::kurbo::Rect;
 use vello_cpu::{Level, PixmapMut, RasterizerSettings, RenderContext, RenderMode, RenderSettings};
 use vello_encoding::Encoding;
+// `std::time::Instant` panics in a page; this reads `performance.now()` there.
+use web_time::Instant;
 
 pub use vello_cpu::color;
 
@@ -374,7 +376,8 @@ pub struct Options {
     /// Worker threads `vello_cpu` rasterizes large regions with; 0 renders
     /// everything on the calling thread. Regions under
     /// [`SINGLE_THREAD_PIXELS`] always render on the calling thread, where
-    /// handing work to the pool costs more than it saves.
+    /// handing work to the pool costs more than it saves. A wasm32 host has
+    /// no pool and renders on its one thread whatever this says.
     pub threads: u16,
     /// Draw blurred rounded rectangles from cached coverage masks with a solid
     /// interior instead of evaluating the blur for every covered pixel.

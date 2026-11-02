@@ -23,6 +23,9 @@ const MORE_PREFIX: &str = "more:";
 /// The row under the apps that lists every one of them, by its name.
 const ALL_APPS_ID: &str = "all-apps";
 
+/// The row that lists every result the card had no room for.
+const ALL_RESULTS_ID: &str = "all-results";
+
 /// What the host can search right now, collected when search opens.
 #[derive(Default)]
 pub struct SearchData {
@@ -136,7 +139,12 @@ impl Sources {
     /// Ask the applications whose answers were still coming.
     fn poll(&self) -> bool {
         let window = self.window.as_ref().is_some_and(WindowSearch::poll);
-        self.content.poll() || window
+        let host = self
+            .host
+            .iter()
+            .map(|source| source.poll())
+            .fold(false, |any, one| any | one);
+        self.content.poll() || window || host
     }
 
     fn waiting(&self) -> bool {
@@ -156,6 +164,9 @@ pub struct DesktopSearch {
     more_rows: Vec<ResourceKind>,
     /// The kinds the person asked to see whole in this search.
     expanded: Vec<ResourceKind>,
+    /// Whether the person asked for every result the search found: the
+    /// groups are then listed whole and the card scrolls.
+    everything: bool,
     /// The row the palette selected by itself when the rows were last
     /// built: a selection still on it is the person's best result, not a
     /// row they chose.
@@ -180,6 +191,9 @@ pub struct DesktopSearch {
     /// The row capacity the rows were cut to: when the card grew or shrank
     /// since, the groups are cut again.
     shown_capacity: usize,
+    /// Whether the rows the palette holds stand two lines tall: what the
+    /// capacity is counted in.
+    shown_two_lines: bool,
     /// The row the person moved to in this search, kept while the rows fill
     /// in: a frame that has no room for it yet does not take their choice
     /// away.
@@ -212,6 +226,7 @@ impl DesktopSearch {
             rows: Vec::new(),
             more_rows: Vec::new(),
             expanded: Vec::new(),
+            everything: false,
             auto_selected: None,
             shown_query: None,
             shown_generation: 0,
@@ -221,6 +236,7 @@ impl DesktopSearch {
             costs: SourceCosts::default(),
             order: Vec::new(),
             shown_capacity: 0,
+            shown_two_lines: false,
             kept_choice: None,
         }
     }
@@ -263,6 +279,7 @@ impl DesktopSearch {
         self.shown_query = None;
         self.stream = None;
         self.expanded.clear();
+        self.everything = false;
         self.palette.open();
         self.refresh();
     }
@@ -344,6 +361,7 @@ impl DesktopSearch {
             if self.shown_query.is_some() && self.shown_query.as_deref() != Some(query.as_str()) {
                 // "Show all" belongs to the search it was asked in.
                 self.expanded.clear();
+                self.everything = false;
             }
             self.restart(&query, generation);
             return true;
@@ -355,7 +373,7 @@ impl DesktopSearch {
             return true;
         }
         // The card grew or shrank: the groups share what it shows now.
-        if self.palette.entry_row_capacity() != self.shown_capacity {
+        if self.palette.entry_row_capacity_for(0, self.shown_two_lines) != self.shown_capacity {
             self.render(&query, generation);
             return true;
         }
@@ -478,10 +496,25 @@ impl DesktopSearch {
             return;
         };
         let groups = self.arranged(query, stream.groups());
-        // Each group shares what the palette shows without scrolling; a
-        // group cut short offers the rest in place.
-        let capacity = self.palette.entry_row_capacity();
-        let groups = ui::search::system::trim_groups(groups, capacity, &self.expanded);
+        let pending = stream.pending();
+        // The rows about to be drawn, not the ones the palette still holds:
+        // a row with a line under its name is twice as tall, and a list
+        // counted in short rows runs past the card.
+        let two_lines = groups
+            .iter()
+            .any(|group| group.results.iter().any(stands_tall));
+        let capacity = self.palette.entry_row_capacity_for(0, two_lines);
+        let browsing = query.trim().is_empty();
+        let mut rows = Vec::new();
+        let mut more_rows = Vec::new();
+        let entries = self.fitted(groups, browsing, &mut rows, &mut more_rows);
+        // What is selected on screen is named by the rows of the frame the
+        // person sees, before this frame replaces them.
+        let on_screen = self
+            .palette
+            .selected_id()
+            .and_then(|id| self.chosen_row(id));
+        self.more_rows = more_rows;
         // A source answering late re-ranks the rows of the same query: the
         // row the person moved to stays chosen, so Enter does not open
         // whatever slid under the cursor. A selection they never moved
@@ -489,49 +522,12 @@ impl DesktopSearch {
         // yet keeps it for the frame that does.
         if self.shown_query.as_deref() != Some(query) {
             self.kept_choice = None;
-        } else if self.palette.selected_id() != self.auto_selected.as_deref() {
-            self.kept_choice = self
-                .palette
-                .selected_id()
-                .and_then(|id| self.chosen_row(id));
+        } else if self.palette.selected_id() != self.auto_selected.as_deref()
+            && let Some(chosen) = on_screen
+        {
+            self.kept_choice = Some(chosen);
         }
         let chosen = self.kept_choice.clone();
-        let mut rows = Vec::new();
-        let mut entries = Vec::new();
-        self.more_rows.clear();
-        let browsing = query.trim().is_empty();
-        for group in groups {
-            let label = group.kind.label().to_owned();
-            let capped = group.is_capped();
-            let applications =
-                browsing && !self.catalogue && group.kind == ResourceKind::Application;
-            for hit in group.results {
-                entries.push(
-                    entry_for(&hit, format!("hit:{}", rows.len()))
-                        .group(label.clone())
-                        .group_total(group.total),
-                );
-                rows.push(hit);
-            }
-            if capped {
-                entries.push(ui::search::system::show_all_entry(
-                    format!("{MORE_PREFIX}{}", self.more_rows.len()),
-                    &label,
-                    group.total,
-                ));
-                self.more_rows.push(group.kind);
-            }
-            if applications {
-                // The rest of what the person has: every app, by its name,
-                // where the few they reach for most are listed.
-                entries.push(
-                    CommandEntry::new(ALL_APPS_ID, crate::i18n::t("search-launcher-all-apps"))
-                        .icon(ui::icons::Icon::LayoutGrid)
-                        .group(label)
-                        .group_total(group.total),
-                );
-            }
-        }
         let kept = chosen.and_then(|chosen| match chosen {
             ChosenRow::Hit(provider, id) => rows
                 .iter()
@@ -559,13 +555,103 @@ impl DesktopSearch {
             self.palette.selected_id().map(str::to_owned)
         };
         // A large index answers typed text only once the engine's code is
-        // in: while it is on its way, an empty list says it is still
-        // searching.
-        self.palette.set_searching(!ui::search::engine_ready());
+        // in, and the slower sources answer in later frames: while either
+        // is still coming, an empty list says it is searching rather than
+        // that nothing matched.
+        self.palette
+            .set_searching(!ui::search::engine_ready() || (rows.is_empty() && pending));
         self.rows = rows;
         self.shown_query = Some(query.to_owned());
         self.shown_generation = generation;
         self.shown_capacity = capacity;
+        self.shown_two_lines = two_lines;
+    }
+
+    /// The rows the card holds for `groups`: each group trimmed to the share
+    /// the card's room gives it, the groups left over listed by one row that
+    /// offers every result the card could not show. The answer and the way
+    /// to the web are never left over: a crowded card loses things to open
+    /// before the question's own answer.
+    fn fitted(
+        &self,
+        mut groups: Vec<KindGroup<Hit>>,
+        browsing: bool,
+        rows: &mut Vec<Hit>,
+        more: &mut Vec<ResourceKind>,
+    ) -> Vec<CommandEntry> {
+        let total: usize = groups.iter().map(|group| group.total).sum();
+        let mut dropped = false;
+        loop {
+            // Short rows hold more than tall ones, so the room is counted in
+            // the shortest a row can be and every plan is weighed at its own
+            // line heights: a list that lost a row it could have kept would
+            // hide a result for nothing.
+            let cap = if self.everything {
+                usize::MAX
+            } else {
+                self.palette.entry_row_capacity_for(groups.len(), false)
+            };
+            // A lone group is kept whole to spare it a "Show all" row it
+            // would not need, so its own rows are trimmed to the room left
+            // instead. Every group keeps at least its first row.
+            let lone = groups.len() == 1;
+            // A lone group the person asked to see whole stays whole and
+            // the card scrolls it: it is not offered itself again.
+            let whole = lone
+                && groups
+                    .first()
+                    .is_some_and(|group| self.expanded.contains(&group.kind));
+            let floor = usize::from(!lone);
+            let mut allowed = cap;
+            let mut last: Option<Vec<CommandEntry>>;
+            loop {
+                let trimmed = if self.everything {
+                    groups.clone()
+                } else if lone {
+                    let mut alone = groups.clone();
+                    if !whole && let Some(only) = alone.first_mut() {
+                        only.results.truncate(allowed);
+                    }
+                    alone
+                } else {
+                    // Rows and the row offering a cut group's rest both
+                    // stand in the list, so the groups share what stays once
+                    // those rows are paid for; a person asking for
+                    // everything lists them whole and scrolls.
+                    ui::search::system::trim_groups(groups.clone(), allowed, &self.expanded)
+                };
+                let mut entries = entries_for(&trimmed, browsing, self.catalogue, more, rows);
+                let shown: usize = trimmed.iter().map(|group| group.results.len()).sum();
+                if dropped {
+                    entries.push(all_results_entry(total.saturating_sub(shown)));
+                }
+                if whole || self.everything || self.palette.entries_fit(&entries, trimmed.len()) {
+                    return entries;
+                }
+                last = Some(entries);
+                if allowed <= floor {
+                    break;
+                }
+                allowed = allowed.saturating_sub(1);
+            }
+            let last = last.unwrap_or_default();
+            if dropped {
+                // Nothing is left to leave out: the rows scroll under the
+                // card rather than being cut at its edge.
+                return last;
+            }
+            // No room for even this many groups: the lowest-ranked one the
+            // search's own rows do not keep makes way for the all-results
+            // row, which lists it too. A group the person asked to see whole
+            // never makes way: the card scrolls it.
+            let Some(at) = groups.iter().rposition(|group| {
+                !always_shown(&group.kind) && !self.expanded.contains(&group.kind)
+            }) else {
+                return last;
+            };
+            groups.remove(at);
+            dropped = true;
+        }
     }
 
     /// List every row of the group behind "Show all" row `more`, keeping
@@ -586,6 +672,19 @@ impl DesktopSearch {
         ui::widget::Widget::set_focus(&mut self.palette, true);
     }
 
+    /// List every result the search found, keeping the query and the
+    /// selected row where they are: the card scrolls the rows it has no
+    /// room for.
+    fn show_everything(&mut self) {
+        self.everything = true;
+        let cursor = self.palette.cursor();
+        let query = self.palette.query().to_owned();
+        self.kept_choice = None;
+        self.render(&query, ui::search::engine_generation());
+        self.palette.set_cursor(cursor);
+        ui::widget::Widget::set_focus(&mut self.palette, true);
+    }
+
     /// Follow the palette after it handled input: take a chosen row, and
     /// notice that the palette closed itself (a choice or Escape). Returns
     /// whether search closed; the caller then [`refresh`](Self::refresh)es
@@ -598,6 +697,8 @@ impl DesktopSearch {
                 .and_then(|more| more.parse().ok())
             {
                 self.expand(more);
+            } else if outcome.id == ALL_RESULTS_ID {
+                self.show_everything();
             } else if outcome.id == ALL_APPS_ID {
                 // The catalogue of every app: the desktop lists them all,
                 // by name, as its empty desk's launchpad does.
@@ -730,14 +831,13 @@ impl DesktopSearch {
         self.rows.clear();
         self.more_rows.clear();
         self.expanded.clear();
+        self.everything = false;
         self.auto_selected = None;
         self.kept_choice = None;
         self.shown_query = None;
     }
 }
 
-/// One hit as a palette row: an application wears its own glyph, the one
-/// its windows wear, never the generic grid every app shared.
 /// The rows that switch a source off and on again, one per switchable
 /// source of a search over everything, by the name a person knows it by.
 /// A search of the desktop's own (the apps only, one window) has no host
@@ -754,6 +854,86 @@ fn switches(sources: &Sources, all: &[&dyn Source]) -> Option<Switches> {
     Some(Switches::new(names, &sources.preferences))
 }
 
+/// Whether the row a hit becomes stands two lines tall: it says something
+/// under its name. Asked of the row the palette would build, so the height
+/// the capacity is counted in is the height the row is drawn at.
+fn stands_tall(hit: &Hit) -> bool {
+    entry_for(hit, String::new()).description.is_some()
+}
+
+/// The rows `groups` list, in order: every hit as its palette row, and
+/// under a group the budget cut short the row that offers the rest of it.
+/// `rows` collects the hits the `hit:{i}` ids name, `more` the kinds the
+/// `more:{i}` ids expand.
+fn entries_for(
+    groups: &[KindGroup<Hit>],
+    browsing: bool,
+    catalogue: bool,
+    more: &mut Vec<ResourceKind>,
+    rows: &mut Vec<Hit>,
+) -> Vec<CommandEntry> {
+    more.clear();
+    rows.clear();
+    let mut entries = Vec::new();
+    for group in groups {
+        let label = group.kind.label().to_owned();
+        let capped = group.is_capped();
+        let applications = browsing && !catalogue && group.kind == ResourceKind::Application;
+        for hit in &group.results {
+            entries.push(
+                entry_for(hit, format!("hit:{}", rows.len()))
+                    .group(label.clone())
+                    .group_total(group.total),
+            );
+            rows.push(hit.clone());
+        }
+        if capped {
+            entries.push(ui::search::system::show_all_entry(
+                format!("{MORE_PREFIX}{}", more.len()),
+                &label,
+                group.total,
+            ));
+            more.push(group.kind.clone());
+        }
+        if applications {
+            // The rest of what the person has: every app, by its name,
+            // where the few they reach for most are listed.
+            entries.push(
+                CommandEntry::new(ALL_APPS_ID, crate::i18n::t("search-launcher-all-apps"))
+                    .icon(ui::icons::Icon::LayoutGrid)
+                    .group(label)
+                    .group_total(group.total),
+            );
+        }
+    }
+    entries
+}
+
+/// The row that lists every result the groups above had no room for.
+fn all_results_entry(rest: usize) -> CommandEntry {
+    CommandEntry::new(
+        ALL_RESULTS_ID,
+        crate::i18n::t_args(
+            "search-show-all-results",
+            &[("count", rest.to_string().into())],
+        ),
+    )
+    .icon(ui::icons::Icon::ChevronDown)
+}
+
+/// Kinds a crowded card never leaves out: the answer to the question and
+/// the way to the web.
+fn always_shown(kind: &ResourceKind) -> bool {
+    [
+        crate::providers::answers_kind(),
+        crate::providers::web_kind(),
+    ]
+    .contains(kind)
+        || *kind == crate::providers::ask_kind()
+}
+
+/// One hit as a palette row: an application wears its own glyph, the one
+/// its windows wear, never the generic grid every app shared.
 fn entry_for(hit: &Hit, id: String) -> CommandEntry {
     let (mut entry, icon) = match &hit.target {
         Target::Action(action) => {
@@ -1858,8 +2038,14 @@ mod tests {
                 .palette()
                 .selected_id()
                 .is_some_and(|id| id.starts_with(MORE_PREFIX)),
-            "{:?}",
-            search.palette().selected_id()
+            "{:?} among {:?}",
+            search.palette().selected_id(),
+            search
+                .palette()
+                .visible_entries()
+                .iter()
+                .map(|entry| (entry.id.clone(), entry.group.clone()))
+                .collect::<Vec<_>>()
         );
         assert_eq!(group(&search).as_deref(), Some(chosen.as_str()));
     }
@@ -1877,6 +2063,37 @@ mod tests {
         assert_eq!(
             selected(&search),
             Some((best.provider.clone(), best.id.clone()))
+        );
+    }
+
+    /// A row stands as tall as the line the palette draws under its name: a
+    /// place it says there, never one that only repeats the name above.
+    #[test]
+    fn a_row_stands_as_tall_as_the_line_under_its_name() {
+        let row = |subtitle: Option<&str>, facts: Vec<String>| Hit {
+            row: None,
+            preview: None,
+            faces: Vec::new(),
+            outcome: None,
+            kind: ResourceKind::Custom(crate::providers::WINDOWS_KIND.into()),
+            provider: "windows".into(),
+            id: "w".into(),
+            title: "Notes".into(),
+            subtitle: subtitle.map(str::to_owned),
+            facts,
+            score: 1,
+            icon: None,
+            target: Target::Window { tab: 7, app: None },
+        };
+        assert!(stands_tall(&row(Some("Tilo/Home"), Vec::new())));
+        assert!(!stands_tall(&row(None, Vec::new())));
+        assert!(
+            !stands_tall(&row(Some("Notes"), Vec::new())),
+            "a name said twice says nothing under it"
+        );
+        assert!(
+            stands_tall(&row(None, vec!["Tilo/Home".into()])),
+            "a fact is drawn under the name, on the row's second line"
         );
     }
 
@@ -1913,6 +2130,84 @@ mod tests {
                 .collect(),
             ..SearchData::default()
         }
+    }
+
+    /// The groups of the rows `entries`: one header apiece, in the order
+    /// they stand.
+    fn groups_of<'a>(entries: &'a [&'a CommandEntry]) -> Vec<&'a str> {
+        let mut groups: Vec<&str> = Vec::new();
+        for entry in entries {
+            if let Some(group) = entry.group.as_deref()
+                && groups.last() != Some(&group)
+            {
+                groups.push(group);
+            }
+        }
+        groups
+    }
+
+    /// A card with no room for every group offers the rows it leaves out in
+    /// one row, and the rows it does keep stand inside it rather than being
+    /// cut at its edge.
+    #[test]
+    fn a_crowded_card_lists_the_rest_of_its_results_in_one_row() {
+        let mut search = DesktopSearch::new();
+        search.set_room(500.0, 160.0);
+        search.open(crowded());
+        settled(&mut search);
+        let shown = search.palette().visible_entries();
+        let entries: Vec<CommandEntry> = shown.iter().map(|entry| (*entry).clone()).collect();
+        let groups = groups_of(&shown).len();
+        assert!(groups >= 1, "{entries:?}");
+        assert!(
+            search.palette().entries_fit(&entries, groups),
+            "every row the card keeps stands inside it: {entries:?}"
+        );
+        let rest = entries
+            .iter()
+            .find(|entry| entry.id == ALL_RESULTS_ID)
+            .unwrap_or_else(|| panic!("a crowded card offers the rest in one row: {entries:?}"));
+        let count: usize = rest
+            .label
+            .split_whitespace()
+            .find_map(|word| word.parse().ok())
+            .unwrap_or_default();
+        assert!(
+            rest.label.starts_with("Show all ") && count > 0,
+            "the row says how many results it lists: {}",
+            rest.label
+        );
+    }
+
+    /// Choosing the row that lists the rest shows every result the search
+    /// found, groups and all, and leaves the card to scroll them: nothing
+    /// the query found stays out of reach.
+    #[test]
+    fn the_rest_of_the_results_are_listed_when_their_row_is_chosen() {
+        let mut search = DesktopSearch::new();
+        search.set_room(500.0, 160.0);
+        search.open(crowded());
+        settled(&mut search);
+        let before = search.results().len();
+        let entries = search.palette().visible_entries();
+        let at = entries
+            .iter()
+            .position(|entry| entry.id == ALL_RESULTS_ID)
+            .unwrap_or_else(|| panic!("a crowded card offers the rest: {entries:?}"));
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+        assert!(!search.observe(), "listing the rest keeps search open");
+        assert!(search.is_open(), "the card stays up");
+        let after = search.results().len();
+        assert!(after > before, "{before} rows became {after}");
+        assert!(
+            search
+                .palette()
+                .visible_entries()
+                .iter()
+                .all(|entry| entry.id != ALL_RESULTS_ID),
+            "nothing is left over to offer"
+        );
     }
 
     fn arrow_down(search: &mut DesktopSearch) -> bool {
@@ -2002,6 +2297,65 @@ mod tests {
                 .visible_entries()
                 .iter()
                 .all(|entry| !entry.id.starts_with(MORE_PREFIX))
+        );
+    }
+
+    /// Choosing a group's "Show all" keeps that group on the card even when
+    /// listing it whole no longer fits: the card scrolls what the person
+    /// asked for instead of taking it away again.
+    #[test]
+    fn a_group_asked_for_whole_scrolls_rather_than_making_way() {
+        let mut search = DesktopSearch::new();
+        search.set_room(400.0, 120.0);
+        search.open(SearchData {
+            applications: vec![AppEntry {
+                id: "so.tilo.notes".into(),
+                title: "Notes".into(),
+                category: None,
+                description: None,
+            }],
+            windows: vec![WindowEntry {
+                tab: 1,
+                title: "Notes".into(),
+                app_title: "Notes".into(),
+                app: Some("so.tilo.notes".into()),
+                place: Vec::new(),
+            }],
+            commands: (0..6)
+                .map(|i| CommandSpec {
+                    id: format!("host:{i}"),
+                    title: format!("Command {i}"),
+                    subtitle: None,
+                })
+                .collect(),
+            ..SearchData::default()
+        });
+        settled(&mut search);
+        let entries = search.palette().visible_entries();
+        let (at, group, total) = entries
+            .iter()
+            .enumerate()
+            .find_map(|(at, entry)| {
+                if !entry.id.starts_with(MORE_PREFIX) {
+                    return None;
+                }
+                Some((at, entry.group.clone()?, entry.group_total?))
+            })
+            .unwrap_or_else(|| panic!("a cramped card offers the rest: {entries:?}"));
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+        assert!(!search.observe(), "showing all keeps search open");
+        let shown = search.palette().visible_entries();
+        let listed = shown
+            .iter()
+            .filter(|entry| entry.group.as_deref() == Some(group.as_str()))
+            .filter(|entry| entry.id.starts_with("hit:"))
+            .count();
+        assert_eq!(listed, total, "every row of {group} is on the card");
+        assert!(
+            shown.iter().all(|entry| !(entry.id.starts_with(MORE_PREFIX)
+                && entry.group.as_deref() == Some(group.as_str()))),
+            "{group} is not offered itself again"
         );
     }
 

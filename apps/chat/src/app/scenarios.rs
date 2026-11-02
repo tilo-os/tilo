@@ -143,7 +143,7 @@ impl ChatApp {
                 }];
                 self.refresh_native_streams();
             }
-            "lounge" | "lounge-call" | "lounge-video" | "lounge-share" | "lounge-bridged" => {
+            "lounge" | "lounge-call" | "lounge-video" | "lounge-share" => {
                 // A shared workspace with people in its voice channels: this
                 // person in the Design Huddle with their microphone on, three
                 // others beside them and two in the standup, as the workspace's
@@ -165,7 +165,7 @@ impl ChatApp {
                     huddle.push("u_devon".to_owned());
                 }
                 // Cameras on, and Sora sharing her screen, as the workspace says.
-                let video = !matches!(scenario, "lounge" | "lounge-call" | "lounge-bridged");
+                let video = !matches!(scenario, "lounge" | "lounge-call");
                 let cameras: Vec<String> = if video {
                     vec![
                         "u_aria".to_owned(),
@@ -200,9 +200,6 @@ impl ChatApp {
                 ];
                 // Aria is talking: her face rings wherever it shows.
                 self.native_voice.snapshot.speaking = vec!["u_aria".to_owned()];
-                if scenario == "lounge-bridged" {
-                    self.stage_bridged_call();
-                }
                 self.refresh_native_streams();
                 // Their pictures: a moving test picture each, coded and
                 // decoded exactly as a call's pictures are, so the tiles show
@@ -513,32 +510,5 @@ impl ChatApp {
         self.call
             .placement
             .pin_handoff_for_visual_review(handoff_phase);
-    }
-
-    /// The Design Huddle bridged to a Discord voice channel: two people
-    /// there in the call beside the workspace's, one of them talking.
-    fn stage_bridged_call(&mut self) {
-        let guest = |account: &str, name: &str, avatar: Option<&str>| ui::native_media::Guest {
-            id: ui::native_media::Guest::id_of("discord", account),
-            name: name.into(),
-            avatar: avatar.map(str::to_owned),
-            service: "discord".into(),
-            linked: None,
-            muted: false,
-        };
-        if let Some(huddle) = self
-            .native_voice
-            .snapshot
-            .rosters
-            .iter_mut()
-            .find(|roster| roster.channel_id == "c_huddle")
-        {
-            huddle.guests = vec![
-                guest("80351110224678912", "Bo", Some("tilo-demo://avatar-bo")),
-                guest("90351110224678912", "Kai", None),
-            ];
-            huddle.bridges = vec!["discord".into()];
-        }
-        self.native_voice.snapshot.speaking = vec!["discord:80351110224678912".to_owned()];
     }
 }

@@ -32,6 +32,7 @@ mod activity_models;
 mod activity_provider;
 pub mod agent_door;
 mod app_icons;
+mod app_names;
 mod app_sheets;
 pub mod arrangement;
 mod asks;
@@ -101,6 +102,7 @@ mod records;
 mod rotation;
 pub mod run;
 mod search;
+mod search_ask;
 pub mod seeded_apps;
 pub mod session_package;
 mod setup;
@@ -1149,6 +1151,10 @@ impl Session {
             &overlays,
         )));
         compositor.add_host(shell::bar_under(options.shell, Held(Rc::clone(&chrome))));
+        // Search's code is asked for as the session starts, so it is in by the
+        // time someone searches; a search asked for before then opens now,
+        // and the desk publishes it on its next pass.
+        handle.search_palette().borrow_mut().adopt();
         // The desk as the session publishes it, which the shell reads through the door.
         let desk_overlays = Rc::new(overlays::Overlays::new());
         let chrome_door = shell::chrome_door(options.shell, &chrome, &desk_overlays);
@@ -2208,6 +2214,52 @@ impl Session {
         &self.input
     }
 
+    /// Let each round of asks play out: a round can ask for another (a key's
+    /// shortcut the chrome leaves to the session); a few rounds settle any
+    /// chain.
+    fn settle_asks(&mut self) -> Result<(), Error> {
+        for _ in 0..4 {
+            self.shared.follow_asks();
+            // What was plugged in since, and what the person asked of its
+            // notice: an open starts Files like any other launch.
+            if let Some(drives) = &self.shared.drives {
+                drives.follow(self.shared.launch.as_deref());
+            }
+            // What the desktop asked to open, and what stopped since.
+            if let Some(launch) = &self.shared.launch {
+                launch.follow();
+            }
+            // The windows this device left open, one at a time, each into the
+            // tab it was in.
+            self.shared.follow_restore();
+            // What the apps asked of their own tabs, and of what a capture
+            // may show of them, as the desk commands they are.
+            if let Some(tabs) = &mut self.tabs {
+                tabs.follow(
+                    &self.shared.desktop,
+                    self.shared.launch.as_deref(),
+                    &mut self.compositor,
+                );
+            }
+            self.shared.follow_gestures();
+            self.shared.follow_tab_menus();
+            let ran = self.shared.run_invocations(self.compositor.locked());
+            let commands = std::mem::take(&mut *self.shared.commands.borrow_mut());
+            let commanded = !commands.is_empty();
+            for command in commands {
+                self.command(command)?;
+            }
+            if !ran && !commanded && self.shared.asks.borrow().is_empty() {
+                break;
+            }
+            // What ran may have queued desktop commands on the shared
+            // handle (the chrome switching workspace): the desk carries
+            // them out on its next pass.
+            self.shared.desktop.with_widgets(WidgetHost::relayout);
+        }
+        Ok(())
+    }
+
     /// Carry out everything asked since the last look: the desktop's asks,
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
@@ -2271,56 +2323,18 @@ impl Session {
             &self.shared.invocations,
         );
         self.place_sheets();
-        // Each round can ask for another (a key's shortcut the chrome
-        // leaves to the session); a few rounds settle any chain.
-        for _ in 0..4 {
-            self.shared.follow_asks();
-            // What was plugged in since, and what the person asked of its
-            // notice: an open starts Files like any other launch.
-            if let Some(drives) = &self.shared.drives {
-                drives.follow(self.shared.launch.as_deref());
-            }
-            // What the desktop asked to open, and what stopped since.
-            if let Some(launch) = &self.shared.launch {
-                launch.follow();
-            }
-            // The windows this device left open, one at a time, each into the
-            // tab it was in.
-            self.shared.follow_restore();
-            // What the apps asked of their own tabs, and of what a capture
-            // may show of them, as the desk commands they are.
-            if let Some(tabs) = &mut self.tabs {
-                tabs.follow(
-                    &self.shared.desktop,
-                    self.shared.launch.as_deref(),
-                    &mut self.compositor,
-                );
-            }
-            self.shared.follow_gestures();
-            self.shared.follow_tab_menus();
-            let ran = self.shared.run_invocations(self.compositor.locked());
-            let commands = std::mem::take(&mut *self.shared.commands.borrow_mut());
-            let commanded = !commands.is_empty();
-            for command in commands {
-                self.command(command)?;
-            }
-            if !ran && !commanded && self.shared.asks.borrow().is_empty() {
-                break;
-            }
-            // What ran may have queued desktop commands on the shared
-            // handle (the chrome switching workspace): the desk carries
-            // them out on its next pass.
-            self.shared.desktop.with_widgets(WidgetHost::relayout);
-        }
+        self.settle_asks()?;
         // The menu the reading says is up has its view over the desk, and
         // the view goes when the menu does.
         self.follow_window_menu();
         // Each open window takes the temperature of the workspace it is in, as this pass left it.
         self.follow_window_warmth();
         self.shared.clipboard.serve_asks(&mut self.compositor);
-        // One file of a paste in flight per turn, so a folder of files does
-        // not hold up a frame.
-        self.shared.clipboard.step_files();
+        // A paste of files runs on its own thread; the loop only asks
+        // whether it is over and tells the person how it went.
+        for notice in self.shared.clipboard.step_files() {
+            self.shared.notifications.borrow().tell(notice);
+        }
         // What was copied here reaches the person's other devices, and what
         // they copied there joins the clipboard here.
         if let Some(fabric) = &self.shared.fabric {
@@ -2590,9 +2604,7 @@ impl Session {
                 Ok(())
             }
             SessionCommand::PasteFiles { destination } => {
-                self.shared
-                    .clipboard
-                    .paste_files(std::path::Path::new(&destination));
+                self.paste_files(&destination);
                 Ok(())
             }
             SessionCommand::NextInputSource => {
@@ -2626,6 +2638,14 @@ impl Session {
                 Ok(())
             }
         }
+    }
+
+    /// Paste what was copied into `destination`, beside what is already there.
+    fn paste_files(&self, destination: &str) {
+        self.shared.clipboard.paste_files(
+            std::path::Path::new(destination),
+            crate::mount::clipboard_files::Conflict::KeepBoth,
+        );
     }
 
     /// Answer the installed folder importer this pass, and open the review it

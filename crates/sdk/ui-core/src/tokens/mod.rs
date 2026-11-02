@@ -25,7 +25,7 @@ pub use colors::{
 };
 pub use density::{Density, RowHeights};
 pub use elevation::{Elevation, Outline, Shadow};
-pub use finish::{Border, BorderInk, Depth, Finish, RoleFinishes, SurfaceRole};
+pub use finish::{Border, BorderInk, ChromeMaterial, Depth, Finish, RoleFinishes, SurfaceRole};
 pub use layout::{Breakpoint, BreakpointTracker, Layout};
 pub use metrics::Metrics;
 pub use motion::{

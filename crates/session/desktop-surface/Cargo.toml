@@ -75,6 +75,9 @@ tilo-window-share = { version = "0.1.0", path = "../window-share", default-featu
 postcard.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Search's palette is drawn and answered by the chrome over the windows: the
+# keyboard tests drive it there, over the desk they hold.
+tilo-desktop = { path = "../desktop" }
 # The window-group tests reach a group's tab bar, which the toolkit offers
 # tests in every profile through `test-support`.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }

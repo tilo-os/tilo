@@ -102,8 +102,8 @@ export function base64OfBytes(bytes) {
  * `source_lost`, `capture_failed`) or null, and `phase` is `idle`, `joining`,
  * `connecting`, `live`, `reconnecting` or `ended`; `admitted` says whether the
  * host granted the call (an ended call that never was is a refusal), and each
- * participant is `{namespace, device, user, publishes, camera, screen, muted,
- * deafened, speaking, self}`.
+ * participant is `{device, user, publishes, camera, screen, muted, deafened,
+ * speaking, self}`.
  */
 export function createVoiceCall({
   signalling,
@@ -189,19 +189,16 @@ export function createVoiceCall({
 
   function participants() {
     if (!grant) return [];
-    const own = grant.participation;
     const at = now();
     return grant.participants.map(participant => ({
-      namespace: participant.namespace,
       device: participant.device,
       user: participant.user,
       publishes: participant.publishes,
       camera: participant.camera === true,
       screen: participant.screen === true,
       muted: participant.muted === true,
-      ...(participant.bridged ? {bridged: participant.bridged} : {}),
       deafened: participant.deafened === true,
-      self: participant.device === device || participant.namespace === own,
+      self: participant.device === device,
       speaking: (speaking.get(participant.device) ?? -Infinity) > at - SPEAKING_HOLD_MS,
     }));
   }
@@ -217,10 +214,10 @@ export function createVoiceCall({
       changed ||= !was;
     };
     if (!state.muted) {
-      // This page's frames go out as the host's device, and its participation
-      // in the call may be named either way: both are this person speaking.
+      // This page's frames go out as the host's device: its participation
+      // in the call is this person speaking.
       for (const participant of grant.participants) {
-        if (participant.device && (participant.device === device || participant.namespace === grant.participation)) hear(participant.device, capture);
+        if (participant.device && participant.device === device) hear(participant.device, capture);
       }
     }
     for (const [id, level] of publishers) hear(id, level);

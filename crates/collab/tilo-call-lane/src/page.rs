@@ -12,7 +12,11 @@
 //! device the lane's connections come from and whose membership the
 //! workspace's roster admits. A receiving device derives the key it opens them
 //! with for that device, and the frame's tag still bounds every frame to its
-//! stream, its sequence and its epoch.
+//! stream, its sequence, its epoch and its track.
+//!
+//! The frames are sealed under the scope of the page's call — that channel of
+//! that workspace — and named as tracks in it ([`TrackName`]), so no frame
+//! opens under another channel's keys or as another track's.
 //!
 //! [`Up`] and [`Down`] are what the two sides say on one turn, encoded with
 //! postcard over whatever carries the page: the page's session to its host.
@@ -21,9 +25,10 @@ use std::collections::BTreeMap;
 
 use crate::picture::{Codec, Layer, Source, VideoObject};
 use channel_crypto::ChannelContentKeys;
+use collab_types::scope::Scope;
 
 use crate::audio::{self, Heard, Microphone};
-use crate::frame::{Opener, Refusal, Sealer, Stream};
+use crate::frame::{Opener, Refusal, Sealer, Stream, TrackName};
 use crate::roster::Roster;
 use crate::wire::{layer_of_wire, layer_wire, source_of_wire, stream_of};
 
@@ -41,12 +46,10 @@ pub const REPEATS: usize = 2;
 /// this seals what it made and opens what arrived, which is all a page needs
 /// of the call's key schedule.
 pub struct Page {
-    workspace: String,
+    /// The channel of the workspace the page's call is in: its keys seal the
+    /// frames, and its id names every track they are sealed as.
+    scope: Scope,
     call: String,
-    /// The channel whose content keys seal the call's frames: the lane's
-    /// handshake names it, so the host carrying the page knows which call its
-    /// lanes are for.
-    channel: collab_types::ChannelId,
     /// The device bridging the page: whose key its frames are sealed under,
     /// and who the lane's other devices see them come from.
     bridge: [u8; 32],
@@ -82,13 +85,13 @@ impl Page {
         keys: &ChannelContentKeys,
         roster: Roster,
     ) -> Result<Self, Refusal> {
+        let scope = Scope::channel(workspace, channel);
         let mut page = Self {
-            workspace,
-            call,
-            channel,
-            bridge,
+            microphone: Microphone::new(keys, bridge, &scope, REPEATS)?,
             opener: Opener::new(keys.clone(), roster),
-            microphone: Microphone::new(keys, bridge, REPEATS)?,
+            scope,
+            call,
+            bridge,
             pictures: BTreeMap::new(),
         };
         page.seal_pictures(keys)?;
@@ -102,7 +105,7 @@ impl Page {
     ///
     /// As [`Self::new`].
     pub fn set_keys(&mut self, keys: &ChannelContentKeys, roster: Roster) -> Result<(), Refusal> {
-        let microphone = Microphone::new(keys, self.bridge, REPEATS)?;
+        let microphone = Microphone::new(keys, self.bridge, &self.scope, REPEATS)?;
         let opener = Opener::new(keys.clone(), roster);
         self.seal_pictures(keys)?;
         self.microphone = microphone;
@@ -119,9 +122,25 @@ impl Page {
         self.opener.set_roster(roster);
     }
 
+    /// The name `stream`'s frames are sealed and opened as, in the page's
+    /// call's scope.
+    fn track(&self, stream: Stream) -> TrackName {
+        TrackName::new(&self.scope, stream.track())
+    }
+
     fn seal_pictures(&mut self, keys: &ChannelContentKeys) -> Result<(), Refusal> {
-        let camera = Sealer::new(keys, self.bridge, Stream::Camera)?;
-        let screen = Sealer::new(keys, self.bridge, Stream::Screen)?;
+        let camera = Sealer::new(
+            keys,
+            self.bridge,
+            Stream::Camera,
+            self.track(Stream::Camera),
+        )?;
+        let screen = Sealer::new(
+            keys,
+            self.bridge,
+            Stream::Screen,
+            self.track(Stream::Screen),
+        )?;
         let mut pictures = BTreeMap::new();
         pictures.insert(Source::Camera, (camera, 0));
         pictures.insert(Source::Screen, (screen, 0));
@@ -132,7 +151,7 @@ impl Page {
     /// The workspace and the call this page is in.
     #[must_use]
     pub fn call(&self) -> (&str, &str) {
-        (&self.workspace, &self.call)
+        (self.scope.workspace_id(), &self.call)
     }
 
     /// The device bridging this page.
@@ -196,7 +215,7 @@ impl Page {
     ///
     /// As [`audio::heard`].
     pub fn heard(&self, from: [u8; 32], datagram: &[u8]) -> Result<Vec<Heard>, Refusal> {
-        audio::heard(&self.opener, from, datagram)
+        audio::heard(&self.opener, from, &self.scope, datagram)
     }
 
     /// The turn this page's next exchange carries, for the call it is in: its
@@ -205,9 +224,9 @@ impl Page {
     #[must_use]
     pub fn up(&self) -> Up {
         Up {
-            workspace: self.workspace.clone(),
+            workspace: self.scope.workspace_id().to_owned(),
             call: self.call.clone(),
-            channel: self.channel,
+            channel: self.scope.channel_id(),
             ..Up::default()
         }
     }
@@ -226,7 +245,12 @@ impl Page {
         source: Source,
         sealed: &[u8],
     ) -> Result<Vec<u8>, Refusal> {
-        self.opener.open(from, stream_of(source), sealed)
+        self.opener.open(
+            from,
+            stream_of(source),
+            &self.track(stream_of(source)),
+            sealed,
+        )
     }
 }
 

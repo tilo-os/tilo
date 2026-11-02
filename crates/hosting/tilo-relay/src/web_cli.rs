@@ -51,14 +51,13 @@ impl std::str::FromStr for TlsArg {
 /// Browser listener flags shared by `run` and `dev`.
 #[derive(clap::Args, Clone, Debug)]
 pub struct WebArgs {
-    /// Serve browsers (HTTPS on TCP, WebTransport on UDP) at this address.
+    /// Serve browsers (HTTPS on TCP) at this address.
     #[arg(long, value_name = "ADDR")]
     pub web: Option<SocketAddr>,
     /// A page origin allowed to call the host cross-origin; repeatable.
     #[arg(long = "allowed-origin", value_name = "ORIGIN")]
     pub allowed_origins: Vec<String>,
-    /// `dev` (self-signed, pinned by WebTransport) or
-    /// `files:<chain.pem>,<key.pem>`.
+    /// `dev` (self-signed) or `files:<chain.pem>,<key.pem>`.
     #[arg(long, default_value = "dev", value_name = "SOURCE")]
     pub tls: TlsArg,
     /// The host name browsers reach this listener by (the certificate's
@@ -68,8 +67,7 @@ pub struct WebArgs {
     #[arg(long = "public-host", value_name = "NAME")]
     pub public_host: Option<String>,
     /// Also serve the HTTPS routes as plain HTTP at this loopback address,
-    /// so a local page needs no certificate exception (the live plane then
-    /// uses the HTTPS stream fallback).
+    /// so a local page needs no certificate exception.
     #[arg(long = "web-plain", value_name = "ADDR")]
     pub web_plain: Option<SocketAddr>,
     /// The `https://` origin a TLS-terminating proxy publishes
@@ -83,12 +81,6 @@ pub struct WebArgs {
     /// `web_entry`.
     #[arg(long = "web-entry", value_name = "URL")]
     pub web_entry: Option<String>,
-    /// The `https://` origin browsers dial WebTransport at, when the page
-    /// origin is behind a proxy that passes HTTP only: `--web` is reached
-    /// directly under this name (its certificate from `--tls files:…`),
-    /// and the HTTPS stream on the page origin stays the fallback.
-    #[arg(long = "live-origin", value_name = "ORIGIN", requires = "web")]
-    pub live_origin: Option<String>,
     /// The request header the proxy in front of the host names a client's
     /// country in (such as `CF-IPCountry`). A person approving a new device
     /// is shown it; nothing is looked up.
@@ -359,7 +351,6 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
         allowed_origins: args.allowed_origins.clone(),
         plain_listen: args.web_plain,
         public_origin: args.public_origin.clone(),
-        live_origin: args.live_origin.clone(),
         limits: web_limits(),
         country: args
             .country_header
@@ -800,11 +791,10 @@ fn announce(
     );
     eprintln!(
         "\nTilo dev host (development only: it certifies every browser that asks)\n  \
-         HTTPS + WebTransport: {localhost}\n  user root:           {user}\n  \
+         HTTPS:               {localhost}\n  user root:           {user}\n  \
          allowed origins:     {}\n  state:               {}\n\n\
          Cloud console:\n  npm run dev:tilo -- --port 9998 --host-origin {localhost} --user-public-key {user}\n\n\
-         Open {localhost} in that browser once and accept the development certificate;\n\
-         WebTransport pins it by hash.\n\n\
+         Open {localhost} in that browser once and accept the development certificate.\n\n\
          Native runtime (its identity must be this user root):\n  TILO_COLLAB_HOST='{iroh}'\n",
         allowed.join(" "),
         state.display(),

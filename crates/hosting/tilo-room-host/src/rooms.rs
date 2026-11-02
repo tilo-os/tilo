@@ -1116,7 +1116,6 @@ impl Rooms {
     }
 
     /// These rooms, held without keeping them alive.
-    #[cfg(feature = "web")]
     #[must_use]
     pub fn downgrade(&self) -> WeakRooms {
         WeakRooms(Arc::downgrade(&self.inner))

@@ -70,9 +70,9 @@ use tilo_runtime::session_door::{Consent, Hello, SESSION_PROVIDER};
 use tilo_service::{Answer, Asked, Question, Questions, Wake};
 use tilo_sheets::{word, words};
 
+use crate::app_names::app_name;
 use crate::launches::Launches;
 use crate::plane::DeskAuthority;
-use crate::questions::app_name;
 
 /// The kind of question the door asks the person.
 pub(crate) const KIND: &str = "session.agent-door";
@@ -1055,6 +1055,79 @@ impl Host {
         }
     }
 
+    /// An invocation the person at this seat made through the seat's own control doors: the
+    /// same as [`ActionHost::invoke`], except that the broker keeps the seat's certificate
+    /// custody for it ([`AppBrokerState::action_invoke_local_person`]), as it does for the
+    /// palette's actions, so what the person may do here is what the person may do anywhere.
+    ///
+    /// Only the seat's own control sockets call it — the owner's door, whose peer is the
+    /// account whose desktop this is ([`crate::test_control::owner_decision`]), and the
+    /// development test-control socket, which drives the seat as the person. An agent, or a
+    /// person over a network, MCP or app connection, invokes as itself through
+    /// [`ActionHost::invoke`], and the broker's per-action and per-role permissions decide; the
+    /// broker refuses custody to anything but a person at the native seat.
+    pub(crate) fn invoke_at_seat(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        self.invoke_within(caller, request, true)
+    }
+
+    /// The broker's answer to `request` for `caller`, at the seat or as the caller itself.
+    fn invoke_within(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        at_seat: bool,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if request.target.provider != SESSION_PROVIDER {
+            return match &self.state {
+                Some(state) if at_seat => state.action_invoke_local_person(caller, &request),
+                Some(state) => state.action_invoke(caller, None, None, &request),
+                None => Pending::ready(Err(ActionHostError::Unavailable {
+                    reason: "this desktop's apps are not running here".to_owned(),
+                })),
+            };
+        }
+        let (actor, reads_only) = Self::at_session(caller);
+        let arguments = match request.argument {
+            tilo_actions::remote::InvokeArgument::Json(arguments) => arguments,
+            tilo_actions::remote::InvokeArgument::Text(_)
+            | tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
+        };
+        let invocation = request.invocation;
+        let (done, ran) = tilo_actions::remote::pending();
+        self.session.ask(DoorAsk::Invoke {
+            actor,
+            reads_only,
+            address: request.target.address,
+            arguments,
+            done,
+        });
+        let answered = Arc::clone(&self.answered);
+        ran.map(move |ran| {
+            use tilo_actions::remote::ReceiptStatus;
+            let status = match ran {
+                Ok(ui::host_operation::ResourceOperationStart::Completed(output)) => {
+                    ReceiptStatus::Completed { output }
+                }
+                Ok(ui::host_operation::ResourceOperationStart::Accepted) => ReceiptStatus::Accepted,
+                Err(error) => ReceiptStatus::Rejected {
+                    error: crate::surfaces::refusal(&error),
+                },
+            };
+            if let Some(update) = crate::surfaces::outcome(invocation, &status) {
+                let mut answered = answered.lock_recover();
+                if answered.len() >= ANSWERED_KEPT {
+                    answered.pop_front();
+                }
+                answered.push_back((invocation, update));
+            }
+            Ok(InvocationReceipt { invocation, status })
+        })
+    }
+
     /// Who `caller` acts as at the session's doors, and whether it may only
     /// read there: an agent reads them; the person does all they offer, as
     /// their own input does.
@@ -1165,54 +1238,10 @@ impl ActionHost for Host {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        if request.target.provider != SESSION_PROVIDER {
-            return match &self.state {
-                // A person at their own seat: the broker retains the seat's
-                // certificate custody for the call, as it does for the
-                // palette's, so what the person may do here is what the
-                // person may do anywhere.
-                Some(state) => state.action_invoke_local_person(caller, &request),
-                None => Pending::ready(Err(ActionHostError::Unavailable {
-                    reason: "this desktop's apps are not running here".to_owned(),
-                })),
-            };
-        }
-        let (actor, reads_only) = Self::at_session(caller);
-        let arguments = match request.argument {
-            tilo_actions::remote::InvokeArgument::Json(arguments) => arguments,
-            tilo_actions::remote::InvokeArgument::Text(_)
-            | tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
-        };
-        let invocation = request.invocation;
-        let (done, ran) = tilo_actions::remote::pending();
-        self.session.ask(DoorAsk::Invoke {
-            actor,
-            reads_only,
-            address: request.target.address,
-            arguments,
-            done,
-        });
-        let answered = Arc::clone(&self.answered);
-        ran.map(move |ran| {
-            use tilo_actions::remote::ReceiptStatus;
-            let status = match ran {
-                Ok(ui::host_operation::ResourceOperationStart::Completed(output)) => {
-                    ReceiptStatus::Completed { output }
-                }
-                Ok(ui::host_operation::ResourceOperationStart::Accepted) => ReceiptStatus::Accepted,
-                Err(error) => ReceiptStatus::Rejected {
-                    error: crate::surfaces::refusal(&error),
-                },
-            };
-            if let Some(update) = crate::surfaces::outcome(invocation, &status) {
-                let mut answered = answered.lock_recover();
-                if answered.len() >= ANSWERED_KEPT {
-                    answered.pop_front();
-                }
-                answered.push_back((invocation, update));
-            }
-            Ok(InvocationReceipt { invocation, status })
-        })
+        // An admitted connection invokes as itself: the broker decides by its per-action and
+        // per-role permissions. Seat custody belongs to the seat's own control doors alone
+        // ([`Host::invoke_at_seat`]).
+        self.invoke_within(caller, request, false)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {

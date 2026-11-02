@@ -5,11 +5,13 @@
 //!
 //! It has one job, the strips of the workspace shown. At rest it is the
 //! ribbon on the content's right edge: one small mark per strip, the focused
-//! one long. Opened, each strip's name stands as a label level with its mark
-//! (no panel around them: the labels are the switcher), with the faces of the
-//! people on it (the only place the strips say who is where), and a "New
-//! strip" label under the last. Workspaces are not here; they are switched,
-//! made and joined from the workspace menu.
+//! one long, and only where a workspace holds more than one strip — a lone
+//! strip would leave a bare mark with nothing to choose. Opened, each strip's
+//! name stands as a label level with its mark (no panel around them: the
+//! labels are the switcher), with the faces of the people on it (the only
+//! place the strips say who is where), and a "New strip" label under the
+//! last. Workspaces are not here; they are switched, made and joined from the
+//! workspace menu.
 //!
 //! Every action is a tap or a long-press, the same for a finger and a
 //! pointer; hovering only gets there sooner:

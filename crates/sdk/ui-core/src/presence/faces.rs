@@ -80,6 +80,35 @@ impl FaceStack {
         max: 3,
     };
 
+    /// The faces standing on a control's own face `height` high (a bar's group of who is
+    /// here): the ring and the ground around it fit within the control, so no face is cut by
+    /// the control's edge.
+    #[must_use]
+    pub fn in_face(height: f64) -> Self {
+        let side = (height - 2.0 * (GAP + RING + GAP)).max(1.0);
+        Self {
+            side,
+            overlap: side / 3.0,
+            max: 3,
+        }
+    }
+
+    /// The faces shown of `count` people, and the badge standing past them counting the
+    /// rest: up to three faces, then a "+N" face of its own (four people read as three faces
+    /// and "+1", never as a face counting four).
+    #[must_use]
+    pub fn group(&self, count: usize) -> (usize, usize) {
+        let shown = count.min(self.max);
+        (shown, count - shown)
+    }
+
+    /// How wide the group of `count` people is ([`Self::group`]), rings included.
+    #[must_use]
+    pub fn group_width(&self, count: usize) -> f64 {
+        let (shown, more) = self.group(count);
+        self.width_of(shown, more)
+    }
+
     /// The faces shown of `count` people, and how many the badge counts.
     #[must_use]
     pub fn split(&self, count: usize) -> (usize, usize) {
@@ -252,6 +281,29 @@ mod tests {
             bar.width(4),
             bar.width(16),
             "the badge takes the fourth place"
+        );
+    }
+
+    /// A group on a control's face shows three faces and a badge past them: four people are
+    /// three faces and "+1", and the faces stay inside the control they stand on.
+    #[test]
+    fn a_group_shows_three_faces_then_counts_the_rest() {
+        let in_face = FaceStack::in_face(24.0);
+        assert_eq!(in_face.group(0), (0, 0));
+        assert_eq!(in_face.group(1), (1, 0));
+        assert_eq!(in_face.group(3), (3, 0));
+        assert_eq!(in_face.group(4), (3, 1));
+        assert_eq!(in_face.group(9), (3, 6));
+        assert_eq!(
+            in_face.group_width(9),
+            in_face.width_of(3, 6),
+            "the badge is a face of its own past the three"
+        );
+        assert!(in_face.group_width(9) > in_face.group_width(3));
+        // The ring and the ground around it stand within the face it sits on.
+        assert!(
+            in_face.side / 2.0 + Face::REACH <= 24.0 / 2.0,
+            "a face fits the control it stands on"
         );
     }
 

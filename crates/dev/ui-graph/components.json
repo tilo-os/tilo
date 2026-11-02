@@ -383,6 +383,13 @@
           "positional": true
         },
         {
+          "name": "accessible_name",
+          "doc": "How assistive technology names it, where that says more than the label shows: the charge reads \"61%\" beside its charging glyph and is named \"61%, charging\". Unset, the label names it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "icon",
           "doc": "A glyph before the label, or instead of it when `icon_only`.",
           "type": {
@@ -393,6 +400,13 @@
           "name": "icon_only",
           "doc": "Show only the icon, the label naming the button to assistive technology.",
           "type": "bool"
+        },
+        {
+          "name": "faces",
+          "doc": "Who is here, as their faces: up to three faces, then a face counting the rest, and nothing else on the button at any width. `icon_only`'s rule holds for it too: the label is the name assistive technology hears, naming the people (\"Mia Clayton and Sam Okafor are here\"). One press opens the roster of everyone here.",
+          "type": {
+            "list": "text"
+          }
         },
         {
           "name": "role",
@@ -924,6 +938,22 @@
                   "bottom",
                   "leading",
                   "trailing"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "material",
+          "doc": "What the body is made of: the theme's bar body (the default), the theme's glass, or that glass made calm. A shell's bar and dock say which the person chose; every body that leaves it out draws the theme's bar body.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ChromeMaterial",
+                "cases": [
+                  "bar",
+                  "glass",
+                  "calm"
                 ]
               }
             }

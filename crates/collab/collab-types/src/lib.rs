@@ -24,6 +24,8 @@
 //! - [`validator`] — the eight-step inbound-op validation pipeline, a
 //!   single pure function ([`validator::validate_inbound_op`]) over a
 //!   [`validator::ChannelState`] snapshot.
+//! - [`scope`] — `Scope`: the workspace, channel or record whose keys seal a
+//!   live track, and the id its name carries.
 //!
 //! Filesystem records and control protocols live in `fs-protocol`, the
 //! first-party app catalogue in `tilo-desktop-model`, and the launcher's collab
@@ -66,6 +68,7 @@ pub mod realtime;
 pub mod receipt;
 pub mod redaction;
 pub mod role;
+pub mod scope;
 pub mod signer;
 pub mod space;
 pub mod surface;

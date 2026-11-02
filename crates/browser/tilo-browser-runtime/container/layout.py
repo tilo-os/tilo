@@ -145,20 +145,20 @@ for page, entry in pages.items():
     for rel in ('preload', 'modulepreload'):
         hint = f'<link rel="{rel}" href="{prefix}'
         text = text.replace(hint, f'{hint}v/{version}/')
-    # The library the page preloads itself comes first, as it was written:
-    # every static import of the entry module follows it in the graph's order.
-    media = 'media-moq-library.mjs'
-    anchor = f'<link rel="modulepreload" href="{prefix}v/{version}/{media}">'
+    # The entry module the page preloads itself (so a page laid out without
+    # this step still starts it at once) leads the graph's hints; every other
+    # module it reaches gets one here.
+    entry = 'entry-page.mjs'
+    anchor = f'<link rel="modulepreload" href="{prefix}v/{version}/{entry}">'
     if text.count(anchor) != 1:
-        sys.exit(f'{page}: expected one modulepreload of {media}')
-    # A module the page already names itself (the entry module, preloaded so
-    # a page laid out without this step still starts it at once) is named
-    # once, in the graph's place for it.
+        sys.exit(f'{page}: expected one modulepreload of {entry}')
     for name in names:
+        if name == entry:
+            continue
         text = re.sub(r'\n[ \t]*' + re.escape(f'<link rel="modulepreload" href="{prefix}v/{version}/{name}">'),
                       '', text)
     hints = ''.join(f'\n  <link rel="modulepreload" href="{prefix}v/{version}/{name}">'
-                    for name in [media, *names])
+                    for name in names)
     text = text.replace(anchor, hints)
     (site / page).parent.mkdir(parents=True, exist_ok=True)
     (site / page).write_text(text)

@@ -654,8 +654,6 @@ doc = false
 "module-lattice-0_2_3" = { package = "module-lattice", version = "^0.2.3", default-features = false, features = ["alloc", "ctutils"] }
 "moka-0_12_15" = { package = "moka", version = "^0.12.15", default-features = false, features = ["default", "sync"] }
 "monitor" = { path = "../../../apps/monitor", default-features = false, features = [] }
-"moq-net-0_3_3" = { package = "moq-net", version = "^0.3.3", default-features = false, features = [] }
-"moq-pattern-0_1_0" = { package = "moq-pattern", version = "^0.1.0", default-features = false, features = ["serde"] }
 "moxcms-0_8_1" = { package = "moxcms", version = "^0.8.1", default-features = false, features = ["avx", "avx_luts", "avx_shaper_fixed_point_paths", "avx_shaper_paths", "default", "lut", "neon", "neon_luts", "neon_shaper_fixed_point_paths", "neon_shaper_paths", "sse", "sse_luts", "sse_shaper_fixed_point_paths", "sse_shaper_paths"] }
 "muldiv-1_0_1" = { package = "muldiv", version = "^1.0.1", default-features = false, features = [] }
 "murmurhash32-0_4_0" = { package = "murmurhash32", version = "^0.4.0", default-features = false, features = [] }
@@ -1216,7 +1214,6 @@ doc = false
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["default", "runtime-client"] }
 "tilo-model-gateway" = { path = "../../../crates/agent/model-gateway", default-features = false, features = ["default", "host-backend", "local-models", "runtime-client", "server"] }
 "tilo-moderation" = { path = "../../../crates/collab/moderation", default-features = false, features = ["host"] }
-"tilo-moq" = { path = "../../../crates/hosting/tilo-moq", default-features = false, features = ["default", "relay", "tls"] }
 "tilo-nearby-service" = { path = "../../../crates/session/nearby-service", default-features = false, features = [] }
 "tilo-net" = { path = "../../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-dev-server", "proxy-host", "sockets", "webtransport", "ws"] }
 "tilo-net-answers" = { path = "../../../crates/system/net-answers", default-features = false, features = ["default", "fetch"] }
@@ -1262,7 +1259,7 @@ doc = false
 "tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["chrono", "test-support"] }
 "tilo-rich-text" = { path = "../../../crates/sdk/tilo-rich-text", default-features = false, features = [] }
 "tilo-rollback" = { path = "../../../crates/system/tilo-rollback", default-features = false, features = [] }
-"tilo-room-host" = { path = "../../../crates/hosting/tilo-room-host", default-features = false, features = ["agents", "test-support", "web"] }
+"tilo-room-host" = { path = "../../../crates/hosting/tilo-room-host", default-features = false, features = ["agents", "test-support"] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-runner-native" = { path = "../../../crates/sdk/runner-native", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "webview-adblock"] }
 "tilo-runtime" = { path = "../../../crates/runtime/tilo-runtime", default-features = false, features = [] }
@@ -1481,8 +1478,8 @@ doc = false
 "web-async-0_1_5" = { package = "web-async", version = "^0.1.5", default-features = false, features = ["tracing"] }
 "web-search" = { path = "../../../apps/web-search", default-features = false, features = [] }
 "web-time-1_1_0" = { package = "web-time", version = "^1.1.0", default-features = false, features = ["serde"] }
-"web-transport-proto-0_6_2" = { package = "web-transport-proto", path = "../../../vendor/web-transport-proto", default-features = false, features = [] }
-"web-transport-quinn-0_12_1" = { package = "web-transport-quinn", path = "../../../vendor/web-transport-quinn", default-features = false, features = ["ring"] }
+"web-transport-proto-0_6_3" = { package = "web-transport-proto", version = "^0.6.3", default-features = false, features = [] }
+"web-transport-quinn-0_12_1" = { package = "web-transport-quinn", version = "^0.12.1", default-features = false, features = ["ring"] }
 "web-transport-trait-0_4_0" = { package = "web-transport-trait", version = "^0.4.0", default-features = false, features = [] }
 "web_atoms-0_2_6" = { package = "web_atoms", version = "^0.2.6", default-features = false, features = ["serde"] }
 "webpki-roots-1_0_10" = { package = "webpki-roots", version = "^1.0.10", default-features = false, features = [] }
@@ -3102,8 +3099,6 @@ doc = false
 "module-lattice-0_2_3" = { package = "module-lattice", version = "^0.2.3", default-features = false, features = ["alloc", "ctutils"] }
 "moka-0_12_15" = { package = "moka", version = "^0.12.15", default-features = false, features = ["default", "sync"] }
 "monitor" = { path = "../../../apps/monitor", default-features = false, features = [] }
-"moq-net-0_3_3" = { package = "moq-net", version = "^0.3.3", default-features = false, features = [] }
-"moq-pattern-0_1_0" = { package = "moq-pattern", version = "^0.1.0", default-features = false, features = ["serde"] }
 "moxcms-0_8_1" = { package = "moxcms", version = "^0.8.1", default-features = false, features = ["avx", "avx_luts", "avx_shaper_fixed_point_paths", "avx_shaper_paths", "default", "lut", "neon", "neon_luts", "neon_shaper_fixed_point_paths", "neon_shaper_paths", "sse", "sse_luts", "sse_shaper_fixed_point_paths", "sse_shaper_paths"] }
 "muldiv-1_0_1" = { package = "muldiv", version = "^1.0.1", default-features = false, features = [] }
 "murmurhash32-0_4_0" = { package = "murmurhash32", version = "^0.4.0", default-features = false, features = [] }
@@ -3664,7 +3659,6 @@ doc = false
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["default", "runtime-client"] }
 "tilo-model-gateway" = { path = "../../../crates/agent/model-gateway", default-features = false, features = ["default", "host-backend", "local-models", "runtime-client", "server"] }
 "tilo-moderation" = { path = "../../../crates/collab/moderation", default-features = false, features = ["host"] }
-"tilo-moq" = { path = "../../../crates/hosting/tilo-moq", default-features = false, features = ["default", "relay", "tls"] }
 "tilo-nearby-service" = { path = "../../../crates/session/nearby-service", default-features = false, features = [] }
 "tilo-net" = { path = "../../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-dev-server", "proxy-host", "sockets", "webtransport", "ws"] }
 "tilo-net-answers" = { path = "../../../crates/system/net-answers", default-features = false, features = ["default", "fetch"] }
@@ -3710,7 +3704,7 @@ doc = false
 "tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["chrono", "test-support"] }
 "tilo-rich-text" = { path = "../../../crates/sdk/tilo-rich-text", default-features = false, features = [] }
 "tilo-rollback" = { path = "../../../crates/system/tilo-rollback", default-features = false, features = [] }
-"tilo-room-host" = { path = "../../../crates/hosting/tilo-room-host", default-features = false, features = ["agents", "test-support", "web"] }
+"tilo-room-host" = { path = "../../../crates/hosting/tilo-room-host", default-features = false, features = ["agents", "test-support"] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-runner-native" = { path = "../../../crates/sdk/runner-native", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "webview-adblock"] }
 "tilo-runtime" = { path = "../../../crates/runtime/tilo-runtime", default-features = false, features = [] }
@@ -3929,8 +3923,8 @@ doc = false
 "web-async-0_1_5" = { package = "web-async", version = "^0.1.5", default-features = false, features = ["tracing"] }
 "web-search" = { path = "../../../apps/web-search", default-features = false, features = [] }
 "web-time-1_1_0" = { package = "web-time", version = "^1.1.0", default-features = false, features = ["serde"] }
-"web-transport-proto-0_6_2" = { package = "web-transport-proto", path = "../../../vendor/web-transport-proto", default-features = false, features = [] }
-"web-transport-quinn-0_12_1" = { package = "web-transport-quinn", path = "../../../vendor/web-transport-quinn", default-features = false, features = ["ring"] }
+"web-transport-proto-0_6_3" = { package = "web-transport-proto", version = "^0.6.3", default-features = false, features = [] }
+"web-transport-quinn-0_12_1" = { package = "web-transport-quinn", version = "^0.12.1", default-features = false, features = ["ring"] }
 "web-transport-trait-0_4_0" = { package = "web-transport-trait", version = "^0.4.0", default-features = false, features = [] }
 "web_atoms-0_2_6" = { package = "web_atoms", version = "^0.2.6", default-features = false, features = ["serde"] }
 "webpki-roots-1_0_10" = { package = "webpki-roots", version = "^1.0.10", default-features = false, features = [] }

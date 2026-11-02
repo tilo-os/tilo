@@ -13,6 +13,7 @@ fn a_menu_button_makes_room_for_its_chevron() {
         FaceContent {
             icon: None,
             image: None,
+            faces: &[],
             badge: None,
             label,
             hint: None,
@@ -1564,17 +1565,17 @@ fn accessibility_reports_role_name_state_and_icon_only_naming() {
         assert_eq!(node.name.as_deref(), Some("Confirm"));
     }
 
-    fn accessibility_visible_label_wins_over_accessible_name() {
+    fn accessibility_stated_name_wins_over_the_visible_label() {
         let b = Button::new("id", "Save").with_accessible_name("Persist");
         let node = Widget::accessibility(&b).unwrap();
-        assert_eq!(node.name.as_deref(), Some("Save"));
+        assert_eq!(node.name.as_deref(), Some("Persist"));
     }
 
     accessibility_reports_button_role_name_and_state();
     accessibility_reflects_disabled_and_focus();
     accessibility_icon_only_button_without_name_is_silent();
     accessibility_icon_only_button_uses_accessible_name();
-    accessibility_visible_label_wins_over_accessible_name();
+    accessibility_stated_name_wins_over_the_visible_label();
 }
 
 #[test]
@@ -1616,8 +1617,8 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
         );
         assert_eq!(
             Widget::accessibility(&button).unwrap().name.as_deref(),
-            Some("Publish"),
-            "the visible label again takes precedence after expansion"
+            Some("Publish document"),
+            "the name the app stated still says it after expansion"
         );
         assert_eq!(Widget::tooltip(&button), Some("Publish this document now"));
     }
@@ -1749,11 +1750,63 @@ fn keys_plain_ink_and_bound_state() {
     enabled_follows_its_state_and_bounds_are_spoken();
 }
 
-/// A node's margins are its parent's (an arrangement puts its gaps there): a button without a
-/// count leaves them as they are, and one with a count adds the count's room to them, once.
-/// Either way a second layout pass finds nothing to change, so the layout settles.
+/// A button of who is here is exactly as wide as the faces it shows: no label behind them at
+/// any width, one face wider than a square for one person, and a fourth person counted in a
+/// face of its own rather than a fifth face. The label names the people, never the glyph.
 #[test]
-fn a_button_only_adds_its_counts_room_to_the_margins_its_parent_gave() {
+fn a_faces_button_is_as_wide_as_the_faces_it_shows() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let button = |people: &[&str]| {
+        let mut button = Button::new("people", "")
+            .with_accessible_name("Mia Clayton and others are here")
+            .with_faces(people.iter().map(|name| (*name).to_owned()))
+            .role(ButtonRole::Bar);
+        button.metrics = FaceMetrics::of_role(ControlSize::Regular, ButtonRole::Bar, &theme);
+        button
+    };
+    let width =
+        |people: &[&str], text: &mut TextRenderer| f64::from(button(people).intrinsic_width(text));
+    let stack = crate::presence::FaceStack::in_face(button(&[]).face_height());
+    let pad = 2.0 * button(&[]).metrics.pad_x;
+    let one = width(&["Mia Clayton"], &mut text);
+    let three = width(&["Mia Clayton", "Sam Okafor", "Ana Ruiz"], &mut text);
+    let four = width(
+        &["Mia Clayton", "Sam Okafor", "Ana Ruiz", "Ben Ito"],
+        &mut text,
+    );
+    assert!(
+        (one - (stack.group_width(1) + pad)).abs() <= 1.0,
+        "one face and the pad: {one}"
+    );
+    assert!(three > one, "three faces are wider than one: {three}");
+    assert!(
+        (four - (stack.group_width(4) + pad)).abs() <= 1.0,
+        "the fourth person is a counted face of its own: {four} vs {}",
+        stack.group_width(4) + pad
+    );
+    assert!(four > three, "counting the rest takes a slot: {four}");
+    assert_eq!(stack.group(4), (3, 1), "three faces, then +1");
+    assert!(
+        four < 4.0 * button(&[]).face_height(),
+        "still a bar control"
+    );
+
+    let node = Widget::accessibility(&button(&["Mia Clayton", "Sam Okafor"]))
+        .expect("a group of faces is announced");
+    assert_eq!(
+        node.name.as_deref(),
+        Some("Mia Clayton and others are here"),
+        "the name is the people, in words"
+    );
+}
+
+/// A node's margins are its parent's (an arrangement puts its gaps there), and a count stands
+/// inside the button's face: a button with a count leaves its parent's margins as they are,
+/// and a second layout pass finds nothing to change, so the layout settles. The count itself
+/// never leaves the face, so the bar's top edge cannot cut it.
+#[test]
+fn a_count_stands_inside_the_face_and_leaves_its_parents_margins_alone() {
     let theme = Theme::light();
     let mut text = TextRenderer::new();
     let parents = taffy::Rect {
@@ -1775,29 +1828,56 @@ fn a_button_only_adds_its_counts_room_to_the_margins_its_parent_gave() {
         (first, changed, tree.style(node).unwrap().margin)
     };
 
-    let (first, changed, after) = laid(Button::new("save", "Save"), &mut text);
-    assert_eq!(
-        first, parents,
-        "a button with no count leaves its parent's margins"
-    );
+    let counted = || {
+        Button::icon_only("bell", crate::icons::Icon::Bell, "Notifications, 9 unread")
+            .role(ButtonRole::Bar)
+            .with_count(
+                crate::widget::BadgeContent::Count(9),
+                crate::widget::ChipStyle::Live,
+            )
+    };
+    let (first, changed, after) = laid(counted(), &mut text);
+    assert_eq!(first, parents, "a count leaves its parent's margins alone");
     assert!(
         !changed && after == parents,
         "and finds nothing to change again"
     );
 
-    let counted = Button::icon_only("bell", crate::icons::Icon::Bell, "Notifications").with_count(
-        crate::widget::BadgeContent::Count(2),
-        crate::widget::ChipStyle::Live,
-    );
-    let (first, changed, after) = laid(counted, &mut text);
-    let px = |m: taffy::LengthPercentageAuto| m.into_raw().value();
-    assert_eq!(px(first.left), 8.0, "the leading margin stays the parent's");
+    // The bar's own control: the badge hangs off the bell's corner and still stands wholly
+    // inside the button, whose top edge is the bar's inner edge.
+    let mut button = counted();
+    let mut tree = TaffyTree::new();
+    let mut map = std::collections::HashMap::new();
+    let node = button.build_layout(&mut tree, &theme, &mut map);
+    button.adjust_layout_style(&mut tree, node, &mut text);
+    button.apply_layout_external(Rect::new(100.0, 0.0, 128.0, 28.0));
+    let badge = button.count_rect().expect("a count where there is unread");
     assert!(
-        px(first.right) > 8.0,
-        "the count's room adds to the parent's: {first:?}"
+        badge.x0 >= button.rect.x0 && badge.x1 <= button.rect.x1,
+        "inside the face across: {badge:?} in {:?}",
+        button.rect
     );
     assert!(
-        !changed && after == first,
-        "a second pass adds nothing more: {after:?}"
+        badge.y0 >= button.rect.y0 && badge.y1 <= button.rect.y1,
+        "inside the face down: {badge:?} in {:?}",
+        button.rect
+    );
+}
+
+/// A button's visible label may say less than its name: the charge reads "61%" beside the
+/// charging glyph, and assistive technology hears the charging too.
+#[test]
+fn a_button_named_beyond_its_label_is_announced_with_that_name() {
+    use crate::widget::Widget as _;
+    let named = Button::new("charge", "61%").with_accessible_name("61%, charging");
+    let heard = named.accessibility().expect("a button is announced");
+    assert_eq!(heard.name.as_deref(), Some("61%, charging"));
+    let shown = Button::new("charge", "61%");
+    assert_eq!(shown.accessibility().unwrap().name.as_deref(), Some("61%"));
+    let glyph = Button::icon_only("charge", crate::icons::Icon::Battery, "61%, charging");
+    assert_eq!(
+        glyph.accessibility().unwrap().name.as_deref(),
+        Some("61%, charging"),
+        "an icon-only button keeps the name its label only states"
     );
 }

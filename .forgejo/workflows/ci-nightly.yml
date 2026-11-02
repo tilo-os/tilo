@@ -172,13 +172,6 @@ jobs:
           printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
           bash tools/ci/require-pdf-sandbox.sh
 
-      # The governed browser voice test drives two real Chromium profiles of
-      # the builder's Chromium, as in check.yml.
-      - name: Prepare governed browser voice fixture
-        run: |
-          npm ci --prefix scripts/moq-browser
-          node scripts/moq-browser/build.mjs
-
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 

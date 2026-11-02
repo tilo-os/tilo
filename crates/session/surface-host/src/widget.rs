@@ -24,6 +24,20 @@ use crate::{Placement, key_event, modifiers_state, mouse_input};
 /// wherever it painted nothing.
 const TRANSPARENT: Color = Color::TRANSPARENT;
 
+/// What a widget tree's next frame is for.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Owed {
+    /// Nothing moved: the tree draws no frame.
+    #[default]
+    Nothing,
+    /// Input arrived, the placement or the theme changed, or the tree queued
+    /// work of its own.
+    Frame,
+    /// Blurred backdrops arrived: the tree draws its material again, so the
+    /// images replace the placeholders its last frame baked in.
+    Material,
+}
+
 /// One widget tree shown on a rectangle of the desktop.
 pub struct WidgetHost {
     host: FrameHarness,
@@ -51,8 +65,8 @@ pub struct WidgetHost {
     backdrops: Vec<(vello::kurbo::Rect, f64, (u32, u32))>,
     /// The blurred backdrops the compositor made, by region.
     provided: Vec<Option<ui::peniko::ImageData>>,
-    /// A frame is owed: input arrived or the placement changed.
-    owed: bool,
+    /// What the next frame is for, if the tree owes one.
+    owed: Owed,
     /// Moves with every frame the tree drew: what it publishes changes only
     /// with what it shows, so a reader of its resources reads them again
     /// only when this moved.
@@ -106,7 +120,7 @@ impl WidgetHost {
             provided: Vec::new(),
             modifiers: ModifiersState::empty(),
             covers: false,
-            owed: true,
+            owed: Owed::Frame,
             revision: 0,
             wells: None,
             previews: None,
@@ -200,7 +214,7 @@ impl WidgetHost {
     /// draw every frame while one is shown. A tree fed only through these (a tilolang view's
     /// patches arrive as a relayout) asks this before [`SurfaceHost::prepare_frame`].
     pub fn wants_frame(&mut self) -> bool {
-        if self.owed {
+        if self.owed != Owed::Nothing {
             return true;
         }
         let frame = self.host.frame_schedule();
@@ -214,6 +228,14 @@ impl WidgetHost {
     /// Where the tree is shown.
     pub const fn placement(&self) -> Placement {
         self.placement
+    }
+
+    /// A frame is owed for what just moved, unless the tree already owes one
+    /// of its material: that frame draws what moved as well.
+    fn owe(&mut self) {
+        if self.owed == Owed::Nothing {
+            self.owed = Owed::Frame;
+        }
     }
 
     /// Show the tree on another rectangle or at another scale.
@@ -233,21 +255,21 @@ impl WidgetHost {
             self.retained.forget();
         }
         self.placement = placement;
-        self.owed = true;
+        self.owe();
     }
 
     /// Draw the tree with `theme`: the person's palette, tokens and fonts,
     /// as the session's presentation settings hand them to every surface.
     pub fn set_theme(&mut self, theme: ui::Theme) {
         self.host.set_theme(theme);
-        self.owed = true;
+        self.owe();
     }
 
     /// Lay the tree out and draw it now, whether or not a frame is due:
     /// what a caller reading its layout needs first.
     pub fn relayout(&mut self) {
         self.with_reports(ui::headless::FrameHarness::relayout);
-        self.owed = true;
+        self.owe();
     }
 
     /// A rectangle of the tree's physical pixels, as the desktop's logical
@@ -274,7 +296,7 @@ impl WidgetHost {
 
     fn input(&mut self, event: &WindowEvent) {
         self.host.send(event);
-        self.owed = true;
+        self.owe();
     }
 }
 
@@ -295,7 +317,7 @@ impl crate::Published for WidgetHost {
         let started = self
             .host
             .invoke_published(&address.resource, &address.action, arguments);
-        self.owed = true;
+        self.owe();
         started
     }
 
@@ -309,7 +331,7 @@ impl crate::Published for WidgetHost {
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
         let acted = self.host.perform_a11y_action(target, action).is_ok();
-        self.owed = true;
+        self.owe();
         acted
     }
 
@@ -375,7 +397,7 @@ impl crate::Published for WidgetHost {
                     .perform_a11y_action(node, &ui::a11y::Action::Activate)?;
             }
         }
-        self.owed = true;
+        self.owe();
         Ok(())
     }
 }
@@ -436,9 +458,10 @@ impl SurfaceHost for WidgetHost {
                     image.texels.0,
                     image.texels.1,
                 ));
+                self.owed = Owed::Material;
             }
         }
-        self.owed = true;
+        self.owe();
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
@@ -532,7 +555,7 @@ impl SurfaceHost for WidgetHost {
     /// compositor is one too; else the earliest deadline the tree sets.
     fn next_deadline(&self) -> Option<std::time::Instant> {
         let schedule = self.host.frame_schedule();
-        if schedule.needs_animation_frame || self.owed {
+        if schedule.needs_animation_frame || self.owed != Owed::Nothing {
             return Some(std::time::Instant::now());
         }
         schedule.next_wake_deadline
@@ -556,8 +579,16 @@ impl SurfaceHost for WidgetHost {
         // What was owed is consumed by this frame whether or not the tree drew anything of
         // its own.
         let owed = std::mem::take(&mut self.owed);
-        let drew = self.with_reports(|host| host.poll_frame().unwrap_or(false));
-        if !(drew || owed) {
+        // A surface draws its material with the image it has when it draws:
+        // new backdrops ask the tree for a frame of its own, even when
+        // nothing else in it moved.
+        let drew = if owed == Owed::Material {
+            self.with_reports(ui::headless::FrameHarness::relayout);
+            true
+        } else {
+            self.with_reports(|host| host.poll_frame().unwrap_or(false))
+        };
+        if !(drew || owed != Owed::Nothing) {
             return false;
         }
         self.revision = self.revision.wrapping_add(1);

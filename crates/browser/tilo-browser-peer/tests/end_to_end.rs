@@ -133,7 +133,7 @@ async fn browser_over_https_is_certified_syncs_and_is_revoked() {
     let workspace_id = workspace();
     let browser_device = browser_cert.device_public_key;
     let laptop_device = laptop.cert.device_public_key;
-    let mut laptop_events = laptop_peer.events();
+    let laptop_events = laptop_peer.events();
     let seen_by_laptop = tilo_test_env::within("the page's cursor reaches the laptop", async {
         loop {
             browser

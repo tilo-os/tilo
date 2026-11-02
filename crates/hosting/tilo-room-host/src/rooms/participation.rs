@@ -90,7 +90,6 @@ impl Readers {
     /// Whether a Read Deny keeps `channel`'s record from any device; a
     /// channel whose record the node cannot name counts as withheld, as it
     /// may be a member's own.
-    #[cfg(feature = "web")]
     pub fn withholds(&self, channel: ChannelId) -> bool {
         !self
             .withheld

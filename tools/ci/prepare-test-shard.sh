@@ -78,14 +78,6 @@ if tests pdf-viewer tilo-pdf tilo-pdf-helper tilo-thumbnail; then
     bash tools/ci/require-pdf-sandbox.sh "$env_file"
 fi
 
-# Real browser voice coverage runs only with the peer package, in the builder's
-# Chromium. Both participants use throwaway profiles and Chromium's fake
-# microphone.
-if reads tilo-browser-peer; then
-    npm ci --prefix scripts/moq-browser
-    node scripts/moq-browser/build.mjs
-fi
-
 # Imager deliberately rejects cache/source directories on the container
 # overlay that also backs the operating-system root. The checked-out workspace
 # is a host-backed qualified filesystem, so keep its native syscall fixtures

@@ -15,8 +15,9 @@
 ///   action's own declaration names (`group:`), in the app's order. It is never a generated
 ///   list of everything the app can do;
 /// - the **top bar** is one row, edge to edge: the system menu and the focused window's
-///   commands leading, the tasks, the time, the person and the notifications flush at its
-///   trailing edge, as every desktop since 1986 has. The shell's own settings are never there:
+///   commands leading, the tasks, the time, who is here, the status, the notifications and the
+///   person's own face flush at its trailing edge, as every desktop since 1986 has. The
+///   shell's own settings are never there:
 ///   they are in Settings and the system menu.
 ///
 /// Views name theme roles only: no colour, radius, font or size of their own.
@@ -87,10 +88,12 @@ view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bo
     }
 }
 
-/// What a place is called: its resource's title, else the title the place was given, else what
-/// it shows.
+/// What a place is called, on every surface: `p.name`, resolved once by the session for all of
+/// them — the window's title and its app's own name (`Groceries — Notes`), or the app alone when
+/// the window has no title. A bar, a chip, a switcher row and a search row never disagree, and
+/// none of them ever falls back to an app id.
 fn place_title(p: ArrangementPlace) -> Text {
-    if let r = placed_resource(p.record) { meta(r).title } else if p.title == "" { p.shows } else { p.title }
+    p.name
 }
 
 /// A frame's controls: the way to carry the place to another row, and close. Each is one
@@ -269,10 +272,11 @@ view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
 }
 
 /// The desktop's top bar, one row edge to edge: the system menu and the focused window's commands
-/// leading, and the tasks running, the time, the person and the notifications flush at the trailing
-/// edge, as a macOS or GNOME bar has them. As the output narrows the window's commands shed into
-/// their menus, the tasks give way, and on a phone the person's avatar does too (the time and the
-/// notifications stay), so the row never wraps and its parts never press into each other.
+/// leading, and the tasks running, the time, who is here, the status, the notifications and the
+/// person's own face flush at the trailing edge, as a macOS or GNOME bar has them. As the output
+/// narrows the window's commands shed into their menus, the tasks and who is here give way, and
+/// on a phone the sound does too (the time, the connection, the charge, the notifications and the
+/// person's face stay), so the row never wraps and its parts never press into each other.
 view traditional_bar(d: Desk) {
     let room = if space.width_class == .wide { BarRoom.roomy } else if space.compact { BarRoom.one } else { BarRoom.menus }
     row(gap: if room == .one { .tight } else { .related }, align: .center, fill) {
@@ -291,10 +295,13 @@ view traditional_bar(d: Desk) {
             }
         }
         clock(d)
-        if d.person != "" and room != .one {
-            ui.Avatar(name: .some(d.person))
+        if room != .one {
+            people_button(d)
         }
         status_icons()
         bell(d)
+        if d.person != "" {
+            ui.Avatar(name: .some(d.person))
+        }
     }
 }

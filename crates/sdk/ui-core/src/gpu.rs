@@ -31,8 +31,8 @@ use std::sync::{Arc, Mutex};
 use tilo_lock::MutexRecover as _;
 use vello::util::RenderSurface;
 use wgpu::{
-    Adapter, Device, Instance, Limits, Queue, Surface, SurfaceConfiguration, SurfaceTarget,
-    Texture, TextureFormat, TextureView, util::TextureBlitter,
+    Adapter, AdapterInfo, Device, DeviceType, Instance, Limits, Queue, Surface,
+    SurfaceConfiguration, SurfaceTarget, Texture, TextureFormat, TextureView, util::TextureBlitter,
 };
 
 /// An adapter and the device opened on it.
@@ -184,6 +184,15 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
 #[must_use]
 pub fn requested_texture_limit() -> u32 {
     Limits::default().max_texture_dimension_2d
+}
+
+/// Whether a host on this adapter rasterizes its frames on the CPU
+/// (`crate::cpu_raster`) and uploads the pixels, instead of running vello's
+/// compute pipelines on an emulated GPU: a SwiftShader page draws its first
+/// frame this way before any pipeline compiles. Vello then draws only
+/// backdrop blurs.
+pub fn rasterizes_on_cpu(adapter: &AdapterInfo) -> bool {
+    adapter.device_type == DeviceType::Cpu
 }
 
 /// wgpu's defaults, except the two a renderer's scratch buffers are bound

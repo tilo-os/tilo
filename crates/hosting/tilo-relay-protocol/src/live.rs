@@ -16,7 +16,7 @@
 //! the bytes unchanged and never stores a frame.
 //!
 //! The vocabulary is `LIVE_V1` from the qOS runtime (PR 541) without its
-//! `MoQ` carrier, grants and early-forwarded durable changes.
+//! carrier's grants and early-forwarded durable changes.
 
 use collab_types::{
     ArtifactId, ChannelId, ContentRetention, EncryptionMetadata, EncryptionScheme, live_artifact_id,

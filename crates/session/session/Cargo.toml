@@ -74,6 +74,9 @@ tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
 app-cli = { path = "../../packaging/app-cli" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+# The host's own filesystem moves a paste depends on: a rename that never
+# overwrites a name, and the Trash a replaced name goes to.
+host-fs = { path = "../../system/host-fs" }
 # What the person picks in the emoji picker is remembered between sessions.
 emoji = { path = "../../text/emoji" }
 tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
@@ -284,6 +287,9 @@ zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+# A paste killed mid-transfer: the crash test's child process ends on a
+# signal, as a power cut ends a machine.
+libc.workspace = true
 # A call's tone and played samples with no device stack: a test hears the
 # same encoder, lane and playout a device's call uses.
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "test-support"] }

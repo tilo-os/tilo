@@ -195,9 +195,9 @@ pub struct PeerContext {
     pub compactor: Option<crate::compaction::Compactor>,
     /// Per-person limits of a public host; `None` limits nobody.
     pub member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
-    /// The rooms whose voice carrier this host serves: the calls of a room
-    /// it carries (a person's own workspace, synced across their devices
-    /// through it) are held by them. `None` holds no carried call.
+    /// The rooms whose calls this host carries: a room a person owns
+    /// (synced across their devices through this host) holds its calls
+    /// there. `None` holds no carried call.
     pub carried_calls: Option<crate::rooms::WeakRooms>,
 }
 
@@ -242,8 +242,8 @@ struct SessionCtx<'a> {
     /// Where this connection's rooms post the presence they fan out to it;
     /// `None` takes each presence on the frame queue.
     presence: Option<&'a Arc<crate::presence_mailbox::PresenceMailbox>>,
-    /// The rooms whose voice carrier this host serves, for the calls of a
-    /// room it carries; `None` holds no carried call.
+    /// The rooms whose calls this host carries; `None` holds no carried
+    /// call.
     carried_calls: Option<crate::rooms::WeakRooms>,
 }
 

@@ -140,10 +140,11 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
     // A note placed through the arrangement stands on the canvas, drawn by its app: its title
     // on screen, under the canvas's entry.
     place(&mut session, &note);
+    let shown = shown_as(&session, NOTE_TITLE);
     until(&mut session, "the note's title on the canvas", |session| {
-        on_screen(session, NOTE_TITLE).is_some()
+        on_screen(session, &shown).is_some()
     });
-    let title = on_screen(&session, NOTE_TITLE).unwrap();
+    let title = on_screen(&session, &shown).unwrap();
     assert!(
         title.1 >= entry.1 + entry.3,
         "the note stands on the canvas, under its entry: {title:?} under {entry:?}"
@@ -219,16 +220,17 @@ fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_scree
         });
         for (index, (note, title)) in notes.iter().zip(TITLES).enumerate() {
             place(&mut session, note);
+            let shown = shown_as(&session, title);
             until(
                 &mut session,
-                &format!("{title} on screen at {width}x{height}"),
-                |session| within(session, title, width, height).is_some(),
+                &format!("{shown} on screen at {width}x{height}"),
+                |session| within(session, &shown, width, height).is_some(),
             );
             if index > 0 {
                 continue;
             }
             // The switch and the first strip under it.
-            let first = within(&session, title, width, height).unwrap();
+            let first = within(&session, &shown, width, height).unwrap();
             let switch = preset_switch(&session);
             assert!(
                 !intersects(switch, first),
@@ -267,6 +269,21 @@ const CHROME: &str = "desktop:chrome";
 
 /// The overview's heading: the overview's own, which no other view of the desk shows.
 const OVERVIEW: &str = "Overview";
+
+/// The name the shell shows a window placed under `title` by: the session resolves it once —
+/// the window's own title and its app's name — and every surface that names a window takes it
+/// from there, so the tests read the name off the same answer they assert on.
+fn shown_as(session: &Session, title: &str) -> String {
+    let reading = session.arrangement().borrow().reading();
+    reading
+        .places
+        .iter()
+        .find(|place| place.title == title)
+        .map_or_else(
+            || panic!("the desk holds a place for {title}"),
+            |place| place.name.clone(),
+        )
+}
 
 /// Where the shell's control named `name` stands, when the whole of it is on a display `width`
 /// by `height` (not only part of it, as [`on_screen`] asks).

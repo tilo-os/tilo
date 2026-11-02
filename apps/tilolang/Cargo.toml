@@ -78,6 +78,8 @@ tilo-startup-metrics = { version = "0.1.0", path = "../../crates/system/tilo-sta
 # Waiting on the hosted window's patch connection.
 libc.workspace = true
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
+# The directory protocol a running app takes later builds of its package through (`src/updates.rs`).
+tilo-app-module = { version = "0.1.0", path = "../../crates/platform/tilo-app-module" }
 # The IMAP and SMTP protocol code of native Mail, and the settings' account store, behind the
 # mail origin of packages whose types hold a mail server's resources (`src/mail`).
 mail = { path = "../mail" }
@@ -109,10 +111,8 @@ uuid.workspace = true
 [lints]
 workspace = true
 
-# The development session's later builds are watched (`src/updates.rs`).
-[target.'cfg(target_os = "linux")'.dependencies]
-tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
-
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+# Later builds of the package are watched (`src/updates.rs`).
+tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }

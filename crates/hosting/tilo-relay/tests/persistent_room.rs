@@ -35,9 +35,8 @@ fn start_with(
         .args(["room", "--state"])
         .arg(state.join("relay"))
         .args([
-            // Port 0: the room picks a port free for both its HTTPS (TCP)
-            // and WebTransport (UDP) sides. A port probed free over TCP
-            // alone may already be held over UDP by another test's socket.
+            // Port 0: the room picks a free port rather than a test choosing
+            // one another test's socket may already hold.
             "--web",
             "127.0.0.1:0",
             "--tls",

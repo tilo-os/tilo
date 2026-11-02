@@ -3578,6 +3578,29 @@ mod tests {
     };
     use winit::event::KeyEvent;
 
+    /// A query's rows stand as tall as what they say: a list counted in
+    /// rows with a line under their name holds fewer of them than one
+    /// counted in bare names, and the rows it holds fit under its cap.
+    #[test]
+    fn capacity_counts_the_rows_that_are_coming_in_their_own_bands() {
+        let mut palette = ActionPalette::rows(Vec::new());
+        palette.set_max_list_height(420.0);
+        let groups = 4;
+        let one_line = palette.entry_row_capacity_for(groups, false);
+        let two_line = palette.entry_row_capacity_for(groups, true);
+        assert!(
+            two_line < one_line,
+            "four headers leave room for {one_line} bare names but {two_line} rows with a line \
+             under each, and those are the taller rows"
+        );
+        let no_headers = palette.entry_row_capacity_for(0, true);
+        assert!(
+            two_line < no_headers,
+            "{groups} headers leave room for {two_line} rows, fewer than the {no_headers} that \
+             fit without them"
+        );
+    }
+
     /// The palette of an app in a window narrower than the screen stands
     /// centred in that window and inside it, never spilling past its edge.
     #[test]
@@ -3643,8 +3666,8 @@ mod tests {
         // The list grows with the display, and stops at the shortest and
         // tallest it may be.
         let tall = |height| list_cap(Rect::new(0.0, 0.0, 1280.0, height), &theme);
-        assert!((tall(800.0) - 440.0).abs() < 1e-9);
-        assert!((tall(1200.0) - 504.0).abs() < 1e-9);
+        assert!((tall(800.0) - 640.0).abs() < 1e-9);
+        assert!((tall(1200.0) - 660.0).abs() < 1e-9);
         assert!((tall(200.0) - 160.0).abs() < 1e-9);
     }
 

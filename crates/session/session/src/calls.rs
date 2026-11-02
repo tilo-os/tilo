@@ -95,7 +95,6 @@ impl Calls {
         let mut people: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut cameras: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut screens: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        let mut bridges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for call in &live {
             let in_call = people.entry(call.channel.clone()).or_default();
             for caller in &call.people {
@@ -114,15 +113,6 @@ impl Calls {
                         .entry(call.channel.clone())
                         .or_default()
                         .insert(person.clone());
-                }
-                // The call says which software its people's frames pass
-                // through, lowercased as every service is named.
-                let carrying = bridges.entry(call.channel.clone()).or_default();
-                for service in &caller.services {
-                    let service = service.trim().to_lowercase();
-                    if !service.is_empty() {
-                        carrying.insert(service);
-                    }
                 }
             }
         }
@@ -154,10 +144,6 @@ impl Calls {
                 screens: screens
                     .remove(&channel_id)
                     .map(|set| set.into_iter().collect())
-                    .unwrap_or_default(),
-                bridges: bridges
-                    .remove(&channel_id)
-                    .map(|services| services.into_iter().collect())
                     .unwrap_or_default(),
                 channel_id,
                 people: people.into_iter().collect(),
@@ -425,6 +411,9 @@ async fn open(
     };
     let workspace_id = RoomId::parse(&target.workspace).ok_or(Issue::Unavailable)?;
     let channel = collab_types::document_channel_id(&target.app, &target.workspace, &target.record);
+    // The call is one channel of one workspace: that scope's keys seal its
+    // tracks, and its id names them.
+    let scope = collab_types::scope::Scope::channel(target.workspace.clone(), channel);
     let (access, keys) = call_keys(sources, workspace_id, channel)?;
     let roster = admitted(sources, &target.workspace);
     let own = *endpoint.id().as_bytes();
@@ -440,12 +429,12 @@ async fn open(
     );
     let video = tilo_call_lane::Video::new(own);
     if let Some(keys) = &keys {
-        video.set_keys(keys, roster.clone());
+        video.set_keys(keys, roster.clone(), &scope);
     }
     let (voice, microphones, offered) = opened_microphones(sources.audio).await?;
     let microphone = keys
         .as_ref()
-        .and_then(|keys| tilo_call_lane::Microphone::new(keys, own, REPEATS).ok());
+        .and_then(|keys| tilo_call_lane::Microphone::new(keys, own, &scope, REPEATS).ok());
     let live = keys.is_some();
     let current = keys.map(|keys| Current {
         opener: tilo_call_lane::Opener::new(keys.clone(), roster.clone()),
@@ -467,6 +456,7 @@ async fn open(
         access,
         workspace_id,
         channel,
+        scope,
         workspace: target.workspace.clone(),
         admitted: sources.roster.clone(),
         current: Mutex::new(current),
@@ -687,6 +677,8 @@ struct Shared {
     /// The workspace id the channel's keys and governance are read by.
     workspace_id: RoomId,
     channel: collab_types::ChannelId,
+    /// The channel's scope: what its tracks are sealed under and named as.
+    scope: collab_types::scope::Scope,
     workspace: String,
     /// The workspace's admitted devices, re-read while the call lasts.
     admitted: Option<Admitted>,
@@ -779,7 +771,8 @@ impl Shared {
         };
         let mut side = self.side.lock_recover();
         side.voice.start(&source, still_current)?;
-        side.microphone = tilo_call_lane::Microphone::new(&keys, self.own, REPEATS).ok();
+        side.microphone =
+            tilo_call_lane::Microphone::new(&keys, self.own, &self.scope, REPEATS).ok();
         drop(side);
         Ok(())
     }
@@ -1053,9 +1046,9 @@ impl Shared {
         }
         let heard = {
             let held = self.current.lock_recover();
-            let heard = held
-                .as_ref()
-                .map(|current| tilo_call_lane::heard(&current.opener, sender, datagram));
+            let heard = held.as_ref().map(|current| {
+                tilo_call_lane::heard(&current.opener, sender, &self.scope, datagram)
+            });
             drop(held);
             heard
         };
@@ -1167,7 +1160,8 @@ impl Shared {
                         tilo_call_lane::Opener::new(current.keys.clone(), current.roster.clone());
                     // The pictures seal with the epoch's keys as the audio
                     // does, from this epoch on.
-                    self.video.set_keys(&current.keys, current.roster.clone());
+                    self.video
+                        .set_keys(&current.keys, current.roster.clone(), &self.scope);
                     rekeyed = true;
                 }
                 (Some(current), _) => {
@@ -1180,13 +1174,14 @@ impl Shared {
                             current.keys.clone(),
                             current.roster.clone(),
                         );
-                        self.video.set_keys(&current.keys, current.roster.clone());
+                        self.video
+                            .set_keys(&current.keys, current.roster.clone(), &self.scope);
                     }
                 }
                 (None, Some(keys)) => {
                     let roster = roster.unwrap_or_default();
                     self.calls.set_roster(roster.clone());
-                    self.video.set_keys(&keys, roster.clone());
+                    self.video.set_keys(&keys, roster.clone(), &self.scope);
                     *held = Some(Current {
                         opener: tilo_call_lane::Opener::new(keys.clone(), roster.clone()),
                         keys,
@@ -1207,7 +1202,7 @@ impl Shared {
             let mut side = self.side.lock_recover();
             if side.microphone.is_some() {
                 side.microphone = keys.and_then(|keys| {
-                    tilo_call_lane::Microphone::new(&keys, self.own, REPEATS).ok()
+                    tilo_call_lane::Microphone::new(&keys, self.own, &self.scope, REPEATS).ok()
                 });
             }
         }
@@ -2292,7 +2287,7 @@ mod tests {
     /// through.
     #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_page_in_a_call_is_heard_and_hears_through_the_bridge_the_call_shows() {
+    async fn a_page_in_a_call_is_heard_and_hears() {
         let owner = person_key();
         let laptop = device(&owner, 0x11, "Laptop");
         // The page's device: the key its frames name, and the device its host
@@ -2335,35 +2330,23 @@ mod tests {
             .parse()
             .expect("the responder's address");
 
-        // The workspace says the page's device is in the call, carried by the
-        // web, and the two devices know where each other is.
+        // The workspace says the page's device is in the call, and the two
+        // devices know where each other is.
         laptop.connect(bound_addr(&endpoint));
         laptop.follow_desktop(&desk_tree());
         laptop.hear(hello(0x22, "Page"));
         laptop.hear(presence(0x22, collab_types::PeerPresencePayload::Arrived));
         laptop.hear(availability(0x22, Some(call_presence())));
-        laptop.hear(presence(
-            0x22,
-            collab_types::PeerPresencePayload::Bridge {
-                channel: CHANNEL.to_owned(),
-                services: vec!["web".to_owned()],
-            },
-        ));
         bound(&laptop).await;
         let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
         let left = carrier(&laptop, &keys);
 
-        // The call shows the service the page's frames pass through.
+        // The call shows the page's person in it.
         let rosters = left.calls.rosters();
         let standup = rosters
             .iter()
             .find(|roster| roster.channel_id == CHANNEL)
             .expect("the roster of the channel the call is in");
-        assert_eq!(
-            standup.bridges,
-            ["web"],
-            "the call says which service carries a page into it"
-        );
         assert_eq!(
             standup.people,
             vec![person(0x22)],

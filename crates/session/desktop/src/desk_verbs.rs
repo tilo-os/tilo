@@ -11,7 +11,7 @@ use tilo_actions::{ActionSpec, ResourcePresentation, ResourceSpec};
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
 use tilo_resource::{Effect, offer};
 
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 
 /// The resource of the chrome above the windows.
 pub use tilo_desktop_search::CHROME_RESOURCE;
@@ -99,19 +99,23 @@ pub fn desk_resource(
         )
         .with_action(focus)
     });
+    // Each window's verbs name the window they act on: an action row that
+    // says "Focus a window" makes the person find the window again in the
+    // next row.
     let windows = tabs.iter().map(|(id, title)| {
+        let names_the_window = &[("window", title.as_str().into())];
         ResourceSpec::new(tab_resource_id(*id), WINDOW_KIND, title.clone())
             .with_action(bound(
                 &DeskEffect::Focus {
                     tab: id.to_string(),
                 },
-                None,
+                Some(t_args("desk-focus-window", names_the_window)),
             ))
             .with_action(bound(
                 &DeskEffect::CloseTab {
                     tab: id.to_string(),
                 },
-                None,
+                Some(t_args("desk-close-window", names_the_window)),
             ))
     });
     let search = search.map(|(query, rows)| search_resource(query, rows));

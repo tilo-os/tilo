@@ -289,9 +289,9 @@ scenario "a banner" {
     d.notice_actions.insert(NoticeAction(notice: "n4", key: "retry", label: "Retry"))
 }
 
-/// The bar's status and who is here: the faces of the two people working alongside Ada and the
-/// chip that names them, the device's sound, connection and charge, the person's own avatar and
-/// the notifications with what waits in them.
+/// The bar's status and who is here: the faces of the two people working alongside Ada, the
+/// device's sound, connection and charge, the person's own avatar and the notifications with
+/// what waits in them.
 scenario "the bar's status" {
     let d = root Desk
     d.person = "Ada Lovelace"
@@ -350,8 +350,8 @@ scenario "a conversation on the canvas" -> Arrangement {
         held.canvas_height = 1200
         held.placed = true
     }
-    a.places.insert(ArrangementPlace(key: "x-run", strip: s, shows: "so.tilo.shell", shown_as: "conversation", record: "agent-run:r1", title: "Tidy the launch notes", shell: "so.tilo.shell.strips"))
-    a.places.insert(ArrangementPlace(key: "x-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "x-run", strip: s, shows: "so.tilo.shell", shown_as: "conversation", record: "agent-run:r1", title: "Tidy the launch notes", name: "Tidy the launch notes — Shell", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "x-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", name: "A terminal — Terminal", shell: "so.tilo.shell.strips"))
     a
 }
 
@@ -400,7 +400,7 @@ action a_strip(a: Arrangement, row: Text, name: Text, width: Int) -> Text {
 action a_note_place(a: Arrangement, strip: Text, index: Int) -> Text {
     let chosen = notes.notes.take(index + 1)
     if let n = chosen.last() {
-        let p = a.places.insert(ArrangementPlace(key: "p-{index}", strip: strip, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
+        let p = a.places.insert(ArrangementPlace(key: "p-{index}", strip: strip, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, name: "{n.title} — Notes", shell: "so.tilo.shell.strips"))
         return p.key
     }
     ""
@@ -409,7 +409,7 @@ action a_note_place(a: Arrangement, strip: Text, index: Int) -> Text {
 /// A place of a kind this build has no record for: it stands as it is, which is what a place
 /// another shell made looks like (§2).
 action a_foreign_place(a: Arrangement, strip: Text, index: Int, title: Text) -> Text {
-    let p = a.places.insert(ArrangementPlace(key: "f-{index}", strip: strip, shows: "so.tilo.terminal", title: title, shell: "so.tilo.shell.other"))
+    let p = a.places.insert(ArrangementPlace(key: "f-{index}", strip: strip, shows: "so.tilo.terminal", title: title, name: "{title} — Terminal", shell: "so.tilo.shell.other"))
     p.key
 }
 
@@ -424,7 +424,7 @@ scenario "a desk of places" -> Arrangement {
     let one = a_strip(a, row, "One", 667)
     a_note_place(a, one, 0)
     let narrow = a_strip(a, row, "List", 333)
-    a.places.insert(ArrangementPlace(key: "n-1", strip: narrow, shows: "so.tilo.lang.tasks", title: "Tasks", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "n-1", strip: narrow, shows: "so.tilo.lang.tasks", title: "Tasks", name: "Tasks", shell: "so.tilo.shell.strips"))
     let wide = a_strip(a, row, "Board", 1000)
     a_foreign_place(a, wide, 1, "A terminal")
     let usual = a_strip(a, row, "Note", 667)
@@ -435,7 +435,7 @@ scenario "a desk of places" -> Arrangement {
     let i = 0
     for n in notes.notes.take(12) {
         let held = if i < 4 { day_a } else if i < 8 { day_b } else { day_c }
-        a.places.insert(ArrangementPlace(key: "d-{i}", strip: held, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
+        a.places.insert(ArrangementPlace(key: "d-{i}", strip: held, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, name: "{n.title} — Notes", shell: "so.tilo.shell.strips"))
         i += 1
     }
     v.focused = narrow
@@ -463,7 +463,7 @@ scenario "a reference lands beside its place" -> Arrangement {
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let talks = a_strip(a, row, "Chat", 667)
-    a.places.insert(ArrangementPlace(key: "ch", strip: talks, shows: "so.tilo.lang.chat", title: "design", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "ch", strip: talks, shows: "so.tilo.lang.chat", title: "design", name: "design — Chat", shell: "so.tilo.shell.strips"))
     a_note_place(a, talks, 1)
     v.focused = talks
     a
@@ -488,10 +488,10 @@ scenario "a canvas of spaces" -> Arrangement {
     }
     let i = 0
     for n in notes.notes.take(6) {
-        let p = a.places.insert(ArrangementPlace(key: "c-{i}", strip: s, shows: "so.tilo.lang.notes", shown_as: "note_editor", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
+        let p = a.places.insert(ArrangementPlace(key: "c-{i}", strip: s, shows: "so.tilo.lang.notes", shown_as: "note_editor", record: n.id(), title: n.title, name: "{n.title} — Notes", shell: "so.tilo.shell.strips"))
         i += 1
     }
-    a.places.insert(ArrangementPlace(key: "c-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "c-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", name: "A terminal — Terminal", shell: "so.tilo.shell.strips"))
     a
 }
 
@@ -514,10 +514,10 @@ scenario "resources standing as content" -> Arrangement {
     }
     let i = 0
     for n in notes.notes.take(4) {
-        a.places.insert(ArrangementPlace(key: "x-{i}", strip: s, shows: "so.tilo.lang.notes", shown_as: "note_editor", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
+        a.places.insert(ArrangementPlace(key: "x-{i}", strip: s, shows: "so.tilo.lang.notes", shown_as: "note_editor", record: n.id(), title: n.title, name: "{n.title} — Notes", shell: "so.tilo.shell.strips"))
         i += 1
     }
-    a.places.insert(ArrangementPlace(key: "x-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", shell: "so.tilo.shell.strips"))
+    a.places.insert(ArrangementPlace(key: "x-terminal", strip: s, shows: "so.tilo.terminal", title: "A terminal", name: "A terminal — Terminal", shell: "so.tilo.shell.strips"))
     a
 }
 
@@ -586,13 +586,13 @@ scenario "the traditional desktop" {
         held.placed = true
     }
     if let n = note {
-        a.places.insert(ArrangementPlace(key: "p1", strip: desk, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
+        a.places.insert(ArrangementPlace(key: "p1", strip: desk, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, name: "{n.title} — Notes", shell: "so.tilo.shell.strips"))
     }
     if let n = beside {
-        a.places.insert(ArrangementPlace(key: "p2", strip: behind, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, shell: "so.tilo.shell.strips"))
+        a.places.insert(ArrangementPlace(key: "p2", strip: behind, shows: "so.tilo.lang.notes", record: n.id(), title: n.title, name: "{n.title} — Notes", shell: "so.tilo.shell.strips"))
     }
     if let c = channel {
-        a.places.insert(ArrangementPlace(key: "p3", strip: talk, shows: "so.tilo.lang.chat", record: c.id(), title: c.name, shell: "so.tilo.shell.strips"))
+        a.places.insert(ArrangementPlace(key: "p3", strip: talk, shows: "so.tilo.lang.chat", record: c.id(), title: c.name, name: "{c.name} — Chat", shell: "so.tilo.shell.strips"))
     }
     if let strip = a.strips.find(st -> st.key == desk) {
         strip.active = "p1"

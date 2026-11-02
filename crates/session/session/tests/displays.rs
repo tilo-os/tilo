@@ -271,6 +271,11 @@ fn window_tabs(session: &Session) -> Vec<String> {
     .collect()
 }
 
+/// The name the desk gives a window whose bar says its own app id.
+fn desk_name(app: &str) -> String {
+    tilo_desktop_search::names::window_name(app, app)
+}
+
 /// Invoke `action` of `resource`, then let the session run a few frames.
 fn invoke(
     session: &mut Session,
@@ -419,7 +424,7 @@ fn a_mirror_is_one_display() {
     );
     tab(&mut session, &mut client, "org.example.Only");
     assert_eq!(display_of(&mut session, "org.example.Only"), Some(0));
-    assert_eq!(window_tabs(&session), ["org.example.Only"]);
+    assert_eq!(window_tabs(&session), [desk_name("org.example.Only")]);
 }
 
 #[test]
@@ -448,7 +453,7 @@ fn a_dialog_floats_centred_over_its_parent_without_a_tab() {
     );
     assert_eq!(
         window_tabs(&session),
-        ["org.example.Editor"],
+        [desk_name("org.example.Editor")],
         "a dialog takes no tab"
     );
     assert_eq!(

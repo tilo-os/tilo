@@ -34,14 +34,10 @@ NATIVE_TEST_FEATURES = {
     # build only with it. Its loopback tests of every backend (`desktop`) need
     # the other client features; the public-server ones (`live`) stay ignored.
     "tilo-net": ("proxy-dev-server", "json", "ws", "webtransport", "sockets"),
-    # Its relays, clients and their real-WebTransport tests are behind
-    # `relay`; without it the package's own tests are the voice codec alone.
-    "tilo-moq": ("relay",),
     # The listener browsers and the fetch proxy reach a host through, and their
     # tests, are behind `web`, which every deployed relay enables. (`agents`
     # links every web app, so its tests run with the agent packages.)
     "tilo-relay": ("web",),
-    "tilo-relay-shell": ("web",),
     # The rest compile their tests only with a feature their default build
     # leaves to the dependents that want it; each costs a few small crates.
     "wire-frame": ("tokio", "postcard"),
@@ -82,15 +78,14 @@ NATIVE_TEST_FEATURES = {
 # unseen, as the Imager's did when the installation became a feature. Not in
 # the test family's shared jobs, whose memory t budgets for one build each.
 # Those whose tested features are a server's (the gateway's inference and host
-# backend, tilo-net's development proxy, tilo-moq's relay, tilo-crypto's test
-# SRP server) ship to clients without them; every other build has them
+# backend, tilo-net's development proxy, tilo-crypto's test SRP server) ship
+# to clients without them; every other build has them
 # (workspace-unify), so code that compiles only with them would pass unseen.
 DEFAULT_BUILDS_ALSO_CHECKED = (
     "imager",
     "imager-backend",
     "tilo-crypto",
     "tilo-model-gateway",
-    "tilo-moq",
     "tilo-net",
     "tilo-test-env",
 )

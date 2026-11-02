@@ -7,8 +7,8 @@
 //! reconnect, joins afresh once when the host forgot the participation
 //! (a reconnect after [`PARTICIPATION_TTL`](tilo_relay_protocol::voice::PARTICIPATION_TTL)),
 //! and leaves. Each grant the host sends is handed on as a
-//! [`VoiceEvent::Granted`]: the token for the voice carrier's admission
-//! preface, renewed by the host before it expires, and the call's roster.
+//! [`VoiceEvent::Granted`]: this participation's directions in the call and
+//! its roster, which the host refreshes whenever either changes.
 
 use std::collections::HashMap;
 
@@ -298,17 +298,11 @@ mod tests {
                 call,
                 epoch: 1,
                 participation,
-                token: vec![1; 32],
-                endpoint: "https://host/moq/voice".into(),
-                fingerprints: Vec::new(),
                 directions: Directions {
                     publish: true,
                     subscribe: true,
                 },
-                publication: None,
-                subscriptions: Vec::new(),
                 participants: Vec::new(),
-                expires_at_ns: 0,
             }),
         }
     }

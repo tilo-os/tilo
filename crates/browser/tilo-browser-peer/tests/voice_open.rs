@@ -142,9 +142,9 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     })
     .await;
     assert_eq!(
-        full.subscriptions.len(),
-        11,
-        "everyone hears the eleven others"
+        full.participants.len(),
+        12,
+        "everyone is in the call with the eleven others"
     );
 
     // A device joining afresh replaces its own participation: still twelve.

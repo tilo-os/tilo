@@ -567,11 +567,6 @@ impl Shared {
         std::mem::take(&mut *self.app_actions.borrow_mut())
     }
 
-    /// The applications this desktop opens: the bundle's.
-    pub fn catalogue(&self) -> Vec<Application> {
-        catalogue()
-    }
-
     /// Who holds each window of `tree` this desktop's person `me` may not
     /// close or move, named as `person` (by user root) names people here:
     /// the windows the desktop's policy keeps for whoever opened them

@@ -42,7 +42,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
   const runtime = {
     calls,
     get peer() { return peer; },
-    async hostInfo(post) { calls.hostPost = post; return JSON.stringify({hostCert: {}, webtransportPort: 443, certificateSha256: 'ab'.repeat(32)}); },
+    async hostInfo(post) { calls.hostPost = post; return JSON.stringify({hostCert: {}}); },
     async certifyDevice(post, user, label, invite, custody, onPairingCode) {
       calls.certify.push({post, user, label, custody});
       onPairingCode('123456');
@@ -163,7 +163,6 @@ test('first connect certifies over HTTPS once, shows the pairing code and keeps 
   assert.equal(runtime.peer.workspace, WORKSPACE);
   assert.deepEqual(runtime.peer.config.cert, {device: 1});
   assert.equal(typeof runtime.peer.post, 'function', 'the session posts to the host origin');
-  assert.equal(peer.host.certificateSha256, 'ab'.repeat(32));
   await peer.dispose();
 
   const second = await connect(options(runtime, store));
@@ -190,7 +189,7 @@ test('a certificate reaches the session byte for byte, its nanosecond timestamps
 test('a guest certificate from an invitation reaches the session byte for byte', async () => {
   const runtime = fakeRuntime();
   runtime.askToJoin = async () => `{"reply":{"kind":"admitted","room":"${WORKSPACE}","workspaceId":"7","name":"Acme","role":"Editor"},"cert":${LINUX_CERT}}`;
-  runtime.hostInfo = async () => `{"hostCert":{"issued_at_ns":${NANOS}},"webtransportPort":443,"certificateSha256":"${'ab'.repeat(32)}"}`;
+  runtime.hostInfo = async () => `{"hostCert":{"issued_at_ns":${NANOS}}}`;
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const peer = await joinWorkspace({
     origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, admissionToken: 'token',
@@ -359,11 +358,11 @@ test('reauthentication forgets the certificate and certifies again', async () =>
   const peer = await connect(options(runtime, store));
   runtime.peer.emit('failed');
   assert.equal(peer.getSnapshot().phase, 'failed');
-  runtime.hostInfo = async () => JSON.stringify({hostCert: {host: 'new'}, webtransportPort: 443, certificateSha256: 'cd'.repeat(32)});
+  runtime.hostInfo = async () => JSON.stringify({hostCert: {host: 'new'}});
   await peer.recover({kind: 'reauthenticate'});
   assert.equal(runtime.calls.certify.length, 2);
   assert.equal(runtime.calls.started[0].disposed, true);
-  assert.equal(peer.host.certificateSha256, 'cd'.repeat(32), 'a changed host is learnt again');
+  assert.deepEqual(peer.host.hostCert, {host: 'new'}, 'a changed host is learnt again');
   await peer.recover({kind: 'retry-connection'});
   assert.equal(runtime.peer.reconnects, 1);
   await peer.dispose();
@@ -376,10 +375,10 @@ test('a kept certificate of another host than the one answering now is refused b
   const store = memoryStore();
   const host = (user, device) => ({user_public_key: Array(32).fill(user), device_public_key: Array(32).fill(device)});
   await store.put('certificate', JSON.stringify({cert: {device: 9}, hostCert: host(1, 2)}));
-  runtime.hostInfo = async () => JSON.stringify({hostCert: host(1, 3), webtransportPort: 443});
+  runtime.hostInfo = async () => JSON.stringify({hostCert: host(1, 3)});
   await assert.rejects(connect(options(runtime, store)), {name: 'AdmissionError', code: 'host-changed', message: HOST_CHANGED});
   assert.equal(runtime.calls.started.length, 0, 'no session was started');
-  runtime.hostInfo = async () => JSON.stringify({hostCert: host(1, 2), webtransportPort: 443});
+  runtime.hostInfo = async () => JSON.stringify({hostCert: host(1, 2)});
   const same = await connect(options(runtime, store));
   assert.equal(runtime.calls.certify.length, 0, 'the same host takes the kept certificate');
   await same.dispose();
@@ -442,7 +441,7 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   // certificate, and (in the runtime's record beside it) the outbox.
   const kept = JSON.stringify({cert: {device: 9}, hostCert: hostCertOf(1, 2)});
   values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(kept));
-  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3), webtransportPort: 443});
+  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3)});
   const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, vaultStorage, profile,
     fetch: async () => { throw new Error('no network in tests'); }};
 
@@ -494,7 +493,7 @@ test('a device the workspace let go asks to join again under the certificate it 
   // text itself still matches the certificate's signature.
   const kept = JSON.stringify({cert: certificate, hostCert: host}).replace('"issued_at_ns":5', '"issued_at_ns":1792040183583123457');
   values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(kept));
-  runtime.hostInfo = async () => JSON.stringify({hostCert: host, webtransportPort: 443});
+  runtime.hostInfo = async () => JSON.stringify({hostCert: host});
   runtime.askToJoinAs = async (post, invitation, held, custodyKey, requestId, name, token) => {
     runtime.calls.askedAs = {held, token: token && new TextDecoder().decode(token)};
     return JSON.stringify({reply: {kind: 'admitted', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor'}, cert: JSON.parse(held).cert});
@@ -530,7 +529,7 @@ test('a peer with a store of its own never moves it: a host set up again is refu
   const store = memoryStore();
   await store.put('certificate', JSON.stringify({cert: {device: 9}, hostCert: hostCertOf(1, 2)}));
   await store.put('peer-record', 'outbox for the previous host');
-  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3), webtransportPort: 443});
+  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3)});
   await assert.rejects(joinWorkspace({origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity: person(),
     admissionToken: 'one-time-token', runtime, custody, store, storage: null,
     fetch: async () => { throw new Error('no network in tests'); }}), {code: 'host-changed'});
@@ -541,10 +540,10 @@ test('a peer with a store of its own never moves it: a host set up again is refu
 test('reauthenticating against a host set up again reloads the page to join it, keeping the certificate', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
-  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 2), webtransportPort: 443});
+  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 2)});
   await store.put('certificate', JSON.stringify({cert: {device: 9}, hostCert: hostCertOf(1, 2)}));
   const peer = await connect(options(runtime, store));
-  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3), webtransportPort: 443});
+  runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3)});
   let reloads = 0;
   const location = globalThis.location;
   globalThis.location = {reload: () => { reloads += 1; }};

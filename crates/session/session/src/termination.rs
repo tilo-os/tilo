@@ -5,7 +5,10 @@
 //!
 //! The handler only stores a flag and writes a byte to a pipe, both async-signal-safe; a thread
 //! of its own reads the pipe and wakes the loop, which reads the flag ([`asked`]) on its pass.
-//! A second signal while the session is ending ends the process at once, as that signal does.
+//! A second SIGINT while the session is ending ends the process at once, as that signal does.
+//! A second SIGTERM or SIGHUP is the same stop delivered twice — a stop of the session's whole
+//! process group signals every member, and a wrapper that was signalled with it passes it on to
+//! the session it runs — and does not cut that stop's cleanup short.
 
 use std::io;
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
@@ -23,7 +26,13 @@ static WAKE_FD: AtomicI32 = AtomicI32::new(-1);
 
 extern "C" fn on_signal(signal: libc::c_int) {
     if ASKED.swap(true, Ordering::SeqCst) {
-        // The second: the person means it. The default action ends the process.
+        if signal != libc::SIGINT {
+            // The same stop arriving twice: the session is already ending, and
+            // ending it at once would skip what the first signal asked it to
+            // put away.
+            return;
+        }
+        // A second SIGINT: the person means it. The default action ends the process.
         // SAFETY: signal(2) and raise(3) are async-signal-safe.
         unsafe {
             libc::signal(signal, libc::SIG_DFL);

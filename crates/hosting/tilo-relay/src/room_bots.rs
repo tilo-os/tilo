@@ -351,7 +351,6 @@ pub fn workspace_record(catalogue: &tilo_agent_participant::AppCatalogue, app: &
 
 pub mod attachments;
 pub mod discord;
-pub mod discord_voice;
 pub mod installed;
 pub mod membership;
 pub mod requested;

@@ -797,7 +797,6 @@ fn key(address: &ActionAddress) -> String {
     format!("{}\u{1f}{}", address.resource, address.action)
 }
 
-/// The kind answers are grouped under.
 /// The kind worked-out answers are grouped under, in the desktop's
 /// language.
 #[must_use]
@@ -946,6 +945,13 @@ pub fn web_kind() -> ResourceKind {
 #[must_use]
 pub fn websites_kind() -> ResourceKind {
     ResourceKind::Custom(crate::i18n::t("search-kind-websites"))
+}
+
+/// The kind the answer to a question is grouped under, in the desktop's
+/// language.
+#[must_use]
+pub fn ask_kind() -> ResourceKind {
+    ResourceKind::Custom(crate::i18n::t("search-kind-ask"))
 }
 
 /// A service row's score when the query names the service alone: below an

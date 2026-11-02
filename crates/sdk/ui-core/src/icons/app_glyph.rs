@@ -12,10 +12,15 @@ use super::Icon;
 /// `dev.tilo.notes`) in menu category `category`, if it has one.
 #[must_use]
 pub fn app_glyph(package_id: &str, category: Option<&str>) -> Icon {
-    let name = package_id
+    // A window of an app the machine installed says so by its desktop
+    // entry's id (`host:so.tilo.notes.desktop`): the app is the same one
+    // whichever way it was opened, so it gets the same glyph.
+    let id = package_id.strip_prefix("host:").unwrap_or(package_id);
+    let id = id.strip_suffix(".desktop").unwrap_or(id);
+    let name = id
         .strip_prefix("so.tilo.")
-        .or_else(|| package_id.strip_prefix("dev.tilo."))
-        .unwrap_or(package_id);
+        .or_else(|| id.strip_prefix("dev.tilo."))
+        .unwrap_or(id);
     named(name).unwrap_or_else(|| category.map_or(Icon::AppWindow, category_glyph))
 }
 
@@ -96,6 +101,19 @@ mod tests {
         assert_eq!(app_glyph("org.example.x", Some("Development")), Icon::Code);
         assert_eq!(app_glyph("org.example.x", Some("Weird")), Icon::AppWindow);
         assert_eq!(app_glyph("org.example.x", None), Icon::AppWindow);
+    }
+
+    #[test]
+    fn a_host_apps_desktop_entry_has_the_glyph_of_the_app_it_opens() {
+        assert_eq!(
+            app_glyph("host:so.tilo.notes", None),
+            Icon::FileText,
+            "a window of an app the machine installed shows that app's glyph"
+        );
+        assert_eq!(
+            app_glyph("host:so.tilo.file-explorer.desktop", None),
+            Icon::Folder
+        );
     }
 
     #[test]

@@ -293,7 +293,7 @@ fn session_matches_full_renders(sparse: bool) {
         raster
             .rasterize(
                 (device, queue),
-                &mut renderer,
+                Some(&mut renderer),
                 target,
                 FrameContent {
                     scene: input.scene,

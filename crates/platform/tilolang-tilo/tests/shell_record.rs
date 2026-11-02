@@ -126,6 +126,13 @@ fn workspace() -> Replica {
             )
             .expect("the session's clock is written on the desk");
     }
+    // The device's and Settings' readings the desk's views read: published as the session
+    // publishes them, an empty reading until a service says more. A view that reads a
+    // resource with no reading at all traps as the desk opens.
+    for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
+        let target = tilolang_tilo::runtime::ResourceRef::parse_id(resource, ty).unwrap();
+        replica.host.runtime().set_reading(&target, "{}").unwrap();
+    }
     replica.commit();
     replica
 }
@@ -386,6 +393,109 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
     assert!(!runs.is_empty(), "the dock and the bar are runs");
 }
 
+/// The bar's material is the theme's own, chosen by the person's record: the glass of the
+/// translucent style, the calm opaque surface of the solid one, on the same chrome.
+#[test]
+fn the_bars_material_is_the_one_its_style_names() {
+    /// The material the bar's chrome takes in the view the person sees, as the theme reads it.
+    fn material(r: &Replica) -> String {
+        let view = desk_view(r);
+        let bar = nodes(&view, "ui.Chrome")
+            .into_iter()
+            .find(|node| matches!(node.props.get("name"), Some(Value::Text(name)) if name == "Top bar"))
+            .unwrap_or_else(|| panic!("the desk shows a bar: {:?}", view.tree()));
+        format!("{:?}", bar.props.get("material"))
+    }
+    let mut r = workspace();
+    r.commit();
+    assert!(
+        material(&r).contains("calm"),
+        "a fresh shell's bar is calm: {}",
+        material(&r)
+    );
+    let translucent = pick(&r, "Finish", "translucent");
+    let record = shell_ref(&r);
+    choose(&r, "set_bar_finish", vec![record, translucent]);
+    r.commit();
+    assert!(
+        material(&r).contains("glass"),
+        "a translucent bar is the theme's glass: {}",
+        material(&r)
+    );
+    let solid = pick(&r, "Finish", "solid");
+    let record = shell_ref(&r);
+    choose(&r, "set_bar_finish", vec![record, solid]);
+    r.commit();
+    assert!(
+        material(&r).contains("calm"),
+        "and back to calm: {}",
+        material(&r)
+    );
+}
+
+/// The charge's control reads the pack's own state: a pack taking charge (or waiting for it)
+/// shows the charging battery and says so, and a pack that drains shows the plain one.
+#[test]
+fn a_charging_pack_shows_the_charging_battery() {
+    /// Publish `reading` for the pack, and nothing for the rest of the device.
+    fn charge(r: &mut Replica, reading: &str) {
+        for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
+            let target = tilolang_tilo::runtime::ResourceRef::parse_id(resource, ty).unwrap();
+            let reading = if resource == "power:battery" {
+                reading
+            } else {
+                "{}"
+            };
+            r.host.runtime().set_reading(&target, reading).unwrap();
+        }
+        r.commit();
+    }
+    /// Whether the bar shows the charging battery's glyph.
+    fn charging_glyph(view: &tilolang_runtime::ViewInstance) -> bool {
+        let tree = format!("{:?}", view.tree());
+        tree.contains("battery-charging") || tree.contains("battery_charging")
+    }
+    let mut r = workspace();
+    charge(
+        &mut r,
+        r#"{"present": true, "percentage": 61, "state": "charging", "on_battery": false}"#,
+    );
+    let taking = desk_view(&r);
+    assert!(
+        says(&taking, "61%, charging"),
+        "the charge says it takes charge: {:?}",
+        taking.tree()
+    );
+    assert!(
+        charging_glyph(&taking),
+        "a charging pack shows the charging battery: {:?}",
+        taking.tree()
+    );
+    charge(
+        &mut r,
+        r#"{"present": true, "percentage": 61, "state": "pending-charge", "on_battery": true}"#,
+    );
+    assert!(
+        charging_glyph(&desk_view(&r)),
+        "a pack waiting for its charger shows it too"
+    );
+    charge(
+        &mut r,
+        r#"{"present": true, "percentage": 61, "state": "discharging", "on_battery": true}"#,
+    );
+    let draining = desk_view(&r);
+    assert!(
+        says(&draining, "61%") && !says(&draining, "charging"),
+        "a pack that drains says the charge alone: {:?}",
+        draining.tree()
+    );
+    assert!(
+        !charging_glyph(&draining),
+        "and shows the plain battery: {:?}",
+        draining.tree()
+    );
+}
+
 /// The macOS bar's menus are the focused window's own: its resource's actions in the runs the
 /// app declared (the notes app's "Note" and "Tags"), each item running the app's action, never
 /// a menu the shell made up.
@@ -448,6 +558,52 @@ fn the_macos_bar_carries_the_focused_windows_own_menus() {
         !says(&macos, "\"File\""),
         "no menu the shell made up: {}",
         card(&macos)
+    );
+}
+
+/// Every surface that names a window reads the session's one answer: the window's own title and
+/// its app's own name, never an app id.
+#[test]
+fn a_window_is_named_by_its_window_and_app_never_an_id() {
+    let mut r = workspace();
+    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.commit();
+    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    r.commit();
+    let arrangement = scenario(&r, APP, "a reference lands beside its place");
+    let meta = r.host.package(APP).unwrap().meta;
+    let front = meta
+        .views
+        .iter()
+        .find(|v| v.name == "front_window")
+        .expect("the front window's view")
+        .id
+        .clone();
+    let view = r
+        .host
+        .runtime()
+        .open_view(
+            &Principal::new("ada"),
+            &front,
+            vec![arrangement, Value::Bool(false)],
+        )
+        .unwrap();
+    let names: Vec<String> = nodes(&view, "ui.WindowFrame")
+        .iter()
+        .filter_map(|frame| match frame.props.get("name") {
+            Some(Value::Text(name)) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec!["design — Chat".to_owned()],
+        "a window reads as its own title and its app: {names:?}"
+    );
+    let tree = format!("{:?}", view.tree());
+    assert!(
+        !tree.contains("so.tilo.lang.chat\""),
+        "the desk never shows the id it opens a place by: {tree}"
     );
 }
 

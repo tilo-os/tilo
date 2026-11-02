@@ -45,6 +45,7 @@ use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use crate::overlays::{Overlays, Slot};
 use crate::overview::{OverviewHost, workspace_cards};
 use crate::overview_panel::{OverviewPanel, OverviewPick};
+use crate::search_overlay::SearchOverlay;
 use crate::shortcuts::{page_chord, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
@@ -457,7 +458,13 @@ impl ui::resources::PublishesResources for DeskLayer {
                 .flat_map(|workspace| &workspace.strips)
                 .flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs)
-                .map(|tab| (tab.id, tab.title.clone()))
+                .map(|tab| {
+                    let title = tilo_desktop_model::apps::canonical_app_id(&tab.tile).map_or_else(
+                        || tab.title.clone(),
+                        |app| tilo_desktop_search::names::window_name(&app, &tab.title),
+                    );
+                    (tab.id, title)
+                })
                 .collect()
         });
         let (query, rows) = self.handle.search_rows();
@@ -729,6 +736,10 @@ pub struct DesktopChrome {
     reveals: Rc<RefCell<Reveals>>,
     /// The way out of the window that filled a display, said once over it.
     fullscreen_hint: FullscreenHint,
+    /// The desk's search palette, over the windows the desk draws: it is the
+    /// one surface here that must cover a window in front, so the chrome
+    /// draws it rather than the desk under them.
+    search: SearchOverlay,
 }
 
 /// The overlays the chrome paints itself, as opposed to the retained widgets
@@ -742,11 +753,13 @@ enum PaintedOverlay {
     Emoji,
     /// The way out of the window that filled a display.
     Hint,
+    /// The search palette.
+    Search,
 }
 
 impl PaintedOverlay {
     /// Every painted overlay, bottom to top.
-    const ALL: [Self; 3] = [Self::StripLabels, Self::Emoji, Self::Hint];
+    const ALL: [Self; 4] = [Self::StripLabels, Self::Emoji, Self::Hint, Self::Search];
 
     /// The key its node keeps in the chrome's tree, so the id survives the
     /// other overlays opening and closing.
@@ -755,6 +768,7 @@ impl PaintedOverlay {
             Self::StripLabels => "chrome-strip-labels",
             Self::Emoji => "chrome-emoji-card",
             Self::Hint => "chrome-fullscreen-way-out",
+            Self::Search => "chrome-search-palette",
         })
     }
 
@@ -764,6 +778,7 @@ impl PaintedOverlay {
             Self::StripLabels => chrome.navigator.is_open(),
             Self::Emoji => chrome.emoji.is_open(),
             Self::Hint => chrome.fullscreen_hint.is_up(ui::time::now()),
+            Self::Search => chrome.search.is_open(),
         }
     }
 }
@@ -782,6 +797,7 @@ impl DesktopChrome {
         tilo_menu: TiloMenu,
         mac: bool,
     ) -> Self {
+        let search = SearchOverlay::new(handle.clone());
         Self {
             bar,
             compact: Vec::new(),
@@ -813,6 +829,7 @@ impl DesktopChrome {
             focused: false,
             reveals: Rc::default(),
             fullscreen_hint: FullscreenHint::default(),
+            search,
         }
     }
 
@@ -916,6 +933,7 @@ impl DesktopChrome {
             (Slot::TiloMenu, self.tilo_menu.is_open()),
             (Slot::Overview, self.overview.is_open()),
             (Slot::Strips, self.navigator.takes_keys()),
+            (Slot::Search, self.search.is_open()),
         ] {
             if open == self.overlays.is_open(slot) {
                 continue;
@@ -959,6 +977,7 @@ impl DesktopChrome {
             PaintedOverlay::StripLabels => self.navigator.accessibility(),
             PaintedOverlay::Emoji => self.emoji.accessibility(),
             PaintedOverlay::Hint => self.fullscreen_hint.accessibility(ui::time::now()),
+            PaintedOverlay::Search => self.search.accessibility(),
         }
     }
 
@@ -2272,6 +2291,7 @@ impl Widget for DesktopChrome {
             changed = true;
         }
         changed |= self.emoji.needs_redraw();
+        changed |= self.search.update(state, path);
         self.observe_navigation();
         self.publish_overlays();
         if let Some(open) = &self.overview_open {
@@ -2310,7 +2330,8 @@ impl Widget for DesktopChrome {
         let _ = taffy.set_style(overview, style);
         let tilo_menu = self.tilo_menu.build_layout(taffy, theme, map);
         let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
-        let mut kids = vec![bar, content, overview, tilo_menu, workspace_menu];
+        let search = self.search.build_layout(taffy, theme, map);
+        let mut kids = vec![bar, content, overview, tilo_menu, workspace_menu, search];
         // Every other display's bar stands over its own display's top
         // edge, laid out across the desk: it takes no room in the column,
         // its place carrying it where its display is.
@@ -2342,6 +2363,7 @@ impl Widget for DesktopChrome {
             overview,
             tilo_menu,
             workspace_menu,
+            search,
             compact @ ..,
         ] = &kids[..]
         else {
@@ -2353,6 +2375,7 @@ impl Widget for DesktopChrome {
         self.tilo_menu.apply_layout(taffy, *tilo_menu, inner);
         self.workspace_menu
             .apply_layout(taffy, *workspace_menu, inner);
+        self.search.apply_layout(taffy, *search, inner);
         for (bar, node) in self.compact.iter_mut().zip(compact) {
             bar.apply_layout(taffy, *node, inner);
         }
@@ -2394,11 +2417,23 @@ impl Widget for DesktopChrome {
         // chrome that would leave it, so the words saying how are the only
         // way out the person can see.
         self.fullscreen_hint.draw(scene, transform, text, theme);
+        // Topmost: the search palette dims what it stands over, a window in
+        // front included, and the card over it.
+        self.search.draw(scene, transform, text, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let kids = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let [bar, _, overview, tilo_menu, workspace_menu, compact @ ..] = &kids[..] else {
+        let [
+            bar,
+            _,
+            overview,
+            tilo_menu,
+            workspace_menu,
+            search,
+            compact @ ..,
+        ] = &kids[..]
+        else {
             return;
         };
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -2408,6 +2443,16 @@ impl Widget for DesktopChrome {
             ));
         } else if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.cursor = None;
+        }
+        // The search palette stands over everything, a window in front
+        // included: while it is up, every key and press is its, and its own
+        // chord or a press off the card leaves search. While it is down its
+        // chord opens it, before a menu or the bar takes that key.
+        self.search
+            .handle_event(event, &mut ctx.reborrow(ctx.path, *search));
+        if *ctx.handled {
+            self.publish_overlays();
+            return;
         }
         // The emoji picker is modal: its own chord closes it, and every other
         // key and press is the card's, reaching nothing behind it.
@@ -2498,6 +2543,7 @@ impl Widget for DesktopChrome {
             &self.overview,
             &self.tilo_menu,
             &self.workspace_menu,
+            &self.search,
         ];
         children.extend(self.compact.iter().map(|bar| bar as &dyn Widget));
         children
@@ -2584,6 +2630,7 @@ impl Widget for DesktopChrome {
             &mut self.overview,
             &mut self.tilo_menu,
             &mut self.workspace_menu,
+            &mut self.search,
         ];
         children.extend(self.compact.iter_mut().map(|bar| bar as &mut dyn Widget));
         children
@@ -2632,17 +2679,22 @@ impl Widget for DesktopChrome {
     /// The bar's own deadline turns its clock over on the minute, on every
     /// display that shows one.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        [&self.bar as &dyn Widget, &self.overview, &self.tilo_menu]
-            .into_iter()
-            .chain(self.compact.iter().map(|bar| bar as &dyn Widget))
-            .filter_map(wake_deadline)
-            .chain(
-                self.navigator
-                    .next_wake_deadline(&self.navigator_frame, ui::time::now()),
-            )
-            .chain(self.reveals.borrow().deadline())
-            .chain(self.fullscreen_hint.next_wake_deadline(ui::time::now()))
-            .min()
+        [
+            &self.bar as &dyn Widget,
+            &self.overview,
+            &self.tilo_menu,
+            &self.search,
+        ]
+        .into_iter()
+        .chain(self.compact.iter().map(|bar| bar as &dyn Widget))
+        .filter_map(wake_deadline)
+        .chain(
+            self.navigator
+                .next_wake_deadline(&self.navigator_frame, ui::time::now()),
+        )
+        .chain(self.reveals.borrow().deadline())
+        .chain(self.fullscreen_hint.next_wake_deadline(ui::time::now()))
+        .min()
     }
 
     fn name(&self) -> &'static str {

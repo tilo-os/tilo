@@ -966,7 +966,7 @@ pub struct RelayProtocol {
     pub autobind: Option<WorkspaceAutobind>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
     /// Set once when the host starts serving browsers: the rooms whose
-    /// voice carrier it serves.
+    /// calls it carries.
     pub carried_calls: Arc<std::sync::OnceLock<crate::rooms::WeakRooms>>,
     pub agents: crate::peer::AgentRegistry,
     pub compactor: crate::compaction::Compactor,
@@ -978,7 +978,6 @@ pub struct RelayProtocol {
 
 impl RelayProtocol {
     /// This relay's certificate and agent trust.
-    #[cfg(feature = "web")]
     pub fn trust(&self) -> crate::room_access::RelayTrust<'_> {
         crate::room_access::RelayTrust {
             revocations: &self.identity.revocations,

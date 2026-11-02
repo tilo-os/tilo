@@ -127,7 +127,7 @@ packages = [
     "tilo-agent-participant", "tilo-app", "tilo-bluez", "tilo-browser-compute",
     "tilo-browser-peer", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
-    "tilo-location", "tilo-model-gateway", "tilo-moq", "tilo-notify", "tilo-ntfs-protocol",
+    "tilo-location", "tilo-model-gateway", "tilo-notify", "tilo-ntfs-protocol",
     "tilo-paint-stream", "tilo-pdf", "tilo-relay", "tilo-staging-reclaim", "tilo-ui", "tilo-vmd",
     "tilo-web-search", "tilo-wet-media", "tilolang-app", "tilolang-host", "tilolang-tilo",
     "tube", "typst-editor", "ui-examples", "ush", "windows-vm", "word-processor",
@@ -357,17 +357,13 @@ env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin
 on = ["stable", "dispatch", "idle"]
 heavy = true
 
-# The live transport suites load the MoQ library built from `scripts/moq-browser`, which needs
-# npm as a layer over the image.
 [[check.matrix.set]]
 when = { group = "browser-compute-web" }
-setup = { run = "dnf install -y --setopt=install_weak_deps=False npm" }
-run = "npm ci --prefix scripts/moq-browser --no-audit --no-fund --loglevel=error\nnode scripts/moq-browser/build.mjs\npython3 tools/ci/suites.py run --jobs 8 --group browser-compute-web"
+run = "python3 tools/ci/suites.py run --jobs 8 --group browser-compute-web"
 
 [[check.matrix.set]]
 when = { group = "browser-runtime-web" }
-setup = { run = "dnf install -y --setopt=install_weak_deps=False npm" }
-run = "npm ci --prefix scripts/moq-browser --no-audit --no-fund --loglevel=error\nnode scripts/moq-browser/build.mjs\npython3 tools/ci/suites.py run --jobs 8 --group browser-runtime-web"
+run = "python3 tools/ci/suites.py run --jobs 8 --group browser-runtime-web"
 
 # ---- Per-area checks -------------------------------------------------------------
 #
@@ -550,7 +546,6 @@ default = false
 [[check]]
 name = "web-examples"
 run = "bash tools/ci/build-web-examples.sh $(for d in examples/apps/*/; do printf ' example-%s' \"$(basename \"$d\")\"; done)"
-env = { npm_config_cache = "/tmp/npm-cache" }
 on = ["stable", "dispatch", "idle"]
 heavy = true
 

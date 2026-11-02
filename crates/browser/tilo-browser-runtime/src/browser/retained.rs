@@ -16,14 +16,27 @@ pub(super) struct Retained {
 }
 
 impl Retained {
-    pub(super) fn new() -> Self {
+    /// `on_cpu` rasterizes frames on the CPU and uploads the pixels: how a
+    /// page draws until its renderer's pipelines are compiled.
+    pub(super) fn new(on_cpu: bool) -> Self {
         Self {
-            raster: ui::retained_raster::RetainedRaster::new(false),
+            raster: ui::retained_raster::RetainedRaster::new(on_cpu),
             frames: ui::retained_raster::RetainedFrames::default(),
             generation: 0,
             #[cfg(debug_assertions)]
             check: None,
         }
+    }
+
+    /// Draw the frames after this one on the CPU or on the GPU: the target
+    /// then holds nothing of the last frame, so the next frame repaints it
+    /// whole.
+    pub(super) fn switch_raster(&mut self, on_cpu: bool) {
+        if self.raster.on_cpu() == on_cpu {
+            return;
+        }
+        self.raster = ui::retained_raster::RetainedRaster::new(on_cpu);
+        self.forget();
     }
 
     /// The target no longer shows the last presented frame: repaint all of
@@ -46,12 +59,23 @@ impl Retained {
 pub(super) fn check_retained(
     retained: &mut Retained,
     surface: &vello::util::RenderSurface<'static>,
-    renderer: &mut vello::Renderer,
+    renderer: Option<&mut vello::Renderer>,
     handle: &ui::gpu::DeviceHandle,
     physical: &vello::Scene,
     key: ui::retained_raster::TargetKey,
     full_redraw: bool,
 ) {
+    // The check renders a full frame on the GPU to compare with: a target
+    // rasterized on the CPU, or one whose renderer has not compiled yet, has
+    // nothing to compare with.
+    if retained.raster.on_cpu() {
+        retained.check = None;
+        return;
+    }
+    let Some(renderer) = renderer else {
+        retained.check = None;
+        return;
+    };
     if let Some(check) = &retained.check {
         let Some(differing) = check.differing() else {
             return;

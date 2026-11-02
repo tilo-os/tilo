@@ -45,6 +45,9 @@ node tools/perf/web_startup.mjs --bundle "$PWD/bundle" --device web-desktop --js
 # The page names the graphics step it waits on (`device`, `pipelines`,
 # `surface`), printed with its time: a slow first frame on a browser without
 # a GPU is the browser compiling the renderer's pipelines, not the page.
+# The bundle is served brotli-compressed, as a deployment serves it, so the
+# transfer it reports is the one a person waits on; `--warm` loads the page a
+# second time in the same browser, as someone coming back to it does.
 # `--chrome-arg=SWITCH` passes one browser switch (`=`, since a switch starts
 # with a dash), e.g. to ask for a hardware backend.
 

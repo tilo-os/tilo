@@ -1,10 +1,11 @@
-//! Later builds of the installed package, in a development session.
+//! Later builds of the package while it runs.
 //!
-//! A development session's launcher follows reinstalls of a module payload's package
-//! (`crates/packaging/launcher/src/live_module.rs`): it verifies each reinstall as a launch does,
-//! copies its payload into a directory bound read-only into this sandbox and names that
-//! generation in its `current` file. The launcher names the directory with [`UPDATES_ENV`];
-//! outside a development session there is no such directory, and nothing here runs.
+//! Whoever starts the app may give it a directory its later builds are published into: a
+//! development session's launcher follows reinstalls of the package
+//! (`crates/packaging/launcher/src/live_module.rs`), and `tilolang dev` on a desktop publishes
+//! each saved build itself (`crates/lang/tilolang-cli/src/dev.rs`). Both use the directory
+//! protocol of `tilo_app_module`: the directory is named in `TILO_APP_MODULE_UPDATES`. Without
+//! one, nothing here runs.
 //!
 //! A thread watches the directory, reads each new generation as a [`Bundle`] and wakes the
 //! windows, which take it over on their own thread ([`crate::window::Window`]): in place when
@@ -15,12 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
+use tilo_app_module::CURRENT_FILE;
 use tilolang_tilo::bundle::Bundle;
-
-/// The variable the launcher names the updates directory with.
-pub const UPDATES_ENV: &str = "TILO_APP_MODULE_UPDATES";
-/// The file in it that names the current generation.
-pub const CURRENT_FILE: &str = "current";
 
 /// A later build, read.
 #[derive(Clone)]
@@ -92,20 +89,18 @@ pub fn subscribe(wake: ui::wake::WakeHandle) {
     shared.wakes.push(wake);
 }
 
-/// Whether this process follows later builds: the launcher gave it an updates directory.
+/// Whether this process follows later builds: it was started with an updates directory.
 #[must_use]
 pub fn followed() -> bool {
     updates_dir().is_some()
 }
 
 fn updates_dir() -> Option<PathBuf> {
-    std::env::var_os(UPDATES_ENV)
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
+    tilo_app_module::dir_from_env()
 }
 
-/// Start watching for later builds of the installed package `app`, when the launcher gave this
-/// process an updates directory.
+/// Start watching for later builds of the installed package `app`, when this process was
+/// started with an updates directory.
 pub fn start(app: &str) {
     let Some(dir) = updates_dir() else {
         return;
@@ -119,7 +114,7 @@ pub fn start(app: &str) {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(not(target_arch = "wasm32"))]
 fn watch(dir: &Path, app: &str) {
     let (replaced, replacements) = std::sync::mpsc::channel();
     let watch = tilo_files::native::watch_changes(
@@ -136,13 +131,15 @@ fn watch(dir: &Path, app: &str) {
             return;
         }
     };
-    let mut seen = String::new();
+    let mut seen = started_generation(dir);
     loop {
-        if let Some(name) = current_generation(dir)
-            && name != seen
-        {
-            seen.clone_from(&name);
-            take(dir, &name, app);
+        match tilo_app_module::current(dir) {
+            Ok(Some(generation)) if Some(generation) != seen => {
+                seen = Some(generation);
+                take(dir, generation, app);
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("tilolang: {error}"),
         }
         if replacements.recv().is_err() {
             eprintln!("tilolang: not following later builds: the watch ended");
@@ -153,33 +150,31 @@ fn watch(dir: &Path, app: &str) {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_arch = "wasm32")]
 fn watch(_dir: &Path, _app: &str) {}
 
-fn current_generation(dir: &Path) -> Option<String> {
-    let path = dir.join(CURRENT_FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        // No build was published yet.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+/// The generation this process was started on, when it was started on one: it runs that build
+/// already, and taking it again would only redraw what is on screen.
+fn started_generation(dir: &Path) -> Option<u64> {
+    let module = std::env::var_os(tilolang_tilo::bundle::MODULE_ENV)?;
+    let module = Path::new(&module);
+    if module.parent() != Some(dir) {
+        return None;
+    }
+    let name = module.file_name()?.to_str()?;
+    match name.parse() {
+        Ok(generation) => Some(generation),
         Err(error) => {
-            eprintln!("tilolang: {}: {error}", path.display());
-            return None;
+            eprintln!("tilolang: the build it started on, {name}, names no generation: {error}");
+            None
         }
-    };
-    let name = text.trim();
-    if !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit()) {
-        Some(name.to_owned())
-    } else {
-        eprintln!("tilolang: {} names no build: {name:?}", path.display());
-        None
     }
 }
 
-/// Read generation `name` and hand it to the windows.
-fn take(dir: &Path, name: &str, app: &str) {
+/// Read generation `generation` and hand it to the windows.
+fn take(dir: &Path, generation: u64, app: &str) {
     let read_at = Instant::now();
-    let bundle = match Bundle::read(&dir.join(name)) {
+    let bundle = match Bundle::read(&dir.join(generation.to_string())) {
         Ok(bundle) => bundle,
         Err(error) => {
             eprintln!("tilolang: the new build does not read: {error}");

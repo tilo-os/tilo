@@ -1,0 +1,87 @@
+[package]
+name = "tilo-live"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "The live plane: a moq-lite session per device per scope, a relay that copies sealed bytes and admits from certificates and the roster, and the tilo-voice/1 and tilo-video/1 object profiles."
+license.workspace = true
+
+[features]
+default = []
+# The HTTPS server identity alone (`tls`): rustls, without the relay stack.
+tls = ["dep:rustls"]
+relay = ["tls", "dep:moq-net", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:hex", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
+# The same carrier over a direct iroh connection, beside WebTransport.
+native = ["relay", "dep:iroh"]
+
+[dependencies]
+# The scope of a track is a channel of an app's record.
+collab-types = { version = "0.1.0", path = "../collab-types" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+thiserror.workspace = true
+bytes = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+url = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
+moq-net = { workspace = true, optional = true }
+web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"], optional = true }
+quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
+rustls = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+iroh = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# Only for examples/wt_stream_signal_repro.rs (Chromium WebTransport crash reproducer).
+web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
+rustls.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
+tilo-test-env = { path = "../../dev/test-env" }
+# `tls` tests load a generated PEM pair from a temporary directory.
+rcgen.workspace = true
+tempfile.workspace = true
+# The native carrier test seals a track as a call's keys seal it.
+tilo-seal = { path = "../../system/tilo-seal" }
+
+[[bin]]
+name = "moq-proof"
+path = "src/bin/moq-proof.rs"
+required-features = ["relay"]
+
+[[example]]
+name = "wt_stream_signal_repro"
+path = "examples/wt_stream_signal_repro.rs"
+
+[[test]]
+name = "relay"
+required-features = ["relay"]
+
+[[test]]
+name = "client_admission"
+required-features = ["relay"]
+
+[[test]]
+name = "client_pictures"
+required-features = ["relay"]
+
+[[test]]
+name = "relay_goaway"
+required-features = ["relay"]
+
+[[test]]
+name = "window_tracks"
+required-features = ["relay"]
+
+[[test]]
+name = "live_native"
+required-features = ["relay", "native"]
+
+[lints]
+workspace = true

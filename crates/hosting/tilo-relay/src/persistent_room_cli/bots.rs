@@ -121,9 +121,6 @@ pub(super) async fn start_bots(
             .map(|(app, process)| (app.clone(), Arc::clone(process)))
             .collect::<BTreeMap<_, _>>();
         let certifier = tilo_relay::room_bots::membership::HostRootCertifier::new(root.clone());
-        if let Some(lane) = own.get(discord::APP).cloned() {
-            runners.extend(carry_calls(rooms, room, host_cert, &certifier, &bot, lane));
-        }
         let runner = BotRunner::new(
             rooms.clone(),
             room.to_owned(),
@@ -146,34 +143,6 @@ pub(super) async fn start_bots(
         runners.push(tokio::spawn(runner.run()));
     }
     Ok((runners, started.get(discord::APP).cloned()))
-}
-
-/// Carry `room`'s calls to Discord and back as `bot`'s device, through the
-/// Discord connector's worker `lane` the bot's runner uses too.
-fn carry_calls(
-    rooms: &Rooms,
-    room: &str,
-    host_cert: &DeviceCert,
-    certifier: &tilo_relay::room_bots::membership::HostRootCertifier,
-    bot: &tilo_relay::room_bots::installed::InstalledBot,
-    lane: Arc<impl tilo_relay::room_bots::discord_voice::CallLane>,
-) -> Option<tokio::task::JoinHandle<()>> {
-    match certifier.device(room, bot, tilo_clock::unix_now_ns()) {
-        Ok(device) => Some(tokio::spawn(
-            tilo_relay::room_bots::discord_voice::VoiceBridge::new(
-                rooms.clone(),
-                room.to_owned(),
-                host_cert.clone(),
-                device.cert,
-                lane,
-            )
-            .run(),
-        )),
-        Err(error) => {
-            tracing::error!(entry = %bot.entry, %error, "not carrying the Discord bridge's calls");
-            None
-        }
-    }
 }
 
 /// A file name for directory entry or program path `entry`.

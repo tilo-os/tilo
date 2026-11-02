@@ -160,3 +160,15 @@ identity-clock-wait-expired = Ihre Tilo-Identität ist sicher. Ihr Zertifikat ga
 
 ## wie die Einblendung die Tastatur nennt, deren Beleuchtung sie gerade ändert.
 osd-keyboard-name = Tastatur
+
+## Was ein Einfügen kopierter Dateien in einen Ordner ergeben hat.
+paste-app-name = Dateien
+paste-refused-title = Nichts wurde eingefügt
+paste-nothing-to-paste = Jeder Name war schon belegt, oder die Dateien liegen bereits in diesem Ordner.
+paste-not-a-folder = { $path } ist kein Ordner.
+paste-stopped = { $reason }
+paste-failed-title = Einige Dateien wurden nicht eingefügt
+paste-failed-body = { $failed } von { $total } sind nicht angekommen. { $name }: { $reason }
+paste-undone-title = Das letzte Einfügen wurde nicht fertig
+paste-undone-body = { $landed } von { $total } waren schon angekommen. Die bleiben; der Rest liegt wieder, wo er war.
+paste-undone-trouble = { $landed } von { $total } waren schon angekommen. Die bleiben; der Rest konnte noch nicht zurückgelegt werden: { $reason }

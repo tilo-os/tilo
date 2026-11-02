@@ -112,3 +112,8 @@ reason = "one JSON line per answer over the supervisor's socket, tagged by its `
 file = "crates/runtime/ush/src/supervisor/session_end.rs"
 enum = "EndReport"
 reason = "write-only: one JSON line a session's lease carries to the app that asked, tagged by its `ended` name, and nothing decodes it back; `lost` and `superseded` described relay sessions no longer served"
+
+[[break]]
+file = "crates/collab/collab-types/src/peer.rs"
+enum = "PeerPresencePayload"
+reason = "postcard presence frames between devices and between an app and its runtime, which speak only at an equal peer and runtime version; that variant said which services carried a page's media into a call, which calls riding the call lane no longer have, and both numbers were raised past its removal, so no device or app reads a frame written before it"
