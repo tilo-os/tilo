@@ -81,6 +81,9 @@ pub(crate) struct Shell {
     reading: std::collections::BTreeMap<String, String>,
     /// How often each was read for the shell.
     reads: std::collections::BTreeMap<String, u64>,
+    /// How many of the session's turns read some of them: what the views composed in places
+    /// waited on comes in one turn for everything one run of them read, not one per resource.
+    rounds: u64,
     /// The shell's record, shared by every part: the bar draws it and every other display's
     /// bar draws the same.
     record: Rc<RefCell<tilo_resource::Doc>>,
@@ -135,6 +138,7 @@ impl Shell {
             followed: None,
             reading: std::collections::BTreeMap::new(),
             reads: std::collections::BTreeMap::new(),
+            rounds: 0,
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             parts: Vec::new(),
             packages,
@@ -376,6 +380,9 @@ impl Shell {
                 }
             }
         }
+        if !fresh.is_empty() {
+            self.rounds += 1;
+        }
         for (id, ty) in fresh {
             *self.reads.entry(id.clone()).or_default() += 1;
             if let Some(reading) = services.read(&id) {
@@ -389,6 +396,11 @@ impl Shell {
     /// a test proves a change re-reads only what it touched by.
     pub(crate) fn reads(&self) -> std::collections::BTreeMap<String, u64> {
         self.reads.clone()
+    }
+
+    /// How many of the session's turns read readings for the shell's places.
+    pub(crate) const fn reading_rounds(&self) -> u64 {
+        self.rounds
     }
 
     /// The apps whose packages the shell's runtime holds loaded now, because a place shows
@@ -873,6 +885,13 @@ impl crate::Session {
             .as_ref()
             .map(Shell::loaded_apps)
             .unwrap_or_default()
+    }
+
+    /// How many of the session's turns read readings for the shell's places: each hands the
+    /// shell everything the views composed there read in one run of them.
+    #[must_use]
+    pub fn shell_reading_rounds(&self) -> u64 {
+        self.shell.as_ref().map_or(0, Shell::reading_rounds)
     }
 
     /// How often the session read each resource the shell's places show, by id, for the

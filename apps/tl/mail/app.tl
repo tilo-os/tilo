@@ -632,7 +632,7 @@ view mailboxes(a: Account) {
             std.header(actions(a))
         }
         overview: {
-            thread_list(shown)
+            thread_list(shown, fill)
         }
         content: {
             ui.EmptyState("No conversation selected", icon: .mail)
@@ -646,7 +646,7 @@ view mailboxes(a: Account) {
 view inbox(b: Mailbox) {
     let m = root Mail
     if let a = m.accounts.find(x -> x.mailboxes.any(y -> y.id() == b.id())) {
-        thread_list(in_mailbox(a, b))
+        thread_list(in_mailbox(a, b), fill)
     } else {
         ui.EmptyState("Nothing here", icon: .inbox)
     }

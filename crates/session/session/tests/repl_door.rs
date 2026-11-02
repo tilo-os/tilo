@@ -948,3 +948,68 @@ fn a_change_to_one_thread_rereads_only_that_threads_reading() {
         "only the conversation that changed is read again"
     );
 }
+
+/// A placed inbox settles: once its conversations are drawn, a session left alone runs the
+/// shell's views no more and draws no frame. A list's rows asked of the shell's own runtime go
+/// out on the turn they are asked, rather than the list taking frames until they would.
+#[test]
+fn a_placed_inbox_settles_and_draws_nothing_while_idle() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    place_the_inbox(&mut session, root.path());
+    for _ in 0..200 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let settled = session.shell_work().expect("the shell runs");
+    for _ in 0..200 {
+        session.step(Duration::from_millis(5)).expect("step");
+    }
+    let idle = session.shell_work().expect("the shell runs");
+    assert_eq!(
+        (idle.turns, idle.drawn),
+        (settled.turns, settled.drawn),
+        "an idle session runs and draws nothing"
+    );
+}
+
+/// The inbox's conversations come in together: the session reads what one run of the views
+/// read in one turn, so a placed inbox fills in as many turns as its views reach records deep
+/// (the mailbox, the mail's root, its account, the conversations), however many conversations
+/// it lists.
+#[test]
+fn a_placed_inbox_fills_in_a_turn_per_level_not_per_conversation() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let before = session.shell_reading_rounds();
+    place_the_inbox(&mut session, root.path());
+    for _ in 0..200 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let threads = session
+        .shell_reads()
+        .keys()
+        .filter(|id| id.contains(&format!("{MAIL}:")) && seeded_thread(&session, id))
+        .count();
+    let rounds = session.shell_reading_rounds() - before;
+    assert!(
+        threads > 4,
+        "the inbox read its conversations: {:?}",
+        session.shell_reads()
+    );
+    assert!(
+        rounds <= 5,
+        "{threads} conversations came in {rounds} turns, not one each"
+    );
+}
+
+/// Whether `id` is a seeded conversation of the mail app.
+fn seeded_thread(session: &Session, id: &str) -> bool {
+    fn find(resources: &[tilo_actions::ResourceSpec], id: &str, kind: &str) -> bool {
+        resources
+            .iter()
+            .any(|r| (r.id.as_str() == id && r.kind == kind) || find(&r.children, id, kind))
+    }
+    find(&session.resources(), id, &format!("tl.{MAIL}.Thread"))
+}

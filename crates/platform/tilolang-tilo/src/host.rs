@@ -392,16 +392,6 @@ fn union_label(keys: &[tilolang_runtime::meta::TypeKey]) -> String {
         .join(" | ")
 }
 
-/// The argument `value` of the type `ty`, as the door takes it: in the shape the action's
-/// published parameter declares ([`crate::surface::published_param`]), which the broker binds
-/// before it delivers, and which [`value_of`] reads back as the same value. A record by the
-/// catalogue's reference to it, of its own type, so a union or a type of another app says which
-/// it is; a plain enum by its case's name; a principal as the workspace subject it is; an option
-/// as its value, or null; lists and tuples item by item; rich text as its text, or encoded
-/// whole when it holds more than text. `owner` finds the package of an app the type names.
-///
-/// # Errors
-/// A value that is not of `ty`, or names a type no package declares.
 /// `meta` as a runtime that does not run its app loads it: each of its roots (`root Mail`,
 /// `root notes: Notes`) named as the resource its app publishes it as, the root's record
 /// (`root-<type id>`) by its published id. A root it names already is left as it is.
@@ -432,6 +422,16 @@ fn published_roots(meta: &Meta) -> Meta {
     meta
 }
 
+/// The argument `value` of the type `ty`, as the door takes it: in the shape the action's
+/// published parameter declares ([`crate::surface::published_param`]), which the broker binds
+/// before it delivers, and which [`value_of`] reads back as the same value. A record by the
+/// catalogue's reference to it, of its own type, so a union or a type of another app says which
+/// it is; a plain enum by its case's name; a principal as the workspace subject it is; an option
+/// as its value, or null; lists and tuples item by item; rich text as its text, or encoded
+/// whole when it holds more than text. `owner` finds the package of an app the type names.
+///
+/// # Errors
+/// A value that is not of `ty`, or names a type no package declares.
 pub fn argument_json(
     owner: &dyn Fn(&str) -> Result<Meta, String>,
     meta: &Meta,
