@@ -1056,14 +1056,7 @@ fn presence_bodies(value: &JsPresence, peer: u64, room: &str) -> Result<Vec<Vec<
                 },
             })
             .map_err(js_error)?;
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "the presence wire carries tile offsets as f32"
-            )]
-            let payload = PeerPresencePayload::Pointer {
-                x: at[0] as f32,
-                y: at[1] as f32,
-            };
+            let payload = PeerPresencePayload::Pointer { x: at[0], y: at[1] };
             bodies.push(presence_message(peer, room, key, payload)?);
         }
         Some(_) => {

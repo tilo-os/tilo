@@ -19,8 +19,11 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
         m.desktop
             .as_ref()
             .map(|d| {
-                serde_json::to_string(&d.handle.snapshot(&d.generation, d.shared.catalogue()))
-                    .map_err(error)
+                serde_json::to_string(
+                    &d.handle
+                        .snapshot(&d.generation, crate::desktop::catalogue()),
+                )
+                .map_err(error)
             })
             .transpose()
     })
