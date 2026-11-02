@@ -506,7 +506,10 @@ async fn a_page_and_a_native_device_exchange_sealed_presence_and_audio_through_a
         },
     )
     .await;
-    assert_eq!(opened.body, voiced);
+    // A heard audio object is the voice object with its payload opened, so
+    // the reader decodes it as one and gets the opus frame back.
+    let object = VoiceObject::decode(&opened.body).unwrap();
+    assert_eq!(object.payload, voiced);
 }
 
 /// A page's presence reaches a device across one relay hop, sealed and
