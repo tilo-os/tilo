@@ -46,7 +46,8 @@ pub struct HomeRelayHosting {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedWorkspace {
     /// Its workspace's id.
-    #[serde(rename = "workspace", alias = "room")]
+    // Sent as `room`: a frame reaches peers on other builds, which read the key they know.
+    #[serde(rename = "room", alias = "workspace")]
     pub workspace: String,
     /// Its name.
     pub name: String,
