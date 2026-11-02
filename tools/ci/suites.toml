@@ -801,9 +801,17 @@ readers = [
 
 [[cargo]]
 package = "tilolang-tilo"
-# The collaboration tests compile the built-in packages and the rich-text fixture from their sources.
-inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/"]
+# The collaboration tests compile the built-in packages and the rich-text fixture from their sources;
+# a view's platform apps are read from the surfaces they publish, the device's as the session holds it
+# and Settings' as its package ships it.
+inputs = [
+  "apps/tl/",
+  "crates/lang/tilolang/tests/fixtures/",
+  "apps/settings/surface.toml",
+  "crates/session/session/device-surface.json",
+]
 readers = [
+  "crates/platform/tilolang-tilo/src/platform_apps.rs",
   "crates/platform/tilolang-tilo/tests/agent_queries.rs",
   "crates/platform/tilolang-tilo/tests/budgets.rs",
   "crates/platform/tilolang-tilo/tests/bundle.rs",
@@ -1459,6 +1467,10 @@ package = "tilo-session"
 # each binary is installed; the shell package it compiles from source.
 inputs = [
   "apps/tl/shell/",
+  # The session's own package description, what its door publishes; and the notes app its
+  # screen tests load.
+  "apps/tl/session/",
+  "apps/tl/notes/",
   "os/usr/lib/systemd/system/shell-firstboot.service",
   "os/components.toml",
   # The registry both vaults decode, as builds that kept lifecycle records wrote it.
@@ -1467,6 +1479,8 @@ inputs = [
 readers = [
   "crates/session/session/tests/firstboot.rs",
   "crates/session/session/src/channels/vault.rs",
+  "crates/session/session/tests/session_package.rs",
+  "crates/session/session/tests/shell_screen.rs",
 ]
 
 [[cargo]]
@@ -2057,3 +2071,4 @@ package = "tilo-cli"
 # image's component manifest.
 inputs = ["os/components.toml"]
 readers = ["crates/system/tilo-cli/src/aliases.rs"]
+
