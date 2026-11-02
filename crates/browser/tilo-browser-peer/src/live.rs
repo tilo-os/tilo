@@ -24,41 +24,21 @@ use crate::ChannelContentKeys;
 /// The message a page shows when its browser cannot join live.
 pub const UNSUPPORTED: &str = "this browser cannot join live";
 
-/// Why the page could not join the live plane.
+/// Why the page could not join the live plane: one reason of its own — the
+/// browser has no WebTransport to join with — and everything the plane itself
+/// answers with, which a page reports as it is.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LiveError {
     /// The browser has no WebTransport, or no WebTransport subprotocol
     /// negotiation. There is no fallback: the page joins nothing.
     #[error("{UNSUPPORTED}")]
     Unsupported,
-    /// The host refused the page's grant, or its authority lapsed.
-    #[error("the host refused the page's live grant")]
-    Denied,
-    /// The carrier could not be reached, or did not finish its setup.
-    #[error("the live carrier is unavailable")]
-    Unavailable,
     /// The transport does not speak the live carrier's protocol.
     #[error("the transport does not speak the live carrier's protocol")]
     WrongProtocol,
-    /// The scope's keys cannot seal or open this page's tracks.
-    #[error("the page holds no media key for this scope")]
-    NoKey,
-    /// The plane refused the page's namespace or track.
-    #[error("the live plane refused the page's namespace")]
-    Refused,
-}
-
-impl From<PlaneError> for LiveError {
-    fn from(error: PlaneError) -> Self {
-        match error {
-            PlaneError::Denied | PlaneError::Ended => Self::Denied,
-            PlaneError::Unavailable => Self::Unavailable,
-            PlaneError::Refused(
-                tilo_call_lane::Refusal::NoKey(_) | tilo_call_lane::Refusal::Primitive,
-            ) => Self::NoKey,
-            PlaneError::Refused(_) | PlaneError::Invalid => Self::Refused,
-        }
-    }
+    /// The page did not reach the plane, or the plane refused it.
+    #[error(transparent)]
+    Plane(#[from] PlaneError),
 }
 
 /// Join `scope`'s live plane as this page's own device, through the relay
@@ -71,9 +51,9 @@ impl From<PlaneError> for LiveError {
 ///
 /// [`LiveError::Unsupported`] in a browser without WebTransport or without
 /// subprotocol negotiation, [`LiveError::WrongProtocol`] from a carrier that
-/// speaks another protocol, [`LiveError::Denied`] when the host refuses the
-/// grant, [`LiveError::Unavailable`] when the carrier fails first, and
-/// [`LiveError::NoKey`] when `keys` cannot seal this device's tracks.
+/// speaks another protocol, and [`LiveError::Plane`] for what the plane
+/// answers with: no carrier, a refused grant, or keys that cannot seal this
+/// device's tracks.
 ///
 /// [`LiveInfo::webtransport_origin`]: tilo_relay_protocol::web::LiveInfo
 pub async fn join(
@@ -92,7 +72,7 @@ pub async fn join(
         .await
         .map_err(|error| match error {
             tilo_net::NetError::Unsupported(_) => LiveError::Unsupported,
-            _ => LiveError::Unavailable,
+            _ => PlaneError::Unavailable.into(),
         })?;
     protocol_gate(transport.protocol())?;
     let opened = Opened {
@@ -111,7 +91,7 @@ pub async fn join(
         },
     )
     .await
-    .map_err(LiveError::from)
+    .map_err(Into::into)
 }
 
 /// A page's WebTransport session, with the grant it proves itself by: the one

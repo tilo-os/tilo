@@ -647,7 +647,10 @@ async fn a_browser_without_webtransport_is_told_so_and_offers_no_fallback() {
         Roster::new([PAGE]),
     )
     .await;
-    assert_eq!(refused.err(), Some(LiveError::Unavailable));
+    assert_eq!(
+        refused.err(),
+        Some(LiveError::Plane(PlaneError::Unavailable))
+    );
 }
 
 /// The base64 form of a pinned certificate digest.
