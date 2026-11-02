@@ -125,7 +125,6 @@ impl BooksApp {
             }
         }
         self.layout = None;
-        self.dirty = true;
     }
 
     /// Where the shelf holds the book `id` (the first book when it does not).

@@ -201,6 +201,10 @@ pub struct Window {
     undo: ui::undo::UndoAccess,
     /// A later build this window took and has not drawn yet: its first frame says so.
     undrawn: Option<Undrawn>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Window {
@@ -236,6 +240,7 @@ impl Window {
         );
         let view = AppWindow::new(Box::new(window_end), vec![endpoint, open_endpoint]);
         Self {
+            dirty: true,
             app,
             me,
             mode,
@@ -615,6 +620,14 @@ impl Widget for Window {
         dyn ui::presence::capability::PublishesPresence
     );
 
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "TilolangWindow"
     }
@@ -628,6 +641,7 @@ impl Widget for Window {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         let _phase = Phase::start("tl.sync");
         // Shown before the workspace's record, the window reads none: it opens over the indexes.
         let doc = self
@@ -690,6 +704,7 @@ impl Widget for Window {
         event: &ui::winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
+        self.dirty = true;
         self.view.handle_event(event, ctx);
     }
 

@@ -390,8 +390,14 @@ fn any_child(each: EachChild<'_>, dirty: fn(&dyn Widget) -> bool) -> Option<bool
     has_children.then_some(found)
 }
 
+/// Whether a container must draw again: a child is dirty, or one of them is
+/// on its way (`needs_animation_frame`) and paints other pixels this frame.
+/// A cache is only as fresh as the child that can repaint itself.
 pub(super) fn needs_redraw(each: EachChild<'_>) -> bool {
-    any_child(each, |child| child.needs_redraw()).unwrap_or(false)
+    any_child(each, |child| {
+        child.needs_redraw() || child.needs_animation_frame()
+    })
+    .unwrap_or(false)
 }
 
 pub(super) fn is_layout_dirty(each: EachChild<'_>) -> bool {

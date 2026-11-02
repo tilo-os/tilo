@@ -64,11 +64,16 @@ pub struct PathBar {
     /// What the bar painted, this frame and last, so a frame that left the
     /// trail or the field as they were repaints neither.
     own: ui::own_paint::OwnPaint,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl PathBar {
     pub fn new(sink: CommandSink) -> Self {
         Self {
+            dirty: true,
             crumbs: Breadcrumb::new(Vec::new()),
             targets: Vec::new(),
             crumbs_node: None,
@@ -296,6 +301,7 @@ impl Widget for PathBar {
     }
 
     fn mark_drawn(&mut self) {
+        self.dirty = false;
         self.own.present();
         self.field.mark_drawn();
         self.crumbs.mark_drawn();
@@ -316,6 +322,7 @@ impl Widget for PathBar {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         if self.editing {
             self.field.handle_event(event, ctx);
             match self.field.take_outcome() {
@@ -347,6 +354,10 @@ impl Widget for PathBar {
         } else {
             self.crumbs.cursor_shape(point)
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
     }
 
     fn name(&self) -> &'static str {

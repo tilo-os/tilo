@@ -5323,7 +5323,6 @@ impl Widget for BooksApp {
         if !focused {
             self.semantic_focus = None;
         }
-        self.dirty = true;
     }
 
     fn is_focused(&self) -> bool {
@@ -5382,12 +5381,12 @@ impl Widget for BooksApp {
             let (toc, notes) = (self.toc_open(), self.notes_open());
             self.toc_drawer.snap(toc);
             self.notes_drawer.snap(notes);
-            self.dirty = true;
         }
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn is_layout_dirty(&self) -> bool {

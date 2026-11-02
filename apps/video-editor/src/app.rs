@@ -1283,6 +1283,10 @@ pub struct VideoEditorApp {
     /// rate is carried as its bit pattern so the freshness test is an exact
     /// comparison rather than a float one.
     project_format_from: (u32, u32, u64),
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 /// A drag that started on a media-bin item and is heading for the timeline.
@@ -1330,6 +1334,7 @@ impl VideoEditorApp {
     )]
     pub fn new() -> Self {
         Self {
+            dirty: true,
             project: Project::new("Untitled"),
             stored: std::rc::Rc::new(Project::new("Untitled")),
             live: None,
@@ -6049,6 +6054,7 @@ impl Widget for VideoEditorApp {
     }
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.dirty = true;
         self.run_later();
         self.follow_document();
         self.take_notice_actions();
@@ -6363,6 +6369,7 @@ impl Widget for VideoEditorApp {
         reason = "the window-event dispatcher: one arm per event kind, in the order they arrive"
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         // Everything one input event edits is one undo step.
         let _gesture = self
             .actions
@@ -6988,6 +6995,14 @@ impl Widget for VideoEditorApp {
             }
         }
         Some(CursorIcon::Default)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

@@ -134,6 +134,10 @@ pub struct TimePicker {
     /// digit closes the cell and starts a fresh sequence on the next
     /// cell. Cleared when a cell is entered or when Esc is pressed.
     digit_buffer: String,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl TimePicker {
@@ -143,6 +147,7 @@ impl TimePicker {
     /// constructor.
     pub fn new(hours: u8, minutes: u8) -> Self {
         Self {
+            dirty: true,
             id: "time_picker".into(),
             accessible_name: None,
             hours: hours.min(HOUR_MAX),
@@ -342,16 +347,19 @@ impl TimePicker {
     }
 
     pub fn set_hours(&mut self, h: u8) {
+        self.dirty = true;
         self.hours = h.min(HOUR_MAX);
         self.publish_local_state();
     }
 
     pub fn set_minutes(&mut self, m: u8) {
+        self.dirty = true;
         self.minutes = m.min(MINSEC_MAX);
         self.publish_local_state();
     }
 
     pub fn set_value(&mut self, value: TimeValue) {
+        self.dirty = true;
         self.apply_value(value.normalized());
         self.publish_local_state();
     }
@@ -499,6 +507,7 @@ impl Widget for TimePicker {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         if let Some(binding) = &mut self.local_state
             && let crate::widget::binding::Pulled::Value(value) = binding.pull(state, path)
         {
@@ -639,6 +648,7 @@ impl Widget for TimePicker {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
@@ -662,6 +672,14 @@ impl Widget for TimePicker {
         }
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "TimePicker"
     }
@@ -678,6 +696,7 @@ impl Widget for TimePicker {
         true
     }
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.is_focused = focused;
         if !focused {
             self.focused_cell = None;

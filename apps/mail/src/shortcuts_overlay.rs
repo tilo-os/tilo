@@ -72,7 +72,6 @@ impl MailShortcutsOverlay {
         if self.viewport != viewport {
             self.viewport = viewport;
             self.layout = None;
-            self.dirty = true;
         }
     }
 

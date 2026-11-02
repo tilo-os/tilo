@@ -1873,9 +1873,11 @@ impl Widget for WindowSearch {
 
     fn needs_redraw(&self) -> bool {
         self.presence.is_moving(crate::motion::frame_now())
-            || self.field.needs_redraw()
+            || (self.field.needs_redraw() || self.field.needs_animation_frame())
             || self.panel.needs_redraw()
-            || (self.panel.is_drawn() && self.panel.replace_field.needs_redraw())
+            || (self.panel.is_drawn()
+                && (self.panel.replace_field.needs_redraw()
+                    || self.panel.replace_field.needs_animation_frame()))
     }
 
     fn needs_animation_frame(&self) -> bool {

@@ -965,7 +965,6 @@ impl MailApp {
             }
             _ => {}
         }
-        self.dirty = true;
     }
 
     /// The newest message from `sender` open in the reader.
@@ -1075,7 +1074,6 @@ impl MailApp {
             self.shared.borrow_mut().push_intent(Intent::Reply(id));
             self.process_intents();
         }
-        self.dirty = true;
     }
 }
 

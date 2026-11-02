@@ -601,6 +601,10 @@ pub struct GitClientApp {
     /// a window outside the framework.
     document: Option<Live<crate::resource::GitClient>>,
     presented: Option<(u64, u64)>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for GitClientApp {
@@ -649,6 +653,7 @@ impl GitClientApp {
 
     fn showing(state: GitClientState) -> Self {
         Self {
+            dirty: true,
             state: Rc::new(RefCell::new(state)),
             document: None,
             presented: None,
@@ -714,6 +719,7 @@ impl Widget for GitClientApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.dirty = true;
         self.follow_document();
         self.state().sync();
     }
@@ -769,7 +775,16 @@ impl Widget for GitClientApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         self.state().handle_event(event, ctx);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

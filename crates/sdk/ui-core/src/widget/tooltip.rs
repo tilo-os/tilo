@@ -412,6 +412,10 @@ pub struct Tooltip {
     hover_since: Option<Instant>,
     /// Its arrival from the anchor (`motion::Appear`); it goes at once.
     appear: crate::motion::Appearing,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl std::fmt::Debug for Tooltip {
@@ -432,6 +436,7 @@ impl std::fmt::Debug for Tooltip {
 impl Tooltip {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
+            dirty: true,
             label: label.into(),
             delay: DEFAULT_DELAY,
             elapsed: None,
@@ -457,6 +462,7 @@ impl Tooltip {
     }
 
     pub fn set_anchor(&mut self, anchor: Rect) {
+        self.dirty = true;
         self.anchor = anchor;
     }
 
@@ -475,16 +481,19 @@ impl Tooltip {
     /// `initial` seeds the accumulator so a pointer already hovering can be
     /// resumed without losing that elapsed duration (tests pass `Duration::ZERO`).
     pub fn on_hover_enter(&mut self, initial: Duration) {
+        self.dirty = true;
         self.elapsed = Some(initial);
         self.is_visible = initial >= self.delay;
     }
 
     pub fn on_hover_leave(&mut self) {
+        self.dirty = true;
         self.elapsed = None;
         self.is_visible = false;
     }
 
     pub fn tick(&mut self, dt: Duration) {
+        self.dirty = true;
         let Some(e) = self.elapsed.as_mut() else {
             return;
         };
@@ -568,6 +577,7 @@ impl Widget for Tooltip {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         // Without an anchor the widget stays driven by the explicit
         // on_hover_*/tick API.
         if self.anchor == Rect::ZERO {
@@ -623,6 +633,14 @@ impl Widget for Tooltip {
 
     fn needs_animation_frame(&self) -> bool {
         self.appear.is_moving()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

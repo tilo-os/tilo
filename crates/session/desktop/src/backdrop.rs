@@ -549,7 +549,12 @@ impl Widget for DesktopBackdrop {
         let first = self.cache_rect == Rect::ZERO && self.drawn_wallpaper.is_none();
         let wallpaper_moved = self.wallpaper.is_some()
             && self.current_wallpaper().map(|image| image.data.id()) != self.drawn_wallpaper;
-        first || wallpaper_moved || self.child.as_ref().is_some_and(|c| c.needs_redraw())
+        first
+            || wallpaper_moved
+            || self
+                .child
+                .as_ref()
+                .is_some_and(|c| (c.needs_redraw() || c.needs_animation_frame()))
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -612,7 +617,7 @@ mod tests {
 
         backdrop.set_workspace("8");
         assert!(
-            backdrop.needs_redraw(),
+            backdrop.needs_redraw() || backdrop.needs_animation_frame(),
             "another workspace's picture is not the one drawn"
         );
         paint(&mut backdrop);

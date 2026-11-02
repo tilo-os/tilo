@@ -130,6 +130,10 @@ pub struct ImageViewer {
     /// can still anchor its zoom on the pointer.
     cursor: Option<Vec2>,
     rect: Rect,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl ImageViewer {
@@ -137,6 +141,7 @@ impl ImageViewer {
     /// is cheap — the caller may share the same source with other widgets.
     pub fn new(image: peniko::ImageData) -> Self {
         Self {
+            dirty: true,
             image,
             zoom: 1.0,
             pan: Vec2::ZERO,
@@ -164,11 +169,13 @@ impl ImageViewer {
     /// as the wheel turned with the cursor there does: the screen-to-image
     /// mapping is the same there at every zoom, so the pan stays.
     pub fn set_zoom(&mut self, z: f32) {
+        self.dirty = true;
         self.zoom = z.clamp(ZOOM_MIN, ZOOM_MAX);
     }
 
     #[cfg(test)]
     pub fn set_pan(&mut self, p: Vec2) {
+        self.dirty = true;
         self.pan = p;
     }
 
@@ -233,6 +240,7 @@ impl Widget for ImageViewer {
         reason = "kurbo::Vec2 arithmetic is f64 component-wise math; it never panics or overflows, unlike integer +/-/*"
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical =
@@ -310,6 +318,14 @@ impl Widget for ImageViewer {
             }
             _ => {}
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

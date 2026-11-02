@@ -654,7 +654,6 @@ impl CalendarApp {
             self.view = view;
         }
         if name.starts_with("empty") {
-            self.dirty = true;
             return;
         }
         match name {
@@ -686,7 +685,6 @@ impl CalendarApp {
             "narrow_drawer" => self.stage_sidebar(true),
             _ => {}
         }
-        self.dirty = true;
     }
 
     pub fn shots_open_task_picker(&mut self, picker: &str) {
@@ -2421,7 +2419,6 @@ impl CalendarApp {
             );
         }
         self.event_popovers.close();
-        self.dirty = true;
     }
 
     /// Open one of the form popovers, seeding the embedded picker from the

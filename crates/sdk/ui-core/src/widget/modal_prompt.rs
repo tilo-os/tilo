@@ -59,6 +59,10 @@ pub struct PromptBody {
     caption_h: f64,
     label_height: f64,
     theme: Theme,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl PromptBody {
@@ -68,6 +72,7 @@ impl PromptBody {
         let mut input = TextInput::local().with_placeholder(placeholder);
         input.set_focus(true);
         Self {
+            dirty: true,
             caption: String::new(),
             label: label.to_string(),
             input,
@@ -138,6 +143,7 @@ impl PromptBody {
     }
 
     pub fn set_value(&mut self, s: &str) {
+        self.dirty = true;
         self.input.set_text(s);
         self.input.set_cursor_pos(s.chars().count());
     }
@@ -202,6 +208,7 @@ impl PromptBody {
 }
 impl Widget for PromptBody {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         self.input.sync(state, path);
     }
 
@@ -311,6 +318,7 @@ impl Widget for PromptBody {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         self.input.handle_event(event, ctx);
     }
 
@@ -319,6 +327,7 @@ impl Widget for PromptBody {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.input.set_focus(focused);
     }
 
@@ -348,6 +357,14 @@ impl Widget for PromptBody {
             node.description = Some(self.caption.clone());
         }
         Some(node)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

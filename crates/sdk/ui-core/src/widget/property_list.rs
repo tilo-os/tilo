@@ -1316,11 +1316,16 @@ pub struct PropertyValue {
     hovered: bool,
     pressed: crate::pointer_replay::HeldPress,
     metrics: Option<ListMetrics>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl PropertyValue {
     pub fn new(value: impl Into<String>) -> Self {
         Self {
+            dirty: true,
             id: None,
             value: value.into(),
             kind: TextKind::Prose,
@@ -1362,6 +1367,7 @@ impl PropertyValue {
     }
 
     pub fn set_value(&mut self, value: impl Into<String>) {
+        self.dirty = true;
         self.value = value.into();
     }
 
@@ -1503,6 +1509,7 @@ impl Widget for PropertyValue {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         let Some(target) = self.copy_rect else {
             return;
         };
@@ -1554,6 +1561,14 @@ impl Widget for PropertyValue {
         self.copy_rect
             .filter(|r| r.contains(point))
             .map(|r| (r, "Copy".to_owned()))
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

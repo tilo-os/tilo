@@ -178,11 +178,16 @@ pub struct ColorPicker {
     done_rect: Rect,
     /// What inputs the host has, from the frame: a swatch is a finger's target on touch.
     interaction: crate::interaction::InteractionEnvironment,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl ColorPicker {
     pub fn new(initial: Color) -> Self {
         let mut s = Self {
+            dirty: true,
             accessible_name: Some("Colour".to_owned()),
             color: initial,
             on_change: None,
@@ -481,6 +486,7 @@ impl ColorPicker {
     /// field, but does NOT fire `on_change` or the `take_changed` record
     /// — see `take_changed`. No-op when the colour is unchanged.
     pub fn set_color(&mut self, color: Color) {
+        self.dirty = true;
         if color.r() == self.color.r()
             && color.g() == self.color.g()
             && color.b() == self.color.b()
@@ -524,6 +530,7 @@ impl ColorPicker {
     /// release binaries don't carry the matching dirty-sentinel branch.
     #[cfg(any(test, debug_assertions))]
     pub fn set_hex_text_for_test(&mut self, s: &str) {
+        self.dirty = true;
         self.hex_input.set_text(s);
         self.hex_input_force_dirty_for_test = true;
     }
@@ -536,6 +543,7 @@ impl ColorPicker {
     /// Re-emits the canonical hex string into the embedded input after
     /// the SV square/hue strip/sliders mutate `self.color`.
     fn sync_input(&mut self) {
+        self.dirty = true;
         let hex = self.hex_string();
         self.hex_input.set_text(&hex);
     }
@@ -599,6 +607,7 @@ impl ColorPicker {
                   ones would only hurt readability here"
     )]
     fn set_hue(&mut self, h: f32) {
+        self.dirty = true;
         let (_, s, v) = self.current_hsv();
         // On the achromatic axis s=0; clamp to a minimum so picking a
         // hue still shows visible saturation.
@@ -612,6 +621,7 @@ impl ColorPicker {
     /// `on_change` callback (when one is registered) and refreshes the
     /// colour atomically.
     fn set_rgb(&mut self, r: u8, g: u8, b: u8) {
+        self.dirty = true;
         let new_color = Color::from_rgba8(r, g, b, self.color.a());
         if new_color.r() == self.color.r()
             && new_color.g() == self.color.g()
@@ -987,6 +997,7 @@ impl ColorPicker {
 
 impl Widget for ColorPicker {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        self.dirty = true;
         if let Some(binding) = &mut self.local_state
             && let crate::widget::binding::Pulled::Value(color) = binding.pull(state, root)
         {
@@ -1075,6 +1086,7 @@ impl Widget for ColorPicker {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         // Embedded hex input gets the event first. It isn't registered in
         // the parent's taffy/node_map, though, so its own
         // `*focus_target = Some(id)` would set *our* node id — the App
@@ -1243,6 +1255,14 @@ impl Widget for ColorPicker {
         self.target_at(point).is_some()
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "ColorPicker"
     }
@@ -1277,6 +1297,7 @@ impl Widget for ColorPicker {
         true
     }
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         if focused && self.hex_input_focus_pending {
             // Redirect the App's delivered focus onto the input; keep
             // our own `is_focused` false so we don't double-claim.

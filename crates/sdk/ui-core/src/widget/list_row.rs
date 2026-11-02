@@ -3641,7 +3641,7 @@ impl Widget for ListRow {
             || self
                 .trailing
                 .as_ref()
-                .is_some_and(|t| t.element.needs_redraw())
+                .is_some_and(|t| t.element.needs_redraw() || t.element.needs_animation_frame())
     }
 
     /// Frames only while its leading checkbox is on its way.

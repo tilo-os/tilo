@@ -1460,7 +1460,8 @@ impl Widget for DocumentViewport {
             .shown
             .frames()
             .is_none_or(|(drawing, presented)| *drawing != *presented);
-        if !shown_changed && !self.repaint && !self.needs_redraw() {
+        if !shown_changed && !self.repaint && !(self.needs_redraw() || self.needs_animation_frame())
+        {
             return;
         }
         // A draw closure's content says nothing of what changed in it, so

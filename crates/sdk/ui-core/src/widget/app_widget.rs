@@ -1401,7 +1401,10 @@ mod component_adapter {
             root.take_structure_change().join(relayout)
         }
         fn needs_redraw(&self) -> bool {
-            self.save_status_shown || self.in_root(|root| root.needs_redraw()).unwrap_or_default()
+            self.save_status_shown
+                || self
+                    .in_root(|root| root.needs_redraw() || root.needs_animation_frame())
+                    .unwrap_or_default()
         }
         fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
             self.in_root(|root| root.collect_damage(regions));

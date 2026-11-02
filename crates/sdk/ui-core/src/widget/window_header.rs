@@ -266,6 +266,8 @@ pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&WindowSta
 pub struct HeaderStatus {
     text: Option<String>,
     rect: Rect,
+    /// Its paint changed since the last frame drew it.
+    dirty: bool,
 }
 
 impl HeaderStatus {
@@ -276,6 +278,7 @@ impl HeaderStatus {
             return false;
         }
         self.text = text.map(str::to_owned);
+        self.dirty = true;
         if self.text.is_none() {
             self.rect = Rect::ZERO;
         }
@@ -327,6 +330,15 @@ impl HeaderStatus {
 }
 
 impl Widget for HeaderStatus {
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,

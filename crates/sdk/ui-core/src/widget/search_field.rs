@@ -190,6 +190,10 @@ pub struct SearchField {
     /// What the field is asking for, drawn dim before the text ("New
     /// name:") while a step collects a value in it.
     prompt: Option<String>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl SearchField {
@@ -216,6 +220,7 @@ impl SearchField {
 
     fn with_input(input: TextInput) -> Self {
         Self {
+            dirty: true,
             input: input
                 .with_plain_chrome()
                 .with_kind(TextInputKind::Search)
@@ -269,6 +274,7 @@ impl SearchField {
 
     /// Show `count` in the trailing slot ("3 of 120"), or nothing.
     pub fn set_count(&mut self, count: Option<FilterCount>) {
+        self.dirty = true;
         self.count = count;
     }
 
@@ -279,6 +285,7 @@ impl SearchField {
 
     /// Show a removable scope token before the text, e.g. "Only Inbox".
     pub fn set_scope_token(&mut self, token: Option<String>) {
+        self.dirty = true;
         self.scope_token = token;
         self.scope_token_rect = Rect::ZERO;
     }
@@ -287,6 +294,7 @@ impl SearchField {
     /// the token names the scope the query was narrowed into. It is drawn by
     /// the chip, so it is never a character in the token's text.
     pub fn set_scope_token_icon(&mut self, icon: Icon) {
+        self.dirty = true;
         self.scope_token_icon = icon;
     }
 
@@ -314,6 +322,7 @@ impl SearchField {
     }
 
     pub fn set_placeholder(&mut self, hint: &str) {
+        self.dirty = true;
         hint.clone_into(&mut self.placeholder);
         self.input.set_placeholder(hint);
     }
@@ -362,12 +371,14 @@ impl SearchField {
     /// own. [`crate::widget::primitives::FloatingPanel`] sets it on a field
     /// placed in its header slot.
     pub fn set_embedded(&mut self, embedded: bool) {
+        self.dirty = true;
         self.embedded = embedded;
     }
 
     /// Ask for a value with `prompt` drawn dim before the text, or `None`
     /// for a plain query.
     pub fn set_prompt(&mut self, prompt: Option<String>) {
+        self.dirty = true;
         self.prompt = prompt;
     }
 
@@ -380,6 +391,7 @@ impl SearchField {
     /// to an input method; a secret is masked, kept off the clipboard and
     /// never read out ([`TextInput::set_secret`]).
     pub fn set_input_kind(&mut self, kind: TextInputKind, secret: bool) {
+        self.dirty = true;
         self.input.set_secret(secret);
         self.input.set_kind(if secret {
             TextInputKind::Password
@@ -390,6 +402,7 @@ impl SearchField {
 
     /// Select `anchor..cursor` (bytes) of the text.
     pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
+        self.dirty = true;
         self.input.set_selection(anchor, cursor);
     }
 
@@ -412,6 +425,7 @@ impl SearchField {
 
     /// Goes through the shared text core, so caret/selection stay consistent.
     pub fn set_query(&mut self, text: &str) {
+        self.dirty = true;
         self.input.set_text(text);
     }
 
@@ -422,6 +436,7 @@ impl SearchField {
     }
 
     pub fn set_focused(&mut self, on: bool) {
+        self.dirty = true;
         self.input.set_focus(on);
     }
 
@@ -871,6 +886,7 @@ impl Widget for SearchField {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = ctx.logical(position);
         }
@@ -988,6 +1004,14 @@ impl Widget for SearchField {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.input as &mut (dyn Widget + '_)]
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

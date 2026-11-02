@@ -292,7 +292,6 @@ impl MergeView {
     pub(crate) fn set_read_only(&mut self, read_only: bool) {
         if self.read_only != read_only {
             self.read_only = read_only;
-            self.dirty = true;
         }
     }
 
@@ -370,7 +369,6 @@ impl MergeView {
             .first_conflict()
             .or_else(|| self.model.change_indices().first().copied());
         self.reveal = self.active_hunk;
-        self.dirty = true;
     }
 
     fn clear_inputs(&mut self) {

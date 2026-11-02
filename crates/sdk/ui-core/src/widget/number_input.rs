@@ -420,6 +420,10 @@ pub struct NumberInput {
     field_padding: f32,
     value_style: crate::text_render::TextStyle,
     interaction: crate::interaction::InteractionEnvironment,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl NumberInput {
@@ -430,6 +434,7 @@ impl NumberInput {
     /// the full `f64` line, `step = 1`, integer display, and no suffix.
     pub fn new(value: f64) -> Self {
         let mut s = Self {
+            dirty: true,
             id: String::new(),
             accessible_name: None,
             value,
@@ -478,6 +483,7 @@ impl NumberInput {
     pub fn from_state(state: &crate::LocalState<f64>) -> Self {
         let (value, binding) = super::binding::local(state);
         Self {
+            dirty: true,
             binding: Some(binding),
             ..Self::new(value)
         }
@@ -595,6 +601,7 @@ impl NumberInput {
 
     /// Change whether it can be changed now; see [`Self::with_enabled`].
     pub fn set_enabled(&mut self, enabled: bool) {
+        self.dirty = true;
         if self.enabled != enabled {
             self.enabled = enabled;
             self.field.set_disabled(!enabled);
@@ -612,6 +619,7 @@ impl NumberInput {
     /// [`crate::LocalState`] is updated immediately.
     /// Mirrors [`TextInput::set_text`](crate::widget::TextInput::set_text).
     pub fn set_value(&mut self, v: f64) {
+        self.dirty = true;
         self.value = v.clamp(self.min, self.max);
         self.sync_field();
         if self.action.is_none() {
@@ -731,6 +739,7 @@ impl NumberInput {
     /// Overwrite the embedded field's text with the canonical value's
     /// formatted string.
     fn sync_field(&mut self) {
+        self.dirty = true;
         let t = self.format_value();
         self.field.set_text(&t);
     }
@@ -836,6 +845,7 @@ impl Widget for NumberInput {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        self.dirty = true;
         // Don't clobber the field while the user is mid-edit; the model is
         // adopted as soon as editing ends.
         if self.field.is_focused() {
@@ -959,6 +969,7 @@ impl Widget for NumberInput {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if !self.effectively_enabled() {
             return;
         }
@@ -1044,6 +1055,14 @@ impl Widget for NumberInput {
         self.field.is_dragging()
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "NumberInput"
     }
@@ -1080,6 +1099,7 @@ impl Widget for NumberInput {
         self.effectively_enabled()
     }
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         if focused {
             // Route focus into the embedded field so it's immediately
             // editable, however it arrived. A click in the field also

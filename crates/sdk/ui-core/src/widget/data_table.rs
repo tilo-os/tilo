@@ -3980,7 +3980,7 @@ impl Widget for DataTableCore {
             || self
                 .mounted_cells
                 .iter()
-                .any(|cell| cell.widget.needs_redraw())
+                .any(|cell| cell.widget.needs_redraw() || cell.widget.needs_animation_frame())
     }
 
     /// What the draw changed: the rows that changed, and a scroll offered as

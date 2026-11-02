@@ -148,12 +148,17 @@ pub struct SplitHandle {
     /// the divider stands at it and the rest goes to the second pane,
     /// while the ratio the person chose is kept for when it fits again.
     first_max: Option<f64>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl SplitHandle {
     #[must_use]
     pub fn new(orientation: SplitOrientation, ratio: SplitRatio) -> Self {
         Self {
+            dirty: true,
             orientation,
             ratio,
             rect: Rect::ZERO,
@@ -205,6 +210,7 @@ impl SplitHandle {
     /// The most the first pane can use (a picture that already fills its
     /// width); `None`: all the ratio gives it. The ratio itself is kept.
     pub fn set_first_max(&mut self, max: Option<f64>) {
+        self.dirty = true;
         self.first_max = max.map(|max| max.max(0.0));
         self.place();
     }
@@ -301,6 +307,7 @@ impl SplitHandle {
 
     /// Follow the host's keyboard focus on the divider.
     pub fn set_focused(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
     }
 
@@ -321,6 +328,7 @@ impl SplitHandle {
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
+        self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = ctx.logical(position);
@@ -524,6 +532,7 @@ impl Widget for SplitHandle {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         self.layout_dirty |= SplitHandle::handle_event(self, event, ctx);
     }
 
@@ -546,6 +555,7 @@ impl Widget for SplitHandle {
         self.focused
     }
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.set_focused(focused);
     }
     fn wants_pointer_capture(&self) -> bool {
@@ -581,6 +591,14 @@ impl Widget for SplitHandle {
     }
     fn test_id(&self) -> Option<&str> {
         self.test_id.as_deref()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "SplitHandle"

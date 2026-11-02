@@ -472,7 +472,13 @@ impl Flow {
         )]
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
-        let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
+        // A child that is moving paints other pixels every frame without
+        // being dirty in the `needs_redraw` sense (a fade in, a spring): the
+        // cache is only as fresh as the child that can repaint itself.
+        let any_child_dirty = self
+            .children
+            .iter()
+            .any(|c| c.needs_redraw() || c.needs_animation_frame());
         let theme_changed = self
             .cache_theme
             .as_deref()
@@ -861,7 +867,7 @@ macro_rules! flow_widget_methods {
         /// `Vec` via `children()`, which the subtree-cache check
         /// hits per frame.
         fn needs_redraw(&self) -> bool {
-            self.flow.has_ghosts() || self.flow.children.iter().any(|c| c.needs_redraw())
+            self.flow.has_ghosts() || self.flow.children.iter().any(|c| (c.needs_redraw() || c.needs_animation_frame()))
         }
 
         /// Frames while a band its view stopped building leaves, and one

@@ -208,6 +208,10 @@ pub struct FileView {
     /// and a frame that changed none of them (a hover in the sidebar beside
     /// it) leaves it as it was.
     own: OwnPaint,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 /// Pointer travel (logical px) past which a held directory press becomes a
@@ -220,6 +224,7 @@ pub fn drag_threshold() -> f64 {
 impl FileView {
     pub fn new(entries: &[Entry], selection: &SelectionModel, sink: &CommandSink) -> Self {
         Self {
+            dirty: true,
             entries: entries.to_vec(),
             selection: selection.clone(),
             mode: ViewMode::List,
@@ -1121,10 +1126,12 @@ impl Widget for FileView {
     }
 
     fn mark_drawn(&mut self) {
+        self.dirty = false;
         self.own.present();
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         match event {
             // A list's up/down movement is linear and remains app-level. An
             // icon grid, however, must use its *live measured* columns or a
@@ -1243,6 +1250,10 @@ impl Widget for FileView {
             }
             _ => {}
         }
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
     }
 
     fn name(&self) -> &'static str {

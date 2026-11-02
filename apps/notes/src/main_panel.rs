@@ -613,7 +613,6 @@ impl MainPanel {
             .set_semantic_target(self.page_id.map(|page| format!("notes:page-title:{page}")));
         self.pending_rename = None;
         self.naming_new = false;
-        self.dirty = true;
     }
 
     /// End naming a new note: Enter or Escape goes on to the start of its
@@ -869,7 +868,6 @@ impl MainPanel {
             && self.title_label.value() != t
         {
             self.title_label.set_value(&t);
-            self.dirty = true;
         }
     }
 
@@ -1055,7 +1053,6 @@ impl MainPanel {
         let inset = inset.max(0.0);
         if (self.bottom_inset - inset).abs() > f64::EPSILON {
             self.bottom_inset = inset;
-            self.dirty = true;
         }
     }
 
@@ -2578,14 +2575,12 @@ impl Widget for MainPanel {
         if self.page_id.is_some() {
             if !focused {
                 self.scroll_focused = false;
-                self.dirty = true;
             }
             return;
         }
         let next = focused && self.page_id.is_none();
         if self.empty_action_focused != next {
             self.empty_action_focused = next;
-            self.dirty = true;
         }
     }
 

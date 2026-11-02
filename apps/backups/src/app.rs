@@ -1116,7 +1116,6 @@ impl Store {
             _ => {}
         }
         self.refresh_runtime();
-        self.dirty = true;
     }
     /// The newest snapshot of the page, unless one is chosen there already.
     fn keep_selection(&mut self) {

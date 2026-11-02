@@ -26,6 +26,10 @@ pub(crate) struct Tripwire {
     replaced: Rc<Cell<bool>>,
     focused: bool,
     rect: Rect,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Tripwire {
@@ -33,6 +37,7 @@ impl Tripwire {
         let replaced = Rc::new(Cell::new(false));
         (
             Self {
+                dirty: true,
                 replaced: Rc::clone(&replaced),
                 focused,
                 rect: Rect::ZERO,
@@ -82,6 +87,7 @@ impl Widget for Tripwire {
         self.focused
     }
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.check();
         self.focused = focused;
     }
@@ -96,6 +102,14 @@ impl Widget for Tripwire {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.check();
         Some(crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_name("Tripwire"))
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "Tripwire"
@@ -168,12 +182,14 @@ impl Replacing {
 
 impl Widget for Replacing {
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.dirty = true;
         self.replace_if(ReplaceAt::Sync);
     }
     fn settle(&mut self, _edits: &mut crate::widget::Edits<'_>, _path: &automerge::ObjId) {
         self.replace_if(ReplaceAt::Settle);
     }
     fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {
+        self.dirty = true;
         self.replace_if(ReplaceAt::Event);
     }
     fn take_structure_dirty(&mut self) -> bool {
@@ -211,6 +227,14 @@ impl Widget for Replacing {
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![self.child.as_mut()]
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "Replacing"

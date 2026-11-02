@@ -7388,7 +7388,8 @@ mod tests {
             &mut self.row
         }
         fn needs_redraw(&self) -> bool {
-            self.travel.get().is_some() || self.row.needs_redraw()
+            self.travel.get().is_some()
+                || (self.row.needs_redraw() || self.row.needs_animation_frame())
         }
         fn update(&mut self, state: &crate::widget::AppModel, path: &ModelPath) -> bool {
             if let Some(travel) = self.travel.take() {
@@ -11217,14 +11218,14 @@ mod tests {
         let (mut row, ..) = relayout_row_owned_with(row, 2000.0, &Theme::dark());
         let _ = encoded(&mut row);
         assert!(
-            row.sibling_fade_in_flight() && row.needs_redraw() && row.needs_animation_frame(),
+            row.sibling_fade_in_flight() && row.needs_animation_frame(),
             "the neighbours fading back in redraw the row every frame"
         );
         // The fade ends between frames: the last frame drawn showed it partway.
         row.advance_sibling_fade(Duration::from_secs(1));
         assert!(!row.sibling_fade_in_flight());
         assert!(
-            row.sibling_fade_needs_frame() && row.needs_redraw() && row.needs_animation_frame(),
+            row.sibling_fade_needs_frame() && row.needs_animation_frame(),
             "the frame with the neighbours at rest is still owed"
         );
         let _ = encoded(&mut row);

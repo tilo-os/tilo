@@ -135,6 +135,10 @@ pub struct SetupApp {
     internal_install_revision: u64,
     host_command_pending: Option<HostCommand>,
     internal_run_announced: RunState,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for SetupApp {
@@ -359,6 +363,7 @@ impl SetupApp {
                 Err(error) => (None, Some(error)),
             };
         Self {
+            dirty: true,
             capabilities,
             experience: None,
             commands: Rc::new(RefCell::new(Vec::new())),
@@ -2087,6 +2092,7 @@ impl Widget for SetupApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         self.poll_background();
         self.drain_commands();
         self.composed.sync(state, path);
@@ -2121,6 +2127,14 @@ impl Widget for SetupApp {
     }
 
     ui::forward_to_composed!(composed);
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
+    }
 
     fn name(&self) -> &'static str {
         "SetupApp"

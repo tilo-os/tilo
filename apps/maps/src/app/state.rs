@@ -82,6 +82,7 @@ impl MapsApp {
         let cache_bytes = tiles.cache_bytes();
         let nav_card_size = navigation_card_size(&Theme::dark());
         Self {
+            dirty: true,
             model,
             basemap,
             rect: Rect::ZERO,

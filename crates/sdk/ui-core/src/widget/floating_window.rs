@@ -174,12 +174,17 @@ pub struct FloatingWindow<C: Widget> {
     /// of silently measuring with dark-mode metrics during light/high-contrast
     /// rendering or while a drag triggers a local relayout.
     layout_theme: Theme,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl<C: Widget> FloatingWindow<C> {
     /// Starts closed.
     pub fn new(title: impl Into<String>, content: C) -> Self {
         Self {
+            dirty: true,
             title: title.into(),
             content,
             open: false,
@@ -229,6 +234,7 @@ impl<C: Widget> FloatingWindow<C> {
 
     /// Non-builder form of [`Self::open`].
     pub fn set_open(&mut self, open: bool) {
+        self.dirty = true;
         if open && !self.open {
             self.opened_at = Some(crate::time::now());
             self.reset_overlay_chrome_presence();
@@ -267,6 +273,7 @@ impl<C: Widget> FloatingWindow<C> {
     /// the shell shot harness uses this immediately before painting because a
     /// software-rendered PNG can take longer than the complete animation.
     pub fn set_source_handoff_progress(&mut self, permille: u16) {
+        self.dirty = true;
         if self.spawn_from.is_none() {
             return;
         }
@@ -283,6 +290,7 @@ impl<C: Widget> FloatingWindow<C> {
     }
 
     pub fn set_content(&mut self, content: C) {
+        self.dirty = true;
         self.content = content;
         self.content_taffy = None;
         self.content_node = None;
@@ -364,6 +372,7 @@ impl<C: Widget> FloatingWindow<C> {
     }
 
     fn set_overlay_chrome_hovered(&mut self, hovered: bool, now: Instant) {
+        self.dirty = true;
         if !self.overlay_chrome || hovered == self.overlay_chrome_hovered {
             return;
         }
@@ -1070,6 +1079,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         reason = "the floating surface routes pointer, keyboard, and touch ownership in one event boundary"
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if !self.open {
             return;
         }
@@ -1224,6 +1234,14 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         vec![&mut self.content]
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "FloatingWindow"
     }
@@ -1295,6 +1313,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
     }
 

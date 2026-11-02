@@ -721,6 +721,10 @@ pub(crate) struct LogsWindow {
     inspected: Inspected,
     has_inspector: bool,
     layout_dirty: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl LogsWindow {
@@ -739,6 +743,7 @@ impl LogsWindow {
             .with_window_toolbar()
             .inspector(crate::view::entry_detail(None, &Spacing::default()));
         let mut window = Self {
+            dirty: true,
             journal,
             shared,
             live,
@@ -932,6 +937,7 @@ fn export_picked(picked: &PortalChannel, entries: &[LogEntry]) -> Option<String>
 }
 impl Widget for LogsWindow {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         self.follow_document();
         self.journal.borrow_mut().poll();
         self.take_window_toolbar_events();
@@ -988,6 +994,7 @@ impl Widget for LogsWindow {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         // Ctrl+L follows or pauses the journal, like a terminal's `-f`.
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
@@ -1021,6 +1028,14 @@ impl Widget for LogsWindow {
 
     fn wants_pointer_capture(&self) -> bool {
         self.shell.wants_pointer_capture()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

@@ -215,7 +215,8 @@ impl Widget for EmptyWorkspace {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.shown.get() && self.launchpad.needs_redraw()
+        self.shown.get()
+            && (self.launchpad.needs_redraw() || self.launchpad.needs_animation_frame())
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -620,11 +621,13 @@ impl Widget for DeskLayer {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.backdrop.needs_redraw() || self.area.needs_redraw()
+        self.backdrop.needs_redraw()
+            || self.backdrop.needs_animation_frame()
+            || (self.area.needs_redraw() || self.area.needs_animation_frame())
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.backdrop.needs_redraw() {
+        if (self.backdrop.needs_redraw() || self.backdrop.needs_animation_frame()) {
             regions.push(self.rect);
             return;
         }
@@ -1908,12 +1911,15 @@ impl DesktopChrome {
         // An intent waiting to be carried out asks for the frame that
         // carries it.
         !self.intents.borrow().is_empty()
-            || self.emoji.needs_redraw()
+            || (self.emoji.needs_redraw() || self.emoji.needs_animation_frame())
             || self.emoji_link.has_delivered()
             || self.navigator.needs_animation_frame(ui::time::now())
             || self.fullscreen_hint.needs_redraw(ui::time::now())
             || self.identify.needs_redraw(ui::time::now())
-            || self.children().iter().any(|child| child.needs_redraw())
+            || self
+                .children()
+                .iter()
+                .any(|child| child.needs_redraw() || child.needs_animation_frame())
     }
 }
 
@@ -2351,7 +2357,7 @@ impl Widget for DesktopChrome {
             self.emoji.note_delivered(&text, sensitive);
             changed = true;
         }
-        changed |= self.emoji.needs_redraw();
+        changed |= (self.emoji.needs_redraw() || self.emoji.needs_animation_frame());
         changed |= self.search.update(state, path);
         self.observe_navigation();
         self.publish_overlays();

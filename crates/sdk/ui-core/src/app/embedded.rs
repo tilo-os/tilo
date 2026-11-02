@@ -656,8 +656,10 @@ impl Widget for EmbeddedApp {
             || self.app.unsettled()
             // A wake from outside may be an authority that moved what the
             // app paints (a grant, a policy clock): that frame draws again.
-            || (woken && (self.app.root_widget.needs_redraw() || self.app.permissions_moved()))
-            || self.app.root_widget.needs_animation_frame()
+            || (woken
+                && (self.app.root_widget.needs_redraw()
+                    || self.app.root_widget.needs_animation_frame()
+                    || self.app.permissions_moved()))
             || self.app.permissions_walk_due(crate::time::now())
             || crate::motion::frames_wanted(crate::time::now());
         if visible {
@@ -1510,7 +1512,7 @@ mod theme_repaint_tests {
         let mut previous = paint_tracked(&mut tile, &theme);
         for _ in 0..4 {
             previous = paint_tracked(&mut tile, &theme);
-            if !tile.needs_redraw() {
+            if !(tile.needs_redraw() || tile.needs_animation_frame()) {
                 break;
             }
         }
@@ -1557,25 +1559,25 @@ mod theme_repaint_tests {
         let mut previous = Vec::new();
         for _ in 0..4 {
             previous = paint(&mut tile, &light);
-            if !tile.needs_redraw() {
+            if !(tile.needs_redraw() || tile.needs_animation_frame()) {
                 break;
             }
         }
         assert!(
-            !tile.needs_redraw(),
+            !(tile.needs_redraw() || tile.needs_animation_frame()),
             "the actual tile must settle before a theme change"
         );
         assert!(!previous.is_empty(), "the actual label must be painted");
         layout(&mut tile, &light);
         assert!(
-            !tile.needs_redraw(),
+            !(tile.needs_redraw() || tile.needs_animation_frame()),
             "an unchanged theme keeps the idle tile cached"
         );
         assert_eq!(paint(&mut tile, &light), previous);
         for theme in [Theme::dark(), Theme::high_contrast()] {
             layout(&mut tile, &theme);
             assert!(
-                tile.needs_redraw(),
+                tile.needs_redraw() || tile.needs_animation_frame(),
                 "a host theme change must repaint the retained scene"
             );
             let current = paint(&mut tile, &theme);
@@ -1598,12 +1600,12 @@ mod theme_repaint_tests {
         layout(&mut tile, &theme);
         for _ in 0..8 {
             paint(&mut tile, &theme);
-            if !tile.needs_redraw() {
+            if !(tile.needs_redraw() || tile.needs_animation_frame()) {
                 break;
             }
         }
         assert!(
-            !tile.needs_redraw(),
+            !(tile.needs_redraw() || tile.needs_animation_frame()),
             "the app must settle before focus moves"
         );
 
@@ -1684,7 +1686,7 @@ mod saving_record_wake_tests {
         for _ in 0..8 {
             layout(tile, theme);
             paint(tile, theme);
-            if !tile.needs_redraw() {
+            if !(tile.needs_redraw() || tile.needs_animation_frame()) {
                 return;
             }
         }
@@ -1959,7 +1961,7 @@ mod semantic_target_tests {
         for _ in 0..8 {
             layout(tile, theme);
             let _ = paint(tile, theme);
-            if !tile.needs_redraw() {
+            if !(tile.needs_redraw() || tile.needs_animation_frame()) {
                 return;
             }
         }

@@ -1232,7 +1232,6 @@ impl Store {
             return;
         }
         self.fullscreen = fullscreen;
-        self.dirty = true;
     }
 
     /// Show the connection a picked search hit points at.

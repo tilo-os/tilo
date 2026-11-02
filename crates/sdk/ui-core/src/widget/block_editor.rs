@@ -4706,6 +4706,7 @@ impl BlockEditor {
 
     /// Queue an image intent in prose without deleting any selected content.
     fn paste_image(&mut self) -> bool {
+        self.dirty = true;
         if self.read_only || self.is_composing() {
             return false;
         }
@@ -4728,7 +4729,6 @@ impl BlockEditor {
             return false;
         };
         self.pasted_images.push(ImagePasteRequest { image, target });
-        self.dirty = true;
         true
     }
 
@@ -10665,7 +10665,8 @@ impl Widget for BlockEditor {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.needs_redraw() || self.paint_damage.is_recorded() {
+        if (self.needs_redraw() || self.needs_animation_frame()) || self.paint_damage.is_recorded()
+        {
             self.paint_damage.collect(self.paint_extent(), regions);
         }
     }
@@ -12565,8 +12566,11 @@ impl BlockEditor {
             && (focused.is_some()
                 || self.table_mode_controls.values().any(|control| {
                     control.button.needs_redraw()
-                        || control.add_row.needs_redraw()
-                        || control.add_column.needs_redraw()
+                        || control.button.needs_animation_frame()
+                        || (control.add_row.needs_redraw()
+                            || control.add_row.needs_animation_frame())
+                        || (control.add_column.needs_redraw()
+                            || control.add_column.needs_animation_frame())
                 }))
         {
             self.dirty = true;

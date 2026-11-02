@@ -229,7 +229,6 @@ impl BottomPanel {
             self.problems = problems;
             self.invalidate_list();
             self.refresh_tab_titles();
-            self.dirty = true;
         }
     }
 
@@ -325,7 +324,6 @@ impl BottomPanel {
     pub fn set_analysis(&mut self, note: Option<String>) {
         if self.analysis != note {
             self.analysis = note;
-            self.dirty = true;
         }
     }
 
@@ -333,7 +331,6 @@ impl BottomPanel {
     pub fn set_has_live_terminal(&mut self, live: bool) {
         if self.has_live_terminal != live {
             self.has_live_terminal = live;
-            self.dirty = true;
         }
     }
 
@@ -341,7 +338,6 @@ impl BottomPanel {
     pub fn set_terminal_note(&mut self, note: Option<String>) {
         if self.terminal_note != note {
             self.terminal_note = note;
-            self.dirty = true;
         }
     }
 
@@ -384,7 +380,6 @@ impl BottomPanel {
             self.tabs.set_active(tab.id());
             self.activated.set(None);
             self.invalidate_list();
-            self.dirty = true;
         }
     }
 
@@ -666,7 +661,6 @@ impl BottomPanel {
             if self.tab == PanelTab::Search {
                 self.invalidate_list();
             }
-            self.dirty = true;
         }
     }
     pub fn take_search_jump(&self) -> Option<usize> {

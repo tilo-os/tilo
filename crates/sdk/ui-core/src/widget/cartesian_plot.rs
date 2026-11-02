@@ -694,6 +694,10 @@ pub struct CartesianPlot {
     bands: Bands,
     /// Keyboard inspection only while the plot has focus.
     focused: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 /// The space around a plot: tick labels, axis titles, the chart's title and
@@ -750,6 +754,7 @@ impl CartesianPlot {
     }
     pub fn new(series: Vec<PlotSeries>) -> Self {
         Self {
+            dirty: true,
             series,
             annotations: Vec::new(),
             style: CartesianStyle::default(),
@@ -810,6 +815,7 @@ impl CartesianPlot {
         self
     }
     pub fn set_series(&mut self, series: Vec<PlotSeries>) {
+        self.dirty = true;
         if self.series == series {
             return;
         }
@@ -828,6 +834,7 @@ impl CartesianPlot {
     /// Replace data without motion, useful for initial hydration, restored
     /// sessions, and deterministic capture.
     pub fn set_series_immediate(&mut self, series: Vec<PlotSeries>) {
+        self.dirty = true;
         self.series = series;
         self.transition_from = None;
         self.toggles
@@ -879,6 +886,7 @@ impl CartesianPlot {
         self.series.iter().any(|series| series.id == id) && !self.toggles.is_hidden(id)
     }
     pub fn set_series_visible(&mut self, id: &str, visible: bool) -> bool {
+        self.dirty = true;
         if !self.series.iter().any(|series| series.id == id) {
             return false;
         }
@@ -961,6 +969,7 @@ impl CartesianPlot {
     /// that axis to its configured domain. Invalid or empty fixed ranges are
     /// rejected without changing the current view.
     pub fn set_viewport(&mut self, x: Option<AxisRange>, y: Option<AxisRange>) -> bool {
+        self.dirty = true;
         let parse = |range: Option<AxisRange>, scale: AxisScale| match range {
             None | Some(AxisRange::Auto) => Ok(None),
             Some(range) => Domain::from_range(range)
@@ -2967,6 +2976,7 @@ impl Widget for CartesianPlot {
         self.draw_annotation_tooltip(scene, transform, tr, theme);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             if self.handle_touch_action(action) {
                 *ctx.handled = true;
@@ -3172,6 +3182,14 @@ impl Widget for CartesianPlot {
         }
         false
     }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
     fn name(&self) -> &'static str {
         "CartesianPlot"
     }
@@ -3182,6 +3200,7 @@ impl Widget for CartesianPlot {
         true
     }
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         self.focused = focused;
         if !focused && self.keyboard_inspection {
             self.keyboard_inspection = false;

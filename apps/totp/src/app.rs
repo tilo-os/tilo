@@ -396,6 +396,10 @@ pub struct AuthenticatorApp {
     /// Why codes may be rejected because this device's clock is not
     /// synchronised, when the platform can say so.
     clock_warning: Option<&'static str>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Default for AuthenticatorApp {
@@ -425,6 +429,7 @@ impl AuthenticatorApp {
     pub(crate) fn over(store: Shared) -> Self {
         crate::i18n::ensure();
         Self {
+            dirty: true,
             store,
             list: AccountList::new(),
             add_panel: AddAccountPanel::new(),
@@ -1068,6 +1073,7 @@ impl Widget for AuthenticatorApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         {
             let mut store = self.state();
             store.follow_document();
@@ -1146,6 +1152,7 @@ impl Widget for AuthenticatorApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = ctx.logical(position);
         }
@@ -1207,6 +1214,14 @@ impl Widget for AuthenticatorApp {
         // Keep the list's selection mirror current.
         self.list.set_selected(self.selected_account());
         self.refresh_list_if_dirty();
+    }
+
+    fn needs_redraw(&self) -> bool {
+        ui::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        ui::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

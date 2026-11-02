@@ -3450,7 +3450,8 @@ pub(crate) fn service_owner_save_progress(
                 // anything else it asks to redraw.
                 let bar = crate::window_toolbar::revision();
                 owner.record_save_status(status);
-                Ok(crate::window_toolbar::revision() != bar || owner.needs_redraw())
+                Ok(crate::window_toolbar::revision() != bar
+                    || (owner.needs_redraw() || owner.needs_animation_frame()))
             }));
         }
         None

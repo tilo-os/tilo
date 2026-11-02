@@ -582,10 +582,10 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     /// every part is conditional and none stands — dirty forever, drawing a frame each time
     /// it was asked.
     fn needs_redraw(&self) -> bool {
-        self.slots
-            .iter()
-            .enumerate()
-            .any(|(index, slot)| !self.layout.hidden(index) && slot.element.needs_redraw())
+        self.slots.iter().enumerate().any(|(index, slot)| {
+            !self.layout.hidden(index)
+                && (slot.element.needs_redraw() || slot.element.needs_animation_frame())
+        })
     }
 
     fn name(&self) -> &str {

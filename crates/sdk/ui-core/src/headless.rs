@@ -2650,7 +2650,9 @@ impl FrameHarness {
                 )
                 .chain(self.tooltips.schedule().1)
                 .min(),
-            needs_redraw: roots.iter().any(|root| root.needs_redraw())
+            needs_redraw: roots
+                .iter()
+                .any(|root| root.needs_redraw() || root.needs_animation_frame())
                 || queued_work
                 || self.permissions_moved(),
             queued_work,
@@ -2795,7 +2797,7 @@ impl FrameHarness {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
                 return;
             };
-            if !widget.needs_redraw() {
+            if !(widget.needs_redraw() || widget.needs_animation_frame()) {
                 return;
             }
             let path = format!("{parent}/{}", widget.name());

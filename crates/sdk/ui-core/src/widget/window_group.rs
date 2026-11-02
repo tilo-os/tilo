@@ -4075,7 +4075,8 @@ impl Widget for WindowGroup {
             || reveal_due
             || edge_due
             || (self.navigation_bar_visible()
-                && (self.bar.needs_redraw() || self.search.needs_redraw()))
+                && ((self.bar.needs_redraw() || self.bar.needs_animation_frame())
+                    || (self.search.needs_redraw() || self.search.needs_animation_frame())))
             || self.active_host().is_some_and(Widget::needs_redraw)
     }
     fn mark_drawn(&mut self) {
@@ -4424,7 +4425,8 @@ mod tests {
             );
         }
         assert!(
-            at(later, || group.needs_redraw()),
+            at(later, || group.needs_redraw()
+                || group.needs_animation_frame()),
             "the dwell's end is a frame of its own"
         );
         assert_eq!(group.next_wake_deadline(), Some(later));

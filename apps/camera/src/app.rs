@@ -1188,7 +1188,6 @@ impl CameraApp {
         // The staged screen shows its controls as a control's way there does:
         // the documents list the scanners this sample has.
         self.present_controls();
-        self.dirty = true;
     }
 
     /// The current time in Unix seconds.
@@ -3280,7 +3279,6 @@ impl Widget for CameraApp {
     }
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
-        self.dirty = true;
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;

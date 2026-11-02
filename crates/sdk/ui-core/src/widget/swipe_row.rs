@@ -493,7 +493,8 @@ impl Decorator for SwipeRow {
 
     fn needs_redraw(&self) -> bool {
         let offset = self.offset.get(crate::motion::frame_now());
-        (offset - self.drawn).abs() > f64::EPSILON || self.content.needs_redraw()
+        (offset - self.drawn).abs() > f64::EPSILON
+            || (self.content.needs_redraw() || self.content.needs_animation_frame())
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

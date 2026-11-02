@@ -665,7 +665,6 @@ impl ContactsApp {
             Some(name) => self.stage(name),
             None => {}
         }
-        self.dirty = true;
     }
 
     fn stage(&mut self, scenario: &str) {
@@ -795,7 +794,6 @@ impl ContactsApp {
             self.destination.set(Some(id));
         }
         self.list_stale = true;
-        self.dirty = true;
     }
 
     /// Follow the sidebar: the person chose a destination.

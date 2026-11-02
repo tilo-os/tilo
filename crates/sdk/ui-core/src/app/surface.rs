@@ -110,7 +110,7 @@ impl App {
             && !handled
             && self.accessibility.semantic_tree_marks == marks
             && !self.unsettled()
-            && !self.root_widget.needs_redraw()
+            && !(self.root_widget.needs_redraw() || self.root_widget.needs_animation_frame())
             && self.root_widget.floating_surface_presentations().is_empty();
         if inert {
             self.accessibility.semantic_tree_stale = stale;
@@ -575,7 +575,8 @@ impl App {
             if was_mouse_click {
                 tracing::debug!(
                     handled,
-                    needs_redraw = app.root_widget.needs_redraw(),
+                    needs_redraw =
+                        app.root_widget.needs_redraw() || app.root_widget.needs_animation_frame(),
                     is_layout_dirty = app.root_widget.is_layout_dirty(),
                     "root_widget.handle_event(MouseInput Pressed) returned"
                 );
@@ -691,7 +692,10 @@ impl App {
             if !is_pointer_move || app.root_widget.is_layout_dirty() {
                 app.layout.layout_dirty = true;
             }
-            if !is_pointer_move || floating_pointer_needs_redraw || app.root_widget.needs_redraw() {
+            if !is_pointer_move
+                || floating_pointer_needs_redraw
+                || (app.root_widget.needs_redraw() || app.root_widget.needs_animation_frame())
+            {
                 window.request_redraw();
             }
         }

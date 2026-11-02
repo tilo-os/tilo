@@ -124,6 +124,18 @@ fn build(
 }
 
 impl crate::widget::Widget for DeclaredLine {
+    fn needs_redraw(&self) -> bool {
+        self.line.needs_redraw() || self.line.needs_animation_frame()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.line.mark_drawn();
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.line.needs_animation_frame()
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

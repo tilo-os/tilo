@@ -2836,7 +2836,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 self.collect_row_damage(regions);
             }
             crate::scroll_copy::Since::Still | crate::scroll_copy::Since::Repaint => {
-                if shown_changed || self.needs_redraw() {
+                if shown_changed || (self.needs_redraw() || self.needs_animation_frame()) {
                     regions.push(self.rect);
                 }
             }

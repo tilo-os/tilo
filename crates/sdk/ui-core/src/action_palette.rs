@@ -529,6 +529,10 @@ pub struct ActionPalette {
     ui_scale: f64,
     /// The card's own composition changed: a host asks for a new frame.
     structure_dirty: bool,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 enum PaletteFieldSource {
@@ -674,6 +678,7 @@ impl ActionPalette {
         let command = std::rc::Rc::new(std::cell::Cell::new(None));
         let controls = confirm::controls(&command, "Confirm", None);
         Self {
+            dirty: true,
             field: field_source
                 .build()
                 .control_size(FIELD_SIZE)
@@ -820,6 +825,7 @@ impl ActionPalette {
     }
 
     pub fn set_ambient_context(&mut self, context: Option<ActionContext>) {
+        self.dirty = true;
         self.ambient_context = context;
         let query = self.field.value().to_string();
         self.rebuild(&query);
@@ -828,6 +834,7 @@ impl ActionPalette {
     /// Fold in searchable-content sources. Canonically addressed hits dispatch
     /// through the resource/action path; legacy opaque hits remain navigable.
     pub fn set_providers(&mut self, providers: Vec<Box<dyn SearchProvider>>) {
+        self.dirty = true;
         self.providers = providers;
         self.facets = merged_facets(&self.providers);
         self.scopes = self
@@ -1156,6 +1163,7 @@ impl ActionPalette {
     /// Narrow the palette to one part of the app, or widen it to the whole
     /// app with `None`. The field shows the scope as a removable token.
     pub fn set_scope(&mut self, scope: Option<ScopeDecl>) {
+        self.dirty = true;
         self.scope = scope;
         self.field
             .set_scope_token(self.scope.as_ref().map(scope_token_label));
@@ -1254,6 +1262,7 @@ impl ActionPalette {
     /// While the palette asks for a name to be typed, this is what stands
     /// in its plain field instead: it searches nothing.
     pub fn set_query(&mut self, q: &str) {
+        self.dirty = true;
         if self.hosts_rows() {
             self.set_host_query(q);
             return;
@@ -1755,6 +1764,7 @@ impl ActionPalette {
 
     /// Move the highlight to a flat row index (clamped).
     pub fn set_cursor(&mut self, index: usize) {
+        self.dirty = true;
         self.missing_selection = None;
         self.results.set_cursor(index);
         if self.hosts_rows() {
@@ -3197,6 +3207,13 @@ impl ActionPalette {
 }
 
 impl Widget for ActionPalette {
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
     fn name(&self) -> &str {
         "ActionPalette"
     }
@@ -3229,6 +3246,7 @@ impl Widget for ActionPalette {
                     .any(|control| control.is_focused()))
     }
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         if self.hosts_rows() {
             self.open = focused;
             self.results.set_focused(focused);
@@ -3325,6 +3343,7 @@ impl Widget for ActionPalette {
         ActionPalette::draw(self, scene, transform, text, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         *ctx.handled |= self.route_event(
             event,
             ctx.scale_factor,

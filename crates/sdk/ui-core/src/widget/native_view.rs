@@ -188,6 +188,10 @@ pub struct NativeView {
     last_cursor: Point,
     fallback: Option<Element>,
     fallback_node: Option<NodeId>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl NativeView {
@@ -195,6 +199,7 @@ impl NativeView {
     /// [`Self::platform_accessible`] when the child publishes native semantics.
     pub fn new(name: impl Into<String>, backend: impl NativeViewBackend + 'static) -> Self {
         Self {
+            dirty: true,
             backend: Box::new(backend),
             accessibility: NativeViewAccessibility::Toolkit { name: name.into() },
             test_id: "native-view".into(),
@@ -244,6 +249,7 @@ impl NativeView {
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
+        self.dirty = true;
         if self.enabled != enabled {
             self.enabled = enabled;
             if self.mounted {
@@ -270,6 +276,7 @@ impl NativeView {
     }
 
     fn sync_geometry(&mut self) {
+        self.dirty = true;
         if self.mounted {
             self.backend
                 .set_geometry(NativeViewGeometry::resolve(self.rect, self.scale_factor));
@@ -352,6 +359,7 @@ impl Widget for NativeView {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.dirty = true;
         if let Some(fallback) = &mut self.fallback {
             fallback.sync(state, path);
         }
@@ -456,6 +464,7 @@ impl Widget for NativeView {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.dirty = true;
         if !self.enabled {
             return;
         }
@@ -511,6 +520,14 @@ impl Widget for NativeView {
         }
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "NativeView"
     }
@@ -528,6 +545,7 @@ impl Widget for NativeView {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.dirty = true;
         if self.focused != focused {
             self.focused = focused;
             if self.mounted {

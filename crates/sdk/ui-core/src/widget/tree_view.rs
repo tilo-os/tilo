@@ -4057,15 +4057,15 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
             || self.scroll.fading()
             || self.reorder.is_active()
             || self.transitions.is_moving(crate::time::now())
-            || self.menu.is_open() && self.menu.needs_redraw()
-            || self
-                .rename
-                .as_ref()
-                .is_some_and(|field| field.input.needs_redraw())
+            || self.menu.is_open()
+                && (self.menu.needs_redraw() || self.menu.needs_animation_frame())
+            || self.rename.as_ref().is_some_and(|field| {
+                field.input.needs_redraw() || field.input.needs_animation_frame()
+            })
             || self
                 .mounted_rows
                 .iter()
-                .any(|row| row.widget.needs_redraw())
+                .any(|row| row.widget.needs_redraw() || row.widget.needs_animation_frame())
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -4073,7 +4073,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
             regions.push(self.rect);
             return;
         }
-        if self.needs_redraw() || self.shown.drawing().is_some() {
+        if (self.needs_redraw() || self.needs_animation_frame()) || self.shown.drawing().is_some() {
             self.shown.damage_within(self, self.rect, regions);
         }
     }

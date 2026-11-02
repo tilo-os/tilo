@@ -431,6 +431,10 @@ pub struct Chart {
     height: f32,
     style: ChartStyle,
     rect: Rect,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Chart {
@@ -438,6 +442,7 @@ impl Chart {
     /// data-derived max, an intrinsic height of 160 px.
     pub fn new(series: Vec<Series>) -> Self {
         Self {
+            dirty: true,
             series,
             max: None,
             area: false,
@@ -489,6 +494,7 @@ impl Chart {
     }
 
     pub fn set_series(&mut self, series: Vec<Series>) {
+        self.dirty = true;
         self.series = series;
     }
 
@@ -780,6 +786,14 @@ impl Widget for Chart {
         );
     }
 
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
     fn name(&self) -> &'static str {
         "Chart"
     }
@@ -803,6 +817,10 @@ pub struct Sparkline {
     /// What the line means, when it means something: a status, a person. Its colour comes from
     /// the theme at paint; without one the sparkline wears the colour it was built in.
     pub(crate) tone: Option<crate::widget::Tone>,
+
+    /// Input or a new document value changed what this widget paints: it
+    /// repaints once, and rests after the frame draws it.
+    dirty: bool,
 }
 
 impl Sparkline {
@@ -810,6 +828,7 @@ impl Sparkline {
     /// intrinsic size and a data-derived max.
     pub fn new(data: Vec<f32>, color: Color) -> Self {
         Self {
+            dirty: true,
             color: Some(color),
             ..Self::accented(data)
         }
@@ -820,6 +839,7 @@ impl Sparkline {
     #[must_use]
     pub fn accented(data: Vec<f32>) -> Self {
         Self {
+            dirty: true,
             data,
             color: None,
             max: None,
@@ -836,6 +856,7 @@ impl Sparkline {
     /// curve smooth rather than straight, and a dot of `leading_dot` radius on the newest
     /// sample.
     pub fn set_look(&mut self, filled: bool, smooth: bool, leading_dot: Option<f64>) {
+        self.dirty = true;
         let mut style = TrendStyle::SPARKLINE;
         if !filled {
             style = style.with_fill(TrendFill::None);
@@ -875,6 +896,7 @@ impl Sparkline {
     }
 
     pub fn set_data(&mut self, data: Vec<f32>) {
+        self.dirty = true;
         self.data = data;
     }
 
@@ -971,6 +993,14 @@ impl Widget for Sparkline {
             self.painted_colour(theme),
             &self.style,
         );
+    }
+
+    fn needs_redraw(&self) -> bool {
+        crate::widget::redraw_or_children(self.dirty, self)
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

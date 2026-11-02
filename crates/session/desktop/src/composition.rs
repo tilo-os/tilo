@@ -1304,7 +1304,8 @@ impl Widget for DesktopSurface {
         self.root.update(doc, path) || wake
     }
     fn needs_redraw(&self) -> bool {
-        self.has_pending_component_wake() || self.root.needs_redraw()
+        self.has_pending_component_wake()
+            || (self.root.needs_redraw() || self.root.needs_animation_frame())
     }
     fn build_layout(
         &mut self,
