@@ -19,7 +19,7 @@ function fixture() {
 test('shared Chat commands join listening, mute, select an input and leave the governed call', async () => {
   const f = fixture();
   assert.equal((await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}))).state, 'joining');
-  assert.deepEqual(f.operations[0], ['join', CALL, {muted: true}]);
+  assert.deepEqual(f.operations[0], ['join', CALL, {muted: true, app: 'so.tilo.chat', record: ''}]);
   Object.assign(f.state, {phase: 'live', canPublish: true});
   await f.controls.execute(f.request({op: 'set_muted', muted: false}));
   assert.equal(f.state.muted, false);
@@ -124,7 +124,7 @@ test('joining from a new retained owner first leaves the prior participation', a
   await f.controls.execute({...f.request({op: 'join', channel_id: 'standup'}), instance: '1'});
   Object.assign(f.state, {phase: 'live', muted: false});
   await f.controls.execute({...f.request({op: 'join', channel_id: 'standup'}), instance: '2'});
-  assert.deepEqual(f.operations.slice(1), [['leave'], ['join', CALL, {muted: true}]]);
+  assert.deepEqual(f.operations.slice(1), [['leave'], ['join', CALL, {muted: true, app: 'so.tilo.chat', record: ''}]]);
 });
 
 test('a reused instance cannot inherit or retire another component lifetime', async () => {
@@ -132,7 +132,7 @@ test('a reused instance cannot inherit or retire another component lifetime', as
   const command = f.request({op: 'join', channel_id: 'standup'});
   await f.controls.execute({...command, instance: '1', owner: 'old-lifetime'});
   await f.controls.execute({...command, instance: '1', owner: 'replacement-lifetime'});
-  assert.deepEqual(f.operations.slice(1), [['leave'], ['join', CALL, {muted: true}]]);
+  assert.deepEqual(f.operations.slice(1), [['leave'], ['join', CALL, {muted: true, app: 'so.tilo.chat', record: ''}]]);
   f.controls.release({...command, instance: '1', owner: 'old-lifetime'});
   assert.equal(f.state.phase, 'joining');
   f.controls.release({...command, instance: '1', owner: 'replacement-lifetime'});
@@ -171,12 +171,12 @@ test('joining a voice channel opens its call muted, every time, and asks the bro
   const f = fixture();
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   assert.deepEqual(f.opened, ['standup'], 'nobody has to start the call first');
-  assert.deepEqual(f.operations[0], ['join', CALL, {muted: true}]);
+  assert.deepEqual(f.operations[0], ['join', CALL, {muted: true, app: 'so.tilo.chat', record: ''}]);
   Object.assign(f.state, {phase: 'live', canPublish: true});
   await f.controls.execute(f.request({op: 'set_muted', muted: false}));
   await f.controls.execute(f.request({op: 'leave'}));
   await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
-  assert.deepEqual(f.operations.at(-1), ['join', CALL, {muted: true}]);
+  assert.deepEqual(f.operations.at(-1), ['join', CALL, {muted: true, app: 'so.tilo.chat', record: ''}]);
 });
 
 test('a refused microphone answers with the call on, muted, and why', async () => {

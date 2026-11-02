@@ -112,6 +112,10 @@ pub fn enrol(root: &SigningKey, label: &str, capabilities: DeviceCapabilities) -
 pub struct TestHost {
     pub relay: Relay,
     pub web: WebHandle,
+    /// How a test's call participants are found: the pages' calls reach the
+    /// devices registered here without a directory, and a device's call
+    /// reaches them by its id alone.
+    pub lookup: iroh::address_lookup::memory::MemoryLookup,
 }
 
 pub async fn start_host(
@@ -241,7 +245,11 @@ pub async fn start_host_serving(
         .await
         .unwrap();
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
-    TestHost { relay, web }
+    TestHost {
+        relay,
+        web,
+        lookup: iroh::address_lookup::memory::MemoryLookup::new(),
+    }
 }
 
 /// A host that governs workspaces rather than one pinned workspace, serving
@@ -268,25 +276,47 @@ pub async fn start_workspace_host(
     )
     .await
     .unwrap();
+    // The pages' calls are carried as the host's device, on an endpoint the
+    // call's other devices reach from this test's lookup: a call needs no
+    // directory to find them.
+    let lookup = iroh::address_lookup::memory::MemoryLookup::new();
+    let lane = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&host.key.to_bytes()))
+        .address_lookup(lookup.clone())
+        .relay_mode(iroh::RelayMode::Disabled)
+        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .transport_config(tilo_call_lane::carrier::transport_config())
+        .bind()
+        .await
+        .unwrap();
+    let port = lane.bound_sockets().first().unwrap().port();
+    lookup.add_endpoint_info(
+        iroh::EndpointAddr::new(lane.id())
+            .with_ip_addr(SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port))),
+    );
     let web = relay
-        .serve_web(WebConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            tls: TlsSource::Development {
-                hosts: vec!["localhost".into(), "127.0.0.1".into()],
-                store: keep_web_identity.then(|| state.join("web-dev-identity")),
+        .serve_web_with_lane(
+            WebConfig {
+                listen: "127.0.0.1:0".parse().unwrap(),
+                tls: TlsSource::Development {
+                    hosts: vec!["localhost".into(), "127.0.0.1".into()],
+                    store: keep_web_identity.then(|| state.join("web-dev-identity")),
+                },
+                allowed_origins: Vec::new(),
+                plain_listen: None,
+                public_origin: None,
+                live_origin: None,
+                limits: tilo_relay::web::WebLimits::default(),
+                country: None,
+                fetch_proxy: None,
             },
-            allowed_origins: Vec::new(),
-            plain_listen: None,
-            public_origin: None,
-            live_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
-            country: None,
-            fetch_proxy: None,
-        })
+            lane,
+        )
         .await
         .unwrap();
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
-    TestHost { relay, web }
+    TestHost { relay, web, lookup }
 }
 
 impl TestHost {

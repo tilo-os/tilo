@@ -35,6 +35,7 @@ tokio = { workspace = true, features = ["sync", "macros"] }
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
+base64.workspace = true
 thiserror.workspace = true
 rand.workspace = true
 blake3.workspace = true
@@ -67,7 +68,11 @@ toolkit = ["dep:ui"]
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-automerge-isolate.workspace = true
 test-http = { path = "../../dev/test-http" }
-tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
+tilo-relay = { path = "../../hosting/tilo-relay", features = ["web", "test-support"] }
+# A call's native side: the lanes a page's bridge opens, and their pictures.
+tilo-call-lane = { path = "../../collab/tilo-call-lane", features = ["lanes"] }
+# The call's native side sends and hears a real tone, as a call does.
+opus = "0.4"
 automerge.workspace = true
 tilo-automerge.workspace = true
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }

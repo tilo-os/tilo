@@ -110,6 +110,15 @@ impl Page {
         Ok(())
     }
 
+    /// Who may send to this page from now on, under the same keys.
+    ///
+    /// A call's roster follows the workspace's membership turn by turn; the
+    /// page keeps its microphone's and pictures' places while it does, which
+    /// [`Self::set_keys`] starts over.
+    pub fn set_roster(&mut self, roster: Roster) {
+        self.opener.set_roster(roster);
+    }
+
     fn seal_pictures(&mut self, keys: &ChannelContentKeys) -> Result<(), Refusal> {
         let camera = Sealer::new(keys, self.bridge, Stream::Camera)?;
         let screen = Sealer::new(keys, self.bridge, Stream::Screen)?;

@@ -149,8 +149,7 @@ pub const REDUNDANCY_HOLD: std::time::Duration = std::time::Duration::from_secs(
 /// loss that hop's transport measured. Redundancy costs a full
 /// object per copy, so it is spent only where loss is observed: zero on a
 /// clean hop, one at [`REDUNDANCY_ONE_PERMILLE`], two at
-/// [`REDUNDANCY_TWO_PERMILLE`]. The browser publisher applies the same policy
-/// to its uplink (web/voice-transport.mjs).
+/// [`REDUNDANCY_TWO_PERMILLE`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Redundancy {
     level: u8,

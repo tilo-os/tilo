@@ -1,45 +1,62 @@
 /**
- * A browser participant in a call the host governs (tilo-relay `workspaces::voice`).
+ * A browser participant in a call its host carries on the call lane
+ * (`tilo-call-lane` `page`, `tilo-browser-peer` `call_media`).
  *
- * The page's peer session holds the participation (tilo-browser-peer
- * `voice`): it joins, beats and rejoins after reconnects, and hands on each
- * grant the host sends. This module follows those grants with the audio:
+ * The page is a member of the call's channel and holds its content keys, so
+ * it seals what its microphone and camera make itself and opens what the
+ * call's devices send: the host only copies sealed bytes between the page and
+ * the lane (`POST {API_PREFIX}/call/lane`, `signalling.turn`). This module is
+ * the app around that exchange:
  *
- * - a voice carrier per grant whose token or publication changed
- *   (web/voice-transport.mjs); a roster change keeps the carrier, since the
- *   host offers new publishers in place;
- * - the carrier reopened with backoff when it drops, and at once when the
- *   network changes (`online`, `navigator.connection` `change`): QUIC paths
- *   do not survive a new network;
  * - the microphone and playback (web/voice-audio.mjs): a call starts muted
  *   and asks the browser for nothing; the first unmute asks for the
  *   microphone, and a refusal keeps the person in the call, muted, with the
- *   reason in `micIssue`; muting stops the microphone and the publication,
- *   and a grant that may not publish mutes;
+ *   reason in `micIssue`; muting stops the microphone;
+ * - one turn every `TURN_MS`, one at a time: the microphone frames since the
+ *   last turn, the pictures the encoders made, what the page shows of each
+ *   device, and the keyframes it asks for; the answer is played, admitted to
+ *   the picture inbox, and says which layers of the page's pictures each
+ *   device shows and which it wants started over;
+ * - the camera and a shared screen (web/voice-video.mjs), encoded in the
+ *   layers the call's devices show, and told to the host
+ *   (`signalling.show`), so everyone in the call sees who shows what;
  * - who is speaking, from the levels the audio thread measures;
- * - the camera and a shared screen (web/voice-video.mjs): published on the
- *   carrier while on, again on each new carrier, and told to the host
- *   (`signalling.show`); and the pictures of others the app shows, read off
- *   the carrier into an inbox the app collects from;
- * - whether this person is muted or deafened, told to the host with what
- *   they show whenever it changes, so everyone in the call sees it; a
- *   deafened person hears nothing of the call and is muted.
+ * - a host that cannot be reached is retried with backoff and the microphone
+ *   waits meanwhile; a turn the host refuses (the call ended, this page lost
+ *   its admission) waits for the host's next grant, and a call whose grant
+ *   does not come within the deadline ends with a reason;
+ * - whether this person is muted or deafened, told to the host with what they
+ *   show whenever it changes; a deafened person hears nothing of the call and
+ *   is muted.
  *
- * `signalling` is the session side: `{join(call), leave(), show(camera,
- * screen, muted, deafened), reachable(), onEvent(listener)}`
+ * `signalling` is the session side: `{join(call), leave(), end(), turn(json),
+ * show(camera, screen, muted, deafened), reachable(), onEvent(listener)}`
  * where events are `{kind: 'granted', grant}` and `{kind: 'ended', call,
- * reason}` (`peer.voice` in peer.mjs adapts the wasm peer).
+ * reason}`, and `device` is the device the host bridges this page as: the
+ * sender its frames carry (peer.voice in peer.mjs adapts the wasm peer).
  */
 import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
-import {createPictureInbox, openSource} from './voice-video.mjs';
-import {createVoiceTransport} from './voice-transport.mjs';
-import {CarrierUnsupportedError, MediaAdmissionError} from './moq-carrier.mjs';
+import {LAYER_CODES, SOURCE_CODES, createPictureEncoder, createPictureInbox, layerOfCode, openSource, pictureObject, sourceOfCode} from './voice-video.mjs';
 import {callIdOf} from './voice-controls.mjs';
 
 /** RMS above which a participant counts as speaking, and how long it stays so. */
 const SPEAKING_LEVEL = 0.015;
 const SPEAKING_HOLD_MS = 400;
 const RECONNECT_MS = [250, 1000, 3000, 10_000];
+/** How often the page takes a turn with its host, and how long one may take
+ * before the page gives up on it and asks again. */
+export const TURN_MS = 20;
+export const TURN_DEADLINE_MS = 5_000;
+/** Microphone frames kept for the next turn: a page that stood still sends
+ * the newest `MAX_TURN_AUDIO` and drops the rest, as the call plays only what
+ * is current. */
+const MAX_TURN_AUDIO = 20;
+/** How far behind its newest frame a datagram reaches back with repeats
+ * ([`tilo_call_lane::voice::MAX_BUNDLE_OBJECTS`]): a frame within that reach
+ * that was already played is a repeat, not a stream that started over. */
+const REPEAT_REACH = 3;
+/** Pictures kept for the next turn: encoded layers of a loaded page. */
+const MAX_TURN_PICTURES = 256;
 /** How long a join waits for the host's grant before it gives up: a host
  * that never answers ends the call with a reason, never a call that stays
  * joining. */
@@ -54,6 +71,12 @@ export const GRANT_DEADLINE_MS = 15_000;
 export const GRANT_LOOK_MS = 2_000;
 /** Why a join ended when no grant came in time. */
 export const NO_GRANT = 'no grant arrived in time';
+/** Why a turn cannot be taken at all: this page holds none of the call's
+ * keys, or only watches the workspace. */
+const NO_KEYS = /no keys|only watches/i;
+/** Why a turn was refused: the host does not admit this page to the call's
+ * workspace any more, or the call is over. */
+const REFUSED = /not admitted|refused|not a member|no call lane/i;
 
 /** Why the browser gave no microphone, as the call's status names it: the
  * person or the browser refused it, there is none, or it would not start. */
@@ -64,19 +87,28 @@ export function microphoneIssue(error) {
   return 'capture_failed';
 }
 
+/** `bytes` in base64, as the turn's JSON carries an Opus frame. */
+export function base64OfBytes(bytes) {
+  let text = '';
+  for (let index = 0; index < bytes.length; index += 0x8000) text += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  return btoa(text);
+}
+
 /**
- * `state` is `{phase, call, muted, canPublish, participants, inputId,
- * reason, carrier, micIssue, unsupported}` where `unsupported` says an
- * ended call ended because this browser cannot open the carrier, and `micIssue` is why the microphone could
- * not start (`permission_denied`, `source_lost`, `capture_failed`) or null; `phase` is `idle`, `joining`, `connecting`, `live`,
- * `reconnecting` or `ended`, `admitted` says whether the host granted the
- * call (an ended call that never was is a refusal), and each participant is `{namespace, device,
- * user, publishes, camera, screen, muted, deafened, speaking, self}`.
+ * `state` is `{phase, call, app, record, muted, canPublish, participants,
+ * inputId, reason, turn, micIssue, unsupported}` where `turn` is `idle`,
+ * `waiting` or `open` (whether the host answered the last turn), `micIssue`
+ * is why the microphone could not start (`permission_denied`,
+ * `source_lost`, `capture_failed`) or null, and `phase` is `idle`, `joining`,
+ * `connecting`, `live`, `reconnecting` or `ended`; `admitted` says whether the
+ * host granted the call (an ended call that never was is a refusal), and each
+ * participant is `{namespace, device, user, publishes, camera, screen, muted,
+ * deafened, speaking, self}`.
  */
 export function createVoiceCall({
   signalling,
+  device = null,
   audio = createBrowserAudio(),
-  transport = createVoiceTransport(),
   environment = globalThis,
   clock = {},
   onReport = () => {},
@@ -95,13 +127,13 @@ export function createVoiceCall({
   let audioSession;
   let audioStarting;
   let audioController;
-  let carrier;
-  let carrierKey;
-  let connecting;
-  /** What the carrier being opened is for (see `keyOf`). */
-  let connectingKey;
+  /** The call's app and record: the channel they and the workspace name
+   * seals its frames. */
+  let app = '';
+  let record = '';
   let attempt = 0;
   let retryTimer;
+  let turnTimer;
   let grantTimer;
   let capturePaused = false;
   let generation = 0;
@@ -112,28 +144,43 @@ export function createVoiceCall({
    * undeafening puts back. */
   let mutedBeforeDeafen = true;
   const speaking = new Map();
-  /** How loud each participant plays here, by id (`callIdOf`), and that
-   * as a gain per publication of the grant it was worked out for. */
+  /** How loud each participant plays here, by id (`callIdOf`). */
   const volumes = new Map();
-  let gains = new Map();
-  let gainsOf;
-  /** The camera and screen streams this person shows, by source. */
+  /** The microphone frames and encoded pictures the next turn carries. */
+  let microphone = [];
+  let pictures = [];
+  /** The newest frame played from each device, by hex: a call's datagrams
+   * repeat the frames before their newest one, which play once. */
+  const heardUpTo = new Map();
+  /** Whether a turn is with the host, and when the last one was answered. */
+  let turning = false;
+  let turnTimerHandle;
+  /** The layers each device in the call shows of this page's sources, by
+   * source, as its last answer said. */
+  let shownOfPage = {camera: new Set(), screen: new Set()};
+  /** Devices asking this page's pictures to start over, by source. */
+  let keyframesAsked = {camera: false, screen: false};
+  /** The camera and screen streams this person shows. */
   const streams = new Map();
-  /** Their publishers on the current carrier, by source. */
-  const publishers = new Map();
+  /** Their encoders, by source. */
+  const encoders = new Map();
   /** What the app shows: `[{person, source, layer}]`. */
   let shown = [];
   /** The layer this person's own camera tile shows, if any. */
   let ownLayer = null;
+  /** Devices this page asks to start over, by `${device}|${source}` until
+   * the keyframe arrives. */
+  const asking = new Map();
   const inbox = createPictureInbox();
+  const turns = {sent: 0, refused: 0, unreachable: 0, audio: 0, pictures: 0};
 
   function idle() {
-    return {phase: 'idle', call: null, admitted: false, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, deafened: false, videoIssue: null, micIssue: null, unsupported: false, audioFailed: false};
+    return {phase: 'idle', call: null, app: '', record: '', admitted: false, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, camera: false, screen: false, deafened: false, videoIssue: null, micIssue: null, unsupported: false, audioFailed: false};
   }
   const emit = () => { for (const listener of [...listeners]) { try { listener(state); } catch (error) { report({type: 'voice-listener-error', error}); } } };
   const update = change => {
     state = {...state, ...change};
-    // Muting, deafening, a refused or lost microphone and a grant that may
+    // Muting, deafening, a refused or lost microphone and a call that may
     // not publish all reach the others.
     if ((state.muted !== toldMuted || state.deafened !== toldDeafened) && inCall()) tellShowing();
     emit();
@@ -142,7 +189,7 @@ export function createVoiceCall({
 
   function participants() {
     if (!grant) return [];
-    const own = `${grant.call}/${grant.participation}`;
+    const own = grant.participation;
     const at = now();
     return grant.participants.map(participant => ({
       namespace: participant.namespace,
@@ -154,8 +201,8 @@ export function createVoiceCall({
       muted: participant.muted === true,
       ...(participant.bridged ? {bridged: participant.bridged} : {}),
       deafened: participant.deafened === true,
-      self: participant.namespace === own,
-      speaking: (speaking.get(participant.namespace.split('/')[1]) ?? -Infinity) > at - SPEAKING_HOLD_MS,
+      self: participant.device === device || participant.namespace === own,
+      speaking: (speaking.get(participant.device) ?? -Infinity) > at - SPEAKING_HOLD_MS,
     }));
   }
 
@@ -169,27 +216,29 @@ export function createVoiceCall({
       speaking.set(id, at);
       changed ||= !was;
     };
-    if (!state.muted) hear(grant.participation, capture);
+    if (!state.muted) {
+      // This page's frames go out as the host's device, and its participation
+      // in the call may be named either way: both are this person speaking.
+      for (const participant of grant.participants) {
+        if (participant.device && (participant.device === device || participant.namespace === grant.participation)) hear(participant.device, capture);
+      }
+    }
     for (const [id, level] of publishers) hear(id, level);
     const next = participants();
     changed ||= next.some((participant, index) => participant.speaking !== state.participants[index]?.speaking);
     if (changed) update({participants: next});
   }
 
-  function gainOf(publisher) {
-    if (gainsOf !== grant) {
-      gainsOf = grant;
-      gains = new Map((grant?.participants ?? []).flatMap(participant => {
-        const gain = volumes.get(callIdOf(participant));
-        return gain === undefined ? [] : [[participant.namespace.split('/')[1], gain]];
-      }));
-    }
-    return gains.get(publisher) ?? 1;
+  /** How loud `sender` plays here: its person's volume, or the call's. */
+  function gainOf(sender) {
+    const person = grant?.participants.find(participant => participant.device === sender)?.user;
+    return (person && volumes.get(person)) ?? 1;
   }
 
   function onFrame(frame) {
-    if (!carrier || state.muted || !grant?.directions.publish) return;
-    try { carrier.publish(frame); } catch (error) { report({type: 'voice-publish-error', error}); }
+    if (!inCall() || state.muted) return;
+    microphone.push({timestamp48k: Number(frame.timestamp), opus: base64OfBytes(frame.payload)});
+    if (microphone.length > MAX_TURN_AUDIO) microphone = microphone.slice(-MAX_TURN_AUDIO);
   }
 
   function startAudio() {
@@ -212,7 +261,7 @@ export function createVoiceCall({
       if (audioController !== controller || controller.signal.aborted) return;
       report({type: 'voice-audio-error', error});
       const call = state.call;
-      signalling.leave();
+      leaveCall();
       ended(call, String(error?.message ?? error), {audioFailed: true});
     }}).then(session => {
       if (audioController !== controller || controller.signal.aborted) { void session.stop(); return undefined; }
@@ -225,7 +274,7 @@ export function createVoiceCall({
       if (audioController !== controller || controller.signal.aborted) return undefined;
       report({type: 'voice-audio-error', error});
       const call = state.call;
-      signalling.leave();
+      leaveCall();
       ended(call, String(error?.message ?? error), {audioFailed: true});
       return undefined;
     });
@@ -256,50 +305,70 @@ export function createVoiceCall({
     synchronizeCapture(true);
   }
 
-  /** Publish every shown source on the current carrier. */
-  function publishVideo() {
-    if (!carrier?.publishPictures) return;
+  /** The layers of this page's `source` the call's devices show. */
+  function encoderWanted(source) {
+    return layer => layer !== null && shownOfPage[source].has(layer);
+  }
+
+  /** Encode every shown source for the layers the call shows of it. */
+  function encodeVideo() {
     for (const [source, stream] of streams) {
-      if (publishers.has(source)) continue;
+      if (encoders.has(source)) continue;
       try {
-        publishers.set(source, carrier.publishPictures({
+        encoders.set(source, createPictureEncoder({
           source,
           stream,
           environment,
-          ownLayer: () => (source === 'camera' ? ownLayer : null),
-          own: (layer, object, keyframe) => {
-            const self = participants().find(participant => participant.self);
-            if (self) inbox.admit({person: self.user, stream: 'own/camera', source, object}, keyframe);
-          },
+          wanted: encoderWanted(source),
+          onPicture: picture => ownPicture(picture),
           // The person ended it in the browser's own controls.
           onEnded: () => { void setVideo(source, false); },
+          report,
         }));
       } catch (error) {
-        report({type: 'video-publish-error', error});
+        report({type: 'video-encode-error', error});
       }
     }
   }
 
-  function unpublishVideo() {
-    for (const publisher of publishers.values()) publisher.stop({keepStream: true});
-    publishers.clear();
+  function ownPicture(picture) {
+    if (pictures.length < MAX_TURN_PICTURES) pictures.push(picture);
+    // This person's own tile draws what their camera makes at its layer.
+    if (picture.source === 'camera' && ownLayer === picture.layer) {
+      const self = participants().find(participant => participant.self);
+      if (self) inbox.admit({person: self.user, stream: 'own/camera', source: picture.source, object: pictureObject(picture)}, picture.keyframe);
+    }
   }
 
-  /** Read the pictures the app shows of the others, by their publications. */
-  function applyShown() {
-    if (!carrier?.showPictures || !grant) return;
-    const others = participants().filter(participant => !participant.self && participant.publishes);
-    const wanted = [];
-    for (const item of shown) {
-      for (const participant of others) {
-        if (participant.user === item.person) wanted.push({publisher: participant.namespace.split('/')[1], source: item.source, layer: item.layer});
+  function stopEncoders() {
+    for (const encoder of encoders.values()) encoder.stop({keepStream: true});
+    encoders.clear();
+  }
+
+  /** What this page shows of each device, as the turn sends it. */
+  function showsOfPage() {
+    const byDevice = new Map();
+    const add = (source, person, layer) => {
+      const code = LAYER_CODES[layer];
+      if (code === undefined) return;
+      for (const participant of grant?.participants ?? []) {
+        if (participant.self || participant.user !== person || !participant.device) continue;
+        const entry = byDevice.get(participant.device) ?? {device: participant.device, camera: [], screen: []};
+        if (!entry[source].includes(code)) entry[source].push(code);
+        byDevice.set(participant.device, entry);
       }
-    }
-    const carrierAt = generation;
-    carrier.showPictures(wanted, (publisher, source, object, keyframe) => {
-      const person = participants().find(participant => participant.namespace === `${grant?.call}/${publisher}`)?.user;
-      if (person) inbox.admit({person, stream: `${publisher}/${carrierAt}`, source, object}, keyframe);
-    });
+    };
+    for (const item of shown) add(item.source, item.person, item.layer);
+    return [...byDevice.values()];
+  }
+
+  /** What the page asks the call's devices to start over on, as the turn
+   * sends it. */
+  function keyframesOfPage() {
+    return [...asking].map(([key]) => {
+      const [device, source] = key.split('|');
+      return {device, source: SOURCE_CODES[source]};
+    }).filter(entry => entry.source !== undefined);
   }
 
   function tellShowing() {
@@ -309,19 +378,21 @@ export function createVoiceCall({
   }
 
   function stopVideo() {
-    unpublishVideo();
+    stopEncoders();
     for (const stream of streams.values()) for (const track of stream.getTracks()) track.stop();
     streams.clear();
     shown = [];
     ownLayer = null;
+    shownOfPage = {camera: new Set(), screen: new Set()};
+    asking.clear();
     inbox.clear();
   }
 
   /** Turn `source` (`camera`, `screen`) on or off in the call. */
   async function setVideo(source, on) {
     if (!on) {
-      publishers.get(source)?.stop();
-      publishers.delete(source);
+      encoders.get(source)?.stop();
+      encoders.delete(source);
       const stream = streams.get(source);
       streams.delete(source);
       for (const track of stream?.getTracks() ?? []) track.stop();
@@ -344,119 +415,174 @@ export function createVoiceCall({
       return;
     }
     streams.set(source, stream);
-    publishVideo();
+    encodeVideo();
     tellShowing();
     update({[source]: true, videoIssue: null});
   }
 
-  function closeCarrier(pause = true) {
-    if (retryTimer !== undefined) clearTimer(retryTimer);
-    retryTimer = undefined;
-    connecting?.abort();
-    connecting = undefined;
-    connectingKey = undefined;
-    unpublishVideo();
-    const current = carrier;
-    if (current && pause) pauseCapture();
-    carrier = undefined;
-    carrierKey = undefined;
-    try { current?.close(); } catch {}
-  }
-
-  /** What a carrier is opened for: its participation and directions. The
-   * token only admits new carrier sessions; an admitted one keeps the
-   * participation's authority, so a renewed token (every half minute) keeps
-   * the carrier and is used when one is opened next. */
-  const keyOf = value => `${value.participation}:${value.directions.publish}:${value.directions.subscribe}`;
-
-  function connect() {
-    if (!grant || state.phase === 'idle' || state.phase === 'ended') return;
-    if (carrier && carrierKey === keyOf(grant)) return;
-    // A grant renewed or re-sent while a carrier is being opened for the
-    // same participation leaves that opening be: started over, a slow
-    // handshake (a network just back) never finishes.
-    if (connecting && connectingKey === keyOf(grant)) return;
-    closeCarrier();
-    const opening = grant;
-    const ticket = ++generation;
-    const controller = new AbortController();
-    connecting = controller;
-    connectingKey = keyOf(opening);
-    update({phase: attempt === 0 && state.phase !== 'live' ? 'connecting' : 'reconnecting', carrier: 'connecting'});
-    void transport.connect({grant: opening, signal: controller.signal}).then(session => {
-      if (ticket !== generation) { session.close(); return; }
-      connecting = undefined;
-      connectingKey = undefined;
-      carrier = session;
-      carrierKey = keyOf(opening);
+  /** A turn with the host: what the page sealed since the last one goes out,
+   * and what the call sent comes back. */
+  function pump() {
+    turnTimerHandle = undefined;
+    if (!inCall() || turning || state.phase === 'joining') return;
+    const frames = microphone;
+    const encoded = pictures;
+    microphone = [];
+    pictures = [];
+    const turn = {
+      call: state.call,
+      app,
+      record,
+      audio: frames,
+      pictures: encoded.map(picture => ({
+        source: SOURCE_CODES[picture.source],
+        layer: LAYER_CODES[picture.layer],
+        sequence: picture.sequence,
+        keyframe: picture.keyframe,
+        timestampUs: picture.timestampUs,
+        width: picture.width,
+        height: picture.height,
+        payload: base64OfBytes(picture.payload),
+      })),
+      shows: showsOfPage(),
+      keyframes: keyframesOfPage(),
+    };
+    turning = true;
+    let answered;
+    try {
+      answered = Promise.resolve(signalling.turn(JSON.stringify(turn)));
+    } catch (error) {
+      answered = Promise.reject(error);
+    }
+    const deadline = setTimer(() => {
+      if (turning) unreachable(new Error('the host did not answer the turn in time'));
+    }, TURN_DEADLINE_MS);
+    void answered.then(json => {
+      clearTimer(deadline);
+      if (!turning) return;
+      turning = false;
       attempt = 0;
-      session.subscribe({
-        onFrame: frame => audioSession?.play({publisherId: frame.publisher, timestamp: frame.timestamp, duration: frame.duration, payload: frame.payload, gain: gainOf(frame.publisher)}),
-        onPublisher: (publisher, active) => { if (!active) audioSession?.removePublisher(publisher); },
-      });
-      update({phase: 'live', carrier: 'open', reason: null});
-      if (capturePaused) {capturePaused = false; synchronizeCapture(state.muted);}
-      publishVideo();
-      applyShown();
-      // A lost signalling connection must not retain audio after the
-      // authenticated carrier says this grant no longer has authority.
-      void session.authorityLost?.then(() => {
-        if (ticket !== generation || !grant || state.call !== opening.call) return;
-        admissionLost(opening.call, new MediaAdmissionError().message);
-      });
-      void session.closed.then(() => {
-        if (carrier !== session) return;
-        carrier = undefined;
-        carrierKey = undefined;
-        retry();
-      });
+      turns.sent += 1;
+      const answer = JSON.parse(json);
+      apply(answer);
+      if (state.phase !== 'live') update({phase: 'live', reason: null});
+      if (capturePaused) { capturePaused = false; synchronizeCapture(state.muted); }
+      schedule();
     }, error => {
-      if (ticket !== generation) return;
-      connecting = undefined;
-      connectingKey = undefined;
-      report({type: 'voice-carrier-error', error});
-      if (error instanceof CarrierUnsupportedError) {
-        unsupportedEnded(opening.call, error.message);
-        return;
+      clearTimer(deadline);
+      if (!turning) return;
+      turning = false;
+      const text = String(error?.message ?? error);
+      if (NO_KEYS.test(text)) {
+        ended(state.call, text);
+        leaveCall();
+      } else if (REFUSED.test(text)) {
+        refused(state.call, text);
+      } else {
+        unreachable(error);
       }
-      if (error instanceof MediaAdmissionError) {
-        admissionLost(opening.call, error.message);
-        return;
-      }
-      retry();
     });
   }
 
-  function retry() {
-    if (!grant || state.phase === 'idle' || state.phase === 'ended') return;
-    if (retryTimer !== undefined) return;
+  /** What the answer brings: play what the call said, queue the pictures,
+   * and follow what its devices show and ask of the page. */
+  function apply(answer) {
+    for (const frame of answer.audio ?? []) {
+      turns.audio += 1;
+      const played = heardUpTo.get(frame.from);
+      if (played !== undefined && frame.sequence <= played) {
+        // A datagram carries the frames just before its newest one, and a
+        // device whose stream started over numbers them from the start
+        // again: past the repeats' reach, this is that.
+        if (played - frame.sequence < REPEAT_REACH) continue;
+      }
+      heardUpTo.set(frame.from, frame.sequence);
+      try {
+        audioSession?.play({publisherId: frame.from, timestamp: BigInt(frame.timestamp48k), duration: 960, payload: base64OfDecoded(frame.opus), gain: gainOf(frame.from)});
+      } catch (error) {
+        report({type: 'voice-play-error', error});
+      }
+    }
+    for (const picture of answer.pictures ?? []) {
+      turns.pictures += 1;
+      const person = grant?.participants.find(participant => participant.device === picture.from)?.user;
+      const source = sourceOfCode(picture.source);
+      if (!person || !source) continue;
+      if (picture.keyframe) asking.delete(`${picture.from}|${source}`);
+      inbox.admit({person, stream: `${picture.from}/${generation}`, source, object: base64OfDecoded(picture.object)}, picture.keyframe);
+    }
+    const shownNow = {camera: new Set(), screen: new Set()};
+    for (const entry of answer.shows ?? []) {
+      for (const code of entry.camera ?? []) shownNow.camera.add(layerOfCode(code));
+      for (const code of entry.screen ?? []) shownNow.screen.add(layerOfCode(code));
+    }
+    shownNow.camera.delete(null);
+    shownNow.screen.delete(null);
+    shownOfPage = shownNow;
+    for (const asked of answer.keyframes ?? []) {
+      const source = sourceOfCode(asked.source);
+      if (source) encoders.get(source)?.keyframe();
+    }
+  }
+
+  function schedule() {
+    if (turnTimerHandle !== undefined || !inCall() || state.phase === 'joining') return;
+    turnTimerHandle = setTimer(pump, TURN_MS);
+  }
+
+  function stopTurns() {
+    if (turnTimerHandle !== undefined) clearTimer(turnTimerHandle);
+    turnTimerHandle = undefined;
+    if (retryTimer !== undefined) clearTimer(retryTimer);
+    retryTimer = undefined;
+    turning = false;
+    microphone = [];
+    pictures = [];
+  }
+
+  /** The host could not be reached: retry, and keep the microphone quiet
+   * meanwhile, so nothing piles up behind a link that is not there. */
+  function unreachable(error) {
+    turns.unreachable += 1;
+    report({type: 'voice-turn-error', error: error instanceof Error ? error : new Error(String(error?.message ?? error))});
+    if (!inCall() || state.phase === 'ended') return;
     pauseCapture();
     const delay = RECONNECT_MS[Math.min(attempt, RECONNECT_MS.length - 1)];
     attempt++;
-    update({phase: 'reconnecting', carrier: 'waiting'});
-    retryTimer = setTimer(() => { retryTimer = undefined; connect(); }, delay);
+    update({phase: 'reconnecting'});
+    if (retryTimer === undefined) {
+      retryTimer = setTimer(() => { retryTimer = undefined; schedule(); }, delay);
+    }
   }
 
-  /** The network changed: the old path is gone, open a carrier on the new one now. */
-  function networkChanged() {
-    if (!grant || state.phase === 'idle' || state.phase === 'ended') return;
-    attempt = 0;
-    closeCarrier();
-    connect();
+  /** The host refused the turn: this page is in no call it can seal, or the
+   * call is over. It waits for the host's next grant, which a session that is
+   * still a member gets again. */
+  function refused(call, reason) {
+    turns.refused += 1;
+    stopTurns();
+    stopEncoders();
+    // No call is granted any more: the device list is the host's to say again.
+    grant = undefined;
+    update({phase: 'reconnecting', camera: false, screen: false, participants: []});
+    try { signalling.reachable?.(); } catch (error) { report({type: 'voice-signalling-error', error}); }
+    startGrantDeadline(() => {
+      if (state.call === call && !grant && inCall()) admissionEnded(call, reason);
+    });
   }
 
   function granted(next) {
     if (state.phase === 'idle' || state.phase === 'ended' || next.call !== state.call) return;
     grant = next;
     clearGrantDeadline();
-    // Back after the workspace took the carrier away: audio again, as wanted.
+    // Back after the host took the call away: audio again, as wanted.
     if (!audioSession && !audioStarting) void startAudio();
     const canPublish = next.directions.publish;
     if (!canPublish && !state.muted) void audioSession?.setMuted(true);
-    update({admitted: true, canPublish, muted: canPublish ? state.muted : true, participants: participants()});
-    connect();
-    // Someone joined or left: the shown pictures follow their publications.
-    applyShown();
+    update({phase: state.phase === 'joining' ? 'connecting' : state.phase, admitted: true, canPublish, muted: canPublish ? state.muted : true, participants: participants()});
+    encodeVideo();
+    pump();
+    schedule();
   }
 
   /** The call ended for `reason`; `audioFailed` when this device's audio
@@ -497,37 +623,9 @@ export function createVoiceCall({
     grantTimer = setTimer(look, GRANT_LOOK_MS);
   }
 
-  /** The workspace took the carrier's admission away (revoked it, or refused
-   * its token): nothing is sent or played on it any more. The session
-   * still holds the participation and joins afresh when the host forgot it
-   * (a page that stood still past its lifetime, a token renewed meanwhile),
-   * so the call waits for that grant; one that does not come while the
-   * page runs for the deadline ends the call, and an end the session
-   * reports ends it at once. */
-  function admissionLost(call, reason) {
-    if (call !== state.call) return;
-    stopAll();
-    // The relay answered, so the host is reachable again: the session need
-    // not wait out its backoff to bring the fresh grant.
-    try { signalling.reachable?.(); } catch (error) { report({type: 'voice-signalling-error', error}); }
-    update({phase: 'reconnecting', carrier: 'waiting', camera: false, screen: false, participants: []});
-    startGrantDeadline(() => {
-      if (state.call === call && !grant && state.phase !== 'idle' && state.phase !== 'ended') admissionEnded(call, reason);
-    });
-  }
-
-  /** This browser can never open the carrier: the call ends at once with
-   * why, instead of reconnecting forever. */
-  function unsupportedEnded(call, reason) {
-    if (call !== state.call) return;
-    stopAll();
-    update({...idle(), phase: 'ended', call, admitted: false, unsupported: true, reason});
-    try { signalling.leave(); } catch (error) { report({type: 'voice-signalling-error', error}); }
-  }
-
   function admissionEnded(call, reason) {
     ended(call, reason);
-    try { signalling.leave(); } catch (error) { report({type: 'voice-signalling-error', error}); }
+    leaveCall();
   }
 
   /** Silence or play what the call plays here, and say it. */
@@ -536,17 +634,25 @@ export function createVoiceCall({
     update({deafened});
   }
 
+  /** Leave the call on the host's side: its bridge forgets this page. */
+  function leaveCall() {
+    try { signalling.end?.(); } catch (error) { report({type: 'voice-signalling-error', error}); }
+    try { signalling.leave?.(); } catch (error) { report({type: 'voice-signalling-error', error}); }
+  }
+
   function stopAll() {
     clearGrantDeadline();
-    closeCarrier(false);
+    stopTurns();
     capturePaused = false;
     generation++;
     grant = undefined;
+    app = '';
+    record = '';
     toldMuted = undefined;
     toldDeafened = undefined;
     speaking.clear();
     volumes.clear();
-    gainsOf = undefined;
+    heardUpTo.clear();
     stopVideo();
     const session = audioSession;
     audioSession = undefined;
@@ -565,42 +671,47 @@ export function createVoiceCall({
   const connection = environment.navigator?.connection;
   connection?.addEventListener?.('change', online);
 
+  /** The network changed: the turn in flight is gone, or will be soon. */
+  function networkChanged() {
+    if (!inCall()) return;
+    attempt = 0;
+    if (retryTimer !== undefined) { clearTimer(retryTimer); retryTimer = undefined; }
+    stopTurns();
+    pauseCapture();
+    schedule();
+  }
+
   return {
     get state() { return state; },
     /** Call `listener(state)` on every change; returns its removal. */
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     /**
-     * Join `call` (hex). Call it from the person's gesture: the audio
-     * context resumes and the microphone is asked for within it.
+     * Join `call` (hex) of `app`'s record `record`. Call it from the person's
+     * gesture: the audio context resumes and the microphone is asked for
+     * within it.
      */
-    join(call, {muted = false} = {}) {
+    join(call, {muted = false, app: callApp = '', record: callRecord = ''} = {}) {
       if (state.call === call && state.phase !== 'ended' && state.phase !== 'idle') return;
       if (state.phase !== 'idle' && state.phase !== 'ended') this.leave();
       wantMuted = muted;
       attempt = 0;
-      // A browser that cannot open the carrier never joins: the others
-      // would see someone in the call who hears nothing.
-      const unsupported = transport.unsupported?.();
-      if (unsupported) {
-        state = {...idle(), phase: 'ended', call, muted, unsupported: true, reason: unsupported};
-        emit();
-        return;
-      }
-      state = {...idle(), phase: 'joining', call, muted};
+      app = callApp;
+      record = callRecord;
+      state = {...idle(), phase: 'joining', call, app, record, muted};
       emit();
       void startAudio();
       signalling.join(call);
       // Said before the grant: the session tells the host once granted.
       tellShowing();
       startGrantDeadline(() => {
-        if (state.call === call && !grant && state.phase !== 'idle' && state.phase !== 'ended') admissionEnded(call, NO_GRANT);
+        if (state.call === call && !grant && inCall()) admissionEnded(call, NO_GRANT);
       });
     },
     leave() {
       if (state.phase === 'idle') return;
       const wasIn = state.phase !== 'ended';
       stopAll();
-      if (wasIn) signalling.leave();
+      if (wasIn) leaveCall();
       state = idle();
       emit();
     },
@@ -610,7 +721,7 @@ export function createVoiceCall({
       // Unmuting is hearing the call again too.
       if (!value && state.deafened) applyDeafened(false);
       wantMuted = Boolean(value) || !(grant?.directions.publish ?? true);
-      if (state.phase === 'idle' || state.phase === 'ended') { update({muted: wantMuted}); return; }
+      if (!inCall()) { update({muted: wantMuted}); return; }
       update({muted: wantMuted, ...(wantMuted ? {} : {micIssue: null})});
       const call = state.call;
       const session = audioSession ?? await audioStarting;
@@ -644,14 +755,21 @@ export function createVoiceCall({
     setVolume(id, gain) {
       if (typeof id !== 'string' || !Number.isFinite(gain) || gain < 0 || gain > 2) return;
       if (gain === 1) volumes.delete(id); else volumes.set(id, gain);
-      gainsOf = undefined;
     },
     /** The pictures the app shows: `[{person, source, layer}]`. */
-    showPictures(pictures) {
-      shown = pictures.filter(item => !participants().some(participant => participant.self && participant.user === item.person));
+    showPictures(items) {
       const self = participants().find(participant => participant.self);
-      ownLayer = pictures.find(item => item.source === 'camera' && item.person === self?.user)?.layer ?? null;
-      applyShown();
+      shown = items.filter(item => !(self && item.person === self.user));
+      ownLayer = items.find(item => item.source === 'camera' && item.person === self?.user)?.layer ?? null;
+      // A device that starts showing a source is asked for a keyframe until
+      // one arrives: nothing before it decodes.
+      for (const item of shown) {
+        for (const participant of grant?.participants ?? []) {
+          if (participant.self || participant.user !== item.person || !participant.device) continue;
+          const key = `${participant.device}|${item.source}`;
+          if (!asking.has(key)) asking.set(key, true);
+        }
+      }
     },
     /** The pictures received after `after`: `{pictures, cursor}`, objects in base64. */
     takePictures: (after, budget) => inbox.take(after, budget),
@@ -668,9 +786,9 @@ export function createVoiceCall({
       return (audioSession ?? await audioStarting)?.selectOutput(deviceId) ?? false;
     },
     /** Why this browser cannot take part in calls, or null when it can. */
-    unsupported: () => transport.unsupported?.() ?? null,
-    /** Carrier and audio counters, for diagnostics and tests. */
-    stats: () => ({carrier: carrier?.stats() ?? null, phase: state.phase, captureActive: audioSession?.captureActive === true}),
+    unsupported: () => null,
+    /** Turn and audio counters, for diagnostics and tests. */
+    stats: () => ({phase: state.phase, captureActive: audioSession?.captureActive === true, turns: {...turns, inFlight: turning}}),
     networkChanged,
     dispose() {
       this.leave();
@@ -680,4 +798,12 @@ export function createVoiceCall({
       listeners.clear();
     },
   };
+}
+
+/** Bytes from the turn's JSON: base64, as every payload of it travels. */
+export function base64OfDecoded(text) {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }

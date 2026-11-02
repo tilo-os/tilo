@@ -1,29 +1,43 @@
 /**
- * A browser participant's pictures in a call, as a Tilo device sends and
- * receives them (tilo-video/1, web/video-profile.mjs; the shell's
- * `native_media::video`):
+ * A browser participant's pictures in a call: the camera (`getUserMedia`) or
+ * a shared screen (`getDisplayMedia`) encoded here as one H.264 stream per
+ * layer of its source, and the pictures the call sends for this page waiting
+ * in an inbox until the app collects them.
  *
- * - **Sending.** The camera (`getUserMedia`) or a shared screen
- *   (`getDisplayMedia`) is published as one track per layer of its source.
- *   A layer is encoded (WebCodecs, H.264, hardware where the browser has
- *   it) only while someone subscribes to its track (`track.used`), so
- *   nothing is encoded for nobody. A picture that stops changing is sent
- *   again as a keyframe every `REPEAT_MS`, so someone who starts showing
- *   it later sees it at once.
- * - **Receiving.** The pictures the app shows arrive on the tracks it asks
- *   for and wait in an inbox until the app collects them, coded; the app
- *   decodes them (tilo-media's page decoder). A stream that falls behind
- *   starts over at its next keyframe.
+ * A layer is encoded (WebCodecs, hardware where the browser has it) only
+ * while a device in the call shows it, so nothing is encoded for nobody
+ * (`wanted(layer)`). A picture that stops changing is encoded again as a
+ * keyframe every `REPEAT_MS`, so someone who starts showing it later sees it
+ * at once, and `keyframe()` makes the next picture of each layer one, which
+ * is what a device that fell behind asks for.
+ *
+ * What the encoder writes is one picture's coded bytes and its place in the
+ * source's stream; the call seals it and puts it in a tilo-video/1 object
+ * (tilo-call-lane `page`), so the page never speaks that format for what it
+ * sends. What arrives is already such an object, and the app decodes it.
  */
-import {SOURCES, base64Of, decodeVideoObject, encodeVideoObject, fitted, videoTrack} from './video-profile.mjs';
+import {SOURCES, base64Of, encodeVideoObject, fitted} from './video-profile.mjs';
 
 const KEYFRAME_MS = 2000;
 const REPEAT_MS = 2000;
 const FPS = {camera: 30, screen: 15};
-const PICTURE_AGE_MS = 2000;
 const INBOX_BYTES = 8 * 1024 * 1024;
 /** Frames an encoder may hold before new ones are skipped. */
 const ENCODE_QUEUE = 2;
+/** The layers of each source, in their wire order. */
+export const LAYER_CODES = Object.freeze({low: 0, mid: 1, high: 2});
+/** The wire codes of the sources. */
+export const SOURCE_CODES = Object.freeze({camera: 0, screen: 1});
+
+/** The layer of a wire code, or null for one this profile has none of. */
+export function layerOfCode(code) {
+  return Object.keys(LAYER_CODES).find(name => LAYER_CODES[name] === code) ?? null;
+}
+
+/** The source of a wire code, or null for one this profile has none of. */
+export function sourceOfCode(code) {
+  return Object.keys(SOURCE_CODES).find(name => SOURCE_CODES[name] === code) ?? null;
+}
 
 /** Open this person's camera or a screen they choose: a stream with one video track. */
 export async function openSource(source, environment = globalThis) {
@@ -80,30 +94,26 @@ function readFrames(stream, environment, onFrame, onEnded) {
 }
 
 /**
- * Publish `stream`'s pictures as `source` on `broadcast` (a `@moq/net`
- * broadcast producer) through `moq`. `own(layer, object)` receives this
- * person's own pictures at the layer `ownLayer()` names (their own tile).
- * Returns `{stop()}`; `onEnded` runs when the person ends the capture in
- * the browser's own controls.
+ * Encode `stream`'s pictures as `source` in the layers `wanted(layer)` names
+ * (`low`, `mid`, `high`). `onPicture` receives each coded picture:
+ * `{source, layer, sequence, keyframe, timestampUs, width, height, payload}`,
+ * with `sequence` this source's own count. Returns `{stop, keyframe}`;
+ * `onEnded` runs when the person ends the capture in the browser's own
+ * controls.
  */
-export function publishPictures({moq, broadcast, source, stream, environment = globalThis, ownLayer = () => null, own = () => {}, onEnded = () => {}, report = () => {}}) {
+export function createPictureEncoder({source, stream, environment = globalThis, wanted = () => false, onPicture = () => {}, onEnded = () => {}, report = () => {}}) {
   const layers = SOURCES[source];
   if (!layers) throw new RangeError(`unknown picture source ${source}`);
-  const started = performance.now();
   const outputs = new Map();
   for (const layer of Object.keys(layers)) {
-    const track = broadcast.createTrack(videoTrack(source, layer), {timescale: moq.Time.Timescale.MICRO, maxAge: PICTURE_AGE_MS});
-    outputs.set(layer, {layer, track, encoder: null, group: null, sequence: 0, size: null, canvas: null, context: null, lastKey: -Infinity, needKey: true});
+    outputs.set(layer, {layer, encoder: null, sequence: 0, size: null, canvas: null, context: null, lastKey: -Infinity, needKey: true});
   }
   let stopped = false;
   let last = null;
   let repeatTimer;
 
-  function closeEncoder(output) {
-    try { output.encoder?.close(); } catch {}
+  function closeEncoder(output) {    try { output.encoder?.close(); } catch {}
     output.encoder = null;
-    try { output.group?.close(); } catch {}
-    output.group = null;
     output.needKey = true;
   }
 
@@ -124,37 +134,23 @@ export function publishPictures({moq, broadcast, source, stream, environment = g
   function written(output, chunk) {
     const payload = new Uint8Array(chunk.byteLength);
     chunk.copyTo(payload);
-    const keyframe = chunk.type === 'key';
-    const timestampUs = Math.max(0, Math.round(chunk.timestamp));
     const [width, height] = output.size;
-    let object;
+    let picture;
     try {
-      object = encodeVideoObject({keyframe, layer: output.layer, sequence: output.sequence++, timestampUs, width, height, payload});
+      picture = {source, layer: output.layer, sequence: output.sequence, keyframe: chunk.type === 'key', timestampUs: Math.max(0, Math.round(chunk.timestamp)), width, height, payload};
+      output.sequence++;
     } catch (error) {
       report({type: 'video-object-error', error});
       return;
     }
-    if (ownLayer() === output.layer) own(output.layer, object, keyframe);
-    if (!output.track.used.peek()) return;
-    if (keyframe) {
-      try { output.group?.close(); } catch {}
-      output.group = output.track.appendGroup();
-    }
-    if (!output.group) return;
-    try {
-      output.group.writeFrame({payload: object, timestamp: new moq.Time.Timestamp(timestampUs, moq.Time.Timescale.MICRO)});
-    } catch (error) {
-      report({type: 'video-publish-error', error});
-      output.group = null;
-      output.needKey = true;
-    }
+    try { onPicture(picture); } catch (error) { report({type: 'video-picture-error', error}); }
   }
 
   function encode(frame, repeat) {
     const at = performance.now();
     for (const output of outputs.values()) {
-      const wanted = output.track.used.peek() || ownLayer() === output.layer;
-      if (!wanted) { if (output.encoder) closeEncoder(output); continue; }
+      const wantedNow = wanted(output.layer);
+      if (!wantedNow) { if (output.encoder) closeEncoder(output); continue; }
       let encoder;
       try { encoder = encoderFor(output, frame.displayWidth, frame.displayHeight); } catch (error) { report({type: 'video-encoder-error', error}); continue; }
       if (encoder.encodeQueueSize > ENCODE_QUEUE) continue;
@@ -180,7 +176,7 @@ export function publishPictures({moq, broadcast, source, stream, environment = g
     repeatTimer = setTimeout(() => {
       if (stopped || !last) return;
       // A still picture: the last one again, as a keyframe.
-      const again = new environment.VideoFrame(last, {timestamp: (performance.now() - started) * 1000});
+      const again = new environment.VideoFrame(last, {timestamp: performance.now() * 1000});
       encode(again, true);
       again.close();
       repeatLater();
@@ -197,8 +193,11 @@ export function publishPictures({moq, broadcast, source, stream, environment = g
 
   return {
     source,
-    /** Stop publishing; the capture itself stops too unless `keepStream`
-     * (the call moves to a new carrier and publishes it again). */
+    /** Start every layer's next picture at a keyframe. */
+    keyframe() {
+      for (const output of outputs.values()) output.needKey = true;
+    },
+    /** Stop encoding; the capture itself stops too unless `keepStream`. */
     stop({keepStream = false} = {}) {
       if (stopped) return;
       stopped = true;
@@ -206,14 +205,16 @@ export function publishPictures({moq, broadcast, source, stream, environment = g
       stopFrames();
       last?.close();
       last = null;
-      for (const output of outputs.values()) {
-        closeEncoder(output);
-        try { broadcast.removeTrack(output.track.name); } catch {}
-        try { output.track.close(); } catch {}
-      }
+      for (const output of outputs.values()) closeEncoder(output);
       if (!keepStream) for (const track of stream.getTracks()) track.stop();
     },
   };
+}
+
+/** The tilo-video/1 object of `picture` (see [`createPictureEncoder`]): what
+ * this page's own tile draws without the call sending it back. */
+export function pictureObject({source, layer, sequence, keyframe, timestampUs, width, height, payload}) {
+  return encodeVideoObject({keyframe, layer, sequence, timestampUs, width, height, payload});
 }
 
 /**
@@ -287,91 +288,5 @@ export function createPictureInbox({maxBytes = INBOX_BYTES} = {}) {
       behind.add(key);
     },
     clear() { queue = []; bytes = 0; behind.clear(); },
-  };
-}
-
-/**
- * Read the picture tracks shown of each publisher of the call `callPath`
- * from `incoming` (a `@moq/net` origin), into `deliver(publisher, source,
- * object bytes, keyframe)`. `show([{publisher, source, layer}])` replaces
- * what is read. Returns `{show, close}`.
- */
-export function receivePictures({moq, incoming, call, deliver, report = () => {}}) {
-  const reading = new Map();
-  let closed = false;
-  function stopReading(key) {
-    const entry = reading.get(key);
-    if (!entry) return;
-    reading.delete(key);
-    entry.active = false;
-    try { entry.subscriber?.close(); } catch {}
-    try { entry.request?.close(); } catch {}
-  }
-  function startReading(key, {publisher, source, layer}) {
-    const entry = {active: true, layer, request: undefined, subscriber: undefined};
-    reading.set(key, entry);
-    void (async () => {
-      try {
-        entry.request = incoming.request(moq.Path.from(call, publisher));
-        // The request follows the path: a renewed carrier's republish takes
-        // it over without a new announcement, and the broadcast read so far
-        // then ends. Read the broadcast that took the path, from its first
-        // keyframe. A stream its publisher ended on a broadcast that still
-        // holds the path ends here, and is read again when shown again.
-        let current;
-        while (entry.active) {
-          let broadcast;
-          while (entry.active && (!(broadcast = entry.request.active.peek()) || broadcast === current)) await entry.request.active.changed();
-          if (!entry.active) return;
-          current = broadcast;
-          entry.subscriber = broadcast.track(videoTrack(source, layer)).subscribe({priority: 1, maxAge: PICTURE_AGE_MS});
-          let expectKey = true;
-          for (;;) {
-            const group = await entry.subscriber.recvGroup();
-            if (!group || !entry.active) break;
-            try {
-              for (;;) {
-                const frame = await group.readFrame();
-                if (!frame || !entry.active) break;
-                let object;
-                try { object = decodeVideoObject(frame.payload); } catch { report({type: 'video-receive-drop', reason: 'invalid-object'}); break; }
-                if (expectKey && !object.keyframe) break;
-                expectKey = false;
-                deliver(publisher, source, frame.payload, object.keyframe);
-              }
-            } catch {
-              // A group cut short: its later pictures are lost; start again at a keyframe.
-              expectKey = true;
-            } finally {
-              try { group.close(); } catch {}
-            }
-          }
-          try { entry.subscriber.close(); } catch {}
-          if (entry.request.active.peek() === current) return;
-        }
-      } catch (error) {
-        if (entry.active) report({type: 'video-subscription-error', error});
-      } finally {
-        if (reading.get(key) === entry) {
-          reading.delete(key);
-          try { entry.request?.close(); } catch {}
-        }
-      }
-    })();
-  }
-  return {
-    show(wanted) {
-      if (closed) return;
-      const next = new Map(wanted.map(item => [`${item.publisher}|${item.source}`, item]));
-      for (const [key, entry] of [...reading]) {
-        const want = next.get(key);
-        if (!want || want.layer !== entry.layer) stopReading(key);
-      }
-      for (const [key, item] of next) if (!reading.has(key)) startReading(key, item);
-    },
-    close() {
-      closed = true;
-      for (const key of [...reading.keys()]) stopReading(key);
-    },
   };
 }

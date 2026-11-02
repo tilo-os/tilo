@@ -97,7 +97,8 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let phone = enrol(&alice, "alice-phone", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_workspace_host(&alice, &host, state.path(), false).await;
+    let TestHost { relay, web, .. } =
+        start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
 
     for (index, kind) in KINDS.into_iter().enumerate() {

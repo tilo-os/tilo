@@ -2195,6 +2195,44 @@ impl WasmPeer {
         serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
     }
 
+    /// Take one turn of `workspace`'s call: `turn` is a `LaneTurn` as JSON
+    /// (the frames this page's microphone and encoders made, what it shows of
+    /// the call's devices, and which of them it asks to start over), and the
+    /// answer is a `LaneAnswer` as JSON: what the call sent for this page,
+    /// opened, and what its devices show and ask of it.
+    ///
+    /// `workspace` is the workspace's uuid, as its records' routes name it:
+    /// the call's frames are sealed with the content keys of the channel its
+    /// app and record belong to. Rejects when this page holds no keys for that
+    /// channel, when the session is watching only, or when it is closed.
+    #[wasm_bindgen(js_name = callLaneTurn)]
+    pub async fn call_lane_turn(&self, workspace: String, turn: String) -> Result<String, JsError> {
+        let turn: tilo_browser_peer::LaneTurn = serde_json::from_str(&turn).map_err(js_error)?;
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        let done: tilo_browser_peer::LaneCompletion = Box::new(move |answer| {
+            let _ = reply.send(answer);
+        });
+        self.handle
+            .call_lane_then(&workspace, turn, done)
+            .map_err(js_error)?;
+        let answer = receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)?;
+        serde_json::to_string(&answer).map_err(js_error)
+    }
+
+    /// Leave the call of `workspace`: the page's next turn starts a fresh one,
+    /// sealed from the start.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a closed session.
+    #[wasm_bindgen(js_name = callLaneLeave)]
+    pub fn call_lane_leave(&self, workspace: &str) -> Result<(), JsError> {
+        self.handle.call_lane_end(workspace).map_err(js_error)
+    }
+
     /// Post this person's display name, the window they focus (`window`:
     /// tab id in hex) and own recent semantic actions in `workspace` (`actions`:
     /// JSON array of `{id: 32 hex, action, resource, app, at_ms}`, titles

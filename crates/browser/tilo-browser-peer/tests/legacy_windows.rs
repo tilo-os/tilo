@@ -129,7 +129,7 @@ async fn native_window_scenario() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_host(
+    let TestHost { relay, web, .. } = start_host(
         &root,
         &host_device,
         state.path(),
@@ -391,7 +391,7 @@ async fn a_session_without_an_h264_encoder_streams_vp9_to_a_browser_that_decodes
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_host(
+    let TestHost { relay, web, .. } = start_host(
         &root,
         &host_device,
         state.path(),

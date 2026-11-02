@@ -11,8 +11,9 @@
  * - the live plane (`peer.live`) over WebTransport `moq-lite`
  *   (`live-transport.mjs`), or its HTTPS stream fallback (`live-fallback.mjs`),
  *   admitted by a host grant for this session. Never authority;
- * - the workspace's calls (`peer.voice`, `voice-peer.mjs`): the session holds the
- *   participation, the page's voice carrier follows its grants.
+ * - the workspace's calls (`peer.voice`, `voice-peer.mjs`): the session holds
+ *   the participation and seals the page's frames, which reach the call as
+ *   turns on its host's call lane (`voice.mjs`).
  *
  * The page holds one device key (`device-custody.mjs`): each tab is a
  * device of its own, with its own key, certificate and state. A page that also
@@ -1062,8 +1063,10 @@ async function connect({
       }
       agents?.dispose();
       actions?.dispose();
-      voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, workspace, ...voiceOptions});
       const hostDevice = hexKey(host.hostCert?.device_public_key);
+      // The host bridges this page into a call, so its frames carry the
+      // host's device and it is the page's own voice there.
+      voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, workspace, device: hostDevice, ...voiceOptions});
       agents = hostDevice ? createAgents({peer: remote, runtime, workspace, live, userPublicKey, hostDevice}) : undefined;
       actions = hostDevice
         ? createActions({peer: remote, workspace, hostDevice, device: custodyKeyHex(), userPublicKey, store})

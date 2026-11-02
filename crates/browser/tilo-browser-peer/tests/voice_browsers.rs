@@ -3,28 +3,113 @@
     clippy::expect_used,
     clippy::panic,
     clippy::too_many_lines,
-    reason = "test assertions and fixture setup fail loudly"
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "test assertions and fixture setup fail loudly; the arithmetic and casts are counters \
+              over bounded test sample buffers"
 )]
 #[path = "support/call.rs"]
 mod call;
 mod support;
 tilo_automerge_isolate::test_worker!();
 
+use std::collections::BTreeSet;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
+use iroh::protocol::Router;
+use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
+use opus::{Application, Channels, Decoder, Encoder};
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use test_http::{Reply, Responder};
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle, VoiceEvent};
-use tilo_moq::client::{CapturedOpus, Status};
-use tilo_relay_protocol::{
-    Envelope,
-    voice::{CallOperation, VoiceGrant},
+use tilo_call_lane::picture::VideoObject;
+use tilo_call_lane::{
+    ALPN, CAMERA_FPS, CAMERA_SIZE, Calls, Hello, Lane, Layer, Microphone, Opener, Peer, Picture,
+    Roster, Source, Video, heard,
 };
-use tilo_test_env::SpawnUnderEnvLock as _;
+use tilo_relay_protocol::Envelope;
+use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
-use call::carrier;
+/// One tick of the native participant: a page takes a turn every 20 ms, and
+/// so does the device at the other end of its call.
+const TICK: Duration = Duration::from_millis(20);
+/// A participation lapses without a heartbeat: the native device joins the
+/// call again this often, as its shell does.
+const HEARTBEAT_TICKS: u64 = 250;
+/// The channel's content keys, as the call's members derive them from the
+/// channel's MLS group: what seals every frame the page and the native
+/// device exchange, and what the bridge never holds.
+fn channel_keys(channel: collab_types::ChannelId) -> ChannelContentKeys {
+    ChannelGroup::create(channel, MemberKey::generate("alice").unwrap())
+        .unwrap()
+        .content_keys()
+        .unwrap()
+}
 
+/// `frames` 20 ms Opus frames (48 kHz mono) of a sine at `hz`: a real tone,
+/// as a call's microphone sends it.
+fn tone(hz: f32, frames: usize) -> Vec<Vec<u8>> {
+    const RATE: f32 = 48_000.0;
+    const SAMPLES: usize = 960;
+    const AMPLITUDE: f32 = 0.3;
+    let mut encoder = Encoder::new(48_000, Channels::Mono, Application::Audio).unwrap();
+    let step = hz / RATE * std::f32::consts::TAU;
+    let mut phase = 0.0_f32;
+    let mut pcm = [0.0_f32; SAMPLES];
+    (0..frames)
+        .map(|_| {
+            for sample in &mut pcm {
+                *sample = phase.sin() * AMPLITUDE;
+                phase = (phase + step) % std::f32::consts::TAU;
+            }
+            encoder.encode_vec_float(&pcm, 1275).unwrap()
+        })
+        .collect()
+}
+
+/// What one Opus packet decodes to, or nothing when it is not one.
+fn decode(decoder: &mut Decoder, opus: &[u8]) -> Vec<f32> {
+    let mut samples = vec![0.0_f32; 960];
+    match decoder.decode_float(opus, &mut samples, false) {
+        Ok(count) => {
+            samples.truncate(count);
+            samples
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The loudness of a decoded frame: above the call's speaking level means the
+/// page's microphone carried a tone, not only packets.
+fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
+/// One camera frame, as a call's capture hands it to its encoder.
+fn camera_frame(fill: u8) -> tilo_call_lane::Frame {
+    let (width, height) = (640, 480);
+    debug_assert!(width <= CAMERA_SIZE.0 && height <= CAMERA_SIZE.1);
+    tilo_call_lane::Frame {
+        pixels: Arc::from(vec![fill; (width * height * 4) as usize]),
+        width,
+        height,
+        format: tilo_media::realtime::InputFormat::Rgba,
+        captured_at: Instant::now(),
+    }
+}
+
+/// The grant the page's session hands its app: what `web/voice.mjs` reads.
 fn grant_json(grant: &VoiceGrant) -> Value {
     json!({
         "call": hex::encode(grant.call), "epoch": grant.epoch,
@@ -54,49 +139,11 @@ fn call_operation(body: &[u8]) -> Option<CallOperation> {
     })
 }
 
-/// The page's voice transport imports the live plane's `MoQ` library, which
-/// is generated from the `@moq/net` pinned in
-/// `scripts/moq-browser/package-lock.json` and never committed. Build it the
-/// way the browser runtime build does (`npm ci`, then `build.mjs`, which writes
-/// it next to the web modules) unless a build newer than the lock is there.
-fn ensure_moq_library(repository: &std::path::Path) {
-    let builder = repository.join("scripts/moq-browser");
-    let output = repository.join("crates/browser/tilo-browser-runtime/web/media-moq-library.mjs");
-    let modified =
-        |path: &std::path::Path| std::fs::metadata(path).and_then(|metadata| metadata.modified());
-    if let (Ok(built), Ok(pinned)) = (
-        modified(&output),
-        modified(&builder.join("package-lock.json")),
-    ) && built >= pinned
-    {
-        return;
-    }
-    let steps: [(&str, &[&str]); 2] = [
-        ("npm", &["ci", "--no-audit", "--no-fund", "--silent"]),
-        ("node", &["build.mjs"]),
-    ];
-    for (program, args) in steps {
-        let status = std::process::Command::new(program)
-            .args(args)
-            .current_dir(&builder)
-            .status_locked()
-            .unwrap_or_else(|error| {
-                panic!("running {program} to build media-moq-library.mjs: {error}")
-            });
-        assert!(
-            status.success(),
-            "{program} {} in {} failed: {status}",
-            args.join(" "),
-            builder.display()
-        );
-    }
-}
-
 struct Page {
     workspace: String,
     peer: PeerHandle,
-    last: Mutex<Option<VoiceGrant>>,
 }
+
 impl Page {
     fn events(&self) -> Value {
         let events: Vec<Value> = self
@@ -104,21 +151,22 @@ impl Page {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::Voice(VoiceEvent::Granted { grant, .. }) => {
-                    *self.last.lock().unwrap() = Some((*grant).clone());
-                    Some(json!({"room": self.workspace, "kind": "granted", "grant": grant_json(&grant)}))
+                PeerEvent::Voice(VoiceEvent::Granted { grant, .. }) => Some(
+                    json!({"room": self.workspace, "kind": "granted", "grant": grant_json(&grant)}),
+                ),
+                PeerEvent::Voice(VoiceEvent::CallResult { request, result, .. }) => {
+                    Some(match result {
+                        Ok(state) => json!({"room": self.workspace, "kind": "callResult", "request": hex::encode(request), "call": {
+                            "call": hex::encode(state.call), "epoch": state.epoch, "active": state.active,
+                            "allowed": {"publish": state.allowed.publish, "subscribe": state.allowed.subscribe},
+                        }}),
+                        Err(error) => json!({"room": self.workspace, "kind": "callResult", "request": hex::encode(request), "error": error}),
+                    })
                 }
-                PeerEvent::Voice(VoiceEvent::CallResult { request, result, .. }) => Some(match result {
-                    Ok(state) => json!({"room": self.workspace, "kind": "callResult", "request": hex::encode(request), "call": {
-                        "call": hex::encode(state.call), "epoch": state.epoch, "active": state.active,
-                        "allowed": {"publish": state.allowed.publish, "subscribe": state.allowed.subscribe},
-                    }}),
-                    Err(error) => json!({"room": self.workspace, "kind": "callResult", "request": hex::encode(request), "error": error}),
-                }),
-                PeerEvent::Voice(VoiceEvent::Ended { call, reason, .. }) => {
-                    Some(json!({"room": self.workspace, "kind": "ended", "call": hex::encode(call), "reason": reason}))
-                }
-                PeerEvent::Voice(VoiceEvent::Calls {result, ..}) => Some(match result {
+                PeerEvent::Voice(VoiceEvent::Ended { call, reason, .. }) => Some(
+                    json!({"room": self.workspace, "kind": "ended", "call": hex::encode(call), "reason": reason}),
+                ),
+                PeerEvent::Voice(VoiceEvent::Calls { result, .. }) => Some(match result {
                     Ok(calls) => json!({"room": self.workspace, "kind": "calls", "calls": calls.iter().map(|call| json!({
                         "call": hex::encode(call.state.call), "epoch": call.state.epoch, "active": call.state.active,
                         "app": call.app_id, "record": call.record_id, "channel": call.channel_id,
@@ -132,37 +180,218 @@ impl Page {
     }
 }
 
+/// The device at the other end of the page's call: a real lane member, as a
+/// native session is one. It answers the lanes the page's host opens, speaks a
+/// tone of its own, hears what the page's microphone sends, shows a camera and
+/// collects the page's pictures. Nothing of it goes through the host: the
+/// frames are sealed with the channel's keys, and the host only copies them.
+struct Native {
+    _endpoint: Endpoint,
+    _lanes: Router,
+    arrivals: tokio::sync::mpsc::UnboundedReceiver<Peer>,
+    received_at: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    received: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    voices: Vec<Peer>,
+    device: [u8; 32],
+    /// The device the page's frames name: the host that bridges it.
+    bridge: [u8; 32],
+    ear: Opener,
+    mouth: Microphone,
+    decoder: Decoder,
+    tone: Vec<Vec<u8>>,
+    timestamp: u64,
+    /// The page's frames this device heard, each counted once.
+    sequences: BTreeSet<u64>,
+    /// How many of them decoded loud enough to be the page's tone.
+    loud: usize,
+    video: Arc<Video>,
+    sending: Arc<tilo_call_lane::Sending>,
+    pictures: Vec<Picture>,
+    cursor: u64,
+    ticks: u64,
+}
+
+impl Native {
+    async fn start(
+        governed: &call::GovernedCall,
+        channel: collab_types::ChannelId,
+        keys: &ChannelContentKeys,
+    ) -> Self {
+        let device = governed.laptop.key.verifying_key().to_bytes();
+        let bridge = governed.host.cert.device_public_key;
+        assert_ne!(
+            device, bridge,
+            "the page's bridge and the call's device are two devices"
+        );
+        let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(SecretKey::from_bytes(&governed.laptop.key.to_bytes()))
+            .address_lookup(governed.lookup.clone())
+            .relay_mode(RelayMode::Disabled)
+            .bind_addr((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .transport_config(tilo_call_lane::carrier::transport_config())
+            .bind()
+            .await
+            .unwrap();
+        let port = endpoint.bound_sockets()[0].port();
+        governed.lookup.add_endpoint_info(
+            EndpointAddr::new(endpoint.id())
+                .with_ip_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, port))),
+        );
+        let roster = Roster::new([device, bridge]);
+        let (calls, arrivals) = Calls::new(
+            Hello {
+                workspace: governed.cluster_id.clone(),
+                channel,
+                call: hex::encode(governed.call.call),
+                lane: Lane::Audio,
+            },
+            roster.clone(),
+        );
+        let lanes = Router::builder(endpoint.clone())
+            .accept(ALPN, calls)
+            .spawn();
+        let video = Video::new(device);
+        video.set_keys(keys, roster.clone());
+        // The page's camera is shown here: what makes it encode, and at which
+        // layer.
+        video.show(bridge, &[Layer::Low], &[]);
+        let sending = video
+            .start(Source::Camera, CAMERA_FPS)
+            .expect("a camera encoder thread");
+        let (received_at, received) = tokio::sync::mpsc::unbounded_channel();
+        Self {
+            _endpoint: endpoint,
+            _lanes: lanes,
+            arrivals,
+            received_at,
+            received,
+            voices: Vec::new(),
+            device,
+            bridge,
+            ear: Opener::new(keys.clone(), roster),
+            mouth: Microphone::new(keys, device, 2).unwrap(),
+            decoder: Decoder::new(48_000, Channels::Mono).unwrap(),
+            tone: tone(440.0, 50),
+            timestamp: 0,
+            sequences: BTreeSet::new(),
+            loud: 0,
+            video,
+            sending,
+            pictures: Vec::new(),
+            cursor: 0,
+            ticks: 0,
+        }
+    }
+
+    /// Take the lanes the page's host opened since the last tick.
+    fn arrived(&mut self) {
+        while let Ok(peer) = self.arrivals.try_recv() {
+            if peer.lane() == Lane::Video {
+                self.video.add(peer);
+                continue;
+            }
+            let sending = self.received_at.clone();
+            let reading = peer.clone();
+            tokio::spawn(async move {
+                while let Ok(datagram) = reading.received().await {
+                    if sending.send(datagram.to_vec()).is_err() {
+                        return;
+                    }
+                }
+            });
+            self.voices.push(peer);
+        }
+    }
+
+    /// One tick: join the call again when the participation lapses, send a
+    /// tone frame and a camera picture, and take what the page sent.
+    fn step(
+        &mut self,
+        client: &tilo_relay::RelayClient,
+        workspace_id: u64,
+        call: [u8; 32],
+        participation: [u8; 32],
+    ) {
+        self.ticks = self.ticks.wrapping_add(1);
+        if self.ticks.is_multiple_of(HEARTBEAT_TICKS) {
+            client
+                .send(Envelope::VoiceJoin {
+                    workspace_id,
+                    call,
+                    participation: Some(participation),
+                })
+                .unwrap();
+        }
+        if self.ticks.is_multiple_of(3) {
+            self.sending.publish(camera_frame(0x40));
+        }
+        if !self.voices.is_empty() {
+            let opus = &self.tone[self.timestamp as usize / 960 % self.tone.len().max(1)];
+            if let Ok(Some(datagram)) = self.mouth.frame(self.timestamp, opus) {
+                for voice in &self.voices {
+                    let _ = voice.send(datagram.clone());
+                }
+                self.timestamp = self.timestamp.wrapping_add(960);
+            }
+        }
+        while let Ok(datagram) = self.received.try_recv() {
+            for frame in heard(&self.ear, self.bridge, &datagram).expect("the page's frames open") {
+                if !self.sequences.insert(frame.sequence) {
+                    continue;
+                }
+                if rms(&decode(&mut self.decoder, &frame.opus)) > 0.02 {
+                    self.loud = self.loud.checked_add(1).unwrap();
+                }
+            }
+        }
+        let (taken, cursor) = self.video.take(self.cursor, usize::MAX);
+        self.pictures.extend(taken);
+        self.cursor = cursor;
+    }
+}
+
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay fixture is consumed by shutdown after the final grant assertion; dropping it at Clippy's suggested location uses a moved value"
+    reason = "the fixture is consumed by shutdown after the final assertion; dropping its guard at Clippy's suggested location uses a moved value"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
-    // Build the page's library before anyone joins: a participation lapses
-    // after `PARTICIPATION_TTL` without a heartbeat, and the native one only
-    // beats once the browsers run.
-    let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../");
-    ensure_moq_library(&repository);
+async fn a_page_and_a_native_device_exchange_microphone_audio_and_pictures_in_a_governed_call() {
     let governed = call::GovernedCall::start().await;
     let (_, bob_device) = governed.invite("bob-browser").await;
-    let (_, carol_device) = governed.invite("carol-browser").await;
-    let page = |device: support::Device| {
-        Arc::new(Page {
-            workspace: governed.cluster_id.clone(),
-            peer: support::start_peer(
-                Host::Https(governed.https()),
-                device.cert,
-                governed.host.cert.clone(),
-                device.key,
-            ),
-            last: Mutex::new(None),
-        })
+    let page = Arc::new(Page {
+        workspace: governed.cluster_id.clone(),
+        peer: support::start_peer(
+            Host::Https(governed.https()),
+            bob_device.cert,
+            governed.host.cert.clone(),
+            bob_device.key,
+        ),
+    });
+    page.peer.join(governed.workspace_id).unwrap();
+    support::ready(&[&page.peer]).await;
+
+    // The call's frames are sealed with its channel's content keys; the page
+    // holds them as a channel member, and so does the device it calls.
+    let channel = collab_types::document_channel_id(call::CHAT, &governed.cluster_id, "");
+    let keys = channel_keys(channel);
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: call::CHAT.into(),
+        cluster_id: governed.cluster_id.clone(),
+        record: String::new(),
     };
-    let bob = page(bob_device);
-    let carol = page(carol_device);
-    bob.peer.join(governed.workspace_id).unwrap();
-    carol.peer.join(governed.workspace_id).unwrap();
-    support::ready(&[&bob.peer, &carol.peer]).await;
+    page.peer.install_channel_keys(route, keys.clone()).unwrap();
+    let (installed, settles) = tokio::sync::oneshot::channel();
+    page.peer
+        .barrier_then(Box::new(move |result| {
+            let _ = installed.send(result);
+        }))
+        .unwrap();
+    settles.await.unwrap().unwrap();
+
+    // Alice's own laptop takes part in the call, in the workspace it belongs
+    // to: the page's grant names it, and its lanes answer the host's.
+    let mut native = Native::start(&governed, channel, &keys).await;
     governed
         .owner
         .send(Envelope::VoiceJoin {
@@ -176,23 +405,18 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
         _ => None,
     })
     .await;
-    let alice_id = hex::encode(alice.participation);
-    let mut generation = 1_u64;
-    let mut native = carrier(&alice, generation);
-    let mut native_grant = alice.clone();
-    let mut retry_at = std::time::Instant::now();
-    let mut native_reconnects = 0_usize;
 
-    let mut native_received = std::collections::BTreeMap::<String, usize>::new();
     let marks = Arc::new(Mutex::new(Vec::<String>::new()));
-    let server_marks = marks.clone();
-    let server_bob = bob.clone();
-    let server_carol = carol.clone();
+    let server_marks = Arc::clone(&marks);
+    let server_page = Arc::clone(&page);
     let call_id = hex::encode(governed.call.call);
     let workspace_cluster = governed.cluster_id.clone();
     let channel_id = governed.channel.clone();
     let workspace = governed.workspace_id;
     let call = governed.call.call;
+    let native_device = hex::encode(native.device);
+    let host_device = hex::encode(native.bridge);
+    let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../");
     let server = Responder::handle(move |request| {
         let path = request.target.split('?').next().unwrap();
         let text = |body: String| Some(Reply::status(200).body(body));
@@ -207,42 +431,72 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
         if path == "/api/channel" {
             return text(channel_id.clone());
         }
-        if path == "/api/alice" {
-            return text(alice_id.clone());
+        // The device this page's frames name (its host's), and the device of
+        // the native participant the page's tone and picture come from.
+        if path == "/api/host" {
+            return text(host_device.clone());
+        }
+        if path == "/api/native" {
+            return text(native_device.clone());
         }
         if let Some(mark) = path.strip_prefix("/api/mark/") {
             server_marks.lock().unwrap().push(mark.into());
             return text(String::new());
         }
-        for (who, page) in [("bob", &server_bob), ("carol", &server_carol)] {
-            if let Some(op) = path.strip_prefix(&format!("/api/{who}/")) {
-                if op == "events" {
-                    return text(page.events().to_string());
-                }
-                if op == "leave" {
-                    page.peer.voice_leave(workspace).unwrap();
-                } else if op.starts_with("join/") {
-                    page.peer.voice_join(workspace, call).unwrap();
-                } else if op == "calls" {
-                    page.peer.voice_calls(workspace).unwrap();
-                } else if let Some(id) = op.strip_prefix("call/") {
-                    let Some(operation) = call_operation(&request.body) else {
-                        return Some(Reply::status(400));
-                    };
-                    let id = hex::decode(id)
-                        .ok()
-                        .and_then(|id| <[u8; 16]>::try_from(id).ok());
-                    let Some(id) = id else {
-                        return Some(Reply::status(400));
-                    };
-                    page.peer.voice_call(workspace, id, operation).unwrap();
-                } else if op == "reconnect" {
-                    page.peer.reconnect().unwrap();
-                } else {
-                    return Some(Reply::status(404));
-                }
-                return text(String::new());
+        if let Some(op) = path.strip_prefix("/api/bob/") {
+            if op == "events" {
+                return text(server_page.events().to_string());
             }
+            if op == "leave" {
+                server_page.peer.voice_leave(workspace).unwrap();
+            } else if op.starts_with("join/") {
+                server_page.peer.voice_join(workspace, call).unwrap();
+            } else if op == "calls" {
+                server_page.peer.voice_calls(workspace).unwrap();
+            } else if let Some(id) = op.strip_prefix("call/") {
+                let Some(operation) = call_operation(&request.body) else {
+                    return Some(Reply::status(400));
+                };
+                let id = hex::decode(id)
+                    .ok()
+                    .and_then(|id| <[u8; 16]>::try_from(id).ok());
+                let Some(id) = id else {
+                    return Some(Reply::status(400));
+                };
+                server_page
+                    .peer
+                    .voice_call(workspace, id, operation)
+                    .unwrap();
+            } else if op == "reconnect" {
+                server_page.peer.reconnect().unwrap();
+            } else if op == "turn" {
+                // One turn of the page's call: what the page sealed goes to
+                // its host's call lane, and the answer is what came back.
+                let Ok(turn) = serde_json::from_slice(&request.body) else {
+                    return Some(Reply::status(400));
+                };
+                let (done, answer) = std::sync::mpsc::channel();
+                let completing = Box::new(move |answer| {
+                    let _ = done.send(answer);
+                });
+                if server_page
+                    .peer
+                    .call_lane_then(&workspace_cluster, turn, completing)
+                    .is_err()
+                {
+                    return Some(Reply::status(503).body("the peer session is closed"));
+                }
+                return match answer.recv_timeout(Duration::from_secs(20)) {
+                    Ok(Ok(answer)) => text(serde_json::to_string(&answer).unwrap_or_default()),
+                    Ok(Err(error)) => Some(Reply::status(409).body(error)),
+                    Err(_) => Some(Reply::status(504).body("the host did not answer")),
+                };
+            } else if op == "end" {
+                server_page.peer.call_lane_end(&workspace_cluster).unwrap();
+            } else {
+                return Some(Reply::status(404));
+            }
+            return text(String::new());
         }
         let file = if path == "/page.html" {
             repository.join("crates/browser/tilo-browser-peer/tests/voice_browsers/page.html")
@@ -281,88 +535,63 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
         .kill_on_drop(true)
         .spawn_locked()
         .unwrap();
-    let mut tick = tokio::time::interval(Duration::from_millis(20));
-    let mut timestamp = 0_u64;
-    let status = tilo_test_env::within("the two microphone browsers", async {
+    let mut tick = tokio::time::interval(TICK);
+    let status = tilo_test_env::within("the page and the native device in one call", async {
         loop {
             tokio::select! {
                 result = browser.wait() => break result.unwrap(),
                 event = governed.owner.recv() => {
                     if let Some(Envelope::VoiceRefused {reason, ..}) = &event {
-                        panic!("the relay refused Alice's heartbeat: {reason}");
-                    }
-                    // As the native shell does, Alice keeps her carrier
-                    // through a renewed token or another roster (Carol muting,
-                    // Bob reconnecting) and replaces it only for another
-                    // scope: a carrier rebuilt on every grant drops her audio
-                    // to everyone while it reconnects.
-                    if let Some(Envelope::VoiceGranted {grant, ..}) = event {
-                        let stale = call::scope(&grant, generation) != call::scope(&native_grant, generation);
-                        native_grant = *grant;
-                        if stale {
-                            native.close();
-                            generation = generation.checked_add(1).unwrap();
-                            native = carrier(&native_grant, generation);
-                        }
+                        panic!("the relay refused the native device's heartbeat: {reason}");
                     }
                 }
                 _ = tick.tick() => {
-                    // A carrier that failed is reopened, as its owner does,
-                    // with the current grant.
-                    if native.status() == Status::Failed && std::time::Instant::now() >= retry_at {
-                        native.close();
-                        generation = generation.checked_add(1).unwrap();
-                        native_reconnects = native_reconnects.checked_add(1).unwrap();
-                        native = carrier(&native_grant, generation);
-                        retry_at = std::time::Instant::now().checked_add(Duration::from_millis(250)).unwrap();
-                    }
-                    if timestamp.is_multiple_of(240_000) {
-                        governed.owner.send(Envelope::VoiceJoin {workspace_id: governed.workspace_id, call: governed.call.call, participation: Some(alice.participation)}).unwrap();
-                    }
-                    let _ = native.enable_publication();
-                    let _ = native.try_send(CapturedOpus {timestamp_48k: timestamp, duration_samples: 960, payload: vec![0xf8, 0xff, 0xfe], captured_at: std::time::Instant::now()});
-                    timestamp = timestamp.checked_add(960).unwrap();
-                    while let Some(frame) = native.try_recv() {
-                        assert_eq!(frame.object.duration, 960);
-                        assert!(!frame.object.payload.is_empty());
-                        let count = native_received.entry(frame.publisher.namespace).or_default();
-                        *count = count.checked_add(1).unwrap();
-                    }
+                    native.arrived();
+                    native.step(&governed.owner, governed.workspace_id, governed.call.call, alice.participation);
                 }
             }
         }
     }).await;
-    assert!(status.success(), "Chromium voice driver failed: {status}");
+    assert!(status.success(), "Chromium call driver failed: {status}");
     let marks = marks.lock().unwrap().clone();
     assert!(marks.iter().any(|mark| mark == "done"));
-    for who in ["bob", "carol"] {
-        let prefix = format!("{who}=");
-        let participation = marks
+
+    // The page's microphone reached the native device: real Opus frames,
+    // opened with the channel's keys, and loud enough to be the tone the
+    // browser's fake microphone makes.
+    assert!(
+        native.sequences.len() > 100,
+        "the native device heard too few of the page's microphone frames: {}",
+        native.sequences.len()
+    );
+    assert!(
+        native.loud > 20,
+        "the native device decoded too few loud frames of the page's tone: {}",
+        native.loud
+    );
+    // And the page's camera reached it too, in a stream that starts at a
+    // keyframe a decoder can begin at.
+    assert!(
+        native.pictures.iter().any(|picture| {
+            picture.from == native.bridge
+                && VideoObject::decode(&picture.object)
+                    .is_ok_and(|object| object.keyframe && object.width > 0 && object.height > 0)
+        }),
+        "the page's picture never reached the native device: {:?}",
+        native
+            .pictures
             .iter()
-            .find_map(|mark| mark.strip_prefix(&prefix))
-            .unwrap();
-        let namespace = format!("{}/{participation}", hex::encode(governed.call.call));
-        assert!(
-            native_received.get(&namespace).copied().unwrap_or_default() > 100,
-            "the production native carrier heard too few {who} microphone frames"
-        );
-    }
-    println!("native_received={native_received:?}, native_reconnects={native_reconnects}");
-    // A left participant's last token is no longer admitted, independently
-    // of its page having closed the local carrier.
-    let stale = carrier(carol.last.lock().unwrap().as_ref().unwrap(), 1);
-    support::wait_for("Carol's ended grant cannot open a carrier", || async {
-        matches!(
-            stale.status(),
-            Status::Failed | Status::Denied | Status::Closed
-        )
-        .then_some(())
-    })
-    .await;
-    native.close();
-    stale.close();
-    bob.peer.close();
-    carol.peer.close();
+            .map(|picture| (hex::encode(picture.from), picture.object.len()))
+            .collect::<Vec<_>>()
+    );
+    println!(
+        "native heard {} frames ({} loud), {} pictures",
+        native.sequences.len(),
+        native.loud,
+        native.pictures.len()
+    );
+    native.video.close();
+    page.peer.close();
     drop(server);
     governed.shutdown().await;
 }

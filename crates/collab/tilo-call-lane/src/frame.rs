@@ -169,6 +169,12 @@ impl Opener {
         Self { keys, roster }
     }
 
+    /// Who may send from now on, under the same keys: a call's roster moves
+    /// with its membership while the epoch stays as it was.
+    pub fn set_roster(&mut self, roster: Roster) {
+        self.roster = roster;
+    }
+
     /// The frame `sender` sealed as `seq` of `stream`, or why it is refused.
     ///
     /// A frame from a device the roster does not name is refused before

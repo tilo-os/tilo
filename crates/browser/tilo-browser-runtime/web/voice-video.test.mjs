@@ -1,34 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createPictureInbox, publishPictures, receivePictures} from './voice-video.mjs';
-import {decodeVideoObject, encodeVideoObject} from './video-profile.mjs';
+import {LAYER_CODES, SOURCE_CODES, createPictureEncoder, createPictureInbox, layerOfCode, pictureObject, sourceOfCode} from './voice-video.mjs';
+import {decodeVideoObject} from './video-profile.mjs';
 
 const drain = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 
-/** A `@moq/net` stand-in: tracks whose demand the test sets, groups that record frames. */
-function fakeMoq() {
-  const tracks = new Map();
-  let used = new Set();
-  const moq = {Time: {Timescale: {MICRO: 'us'}, Timestamp: class { constructor(value) { this.value = value; } }}};
-  const broadcast = {
-    createTrack(name) {
-      const track = {
-        name,
-        groups: [],
-        used: {peek: () => used.has(name)},
-        appendGroup() { const group = {frames: [], writeFrame(frame) { group.frames.push(frame); }, close() {}}; track.groups.push(group); return group; },
-        close() { track.closed = true; },
-      };
-      tracks.set(name, track);
-      return track;
-    },
-    removeTrack(name) { tracks.get(name).removed = true; },
-  };
-  return {moq, broadcast, tracks, demand(names) { used = new Set(names); }};
-}
-
-/** A browser stand-in: a camera that yields `frames`, and a WebCodecs encoder that keys on demand. */
+/** A browser stand-in: a camera that yields frames, and a WebCodecs encoder
+ * that codes each one as a keyframe or not. */
 function fakeBrowser() {
   const encoders = [];
   let push;
@@ -56,145 +35,105 @@ function fakeBrowser() {
   }
   const stopped = [];
   const stream = {getVideoTracks: () => [{addEventListener() {}}], getTracks: () => [{stop() { stopped.push(true); }}]};
-  const camera = (n) => new VideoFrame({width: 1280, height: 720}, {timestamp: n * 33_333});
-  return {environment: {VideoFrame, VideoEncoder, OffscreenCanvas, MediaStreamTrackProcessor}, encoders, stream, stopped, frame: n => push(camera(n))};
+  const camera = (n, width = 1280, height = 720) => new VideoFrame({width, height}, {timestamp: n * 33_333});
+  return {environment: {VideoFrame, VideoEncoder, OffscreenCanvas, MediaStreamTrackProcessor}, encoders, stream, stopped, frame: (n, width, height) => push(camera(n, width, height))};
 }
 
-test('a camera layer is encoded only while someone shows it, and each group starts at a keyframe', async () => {
-  const {moq, broadcast, tracks, demand} = fakeMoq();
+test('a layer is encoded only while a device shows it, at the layer size, and a device that fell behind gets a keyframe', async () => {
   const browser = fakeBrowser();
-  const published = publishPictures({moq, broadcast, source: 'camera', stream: browser.stream, environment: browser.environment});
-  assert.deepEqual([...tracks.keys()], ['camera/low', 'camera/mid', 'camera/high']);
+  const wanted = new Set(['high']);
+  const pictures = [];
+  const encoder = createPictureEncoder({source: 'camera', stream: browser.stream, environment: browser.environment, wanted: layer => wanted.has(layer), onPicture: picture => pictures.push(picture)});
   browser.frame(0);
   await drain();
-  assert.equal(browser.encoders.length, 0, 'nobody shows the camera: nothing is encoded');
+  assert.equal(browser.encoders.length, 1, 'only the shown layer is encoded');
+  assert.deepEqual([browser.encoders[0].config.width, browser.encoders[0].config.height], [1280, 720]);
+  assert.equal(pictures.length, 1);
+  assert.equal(pictures[0].keyframe, true, 'a layer starts at a keyframe');
+  assert.equal(pictures[0].layer, 'high');
+  assert.equal(pictures[0].sequence, 0);
+  assert.equal(pictures[0].timestampUs, 0);
+  assert.deepEqual([...pictures[0].payload], [0, 0, 0, 1, 0x65]);
 
-  demand(['camera/mid']);
   browser.frame(1);
+  await drain();
+  assert.equal(pictures.length, 2);
+  assert.equal(pictures[1].keyframe, false);
+  assert.equal(pictures[1].sequence, 1);
+
+  // A device falls behind and asks for a keyframe: the next picture is one.
+  encoder.keyframe();
   browser.frame(2);
   await drain();
-  assert.equal(browser.encoders.length, 1);
-  assert.deepEqual([browser.encoders[0].config.width, browser.encoders[0].config.height], [640, 360]);
-  const [group] = tracks.get('camera/mid').groups;
-  const objects = group.frames.map(frame => decodeVideoObject(frame.payload));
-  assert.equal(objects[0].keyframe, true, 'the layer starts at a keyframe');
-  assert.equal(objects[1].keyframe, false);
-  assert.deepEqual(objects.map(object => object.layer), ['mid', 'mid']);
-  assert.equal(tracks.get('camera/low').groups.length, 0);
+  assert.equal(pictures.at(-1).keyframe, true, 'the asked-for picture starts over');
 
-  // Nobody shows it any more: its encoder closes.
-  demand([]);
+  wanted.clear();
   browser.frame(3);
   await drain();
-  assert.equal(browser.encoders[0].state, 'closed');
-
-  published.stop();
-  assert.ok([...tracks.values()].every(track => track.removed && track.closed));
-  assert.equal(browser.stopped.length, 1, 'the camera stops');
+  assert.equal(browser.encoders[0].state, 'closed', 'nobody shows the layer any more');
+  encoder.stop();
 });
 
-test('this person sees their own camera at their tile\'s layer without anyone else showing it', async () => {
-  const {moq, broadcast, tracks} = fakeMoq();
+test('a screen fits its shown layer and a source this profile has none of is refused', async () => {
   const browser = fakeBrowser();
-  const own = [];
-  const published = publishPictures({moq, broadcast, source: 'camera', stream: browser.stream, environment: browser.environment,
-    ownLayer: () => 'low', own: (layer, object, keyframe) => own.push({layer, object, keyframe})});
-  browser.frame(0);
+  const pictures = [];
+  const encoder = createPictureEncoder({source: 'screen', stream: browser.stream, environment: browser.environment, wanted: layer => layer === 'low', onPicture: picture => pictures.push(picture)});
+  browser.frame(0, 1920, 1080);
   await drain();
-  assert.equal(own.length, 1);
-  assert.equal(own[0].keyframe, true);
-  assert.deepEqual([decodeVideoObject(own[0].object).width, decodeVideoObject(own[0].object).height], [320, 180]);
-  assert.equal(tracks.get('camera/low').groups.length, 0, 'nothing went out for it');
-  published.stop({keepStream: true});
-  assert.equal(browser.stopped.length, 0, 'a new carrier publishes the same camera again');
+  assert.deepEqual([browser.encoders[0].config.width, browser.encoders[0].config.height], [320, 180]);
+  assert.throws(() => createPictureEncoder({source: 'hologram', stream: browser.stream}), RangeError);
+  encoder.stop();
 });
 
-test('the inbox hands pictures over by cursor, in base64, and a stream that falls behind waits for a keyframe', () => {
-  const inbox = createPictureInbox({maxBytes: 100});
-  const picture = (stream, size) => ({person: 'ab'.repeat(32), stream, source: 'camera', object: new Uint8Array(size).fill(1)});
-  inbox.admit(picture('slow', 40), true);
-  inbox.admit(picture('slow', 40), false);
-  inbox.admit(picture('fast', 40), true);
-  const {pictures, cursor} = inbox.take(0);
-  assert.deepEqual(pictures.map(p => p.stream), ['fast'], 'the oldest stream gave way whole');
-  assert.equal(typeof pictures[0].object, 'string');
-  assert.equal(inbox.take(cursor).pictures.length, 0);
-  inbox.admit(picture('slow', 10), false);
-  assert.equal(inbox.take(cursor).pictures.length, 0, 'not without its keyframe');
-  inbox.admit(picture('slow', 10), true);
-  assert.equal(inbox.take(cursor).pictures.length, 1);
+test('stopping an encoder releases the capture unless it moves to another call', async () => {
+  const browser = fakeBrowser();
+  const kept = createPictureEncoder({source: 'camera', stream: browser.stream, environment: browser.environment, wanted: () => true});
+  kept.stop({keepStream: true});
+  assert.deepEqual(browser.stopped, []);
+  const ended = createPictureEncoder({source: 'camera', stream: browser.stream, environment: browser.environment, wanted: () => true});
+  ended.stop();
+  assert.deepEqual(browser.stopped, [true]);
 });
 
-/** A remote publisher's broadcast whose camera track the test feeds one group at a time. */
-function remoteBroadcast() {
-  let group, ended = false;
-  const subscriber = {
-    recvGroup: () => ended ? Promise.resolve(undefined) : new Promise(resolve => { group = resolve; }),
-    close() {},
-  };
-  const picture = (keyframe, sequence) => encodeVideoObject({keyframe, layer: 'low', sequence, timestampUs: sequence * 33_333, width: 320, height: 180, payload: Uint8Array.of(1, 2, 3)});
-  return {
-    track: () => ({subscribe: () => subscriber}),
-    send(sequence) {
-      const frames = [picture(true, sequence)];
-      group({readFrame: async () => frames.length ? {payload: frames.shift()} : undefined, close() {}});
-    },
-    end() { ended = true; group?.(undefined); },
-  };
-}
-
-test('a camera whose publisher renewed its carrier is seen again without a new announcement', async () => {
-  const PUBLISHER = 'b'.repeat(64);
-  let request;
-  const incoming = {
-    request() {
-      let current = remoteBroadcast(), changed;
-      request = {
-        active: {peek: () => current, changed: () => new Promise(resolve => { changed = resolve; })},
-        swap(next) { current = next; changed?.(); },
-        current: () => current,
-        closed: false, close() { this.closed = true; },
-      };
-      return request;
-    },
-  };
-  const moq = {Path: {from: (...parts) => parts.join('/')}};
-  const delivered = [];
-  const reading = receivePictures({moq, incoming, call: 'c'.repeat(64), deliver: (publisher, source) => delivered.push([publisher, source])});
-  reading.show([{publisher: PUBLISHER, source: 'camera', layer: 'low'}]);
-  await drain();
-  const first = request.current();
-  first.send(0);
-  await drain();
-  assert.equal(delivered.length, 1);
-  // The publisher's renewed carrier republishes the path and its old one
-  // closes; the route never lapses, so nothing calls show() again.
-  const second = remoteBroadcast();
-  request.swap(second);
-  first.end();
-  await drain();
-  second.send(0);
-  await drain();
-  assert.deepEqual(delivered, [[PUBLISHER, 'camera'], [PUBLISHER, 'camera']], 'the broadcast that took the path is shown');
-  reading.close();
-  assert.equal(request.closed, true, 'closing releases the request');
+test('the page speaks the call\'s codes: camera and screen, and the layers in their order', () => {
+  assert.deepEqual(SOURCE_CODES, {camera: 0, screen: 1});
+  assert.deepEqual(LAYER_CODES, {low: 0, mid: 1, high: 2});
+  assert.equal(sourceOfCode(1), 'screen');
+  assert.equal(sourceOfCode(7), null);
+  assert.equal(layerOfCode(2), 'high');
+  assert.equal(layerOfCode(9), null);
 });
 
-test('a camera its publisher stopped on the same broadcast is read again when shown again', async () => {
-  const PUBLISHER = 'b'.repeat(64);
-  const broadcast = remoteBroadcast();
-  const requests = [];
-  const incoming = {request() { const request = {active: {peek: () => broadcast, changed: () => new Promise(() => {})}, closed: false, close() { this.closed = true; }}; requests.push(request); return request; }};
-  const moq = {Path: {from: (...parts) => parts.join('/')}};
-  const reading = receivePictures({moq, incoming, call: 'c'.repeat(64), deliver() {}});
-  const camera = [{publisher: PUBLISHER, source: 'camera', layer: 'low'}];
-  reading.show(camera);
-  await drain();
-  broadcast.end();
-  await drain();
-  reading.show(camera);
-  await drain();
-  assert.equal(requests[0].closed, true, 'the ended stream releases its request');
-  assert.equal(requests.length, 2, 'the ended stream is asked for again, not waited on');
-  reading.close();
+test('a picture this page keeps is the tilo-video/1 object the call would seal', () => {
+  const object = pictureObject({source: 'camera', layer: 'mid', sequence: 7, keyframe: true, timestampUs: 1234, width: 640, height: 360, payload: Uint8Array.of(9, 8, 7)});
+  const decoded = decodeVideoObject(object);
+  assert.equal(decoded.keyframe, true);
+  assert.equal(decoded.layer, 'mid');
+  assert.equal(decoded.sequence, 7n);
+  assert.equal(decoded.timestampUs, 1234n);
+  assert.deepEqual([...decoded.payload], [9, 8, 7]);
+});
+
+test('the inbox holds pictures by cursor, starts a fallen-behind stream at its next keyframe, and bounds itself', () => {
+  const inbox = createPictureInbox({maxBytes: 8});
+  const picture = (sequence, keyframe, size = 4) => ({person: 'p'.repeat(64), stream: 'cam', source: 'camera', sequence, object: new Uint8Array(size).fill(sequence), keyframe});
+  inbox.admit(picture(1, true), true);
+  inbox.admit(picture(2, false), false);
+  const taken = inbox.take(0);
+  assert.equal(taken.pictures.length, 2);
+  assert.equal(taken.cursor, 2);
+  inbox.behind('cam', 'camera');
+  inbox.admit(picture(3, false), false);
+  assert.equal(inbox.take(taken.cursor).pictures.length, 0, 'nothing before a keyframe is drawn');
+  inbox.admit(picture(4, true), true);
+  assert.equal(inbox.take(taken.cursor).pictures[0].sequence, 4);
+  // Beyond the byte budget the oldest picture goes, and its stream waits for
+  // a keyframe: what the app decodes never skips one.
+  const other = key => ({person: 'q'.repeat(64), stream: key, source: 'camera', object: new Uint8Array(4)});
+  inbox.admit(other('a'), true);
+  inbox.admit(other('b'), true);
+  inbox.admit(other('c'), true);
+  const bounded = inbox.take(0, 1000);
+  assert.deepEqual(bounded.pictures.map(entry => entry.stream), ['b', 'c']);
+  assert.equal(typeof bounded.pictures[0].object, 'string', 'objects travel as base64');
 });

@@ -117,7 +117,8 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
     );
     let page = enrol(&alice, "alice-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_workspace_host(&alice, &host, state.path(), false).await;
+    let TestHost { relay, web, .. } =
+        start_workspace_host(&alice, &host, state.path(), false).await;
     let https: Arc<dyn HttpClient> =
         support::https::DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
     let owner = HttpsLink::connect(

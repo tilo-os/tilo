@@ -750,6 +750,34 @@ for (const adaptive of [true, false]) {
     const first = loud.find(at => at >= 125 * 960);
     assert.ok(first !== undefined && first < 140 * 960, `the frames after it are heard (first at frame ${first / 960})`);
   });
+
+  test(`${adaptive ? 'adaptive' : 'fixed'} worklet playout keeps hearing a sender whose clock runs faster than this page's`, async t => {
+    const Processor = await worklet(t, `fast-clock-${adaptive}`);
+    const jitter = adaptive ? {adaptive: true, initial: 1920, min: 960, max: 7680} : {};
+    const processor = new Processor({processorOptions: {muted: true, jitter}});
+    const tone = () => Float32Array.from({length: 960}, (_, index) => 0.5 * Math.sin(2 * Math.PI * 1000 * index / 48_000));
+    let quanta = 0;
+    const heard = [];
+    const advanceTo = sample => {
+      while (quanta * 128 < sample) {
+        const block = new Float32Array(128);
+        processor.process([], [[block]]);
+        if (block.some(value => Math.abs(value) > 0.1)) heard.push(quanta * 128);
+        quanta++;
+      }
+    };
+    // This page's audio device runs two percent slow against the sender's
+    // clock: its frames keep arriving a little sooner than their samples play.
+    for (let index = 0; index < 500; index++) {
+      advanceTo(Math.round(index * 960 * 0.98));
+      processor.port.receive({type: 'play', publisherId: PUB_A, generation: 1, samples: tone().buffer, timestamp: BigInt(index * 960), duration: 960, reservedSamples: 960});
+    }
+    advanceTo(Math.round(500 * 960 * 0.98));
+    const loud = heard.length;
+    const expired = processor.port.sent.filter(message => message.stage === 'playback-expired').length;
+    assert.ok(loud >= 450, `the publisher is heard throughout instead of going quiet for good (${loud} of 500 frames heard)`);
+    assert.ok(expired <= 60, `only what the clocks' difference costs is skipped (${expired} frames)`);
+  });
 }
 
 for (const stallMs of [1000, 3000]) {

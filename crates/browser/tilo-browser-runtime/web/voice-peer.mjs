@@ -1,11 +1,13 @@
 /**
  * `peer.voice`: the workspace's calls through the page's certified peer.
  *
- * The wasm peer (`WasmPeer.voiceCalls`, `voiceCall`, `voiceJoin`,
- * `voiceLeave`, `takeVoiceEvents`) carries the call envelopes over the
- * peer's HTTPS session and keeps the participation alive; this adapts it to
- * the signalling web/voice.mjs follows, and lists and governs the workspace's
- * calls for the desktop.
+ * The wasm peer carries the call's presence and its media:
+ * `WasmPeer.voiceCalls`, `voiceCall`, `voiceJoin`, `voiceLeave` and
+ * `takeVoiceEvents` keep this page's participation alive in the call and say
+ * who is in it, and `callLaneTurn` takes one turn of the page's sealed media
+ * with the host's call lane. This adapts both to the signalling
+ * web/voice.mjs follows, and lists and governs the workspace's calls for the
+ * desktop.
  */
 import {createVoiceCall} from './voice.mjs';
 
@@ -14,9 +16,11 @@ const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0'
 
 /**
  * `peer()` is the current `WasmPeer` (it changes when the page certifies
- * again); `workspace` the joined workspace. `options` go to `createVoiceCall`.
+ * again); `workspace` the joined workspace; `device` the host's device, which
+ * bridges this page into the call, its frames carrying it as their sender.
+ * `options` go to `createVoiceCall`.
  */
-export function createPeerVoice({peer, workspace, createCall = createVoiceCall, random = bytes => crypto.getRandomValues(bytes), ...options}) {
+export function createPeerVoice({peer, workspace, device = null, createCall = createVoiceCall, random = bytes => crypto.getRandomValues(bytes), ...options}) {
   const listeners = new Set();
   const listings = [];
   const requests = new Map();
@@ -29,9 +33,14 @@ export function createPeerVoice({peer, workspace, createCall = createVoiceCall, 
     // can now, and brings the fresh grant the call waits for.
     reachable: () => { try { peer().retryNow?.(); } catch {} },
     show: (camera, screen, muted, deafened) => { try { peer().voiceShow(workspace, camera, screen, muted, deafened); } catch {} },
+    // One turn of the call's sealed media: the host copies it onto the call's
+    // lane and answers with what its devices sent.
+    turn: turn => peer().callLaneTurn(workspace, turn),
+    // The host's bridge forgets this page's call: its next turn starts afresh.
+    end: () => { try { peer().callLaneLeave(workspace); } catch {} },
     onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
-  const call = createCall({signalling, ...options});
+  const call = createCall({signalling, device, ...options});
 
   function listed(result) {
     if (result.calls) {

@@ -28,13 +28,18 @@ use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
+use crate::call_media::{LaneAnswer, LaneCall, LaneTurn};
 use crate::custody::{OutboxEntry, PeerRecord, PeerStore};
 use crate::document::sign_frame;
+use tilo_call_lane::page::Down;
+use tilo_call_lane::{Page, Roster};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::{
     Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame,
 };
 use tilo_relay_client::https::{HttpClient, HttpsLink, LinkError};
+
+mod lane;
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -498,6 +503,13 @@ enum Command {
     VoiceJoin(u64, [u8; 32]),
     VoiceLeave(u64),
     VoiceShow(u64, tilo_relay_protocol::voice::Showing),
+    /// One turn of the page's call in the workspace named, sealed and sent.
+    CallLane(String, crate::call_media::LaneTurn, LaneCompletion),
+    /// What the host answered a turn: the page's side of the call, and the
+    /// answer to open and hand on.
+    CallLaneAnswer(Page, Result<Down, LinkError>, LaneCompletion),
+    /// The page left the call of the workspace named.
+    CallLaneEnd(String),
     LegacyInput(
         tilo_relay_protocol::legacy_window::InputRequest,
         InputCompletion,
@@ -568,6 +580,9 @@ pub type HereCompletion =
 /// Called once with the governor's answer, see [`PeerHandle::private_then`].
 pub type PrivateCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::private::PrivateReply, String>) + Send>;
+/// Called once with what a turn of the page's call brought, see
+/// [`PeerHandle::call_lane_then`].
+pub type LaneCompletion = Box<dyn FnOnce(Result<LaneAnswer, String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::RoomsReply, String>) + Send>;
@@ -741,6 +756,7 @@ impl PeerHandle {
             received: BTreeSet::new(),
             compactions: BTreeMap::new(),
             voice: crate::voice::Participations::default(),
+            lane: None,
         };
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
@@ -964,46 +980,6 @@ impl PeerHandle {
         done: GrantCompletion,
     ) -> Result<(), String> {
         self.send(Command::LiveGrant(workspace_id, Some(agent_id), done))
-    }
-
-    /// Ask the host for the calls of `workspace_id`; the answer arrives as
-    /// [`VoiceEvent::Calls`](crate::voice::VoiceEvent::Calls).
-    pub fn voice_calls(&self, workspace_id: u64) -> Result<(), String> {
-        self.send(Command::VoiceCalls(workspace_id))
-    }
-
-    /// Start, end or moderate a call of `workspace_id`; the answer arrives
-    /// as [`VoiceEvent::CallResult`](crate::voice::VoiceEvent::CallResult)
-    /// for `request`.
-    pub fn voice_call(
-        &self,
-        workspace_id: u64,
-        request: [u8; 16],
-        operation: tilo_relay_protocol::voice::CallOperation,
-    ) -> Result<(), String> {
-        self.send(Command::VoiceCall(workspace_id, request, operation))
-    }
-
-    /// Take part in `call` of `workspace_id` until [`Self::voice_leave`]:
-    /// the session keeps the participation alive across reconnects and
-    /// hands on its grants ([`crate::voice`]).
-    pub fn voice_join(&self, workspace_id: u64, call: [u8; 32]) -> Result<(), String> {
-        self.send(Command::VoiceJoin(workspace_id, call))
-    }
-
-    /// Leave the call of `workspace_id`.
-    pub fn voice_leave(&self, workspace_id: u64) -> Result<(), String> {
-        self.send(Command::VoiceLeave(workspace_id))
-    }
-
-    /// Show `showing` besides this session's voice in the call of
-    /// `workspace_id` (its camera, a shared screen).
-    pub fn voice_show(
-        &self,
-        workspace_id: u64,
-        showing: tilo_relay_protocol::voice::Showing,
-    ) -> Result<(), String> {
-        self.send(Command::VoiceShow(workspace_id, showing))
     }
 
     /// Send input for a legacy window a member streams
@@ -1316,6 +1292,10 @@ struct Task {
     compactions: BTreeMap<[u8; 16], Compaction>,
     /// This device's participation in the workspaces' calls.
     voice: crate::voice::Participations,
+    /// The page's own side of the call it takes turns in: what seals its
+    /// microphone and pictures and opens what the call sends, kept between
+    /// turns so a frame is sealed where the last one left off.
+    lane: Option<Page>,
 }
 
 /// An open compaction request: workspace, route and the entries it covers.
@@ -1950,7 +1930,11 @@ impl Task {
             }
             Command::InstallChannelKeys(route, keys) => {
                 // Settled with the next channel changes, the same way as
-                // keys the channel's own governance hands this session.
+                // keys the channel's own governance hands this session. The
+                // channel's records are sealed with them, and so is a call on
+                // one of them while this device holds no channel state of its
+                // own.
+                self.channels.install_handed(&route, keys.clone());
                 self.absorb(crate::channels::Changes {
                     keys: vec![(route, keys)],
                     ..crate::channels::Changes::default()
@@ -1991,6 +1975,24 @@ impl Task {
             Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
             Command::VoiceLeave(workspace_id) => self.voice_leave(workspace_id, client),
             Command::VoiceShow(ws, showing) => self.voice_show(ws, showing, client),
+            Command::CallLane(workspace, turn, done) => {
+                self.call_lane(&workspace, &turn, done, client);
+                true
+            }
+            Command::CallLaneAnswer(page, answered, done) => {
+                self.answered(page, answered, done);
+                true
+            }
+            Command::CallLaneEnd(workspace) => {
+                if self
+                    .lane
+                    .as_ref()
+                    .is_some_and(|page| page.call().0 == workspace)
+                {
+                    self.lane = None;
+                }
+                true
+            }
             Command::Administer(request, done) => {
                 Self::administer(request, done, client);
                 true
@@ -2102,7 +2104,8 @@ impl Task {
             | Command::Live(..)
             | Command::Publish(..)
             | Command::Compact(..)
-            | Command::SendContent(..) => {}
+            | Command::SendContent(..)
+            | Command::CallLaneEnd(_) => {}
             Command::RemoteAction(workspace_id, to, _) => {
                 self.emit(&PeerEvent::RemoteActionUndeliverable {
                     workspace_id,
@@ -2117,6 +2120,9 @@ impl Task {
                 done(Err(
                     "a page that only watches has no private conversations".into()
                 ));
+            }
+            Command::CallLane(_, _, done) => {
+                done(Err("a page that only watches takes part in no call".into()));
             }
             Command::OpenRoute(route) => self.watched.want(route),
             command => return Some(command),
@@ -2186,73 +2192,6 @@ impl Task {
                 return;
             }
             self.resending.remove(&op);
-        }
-    }
-
-    fn voice_calls(&self, workspace_id: u64, client: Option<&Link>) -> bool {
-        if let Some(client) = client {
-            client.send(Envelope::VoiceCalls { workspace_id }).is_ok()
-        } else {
-            self.emit(&PeerEvent::Voice(crate::voice::VoiceEvent::Calls {
-                workspace_id,
-                result: Err("not connected to the host".into()),
-            }));
-            true
-        }
-    }
-
-    fn voice_call(
-        &self,
-        workspace_id: u64,
-        request: [u8; 16],
-        operation: tilo_relay_protocol::voice::CallOperation,
-        client: Option<&Link>,
-    ) -> bool {
-        if let Some(client) = client {
-            client
-                .send(Envelope::VoiceCall {
-                    workspace_id,
-                    request,
-                    operation,
-                })
-                .is_ok()
-        } else {
-            self.emit(&PeerEvent::Voice(crate::voice::VoiceEvent::CallResult {
-                workspace_id,
-                request,
-                result: Err("not connected to the host".into()),
-            }));
-            true
-        }
-    }
-
-    /// Offline, the next connection sends the join.
-    fn voice_join(&mut self, workspace_id: u64, call: [u8; 32], client: Option<&Link>) -> bool {
-        let out = self.voice.join(workspace_id, call);
-        client.is_none_or(|client| {
-            out.into_iter()
-                .all(|envelope| client.send(envelope).is_ok())
-        })
-    }
-
-    /// Offline, the next connection's heartbeat says it.
-    fn voice_show(
-        &mut self,
-        workspace_id: u64,
-        showing: tilo_relay_protocol::voice::Showing,
-        client: Option<&Link>,
-    ) -> bool {
-        match (client, self.voice.show(workspace_id, showing)) {
-            (Some(client), Some(show)) => client.send(show).is_ok(),
-            _ => true,
-        }
-    }
-
-    fn voice_leave(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
-        let out = self.voice.leave(workspace_id);
-        match (client, out) {
-            (Some(client), Some(leave)) => client.send(leave).is_ok(),
-            _ => true,
         }
     }
 

@@ -304,6 +304,24 @@ fn browser_locator_origin(tls: &TlsSource, addr: SocketAddr) -> Result<Option<St
     }))
 }
 
+/// The lane the pages' calls travel on: `lane` when one was handed over, or
+/// the host's own endpoint, bound on first use under the device key its
+/// workspaces admit as a member.
+fn carried_calls(
+    context: &crate::daemon::WebContext,
+    lane: Option<iroh::Endpoint>,
+) -> Arc<call_lane::CallLane> {
+    Arc::new(match lane {
+        Some(lane) => call_lane::CallLane::at(lane),
+        None => call_lane::CallLane::new(
+            context.relay.identity.cert.device_public_key,
+            Some(iroh::SecretKey::from_bytes(
+                &context.relay.identity.signing_key.to_bytes(),
+            )),
+        ),
+    })
+}
+
 impl Relay {
     /// Make `origin` the one browser locators name, and return it shared.
     fn publish_browser_origin(
@@ -325,6 +343,30 @@ impl Relay {
     /// Returns [`RelayError::Iroh`] (the transport error kind) when the
     /// certificate cannot be loaded or an address cannot be bound.
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
+        self.serve_web_on(config, None).await
+    }
+
+    /// Serve browsers, carrying the pages' calls on `lane` (whose id is this
+    /// host's device) instead of an endpoint bound on demand. A test binds one
+    /// whose call's other devices it can reach without a directory.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::serve_web`].
+    #[cfg(feature = "test-support")]
+    pub async fn serve_web_with_lane(
+        &self,
+        config: WebConfig,
+        lane: iroh::Endpoint,
+    ) -> Result<WebHandle, RelayError> {
+        self.serve_web_on(config, Some(lane)).await
+    }
+
+    async fn serve_web_on(
+        &self,
+        config: WebConfig,
+        lane: Option<iroh::Endpoint>,
+    ) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         let live_origin = checked_origins(&config).map_err(failed)?;
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
@@ -357,13 +399,13 @@ impl Relay {
             grants.clone(),
             context.clone(),
         ));
-        let host_cert = context.relay.identity.cert;
+        let host_cert = context.relay.identity.cert.clone();
         let web = Arc::new(Web {
             sessions: sessions.clone(),
             grants: grants.clone(),
             legacy: legacy.clone(),
             live,
-            calls: Arc::new(call_lane::CallLane::new(host_cert.device_public_key)),
+            calls: carried_calls(&context, lane),
             host_info: HostInfo {
                 host_cert,
                 // Behind a TLS-terminating proxy the page only reaches the

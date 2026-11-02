@@ -122,7 +122,7 @@ async fn a_streamed_page_is_rebuilt_by_the_member_and_its_input_returns() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_host(
+    let TestHost { relay, web, .. } = start_host(
         &root,
         &host_device,
         state.path(),

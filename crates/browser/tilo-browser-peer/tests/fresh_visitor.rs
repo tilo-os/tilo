@@ -145,7 +145,7 @@ async fn a_later_visitor_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     for page in pages {
         page.close();
     }
-    let TestHost { relay, web } = hosted;
+    let TestHost { relay, web, .. } = hosted;
     drop(web);
     relay.shutdown().await;
 }

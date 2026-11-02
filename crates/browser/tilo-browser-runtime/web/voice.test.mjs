@@ -1,75 +1,65 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT} from './voice.mjs';
+import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT, TURN_MS, base64OfDecoded} from './voice.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
-import {CarrierUnsupportedError, MediaAdmissionError, carrierUnsupported} from './moq-carrier.mjs';
 
 const CALL = 'c'.repeat(64);
+/** This page's own participation in the call's presence: its device. */
 const ME = 'a'.repeat(64);
 const BOB = 'b'.repeat(64);
-const drain = async () => { for (let index = 0; index < 10; index++) await Promise.resolve(); };
+/** The host's device: the one its bridge seals this page's frames as. */
+const HOST = 'f'.repeat(64);
+const drain = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 
-function grantFor({participation = ME, token = '01', publish = true, others = [BOB]} = {}) {
-  const participants = [participation, ...others].map(id => ({namespace: `${CALL}/${id}`, device: id, user: id, publishes: true}));
+function grantFor({publish = true, others = [BOB]} = {}) {
+  const participants = [ME, ...others].map(id => ({namespace: `${CALL}/${id}`, device: id, user: id, publishes: true}));
   return {
-    call: CALL, epoch: 1, participation, token,
-    endpoint: 'https://localhost:4433/moq/voice', fingerprints: [],
+    call: CALL, epoch: 1, participation: `${CALL}/${ME}`,
     directions: {publish, subscribe: true},
-    publication: publish ? `${CALL}/${participation}` : null,
-    subscriptions: others.map(id => `${CALL}/${id}`),
-    participants, expiresAtNs: 0,
+    participants,
   };
 }
 
+/** A page whose host answers each turn with `answer`, and whose microphone,
+ * playback and timers the test drives. */
 function fixture() {
   const sent = [];
   const shows = [];
+  const turns = [];
   let listener;
+  let answer = {devices: [], audio: [], pictures: [], shows: [], keyframes: []};
+  let failure;
   const signalling = {
     join: call => sent.push(['join', call]),
     leave: () => sent.push(['leave']),
+    end: () => sent.push(['end']),
     reachable: () => sent.push(['reachable']),
-    show: (camera, screen, muted, deafened) => shows.push({camera, screen, muted, deafened}),
+    show: (...flags) => shows.push(flags),
+    turn(json) {
+      turns.push(JSON.parse(json));
+      return failure ? Promise.reject(failure) : Promise.resolve(JSON.stringify(answer));
+    },
     onEvent(next) { listener = next; return () => { listener = undefined; }; },
   };
-  const audio = {started: 0, played: [], removed: [], mutes: [], deafens: [], stopped: 0};
-  audio.start = async ({muted, onFrame, onLevels, onCaptureLost, onInputChanged}) => {
+  const audio = {started: 0, played: [], mutes: [], deafens: [], stopped: 0};
+  Object.defineProperty(audio, 'captureActive', {get: () => !audio.muted && audio.stopped === 0});
+  audio.start = async ({muted, onFrame, onLevels, onCaptureLost, onInputChanged, onError}) => {
     audio.started++;
-    audio.onFrame = onFrame;
-    audio.onLevels = onLevels;
-    audio.onCaptureLost = onCaptureLost;
-    audio.onInputChanged = onInputChanged;
-    audio.muted = muted;
+    Object.assign(audio, {onFrame, onLevels, onCaptureLost, onInputChanged, onError, muted});
     return {
       play: frame => audio.played.push(frame),
-      removePublisher: id => audio.removed.push(id),
       setDeafened: value => audio.deafens.push(value),
-      setMuted: async value => { if (!value && audio.refuseCapture) throw Object.assign(new Error('Permission denied'), {name: 'NotAllowedError'}); audio.mutes.push(value); audio.muted = value; },
+      setMuted: async value => {
+        if (!value && audio.refuseCapture) throw Object.assign(new Error('Permission denied'), {name: 'NotAllowedError'});
+        audio.mutes.push(value);
+        audio.muted = value;
+      },
       get captureActive() { return !audio.muted && audio.stopped === 0; },
       selectInput: async id => { audio.input = id; },
       selectOutput: async () => true,
       stop: async () => { audio.stopped++; },
     };
-  };
-  const carriers = [];
-  const transport = {
-    opens: [],
-    async connect({grant, signal}) {
-      transport.opens.push({grant, signal});
-      if (transport.hold) await transport.hold;
-      if (transport.refuse) throw new Error('media admission denied');
-      let close;
-      const carrier = {
-        grant, published: [], closed: new Promise(resolve => { close = resolve; }), open: true,
-        publish(frame) { carrier.published.push(frame); return true; },
-        subscribe({onFrame, onPublisher}) { carrier.onFrame = onFrame; carrier.onPublisher = onPublisher; return () => {}; },
-        close() { if (carrier.open) { carrier.open = false; close(); } },
-        stats: () => ({sent: carrier.published.length}),
-      };
-      carriers.push(carrier);
-      return carrier;
-    },
   };
   const timers = [];
   const clock = {
@@ -79,13 +69,21 @@ function fixture() {
     clearTimeout: handle => { if (timers[handle - 1]) timers[handle - 1].callback = () => {}; },
   };
   const environment = new EventTarget();
-  const call = createVoiceCall({signalling, audio, transport, environment, clock});
+  const call = createVoiceCall({signalling, device: HOST, audio, environment, clock});
   const event = value => listener?.(value);
-  return {sent, shows, audio, carriers, transport, timers, clock, environment, call, event};
+  return {sent, shows, turns, audio, timers, clock, environment, call, event, answer: value => { answer = value; }, fail: error => { failure = error; }};
 }
 
-/** Run the grant deadline's looks on a page that runs, each one look
- * later: how many looks it took to end. */
+/** Run the next turn the page scheduled, as its timer would. */
+async function nextTurn(f) {
+  const timer = f.timers.findLast(entry => entry.delay === TURN_MS && entry.callback);
+  assert.ok(timer, 'a turn is scheduled');
+  timer.callback();
+  await drain();
+}
+
+/** Run the grant deadline's looks on a page that runs, one look at a time:
+ * how many looks it took to end. */
 function runDeadline({timers, clock}) {
   let looks = 0;
   for (let seen = 0; ; looks++) {
@@ -99,555 +97,306 @@ function runDeadline({timers, clock}) {
 
 const frame = n => ({timestamp: BigInt(n * 960), duration: 960, payload: Uint8Array.of(n)});
 
-test('a joined call follows its grant: the carrier publishes the microphone and plays the others', async () => {
-  const {sent, audio, carriers, call, event} = fixture();
+test('a joined call turns with the host: the microphone goes out sealed by the host device, and what it sends is played', async () => {
+  const f = fixture();
   const states = [];
-  call.subscribe(state => { if (states.at(-1) !== state.phase) states.push(state.phase); });
-  call.join(CALL);
-  assert.deepEqual(sent, [['join', CALL]]);
-  assert.equal(call.state.phase, 'joining');
+  f.call.subscribe(state => { if (states.at(-1) !== state.phase) states.push(state.phase); });
+  f.call.join(CALL, {app: 'so.tilo.chat', record: ''});
+  assert.deepEqual(f.sent, [['join', CALL]]);
+  assert.deepEqual(f.shows.at(-1), [false, false, false, false], 'the call is joined muted and showing nothing');
+  assert.equal(f.call.state.phase, 'joining');
   await drain();
-  assert.equal(audio.started, 1, 'the audio starts within the gesture, before any grant');
-  assert.equal(audio.muted, false);
-  event({kind: 'granted', grant: grantFor()});
+  assert.equal(f.audio.started, 1, 'the audio starts within the gesture, before any grant');
+  f.event({kind: 'granted', grant: grantFor()});
   await drain();
-  assert.equal(carriers.length, 1);
-  assert.equal(call.state.phase, 'live');
-  assert.deepEqual(call.state.participants.map(p => [p.self, p.device]), [[true, ME], [false, BOB]]);
-  audio.onFrame(frame(1));
-  assert.equal(carriers[0].published.length, 1);
-  carriers[0].onFrame({publisher: BOB, sequence: 0n, ...frame(2)});
-  assert.equal(audio.played[0].publisherId, BOB);
+  assert.equal(f.call.state.phase, 'live');
+  assert.equal(f.turns.length, 1, 'the first turn follows the grant');
+  assert.equal(f.turns[0].call, CALL);
+  assert.equal(f.turns[0].app, 'so.tilo.chat');
+  assert.equal(f.turns[0].record, '');
+  assert.deepEqual(f.call.state.participants.map(participant => participant.self), [true, false]);
+
+  f.audio.onFrame(frame(1));
+  await nextTurn(f);
+  assert.deepEqual(f.turns[1].audio, [{timestamp48k: 960, opus: btoa('\u0001')}]);
+  assert.deepEqual(f.turns[1].audio.length && [...base64OfDecoded(f.turns[1].audio[0].opus)], [1]);
+
+  f.answer({devices: [BOB], audio: [{from: BOB, timestamp48k: 960, opus: btoa('\u0002\u0003')}], pictures: [], shows: [], keyframes: []});
+  await nextTurn(f);
+  assert.equal(f.audio.played.length, 1);
+  assert.equal(f.audio.played[0].publisherId, BOB);
+  assert.equal(f.audio.played[0].timestamp, 960n, 'a frame names its place in its sender\'s 48 kHz timeline');
+  assert.deepEqual([...f.audio.played[0].payload], [2, 3]);
+  assert.equal(f.call.stats().turns.audio, 1);
   assert.deepEqual(states, ['joining', 'connecting', 'live']);
 });
 
-test('muting stops publication; a grant that may not publish mutes and says so', async () => {
-  const {audio, carriers, call, event} = fixture();
-  call.join(CALL);
+test('a datagram that repeats the frames before its newest one plays each frame once', async () => {
+  const f = fixture();
+  f.call.join(CALL);
   await drain();
-  event({kind: 'granted', grant: grantFor()});
+  f.event({kind: 'granted', grant: grantFor()});
   await drain();
-  await call.setMuted(true);
-  assert.deepEqual(audio.mutes, [true]);
-  audio.onFrame(frame(1));
-  assert.equal(carriers[0].published.length, 0, 'nothing leaves while muted');
-  await call.setMuted(false);
-  audio.onFrame(frame(2));
-  assert.equal(carriers[0].published.length, 1);
-  // The owner denies this person's voice: the new grant replaces the carrier.
-  event({kind: 'granted', grant: grantFor({publish: false, token: '02'})});
-  await drain();
-  assert.equal(call.state.muted, true);
-  assert.equal(call.state.canPublish, false);
-  assert.equal(carriers.length, 2);
-  assert.equal(carriers[0].open, false);
-  audio.onFrame(frame(3));
-  assert.equal(carriers[1].published.length, 0);
-  await call.setMuted(false);
-  assert.equal(call.state.muted, true, 'cannot unmute without the right to publish');
+  const heard = sequence => ({from: BOB, sequence, timestamp48k: sequence * 960, opus: btoa(String.fromCharCode(sequence))});
+  const played = () => f.audio.played.map(frame => [...frame.payload][0]);
+  f.answer({devices: [BOB], audio: [heard(5), heard(6), heard(7)], pictures: [], shows: [], keyframes: []});
+  await nextTurn(f);
+  assert.deepEqual(played(), [5, 6, 7]);
+  f.answer({devices: [BOB], audio: [heard(7), heard(8), heard(9)], pictures: [], shows: [], keyframes: []});
+  await nextTurn(f);
+  assert.deepEqual(played(), [5, 6, 7, 8, 9], 'the frames a datagram carries again play once');
+  f.answer({devices: [BOB], audio: [heard(0), heard(1)], pictures: [], shows: [], keyframes: []});
+  await nextTurn(f);
+  assert.deepEqual(played(), [5, 6, 7, 8, 9, 0, 1], 'a sender whose stream started over plays');
 });
 
-test('a roster change or a renewed token keeps the carrier; a dropped carrier reopens with the newest token', async () => {
-  const {carriers, call, event, timers} = fixture();
-  call.join(CALL);
+test('muting stops what the microphone hands the turns; a call that may not publish mutes and says so', async () => {
+  const f = fixture();
+  f.call.join(CALL);
   await drain();
-  event({kind: 'granted', grant: grantFor()});
+  f.event({kind: 'granted', grant: grantFor()});
   await drain();
-  event({kind: 'granted', grant: grantFor({others: [BOB, 'd'.repeat(64)]})});
+  await f.call.setMuted(true);
+  f.audio.onFrame(frame(1));
+  await nextTurn(f);
+  assert.deepEqual(f.turns.at(-1).audio, [], 'a muted microphone sends nothing');
+  assert.equal(f.audio.captureActive, false);
+  await f.call.setMuted(false);
+  f.audio.onFrame(frame(2));
+  await nextTurn(f);
+  assert.equal(f.turns.at(-1).audio.length, 1);
+
+  f.event({kind: 'granted', grant: grantFor({publish: false})});
   await drain();
-  assert.equal(carriers.length, 1, 'new participants are heard on the same carrier');
-  assert.equal(call.state.participants.length, 3);
-  event({kind: 'granted', grant: grantFor({token: '03'})});
-  await drain();
-  assert.equal(carriers.length, 1, 'the admitted carrier outlives the token that admitted it');
-  assert.equal(carriers[0].open, true);
-  carriers[0].close();
-  await drain();
-  assert.equal(call.state.phase, 'reconnecting');
-  assert.equal(timers.at(-1).delay, 250);
-  timers.at(-1).callback();
-  await drain();
-  assert.equal(carriers.length, 2);
-  assert.equal(carriers[1].grant.token, '03', 'a new carrier presents the renewed token');
-  assert.equal(call.state.phase, 'live');
+  assert.equal(f.call.state.muted, true);
+  assert.equal(f.call.state.canPublish, false);
 });
 
-test('a grant re-sent while the carrier is being opened lets that opening finish', async () => {
-  const {carriers, call, event, transport} = fixture();
-  let open;
-  transport.hold = new Promise(resolve => { open = resolve; });
-  call.join(CALL);
+test('a call the host refuses waits for its next grant, and one that never comes ends with a reason', async () => {
+  const f = fixture();
+  f.call.join(CALL);
   await drain();
-  event({kind: 'granted', grant: grantFor()});
+  f.event({kind: 'granted', grant: grantFor()});
   await drain();
-  event({kind: 'granted', grant: grantFor({token: '03'})});
-  event({kind: 'granted', grant: grantFor({others: [BOB, 'd'.repeat(64)]})});
+  f.fail(new Error('the host refused the turn: not admitted to this workspace'));
+  f.audio.onFrame(frame(1));
+  await nextTurn(f);
+  assert.equal(f.call.state.phase, 'reconnecting');
+  assert.deepEqual(f.sent.filter(([what]) => what === 'reachable').length, 1);
+  f.fail(undefined);
+  f.audio.onFrame(frame(2));
+  f.event({kind: 'granted', grant: grantFor()});
   await drain();
-  assert.equal(transport.opens.length, 1, 'one opening for the participation');
-  assert.equal(transport.opens[0].signal.aborted, false);
-  open();
-  await drain();
-  assert.equal(carriers.length, 1);
-  assert.equal(call.state.phase, 'live');
+  assert.equal(f.call.state.phase, 'live', 'the fresh grant takes turns again');
+  assert.equal(f.turns.at(-1).audio.length, 1);
+
+  f.fail(new Error('the host refused the turn: not admitted to this workspace'));
+  await nextTurn(f);
+  assert.equal(f.call.state.phase, 'reconnecting');
+  runDeadline(f);
+  assert.equal(f.call.state.phase, 'ended');
+  assert.match(f.call.state.reason, /not admitted/);
+  assert.equal(f.call.state.admitted, true, 'it was in a call it lost');
 });
 
-test('a network change reopens the carrier at once; refusals back off', async () => {
-  const {carriers, call, event, environment, transport, timers} = fixture();
-  call.join(CALL);
+test('a host that cannot be reached retries with the microphone quiet, and the call goes on when it answers', async () => {
+  const f = fixture();
+  f.call.join(CALL);
   await drain();
-  event({kind: 'granted', grant: grantFor()});
+  f.event({kind: 'granted', grant: grantFor()});
   await drain();
-  environment.dispatchEvent(new Event('online'));
+  f.fail(new Error('unreachable'));
+  f.audio.onFrame(frame(1));
+  await nextTurn(f);
+  assert.equal(f.call.state.phase, 'reconnecting');
+  assert.equal(f.audio.captureActive, false, 'nothing is captured behind a link that is not there');
+  assert.equal(f.call.stats().turns.unreachable, 1);
+  f.fail(undefined);
+  // The retry's timer opens the next turn.
+  const retry = f.timers.findLast(entry => entry.callback && entry.delay === 250);
+  assert.ok(retry, 'a retry is scheduled');
+  retry.callback();
+  await nextTurn(f);
+  assert.equal(f.call.state.phase, 'live');
+  assert.equal(f.audio.captureActive, true, 'the microphone comes back with the host');
+});
+
+test('a call this page holds no keys for ends at once with the host\'s reason', async () => {
+  const f = fixture();
+  f.call.join(CALL);
   await drain();
-  assert.equal(carriers.length, 2);
-  assert.equal(carriers[0].open, false);
-  transport.refuse = true;
-  carriers[1].close();
+  f.event({kind: 'granted', grant: grantFor()});
   await drain();
-  timers.at(-1).callback();
-  await drain();
-  assert.deepEqual(timers.map(timer => timer.delay).filter(delay => delay !== GRANT_LOOK_MS), [250, 1000]);
+  f.fail(new Error('this page holds no keys for the call\'s record'));
+  await nextTurn(f);
+  assert.equal(f.call.state.phase, 'ended');
+  assert.match(f.call.state.reason, /no keys/);
+  assert.ok(f.sent.some(([what]) => what === 'end'), 'the host\'s bridge forgets the page');
 });
 
 test('speaking follows the measured levels, held briefly', async () => {
-  const {audio, call, event, clock} = fixture();
-  call.join(CALL);
-  await drain();
-  event({kind: 'granted', grant: grantFor()});
-  await drain();
-  audio.onLevels({capture: 0.2, publishers: new Map([[BOB, 0]])});
-  assert.deepEqual(call.state.participants.map(p => p.speaking), [true, false]);
-  clock.at += 100;
-  audio.onLevels({capture: 0, publishers: new Map([[BOB, 0.1]])});
-  assert.deepEqual(call.state.participants.map(p => p.speaking), [true, true]);
-  clock.at += 500;
-  audio.onLevels({capture: 0, publishers: new Map([[BOB, 0]])});
-  assert.deepEqual(call.state.participants.map(p => p.speaking), [false, false]);
-});
-
-test('leaving ends the participation; an ended call stops everything', async () => {
-  const first = fixture();
-  first.call.join(CALL);
-  await drain();
-  first.event({kind: 'granted', grant: grantFor()});
-  await drain();
-  first.call.leave();
-  await drain();
-  assert.deepEqual(first.sent, [['join', CALL], ['leave']]);
-  assert.equal(first.carriers[0].open, false);
-  assert.equal(first.audio.stopped, 1);
-  assert.equal(first.call.state.phase, 'idle');
-
-  const second = fixture();
-  second.call.join(CALL);
-  await drain();
-  second.event({kind: 'granted', grant: grantFor()});
-  await drain();
-  second.event({kind: 'ended', call: CALL, reason: 'the call has ended'});
-  await drain();
-  assert.equal(second.call.state.phase, 'ended');
-  assert.equal(second.call.state.reason, 'the call has ended');
-  assert.equal(second.carriers[0].open, false);
-  assert.equal(second.audio.stopped, 1);
-  second.event({kind: 'granted', grant: grantFor({token: '09'})});
-  await drain();
-  assert.equal(second.carriers.length, 1, 'a late grant reopens nothing');
-});
-
-test('a join the host never grants ends at the deadline with a reason; a grant in time keeps it', async () => {
-  const late = fixture();
-  late.call.join(CALL);
-  await drain();
-  assert.ok(late.timers.some(timer => timer.delay === GRANT_LOOK_MS), 'a join waits for its grant with a deadline');
-  assert.equal(runDeadline(late), Math.ceil(GRANT_DEADLINE_MS / GRANT_LOOK_MS), 'the deadline is the time the page ran');
-  await drain();
-  assert.equal(late.call.state.phase, 'ended');
-  assert.equal(late.call.state.reason, NO_GRANT);
-  assert.equal(late.call.state.admitted, false);
-  assert.deepEqual(late.sent, [['join', CALL], ['leave']], 'the participation is let go');
-  assert.equal(late.audio.stopped, 1, 'nothing keeps the microphone');
-
-  const granted = fixture();
-  granted.call.join(CALL);
-  await drain();
-  granted.event({kind: 'granted', grant: grantFor()});
-  await drain();
-  granted.timers.find(timer => timer.delay === GRANT_LOOK_MS).callback();
-  await drain();
-  assert.equal(granted.call.state.phase, 'live');
-  assert.equal(granted.call.state.admitted, true);
-  granted.event({kind: 'ended', call: CALL, reason: 'the call has ended'});
-  await drain();
-  assert.equal(granted.call.state.admitted, true, 'a granted call that ends was not refused');
-
-  const refused = fixture();
-  refused.call.join(CALL);
-  await drain();
-  refused.event({kind: 'ended', call: CALL, reason: 'not a member of the room'});
-  await drain();
-  assert.equal(refused.call.state.phase, 'ended');
-  assert.equal(refused.call.state.admitted, false);
-});
-
-test('a call whose carrier lost its admission waits out an offline spell for the fresh grant', async () => {
-  const offline = fixture();
-  offline.environment.navigator = {onLine: true};
-  offline.call.join(CALL);
-  await drain();
-  offline.event({kind: 'granted', grant: grantFor()});
-  await drain();
-  assert.equal(offline.call.state.phase, 'live');
-  // The session lost the host while the carrier still ran: the host forgot
-  // the participation and refuses its token.
-  offline.environment.navigator.onLine = false;
-  const working = offline.transport.connect;
-  offline.transport.connect = async () => { throw new MediaAdmissionError(); };
-  offline.carriers[0].close();
-  await drain();
-  offline.timers.findLast(timer => timer.delay > 0 && timer.delay !== GRANT_LOOK_MS)?.callback();
-  await drain();
-  assert.equal(offline.call.state.phase, 'reconnecting');
-  // Offline for twice the deadline: no grant could come, the call waits.
-  for (let index = 0; index < 2 * GRANT_DEADLINE_MS / GRANT_LOOK_MS; index++) {
-    offline.clock.at += GRANT_LOOK_MS;
-    offline.timers.findLast(timer => timer.delay === GRANT_LOOK_MS).callback();
-  }
-  await drain();
-  assert.equal(offline.call.state.phase, 'reconnecting');
-  assert.deepEqual(offline.sent, [['join', CALL], ['reachable']], 'the participation is kept, and the session told the host answered');
-  // Back online, the session joins afresh and the host grants again.
-  offline.environment.navigator.onLine = true;
-  offline.transport.connect = working;
-  offline.event({kind: 'granted', grant: grantFor({participation: BOB.replace(/b/g, 'd'), token: '02'})});
-  await drain();
-  assert.equal(offline.call.state.phase, 'live');
-
-  // Online, the same wait ends at the deadline.
-  const online = fixture();
-  online.environment.navigator = {onLine: true};
-  online.call.join(CALL);
-  await drain();
-  online.event({kind: 'granted', grant: grantFor()});
-  await drain();
-  online.transport.connect = async () => { throw new MediaAdmissionError(); };
-  online.carriers[0].close();
-  await drain();
-  online.timers.findLast(timer => timer.delay > 0 && timer.delay !== GRANT_LOOK_MS)?.callback();
-  await drain();
-  assert.equal(runDeadline(online), Math.ceil(GRANT_DEADLINE_MS / GRANT_LOOK_MS));
-  await drain();
-  assert.equal(online.call.state.phase, 'ended');
-});
-
-test('peer.voice lists, governs and signals through the wasm peer', async () => {
-  const calls = [];
-  const wasm = {
-    voiceCalls: room => calls.push(['calls', room]),
-    voiceCall: (room, operation, request) => calls.push(['call', room, JSON.parse(operation), request]),
-    voiceJoin: (room, call) => calls.push(['join', room, call]),
-    voiceLeave: room => calls.push(['leave', room]),
-    voiceShow: (room, camera, screen, muted, deafened) => calls.push(['show', room, camera, screen, muted, deafened]),
-  };
-  let signalling;
-  const voice = createPeerVoice({
-    peer: () => wasm, workspace: 'room-1', random: bytes => bytes.fill(7),
-    createCall: options => { signalling = options.signalling; return {dispose() {}}; },
-  });
-  const listing = voice.list();
-  voice.pump(JSON.stringify([
-    {kind: 'calls', room: 'other', calls: []},
-    {kind: 'calls', room: 'room-1', calls: [{call: CALL, epoch: 2, active: true, participants: []}]},
-  ]));
-  assert.deepEqual((await listing).map(call => call.call), [CALL]);
-  const ending = voice.end({call: CALL, epoch: 2});
-  assert.deepEqual(calls.at(-1), ['call', 'room-1', {kind: 'end', call: CALL, epoch: 2}, '07'.repeat(16)]);
-  voice.pump(JSON.stringify([{kind: 'callResult', room: 'room-1', request: '07'.repeat(16), call: {call: CALL, epoch: 3, active: false}}]));
-  assert.equal((await ending).active, false);
-  const refused = voice.restart({call: CALL, epoch: 3});
-  voice.pump(JSON.stringify([{kind: 'callResult', room: 'room-1', request: '07'.repeat(16), error: 'only the owner'}]));
-  await assert.rejects(refused, /only the owner/);
-  const events = [];
-  signalling.onEvent(event => events.push(event.kind));
-  signalling.join(CALL);
-  signalling.show(true, false, true, true);
-  assert.deepEqual(calls.at(-1), ['show', 'room-1', true, false, true, true]);
-  signalling.leave();
-  voice.pump(JSON.stringify([{kind: 'granted', room: 'room-1', grant: grantFor()}, {kind: 'ended', room: 'room-1', call: CALL, reason: 'x'}]));
-  assert.deepEqual(events, ['granted', 'ended']);
-  assert.deepEqual(calls.slice(-3), [['join', 'room-1', CALL], ['show', 'room-1', true, false, true, true], ['leave', 'room-1']]);
-  voice.dispose();
-});
-
-
-test('a late audio start after leave cannot replace the next call audio or keep its microphone', async () => {
   const f = fixture();
+  f.call.join(CALL);
+  await drain();
   const starts = [];
-  f.audio.start = options => new Promise(resolve => starts.push({options, resolve}));
-  f.call.join(CALL);
-  f.call.leave();
-  assert.equal(starts[0].options.signal.aborted, true, 'leaving cancels acquisition immediately');
-  f.call.join('d'.repeat(64));
-  let oldStops = 0;
-  starts[0].resolve({stop: async () => { oldStops++; }, setMuted: async () => {}});
-  await drain();
-  assert.equal(oldStops, 1, 'the previous call must release its microphone');
-  let newStops = 0;
-  starts[1].resolve({stop: async () => { newStops++; }, setMuted: async () => {}});
-  await drain();
-  f.call.leave();
-  await drain();
-  assert.equal(newStops, 1);
-});
-
-test('audio acquisition failure ends the participation instead of claiming a live call', async () => {
-  const f = fixture();
-  f.audio.start = async () => { throw new Error('Microphone denied'); };
-  f.call.join(CALL);
-  await drain();
-  assert.equal(f.call.state.phase, 'ended');
-  assert.match(f.call.state.reason, /Microphone denied/);
-  assert.deepEqual(f.sent, [['join', CALL], ['leave']]);
+  f.call.subscribe(state => starts.push(state.participants.map(participant => participant.self)));
   f.event({kind: 'granted', grant: grantFor()});
   await drain();
-  assert.equal(f.carriers.length, 0);
+  f.audio.onLevels({capture: 0, publishers: new Map([[BOB, 0.5]])});
+  assert.equal(f.call.state.participants.find(participant => participant.device === BOB).speaking, true);
+  f.clock.at += 100;
+  f.audio.onLevels({capture: 0.5, publishers: new Map()});
+  assert.equal(f.call.state.participants.find(participant => participant.self).speaking, true, 'this page speaks as the host\'s device');
+  f.clock.at += 500;
+  f.audio.onLevels({capture: 0, publishers: new Map()});
+  assert.equal(f.call.state.participants.find(participant => participant.device === BOB).speaking, false, 'a held level ends');
 });
 
-
-test('a terminal audio failure cannot leave a live carrier or microphone status', async () => {
+test('leaving ends the page\'s call on the host too; an ended call stops everything', async () => {
   const f = fixture();
-  f.audio.start = async options => {
-    f.audio.fail = options.onError;
-    return {setMuted: async () => {}, stop: async () => {f.audio.stopped++;}};
-  };
   f.call.join(CALL);
   await drain();
   f.event({kind: 'granted', grant: grantFor()});
   await drain();
-  assert.equal(f.call.state.phase, 'live');
-  f.audio.fail(new Error('Audio worker failed'));
-  await drain();
-  assert.equal(f.call.state.phase, 'ended');
+  f.call.leave();
+  assert.deepEqual(f.sent.slice(-2), [['end'], ['leave']]);
+  assert.equal(f.call.state.phase, 'idle');
   assert.equal(f.audio.stopped, 1);
-  assert.equal(f.carriers[0].open, false);
-  assert.deepEqual(f.sent.at(-1), ['leave']);
-});
-
-test('resetting the certified identity clears cached calls and rejects old pending controls', async () => {
-  let left = 0;
-  const voice = createPeerVoice({peer: () => ({voiceCalls() {}, voiceCall() {}}), workspace: 'room-1', random: bytes => bytes.fill(7),
-    createCall: () => ({leave() {left++;}, dispose() {}})});
-  voice.pump(JSON.stringify([{kind: 'calls', room: 'room-1', calls: [{call: CALL}]}]));
-  assert.equal(voice.calls.length, 1);
-  const listing = assert.rejects(voice.list(), /identity changed/);
-  const ending = assert.rejects(voice.end({call: CALL, epoch: 1}), /identity changed/);
-  voice.reset();
-  await Promise.all([listing, ending]);
-  assert.equal(voice.calls.length, 0);
-  assert.equal(left, 1);
-  voice.dispose();
-});
-
-
-test('reconnecting pauses physical capture and resumes the prior local intent when live', async () => {
-  const f = fixture();
-  f.call.join(CALL); await drain();
-  f.event({kind: 'granted', grant: grantFor()}); await drain();
-  assert.equal(f.call.stats().captureActive, true);
-  f.carriers[0].close(); await drain();
-  assert.equal(f.call.state.phase, 'reconnecting');
-  assert.equal(f.call.stats().captureActive, false);
-  f.timers.at(-1).callback(); await drain();
-  assert.equal(f.call.state.phase, 'live');
-  assert.equal(f.call.stats().captureActive, true);
-  f.call.dispose();
-});
-
-test('a mute during reconnect cannot be undone by reopening the carrier', async () => {
-  const f = fixture();
-  f.call.join(CALL); await drain();
-  f.event({kind: 'granted', grant: grantFor()}); await drain();
-  f.carriers[0].close(); await drain();
-  assert.equal(f.call.stats().captureActive, false);
-  await f.call.setMuted(true);
-  f.timers.at(-1).callback(); await drain();
-  assert.equal(f.call.state.phase, 'live');
-  assert.equal(f.call.state.muted, true);
-  assert.equal(f.call.stats().captureActive, false);
-  f.call.dispose();
-});
-
-test('a microphone refused on reconnect keeps the call, muted, and says why', async () => {
-  const f = fixture();
-  f.call.join(CALL); await drain();
-  f.event({kind: 'granted', grant: grantFor()}); await drain();
-  f.carriers[0].close(); await drain();
-  f.audio.refuseCapture = true;
-  f.timers.at(-1).callback(); await drain();
-  assert.equal(f.call.state.phase, 'live');
-  assert.equal(f.call.state.muted, true);
-  assert.equal(f.call.state.micIssue, 'permission_denied');
-  assert.equal(f.call.stats().captureActive, false);
-  assert.notDeepEqual(f.sent.at(-1), ['leave']);
-  f.call.dispose();
-});
-
-test('the host hears whenever this person is muted: on join, muting, a lost microphone and a grant that may not publish', async () => {
-  const f = fixture();
-  f.call.join(CALL, {muted: true}); await drain();
-  assert.deepEqual(f.shows, [{camera: false, screen: false, muted: true, deafened: false}], 'a muted joiner says so before its grant');
-  const others = {...grantFor(), participants: grantFor().participants.map(p => (p.user === BOB ? {...p, muted: true} : p))};
-  f.event({kind: 'granted', grant: others}); await drain();
-  assert.deepEqual(f.call.state.participants.map(p => [p.user, p.muted]), [[ME, false], [BOB, true]], 'each participant carries whether it is muted');
-  assert.equal(f.shows.length, 1, 'a grant that changes nothing says nothing');
-  await f.call.setMuted(false);
-  assert.deepEqual(f.shows.at(-1), {camera: false, screen: false, muted: false, deafened: false});
-  f.audio.onCaptureLost(new DOMException('Requested device not found', 'NotFoundError'));
+  assert.deepEqual(f.sent.filter(([what]) => what === 'end').length, 1);
+  const count = f.turns.length;
+  for (const timer of f.timers) timer.callback();
   await drain();
-  assert.deepEqual(f.shows.at(-1), {camera: false, screen: false, muted: true, deafened: false}, 'a lost microphone mutes for everyone');
-  await f.call.setMuted(false);
-  assert.equal(f.shows.at(-1).muted, false);
-  f.event({kind: 'granted', grant: grantFor({publish: false, token: '02'})}); await drain();
-  assert.equal(f.shows.at(-1).muted, true, 'a grant that may not publish mutes for everyone');
-  const told = f.shows.length;
-  f.call.leave();
-  await f.call.setMuted(false);
-  assert.equal(f.shows.length, told, 'out of the call, nothing is said');
-  f.call.dispose();
+  assert.equal(f.turns.length, count, 'no turn outlives the call');
+});
+
+test('a join the host never grants ends at the deadline; a grant in time keeps it', async () => {
+  const never = fixture();
+  never.call.join(CALL);
+  await drain();
+  runDeadline(never);
+  assert.equal(never.call.state.phase, 'ended');
+  assert.equal(never.call.state.reason, NO_GRANT);
+  assert.equal(never.call.state.admitted, false);
+
+  const inTime = fixture();
+  inTime.call.join(CALL);
+  await drain();
+  inTime.clock.at += GRANT_DEADLINE_MS / 2;
+  inTime.event({kind: 'granted', grant: grantFor()});
+  await drain();
+  runDeadline(inTime);
+  assert.equal(inTime.call.state.phase, 'live');
 });
 
 test('deafening silences the call and mutes; undeafening puts the microphone back as it was', async () => {
   const f = fixture();
-  f.call.join(CALL, {muted: true}); await drain();
-  f.event({kind: 'granted', grant: grantFor()}); await drain();
-  await f.call.setMuted(false);
+  f.call.join(CALL);
+  await drain();
+  f.event({kind: 'granted', grant: grantFor()});
+  await drain();
   await f.call.setDeafened(true);
   assert.equal(f.call.state.deafened, true);
-  assert.equal(f.call.state.muted, true, 'a deafened person is muted');
-  assert.deepEqual(f.audio.deafens.at(-1), true, 'playback is silenced');
-  assert.equal(f.audio.muted, true, 'the microphone stops');
-  assert.deepEqual(f.shows.at(-1), {camera: false, screen: false, muted: true, deafened: true}, 'everyone sees it');
-  f.audio.onFrame(frame(1));
-  assert.equal(f.carriers[0].published.length, 0, 'nothing leaves while deafened');
-  await f.call.setDeafened(false);
-  assert.deepEqual([f.call.state.deafened, f.call.state.muted], [false, false], 'unmuted before, unmuted again');
-  assert.equal(f.audio.deafens.at(-1), false);
-  assert.deepEqual(f.shows.at(-1), {camera: false, screen: false, muted: false, deafened: false});
-  // Muted before deafening: muted after.
-  await f.call.setMuted(true);
-  await f.call.setDeafened(true);
-  await f.call.setDeafened(false);
-  assert.deepEqual([f.call.state.deafened, f.call.state.muted], [false, true]);
-  // Without a gesture to ask for the microphone, undeafening stays muted.
-  await f.call.setMuted(false);
-  await f.call.setDeafened(true);
-  await f.call.setDeafened(false, {unmute: false});
-  assert.deepEqual([f.call.state.deafened, f.call.state.muted], [false, true]);
-  // Unmuting while deafened hears the call again.
-  await f.call.setDeafened(true);
-  await f.call.setMuted(false);
-  assert.deepEqual([f.call.state.deafened, f.call.state.muted], [false, false]);
-  assert.equal(f.audio.deafens.at(-1), false);
-  // A new call starts hearing.
-  await f.call.setDeafened(true);
-  f.call.leave();
-  f.call.join(CALL, {muted: true}); await drain();
+  assert.equal(f.call.state.muted, true);
+  assert.equal(f.audio.deafens.at(-1), true);
+  assert.deepEqual(f.shows.at(-1), [false, false, true, true], 'everyone sees who hears nothing');
+  await f.call.setDeafened(false, {unmute: true});
   assert.equal(f.call.state.deafened, false);
-  assert.equal(f.audio.deafens.at(-1), false, 'the audio of the new call plays');
-  f.call.dispose();
+  assert.equal(f.call.state.muted, false);
+  assert.equal(f.audio.deafens.at(-1), false);
 });
 
 test('a refused unmute keeps the person in the call, muted, until they allow it', async () => {
   const f = fixture();
-  f.call.join(CALL, {muted: true}); await drain();
-  f.event({kind: 'granted', grant: grantFor()}); await drain();
-  assert.equal(f.call.state.phase, 'live');
+  f.call.join(CALL, {muted: true});
+  await drain();
+  f.event({kind: 'granted', grant: grantFor()});
+  await drain();
   f.audio.refuseCapture = true;
   await f.call.setMuted(false);
-  assert.equal(f.call.state.phase, 'live', 'still in the call');
+  assert.equal(f.call.state.phase, 'live');
   assert.equal(f.call.state.muted, true);
   assert.equal(f.call.state.micIssue, 'permission_denied');
-  assert.notDeepEqual(f.sent.at(-1), ['leave']);
   f.audio.refuseCapture = false;
   await f.call.setMuted(false);
-  assert.equal(f.call.state.muted, false);
   assert.equal(f.call.state.micIssue, null);
-  assert.equal(f.call.stats().captureActive, true);
-  f.call.dispose();
+  assert.equal(f.call.state.muted, false);
 });
 
-test('a participant plays at the volume set for them, a guest by their id', async () => {
-  const {audio, carriers, call, event} = fixture();
-  const DANA = 'd'.repeat(64);
-  call.join(CALL);
-  await drain();
-  const grant = grantFor({others: [BOB, DANA]});
-  grant.participants[2].bridged = {service: 'discord', account: '7', name: 'Dana', avatar: null, linked: null};
-  event({kind: 'granted', grant});
-  await drain();
-  assert.deepEqual(call.state.participants[2].bridged, grant.participants[2].bridged, 'who a bridge carries reaches the app');
-  call.setVolume('discord:7', 0);
-  call.setVolume(BOB, 1.5);
-  carriers[0].onFrame({publisher: DANA, sequence: 0n, ...frame(1)});
-  carriers[0].onFrame({publisher: BOB, sequence: 0n, ...frame(1)});
-  call.setVolume(BOB, 1);
-  carriers[0].onFrame({publisher: BOB, sequence: 1n, ...frame(2)});
-  assert.deepEqual(audio.played.map(played => [played.publisherId, played.gain]), [[DANA, 0], [BOB, 1.5], [BOB, 1]]);
-  call.leave();
-  call.join(CALL);
-  await drain();
-  event({kind: 'granted', grant});
-  await drain();
-  carriers.at(-1).onFrame({publisher: DANA, sequence: 2n, ...frame(3)});
-  assert.equal(audio.played.at(-1).gain, 1, 'a volume lasts as long as the call');
-});
-
-test('a microphone unplugged mid-call keeps the call: capture moves to the default, or mutes and says why', async () => {
+test('a participant plays at the volume set for them', async () => {
   const f = fixture();
-  f.call.join(CALL, {muted: true}); await drain();
-  f.event({kind: 'granted', grant: grantFor()}); await drain();
-  await f.call.selectInput('usb-mic');
-  await f.call.setMuted(false);
-  assert.equal(f.call.state.inputId, 'usb-mic');
-  // The audio session picked up the default microphone in its place.
-  f.audio.onInputChanged(undefined);
-  assert.equal(f.call.state.inputId, null);
-  assert.equal(f.call.state.phase, 'live');
-  assert.equal(f.call.state.muted, false);
-  // No microphone is left: muted, the reason shown, still in the call.
-  f.audio.onCaptureLost(new DOMException('Requested device not found', 'NotFoundError'));
+  f.call.join(CALL);
   await drain();
-  assert.equal(f.call.state.phase, 'live', 'still in the call, still hearing it');
-  assert.equal(f.call.state.muted, true);
-  assert.equal(f.call.state.micIssue, 'source_lost');
-  assert.notDeepEqual(f.sent.at(-1), ['leave']);
-  // Plugged back in: unmuting picks it up again.
-  await f.call.setMuted(false);
-  assert.equal(f.call.state.muted, false);
-  assert.equal(f.call.state.micIssue, null);
-  f.call.dispose();
+  f.event({kind: 'granted', grant: grantFor()});
+  await drain();
+  f.call.setVolume(BOB, 0.25);
+  f.call.setVolume('not a person', 2);
+  f.answer({devices: [BOB], audio: [{from: BOB, timestamp48k: 0, opus: btoa('\u0001')}], pictures: [], shows: [], keyframes: []});
+  await nextTurn(f);
+  assert.equal(f.audio.played[0].gain, 0.25);
+  assert.equal(f.call.state.phase, 'live');
 });
 
-test('a browser that cannot open the carrier says so instead of reconnecting forever', async () => {
-  // No WebTransport, or one too old to offer the carrier's subprotocol
-  // (the host answers those 404 every time).
-  assert.equal(carrierUnsupported(undefined), 'WebTransport is unavailable');
-  assert.match(carrierUnsupported(class {}), /cannot negotiate/);
-  assert.equal(carrierUnsupported(class { get protocol() { return ''; } }), null);
+test('a microphone that fails at start ends the participation instead of claiming a live call', async () => {
+  const f = fixture();
+  f.audio.start = async () => { throw new Error('no output device'); };
+  f.call.join(CALL);
+  await drain();
+  assert.equal(f.call.state.phase, 'ended');
+  assert.equal(f.call.state.audioFailed, true);
+  assert.ok(f.sent.some(([what]) => what === 'end'));
+});
 
-  const before = fixture();
-  before.transport.unsupported = () => 'WebTransport is unavailable';
-  before.call.join(CALL); await drain();
-  assert.equal(before.call.state.phase, 'ended');
-  assert.equal(before.call.state.unsupported, true);
-  assert.deepEqual(before.sent, [], 'never joins: the others would see someone who hears nothing');
-  assert.equal(before.audio.started, 0);
+test('what the app shows of the call\'s devices is what the page asks them for, and a keyframe until one comes', async () => {
+  const f = fixture();
+  f.call.join(CALL);
+  await drain();
+  f.event({kind: 'granted', grant: grantFor()});
+  await drain();
+  f.call.showPictures([{person: BOB, source: 'camera', layer: 'mid'}]);
+  await nextTurn(f);
+  assert.deepEqual(f.turns.at(-1).shows, [{device: BOB, camera: [1], screen: []}]);
+  assert.deepEqual(f.turns.at(-1).keyframes, [{device: BOB, source: 0}], 'nothing before a keyframe decodes');
+  f.answer({devices: [BOB], audio: [], pictures: [
+    {from: BOB, source: 0, keyframe: true, object: btoa('¥\u0000')},
+  ], shows: [], keyframes: []});
+  await nextTurn(f);
+  const taken = f.call.takePictures(0);
+  assert.equal(taken.pictures.length, 1);
+  assert.equal(taken.pictures[0].person, BOB);
+  assert.equal(taken.pictures[0].source, 'camera');
+  await nextTurn(f);
+  assert.deepEqual(f.turns.at(-1).keyframes, [], 'the keyframe arrived');
+});
 
-  const during = fixture();
-  during.call.join(CALL); await drain();
-  during.transport.connect = async () => { throw new CarrierUnsupportedError('WebTransport is unavailable'); };
-  during.event({kind: 'granted', grant: grantFor()}); await drain();
-  assert.equal(during.call.state.phase, 'ended');
-  assert.equal(during.call.state.unsupported, true);
-  assert.deepEqual(during.sent.at(-1), ['leave']);
-  assert.equal(during.timers.filter(timer => timer.delay < GRANT_LOOK_MS).length, 0, 'no reconnect is scheduled');
+test('peer.voice takes the page\'s turns through the wasm peer and lists its calls', async () => {
+  const wasm = {
+    joined: [],
+    turns: [],
+    ended: [],
+    voiceJoin: (workspace, call) => wasm.joined.push([workspace, call]),
+    voiceLeave: () => {},
+    voiceCalls: () => {},
+    voiceShow: (workspace, camera, screen, muted, deafened) => wasm.shown = [camera, screen, muted, deafened],
+    callLaneTurn(workspace, json) { wasm.turns.push([workspace, JSON.parse(json)]); return Promise.resolve(JSON.stringify({devices: [], audio: [], pictures: [], shows: [], keyframes: []})); },
+    callLaneLeave: workspace => wasm.ended.push(workspace),
+  };
+  const voice = createPeerVoice({peer: () => wasm, workspace: 'the-workspace', device: HOST, audio: {
+    start: async () => ({play() {}, setMuted: async () => {}, stop: async () => {}, get captureActive() { return false; }}),
+  }});
+  voice.call.join(CALL, {app: 'so.tilo.chat', record: ''});
+  await drain();
+  assert.deepEqual(wasm.joined, [['the-workspace', CALL]]);
+  assert.deepEqual(wasm.shown, [false, false, false, false]);
+  // The host's grant comes through the wasm peer's events and its turn
+  // through callLaneTurn, then its bridge is told the page left.
+  voice.pump(JSON.stringify([{room: 'the-workspace', kind: 'granted', grant: grantFor()}]));
+  await drain();
+  assert.equal(wasm.turns.length, 1);
+  assert.equal(wasm.turns[0][0], 'the-workspace');
+  assert.equal(wasm.turns[0][1].call, CALL);
+  assert.equal(voice.call.state.phase, 'live');
+  voice.call.leave();
+  assert.deepEqual(wasm.ended, ['the-workspace']);
+  assert.equal(voice.call.state.phase, 'idle');
+  voice.dispose();
 });

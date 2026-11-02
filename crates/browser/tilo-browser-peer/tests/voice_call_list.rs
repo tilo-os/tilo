@@ -78,7 +78,8 @@ async fn whoever_watches_a_workspaces_calls_is_told_each_join_and_leave_unasked(
     let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_workspace_host(&alice, &host, state.path(), false).await;
+    let TestHost { relay, web, .. } =
+        start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
     let workspace = relay.rooms().unwrap().create("Lounge").await.unwrap();
     enter(&relay, &laptop.cert, &workspace.room).await;
@@ -165,7 +166,8 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
     let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_workspace_host(&alice, &host, state.path(), false).await;
+    let TestHost { relay, web, .. } =
+        start_workspace_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
     let workspace = relay.rooms().unwrap().create("Lounge").await.unwrap();
     enter(&relay, &laptop.cert, &workspace.room).await;

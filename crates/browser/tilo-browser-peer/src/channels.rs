@@ -179,6 +179,9 @@ pub(crate) struct Channels {
     /// Restored channel state, waiting for its route to open.
     saved: HashMap<ChannelId, SavedMember>,
     saved_requests: HashMap<ChannelId, MlsAccessRequestV1>,
+    /// Content keys a host handed this session for a record whose channel it
+    /// is not admitted to itself ([`Self::install_handed`]).
+    handed: HashMap<ChannelId, ChannelContentKeys>,
     dirty: bool,
 }
 
@@ -192,6 +195,7 @@ impl Channels {
             unopened: HashMap::new(),
             saved: HashMap::new(),
             saved_requests: HashMap::new(),
+            handed: HashMap::new(),
             dirty: false,
         }
     }
@@ -263,6 +267,24 @@ impl Channels {
 
     pub(crate) fn channel(route: &DocumentRoute) -> ChannelId {
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record)
+    }
+
+    /// The content keys this device holds for `channel`, once its access is
+    /// ready: what a call on the channel's record is sealed and opened with.
+    ///
+    /// A channel this device is a member of speaks for itself; otherwise the
+    /// keys are the ones a host device handed over for its record.
+    pub(crate) fn content_keys(&self, channel: ChannelId) -> Option<ChannelContentKeys> {
+        self.routes
+            .get(&channel)
+            .and_then(|route| route.peer.content_keys())
+            .or_else(|| self.handed.get(&channel).cloned())
+    }
+
+    /// Hold `keys` for `route`'s channel, as a host device hands them over:
+    /// a member's own channel state, once it has some, speaks for it instead.
+    pub(crate) fn install_handed(&mut self, route: &DocumentRoute, keys: ChannelContentKeys) {
+        self.handed.insert(Self::channel(route), keys);
     }
 
     /// The verdict on an op for `route` from this page's state for its

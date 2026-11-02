@@ -155,6 +155,42 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
       this.drop(message, 'playback-replay', reservedSamples);
       return;
     }
+    // Playback that has already started holding a backlog as deep as its whole
+    // budget never drains: every frame arrives at the far end, waits out the
+    // age it may wait, and expires, and with the queue never emptying the
+    // mapping never gets to re-base, so the call goes quiet for good. A
+    // backlog let through at once (what the call carried when this page
+    // joined) and a sender whose clock runs fast against this page's both do
+    // it. The frame's arrival time is the only truthful slot, so the map
+    // starts over there and the queued frames that still fit before it keep
+    // playing; the rest are past their moment and go. A sender's clock that
+    // jumped instead of running ahead keeps its frames queued, to expire on
+    // arrival age, and a queue that has not started playing yet is kept whole
+    // for the cap to admit what fits.
+    const horizon = this.renderTimestamp + BigInt(MAX_PLAYBACK_SAMPLES - samples.length);
+    const newest = publisher.queue.length > 0 ? publisher.queue[publisher.queue.length - 1].timestamp : null;
+    const step = newest === null ? null : message.timestamp - newest;
+    if (publisher.lastRenderedTimestamp !== null
+      && publisher.baseLocalTimestamp + (message.timestamp - publisher.baseRemoteTimestamp) > horizon
+      && step !== null && step > 0n && step <= BigInt(MAX_PLAYBACK_SAMPLES)) {
+      publisher.baseRemoteTimestamp = message.timestamp;
+      publisher.baseLocalTimestamp = this.renderTimestamp + BigInt(this.jitterInitial);
+      publisher.target = this.jitterInitial;
+      const keep = [];
+      for (const entry of publisher.queue) {
+        const slot = publisher.baseLocalTimestamp + (entry.timestamp - publisher.baseRemoteTimestamp);
+        if (slot + BigInt(entry.samples.length) <= this.renderTimestamp) {
+          const expired = entry.samples.length - entry.releasedSamples;
+          publisher.bufferedSamples -= expired;
+          this.release(publisher, 'playback-released', expired);
+          this.port.postMessage({type: 'drop', stage: 'playback-expired', publisherId: publisher.publisherId, count: 1});
+          continue;
+        }
+        entry.localTimestamp = slot;
+        keep.push(entry);
+      }
+      if (keep.length !== publisher.queue.length) publisher.queue = keep;
+    }
     if (publisher.bufferedSamples + samples.length > MAX_PLAYBACK_SAMPLES) {
       this.drop(message, 'playback-buffer', reservedSamples);
       return;

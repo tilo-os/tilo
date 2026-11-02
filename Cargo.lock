@@ -17782,6 +17782,7 @@ dependencies = [
 name = "tilo-browser-peer"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "bytes",
  "channel-crypto",
@@ -17798,6 +17799,7 @@ dependencies = [
  "messages",
  "n0-future",
  "neighbour-wire",
+ "opus",
  "postcard",
  "rand 0.10.3",
  "rustls",

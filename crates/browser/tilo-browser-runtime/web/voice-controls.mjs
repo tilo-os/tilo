@@ -235,7 +235,8 @@ export function createVoiceControls({voice, workspace, gesture = () => globalThi
           return status();
         }
         if (ticket !== generation) throw new Error('call join superseded');
-        voice.call.join(call.call, {muted: true});
+        // The call's frames are sealed with its record's channel keys.
+        voice.call.join(call.call, {muted: true, app: request.app, record: request.record});
       } else if (command.op === 'leave') {
         refusal = undefined;
         generation++;

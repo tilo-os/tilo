@@ -50,6 +50,9 @@ pub(crate) struct CallLane {
     /// This host's device: the key a page's frames name, and the id the call's
     /// lanes open from.
     device: [u8; 32],
+    /// The device's signing key, which the lanes' endpoint binds with: the id
+    /// the call's other devices admit as the workspace's member.
+    key: Option<iroh::SecretKey>,
     /// The endpoint the lanes run on, bound the first time a page asks for a
     /// call: a host that serves no call never pays for one.
     endpoint: OnceCell<iroh::Endpoint>,
@@ -66,21 +69,23 @@ impl std::fmt::Debug for CallLane {
 }
 
 impl CallLane {
-    /// The pages' calls carried as `device`: the host's own key, which the
-    /// workspaces it serves admit as a member.
-    pub(crate) fn new(device: [u8; 32]) -> Self {
+    /// The pages' calls carried as `device`, the host's own key, which the
+    /// workspaces it serves admit as a member. `key` signs the lanes'
+    /// connections: the device's own, or none for a host that serves no lane
+    /// until one is handed over with [`Self::at`].
+    pub(crate) fn new(device: [u8; 32], key: Option<iroh::SecretKey>) -> Self {
         Self {
             device,
+            key,
             endpoint: OnceCell::new(),
             calls: Mutex::new(BTreeMap::new()),
         }
     }
 
     /// The same, on an endpoint already bound: the lanes' connections come
-    /// from its id, which must be `device`'s.
-    #[cfg(test)]
+    /// from its id, which must be the host's device.
     pub(crate) fn at(endpoint: iroh::Endpoint) -> Self {
-        let carried = Self::new(*endpoint.id().as_bytes());
+        let carried = Self::new(*endpoint.id().as_bytes(), None);
         let _ = carried.endpoint.set(endpoint);
         carried
     }
@@ -170,23 +175,25 @@ impl CallLane {
     /// The lanes' endpoint, bound on first use with this host's device key: the
     /// id the workspaces it serves admit as a member.
     async fn endpoint(&self) -> Result<iroh::Endpoint, Failed> {
-        let endpoint = self
-            .endpoint
-            .get_or_try_init(|| async {
-                let key = iroh::SecretKey::from_bytes(&self.device);
-                // What `presets::N0` builds, with its publisher behind number
-                // 0's directory gate ([`tilo_endpoint_reachability`]); the host
-                // keeps the default relays, since its members reach it there.
-                iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-                    .secret_key(key)
-                    .address_lookup(tilo_endpoint_reachability::collaborating())
-                    .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
-                    .relay_mode(iroh::endpoint::default_relay_mode())
-                    .bind()
-                    .await
-                    .map_err(|error| Failed::NoLane(error.to_string()))
-            })
-            .await?;
+        let endpoint =
+            self.endpoint
+                .get_or_try_init(|| async {
+                    let key = self.key.clone().ok_or_else(|| {
+                        Failed::NoLane("the lanes' endpoint was handed over".into())
+                    })?;
+                    // What `presets::N0` builds, with its publisher behind number
+                    // 0's directory gate ([`tilo_endpoint_reachability`]); the host
+                    // keeps the default relays, since its members reach it there.
+                    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                        .secret_key(key)
+                        .address_lookup(tilo_endpoint_reachability::collaborating())
+                        .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
+                        .relay_mode(iroh::endpoint::default_relay_mode())
+                        .bind()
+                        .await
+                        .map_err(|error| Failed::NoLane(error.to_string()))
+                })
+                .await?;
         Ok(endpoint.clone())
     }
 }
