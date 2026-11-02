@@ -2191,7 +2191,7 @@ impl Widget for MainPanel {
                 scene.append(&header_scene, None);
                 let rect = header.get_rect();
                 parts.push(ui::widget::paint_damage::PaintPart::new(
-                    "note-header".into(),
+                    "note-header",
                     rect,
                     header_scene,
                     vec![rect.inflate(
@@ -2254,7 +2254,7 @@ impl Widget for MainPanel {
                 editor_damage,
             ));
             parts.push(ui::widget::paint_damage::PaintPart::new(
-                "note-scrollbar".into(),
+                "note-scrollbar",
                 self.scroll_track,
                 scrollbar_scene,
                 vec![self.scroll_track.inflate(track_reach, track_reach)],
@@ -2269,7 +2269,7 @@ impl Widget for MainPanel {
             title_damage.extend(self.title_overhang);
             title_damage.extend(self.drawn_title_overhang);
             parts.push(ui::widget::paint_damage::PaintPart::new(
-                "note-title".into(),
+                "note-title",
                 self.title_rect,
                 title_scene,
                 title_damage,

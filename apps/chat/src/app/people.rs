@@ -144,13 +144,26 @@ impl ChatApp {
     /// not yet written themselves into it.
     pub fn participants(&self) -> Vec<crate::mention::Participant> {
         let mut out: Vec<crate::mention::Participant> = self
+            .participant_ids()
+            .into_iter()
+            .map(|(id, is_agent)| crate::mention::Participant {
+                id: id.to_owned(),
+                name: self.display_name(id),
+                is_agent,
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// [`Self::participants`] without their names: who can be mentioned, each
+    /// once. A frame that only needs their colours reads this, so it neither
+    /// names every participant nor allocates one string each.
+    pub(crate) fn participant_ids(&self) -> Vec<(&str, bool)> {
+        let mut out: Vec<(&str, bool)> = self
             .users
             .iter()
-            .map(|u| crate::mention::Participant {
-                id: u.id.clone(),
-                name: self.display_name(&u.id),
-                is_agent: u.is_agent,
-            })
+            .map(|u| (u.id.as_str(), u.is_agent))
             .collect();
         // Each person once: a device stands for its person, so neither the
         // person's alias in `workspace_names` nor a device whose person already
@@ -160,16 +173,14 @@ impl ChatApp {
             let person_listed = self
                 .workspace_persons
                 .get(id)
-                .is_some_and(|person| out.iter().any(|p| &p.id == person));
-            if !aliases.contains(id) && !person_listed && !out.iter().any(|p| &p.id == id) {
-                out.push(crate::mention::Participant {
-                    id: id.clone(),
-                    name: self.display_name(id),
-                    is_agent: false,
-                });
+                .is_some_and(|person| out.iter().any(|(listed, _)| listed == person));
+            if !aliases.contains(id)
+                && !person_listed
+                && !out.iter().any(|(listed, _)| *listed == id.as_str())
+            {
+                out.push((id.as_str(), false));
             }
         }
-        out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
 

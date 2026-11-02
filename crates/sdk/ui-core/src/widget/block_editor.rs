@@ -9955,7 +9955,7 @@ impl Widget for BlockEditor {
                 .map(|handle| handle.inflate(reach, reach))
                 .collect();
             paragraph_parts.push(crate::widget::paint_damage::PaintPart::placed(
-                "drag-handles".into(),
+                "drag-handles",
                 handle_damage
                     .iter()
                     .copied()

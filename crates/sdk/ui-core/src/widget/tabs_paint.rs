@@ -199,20 +199,16 @@ impl TabBar {
             && !self.toolbar_row.popup_open()
     }
 
-    /// The drawing to show again: the bar is at rest, and nothing it draws
-    /// from changed since it was made.
-    pub(super) fn replays(
-        &self,
-        transform: Affine,
-        theme: &Theme,
-        seen: &[PersonSeen],
-    ) -> Option<&PaintedBar> {
-        self.painted.as_ref().filter(|painted| {
+    /// Whether the bar's held drawing is the drawing it would make now: the
+    /// bar is at rest, and nothing it draws from changed since it was made.
+    /// Answers without building the list of people again.
+    pub(super) fn replays(&self, transform: Affine, theme: &Theme, presence: &PresenceCtx) -> bool {
+        self.painted.as_ref().is_some_and(|painted| {
             painted.epoch == self.paint_epoch
                 && painted.transform == transform
-                && painted.seen.as_slice() == seen
                 && painted.theme == *theme
                 && self.at_rest()
+                && self.same_people(&painted.seen, presence)
         })
     }
 
@@ -297,9 +293,10 @@ impl TabBar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let seen = self.people_seen(presence);
-        if let Some(painted) = self.replays(transform, theme, &seen) {
-            crate::scene_parts::append(scene, &painted.scene, painted.parts.as_ref(), None);
+        if self.replays(transform, theme, presence) {
+            if let Some(painted) = self.painted.as_ref() {
+                crate::scene_parts::append(scene, &painted.scene, painted.parts.as_ref(), None);
+            }
             return;
         }
         let _drawn = tilo_resource::profiling::Phase::start("ui.tab_bar.draw");
@@ -314,6 +311,7 @@ impl TabBar {
         }
         // Read after the draw: drawing settles what it measures, and the
         // pose of a busy arc it shows.
+        let seen = self.people_seen(presence);
         self.painted = self.at_rest().then(|| PaintedBar {
             epoch: self.paint_epoch,
             transform,

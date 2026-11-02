@@ -63,6 +63,9 @@ pub struct WindowSlots {
     hosted_outbox: Vec<(TabId, ToolbarEvent)>,
     /// The desktop's own items in each tab's overflow menu.
     host_items: HashMap<TabId, Vec<ToolbarAction>>,
+    /// A tab's bar merged with the desktop's items, kept from the first frame
+    /// that needed it until either side changes ([`Self::shown_toolbar`]).
+    shown: HashMap<TabId, WindowToolbar>,
     /// The desktop's items the person chose, by tab, not taken yet.
     host_actions: Vec<(TabId, String)>,
 }
@@ -89,6 +92,7 @@ impl WindowSlots {
             .map(WindowToolbar::bounded)
             .filter(|toolbar| !toolbar.is_empty())
         else {
+            self.shown.remove(&tab);
             let had = self.by_tab.remove(&tab).is_some();
             if had {
                 self.cleared.push(tab);
@@ -99,6 +103,7 @@ impl WindowSlots {
         if self.by_tab.get(&tab) == Some(&next) {
             return false;
         }
+        self.shown.remove(&tab);
         self.by_tab.insert(tab, next);
         true
     }
@@ -131,6 +136,7 @@ impl WindowSlots {
             .collect();
         for tab in &gone {
             self.by_tab.remove(tab);
+            self.shown.remove(tab);
         }
         let offered: Vec<TabId> = self
             .offers
@@ -164,6 +170,7 @@ impl WindowSlots {
             .filter(|item| item.id.starts_with(HOST_ACTION_PREFIX))
             .map(|item| ToolbarAction { menu: true, ..item })
             .collect();
+        self.shown.remove(&tab);
         if items.is_empty() {
             // A window whose only slots they were shows none again.
             if self.host_items.remove(&tab).is_some() && !self.by_tab.contains_key(&tab) {
@@ -189,24 +196,32 @@ impl WindowSlots {
 
     /// `tab`'s bar as it shows: its app's slots, its menu ending in the
     /// desktop's items; the desktop's items alone where its app declared
-    /// none.
-    fn shown_toolbar(&self, tab: TabId) -> Option<WindowToolbar> {
-        let items = self.host_items.get(&tab);
-        let Some(toolbar) = self.toolbar(tab) else {
-            return items.map(|items| WindowToolbar {
-                actions: items.clone(),
-                ..WindowToolbar::default()
-            });
-        };
-        let Some(items) = items else {
-            return Some(toolbar.clone());
-        };
-        let mut shown = toolbar.clone();
-        shown
-            .actions
-            .truncate(MAX_DECLARED_ACTIONS.saturating_sub(items.len()));
-        shown.actions.extend(items.iter().cloned());
-        Some(shown)
+    /// none. The merge is built once and kept until either side changes, so
+    /// a frame that finds the group already showing it allocates nothing.
+    fn shown_toolbar(&mut self, tab: TabId) -> Option<&WindowToolbar> {
+        if !self.host_items.contains_key(&tab) {
+            self.shown.remove(&tab);
+            return self.by_tab.get(&tab).map(|(_, toolbar)| toolbar);
+        }
+        if !self.shown.contains_key(&tab) {
+            let items = self.host_items.get(&tab).map_or(&[][..], Vec::as_slice);
+            let merged = match self.by_tab.get(&tab).map(|(_, toolbar)| toolbar) {
+                Some(toolbar) => {
+                    let mut shown = toolbar.clone();
+                    shown
+                        .actions
+                        .truncate(MAX_DECLARED_ACTIONS.saturating_sub(items.len()));
+                    shown.actions.extend(items.iter().cloned());
+                    shown
+                }
+                None => WindowToolbar {
+                    actions: items.to_vec(),
+                    ..WindowToolbar::default()
+                },
+            };
+            self.shown.insert(tab, merged);
+        }
+        self.shown.get(&tab)
     }
 
     /// Queue `event` for the app that declared `tab`'s slots or offered
@@ -255,6 +270,7 @@ impl WindowSlots {
     pub fn forget_hosted(&mut self, tab: TabId) {
         self.hosted_seen.remove(&tab);
         self.host_items.remove(&tab);
+        self.shown.remove(&tab);
         if self.by_tab.remove(&tab).is_some() {
             self.cleared.push(tab);
         }
@@ -273,7 +289,8 @@ impl WindowSlots {
                 if self.host_items.contains_key(&id)
                     && let Some(toolbar) = self.shown_toolbar(id)
                 {
-                    if group.tab_toolbar(id) != Some(&toolbar) {
+                    if group.tab_toolbar(id) != Some(toolbar) {
+                        let toolbar = toolbar.clone();
                         group.set_tab_toolbar(id, Some(toolbar));
                     }
                 } else if let Some(toolbar) = self.toolbar(id) {
