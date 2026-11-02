@@ -11,10 +11,13 @@ use winit::keyboard::{Key, NamedKey};
 
 /// The key `spec` names, as a driver or a typed shortcut writes it: `Enter`,
 /// `Tab`, `Escape`, the arrows, `F1`–`F12`, `Home`, `End`, `PageUp`,
-/// `PageDown`, `Delete`, `Space` and the rest, or failing those the character
-/// itself.
+/// `PageDown`, `Delete`, `Space` and the rest; one character is that
+/// character typed (`" "` is the space bar's character, `"Space"` the key).
 #[must_use]
 pub fn parse(spec: &str) -> Key {
+    if spec.chars().count() == 1 {
+        return Key::Character(spec.into());
+    }
     match canonical(spec).as_str() {
         "enter" => Key::Named(NamedKey::Enter),
         "tab" => Key::Named(NamedKey::Tab),
@@ -124,6 +127,7 @@ mod tests {
             );
         }
         assert_eq!(parse("e"), Key::Character("e".into()));
+        assert_eq!(parse(" "), Key::Character(" ".into()), "a typed space");
         assert_eq!(token(&parse("E")), Some("e".to_owned()));
         assert_eq!(token(&parse(" ")), Some("space".to_owned()));
         assert_eq!(canonical("Return"), "enter");
