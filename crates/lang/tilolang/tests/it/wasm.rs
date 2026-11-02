@@ -220,3 +220,36 @@ fn views_call_views_and_apply_foreign_views() {
     let c = compile(src);
     assert_shape(&c);
 }
+
+/// A package's catalogues travel in its module (`tilolang.locales`, i18n.md): the module still
+/// validates, its hash is the module's without them, and they read back as they were written.
+#[test]
+fn a_packages_catalogues_travel_in_its_module() {
+    let source = tilolang::PackageSource::single(&fixture("counter.tl")).with_locales([
+        ("de-DE".to_owned(), "d-x = Zähler\n".to_owned()),
+        ("en-US".to_owned(), "d-x = Counter\n".to_owned()),
+    ]);
+    let with = tilolang::compile_package_source_with(
+        &source,
+        &tilolang::IdsLock::new(),
+        &[],
+        &mut tilolang::SeededEntropy(7),
+    )
+    .expect("compiles");
+    let without = compile_fixture("counter.tl", &[]);
+    validate(&with.wasm);
+    assert!(
+        shape(&with.wasm)
+            .custom
+            .contains(&"tilolang.locales".to_string())
+    );
+    assert_eq!(with.meta.module_hash, without.meta.module_hash);
+    assert_eq!(
+        tilolang::meta::locales_from_wasm(&with.wasm),
+        [
+            ("de-DE".to_owned(), "d-x = Zähler\n".to_owned()),
+            ("en-US".to_owned(), "d-x = Counter\n".to_owned()),
+        ]
+    );
+    assert!(tilolang::meta::locales_from_wasm(&without.wasm).is_empty());
+}

@@ -10,6 +10,46 @@ use serde::{Deserialize, Serialize};
 /// Name of the wasm custom section that carries the metadata as JSON.
 pub const META_SECTION: &str = "tilolang.meta";
 
+/// The custom section a package's catalogues travel in: JSON `[[locale, Fluent text], …]`
+/// (i18n.md). Outside the module hash, as the metadata is.
+pub const LOCALES_SECTION: &str = "tilolang.locales";
+
+/// Appends `locales` to the compiled module `wasm` as its [`LOCALES_SECTION`]; nothing when
+/// there are none. A custom section may follow every other section, so the module stays valid.
+pub fn append_locales(wasm: &mut Vec<u8>, locales: &[(String, String)]) {
+    if locales.is_empty() {
+        return;
+    }
+    let data = serde_json::to_vec(locales).unwrap_or_default();
+    let mut payload = Vec::new();
+    write_leb(&mut payload, LOCALES_SECTION.len());
+    payload.extend_from_slice(LOCALES_SECTION.as_bytes());
+    payload.extend_from_slice(&data);
+    wasm.push(0);
+    write_leb(wasm, payload.len());
+    wasm.extend_from_slice(&payload);
+}
+
+/// The catalogues a compiled module carries, `(locale, Fluent text)`; none when it has none.
+#[must_use]
+pub fn locales_from_wasm(wasm: &[u8]) -> Vec<(String, String)> {
+    custom_section(wasm, LOCALES_SECTION)
+        .and_then(|data| serde_json::from_slice(data).ok())
+        .unwrap_or_default()
+}
+
+fn write_leb(out: &mut Vec<u8>, mut value: usize) {
+    loop {
+        let byte = u8::try_from(value & 0x7f).unwrap_or(0);
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PackageMeta {
     pub app: String,

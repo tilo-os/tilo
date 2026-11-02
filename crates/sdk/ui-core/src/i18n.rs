@@ -532,8 +532,15 @@ fn format_from_bundle(
     key: &str,
     args: Option<&FluentArgs>,
 ) -> Option<(String, bool)> {
-    let message = bundle.get_message(key)?;
-    let pattern = message.value()?;
+    // `message.attribute` names an attribute of a message: Fluent keys hold no `.`, so the
+    // split is unambiguous (a tilolang declaration's `d-<id>.noun`, `.doc`).
+    let pattern = match bundle.get_message(key) {
+        Some(message) => message.value()?,
+        None => {
+            let (name, attribute) = key.rsplit_once('.')?;
+            bundle.get_message(name)?.get_attribute(attribute)?.value()
+        }
+    };
     let mut errors = Vec::new();
     let value = bundle
         .format_pattern(pattern, args, &mut errors)
@@ -823,10 +830,13 @@ impl I18nManager {
         MANAGER.with(|manager| {
             manager.borrow().as_ref().is_some_and(|manager| {
                 manager.bundles.values().any(|loaded| {
-                    loaded
-                        .bundle
-                        .get_message(key)
-                        .is_some_and(|m| m.value().is_some())
+                    let bundle = &loaded.bundle;
+                    bundle.get_message(key).is_some_and(|m| m.value().is_some())
+                        || key.rsplit_once('.').is_some_and(|(name, attribute)| {
+                            bundle
+                                .get_message(name)
+                                .is_some_and(|m| m.get_attribute(attribute).is_some())
+                        })
                 })
             })
         })

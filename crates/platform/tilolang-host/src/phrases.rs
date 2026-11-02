@@ -16,7 +16,7 @@ const TRANSLATIONS: &[(&str, &str)] = &[(
 /// The phrases of one language.
 pub struct Phrases {
     locale: &'static str,
-    catalogue: Catalogue,
+    catalogue: std::cell::RefCell<Catalogue>,
 }
 
 impl Phrases {
@@ -43,7 +43,7 @@ impl Phrases {
         }
         Self {
             locale: chosen.0,
-            catalogue: Catalogue::new(chosen.0, &sources),
+            catalogue: std::cell::RefCell::new(Catalogue::new(chosen.0, &sources)),
         }
     }
 
@@ -68,17 +68,80 @@ impl Phrases {
     pub fn say(&self, id: &str, args: &[(String, String)]) -> String {
         let mut fluent = FluentArgs::new();
         for (name, value) in args {
-            fluent.set(name.as_str(), value.as_str());
+            // A number stays a number, so a plural rule selects by it (`[one]` for 1).
+            match value.parse::<f64>() {
+                Ok(number) => fluent.set(name.as_str(), number),
+                Err(_) => fluent.set(name.as_str(), value.as_str()),
+            }
         }
         self.catalogue
+            .borrow()
             .format(id, &fluent)
             .unwrap_or_else(|| id.to_owned())
+    }
+
+    /// Takes in a package's catalogues, `(locale, Fluent text)` (i18n.md): the one in these
+    /// phrases' language first, then the source language's, so a translation wins and a message
+    /// it lacks reads in the source language.
+    pub fn add_package(&self, catalogues: &[(String, String)]) {
+        let language = self.locale.split('-').next().unwrap_or_default();
+        let mut catalogue = self.catalogue.borrow_mut();
+        let translation = catalogues
+            .iter()
+            .find(|(locale, _)| locale == self.locale)
+            .or_else(|| {
+                catalogues
+                    .iter()
+                    .find(|(locale, _)| locale.split('-').next() == Some(language))
+            });
+        if let Some((_, text)) = translation {
+            catalogue.add(text);
+        }
+        if let Some((_, text)) = catalogues.iter().find(|(locale, _)| locale == SOURCE.0) {
+            catalogue.add(text);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A package's words read in the person's language (i18n.md): its translation where it has
+    /// one, its source language where it lacks one, a type's noun by count.
+    #[test]
+    fn a_packages_words_read_in_the_persons_language() {
+        let catalogues = [
+            (
+                "en-US".to_owned(),
+                "d-new = New note\nd-pin = Pin\nd-note = Note\n    .noun = { $count ->\n        [one] note\n       *[other] notes\n    }\n".to_owned(),
+            ),
+            (
+                "de-DE".to_owned(),
+                "d-new = Neue Notiz\nd-note = Notiz\n    .noun = { $count ->\n        [one] Notiz\n       *[other] Notizen\n    }\n".to_owned(),
+            ),
+        ];
+        let count = |n: &str| vec![("count".to_owned(), n.to_owned())];
+        let german = Phrases::new("de_DE.UTF-8");
+        german.add_package(&catalogues);
+        assert_eq!(german.say("d-new", &[]), "Neue Notiz");
+        assert_eq!(
+            german.say("d-pin", &[]),
+            "Pin",
+            "a word the translation lacks is the source's"
+        );
+        assert_eq!(german.say("d-note.noun", &count("1")), "Notiz");
+        assert_eq!(german.say("d-note.noun", &count("2")), "Notizen");
+        let english = Phrases::new("en-US");
+        english.add_package(&catalogues);
+        assert_eq!(english.say("d-new", &[]), "New note");
+        assert_eq!(english.say("d-note.noun", &count("2")), "notes");
+        assert_eq!(
+            english.say("d-gone", &[]),
+            "d-gone",
+            "no catalogue: the key, as a phrase is"
+        );
+    }
 
     #[test]
     fn the_standard_librarys_phrases_read_in_the_persons_language() {

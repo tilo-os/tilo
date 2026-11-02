@@ -127,17 +127,9 @@ impl Core {
     #[must_use]
     pub fn unshared(&self) -> String {
         let id = tilo_reference::embed::UNSHARED_PHRASE;
-        match self.phrases.borrow().as_ref() {
-            Some(phrases) => {
-                let said = phrases(id, &[]);
-                if said == id {
-                    tilo_reference::embed::UNSHARED.to_owned()
-                } else {
-                    said
-                }
-            }
-            None => tilo_reference::embed::UNSHARED.to_owned(),
-        }
+        self.words
+            .borrow()
+            .word(id, &[], tilo_reference::embed::UNSHARED)
     }
 
     fn rich_arg(&self, h: i32) -> HResult<RichValue> {

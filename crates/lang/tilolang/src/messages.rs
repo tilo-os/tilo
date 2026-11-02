@@ -105,8 +105,9 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
     for action in meta.actions.iter().filter(|action| !action.scenario) {
         message(&mut out, &action.id, &action.label, &action.doc);
     }
+    // A view's doc comment says how it draws, for its author; a person sees its label.
     for view in &meta.views {
-        message(&mut out, &view.id, &label(&view.name), &view.doc);
+        message(&mut out, &view.id, &label(&view.name), "");
     }
     out
 }

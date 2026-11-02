@@ -84,13 +84,10 @@ d-5c22cpkr = Make default~present
 d-tyfdfuwh = Add~present
 
 d-2dc3zfxw = Views list
-    .doc = Every view, the kept ones a place of their own, each opening in a window of its own.
 
 d-unwqgbdt = View row
-    .doc = One view in a list: its title, and what was asked.
 
 d-p33c52uw = View page
-    .doc = A view's window: the view itself, live, under its title and its actions.
 
 d-2dc3zfxw~row0 = Views list for p
 
