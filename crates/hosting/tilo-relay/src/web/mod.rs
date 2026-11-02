@@ -20,6 +20,7 @@
 //! periodic work is the 50 ms live permission observation and the session
 //! janitor, both on tokio intervals.
 
+mod call_lane;
 mod envelopes;
 mod fetch;
 mod here;
@@ -46,6 +47,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use hyper::{Method, Request, Response, StatusCode, header};
+use tilo_call_lane::page::Up;
 use tilo_moq::live::LiveRelay;
 use tilo_moq::live::fallback::{
     FALLBACK_OPEN_PATH, FALLBACK_RESUME_PATH, FALLBACK_SEND_PATH, FALLBACK_SESSION_HEADER,
@@ -61,6 +63,7 @@ use tilo_relay_protocol::web::{
 };
 use tilo_user_identity::CertificationRequest;
 
+use crate::auth::AuthenticatedPeer;
 use crate::daemon::{Relay, RelayError};
 use sessions::{SessionError, Sessions};
 use tilo_lock::RwLockRecover as _;
@@ -205,6 +208,9 @@ struct Web {
     )>,
     /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
+    /// The pages' calls: the lane member this host takes part as, answering
+    /// `/call/lane`.
+    calls: Arc<call_lane::CallLane>,
 }
 
 /// Checks the published origins against the listeners they front, and
@@ -351,13 +357,15 @@ impl Relay {
             grants.clone(),
             context.clone(),
         ));
+        let host_cert = context.relay.identity.cert;
+        let lane_device = host_cert.device_public_key;
         let web = Arc::new(Web {
             sessions: sessions.clone(),
             grants: grants.clone(),
             legacy: legacy.clone(),
             live,
             host_info: HostInfo {
-                host_cert: context.relay.identity.cert,
+                host_cert,
                 // Behind a TLS-terminating proxy the page only reaches the
                 // proxy's HTTPS; WebTransport (UDP) does not pass through it,
                 // so it is announced only with a direct origin of its own.
@@ -377,6 +385,7 @@ impl Relay {
             here: Arc::new(here::Here::new(here::from_env())),
             country: config.country.and_then(country_header),
             fetch: fetch.proxy,
+            calls: Arc::new(call_lane::CallLane::new(lane_device)),
         });
         let mut tasks = vec![tasks_bridge, tasks_legacy];
         tasks.extend(fetch.metrics);
@@ -1220,6 +1229,31 @@ fn wait(ms: u32) -> Duration {
     Duration::from_millis(u64::from(ms.min(MAX_POLL_MS)))
 }
 
+/// The devices of `workspace_id`, in no particular order, if `peer` may take
+/// part in the workspace's calls now: its certificate current relay-wide and
+/// admitted by the room, see [`room_access::decide`].
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn admitted_devices(
+    web: &Web,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+) -> Option<Vec<[u8; 32]>> {
+    let relay = &web.sessions.context().relay;
+    let workspace = relay.workspaces.lock().await.get(&workspace_id).cloned()?;
+    let workspace = workspace.lock().await;
+    crate::room_access::decide(
+        &workspace,
+        &relay.trust(),
+        peer,
+        crate::room_access::RoomOperation::Publish,
+    )
+    .admitted()
+    .then(|| workspace.membership.devices.clone())
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one routing table: every browser route and its body type in one place"
@@ -1362,6 +1396,28 @@ async fn route(
                 .await
                 .map(|()| reply(StatusCode::NO_CONTENT, Vec::new()))
                 .map_err(|error| session_status(&error))
+        }
+        "/call/lane" => {
+            let session = authed()?;
+            let up: Up = decode(&bytes)?;
+            let workspace_id = tilo_relay_protocol::room_workspace_id(&up.workspace)
+                .map_err(|_| status(StatusCode::BAD_REQUEST, "not a workspace id"))?;
+            let Some(devices) = admitted_devices(web, &session.peer, workspace_id).await else {
+                return Err(status(
+                    StatusCode::FORBIDDEN,
+                    "not admitted to this workspace",
+                ));
+            };
+            web.calls
+                .turn(devices, up)
+                .await
+                .map(|down| encoded(&down))
+                .map_err(|error| match error {
+                    call_lane::Failed::NoLane(reason) => {
+                        status(StatusCode::SERVICE_UNAVAILABLE, &reason)
+                    }
+                    call_lane::Failed::Refused(reason) => status(StatusCode::CONFLICT, &reason),
+                })
         }
         "/events" => {
             let session = authed()?;

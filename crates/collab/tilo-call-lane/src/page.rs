@@ -43,6 +43,10 @@ pub const REPEATS: usize = 2;
 pub struct Page {
     workspace: String,
     call: String,
+    /// The channel whose content keys seal the call's frames: the lane's
+    /// handshake names it, so the host carrying the page knows which call its
+    /// lanes are for.
+    channel: collab_types::ChannelId,
     /// The device bridging the page: whose key its frames are sealed under,
     /// and who the lane's other devices see them come from.
     bridge: [u8; 32],
@@ -73,6 +77,7 @@ impl Page {
     pub fn new(
         workspace: String,
         call: String,
+        channel: collab_types::ChannelId,
         bridge: [u8; 32],
         keys: &ChannelContentKeys,
         roster: Roster,
@@ -80,6 +85,7 @@ impl Page {
         let mut page = Self {
             workspace,
             call,
+            channel,
             bridge,
             opener: Opener::new(keys.clone(), roster),
             microphone: Microphone::new(keys, bridge, REPEATS)?,
@@ -192,6 +198,7 @@ impl Page {
         Up {
             workspace: self.workspace.clone(),
             call: self.call.clone(),
+            channel: self.channel,
             ..Up::default()
         }
     }
@@ -237,6 +244,9 @@ pub struct Up {
     /// that carries it and a bridge refuses another call's frames.
     pub workspace: String,
     pub call: String,
+    /// The channel whose content keys seal the frames: what the host's lanes
+    /// handshake with, so they join the call the page is in and no other.
+    pub channel: collab_types::ChannelId,
     /// Sealed tilo-voice/1 datagrams: the page's microphone frames, oldest
     /// first.
     pub audio: Vec<Vec<u8>>,

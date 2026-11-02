@@ -2400,6 +2400,7 @@ mod tests {
         let page = tilo_call_lane::Page::new(
             WORKSPACE.to_owned(),
             CHANNEL.to_owned(),
+            collab_types::document_channel_id(APP, WORKSPACE, RECORD),
             page_device,
             &channel_keys(&keys),
             roster,

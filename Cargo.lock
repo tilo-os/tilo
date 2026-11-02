@@ -20621,6 +20621,7 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-bot-directory",
  "tilo-browser-peer",
+ "tilo-call-lane",
  "tilo-clock",
  "tilo-connector",
  "tilo-content",
