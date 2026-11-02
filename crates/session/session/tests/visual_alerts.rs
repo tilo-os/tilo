@@ -1,7 +1,7 @@
 //! The visual alert for what the person is told: when they asked for one, a
-//! notice the session raises, or a notification an app sends, flashes the
-//! screen — the way someone who cannot hear the alert sound is told of it.
-//! With the setting off, nothing flashes.
+//! notice the session raises, or a notification an app sends, lights the
+//! edge of the screen — the way someone who cannot hear the alert sound is
+//! told of it. With the setting off, nothing changes.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -78,21 +78,54 @@ fn plugged_in() -> Medium {
     }
 }
 
-/// How bright `frame` is on average, in 0..=255: the visual alert covers the
-/// whole screen, and a banner does not.
-fn brightness(frame: &Screenshot) -> f64 {
-    let lit: u32 = frame
-        .rgba
-        .chunks(4)
-        .map(|pixel| {
-            pixel
+/// How wide the alert's edge is on screen, physical pixels: the band it
+/// lights along each side of a display.
+const EDGE: u32 = 4;
+
+/// How bright the pixels of `frame` inside `area` are on average, in
+/// 0..=255.
+fn brightness(frame: &Screenshot, area: (u32, u32, u32, u32)) -> f64 {
+    let (x0, y0, x1, y1) = area;
+    let mut lit = 0u32;
+    let mut pixels = 0u32;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let Some(pixel) = frame.pixel(x, y) else {
+                continue;
+            };
+            lit += pixel
                 .iter()
                 .take(3)
                 .map(|channel| u32::from(*channel))
-                .sum::<u32>()
-        })
-        .sum();
-    f64::from(lit) / (frame.rgba.len() / 4 * 3) as f64
+                .sum::<u32>();
+            pixels += 1;
+        }
+    }
+    assert!(pixels > 0, "the area is on screen");
+    f64::from(lit) / f64::from(pixels * 3)
+}
+
+/// How bright the display's own edge is: the band the visual alert lights.
+fn edge_brightness(frame: &Screenshot) -> f64 {
+    let (w, h) = (frame.width, frame.height);
+    let bands = [
+        (0, 0, w, EDGE),
+        (0, h - EDGE, w, h),
+        (0, 0, EDGE, h),
+        (w - EDGE, 0, w, h),
+    ];
+    bands
+        .into_iter()
+        .map(|band| brightness(frame, band))
+        .sum::<f64>()
+        / 4.0
+}
+
+/// How bright the middle of the screen is: what an alert along the edge
+/// leaves as it was.
+fn centre_brightness(frame: &Screenshot) -> f64 {
+    let (w, h) = (frame.width, frame.height);
+    brightness(frame, (w / 3, h / 3, w * 2 / 3, h * 2 / 3))
 }
 
 /// The frame on screen now.
@@ -101,11 +134,12 @@ fn frame(session: &mut Session) -> Screenshot {
 }
 
 #[test]
-fn a_notice_flashes_the_screen_when_visual_alerts_are_on() {
+fn a_notice_lights_the_screen_edge_when_visual_alerts_are_on() {
     let _settled = ui::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let (mut session, desktop) = session(true);
-    let plain = brightness(&frame(&mut session));
+    let plain = frame(&mut session);
+    let (edge, middle) = (edge_brightness(&plain), centre_brightness(&plain));
 
     let _sent = tilo_session::notices::announce_medium(desktop.notifications(), &plugged_in());
     session.step(Duration::from_millis(1)).expect("a frame");
@@ -117,19 +151,26 @@ fn a_notice_flashes_the_screen_when_visual_alerts_are_on() {
         "the banner is the drive's notice: {}",
         up[0].title
     );
-    let flashed = brightness(&frame(&mut session));
+    let lit = frame(&mut session);
     assert!(
-        flashed > plain + 60.0,
-        "the whole screen flashes for it: {plain} then {flashed}"
+        edge_brightness(&lit) > edge + 20.0,
+        "the display's edge lights up for it: {edge} then {}",
+        edge_brightness(&lit)
+    );
+    assert!(
+        (centre_brightness(&lit) - middle).abs() < 5.0,
+        "and the middle of the screen is left alone: {middle} then {}",
+        centre_brightness(&lit)
     );
 }
 
 #[test]
-fn nothing_flashes_when_visual_alerts_are_off() {
+fn nothing_lights_when_visual_alerts_are_off() {
     let _settled = ui::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let (mut session, desktop) = session(false);
-    let plain = brightness(&frame(&mut session));
+    let plain = frame(&mut session);
+    let (edge, middle) = (edge_brightness(&plain), centre_brightness(&plain));
 
     let _sent = tilo_session::notices::announce_medium(desktop.notifications(), &plugged_in());
     session.step(Duration::from_millis(1)).expect("a frame");
@@ -141,9 +182,15 @@ fn nothing_flashes_when_visual_alerts_are_off() {
         "the banner is the drive's notice: {}",
         up[0].title
     );
-    let told = brightness(&frame(&mut session));
+    let told = frame(&mut session);
     assert!(
-        (told - plain).abs() < 5.0,
-        "the desk is unchanged by it: {plain} then {told}"
+        (edge_brightness(&told) - edge).abs() < 5.0,
+        "the display's edge does not light up: {edge} then {}",
+        edge_brightness(&told)
+    );
+    assert!(
+        (centre_brightness(&told) - middle).abs() < 5.0,
+        "and the desk is unchanged by it: {middle} then {}",
+        centre_brightness(&told)
     );
 }
