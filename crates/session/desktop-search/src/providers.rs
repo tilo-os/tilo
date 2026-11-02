@@ -797,7 +797,6 @@ fn key(address: &ActionAddress) -> String {
     format!("{}\u{1f}{}", address.resource, address.action)
 }
 
-/// The kind answers are grouped under.
 /// The kind worked-out answers are grouped under, in the desktop's
 /// language.
 #[must_use]
