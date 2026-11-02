@@ -124,7 +124,7 @@ fn chrome_with_picker(recents: Rc<RefCell<Recents>>) -> (FrameHarness, DesktopHa
     let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
     desk.relayout();
     let link = EmojiLink::new(Box::new(MemoryRecents(recents)));
-    let chrome = DesktopChrome::new(
+    let mut chrome = DesktopChrome::new(
         handle.clone(),
         "g".into(),
         Rc::new(Rules {
@@ -133,8 +133,8 @@ fn chrome_with_picker(recents: Rc<RefCell<Recents>>) -> (FrameHarness, DesktopHa
         TopBarChrome::from_tree(&tree),
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,
-    )
-    .with_emoji(link.clone());
+    );
+    chrome.set_emoji(link.clone());
     let mut frame = FrameHarness::for_root(
         ui::state::State::new(),
         chrome,

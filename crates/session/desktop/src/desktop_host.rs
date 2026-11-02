@@ -858,10 +858,8 @@ impl DesktopChrome {
 
     /// Follow the bars' reveal with `reveals`, which the desk's band reads
     /// too: when each bar shows over the window covering its display.
-    #[must_use]
-    pub fn with_reveals(mut self, reveals: Rc<RefCell<Reveals>>) -> Self {
+    pub fn set_reveals(&mut self, reveals: Rc<RefCell<Reveals>>) {
         self.reveals = reveals;
-        self
     }
 
     /// The surfaces the chrome draws, as the session's stack holds them.
@@ -873,20 +871,16 @@ impl DesktopChrome {
     /// Publish the chrome's surfaces to `overlays`: the session's stack, which
     /// says which of them holds the keyboard and what a press outside them
     /// closes.
-    #[must_use]
-    pub fn with_overlays(mut self, overlays: Overlays) -> Self {
+    pub fn set_overlays(&mut self, overlays: Overlays) {
         self.overlays = overlays;
         self.publish_overlays();
-        self
     }
 
     /// Keep the emoji picker's openings, picks and recents through `link`: the
     /// host says where the focused field's caret is, writes each pick into
     /// that field and keeps the recents where the link's store does.
-    #[must_use]
-    pub fn with_emoji(mut self, link: EmojiLink) -> Self {
+    pub fn set_emoji(&mut self, link: EmojiLink) {
         self.emoji_link = link;
-        self
     }
 
     /// The emoji picker, as the host sees it: open or not, the card's place,
@@ -1079,29 +1073,23 @@ impl DesktopChrome {
 
     /// Put the chrome's asks in `asks`, shared with a host that reads them
     /// outside the widget tree the chrome is drawn in.
-    #[must_use]
-    pub fn with_asks(mut self, asks: Rc<RefCell<Vec<DesktopAsk>>>) -> Self {
+    pub fn set_asks(&mut self, asks: Rc<RefCell<Vec<DesktopAsk>>>) {
         self.asks = asks;
-        self
     }
 
     /// Take the intents a host's bar source raises from `intents`,
     /// shared with that source.
-    #[must_use]
-    pub fn with_intents(mut self, intents: Rc<RefCell<Vec<ChromeIntent>>>) -> Self {
+    pub fn set_intents(&mut self, intents: Rc<RefCell<Vec<ChromeIntent>>>) {
         self.intents = intents;
-        self
     }
 
     /// Have the overview's windows drawn by the host through `flight`, their
     /// pictures resting where the panel draws them — flying between the desk
     /// and the overview on the clock the host keeps there; `open` is set as
     /// the chrome draws, for the host that clock belongs to.
-    #[must_use]
-    pub fn with_overview(mut self, flight: WindowFlight, open: Rc<Cell<bool>>) -> Self {
+    pub fn set_overview(&mut self, flight: WindowFlight, open: Rc<Cell<bool>>) {
         self.overview.set_flight(flight);
         self.overview_open = Some(open);
-        self
     }
 
     /// Close the menus the chrome opened: the host opens a popover of its

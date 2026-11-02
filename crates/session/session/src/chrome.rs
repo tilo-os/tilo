@@ -589,13 +589,13 @@ pub(crate) fn host(
         bar,
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,
-    )
-    .with_intents(intents)
-    .with_asks(asks)
-    .with_overview(overview.flight(), overview.open_flag())
-    .with_emoji(emoji.clone())
-    .with_overlays(overlays.clone())
-    .with_reveals(reveals);
+    );
+    chrome.set_intents(intents);
+    chrome.set_asks(asks);
+    chrome.set_overview(overview.flight(), overview.open_flag());
+    chrome.set_emoji(emoji.clone());
+    chrome.set_overlays(overlays.clone());
+    chrome.set_reveals(reveals);
     chrome.set_shortcuts(options.config.shortcuts.clone());
     // Keys come to the chrome while one of the surfaces it draws holds the
     // keyboard: the stack says which, and it says the window's again as soon
