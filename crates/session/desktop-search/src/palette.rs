@@ -975,11 +975,7 @@ mod tests {
             action("projection.close", "Stop projecting")
                 .unavailable("nothing_to_act_on", "Nothing is projected"),
         );
-        vec![PublishedActions {
-            app: "shell".into(),
-            workspace: "workspace".into(),
-            actions: tilo_actions::door::survey(&[resource]),
-        }]
+        vec![PublishedActions::of("shell", "workspace", &[resource])]
     }
 
     #[test]

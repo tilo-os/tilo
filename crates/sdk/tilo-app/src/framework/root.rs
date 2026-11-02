@@ -1244,6 +1244,7 @@ fn without_children(resource: &ResourceSpec) -> ResourceSpec {
         actions,
         views,
         readers,
+        resource_type,
     } = resource;
     ResourceSpec {
         id: id.clone(),
@@ -1256,6 +1257,7 @@ fn without_children(resource: &ResourceSpec) -> ResourceSpec {
         actions: actions.clone(),
         views: views.clone(),
         readers: *readers,
+        resource_type: resource_type.clone(),
     }
 }
 

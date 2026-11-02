@@ -510,6 +510,52 @@ fn a_retyped_item_moves_only_labels_and_a_reader_learns_them_alone() {
     );
 }
 
+/// Every published resource's id and whether it is its app's root.
+fn roots(resource: &ResourceSpec, out: &mut Vec<(String, bool)>) {
+    if let Some(named) = &resource.resource_type {
+        out.push((resource.id.as_str().to_owned(), named.root));
+    }
+    for child in &resource.children {
+        roots(child, out);
+    }
+}
+
+/// A resource says what it is as it is published: its type's noun, its app's name, and
+/// whether it is the app's root, the one a search naming the app means.
+#[test]
+fn a_published_resource_says_what_it_is() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
+    let meta = packages[0].meta.clone();
+    let root = ada.host.root_of(APP).unwrap().doc;
+    ada.commit();
+    for text in ["milk", "eggs"] {
+        add(&mut ada, &meta, &root, text);
+    }
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let mut out = Vec::new();
+    roots(&published.trees()[&root], &mut out);
+    let ids = item_ids(&ada, &meta, &root);
+    let item = |id: &str| resource_id(APP, &format!("{root}/{id}"));
+    assert_eq!(
+        out,
+        [
+            (resource_id(APP, &root), true),
+            (item(&ids[0]), false),
+            (item(&ids[1]), false),
+        ]
+    );
+    let named = published.trees()[&root].resource_type.clone().unwrap();
+    assert_eq!(
+        (named.noun, named.app),
+        (
+            tilo_actions::Noun::new("todo list", "todo lists"),
+            tilo_actions::Noun::new("Todo", "todos")
+        )
+    );
+}
+
 #[test]
 fn planning_an_action_changes_nothing_anyone_follows() {
     let (ada, meta, root) = workspace();

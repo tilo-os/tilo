@@ -7,7 +7,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
     clippy::arithmetic_side_effects,
     reason = "test fixtures: a failed step is the assertion"
@@ -122,9 +121,11 @@ fn a_window_opens_at_exactly_its_wells_rectangle() {
             &outputs,
         )
         .expect("an arrangement");
-    assert_eq!(arranged[0].location, at);
+    assert_eq!(arranged.len(), 1);
+    let (same, _rest) = arranged.split_first().expect("the window is arranged");
+    assert_eq!(same.location, at);
     assert!(
-        arranged[0].size.is_none(),
+        same.size.is_none(),
         "a well that did not change size leaves the client alone"
     );
 }
@@ -182,7 +183,9 @@ fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view
     assert!(
         policy
             .arrange(&[(window, LayoutRect::new(at, size.into()))], &outputs)
-            .expect("an arrangement")[0]
+            .expect("an arrangement")
+            .first()
+            .expect("the window is arranged")
             .size
             .is_none(),
         "a well that only moved leaves the client's size alone"
@@ -207,7 +210,8 @@ fn a_place_with_no_well_on_screen_waits_off_the_output() {
             &outputs,
         )
         .expect("an arrangement");
-    assert!(arranged[0].location.x < 0, "still off the output");
+    let (off, _rest) = arranged.split_first().expect("the window is arranged");
+    assert!(off.location.x < 0, "still off the output");
 }
 
 #[test]
@@ -245,9 +249,10 @@ fn with_nothing_changing_no_client_is_configured_and_no_well_reported_twice() {
     for _ in 0..200 {
         let arranged = policy.arrange(&windows, &outputs).expect("an arrangement");
         assert_eq!(arranged.len(), 1);
-        assert_eq!(arranged[0].location, at);
+        let (laid, _rest) = arranged.split_first().expect("the window is arranged");
+        assert_eq!(laid.location, at);
         assert!(
-            arranged[0].size.is_none(),
+            laid.size.is_none(),
             "a well that did not change size leaves its window's client alone"
         );
     }
