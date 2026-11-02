@@ -2832,6 +2832,7 @@ impl Session {
         self.compositor.render()?;
         // What `tilo-control` asks of the frame just drawn.
         let locked = self.compositor.locked();
+        let lock_screen_drawn = self.compositor.lock_drawn();
         test_control::serve(
             self.control.as_ref(),
             &mut self.compositor,
@@ -2841,6 +2842,7 @@ impl Session {
                 overlays: &self.shared.overlays,
                 engine: self.shared.engine.as_deref(),
                 locked,
+                lock_screen_drawn,
             },
         );
         // What assistive technology reads of the frame just drawn, and what

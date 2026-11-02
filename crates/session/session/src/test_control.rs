@@ -225,8 +225,8 @@ pub fn owner_decision(
 }
 
 /// What the session is, for the answers that read it: the doors every hosted surface's actions
-/// go through, the desk's tree, what stands over it, the workspaces this computer holds, and
-/// whether the person locked the screen.
+/// go through, the desk's tree, what stands over it, the workspaces this computer holds, whether
+/// the person locked the screen, and whether the lock screen's own frame is on it.
 #[derive(Clone, Copy)]
 pub(crate) struct Desk<'a> {
     pub(crate) doors: &'a Doors,
@@ -234,6 +234,7 @@ pub(crate) struct Desk<'a> {
     pub(crate) overlays: &'a Overlays,
     pub(crate) engine: Option<&'a Engine>,
     pub(crate) locked: bool,
+    pub(crate) lock_screen_drawn: bool,
 }
 
 /// Answer what `control`, when there is one, was asked since the last pass, and publish the
@@ -2011,6 +2012,9 @@ fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
         "held_workspaces": held_workspaces,
         "chrome": {
             "session_locked": desk.locked,
+            // The lock screen's own frame is what the outputs show, not the
+            // desk's last one: the lock is up and covering the desk.
+            "lock_screen_drawn": desk.lock_screen_drawn,
             "in_transition": false,
             "overlays": open,
         },
