@@ -1,18 +1,23 @@
 //! Desktop search on the surface: the shared [`DesktopSearch`] palette over
-//! what this desktop has open, drawn above the shown strip.
+//! what this desktop has open, drawn by the chrome above the windows.
 //!
 //! Search opens from the same chords as the native shell's (Super+K and
 //! Super+Space; Ctrl+K where the platform's command key is Ctrl), from a
 //! `global-search`/`commands` navigation command, or from
 //! [`DesktopHandle::toggle_search`]. A window's new-tab control opens it
 //! over the applications only, and the one chosen opens as a tab of that
-//! window, as the native shell's does. While open it takes every input event.
+//! window, as the native shell's does. The desk keeps what search stands
+//! over and what it found; the chrome, which stands above the windows, draws
+//! the card there, dims what it covers, routes the person's input to it and
+//! closes it ([`DesktopHandle::search_palette`], [`DesktopHandle::search_area`]).
 //! Choosing an application launches it, a window focuses it, and an
 //! application's action or content runs through the palette's control
 //! invocation, which the frame host resolves against the live resource
 //! tree like any bound control. Search over everything also answers what
 //! is not a name, as the native shell's does: a sum or a unit conversion is
 //! copied, an address or a web search opens in a new browser tab.
+
+use std::rc::Rc;
 
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
@@ -761,12 +766,14 @@ impl DesktopSurface {
         self.note_search_activity();
     }
 
-    /// What the host above the windows draws and asks about the palette
-    /// changed: the desk takes it up on its next pass, and the host draws
-    /// what the desk publishes then.
+    /// Search opened or closed from the desk: what the host above the windows
+    /// draws and asks about the palette changed, as it does when the person
+    /// types there ([`DesktopHandle::note_search_activity`]).
     fn note_search_activity(&self) {
-        let mut shared = self.shared.borrow_mut();
-        shared.search_revision = shared.search_revision.wrapping_add(1);
+        DesktopHandle {
+            shared: Rc::clone(&self.shared),
+        }
+        .note_search_activity();
     }
 
     /// The window an app is open in: its window in front, or the window in
