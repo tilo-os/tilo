@@ -28,7 +28,9 @@ use tilo_browser_peer::live::{LiveError, LiveSession, UNSUPPORTED};
 use tilo_call_lane::{Opener, Roster, Sealer, Stream, TrackName};
 use tilo_live::admit::{Connected, OriginTask, origin_config};
 use tilo_live::live::{Namespace, Track};
-use tilo_live::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
+use tilo_live::relay::{
+    Denied, Direction, LoopbackRelay, Peer, RelayAuthority, SessionAuthorization,
+};
 use tilo_live::scope::Scope;
 use tilo_live::voice::VoiceObject;
 use tilo_relay_protocol::web::LiveGrant;
@@ -118,7 +120,7 @@ struct Admits {
 }
 
 impl RelayAuthority for Admits {
-    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit(&self, _peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let device = match LiveGrant::decode(proof) {
             Some(grant) => grant.token,
             None => <[u8; 32]>::try_from(proof).map_err(|_| Denied)?,

@@ -378,7 +378,7 @@ impl Relay {
             async move {
                 relay
                     .serve_session(VoiceRoute(()), session, Peer::Web)
-                    .await
+                    .await;
             }
         })
         .await;

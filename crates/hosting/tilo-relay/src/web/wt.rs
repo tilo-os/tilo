@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tilo_live::live::Namespace;
-use tilo_live::relay::{Denied, Direction, Relay, RelayAuthority, SessionAuthorization};
+use tilo_live::relay::{Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization};
 use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::web::{LiveGrant, LiveInfo};
 use tokio::sync::watch;
@@ -176,7 +176,12 @@ impl Pages {
 }
 
 impl RelayAuthority for Pages {
-    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+        // A page's grant is its session token; a device that reached an iroh
+        // connection proves itself with its certificate instead.
+        if peer != Peer::Web {
+            return Err(Denied);
+        }
         let claim = LiveGrant::decode(proof).ok_or(Denied)?;
         let grant = self
             .grants

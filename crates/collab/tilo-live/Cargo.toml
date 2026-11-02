@@ -10,16 +10,17 @@ license.workspace = true
 default = []
 # The HTTPS server identity alone (`tls`): rustls, without the relay stack.
 tls = ["dep:rustls"]
-# The plane's names: the namespace of one device in one scope, the tracks
-# within it and their delivery. Builds for the page, which publishes and reads
-# them itself.
+# The plane's names and the client half of its carrier: the namespace of one
+# device in one scope, the tracks within it and their delivery, and the
+# admission a page runs over WebTransport. Builds for the page, which
+# publishes and reads them itself.
 plane = ["dep:moq-net", "dep:hex", "dep:n0-future"]
-relay = ["tls", "plane", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
+# The relay, the native carrier, and one participant's sealed plane: the
+# readers of a sealed plane run on the device's own runtime, which a page has
+# not.
+relay = ["tls", "plane", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json", "dep:tilo-call-lane", "dep:channel-crypto"]
 # The same carrier over a direct iroh connection, beside WebTransport.
 native = ["relay", "dep:iroh"]
-# The sealed plane: one participant's session in one scope, sealed under the
-# scope's channel content keys.
-plane = ["relay", "dep:tilo-call-lane", "dep:channel-crypto"]
 
 [dependencies]
 # The scope of a track is a channel of an app's record.

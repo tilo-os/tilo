@@ -45,7 +45,7 @@ pub mod client;
 
 /// One participant's sealed session in one scope, sealed under the scope's
 /// channel keys.
-#[cfg(feature = "plane")]
+#[cfg(feature = "relay")]
 pub mod plane;
 
 /// `at + age`, or `at` when the clock cannot represent the sum: an
