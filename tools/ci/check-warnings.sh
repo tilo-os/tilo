@@ -14,15 +14,21 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 
+# The packages' test features (tools/ci/package_features.py): a test, bench or
+# example whose Cargo.toml lists `required-features` is otherwise no target of
+# `--all-targets` at all, and its warnings would never be read.
+feature_flags=$(python3 tools/ci/package_features.py --workspace) || exit 2
+read -r -a features <<<"$feature_flags"
+
 raw=$(mktemp) || exit 2
 trap 'rm -f "$raw"' EXIT
 
-cargo check --workspace --all-targets --message-format=json > "$raw" 2>/dev/null
+cargo check --workspace --all-targets "${features[@]}" --message-format=json > "$raw" 2>/dev/null
 rc=$?
 if [ "$rc" -ne 0 ]; then
   echo "cargo check failed (exit $rc) — the tree does not compile, so a clean" >&2
   echo "warning count would mean nothing." >&2
-  cargo check --workspace --all-targets --message-format=short 2>&1 | grep -E '^error' | head -10 >&2
+  cargo check --workspace --all-targets "${features[@]}" --message-format=short 2>&1 | grep -E '^error' | head -10 >&2
   exit 2
 fi
 
