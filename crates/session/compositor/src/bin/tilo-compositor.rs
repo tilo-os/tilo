@@ -8,7 +8,6 @@
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
-    use tilo_compositor::{Compositor, DisplayConfig, NestedConfig, OutputConfig, StackPolicy};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = match args.iter().position(|arg| arg == "--") {
@@ -36,32 +35,10 @@ fn main() -> std::process::ExitCode {
         .and_then(|scale| scale.parse().ok())
         .unwrap_or(1.0);
 
-    let started = match backend {
-        "headless" => Compositor::headless(Box::new(StackPolicy)).and_then(|mut compositor| {
-            compositor.add_output(
-                &OutputConfig::new("HEADLESS-1", i32::from(size.0), i32::from(size.1))
-                    .with_scale(scale),
-            )?;
-            Ok(compositor)
-        }),
-        "nested" => Compositor::nested(
-            Box::new(StackPolicy),
-            &NestedConfig {
-                size,
-                scale,
-                ..NestedConfig::default()
-            },
-        ),
-        "drm" => Compositor::drm(Box::new(StackPolicy), DisplayConfig::default()),
-        other => {
-            eprintln!("tilo-compositor: unknown backend {other} (nested, drm, headless)");
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut compositor = match started {
+    let mut compositor = match start(backend, size, scale) {
         Ok(compositor) => compositor,
-        Err(error) => {
-            eprintln!("tilo-compositor: {error}");
+        Err(message) => {
+            eprintln!("tilo-compositor: {message}");
             return ExitCode::FAILURE;
         }
     };
@@ -109,6 +86,44 @@ fn main() -> std::process::ExitCode {
             eprintln!("tilo-compositor: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The compositor for `backend`, at the size and scale asked for, or why
+/// there is none.
+#[cfg(target_os = "linux")]
+fn start(
+    backend: &str,
+    size: (u16, u16),
+    scale: f64,
+) -> Result<tilo_compositor::Compositor, String> {
+    use tilo_compositor::{
+        Compositor, DisplayConfig, NestedBackend, NestedConfig, OutputConfig, StackPolicy,
+    };
+
+    match backend {
+        "headless" => Compositor::headless(Box::new(StackPolicy))
+            .and_then(|mut compositor| {
+                compositor.add_output(
+                    &OutputConfig::new("HEADLESS-1", i32::from(size.0), i32::from(size.1))
+                        .with_scale(scale),
+                )?;
+                Ok(compositor)
+            })
+            .map_err(|error| error.to_string()),
+        "nested" => {
+            let config = NestedConfig {
+                size,
+                scale,
+                ..NestedConfig::default()
+            };
+            NestedBackend::open_window(&config)
+                .and_then(|window| Compositor::nested(Box::new(StackPolicy), &config, window))
+                .map_err(|error| error.to_string())
+        }
+        "drm" => Compositor::drm(Box::new(StackPolicy), DisplayConfig::default())
+            .map_err(|error| error.to_string()),
+        other => Err(format!("unknown backend {other} (nested, drm, headless)")),
     }
 }
 

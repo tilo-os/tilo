@@ -83,6 +83,7 @@ qs-edit-active-heading = Aktive Steuerungen
 qs-edit-add-a11y = Steuerung zu den Schnelleinstellungen hinzufügen
 qs-edit-available-heading = Verfügbar
 qs-edit-controls = Steuerungen bearbeiten
+qs-edit-short = Bearbeiten
 qs-edit-done = Fertig
 qs-edit-help = Zum Anordnen ziehen, Strg + Auf/Ab drücken oder bei einer Zeile Nach oben und Nach unten wählen
 qs-edit-optional-control-a11y = Zum Anordnen ziehen oder Strg plus Pfeiltasten verwenden

@@ -29,7 +29,7 @@ fn issued_owner_permits_recheck_execution_and_device_revocation() {
         "{}{}",
         tilo_actions::ARGUMENTS_JSON_PREFIX,
         serde_json::json!({
-            "source_store": SOURCE, "source_workspace": "unscoped", "destination_workspace": workspace,
+            "source_store": SOURCE, "source_room": "unscoped", "destination_room": workspace,
             "hashes": [hash.to_hex()], "max_bytes": 100
         })
     );

@@ -187,7 +187,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 20;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 21;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 /// What a model may know about one change it is asked to describe: the
@@ -732,6 +732,13 @@ pub enum FloatingSurfaceHostMessage {
     /// sharing it.
     WindowShareAsk {
         ask: crate::window_share::Ask,
+    },
+    /// This shell does not answer that message: the app is told rather than
+    /// left waiting on an answer that never came. `message` names the
+    /// variant it sent, `reason` says what the session cannot do of it.
+    Unanswered {
+        message: String,
+        reason: String,
     },
 }
 

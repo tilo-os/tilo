@@ -18,7 +18,7 @@ use crate::resource::QuickSettings;
 use crate::{NotificationRow, NotificationsView};
 
 /// A page's header: Back, named for where it goes, and the page's title.
-fn header(
+pub(super) fn header(
     cx: &ViewCx<QuickSettings>,
     title: &str,
     back: &str,

@@ -1107,6 +1107,19 @@ impl crate::Shared {
         }
     }
 
+    /// What the person's own records say: their workspaces as all their
+    /// devices hold them, and what this device did since the last pass.
+    pub(crate) fn follow_records(&self) {
+        self.follow_data_usage();
+        self.follow_personal();
+    }
+
+    /// Count what this device did since the last pass into the person's
+    /// records, through the verb of the service that holds them.
+    fn follow_data_usage(&self) {
+        self.table.follow(&mut self.services.borrow_mut());
+    }
+
     /// Keep the person's own workspaces as all their devices hold them:
     /// list what this desk has, take what the others listed, open here what
     /// they made there, take off the desk what they took off theirs, and say

@@ -138,7 +138,6 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
         for (field, value) in [
             ("id", "uuid:00000000-0000-0000-0000-000000000099"),
             ("kind", "foreign-kind"),
-            ("workspace", "00000000-0000-0000-0000-000000000099"),
             ("room", "00000000-0000-0000-0000-000000000099"),
             ("home", "foreign-origin"),
         ] {

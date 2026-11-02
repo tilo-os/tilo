@@ -49,14 +49,28 @@ const REFRESH: Duration = Duration::from_millis(16);
 
 /// The panel, as the session starts it: below the bar's right end.
 fn panel() -> Surface {
+    let height = u32::try_from(HEIGHT).unwrap();
     Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
         .layer(Layer::Top)
         .namespace("tilo-quick-settings")
         .anchor(Anchor::TOP | Anchor::RIGHT)
-        .size((
-            tilo_quick_settings::resource::PANEL_WIDTH,
-            u32::try_from(HEIGHT).unwrap(),
-        ))
+        .size((tilo_quick_settings::resource::PANEL_WIDTH, height))
+        .keyboard(Keyboard::OnDemand)
+}
+
+/// The panel as the session places it on an `output`: `BAR` pixels down from
+/// the output's top edge for the bar, and the popover margin off its right
+/// and bottom edges, so it never runs past the screen.
+fn panel_on_a_laptop(output: (i32, i32)) -> Surface {
+    const BAR: i32 = 32;
+    const MARGIN: i32 = 8;
+    let height = u32::try_from(output.1 - BAR - MARGIN).unwrap();
+    Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
+        .layer(Layer::Top)
+        .namespace("tilo-quick-settings")
+        .anchor(Anchor::TOP | Anchor::RIGHT)
+        .size((tilo_quick_settings::resource::PANEL_WIDTH, height))
+        .margin((BAR, MARGIN, MARGIN, 0))
         .keyboard(Keyboard::OnDemand)
 }
 
@@ -205,6 +219,44 @@ fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
     save(&at_84, "session-quick-settings-battery-84");
 
     session.stop_surface("quick-settings");
+}
+
+/// The panel on a laptop's screen, the size a person's session gives it: its
+/// card stands over the desk rather than on a ground of its own, and it keeps
+/// to the output instead of running past its edge.
+#[test]
+fn the_panel_on_a_laptops_output_stays_inside_it_over_the_desk() {
+    const OUTPUT: (i32, i32) = (1280, 800);
+    let mut laptop = session_of_device_at(&[panel_on_a_laptop(OUTPUT)], Machine::Owned, OUTPUT);
+    let session = &mut laptop.session;
+    let desk = at_rest(session);
+    open_the_panel(session);
+    until_ready(session, "toggle-wifi");
+    let frame = at_rest(session);
+    save(&frame, "session-quick-settings-1280x800");
+
+    // What the card paints over the desk is not the desk under it: the panel
+    // is there.
+    let drew = (0..OUTPUT.1).step_by(4).any(|y| {
+        let x = OUTPUT.0 - width() / 2;
+        pixel(&frame, x, y) != pixel(&desk, x, y)
+    });
+    assert!(drew, "the panel drew over the desk");
+
+    // It keeps to the output it stands in: the bar above it and the row under
+    // its foot are the desk untouched, so no page runs past the screen.
+    for x in (OUTPUT.0 - width()..OUTPUT.0).step_by(8) {
+        assert_eq!(
+            pixel(&frame, x, 0),
+            pixel(&desk, x, 0),
+            "the panel keeps off the output's top edge at {x}"
+        );
+        assert_eq!(
+            pixel(&frame, x, OUTPUT.1 - 1),
+            pixel(&desk, x, OUTPUT.1 - 1),
+            "the panel keeps off the output's bottom edge at {x}"
+        );
+    }
 }
 
 #[test]
@@ -765,6 +817,11 @@ struct Laptop {
 
 /// A headless session on the device in memory, drawing on `machine`.
 fn session_of_device(surfaces: &[Surface], machine: Machine) -> Laptop {
+    session_of_device_at(surfaces, machine, (WIDTH, HEIGHT))
+}
+
+/// A session with a device's services, on an output of `output` pixels.
+fn session_of_device_at(surfaces: &[Surface], machine: Machine, output: (i32, i32)) -> Laptop {
     let radios = Arc::new(Radios::default());
     {
         let mut readings = radios.readings.lock().expect("the radios");
@@ -809,7 +866,7 @@ fn session_of_device(surfaces: &[Surface], machine: Machine) -> Laptop {
             machine,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        &[OutputConfig::new("HEADLESS-1", output.0, output.1)],
     )
     .expect("session");
     Laptop {

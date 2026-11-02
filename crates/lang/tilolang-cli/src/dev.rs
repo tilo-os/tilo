@@ -226,10 +226,14 @@ impl Local {
     }
 
     /// Publish `app` as the first generation and run it on `runtime`.
-    fn start(&mut self, app: &BuiltApp, runtime: &Path) -> Result<(), String> {
+    fn start(&mut self, app: &package::Published, runtime: &Path) -> Result<(), String> {
         self.package.clone_from(&app.app);
-        let generation = tilo_app_module::publish(&self.updates, &app.payload)
-            .map_err(|error| format!("{}: {error}", self.updates.display()))?;
+        let generation = tilo_app_module::publish_with(&self.updates, |generation| {
+            app.bundle
+                .write(generation)
+                .map_err(|error| std::io::Error::other(error.to_string()))
+        })
+        .map_err(|error| format!("{}: {error}", self.updates.display()))?;
         self.spawn(generation, runtime)
     }
 
@@ -395,35 +399,11 @@ impl Dev {
         Ok(apps)
     }
 
-    /// Build, and take what changed to what runs it; the apps built, or the compile errors.
-    fn build_and_deliver(&mut self, saved: Instant) -> Result<Vec<BuiltApp>, String> {
-        let apps = package::build(&self.build, &self.identity)?;
-        let built = saved.elapsed();
-        let opened = self.opened.clone();
+    /// Build the bundles the desktop app reads from its generations, as starting it will have
+    /// them published; the apps.
+    pub(crate) fn build_for_start_local(&mut self) -> Result<Vec<package::Published>, String> {
+        let apps = package::published(&self.build, &self.identity)?;
         for app in &apps {
-            let previous = self.delivered.get(&app.app);
-            if previous.is_some_and(|(digest, _)| *digest == app.digest) {
-                continue;
-            }
-            let plan = previous.map(|(_, meta)| compare(meta, &app.meta));
-            match &mut self.delivery {
-                Delivery::Session { peers, bin } => {
-                    for peer in peers.iter() {
-                        peer.install(bin, &app.tapp)?;
-                    }
-                    report(app, plan, built, saved.elapsed(), "installed");
-                }
-                Delivery::Local(local) => {
-                    // Only the package the window shows runs here; its payload carries the
-                    // packages it uses.
-                    if app.app != opened {
-                        continue;
-                    }
-                    tilo_app_module::publish(&local.updates, &app.payload)
-                        .map_err(|error| format!("{}: {error}", local.updates.display()))?;
-                    report(app, plan, built, saved.elapsed(), "published");
-                }
-            }
             self.delivered
                 .insert(app.app.clone(), (app.digest.clone(), app.meta.clone()));
         }
@@ -431,6 +411,72 @@ impl Dev {
             self.opened.clone_from(&last.app);
         }
         Ok(apps)
+    }
+
+    /// Build, and take what changed to what runs it; the apps built, or the compile errors.
+    fn build_and_deliver(&mut self, saved: Instant) -> Result<Vec<BuiltApp>, String> {
+        if self.is_local() {
+            self.publish_local(saved)?;
+            return Ok(Vec::new());
+        }
+        let apps = package::build(&self.build, &self.identity)?;
+        let built = saved.elapsed();
+        for app in &apps {
+            let previous = self.delivered.get(&app.app);
+            if previous.is_some_and(|(digest, _)| *digest == app.digest) {
+                continue;
+            }
+            let plan = previous.map(|(_, meta)| compare(meta, &app.meta));
+            let Delivery::Session { peers, bin } = &mut self.delivery else {
+                return Ok(Vec::new());
+            };
+            for peer in peers.iter() {
+                peer.install(bin, &app.tapp)?;
+            }
+            report(&app.title, plan, built, saved.elapsed(), "installed");
+            self.delivered
+                .insert(app.app.clone(), (app.digest.clone(), app.meta.clone()));
+        }
+        if let Some(last) = apps.last() {
+            self.opened.clone_from(&last.app);
+        }
+        Ok(apps)
+    }
+
+    /// Build, and publish each changed build of the app the window shows into the generations it
+    /// follows. Nothing is staged, packed or signed: the app reads the bundle itself.
+    fn publish_local(&mut self, saved: Instant) -> Result<(), String> {
+        let opened = self.opened.clone();
+        let apps = package::published(&self.build, &self.identity)?;
+        let built = saved.elapsed();
+        for app in &apps {
+            let previous = self.delivered.get(&app.app);
+            if previous.is_some_and(|(digest, _)| *digest == app.digest) {
+                continue;
+            }
+            // Only the package the window shows runs here; its bundle carries the packages it
+            // uses.
+            if app.app != opened {
+                continue;
+            }
+            let plan = previous.map(|(_, meta)| compare(meta, &app.meta));
+            let local = self
+                .local_mut()
+                .ok_or_else(|| "the app is not run here".to_owned())?;
+            tilo_app_module::publish_with(&local.updates, |generation| {
+                app.bundle
+                    .write(generation)
+                    .map_err(|error| std::io::Error::other(error.to_string()))
+            })
+            .map_err(|error| format!("{}: {error}", local.updates.display()))?;
+            report(&app.title, plan, built, saved.elapsed(), "published");
+            self.delivered
+                .insert(app.app.clone(), (app.digest.clone(), app.meta.clone()));
+        }
+        if let Some(last) = apps.last() {
+            self.opened.clone_from(&last.app);
+        }
+        Ok(())
     }
 
     /// Open the app where it has no window yet. A session indexes an app it just installed
@@ -795,25 +841,22 @@ impl Dev {
     }
 }
 
-/// Say what the running app does with `app`, whose build took `built` and its delivery
+/// Say what the running app does with the build of `title`, which took `built` and its delivery
 /// `delivered`, `how` being what the delivery did with it.
-fn report(app: &BuiltApp, plan: Option<Upgrade>, built: Duration, delivered: Duration, how: &str) {
+fn report(title: &str, plan: Option<Upgrade>, built: Duration, delivered: Duration, how: &str) {
     match plan {
         None => eprintln!(
-            "==> {}: built in {} ms, {how} in {} ms",
-            app.title,
+            "==> {title}: built in {} ms, {how} in {} ms",
             built.as_millis(),
             delivered.as_millis()
         ),
         Some(Upgrade::InPlace) => eprintln!(
-            "==> {}: built in {} ms, {how} in {} ms; the running app takes it with its state",
-            app.title,
+            "==> {title}: built in {} ms, {how} in {} ms; the running app takes it with its state",
             built.as_millis(),
             delivered.as_millis()
         ),
         Some(Upgrade::Restart(reason)) => eprintln!(
-            "==> {}: {reason}; {how} in {} ms, the running app starts over on it with its data",
-            app.title,
+            "==> {title}: {reason}; {how} in {} ms, the running app starts over on it with its data",
             delivered.as_millis()
         ),
     }
@@ -901,12 +944,18 @@ bin = "{bin}"
 
 /// Build the tilolang runtime binary in `repo` as an ordinary program, and say where it is.
 fn build_local_runtime(repo: &Path) -> Result<PathBuf, String> {
+    // The runtime draws every frame of the window the loop shows, and a build of the loop's
+    // sources is taken by it while it runs: the workspace's `fast` profile is the one it names
+    // for the desktop, without LTO and with incremental builds.
+    const PROFILE: &str = "fast";
     let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     command
         .current_dir(repo)
         .args([
             "build",
             "--locked",
+            "--profile",
+            PROFILE,
             "-p",
             RUNTIME_PACKAGE,
             "--bin",
@@ -1060,7 +1109,7 @@ fn dev_on_desktop(
         .and_then(DevRuntime::binary)
         .map(Path::to_path_buf)
         .ok_or_else(|| "no runtime binary to run the app on".to_owned())?;
-    let apps = dev.build_for_start()?;
+    let apps = dev.build_for_start_local()?;
     let app = apps
         .iter()
         .find(|app| app.app == dev.opened)

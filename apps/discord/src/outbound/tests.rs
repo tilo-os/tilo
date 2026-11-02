@@ -74,16 +74,16 @@ fn shared(id: &str, text: &str, share: &Value) -> Value {
 }
 
 /// The host sends the workspace under the key it has always sent it under, so
-/// a context from a host that still does is read the same.
+/// a context from a host that names it for the workspace is read the same.
 #[test]
-fn a_context_naming_the_workspace_as_room_is_read() {
+fn a_context_naming_the_workspace_as_workspace_is_read() {
     let context: Context = serde_json::from_value(json!({
         "avatars": "https://workspaces.example/avatars/",
         "link": "https://app.example/#m",
         "links": {
             "web_entry": "https://tilo.example/",
             "origin": "https://lounge.tilo.example",
-            "room": WORKSPACE,
+            "workspace": WORKSPACE,
             "host_device": "ab".repeat(32),
         },
     }))
@@ -92,6 +92,17 @@ fn a_context_naming_the_workspace_as_room_is_read() {
         context.links.map(|links| links.workspace).as_deref(),
         Some(WORKSPACE)
     );
+}
+
+/// The workspace goes out under the key a host publishes its links with.
+#[test]
+fn a_context_names_the_workspace_under_the_stored_key() {
+    let links = linked().links.unwrap();
+    let written = serde_json::to_string(&links).unwrap();
+    assert!(written.contains("\"room\""), "{written}");
+    assert!(!written.contains("\"workspace\""), "{written}");
+    let stored = written.replace("\"room\"", "\"workspace\"");
+    assert_eq!(serde_json::from_str::<Links>(&stored).unwrap(), *links);
 }
 
 /// A window shared live goes across as a line that says so and opens the

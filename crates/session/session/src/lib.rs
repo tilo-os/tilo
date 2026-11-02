@@ -264,6 +264,9 @@ struct Shared {
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
     services: Rc<RefCell<Services>>,
+    /// The services the session serves its apps and devices itself, kept for
+    /// as long as it runs (`mount::doors::TABLE` says which).
+    table: mount::doors::Doors,
     /// The windows this session shares with its workspaces, and the streams it receives from them.
     window_shares: Rc<RefCell<window_share::WindowShares>>,
     /// The runs of what people ask this session's agents to do, fed every
@@ -1338,6 +1341,24 @@ impl Session {
                 .as_ref()
                 .map(|desktop| desktop.questions().clone())
         });
+        // Every service this session serves, from the one table that says
+        // who serves each: the identity an app signs in through, the
+        // machine's readings an app the launcher connects reads, and the
+        // data this device used. They start here, before any app does.
+        let table = mount::doors::start(mount::doors::Serving {
+            desk: action_plane
+                .as_ref()
+                .map(|plane| std::sync::Arc::clone(&plane.desk)),
+            keys: engine
+                .as_ref()
+                .map_or_else(Default::default, |engine| engine.keys()),
+            questions: questions.clone(),
+            consents: options
+                .desktop
+                .as_ref()
+                .and_then(|desktop| desktop.consents())
+                .cloned(),
+        });
         let session_doors =
             std::sync::Arc::new(agent_door::SessionDoors::new(options.wake.handle()));
         let door = agent_door::mount_named(
@@ -1479,6 +1500,7 @@ impl Session {
             waiting: RefCell::default(),
             readings,
             services,
+            table,
             window_shares,
             agent_runs,
             hosted: !options.machine.is_owned(),
@@ -1708,7 +1730,13 @@ impl Session {
     /// # Errors
     /// The compositor or its window did not start.
     pub fn nested(options: Options, config: &NestedConfig) -> Result<Self, Error> {
-        let mut session = Self::new(options, |policy| Compositor::nested(policy, config))?;
+        // The desktop this session runs inside hands it over as one
+        // connection the window takes once, so the window opens before the
+        // session builds anything of its own: the desk builds the surface
+        // apps' renderers, whose adapter request connects to that desktop,
+        // and after that the window would find no connection left.
+        let window = tilo_compositor::NestedBackend::open_window(config)?;
+        let mut session = Self::new(options, |policy| Compositor::nested(policy, config, window))?;
         session.warm()?;
         Ok(session)
     }
@@ -2234,13 +2262,7 @@ impl Session {
             self.shared.follow_restore();
             // What the apps asked of their own tabs, and of what a capture
             // may show of them, as the desk commands they are.
-            if let Some(tabs) = &mut self.tabs {
-                tabs.follow(
-                    &self.shared.desktop,
-                    self.shared.launch.as_deref(),
-                    &mut self.compositor,
-                );
-            }
+            self.follow_app_asks();
             self.shared.follow_gestures();
             self.shared.follow_tab_menus();
             let ran = self.shared.run_invocations(self.compositor.locked());
@@ -2260,6 +2282,20 @@ impl Session {
         Ok(())
     }
 
+    /// Answer what the apps asked of their own tabs, and of what a capture
+    /// may show of them, as the desk commands they are.
+    fn follow_app_asks(&mut self) {
+        if let Some(tabs) = &mut self.tabs {
+            tabs.follow(
+                &self.shared.desktop,
+                self.shared.launch.as_deref(),
+                &mut self.compositor,
+                self.desktop.as_deref(),
+                self.capture_studio.as_ref(),
+            );
+        }
+    }
+
     /// Carry out everything asked since the last look: the desktop's asks,
     /// the gestures it took, the actions keys asked for, and what those
     /// asked in turn.
@@ -2269,7 +2305,7 @@ impl Session {
         self.shared.serve_activity();
         self.follow_collaboration();
         self.follow_automation();
-        self.shared.follow_personal();
+        self.shared.follow_records();
         // Who each workspace on the desk is whose, after the workspaces this
         // pass brought: the person's own are theirs, and one joined keeps its
         // host's owner.

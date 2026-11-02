@@ -85,6 +85,17 @@ pub fn current(dir: &Path) -> io::Result<Option<u64>> {
 /// The directory cannot be made, `payload` cannot be copied, or `current` cannot be read or
 /// replaced.
 pub fn publish(dir: &Path, payload: &Path) -> io::Result<u64> {
+    publish_with(dir, |generation| copy_tree(payload, generation))
+}
+
+/// Publish a generation that `write` fills, and name it current; the generation's number.
+///
+/// A writer that holds the payload itself (a compiled bundle) writes it straight into the
+/// generation this makes, and nothing is staged or copied.
+///
+/// # Errors
+/// The directory cannot be made, `write` fails, or `current` cannot be read or replaced.
+pub fn publish_with(dir: &Path, write: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<u64> {
     make_dir(dir)?;
     let generation = match current(dir)? {
         Some(last) => last
@@ -96,7 +107,7 @@ pub fn publish(dir: &Path, payload: &Path) -> io::Result<u64> {
     let staging = dir.join(format!("{name}{PARTIAL}"));
     // A publish that failed left its generation half written.
     let _ = std::fs::remove_dir_all(&staging);
-    copy_tree(payload, &staging)?;
+    write(&staging)?;
     std::fs::rename(&staging, dir.join(&name))?;
     let named = dir.join(format!("{CURRENT_FILE}{PARTIAL}"));
     std::fs::write(&named, format!("{name}\n"))?;
@@ -206,6 +217,38 @@ mod tests {
             publish(&updates, &payload(out.path(), text)).unwrap();
         }
         assert_eq!(generations(&updates), ["2", "3"]);
+    }
+
+    /// A writer that holds the payload writes it straight into the generation, which names
+    /// what it wrote and keeps the generation before it as a copy does.
+    #[test]
+    fn a_writer_publishes_the_generation_it_fills_itself() {
+        let out = tempfile::tempdir().unwrap();
+        let updates = out.path().join("updates");
+        let first = publish_with(&updates, |generation| {
+            std::fs::create_dir_all(generation)?;
+            std::fs::write(generation.join("app.wasm"), "written")
+        })
+        .unwrap();
+        assert_eq!(first, 1);
+        assert_eq!(current(&updates).unwrap(), Some(1));
+        assert_eq!(
+            std::fs::read_to_string(updates.join("1/app.wasm")).unwrap(),
+            "written"
+        );
+        assert_eq!(
+            generations(&updates),
+            ["1"],
+            "no half-written staging is left"
+        );
+        let second = publish_with(&updates, |generation| {
+            std::fs::create_dir_all(generation)?;
+            std::fs::write(generation.join("app.wasm"), "again")
+        })
+        .unwrap();
+        assert_eq!(second, 2);
+        assert_eq!(current(&updates).unwrap(), Some(2));
+        assert_eq!(generations(&updates), ["1", "2"]);
     }
 
     #[test]

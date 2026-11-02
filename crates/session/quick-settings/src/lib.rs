@@ -6,9 +6,9 @@
     )
 )]
 //! Quick Settings — the top-right status-area popover — as an app: sliders,
-//! a grid of tiles and rows whose sections (Wi-Fi, Bluetooth, VPN, sound,
-//! the battery, devices, the clipboard) open in place, and the pages that
-//! stay pages (the notifications, one accessory's handoff).
+//! a grid of tiles and rows, the page each section (Wi-Fi, Bluetooth, VPN,
+//! sound, the battery, devices, the clipboard) opens in the controls'
+//! place, and the pages of the notifications and one accessory's handoff.
 //!
 //! The app's resource is the panel ([`QuickSettings`]): which page shows
 //! and what is open, changed by its actions. What it does to the device is
@@ -131,8 +131,8 @@ pub struct HandoffTarget {
     pub local: bool,
 }
 
-/// A single frame in the `QuickSettings` navigation stack. Everything else
-/// opens in place on the root page ([`QsSection`]).
+/// A single frame in the `QuickSettings` navigation stack. A section
+/// ([`QsSection`]) opens its own page in the controls' place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QsLevel {
     Root,
@@ -142,9 +142,8 @@ pub enum QsLevel {
     Notifications,
 }
 
-/// A part of Quick Settings that opens in place on the root page, below
-/// the control it belongs to, with the standard disclosure motion. One is
-/// open at a time.
+/// A part of Quick Settings whose page replaces the controls, with the
+/// standard drill motion; Back returns. One is open at a time.
 #[derive(
     ui::tilo_resource::Model,
     Clone,

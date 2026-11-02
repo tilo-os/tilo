@@ -8,8 +8,10 @@ use tilo_user_identity::DeviceCert;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NativeAuthorityStorage {
     pub(crate) revision: u64,
-    /// Files written before this map was named for the workspace carry `rooms`.
-    #[serde(alias = "rooms")]
+    /// A state file outlives an image update and is read by whatever build the
+    /// update left, so the map is written under the key it was first written
+    /// under; a file written while it was named for the workspace still reads.
+    #[serde(rename = "rooms", alias = "workspaces")]
     pub(crate) workspaces: BTreeMap<RoomId, StoredWorkspace>,
     pub(crate) pending: BTreeMap<RoomId, StoredPendingEnrollment>,
 }
@@ -85,10 +87,11 @@ pub(crate) struct StoredWorkspace {
     #[serde(rename = "workspace")]
     pub workspace_id: u64,
     /// The host this workspace's commits are ordered by: a device of its owner,
-    /// this device itself for a workspace its own host keeps. Files written by
-    /// builds before this record called it the workspace's governor keep their
-    /// layout: their workspaces' hosts read under that name.
-    #[serde(alias = "governor")]
+    /// this device itself for a workspace its own host keeps. Written under
+    /// `room_host`, the key builds before the vocabulary change wrote (and
+    /// older ones under `governor`); a file written while the field was named
+    /// for the workspace reads as the same host.
+    #[serde(rename = "room_host", alias = "governor", alias = "workspace_host")]
     pub workspace_host: DeviceCert,
     pub device: DeviceCert,
     /// How this device joined the workspace its host governs. A workspace it founded
@@ -168,8 +171,10 @@ pub(crate) struct StoredVouch {
 /// Only a successful state-file publication creates an enrollment handle.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingEnrollmentId {
-    /// Files written before this field was named for the workspace carry `room`.
-    #[serde(alias = "room")]
+    /// Written under the key it was first written under, as the state file it
+    /// belongs to is; a handle written while the field was named for the
+    /// workspace still reads.
+    #[serde(rename = "room", alias = "workspace")]
     workspace: RoomId,
     generation: u64,
     digest: [u8; 32],

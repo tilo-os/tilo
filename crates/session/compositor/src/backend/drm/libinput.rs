@@ -56,8 +56,9 @@ pub(super) struct Input {
     /// The assists' timer (a mouse-keys glide, a slow key, automatic
     /// switch scanning), while one is armed.
     ticker: Option<RegistrationToken>,
-    /// The keymap shortcut chords are typed on.
-    keymap: Option<xkb::Keymap>,
+    /// The keymap shortcut chords are typed on, and the layout it was
+    /// compiled for.
+    keymap: Option<(crate::config::KeyboardLayout, xkb::Keymap)>,
     /// Pad rings and strips turned into scroll steps.
     dials: super::input_source::DialSteps,
     pads: Vec<Pad>,
@@ -114,6 +115,7 @@ pub(super) fn dispatch_pad(
     mode: (u32, u32),
     state: &mut State,
 ) {
+    let layout = state.keyboard.clone();
     let (switched, event, chord, steps) = {
         let mut this = input.borrow_mut();
         let this = &mut *this;
@@ -136,7 +138,7 @@ pub(super) fn dispatch_pad(
         let chord = match action {
             PadAction::Button { button, pressed } => this.pad_chord(device, button).map(|chord| {
                 if pressed {
-                    this.chord(&chord)
+                    this.chord(&chord, layout.as_ref())
                 } else {
                     Vec::new()
                 }
@@ -518,11 +520,17 @@ impl Input {
         shaped.x = x;
         shaped.y = y;
         shaped.pressure = apply_pressure_curve(config.pressure_curve, event.pressure());
-        self.remap(shaped, &config)
+        self.remap(shaped, &config, state.keyboard.as_ref())
     }
 
-    /// Apply the tablet's button and eraser mapping.
-    fn remap(&mut self, mut event: TabletEvent, config: &TabletConfig) -> Vec<InputEvent> {
+    /// Apply the tablet's button and eraser mapping; shortcut chords type on
+    /// `layout`.
+    fn remap(
+        &mut self,
+        mut event: TabletEvent,
+        config: &TabletConfig,
+        layout: Option<&crate::config::KeyboardLayout>,
+    ) -> Vec<InputEvent> {
         let mut chord = None;
         if event.tool.tool_type == TabletToolType::Eraser {
             match eraser_route(config) {
@@ -561,27 +569,30 @@ impl Input {
         }
         let mut events = vec![InputEvent::Tablet(event)];
         if let Some(chord) = chord {
-            events.extend(self.chord(&chord));
+            events.extend(self.chord(&chord, layout));
         }
         events
     }
 
     /// The key events that type `chord`: modifiers down, the key down and
     /// up, modifiers up in reverse.
-    fn chord(&mut self, chord: &KeyChord) -> Vec<InputEvent> {
-        if self.keymap.is_none() {
-            let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-            self.keymap = xkb::Keymap::new_from_names(
-                &context,
-                "",
-                "",
-                "",
-                "",
-                None,
-                xkb::KEYMAP_COMPILE_NO_FLAGS,
-            );
+    fn chord(
+        &mut self,
+        chord: &KeyChord,
+        layout: Option<&crate::config::KeyboardLayout>,
+    ) -> Vec<InputEvent> {
+        // A shortcut types on the layout the person chose, and on US until
+        // settings reach the compositor; an empty name is xkb's own US
+        // because the keymap reads none from the environment.
+        let layout = layout.cloned().unwrap_or_default();
+        if self
+            .keymap
+            .as_ref()
+            .is_none_or(|(compiled_for, _)| *compiled_for != layout)
+        {
+            self.keymap = compile_keymap(&layout).map(|keymap| (layout.clone(), keymap));
         }
-        let keymap = self.keymap.as_ref();
+        let keymap = self.keymap.as_ref().map(|(_, keymap)| keymap);
         let Some(codes) = chord_keycodes(chord, |ch| {
             keymap.and_then(|keymap| char_keycode(keymap, ch))
         }) else {
@@ -598,6 +609,22 @@ impl Input {
         });
         down.chain(up).collect()
     }
+}
+
+/// The keymap `layout` compiles. Every name is stated and the context reads
+/// none from the environment, so the machine's own layout and options
+/// (`XKB_DEFAULT_*`) cannot decide what a shortcut types.
+fn compile_keymap(layout: &crate::config::KeyboardLayout) -> Option<xkb::Keymap> {
+    let context = xkb::Context::new(xkb::CONTEXT_NO_ENVIRONMENT_NAMES);
+    xkb::Keymap::new_from_names(
+        &context,
+        "evdev",
+        layout.model.as_str(),
+        layout.layout.as_str(),
+        layout.variant.as_str(),
+        Some(layout.options.clone()),
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )
 }
 
 /// The evdev keycode of the key typing `ch` on its first level.

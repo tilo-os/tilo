@@ -167,6 +167,20 @@ impl CaptureStudio {
         tilo_sheets::Seat::presentation(&self.seat)
     }
 
+    /// Open the studio on what an app asked for, as the person's own shortcut
+    /// opens it: the bar comes up choosing that kind of capture.
+    pub(crate) fn open_asked(&self, mode: ui::floating_surface::CaptureStudioProtocolMode) {
+        use ui::floating_surface::CaptureStudioProtocolMode as Mode;
+        use ui::widget::CaptureMode;
+        let mode = match mode {
+            Mode::Screenshot => CaptureMode::Screenshot,
+            Mode::Recording => CaptureMode::Recording,
+            Mode::PictureInPicture => CaptureMode::Pip,
+        };
+        self.seat.link().open_on(mode);
+        self.presentation().open(false);
+    }
+
     /// Answer what the studio asked since the last pass, feed the recorder
     /// and hand back what came of it.
     pub(crate) fn serve(&mut self, compositor: &mut Compositor) {

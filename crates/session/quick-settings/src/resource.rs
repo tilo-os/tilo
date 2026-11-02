@@ -1,6 +1,6 @@
 //! Quick Settings as an app: its resource is the panel itself — which page
-//! shows, which section is open in place, whether it was opened to paste or
-//! is being arranged — and its actions move between them.
+//! shows, which section's page replaced the controls, whether it was opened
+//! to paste or is being arranged — and its actions move between them.
 //!
 //! The panel is this device's own and is gone with the session: the session
 //! runs it as a surface of its own over a record kept in memory, so nothing
@@ -30,7 +30,7 @@ use crate::host::FixtureHost;
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum Page {
-    /// The controls, with sections opening in place.
+    /// The controls, or the page of the section opened from them.
     #[default]
     Root,
     /// The notifications kept since they arrived.
@@ -50,7 +50,7 @@ pub struct QuickSettings {
     pub accessory: String,
     /// The notification being read.
     pub notification: u64,
-    /// The section open in place on the root page; one at a time.
+    /// The section whose page replaces the controls; one at a time.
     pub section: Option<QsSection>,
     /// Opened to paste: the clipboard history alone, and a choice is pasted
     /// into the focused field.
@@ -67,7 +67,7 @@ impl QuickSettings {
         *self = Self::default();
     }
 
-    /// Open a section in place, closing any other.
+    /// Open a section's page, closing any other.
     #[action(housekeeping)]
     pub fn open_section(&mut self, #[param("The section")] section: QsSection) {
         self.page = Page::Root;
@@ -76,7 +76,8 @@ impl QuickSettings {
         self.section = Some(section);
     }
 
-    /// Open a section, or close it when it is the one open.
+    /// Open a section's page, or go back to the controls when it is the one
+    /// open.
     #[action(housekeeping)]
     pub fn toggle_section(&mut self, #[param("The section")] section: QsSection) {
         if self.section == Some(section) {
@@ -198,6 +199,14 @@ impl ResourceApp for QuickSettingsApp {
     // participant and opens before anyone is chosen.
     const ATTACHES_RUNTIME: bool = false;
     const OPENS_WITHOUT_IDENTITY: bool = true;
+    // The panel is a card over this device's desktop, not a window with a
+    // surface of its own: what its card does not paint shows what lies
+    // under it, and the card's finish paints the material the theme gives
+    // a floating surface.
+    const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {
+        window: ui::application::WindowRole::Sheet,
+        ..ui::application::ComponentBehaviour::DEFAULT
+    };
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::i18n::CATALOG)
@@ -208,10 +217,13 @@ impl ResourceApp for QuickSettingsApp {
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        // The height the panel has on an 800 px laptop output: the bar's 32
+        // and the popover margin's 8 off the bottom. A shot taller than this
+        // shows a panel no screen has room for.
         let height = match scenario {
             Some("paste") => 420,
             Some("short") => 480,
-            _ => 900,
+            _ => 760,
         };
         (PANEL_WIDTH, height)
     }

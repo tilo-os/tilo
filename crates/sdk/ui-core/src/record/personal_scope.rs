@@ -14,8 +14,8 @@ use automerge::transaction::Transactable as _;
 use durable_store::{DurableStore, StorageKey};
 
 use super::{
-    LEGACY_WORKSPACE_KEY, RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordSet,
-    WORKSPACE, identity, meta_obj, transfer, workspace_scope,
+    RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordSet, WORKSPACE, WORKSPACE_ALIAS,
+    identity, meta_obj, transfer, workspace_scope,
 };
 
 /// Where a person's own records live: the cluster their store carries them on,
@@ -95,8 +95,8 @@ impl RecordSet {
         // The record keeps its id and its whole history, attribution and undo
         // among it; only where it is filed becomes theirs. Every field that
         // says where that is moves: the workspace it is bound to (under the
-        // key records name it by now and the one they named it by then, so
-        // they agree and the record reads) and the one that minted it, so a
+        // one key every reader knows, with the key one build wrote it under
+        // dropped so it names one workspace) and the one that minted it, so a
         // record taken here and the same record started fresh on another of
         // the person's devices are one identity, not two.
         let Some(metadata) = meta_obj(&mut doc) else {
@@ -104,12 +104,10 @@ impl RecordSet {
         };
         if doc.put(&metadata, "home", &self.home).is_err()
             || doc.put(&metadata, WORKSPACE, &self.home).is_err()
-            || doc
-                .put(&metadata, LEGACY_WORKSPACE_KEY, &self.home)
-                .is_err()
         {
             return Ok(None);
         }
+        let _ = doc.delete(&metadata, WORKSPACE_ALIAS);
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
                 .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),

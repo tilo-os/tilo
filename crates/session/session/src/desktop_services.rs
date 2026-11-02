@@ -152,6 +152,14 @@ impl DesktopServices {
         &self.questions
     }
 
+    /// The person's access decisions, which the portal gates its requests
+    /// with: another service of the session that asks about a capability
+    /// asks through these, so an answer given to one stands for the other.
+    #[must_use]
+    pub fn consents(&self) -> Option<&tilo_portal::consent::Consents> {
+        self.portal.as_ref().map(tilo_portal::Portal::consents)
+    }
+
     /// The notifications the session shows: what this desktop tells the
     /// person itself goes through the same service as an app's.
     #[must_use]

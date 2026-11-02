@@ -1462,21 +1462,18 @@ fn paths_round_trip_through_text() {
     }
     assert_eq!(
         send().to_string(),
-        "workspace:r/app:mail/kind:mail.message/resource:m1/action:send"
+        "room:r/app:mail/kind:mail.message/resource:m1/action:send"
     );
-    assert_eq!(
-        TreePath::workspace("r/1%").to_string(),
-        "workspace:r%2F1%25"
-    );
+    assert_eq!(TreePath::workspace("r/1%").to_string(), "room:r%2F1%25");
     assert!("workspace".parse::<TreePath>().is_err());
     assert!("planet:x".parse::<TreePath>().is_err());
     assert!("workspace:".parse::<TreePath>().is_err());
     assert!("workspace:a%zz".parse::<TreePath>().is_err());
-    // A path written while the level was named `room` is the same path, and
-    // is written under the level's name from now on.
-    let stored: TreePath = "room:r/app:mail/kind:mail.message/resource:*/action:send"
+    // A path written while the level was named for a workspace is the same
+    // path, and is written under the name every stored path keeps.
+    let stored: TreePath = "workspace:r/app:mail/kind:mail.message/resource:*/action:send"
         .parse()
-        .expect("a stored path still parses");
+        .expect("the stored path still parses");
     assert_eq!(
         stored,
         TreePath::workspace("r")
@@ -1487,7 +1484,7 @@ fn paths_round_trip_through_text() {
     );
     assert_eq!(
         stored.to_string(),
-        "workspace:r/app:mail/kind:mail.message/resource:*/action:send"
+        "room:r/app:mail/kind:mail.message/resource:*/action:send"
     );
 }
 
@@ -1501,7 +1498,7 @@ fn grants_round_trip_through_json() {
     )
     .with_lifetime(Lifetime::Until(5));
     let json = serde_json::to_value(&grant).expect("serialises");
-    assert_eq!(json["node"], "workspace:r/app:mail/resource:*");
+    assert_eq!(json["node"], "room:r/app:mail/resource:*");
     assert_eq!(json["kinds"], serde_json::json!(["read", "undoable"]));
     assert_eq!(json["answer"], "ask");
     let back: Grant = serde_json::from_value(json).expect("deserialises");
@@ -1515,15 +1512,18 @@ fn grants_round_trip_through_json() {
 }
 
 #[test]
-fn a_policy_document_written_under_the_old_names_still_parses() {
+fn a_policy_is_written_under_the_names_a_policy_was_stored_under() {
     let policy = WorkspacePolicy::new("r", ALICE);
     let written = serde_json::to_string(&policy).expect("serialises");
-    assert!(written.contains("\"workspace\":\"r\""), "{written}");
+    assert!(written.contains("\"room\":\"r\""), "{written}");
+    assert!(!written.contains("\"workspace\""), "{written}");
+    assert!(!written.contains("\"workspace:"), "{written}");
+    // A policy stored while the field and the node's level were named for the
+    // workspace reads as the same policy.
     let stored = written
-        .replace("\"workspace\":", "\"room\":")
-        .replace("\"workspace:", "\"room:")
-        .replace("workspace:r", "room:r");
-    assert!(stored.contains("\"room\":\"r\""), "{stored}");
+        .replace("\"room\":", "\"workspace\":")
+        .replace("\"room:", "\"workspace:");
+    assert!(stored.contains("\"workspace\":\"r\""), "{stored}");
     let read: WorkspacePolicy = serde_json::from_str(&stored).expect("reads the stored shape");
     assert_eq!(read, policy);
     assert_eq!(read.workspace, "r");
@@ -1531,18 +1531,18 @@ fn a_policy_document_written_under_the_old_names_still_parses() {
 }
 
 #[test]
-fn a_grant_stored_under_the_old_path_names_still_decides() {
-    // A grant written before the workspace level was called a workspace.
+fn a_grant_written_while_the_level_was_named_for_workspaces_still_decides() {
+    // A grant written while the outermost level was named for a workspace.
     let stored = serde_json::json!({
         "id": "notes-read",
         "subject": {"person": ALICE},
-        "node": "room:r/app:notes/kind:notes.notebook/resource:*",
+        "node": "workspace:r/app:notes/kind:notes.notebook/resource:*",
         "kinds": ["read", "undoable"],
         "answer": "allow",
         "lifetime": "until_revoked",
         "granted_by": {"person": ALICE},
     });
-    let read: Grant = serde_json::from_value(stored).expect("an old grant still loads");
+    let read: Grant = serde_json::from_value(stored).expect("the stored grant still loads");
     assert_eq!(
         read.node,
         TreePath::workspace("r")
@@ -1552,7 +1552,7 @@ fn a_grant_stored_under_the_old_path_names_still_decides() {
     );
     assert_eq!(
         read.node.to_string(),
-        "workspace:r/app:notes/kind:notes.notebook/resource:*"
+        "room:r/app:notes/kind:notes.notebook/resource:*"
     );
     // It decides the same action as a grant written today would.
     let grants = [read];

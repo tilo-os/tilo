@@ -334,7 +334,7 @@ impl<'g> Verdict<'g> {
                 "{} give {} on {} the answer \"{}\" (grant {})",
                 who(index),
                 self.kind.phrase(),
-                grant.node,
+                grant.node.readable(),
                 grant.answer,
                 grant.id
             ),
@@ -343,7 +343,7 @@ impl<'g> Verdict<'g> {
                     "{} do not cover {} on {}",
                     who(index),
                     self.kind.phrase(),
-                    self.node
+                    self.node.readable()
                 )
             }
         };

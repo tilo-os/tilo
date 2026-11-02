@@ -1114,6 +1114,11 @@ impl App {
                     crate::window_share::deliver_ask(ask.bounded());
                     self.window_share_changed();
                 }
+                // The shell says what it does not answer, so nothing of the
+                // app's waits on an answer that will not come.
+                FloatingSurfaceHostMessage::Unanswered { message, reason } => {
+                    tracing::debug!(%message, %reason, "the shell does not answer that message");
+                }
                 FloatingSurfaceHostMessage::DesktopBounds { bounds } => {
                     match crate::floating_surface::protocol_rect(*bounds) {
                         Ok(bounds) => self.root_widget.set_floating_surface_bounds(bounds),

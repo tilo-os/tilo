@@ -58,8 +58,9 @@ pub struct Links {
     pub web_entry: String,
     /// The host's browser origin.
     pub origin: String,
-    /// The workspace.
-    #[serde(alias = "room")]
+    /// The workspace, under the key a host already publishes its links with;
+    /// a link minted while the field was named for the workspace reads too.
+    #[serde(rename = "room", alias = "workspace")]
     pub workspace: String,
     /// The certified host device key, hex.
     pub host_device: String,

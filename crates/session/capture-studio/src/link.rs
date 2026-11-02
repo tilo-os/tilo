@@ -256,6 +256,9 @@ pub enum Ask {
 struct Shared {
     scene: Scene,
     asks: Vec<Ask>,
+    /// What the studio opens on when something outside it opened it: the
+    /// shell, for an app that asked for a capture.
+    opens_on: Option<ui::widget::CaptureMode>,
     wake: Option<ui::WakeHandle>,
 }
 
@@ -313,6 +316,19 @@ impl Link {
     #[must_use]
     pub fn has_asks(&self) -> bool {
         !self.shared.borrow().asks.is_empty()
+    }
+
+    /// Open the bar on `mode` the next time it comes up: what somebody
+    /// outside the studio opened it for (an app's screenshot, a recording, a
+    /// picture in a picture).
+    pub fn open_on(&self, mode: ui::widget::CaptureMode) {
+        self.shared.borrow_mut().opens_on = Some(mode);
+    }
+
+    /// What the bar opens on, once: nothing after it took it.
+    #[must_use]
+    pub fn take_open_on(&self) -> Option<ui::widget::CaptureMode> {
+        self.shared.borrow_mut().opens_on.take()
     }
 
     /// Wake the studio when the session hands it a new scene.
@@ -397,6 +413,18 @@ mod tests {
         assert_eq!(link.scene().asking, Some(Selection::Area));
         assert_eq!(Selection::Area.source(), SourceMode::Region);
         assert_eq!(Selection::Window.source(), SourceMode::Window);
+    }
+
+    #[test]
+    fn what_an_app_opened_the_bar_for_is_taken_once() {
+        use ui::widget::CaptureMode;
+        let link = Link::new();
+        assert_eq!(link.take_open_on(), None, "nothing opened it yet");
+        link.open_on(CaptureMode::Pip);
+        assert_eq!(link.take_open_on(), Some(CaptureMode::Pip));
+        assert_eq!(link.take_open_on(), None, "the bar opens on it once");
+        link.open_on(CaptureMode::Recording);
+        assert_eq!(link.take_open_on(), Some(CaptureMode::Recording));
     }
 
     #[test]

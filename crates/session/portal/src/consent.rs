@@ -109,6 +109,18 @@ impl Consents {
         }
     }
 
+    /// Decisions of a session asked through `questions`, kept where the
+    /// portal keeps its own: a service beside the portal that may ask the
+    /// person about a capability asks the same store, so an answer given to
+    /// one stands for the other.
+    #[must_use]
+    pub fn for_session(questions: Questions) -> Self {
+        Self::new(
+            questions,
+            crate::private_state_root().map(|root| root.join("tilo/portal/consents.json")),
+        )
+    }
+
     /// The same, letting what `grants` says a caller's workspace grants
     /// stand for the person's answer.
     #[must_use]

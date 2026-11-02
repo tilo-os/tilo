@@ -21,7 +21,11 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "StoredWorkspacePolicy")]
 pub struct WorkspacePolicy {
-    /// The workspace this policy governs.
+    /// The workspace this policy governs. Written under `room`, the name a
+    /// stored policy names it by: a policy travels to devices and hosts on
+    /// other builds, and their reader knows no other. The key it is read
+    /// under is [`StoredWorkspacePolicy`]'s.
+    #[serde(rename = "room")]
     pub workspace: String,
     /// The owner, by person id. Structural: holds everything and cannot be
     /// removed, demoted or denied by a grant.
@@ -42,9 +46,10 @@ pub struct WorkspacePolicy {
 /// their current definition.
 #[derive(Deserialize)]
 struct StoredWorkspacePolicy {
-    /// Policies stored before the field was named `workspace` carry it as
-    /// `room`; both names read.
-    #[serde(alias = "room")]
+    /// Policies name their workspace under `room`, the key they were first
+    /// written under; one written while the field was named for what it means
+    /// carries `workspace`, and reads as the same policy.
+    #[serde(rename = "room", alias = "workspace")]
     workspace: String,
     owner: Option<String>,
     members: BTreeMap<String, Role>,
@@ -194,7 +199,9 @@ impl std::fmt::Display for Refusal {
                 "cannot grant \"{wanted}\" for {} while holding \"{held}\"",
                 kind.phrase()
             ),
-            Self::OutsideWorkspace(node) => write!(f, "{node} is not in this workspace"),
+            Self::OutsideWorkspace(node) => {
+                write!(f, "{} is not in this workspace", node.readable())
+            }
             Self::NotBelowActor { actor, target } => match actor {
                 Some(actor) => write!(f, "a {actor} cannot do this to a {target}"),
                 None => write!(f, "only members ranked above a {target} can do this"),

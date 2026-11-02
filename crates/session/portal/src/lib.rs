@@ -299,10 +299,7 @@ impl Portal {
         authenticator: PortalAuthenticator,
         documents: tilo_documents::Documents,
     ) -> Self {
-        let consents = Consents::new(
-            questions.clone(),
-            private_state_root().map(|root| root.join("tilo/portal/consents.json")),
-        );
+        let consents = Consents::for_session(questions.clone());
         let sessions = session::Sessions::default();
         let remotes = remote_desktop::Remotes::default();
         remotes.follow(&sessions);
@@ -462,6 +459,14 @@ impl Portal {
     #[must_use]
     pub const fn app_states(&self) -> &background::AppStates {
         &self.app_states
+    }
+
+    /// The person's access decisions, which the portal gates its requests
+    /// with: what every other service of the session that asks about a
+    /// capability shares, so an answer given to one stands for the other.
+    #[must_use]
+    pub const fn consents(&self) -> &Consents {
+        &self.consents
     }
 
     /// The same, letting what `grants` says of a caller's workspace stand

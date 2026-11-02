@@ -37,8 +37,8 @@ mod nested {
     use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
     use smithay::utils::Transform;
     use tilo_compositor::{
-        Compositor, HostFrame, HostLayer, NestedConfig, OutputConfig, Screenshot, StackPolicy,
-        SurfaceHost,
+        Compositor, HostFrame, HostLayer, NestedBackend, NestedConfig, OutputConfig, Screenshot,
+        StackPolicy, SurfaceHost,
     };
 
     const WIDTH: i32 = 320;
@@ -189,16 +189,16 @@ mod nested {
 
     /// The window's own picture of the layer, as it reports it.
     pub(crate) fn window_side() {
-        let mut window = match Compositor::nested(
-            Box::new(StackPolicy),
-            &NestedConfig {
-                size: (
-                    u16::try_from(WIDTH).expect("width"),
-                    u16::try_from(HEIGHT).expect("height"),
-                ),
-                ..NestedConfig::default()
-            },
-        ) {
+        let config = NestedConfig {
+            size: (
+                u16::try_from(WIDTH).expect("width"),
+                u16::try_from(HEIGHT).expect("height"),
+            ),
+            ..NestedConfig::default()
+        };
+        let mut window = match NestedBackend::open_window(&config)
+            .and_then(|window| Compositor::nested(Box::new(StackPolicy), &config, window))
+        {
             Ok(compositor) => compositor,
             Err(error) => panic!("the window did not open on the output here: {error}"),
         };

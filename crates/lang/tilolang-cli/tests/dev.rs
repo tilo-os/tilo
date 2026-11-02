@@ -47,14 +47,35 @@ fn a_saved_build_is_the_generation_the_app_reads() {
         tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
         version: "0.1.0".into(),
     };
-    let first = package::build(&options, &identity).unwrap();
+    let publish = |app: &package::Published, updates: &Path| {
+        tilo_app_module::publish_with(updates, |generation| {
+            app.bundle
+                .write(generation)
+                .map_err(|error| std::io::Error::other(error.to_string()))
+        })
+        .unwrap()
+    };
+    let first = package::published(&options, &identity).unwrap();
     let app = first.last().unwrap();
     let updates = scratch.path().join("updates");
-    assert_eq!(tilo_app_module::publish(&updates, &app.payload).unwrap(), 1);
+    assert_eq!(publish(app, &updates), 1);
     assert_eq!(tilo_app_module::current(&updates).unwrap(), Some(1));
     let read = Bundle::read(&updates.join("1")).unwrap();
     assert_eq!(read.meta.app, app.app, "the app reads its own package");
     assert_eq!(read.meta.title, app.meta.title);
+    assert!(
+        !options.out.exists() || std::fs::read_dir(&options.out).unwrap().next().is_none(),
+        "a desktop build stages, packs and signs nothing"
+    );
+    assert_eq!(
+        package::build(&options, &identity)
+            .unwrap()
+            .last()
+            .unwrap()
+            .digest,
+        app.digest,
+        "the same build has the same digest whether or not it is installed"
+    );
 
     // A save inside the package's views: the next build is published as the next generation,
     // and the one the running app still reads stays.
@@ -68,14 +89,14 @@ fn a_saved_build_is_the_generation_the_app_reads() {
         ),
     )
     .unwrap();
-    let second = package::build(&options, &identity).unwrap();
+    let second = package::published(&options, &identity).unwrap();
     let app = second.last().unwrap();
     assert_eq!(
         compare(&first.last().unwrap().meta, &app.meta),
         Upgrade::InPlace,
         "a view's text is taken in place"
     );
-    assert_eq!(tilo_app_module::publish(&updates, &app.payload).unwrap(), 2);
+    assert_eq!(publish(app, &updates), 2);
     assert!(updates.join("1").is_dir(), "what the app runs stays");
     let read = Bundle::read(&updates.join("2")).unwrap();
     assert_eq!(read.meta.app, app.app);

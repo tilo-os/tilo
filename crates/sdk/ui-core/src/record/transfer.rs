@@ -8,11 +8,10 @@
 //! workspace, with the source id kept in its `formerly` list as provenance.
 //! Nothing ever looks a record up through that list.
 //!
-//! A record's workspace is stored under `workspace`; documents written
-//! before workspaces were called workspaces hold it under
-//! [`super::LEGACY_WORKSPACE_KEY`] and keep it there, so a document that is
-//! only read arrives as it was. A document this module writes names its
-//! workspace under the current key.
+//! A record's workspace is stored under `room`, the key every record is
+//! written with, so a document this module writes names it the way every
+//! reader knows; a document written while the field was named `workspace`
+//! holds [`super::WORKSPACE_ALIAS`] and is read where it is.
 //!
 //! Moving is transfer followed by [`retire`]: the source record gets one
 //! last change saying it left, which stays in its history the way a
@@ -267,14 +266,15 @@ pub fn adopt_fetched(
 
 /// Identity keys a record's meta map may hold; anything else could claim
 /// more than the one record the document is. A record carries its workspace
-/// under one of two keys: the current one, or the one written before a
-/// workspace was called a workspace, which an older document still holds.
+/// under the key every record is written with, or under
+/// [`super::WORKSPACE_ALIAS`], the key one build wrote it under; both import
+/// as they are.
 const IMPORTABLE_META: [&str; 8] = [
     "id",
     "kind",
     "home",
     super::WORKSPACE,
-    super::LEGACY_WORKSPACE_KEY,
+    super::WORKSPACE_ALIAS,
     FORMERLY,
     "refs",
     "blobs",
@@ -411,14 +411,10 @@ pub fn rehome(
             doc.put(&meta, "id", target.as_str()).map_err(automerge)?;
             doc.put(&meta, super::WORKSPACE, to_workspace)
                 .map_err(automerge)?;
-            // The fork names its workspace under the current key only: the
-            // key it was minted under would name a second one.
-            if matches!(
-                super::string_at(&doc, &meta, super::LEGACY_WORKSPACE_KEY),
-                super::StringAt::Invalid | super::StringAt::String(_)
-            ) {
-                let _ = doc.delete(&meta, super::LEGACY_WORKSPACE_KEY);
-            }
+            // The fork names its workspace under the one key every reader
+            // knows: a document written while the field was named
+            // `workspace` would otherwise name a second one.
+            let _ = doc.delete(&meta, super::WORKSPACE_ALIAS);
             let formerly = match object_at(&doc, &meta, FORMERLY, ObjType::List) {
                 ObjectAt::Object(list) => list,
                 ObjectAt::Missing => doc
@@ -747,6 +743,29 @@ mod tests {
         );
     }
 
+    /// The successor goes into the stamp under the key a record written
+    /// before the rename carries it, and a stamp naming it for the workspace
+    /// reads as the same successor.
+    #[test]
+    fn a_retirement_names_its_successor_under_the_stored_key() {
+        let mut doc = AutoCommit::new();
+        stamp_retired(&mut doc, &moved()).unwrap();
+        let meta = meta_ro(&doc).expect("a stamped record has meta");
+        let Some((Value::Object(ObjType::Map), retired)) = doc.get(&meta, RETIRED).unwrap() else {
+            panic!("the retirement is a map");
+        };
+        assert!(doc.get(&retired, "room").unwrap().is_some(), "stored key");
+        assert!(
+            doc.get(&retired, "workspace").unwrap().is_none(),
+            "one key, one spelling"
+        );
+        let mut renamed = doc.fork();
+        renamed.put(&retired, "workspace", TO.to_owned()).unwrap();
+        renamed.delete(&retired, "room").unwrap();
+        renamed.commit();
+        assert_eq!(retirement(&renamed), Some(moved()));
+    }
+
     fn seeded(root: &std::path::Path) -> (RecordCheckout, RecordStore) {
         let checkout = RecordCheckout::new(
             RecordId::derived("default", &RecordId::for_tab(0)),
@@ -936,16 +955,13 @@ mod tests {
     }
 
     /// A record's workspace is imported whether the document names it under
-    /// the current key or the one written before workspaces were called
-    /// workspaces: it keeps the workspace it names, and the key it names it
-    /// under. A key the import does not know is refused.
+    /// the key every record is written with or the one a build named it by:
+    /// it keeps the workspace it names, and the key it names it under. A key
+    /// the import does not know is refused.
     #[test]
     fn a_document_imports_with_its_workspace_under_either_key() {
         let kind = RecordKind::new("transfer.test");
-        for key in [
-            crate::record::WORKSPACE,
-            crate::record::LEGACY_WORKSPACE_KEY,
-        ] {
+        for key in [crate::record::WORKSPACE, crate::record::WORKSPACE_ALIAS] {
             let target = RecordId::minted();
             let mut doc = AutoCommit::new();
             doc.put(ROOT, "body", "a draft").unwrap();
@@ -974,11 +990,11 @@ mod tests {
         }
     }
 
-    /// Carried into another workspace, a record of an old document names its
-    /// new workspace under the current key only: the key it was minted under
-    /// would name a second one.
+    /// Carried into another workspace, a record names its new workspace under
+    /// the one key every reader knows: the key a build named it by would name
+    /// a second one.
     #[test]
-    fn a_moved_record_names_its_new_workspace_under_the_current_key() {
+    fn a_moved_record_names_its_new_workspace_under_the_stored_key() {
         let kind = RecordKind::new("transfer.test");
         let source = RecordCheckout::new(RecordId::minted(), kind.clone());
         let mut doc = AutoCommit::new();
@@ -992,7 +1008,7 @@ mod tests {
         ));
         let meta = meta_obj(&mut doc).unwrap();
         doc.delete(&meta, crate::record::WORKSPACE).unwrap();
-        doc.put(&meta, crate::record::LEGACY_WORKSPACE_KEY, FROM)
+        doc.put(&meta, crate::record::WORKSPACE_ALIAS, FROM)
             .unwrap();
         doc.commit();
         assert_eq!(workspace_scope(&doc).as_deref(), Some(FROM));
@@ -1002,9 +1018,14 @@ mod tests {
         assert_eq!(workspace_scope(&moved).as_deref(), Some(TO));
         let moved_meta = meta_obj(&mut moved.clone()).unwrap();
         assert_eq!(
-            str_at(&moved, &moved_meta, crate::record::LEGACY_WORKSPACE_KEY),
+            str_at(&moved, &moved_meta, crate::record::WORKSPACE),
+            Some(TO.to_owned()),
+            "the workspace it moved to, under the key every reader knows"
+        );
+        assert_eq!(
+            str_at(&moved, &moved_meta, crate::record::WORKSPACE_ALIAS),
             None,
-            "the old key does not stay behind naming the workspace it left"
+            "the key it was written under does not stay behind naming the workspace it left"
         );
     }
 

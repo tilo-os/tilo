@@ -363,6 +363,33 @@ impl DesktopHandle {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Open { scope, query });
     }
 
+    /// Search `tab`'s app, the way an app in a process of its own asked
+    /// (`ui::floating_surface::FloatingSurfaceClientMessage::OpenAppSearch`):
+    /// inside a session there is one search, the shell's, and the app opens
+    /// none of its own. A tab that shows no app searches nothing.
+    pub fn search_app(&self, tab: TabId, request: ui::search::SearchRequest) {
+        let mut shared = self.shared.borrow_mut();
+        let Some(app) = shared
+            .tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|candidate| candidate.id == tab)
+            .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+        else {
+            return;
+        };
+        shared.search_request = Some(SearchRequest::Open {
+            scope: Scope::InApp(AppScope {
+                app: Some(app),
+                part: request.part.clone(),
+            }),
+            query: request.query,
+        });
+    }
+
     /// Whether the search palette is open, as of the last update pass.
     pub fn search_open(&self) -> bool {
         self.shared.borrow().search_open
