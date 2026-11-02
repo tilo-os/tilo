@@ -757,6 +757,64 @@ fn a_panel_taller_than_its_room_scrolls_rather_than_dropping_a_control() {
 }
 
 #[test]
+fn a_battery_tick_changes_its_row_and_moves_nothing() {
+    use tilo_power_mgmt::BatteryTime;
+    let (mut app, host) = hosted("controls");
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let before = places(&mut app);
+    let words = row_words(&mut app, "qs-row-battery");
+    host.update(|state| {
+        state.status.battery_time = Some(BatteryTime::ToEmpty(199));
+        if let Some(battery) = state.status.battery.as_mut() {
+            battery.percent = 75;
+        }
+    });
+    app.settle();
+    assert_ne!(
+        row_words(&mut app, "qs-row-battery"),
+        words,
+        "the row says the charge and the minutes the tick brought"
+    );
+    assert_eq!(
+        places(&mut app),
+        before,
+        "a tick changes one row's words in place: nothing on the page moves"
+    );
+}
+
+/// Where every control on the page stands, by name.
+fn places(app: &mut HeadlessApp<QuickSettingsApp>) -> Vec<(String, Rect)> {
+    let mut places: Vec<(String, Rect)> = app.harness().targets().into_iter().collect();
+    places.sort_by(|(left, _), (right, _)| left.cmp(right));
+    places
+}
+
+/// What the control with `test_id` says: its name, its line under it, and its
+/// value.
+fn row_words(
+    app: &mut HeadlessApp<QuickSettingsApp>,
+    test_id: &str,
+) -> Option<(Option<String>, Option<String>, Option<String>)> {
+    fn find<'a>(
+        node: &'a ui::headless::InspectionNode,
+        test_id: &str,
+    ) -> Option<&'a ui::headless::InspectionNode> {
+        if node.test_id.as_deref() == Some(test_id) {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, test_id))
+    }
+    let snapshot = app.harness().inspection();
+    let said = find(&snapshot.root, test_id)?.semantics.as_ref()?;
+    Some((
+        said.name.clone(),
+        said.description.clone(),
+        said.value.clone(),
+    ))
+}
+
+#[test]
 fn every_scenario_renders() {
     for scenario in scenarios::NAMES {
         let mut app = staged(scenario);
