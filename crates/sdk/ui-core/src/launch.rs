@@ -2585,11 +2585,11 @@ mod tests {
 
     #[test]
     #[cfg(feature = "native")]
-    fn a_launch_joins_its_workspace_without_asking_who_works_there() {
-        // An app is launched into a workspace, and the connection it is
-        // handed is already that workspace's: nothing in the launch asks the
-        // person to pick an identity, and a launch that cannot join says why
-        // instead of opening a window to wait on one.
+    fn a_launch_that_cannot_join_its_workspace_reports_it_instead_of_asking_who_works_there() {
+        // The connection an app is launched with is already its workspace's,
+        // signed as the person the device's certificate names. A join that
+        // cannot happen says why, in the launch's own terms: there is no
+        // identity to choose, so no window opens to wait on one.
         let spec =
             LaunchSpec::from_definition(crate::application_test_support::runner_probe_definition())
                 .component_host(refuse_to_prepare)
@@ -2605,10 +2605,14 @@ mod tests {
                 ))
             },
         );
-        assert!(
-            matches!(dispatched, Err(LaunchError::Operation(_))),
-            "a launch that cannot join its workspace reports why"
-        );
+        match dispatched {
+            Err(LaunchError::Operation(message)) => assert_eq!(
+                message, "this device has no identity to sign in with",
+                "the join's own reason reaches the launch"
+            ),
+            Err(other) => panic!("a launch that cannot join reports why: {other}"),
+            Ok(_) => panic!("a launch that cannot join dispatches no chooser"),
+        }
     }
 
     fn refuse_to_prepare(
