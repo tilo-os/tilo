@@ -847,15 +847,21 @@ impl DesktopPolicy {
         }
     }
 
-    /// A window's title changed.
+    /// A window's title changed. A window is named by what it shows: while
+    /// its app names that (a note's title, a folder's path, in its bar's
+    /// location), that name stands and the window's own title is what shows
+    /// once it names nothing. The person's own name for the tab, when they
+    /// gave one, stands in front of both.
     pub fn retitle(&mut self, window: u64, title: &str) {
         let mut tree = self.handle.read(Clone::clone);
         let Some(tab) = tab_mut(&mut tree, window) else {
             return;
         };
-        // The person's own name for the tab stands in front of the window's,
-        // which is kept beside it.
-        if tab.set_window_title(title) {
+        let name = self
+            .handle
+            .window_name(tab.id)
+            .unwrap_or_else(|| title.to_owned());
+        if tab.set_window_title(&name) {
             self.handle.replace_tree(tree);
         }
     }

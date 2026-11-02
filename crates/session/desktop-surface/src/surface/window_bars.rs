@@ -43,6 +43,16 @@ pub(super) struct Bars {
 }
 
 impl DesktopHandle {
+    /// The name `tab`'s app gives what its window shows (its bar's location:
+    /// a note's title, a folder's path), as the bar last read it. A window's
+    /// name is what it shows, so this stands in front of the window's own
+    /// title ([`tilo_desktop_policy::DesktopPolicy::retitle`],
+    /// [`DesktopHandle::declare_bar`]).
+    #[must_use]
+    pub fn window_name(&self, tab: u64) -> Option<String> {
+        self.shared.borrow().window_names.get(&tab).cloned()
+    }
+
     /// `connection`'s app declared `toolbar` for `tab`, or none. Shown from
     /// the next pass on. The app is the one the session vouched for, so it
     /// only ever reaches a tab that shows it.
@@ -120,6 +130,7 @@ impl DesktopSurface {
             }
         }
         changed |= sync.changed;
+        changed |= self.publish_window_names();
         changed |= self.ask_bar_changes();
         let events = self.window_slots.take_outbox();
         if !events.is_empty() {
@@ -127,6 +138,29 @@ impl DesktopSurface {
             changed = true;
         }
         changed
+    }
+
+    /// Tell the desk what each app calls what its window shows: the bar's
+    /// location label, a note's title or a folder's path. A window's name is
+    /// what it shows, so the tab's name — in its bar, the overview and
+    /// search — is this, and the window's own title only stands where its
+    /// app names nothing. Returns whether that changed.
+    fn publish_window_names(&mut self) -> bool {
+        let mut names = std::collections::BTreeMap::new();
+        for group in self.rows.values().flat_map(|row| row.groups.iter()) {
+            for tab in group.tabs() {
+                let name = self
+                    .window_slots
+                    .toolbar(tab.id)
+                    .and_then(|toolbar| toolbar.location.as_ref())
+                    .map(|location| location.label.trim())
+                    .filter(|label| !label.is_empty());
+                if let Some(name) = name {
+                    names.insert(tab.id, name.to_owned());
+                }
+            }
+        }
+        self.shared.borrow_mut().take_window_names(names)
     }
 
     /// Take what the apps in processes of their own asked of their windows'
@@ -177,6 +211,20 @@ impl DesktopSurface {
             }
         }
         changed
+    }
+}
+
+impl super::Shared {
+    /// Take `names` as what the windows' apps call what they show; whether
+    /// that changed anything. The bar reads them from the slots the apps
+    /// declared, so an unchanged pass costs one comparison.
+    fn take_window_names(&mut self, names: std::collections::BTreeMap<u64, String>) -> bool {
+        if self.window_names == names {
+            return false;
+        }
+        self.window_names = names;
+        self.changed();
+        true
     }
 }
 

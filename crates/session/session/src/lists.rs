@@ -79,6 +79,11 @@ impl AppLists {
         // first read starts: what later asks for an entry's icon or name on
         // the loop (`crate::app_icons::entry_icon`) finds it read already.
         let scan = desktop_entry::cache::cached_scan();
+        // An installed Tilo app may keep a desktop entry of its own, as its
+        // bundle does; that entry is the same app, listed once
+        // (`applications`) and not again as one of the machine's.
+        let tilo_apps =
+            app_catalogue::Installed::from_ids(installed.iter().map(|app| app.package_id.clone()));
         // The entries Tilo keeps for the person's downloaded programs are
         // search's own source (`providers::downloaded`): it lists them with
         // what the registry knows of them (their kind, and a file that went
@@ -86,7 +91,12 @@ impl AppLists {
         let host_apps = scan
             .entries
             .iter()
-            .filter(|entry| !entry.no_display && !entry.hidden && entry.downloaded.is_none())
+            .filter(|entry| {
+                !entry.no_display
+                    && !entry.hidden
+                    && entry.downloaded.is_none()
+                    && !tilo_apps.contains(&entry.id)
+            })
             .map(|entry| HostAppEntry {
                 desktop_id: entry.id.clone(),
                 name: entry.name.clone(),

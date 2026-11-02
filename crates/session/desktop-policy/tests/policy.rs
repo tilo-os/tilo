@@ -187,6 +187,71 @@ fn a_window_keeps_its_title_in_its_tab() {
 }
 
 #[test]
+fn a_window_is_named_by_what_it_shows_and_by_the_person_above_that() {
+    use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 1, "so.tilo.notes");
+    let tab = window_tab(&policy, 1);
+    // The note the window shows, as its app puts it in the bar's location.
+    let bar = Some(WindowToolbar {
+        location: Some(ToolbarLocation {
+            label: "Garden plan".into(),
+            ..ToolbarLocation::default()
+        }),
+        ..WindowToolbar::default()
+    });
+    policy.handle().declare_bar(tab, 7, bar);
+    settle(&mut driver);
+    policy.retitle(1, "Notes");
+    settle(&mut driver);
+    assert_eq!(
+        title_of(&policy, tab),
+        "Garden plan",
+        "the window's own title only stands where its app names nothing"
+    );
+    // The person's own name stands in front of it, and clearing it goes
+    // back to what the window shows.
+    let group = groups(&policy)
+        .into_iter()
+        .find(|(_, tabs, _)| tabs.contains(&tab))
+        .map(|(group, _, _)| group.to_string())
+        .unwrap();
+    let rename = |name: &str| ChromeEffect::Rename {
+        group: Some(group.clone()),
+        strip: None,
+        workspace: None,
+        name: name.into(),
+    };
+    policy.handle().dispatch(rename("Read later")).unwrap();
+    settle(&mut driver);
+    assert_eq!(title_of(&policy, tab), "Read later");
+    policy.handle().dispatch(rename("")).unwrap();
+    settle(&mut driver);
+    assert_eq!(title_of(&policy, tab), "Garden plan");
+    // Nothing shown to name: the window goes back to its own title.
+    policy.handle().declare_bar(tab, 7, None);
+    settle(&mut driver);
+    policy.retitle(1, "Notes");
+    settle(&mut driver);
+    assert_eq!(title_of(&policy, tab), "Notes");
+}
+
+/// What the tab `tab` is called.
+fn title_of(policy: &DesktopPolicy, tab: u64) -> String {
+    policy.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|held| held.id == tab)
+            .unwrap()
+            .title
+            .clone()
+    })
+}
+
+#[test]
 fn the_desk_names_the_windows_in_front_with_their_apps() {
     let (mut driver, mut policy) = mount();
     map(&mut driver, &mut policy, 4, "so.tilo.notes");

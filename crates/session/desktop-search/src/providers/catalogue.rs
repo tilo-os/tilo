@@ -72,7 +72,6 @@ impl StoreCatalogue {
                     .chain(&entry.keywords)
                     .map(|word| (word.clone(), FieldWeight::KEYWORD)),
             );
-            found.push((entry.tagline.clone(), FieldWeight::SUBTITLE));
             found.push((entry.id.clone(), FieldWeight::IDENTITY));
             fields.push(found);
             rows.push(Row::App(at));
@@ -80,10 +79,11 @@ impl StoreCatalogue {
                 continue;
             }
             for (document, kind) in entry.resource_types.iter().enumerate() {
-                fields.push(vec![
-                    (kind.label.clone(), FieldWeight::TITLE),
-                    (entry.name.clone(), FieldWeight::SUBTITLE),
-                ]);
+                // The kind of document names the row; the app it belongs to
+                // is what the row says under it, not another name for it —
+                // else every document an app offers answers to the app's own
+                // name.
+                fields.push(vec![(kind.label.clone(), FieldWeight::TITLE)]);
                 rows.push(Row::Document(at, document));
             }
             for (action, offer) in entry.actions.iter().enumerate() {

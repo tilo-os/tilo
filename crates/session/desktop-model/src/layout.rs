@@ -226,23 +226,25 @@ pub enum MissingApp {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Tab {
     pub id: TabId,
-    /// What the tab shows: the name a person gave it, else its window's
-    /// own title.
+    /// What the tab shows: the name a person gave it, else what its window
+    /// shows — the app's name for that, or the window's own title.
     pub title: String,
     pub tile: TileContent,
-    /// The window's own latest title while a person's name stands in
-    /// `title`; `None` when the tab has no such name. Written only by
-    /// [`Tab::set_window_title`] and [`Tab::rename`].
+    /// The name the tab goes back to when the person's own name is cleared:
+    /// the app's name for what the window shows, else the window's own
+    /// latest title. `None` while no person's name stands in `title`.
+    /// Written only by [`Tab::set_window_title`] and [`Tab::rename`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_title: Option<String>,
 }
 
 impl Tab {
-    /// The window announced `title`. While a person's name stands, it is
-    /// kept as the window's title for when the name is cleared, and the tab
-    /// goes on showing the name. Returns whether anything changed: a window
-    /// sending the same title again (terminals do, continuously) is no
-    /// change.
+    /// The window is called `title` now: its own title, or, while its app
+    /// names what the window shows, that name — the desk resolves the two.
+    /// While a person's name stands, it is kept for when the name is cleared,
+    /// and the tab goes on showing the name. Returns whether anything
+    /// changed: a window sending the same title again (terminals do,
+    /// continuously) is no change.
     pub fn set_window_title(&mut self, title: &str) -> bool {
         let shown = self.app_title.as_mut().unwrap_or(&mut self.title);
         if shown == title {

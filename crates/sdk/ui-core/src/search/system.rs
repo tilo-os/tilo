@@ -278,18 +278,21 @@ pub fn scope_allows(
 /// an exact name.
 pub const PACKAGE_ID_WEIGHT: super::FieldWeight = super::FieldWeight::new(88);
 
-/// An app's searchable fields. The package id in full, or its last
-/// segment, identifies exactly one app and weighs as its name —
-/// `hex-editor` typed for `so.tilo.hex-editor` is the app's identity and
-/// must outrank an incidental substring. Category ranks below the id
-/// because it's a bucket, not an identity.
+/// An app's searchable fields: its name, the words it is known by and what
+/// kind of app it is. The package id in full, or its last segment,
+/// identifies exactly one app and weighs as its name — `hex-editor` typed
+/// for `so.tilo.hex-editor` is the app's identity and must outrank an
+/// incidental substring. Category ranks below the id because it's a bucket,
+/// not an identity, but is still a name for the app ("office" is Notes).
+/// Prose an app says of itself — a tagline, a description, what it runs on —
+/// is not: a person typing a word has it in mind, and an app's blurb holds
+/// most words at once.
 #[must_use]
 pub fn application_fields<'a>(
     name: &'a str,
     package_id: &'a str,
     category: Option<&'a str>,
-    description: Option<&'a str>,
-) -> [(&'a str, super::FieldWeight); 5] {
+) -> [(&'a str, super::FieldWeight); 4] {
     use super::FieldWeight;
     let last_segment = package_id.rsplit('.').next().unwrap_or(package_id);
     [
@@ -297,7 +300,6 @@ pub fn application_fields<'a>(
         (last_segment, FieldWeight::TITLE),
         (package_id, PACKAGE_ID_WEIGHT),
         (category.unwrap_or_default(), FieldWeight::METADATA),
-        (description.unwrap_or_default(), FieldWeight::BODY),
     ]
 }
 
@@ -527,16 +529,14 @@ pub fn application_search_fields<'a>(
     name: &'a str,
     package_id: &'a str,
     category: Option<&'a str>,
-    description: Option<&'a str>,
     other_names: impl IntoIterator<Item = &'a str>,
     keywords: impl IntoIterator<Item = &'a str>,
 ) -> Vec<(String, super::FieldWeight)> {
     use super::FieldWeight;
-    let mut fields: Vec<(String, FieldWeight)> =
-        application_fields(name, package_id, category, description)
-            .into_iter()
-            .map(|(text, weight)| (text.to_owned(), weight))
-            .collect();
+    let mut fields: Vec<(String, FieldWeight)> = application_fields(name, package_id, category)
+        .into_iter()
+        .map(|(text, weight)| (text.to_owned(), weight))
+        .collect();
     for other in other_names {
         fields.push((other.to_owned(), FieldWeight::TITLE));
         fields.extend(super::initials(other).map(|initials| (initials, FieldWeight::KEYWORD)));
@@ -551,15 +551,24 @@ pub fn application_search_fields<'a>(
     fields
 }
 
-/// What a tier earns in an app's fields: the usual ranks, except that an
-/// app's keywords are its other names (Finder and Explorer are Files, Task
-/// Manager is System Monitor), so a keyword typed whole or begun ranks like
-/// the start of its name. "explo" is already Files, ahead of every file
-/// that merely starts with it; "apps" is the Store's, whatever other app has
-/// the word in its name.
+/// What a tier earns in an app's fields: an app is found by the words that
+/// name it begun, never by a word that merely holds them. A typo, words
+/// spread over its fields, or the query inside a longer word each find half
+/// the catalogue ("nodes", "note pad", "footnotes"), so an app row needs a
+/// word it is named by to start with what was typed — its name, an alias,
+/// its kind. Inside those fields an app's keywords are its other names
+/// (Finder and Explorer are Files, Task Manager is System Monitor), so a
+/// keyword typed whole or begun ranks like the start of its name: "explo" is
+/// already Files, ahead of every file that merely starts with it.
 #[must_use]
 pub fn application_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Option<i32> {
     use super::MatchTier;
+    if matches!(
+        tier,
+        MatchTier::Typo | MatchTier::Spanning | MatchTier::Contains
+    ) {
+        return None;
+    }
     if weight == super::FieldWeight::KEYWORD {
         match tier {
             // Typed whole: the app's other name, as its name's start.
@@ -606,11 +615,6 @@ pub fn application_intent_boost(score: i32, top: i32) -> f32 {
         3.0
     } else if score.saturating_mul(100) >= top.saturating_mul(70) {
         1.5
-    } else if score > 0 && score <= provider_score(super::MatchTier::Spanning.percent()) {
-        // Only a typo or loosely spread words matched. Still a person
-        // reaching for an app by a half-remembered name, so a launch row
-        // leads an action that is just as loosely matched.
-        0.4
     } else {
         0.0
     }
