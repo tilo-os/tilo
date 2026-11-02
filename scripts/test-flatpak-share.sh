@@ -71,7 +71,7 @@ cargo_in_distrobox() {
 run_sw() {
     echo "=== software encoders + negotiation ==="
     cargo_in_distrobox \
-        "cargo test -p shell --test it --release --locked \
+        "cargo test -p shell --test it --features hosted-test-control --release --locked \
             flatpak_share_encoder_probe:: flatpak_share_e2e:: \
             -- --include-ignored"
 }
@@ -79,7 +79,7 @@ run_sw() {
 run_hw() {
     echo "=== hardware encoders + HDR decode ==="
     cargo_in_distrobox \
-        "cargo test -p shell --test it --release --locked \
+        "cargo test -p shell --test it --features hosted-test-control --release --locked \
             hardware_encode:: hdr_decode_pipeline:: \
             -- --include-ignored --nocapture --test-threads 1"
     echo "Note: each test reports and returns when no hardware encoder is listed."
@@ -89,7 +89,7 @@ run_dmabuf() {
     echo "=== DMABUF capture-path routing ==="
     cargo_in_distrobox \
         "cargo test -p shell \
-            --test it --release --locked dmabuf_direct_capture_path:: \
+            --test it --features hosted-test-control --release --locked dmabuf_direct_capture_path:: \
             -- --include-ignored"
 }
 
@@ -97,7 +97,7 @@ run_substream() {
     echo "=== QUIC substream substrate ==="
     cargo_in_distrobox \
         "cargo test -p shell \
-            --test it --release --locked surface_substream_e2e:: \
+            --test it --features hosted-test-control --release --locked surface_substream_e2e:: \
             -- --include-ignored"
 }
 
@@ -105,10 +105,10 @@ run_e2e() {
     echo "=== end-to-end pipeline ==="
     cargo_in_distrobox \
         "cargo test -p shell \
-            --test it --release --locked flatpak_share_e2e:: \
+            --test it --features hosted-test-control --release --locked flatpak_share_e2e:: \
             -- --include-ignored && \
          cargo test -p shell \
-            --test it --release --locked \
+            --test it --features hosted-test-control --release --locked \
             two_netns_share::in_process_udp_pipeline_sustains_10_fps_and_bounded_latency \
             -- --exact --nocapture"
 }
