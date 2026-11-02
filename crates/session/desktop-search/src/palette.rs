@@ -350,7 +350,26 @@ impl DesktopSearch {
         }
         let usage = &self.usage;
         let now = sources.now;
-        search_with(query, &all, 0, &|hit| usage.strength(query, hit, now))
+        let mut groups = search_with(query, &all, 0, &|hit| usage.strength(query, hit, now));
+        if query.trim().is_empty() {
+            // Nothing typed: the groups stand in the order their sources ask
+            // for a browse ([`Source::browse_rank`]), so what is happening
+            // now leads, what the person reached for last follows, and the
+            // ways into everything else come after.
+            let place: std::collections::HashMap<&str, (u8, usize)> = all
+                .iter()
+                .enumerate()
+                .map(|(at, source)| (source.id(), (source.browse_rank(), at)))
+                .collect();
+            groups.sort_by_key(|group| {
+                group
+                    .results
+                    .first()
+                    .and_then(|hit| place.get(hit.provider.as_str()).copied())
+                    .unwrap_or((crate::model::BROWSE_RANK_LATER, usize::MAX))
+            });
+        }
+        groups
     }
 
     fn rebuild_rows(&mut self, query: String, generation: u64) {
@@ -715,6 +734,12 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
     if let Some(outcome) = &hit.outcome {
         entry = entry.outcome(outcome.clone());
     }
+    if let Some(row) = &hit.row {
+        entry = entry.drawn(row.clone());
+    }
+    if let Some(preview) = &hit.preview {
+        entry = entry.previewed(preview.clone());
+    }
     entry.icon(icon)
 }
 
@@ -836,6 +861,164 @@ mod tests {
         };
         assert_eq!(invoke.app, "so.tilo.chat");
         assert_eq!(invoke.address.action.as_str(), "join-call");
+    }
+
+    /// With nothing typed the palette lists what is useful now, in that
+    /// order: who is working here, what the person chose last, then the
+    /// apps and windows it opens. What is left of the workspace (leaving it
+    /// on this computer) is something a person goes looking for, never the
+    /// default list.
+    #[test]
+    fn the_empty_palette_lists_what_is_now_before_the_ways_into_everything() {
+        use crate::providers::happening::{Happening, PersonHere, WorkspaceHere};
+        use crate::providers::people::{People, PersonEntry};
+        let here = WorkspaceHere {
+            id: 1,
+            workspace: "workspace".into(),
+            name: "Studio".into(),
+            active: true,
+            people: vec![PersonHere {
+                id: "ada".into(),
+                name: "Ada".into(),
+                colour: (200, 100, 50),
+                agent: false,
+                away: false,
+                tab: None,
+            }],
+            windows: Vec::new(),
+            calls: Vec::new(),
+        };
+        let mut data = data();
+        data.commands.push(CommandSpec {
+            id: "session-host-leave-workspace".into(),
+            title: "Leave this workspace on this computer".into(),
+            subtitle: None,
+        });
+        data.sources
+            .push(Box::new(Happening::new(false, vec![here])));
+        data.sources.push(Box::new(People::new(
+            "workspace",
+            vec![PersonEntry {
+                id: "mara".into(),
+                name: "Mara Lind".into(),
+                activity: Some("Sheets".into()),
+            }],
+        )));
+        let mut search = DesktopSearch::new();
+        search.open(data);
+        // The row the person chose last stands in Recent.
+        let sheets = search
+            .results()
+            .iter()
+            .find(|hit| hit.title == "Sheets")
+            .cloned()
+            .expect("the app is listed");
+        search.recents.record(&sheets);
+        search.rebuild_rows(String::new(), ui::search::engine_generation());
+
+        let entries = search.palette().visible_entries();
+        let mut groups: Vec<&str> = Vec::new();
+        for entry in &entries {
+            if let Some(group) = entry.group.as_deref()
+                && groups.last() != Some(&group)
+            {
+                groups.push(group);
+            }
+        }
+        assert_eq!(
+            groups,
+            ["Happening now", "People", "Recent", "Apps", "Windows"]
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| !entry.label.starts_with("Leave this workspace")),
+            "no workspace housekeeping is a default: {entries:?}"
+        );
+    }
+
+    /// An app's hit says what it is: the row it shaped and the preview of
+    /// what it holds reach the palette entry unchanged, and choosing it
+    /// opens the item it names.
+    struct Mail;
+
+    impl ui::search::SearchProvider for Mail {
+        fn name(&self) -> &'static str {
+            "Mail"
+        }
+        fn search(&self, query: &str) -> Vec<ui::search::SearchResult> {
+            query
+                .to_lowercase()
+                .contains("invoice")
+                .then(|| {
+                    ui::search::SearchResult::for_action(
+                        "Mail",
+                        "Invoice",
+                        tilo_actions::ActionAddress::new("m1", "open"),
+                    )
+                    .with_row(
+                        ui::search::SearchRow::message("Ada", "Invoice")
+                            .snippet("Attached is March")
+                            .unread(true),
+                    )
+                    .with_preview(
+                        ui::search::SearchPreview::titled("Invoice").body("Attached is March"),
+                    )
+                })
+                .into_iter()
+                .collect()
+        }
+    }
+
+    #[test]
+    fn a_hit_is_drawn_as_the_row_its_app_gave_it() {
+        let mut message = ResourceSpec::new("m1", "mail.message", "Invoice");
+        message
+            .actions
+            .push(tilo_actions::ActionSpec::immediate_encoded(
+                "open",
+                "Open",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction {
+                    type_id: "test.open".into(),
+                    payload: Vec::new(),
+                },
+            ));
+        let mut search = DesktopSearch::new();
+        search.open(SearchData {
+            resources: vec![message],
+            providers: vec![Box::new(Mail)],
+            ..data()
+        });
+        search.set_query("invoice");
+        let entries = search.palette().visible_entries();
+        let at = entries
+            .iter()
+            .position(|entry| entry.label == "Invoice")
+            .unwrap_or_else(|| panic!("the mail is found: {entries:?}"));
+        assert_eq!(
+            entries[at].row,
+            Some(
+                ui::search::SearchRow::message("Ada", "Invoice")
+                    .snippet("Attached is March")
+                    .unread(true)
+            ),
+            "the app's own row reaches the palette"
+        );
+        assert!(
+            entries[at].preview.is_some(),
+            "and what the mail holds is under the list"
+        );
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+        assert!(search.observe(), "choosing a row closes search");
+        let Some(Target::Action(action)) = search.take_choice() else {
+            panic!("the mail opens through its app's open");
+        };
+        assert_eq!(
+            action.address(),
+            tilo_actions::ActionAddress::new("m1", "open")
+        );
     }
 
     /// Under the apps the empty palette offers every one of them: the
@@ -1033,6 +1216,8 @@ mod tests {
                 return Vec::new();
             }
             vec![Hit {
+                row: None,
+                preview: None,
                 faces: Vec::new(),
                 outcome: None,
                 kind: ResourceKind::Note,

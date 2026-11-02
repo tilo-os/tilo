@@ -195,6 +195,8 @@ impl Continue {
             ));
         }
         Hit {
+            row: None,
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: continue_kind(),
@@ -213,6 +215,10 @@ impl Continue {
 impl Source for Continue {
     fn id(&self) -> &'static str {
         "continue"
+    }
+
+    fn browse_rank(&self) -> u8 {
+        crate::model::BROWSE_RANK_RECENT
     }
 
     fn name(&self) -> String {

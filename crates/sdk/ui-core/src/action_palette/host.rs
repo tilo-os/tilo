@@ -576,17 +576,22 @@ impl ActionPalette {
         );
         result.subtitle.clone_from(&entry.description);
         result.icon = entry.icon;
-        result.row = Some(SearchRow::Command(Box::new(CommandRow {
-            description_is_path: entry.description_is_path,
-            facts: entry.description_facts.clone(),
-            image: entry.image.clone(),
-            avatar: entry.avatar.clone(),
-            badge: entry.badge.clone(),
-            keycaps: entry.keycap_labels(self.platform),
-            faces: entry.faces.clone(),
-            outcome: entry.outcome.clone(),
-            alternates: entry.alternates.clone(),
-        })));
+        result.preview.clone_from(&entry.preview);
+        // A row the hit's app draws is painted as that app draws it; the
+        // host's own row is built from what the entry carries.
+        result.row = entry.row.clone().or_else(|| {
+            Some(SearchRow::Command(Box::new(CommandRow {
+                description_is_path: entry.description_is_path,
+                facts: entry.description_facts.clone(),
+                image: entry.image.clone(),
+                avatar: entry.avatar.clone(),
+                badge: entry.badge.clone(),
+                keycaps: entry.keycap_labels(self.platform),
+                faces: entry.faces.clone(),
+                outcome: entry.outcome.clone(),
+                alternates: entry.alternates.clone(),
+            })))
+        });
         result
     }
 

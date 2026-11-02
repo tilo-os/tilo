@@ -72,6 +72,22 @@ pub const ALL_APPS_COMMAND: &str = "desktop.all-apps";
 pub const OPEN_ACTION: &str = "open";
 pub const OPEN_ANCHOR: &str = "anchor";
 
+/// Where a source's rows stand in the empty palette when it does not say:
+/// after everything that answers where it belongs there
+/// ([`Source::browse_rank`]).
+pub const BROWSE_RANK_LATER: u8 = 16;
+
+/// The rows about what is happening now: who is where, and the calls to
+/// join. The empty palette opens with them.
+pub const BROWSE_RANK_NOW: u8 = 0;
+/// The people doing something in the workspace.
+pub const BROWSE_RANK_PEOPLE: u8 = 1;
+/// What the person reached for last.
+pub const BROWSE_RANK_RECENT: u8 = 2;
+/// The ways in: the apps they have, then the windows open.
+pub const BROWSE_RANK_APPS: u8 = 3;
+pub const BROWSE_RANK_WINDOWS: u8 = 4;
+
 /// An application action as the palette offers it.
 #[derive(Clone)]
 pub struct ActionTarget {
@@ -200,6 +216,14 @@ pub struct Hit {
     /// What choosing the row gets you, when it is worth saying ("Open",
     /// "Join"); the kind's own outcome otherwise.
     pub outcome: Option<String>,
+    /// The row its app draws for the hit, when its source says: a shaped
+    /// row (a message, a video, a match in a line), or the reference to the
+    /// item its app keeps ([`ui::search::SearchRow::Item`]), which the
+    /// palette draws as that app's list draws the item. `None` draws the
+    /// generic row, as does a row the palette cannot paint.
+    pub row: Option<ui::search::SearchRow>,
+    /// What the hit looks like in its app, for the band under the list.
+    pub preview: Option<ui::search::SearchPreview>,
     pub target: Target,
 }
 
@@ -218,6 +242,14 @@ pub trait Source {
     }
     /// Hits for `needle`. An empty needle asks for the source's browse set.
     fn query(&self, needle: &str) -> Vec<Hit>;
+    /// Where its rows stand in the empty palette, lowest first: the search
+    /// with nothing typed lists what is happening now before what the person
+    /// reached for last, and the ways into everything else after. Sources
+    /// that tie keep the order they are asked in. It says nothing about a
+    /// typed query, which is ranked by the match.
+    fn browse_rank(&self) -> u8 {
+        BROWSE_RANK_LATER
+    }
     /// How much plainer than its title's match `hit` answers what was
     /// typed, added to its strength at the merge: a query that names a
     /// service and asks it something leads, a row an app serves better
@@ -247,6 +279,9 @@ impl<S: Source + ?Sized> Source for std::rc::Rc<S> {
     }
     fn query(&self, needle: &str) -> Vec<Hit> {
         (**self).query(needle)
+    }
+    fn browse_rank(&self) -> u8 {
+        (**self).browse_rank()
     }
     fn intent(&self, hit: &Hit) -> f32 {
         (**self).intent(hit)

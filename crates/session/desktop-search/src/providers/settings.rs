@@ -201,6 +201,8 @@ impl Settings {
 
     fn hit(&self, row: &Row, score: i32) -> Hit {
         Hit {
+            row: None,
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: settings_kind(),

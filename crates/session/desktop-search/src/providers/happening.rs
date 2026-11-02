@@ -170,6 +170,8 @@ impl Happening {
             }
         };
         Hit {
+            row: None,
+            preview: None,
             kind: happening_kind(),
             provider: self.id().into(),
             id: format!("{WORKSPACE_PREFIX}{}", workspace.id),
@@ -186,6 +188,8 @@ impl Happening {
 
     fn window(&self, workspace: &WorkspaceHere, window: &WindowHere) -> Hit {
         Hit {
+            row: None,
+            preview: None,
             kind: happening_kind(),
             provider: self.id().into(),
             id: format!("{WINDOW_PREFIX}{}:{}", workspace.id, window.tab),
@@ -211,6 +215,8 @@ impl Happening {
             crate::i18n::t_args("search-launcher-call-in", &[("channel", name.into())])
         };
         Hit {
+            row: None,
+            preview: None,
             kind: happening_kind(),
             provider: self.id().into(),
             id: format!("{CALL_PREFIX}{}", call.channel),
@@ -234,6 +240,10 @@ impl Happening {
 impl Source for Happening {
     fn id(&self) -> &'static str {
         "happening-now"
+    }
+
+    fn browse_rank(&self) -> u8 {
+        crate::model::BROWSE_RANK_NOW
     }
 
     fn name(&self) -> String {

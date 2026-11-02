@@ -246,6 +246,12 @@ impl IndexedContent {
             .or_else(|| entry.group.clone())
             .unwrap_or_else(|| (self.app_name)(&slot.app));
         Hit {
+            row: entry
+                .action
+                .is_none()
+                .then(|| ui::search::SearchRow::item_of(slot.app.clone(), &entry.resource))
+                .flatten(),
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: ResourceKind::Record,
@@ -265,6 +271,8 @@ impl IndexedContent {
     fn unlock_row(&self, app: &str, needle: &str, score: i32) -> Hit {
         let name = (self.app_name)(app);
         Hit {
+            row: None,
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: ResourceKind::Record,
@@ -443,6 +451,38 @@ mod tests {
                 .map(|hit| hit.title)
                 .as_deref(),
             Some("Groceries")
+        );
+    }
+
+    /// An entry an app publishes as an item of a resource (a note in a
+    /// notebook) is a reference: the row says which item it is, so the
+    /// palette can draw it as the app lists it, and it opens there. An entry
+    /// that names no item is drawn as the generic row.
+    #[test]
+    fn an_entry_that_names_an_item_carries_its_reference() {
+        let index = Arc::new(AppContentIndex::in_memory());
+        let mut page = note("page-7", "Trip plan", false);
+        page.resource = "notes.notebook/pages/page-7".into();
+        publish(&index, "so.tilo.notes", None, vec![page.clone()]);
+        let content = IndexedContent::new(index, |_| String::new());
+        let hits = content.query("trip");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].row,
+            Some(ui::search::SearchRow::item(
+                "so.tilo.notes",
+                "notes.notebook.pages",
+                "page-7"
+            ))
+        );
+        // The row addresses the resource the hit opens.
+        assert_eq!(
+            hits[0]
+                .row
+                .as_ref()
+                .and_then(ui::search::SearchRow::item_resource)
+                .as_deref(),
+            Some(page.resource.as_str())
         );
     }
 

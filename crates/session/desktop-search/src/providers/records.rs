@@ -152,6 +152,8 @@ impl Records {
                 .with_argument(KIND_PARAM, checkout.kind.as_str())
                 .with_argument(PACKAGE_PARAM, record.package.clone());
         Some(Hit {
+            row: None,
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: ResourceKind::Record,

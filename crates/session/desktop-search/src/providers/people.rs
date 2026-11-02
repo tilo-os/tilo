@@ -53,41 +53,64 @@ impl Source for People {
         "people"
     }
 
+    fn browse_rank(&self) -> u8 {
+        crate::model::BROWSE_RANK_PEOPLE
+    }
+
     fn name(&self) -> String {
         crate::i18n::t("search-kind-people")
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
+        // With nothing typed the people who are doing something are listed:
+        // the empty palette is about the workspace now, and where each
+        // person is working, not a roster of everyone who is about.
         if needle.trim().is_empty() {
-            return Vec::new();
+            let busy = self
+                .people
+                .iter()
+                .filter(|person| person.activity.is_some());
+            let mut top = ui::search::system::MAX_PROVIDER_SCORE;
+            return busy
+                .map(|person| {
+                    let hit = self.hit(person, top);
+                    top = top.saturating_sub(1);
+                    hit
+                })
+                .collect();
         }
         self.people
             .iter()
             .filter_map(|person| {
                 let score = rank_fields(needle, &[(&person.name, FieldWeight::TITLE)])?;
-                Some(Hit {
-                    faces: Vec::new(),
-                    outcome: None,
-                    kind: people_kind(),
-                    provider: self.id().into(),
-                    id: person.id.clone(),
-                    title: person.name.clone(),
-                    subtitle: person.activity.clone(),
-                    facts: Vec::new(),
-                    score,
-                    icon: Some(ui::icons::Icon::User),
-                    target: Target::Invoke(Box::new(
-                        InvokeTarget::action(
-                            DESKTOP_APP,
-                            &self.workspace,
-                            PEOPLE_RESOURCE,
-                            SHOW_PERSON,
-                        )
-                        .with_argument(PERSON_PARAM, person.id.clone()),
-                    )),
-                })
+                Some(self.hit(person, score))
             })
             .collect()
+    }
+}
+
+impl People {
+    /// `person` as a row scoring `score`: shown by the chrome's `show-person`
+    /// at their id.
+    fn hit(&self, person: &PersonEntry, score: i32) -> Hit {
+        Hit {
+            row: None,
+            preview: None,
+            faces: Vec::new(),
+            outcome: None,
+            kind: people_kind(),
+            provider: <Self as Source>::id(self).into(),
+            id: person.id.clone(),
+            title: person.name.clone(),
+            subtitle: person.activity.clone(),
+            facts: Vec::new(),
+            score,
+            icon: Some(ui::icons::Icon::User),
+            target: Target::Invoke(Box::new(
+                InvokeTarget::action(DESKTOP_APP, &self.workspace, PEOPLE_RESOURCE, SHOW_PERSON)
+                    .with_argument(PERSON_PARAM, person.id.clone()),
+            )),
+        }
     }
 }
 
@@ -118,6 +141,20 @@ mod tests {
         );
         assert_eq!(target.arguments[PERSON_PARAM], "mara");
         assert!(people.query("zed").is_empty());
-        assert!(people.query("").is_empty());
+        // Nothing typed lists who is working, with where they are: the empty
+        // palette is about the workspace now, not a roster of everyone.
+        let browsing = people.query("");
+        assert_eq!(browsing.len(), 1);
+        assert_eq!(browsing[0].title, "Mara Lind");
+        assert_eq!(browsing[0].subtitle.as_deref(), Some("Sheets"));
+        let idle = People::new(
+            "workspace",
+            vec![PersonEntry {
+                id: "zed".into(),
+                name: "Zed".into(),
+                activity: None,
+            }],
+        );
+        assert!(idle.query("").is_empty(), "someone idle is not listed");
     }
 }

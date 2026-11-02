@@ -132,6 +132,14 @@ pub struct CommandEntry {
     ///
     /// [`ActionPalette::take_adjustment`]: crate::ActionPalette::take_adjustment
     pub adjustable: bool,
+    /// The row a hit's app draws for it, when the host has one
+    /// ([`Self::drawn`]): the palette paints that instead of the generic
+    /// row. A row whose shape the palette cannot paint falls back to the
+    /// generic one.
+    pub row: Option<crate::search::SearchRow>,
+    /// What the hit looks like in its app, for the band under the list
+    /// ([`Self::previewed`]).
+    pub preview: Option<crate::search::SearchPreview>,
 }
 
 impl std::fmt::Debug for CommandEntry {
@@ -171,7 +179,24 @@ impl CommandEntry {
             description_is_path: false,
             description_facts: Vec::new(),
             adjustable: false,
+            row: None,
+            preview: None,
         }
+    }
+
+    /// Draw the row as `row`, the shape its app draws it with
+    /// ([`crate::search::SearchRow`]).
+    #[must_use]
+    pub fn drawn(mut self, row: crate::search::SearchRow) -> Self {
+        self.row = Some(row);
+        self
+    }
+
+    /// Show `preview` under the list while the row is selected.
+    #[must_use]
+    pub fn previewed(mut self, preview: crate::search::SearchPreview) -> Self {
+        self.preview = Some(preview);
+        self
     }
 
     /// Let ←/→ step the row's value ([`Self::adjustable`]).

@@ -85,6 +85,10 @@ impl Source for Applications {
         "applications"
     }
 
+    fn browse_rank(&self) -> u8 {
+        crate::model::BROWSE_RANK_APPS
+    }
+
     fn name(&self) -> String {
         crate::i18n::t("search-source-apps")
     }
@@ -98,6 +102,8 @@ impl Source for Applications {
             .filter_map(|(app, matched)| {
                 let matched = matched?;
                 Some(Hit {
+                    row: None,
+                    preview: None,
                     faces: Vec::new(),
                     outcome: None,
                     kind: ResourceKind::Application,
@@ -144,6 +150,10 @@ impl Source for Windows {
         "desktop-windows"
     }
 
+    fn browse_rank(&self) -> u8 {
+        crate::model::BROWSE_RANK_WINDOWS
+    }
+
     fn name(&self) -> String {
         crate::i18n::t("search-source-windows")
     }
@@ -158,6 +168,8 @@ impl Source for Windows {
                     rank::window_match_score(needle, &[&window.title, &window.app_title])?
                 };
                 Some(Hit {
+                    row: None,
+                    preview: None,
                     faces: Vec::new(),
                     outcome: None,
                     kind: ResourceKind::Custom(WINDOWS_KIND.into()),
@@ -198,24 +210,29 @@ impl Source for Commands {
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
+        // The empty palette is about what is happening now, never a list of
+        // verbs: closing a window, switching workspace or leaving it on this
+        // computer are things a person goes looking for, and a default list
+        // of them takes the place of what they came for.
+        if needle.trim().is_empty() {
+            return Vec::new();
+        }
         self.0
             .iter()
             .filter_map(|command| {
-                let score = if needle.trim().is_empty() {
-                    20
-                } else {
-                    rank_fields(
-                        needle,
-                        &[
-                            (&command.title, ui::search::FieldWeight::TITLE),
-                            (
-                                command.subtitle.as_deref().unwrap_or_default(),
-                                ui::search::FieldWeight::SUBTITLE,
-                            ),
-                        ],
-                    )?
-                };
+                let score = rank_fields(
+                    needle,
+                    &[
+                        (&command.title, ui::search::FieldWeight::TITLE),
+                        (
+                            command.subtitle.as_deref().unwrap_or_default(),
+                            ui::search::FieldWeight::SUBTITLE,
+                        ),
+                    ],
+                )?;
                 Some(Hit {
+                    row: None,
+                    preview: None,
                     faces: Vec::new(),
                     outcome: None,
                     kind: ResourceKind::Action,
@@ -338,6 +355,8 @@ impl Source for Actions {
                     item_scores.next().flatten()?
                 };
                 Some(Hit {
+                    row: None,
+                    preview: None,
                     faces: Vec::new(),
                     outcome: None,
                     kind: ResourceKind::Action,
@@ -503,6 +522,8 @@ impl Source for Published {
                 continue;
             };
             hits.push(Hit {
+                row: None,
+                preview: None,
                 faces: Vec::new(),
                 outcome: None,
                 kind: ResourceKind::Action,
@@ -701,6 +722,8 @@ impl Source for Content {
                     .unwrap_or(CONTENT_MATCH_SCORE)
                     .min(MAX_PROVIDER_SCORE);
                 hits.push(Hit {
+                    row: result.row.clone(),
+                    preview: result.preview.clone(),
                     faces: Vec::new(),
                     outcome: None,
                     kind: content_kind(&result.kind),
@@ -759,6 +782,8 @@ impl Answers {
         }
         let kind = answers_kind();
         let answer = |id: &str, title: String, subtitle: Option<String>, target: Target| Hit {
+            row: None,
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: kind.clone(),
@@ -915,6 +940,8 @@ impl WebSearch {
     fn web_search_row(&self, query: &str) -> Hit {
         use crate::answers::web::{fallback_search_url, web_search_uri};
         Hit {
+            row: None,
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: web_kind(),
@@ -935,6 +962,8 @@ impl WebSearch {
     /// The service named alone: opens its site.
     fn service_row(&self, service: &'static crate::answers::web::Service) -> Hit {
         Hit {
+            row: None,
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: websites_kind(),
@@ -981,6 +1010,8 @@ impl WebSearch {
             ),
         };
         Hit {
+            row: None,
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: websites_kind(),
@@ -1115,6 +1146,10 @@ impl Source for Recents {
         "recent"
     }
 
+    fn browse_rank(&self) -> u8 {
+        crate::model::BROWSE_RANK_RECENT
+    }
+
     fn name(&self) -> String {
         crate::i18n::t("search-source-recent")
     }
@@ -1127,8 +1162,8 @@ impl Source for Recents {
             .iter()
             .enumerate()
             .map(|(position, hit)| Hit {
-                faces: Vec::new(),
-                outcome: None,
+                // A row chosen before is drawn as its app drew it, as it was
+                // when it was chosen.
                 kind: ResourceKind::Custom(RECENT_KIND.into()),
                 provider: self.id().into(),
                 id: format!("{}\u{1f}{}", hit.provider, hit.id),
@@ -1219,6 +1254,8 @@ impl Source for Switches {
                     ],
                 )?;
                 Some(Hit {
+                    row: None,
+                    preview: None,
                     faces: Vec::new(),
                     outcome: None,
                     kind: ResourceKind::Action,
@@ -1437,11 +1474,23 @@ mod tests {
             app: None,
             place: vec!["Workspace".into()],
         }]);
-        let groups = search("", &[&apps(), &windows, &actions], 0);
+        let commands = Commands(vec![CommandSpec {
+            id: "session-host-leave-workspace".into(),
+            title: "Leave this workspace on this computer".into(),
+            subtitle: None,
+        }]);
+        let groups = search("", &[&apps(), &windows, &actions, &commands], 0);
         let kinds: Vec<&str> = groups.iter().map(|g| g.kind.label()).collect();
         assert!(kinds.contains(&"Apps"));
         assert!(kinds.contains(&WINDOWS_KIND));
         assert!(!kinds.contains(&"Actions"));
+        assert!(
+            groups
+                .iter()
+                .flat_map(|group| &group.results)
+                .all(|hit| !hit.title.starts_with("Leave this workspace")),
+            "nothing typed offers no workspace housekeeping: {groups:?}"
+        );
     }
 
     #[test]
@@ -1723,6 +1772,11 @@ mod tests {
         }]);
         assert_eq!(commands.query("close").len(), 1);
         assert!(commands.query("launch").is_empty());
+        // Nothing typed lists no verbs at all: closing a window, changing
+        // workspace or leaving it on this computer are things a person goes
+        // looking for, never what the empty palette leads with.
+        assert!(commands.query("").is_empty());
+        assert!(commands.query("  ").is_empty());
     }
 
     /// Every app of the manifest registry, as the portable desktop lists them.
@@ -1780,6 +1834,8 @@ mod tests {
             }
             fn query(&self, needle: &str) -> Vec<Hit> {
                 vec![Hit {
+                    row: None,
+                    preview: None,
                     faces: Vec::new(),
                     outcome: None,
                     kind: ResourceKind::Note,

@@ -196,6 +196,16 @@ impl SearchRow {
         }
     }
 
+    /// The item row for `resource` (`notes.notebook/pages/<id>`) of `app`:
+    /// what a hit on a resource an app publishes as items is drawn with.
+    /// `None` when `resource` names no item of an app (a whole notebook, an
+    /// app's own surface), which is drawn as the generic row.
+    pub fn item_of(app: impl Into<String>, resource: &str) -> Option<Self> {
+        let kind = tilo_resource::items::item_kind(resource)?;
+        let id = resource.rsplit('/').next()?;
+        Some(Self::item(app, kind, id))
+    }
+
     /// The resource id of the item this row is, when it is one:
     /// `<resource>/<collection>/<id>` (`notes.notebook/pages/<id>`), the
     /// address its app's `open` shows. `None` for a row that names no item.
@@ -420,5 +430,25 @@ mod tests {
             "a kind with no collection names no item"
         );
         assert_eq!(SearchRow::message("Ada", "Hi").item_resource(), None);
+    }
+
+    /// A hit an app publishes as an item of a resource names the item, so
+    /// every palette can draw the row the app's list draws for it.
+    #[test]
+    fn an_item_row_is_read_from_the_resource_it_names() {
+        assert_eq!(
+            SearchRow::item_of("so.tilo.notes", "notes.notebook/pages/page-7"),
+            Some(SearchRow::item(
+                "so.tilo.notes",
+                "notes.notebook.pages",
+                "page-7"
+            ))
+        );
+        assert_eq!(
+            SearchRow::item_of("so.tilo.notes", "notes.notebook"),
+            None,
+            "a whole notebook is no item"
+        );
+        assert_eq!(SearchRow::item_of("so.tilo.notes", "page-7"), None);
     }
 }

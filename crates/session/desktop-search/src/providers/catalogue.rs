@@ -181,6 +181,8 @@ impl StoreCatalogue {
             }
         };
         Some(Hit {
+            row: None,
+            preview: None,
             faces: Vec::new(),
             outcome: None,
             kind,

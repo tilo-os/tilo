@@ -564,11 +564,15 @@ impl SearchResultsView {
         self.plan().bottom - (self.rect.y0 + PAD - self.scroll)
     }
 
-    /// The tallest run of whole rows from the top that fits in `cap`, for an
-    /// owner sizing the list: a cap that cut a row would leave a sliver, and
-    /// a header with no row under it reads as a broken list. At least one
-    /// row's band.
+    /// The height the list takes when the most rows that fit in `cap` show,
+    /// preview band included: an owner sizing the list must leave the band
+    /// its room, or it would eat into the last row, and the card's own
+    /// padding at the foot, or it would clip one. A cap that cut a row would
+    /// leave a sliver, and a header with no row under it reads as a broken
+    /// list, so only whole rows count. At least one row's band.
     pub fn fitted_height(&self, cap: f64) -> f64 {
+        let band = self.preview_band();
+        let cap = (cap - band - PAD * 2.0).max(0.0);
         let plan = self.plan();
         let start = self.rect.y0 + PAD - self.scroll;
         let mut ends: Vec<(f64, bool)> = plan
@@ -592,7 +596,7 @@ impl SearchResultsView {
             .iter()
             .find_map(|g| g.results.first())
             .map_or(self.bands.one_line, |r| self.row_height(r));
-        f64::max(fitted, least)
+        f64::max(fitted, least) + PAD * 2.0 + band
     }
 
     /// Where rows show: the list less its padding, which stays clear.
@@ -1985,6 +1989,43 @@ mod tests {
         v.set_groups(reg.query_grouped(query));
         v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
         v
+    }
+
+    /// A fitted list counts the preview band as part of itself: an owner
+    /// sizing the list to the rows alone would put the band over the last
+    /// row, which then never shows.
+    #[test]
+    fn a_fitted_list_keeps_the_preview_band_its_room() {
+        let mut v = SearchResultsView::new();
+        v.set_results(
+            (0..10)
+                .map(|n| {
+                    SearchResult::new("Feeds", format!("Feed {n}"), format!("f:{n}"))
+                        .with_preview(SearchPreview::titled("Feed").fact("1 unread"))
+                })
+                .collect(),
+        );
+        v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
+        let band = v.preview_band();
+        assert!(band > 0.0);
+        let rows = v.plan().rows;
+        let third = rows[2].rect.y1 - v.rect.y0;
+        // Three rows, the list's foot padding and the band: the cap the owner
+        // allows. The fitted height is exactly that, so no row is clipped at
+        // the card's foot and the band keeps its room.
+        let cap = third + PAD + band;
+        let fitted = v.fitted_height(cap);
+        assert!(
+            (fitted - cap).abs() < 0.01,
+            "the fitted list keeps its padding and the band's room: {fitted} for {cap}"
+        );
+        v.set_rect(Rect::new(0.0, 0.0, 360.0, fitted));
+        let rows = v.plan().rows;
+        assert!(
+            rows[2].rect.y1 <= v.rect.y1 - band - PAD + 0.01,
+            "the last fitted row is not clipped at the card's foot"
+        );
+        assert!(v.list_rect().y1 <= v.rect.y1, "the band stays in the card");
     }
 
     /// More rows than the window has room for scroll inside the card: it
