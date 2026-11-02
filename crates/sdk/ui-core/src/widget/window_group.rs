@@ -4074,13 +4074,23 @@ impl Widget for WindowGroup {
         self.grip_dirty
             || reveal_due
             || edge_due
-            || self.children().into_iter().any(Widget::needs_redraw)
+            || (self.navigation_bar_visible()
+                && (self.bar.needs_redraw() || self.search.needs_redraw()))
+            || self.active_host().is_some_and(Widget::needs_redraw)
     }
     fn mark_drawn(&mut self) {
         self.grip_dirty = false;
         self.next_frame();
-        for child in self.children_mut() {
-            child.mark_drawn();
+        // The bar, its search and the active host: what the group draws.
+        let shows_bar = self.navigation_bar_visible();
+        if shows_bar {
+            self.bar.mark_drawn();
+            self.search.mark_drawn();
+        }
+        let active = self.bar.active_id();
+        if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
+            host.set_panic_scope(*id);
+            host.mark_drawn();
         }
     }
     /// Layout follows the built tree: the tab bar (whenever it was built) and

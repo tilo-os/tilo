@@ -386,6 +386,10 @@ pub struct FrameHarness {
     /// A frame was laid out: what arrives after it moves in
     /// (`motion::window_has_shown`).
     shown_a_frame: bool,
+    /// [`crate::permissions::shared_revision`] as the last frame drew it: a
+    /// permission change moves what widgets paint with nothing in the tree
+    /// marking it, so the next frame draws again from a cleared cache.
+    drawn_permissions: u64,
     child_node: NodeId,
     /// The harness stands in for the desktop's window bar: the app's slots,
     /// search and History are hosted there and every capture paints it over
@@ -1549,6 +1553,7 @@ impl FrameHarness {
             component_close_reports: vec![],
             root_node: NodeId::from(0usize),
             shown_a_frame: false,
+            drawn_permissions: crate::permissions::shared_revision(),
             child_node: NodeId::from(0usize),
             window_bar: false,
             window_search: Box::new(crate::widget::WindowSearch::new()),
@@ -2645,9 +2650,18 @@ impl FrameHarness {
                 )
                 .chain(self.tooltips.schedule().1)
                 .min(),
-            needs_redraw: roots.iter().any(|root| root.needs_redraw()) || queued_work,
+            needs_redraw: roots.iter().any(|root| root.needs_redraw())
+                || queued_work
+                || self.permissions_moved(),
             queued_work,
         })
+    }
+
+    /// Whether the shared permissions moved since the last frame drew them:
+    /// what widgets paint from them is stale, so a frame is due and the
+    /// drawings are made again ([`Self::try_relayout_content`]).
+    fn permissions_moved(&self) -> bool {
+        self.drawn_permissions != crate::permissions::shared_revision()
     }
 
     /// The roots [`Self::frame_schedule`] reads demand from, with this
@@ -3855,6 +3869,21 @@ impl FrameHarness {
         // before draw and any accessibility read — a shot must show the
         // enabled state the user would see. A quiet frame that kept its
         // composition and focus would write what the last frame wrote.
+        // What the tree holds was drawn from the permissions of that frame.
+        // A change since moves what gated widgets paint with nothing in the
+        // tree marking it: the retained drawings go, and this frame draws
+        // the widgets again instead of showing the last drawing.
+        if self.permissions_moved() {
+            self.invalidate_local();
+            self.root.release_scene_cache();
+            if let Some(palette) = self.action_palette.as_deref_mut() {
+                palette.release_scene_cache();
+            }
+            if let Some(history) = self.history.as_deref_mut() {
+                history.release_scene_cache();
+            }
+            self.drawn_permissions = crate::permissions::shared_revision();
+        }
         let quiet = quiet
             && !stats.rebuilt
             && self.focused == focused_at_start
@@ -4294,6 +4323,7 @@ impl FrameHarness {
 
     fn capture_is_ready(&self) -> bool {
         !self.frame_schedule().needs_animation_frame
+            && self.root.holds_frame_until(crate::time::now()).is_none()
             && !self.root.has_pending_visual_work()
             && crate::image_store::loads_in_flight() == 0
     }

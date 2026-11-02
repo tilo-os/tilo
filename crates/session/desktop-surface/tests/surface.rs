@@ -2573,10 +2573,10 @@ mod actions;
 
 /// A desk nobody touches has nothing to draw: a settled desk declines the
 /// frame its host offers, so a window's bar and its search lane paint nothing
-/// until what they show changes — and then they ask for that frame.
+/// until what they show changes.
 #[test]
 fn a_settled_idle_desk_repaints_nothing() {
-    let (mut driver, handle, _) = mount();
+    let (mut driver, _handle, _) = mount();
     driver.relayout();
     driver.settle_for_capture(Duration::from_millis(2000));
     let schedule = driver.frame_schedule();
@@ -2585,11 +2585,62 @@ fn a_settled_idle_desk_repaints_nothing() {
         "an idle desk needs no repaint: {schedule:?} from {:?}",
         driver.redraw_sources()
     );
+    for _ in 0..3 {
+        assert!(
+            !driver.poll_frame().unwrap(),
+            "an offered frame draws nothing: {:?}",
+            driver.redraw_sources()
+        );
+    }
+}
 
-    // And nothing below it asks either: no bar, no search lane, no window.
-    assert!(
-        !driver.frame_schedule().needs_redraw,
-        "nothing on the desk is dirty: {:?}",
-        driver.redraw_sources()
+/// A desk whose windows hold apps whose first frame is still on its way: the
+/// native session's tabs before a client draws at all. Their placeholders
+/// are deadlines, not animations, so such a desk at rest has nothing to draw
+/// either.
+#[test]
+fn a_settled_idle_desk_of_arriving_windows_repaints_nothing() {
+    struct Arriving;
+
+    impl TileSource for Arriving {
+        fn tile(&mut self, _: &Workspace, _: &Tab) -> TileHost {
+            TileHost::new(ui::widget::TileContent::Arriving)
+        }
+    }
+
+    let mut minter = IdMinter::new(7);
+    let tabs = ["Writer", "Sheets"]
+        .into_iter()
+        .map(|title| tab(&mut minter, title))
+        .collect();
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Arriving));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
     );
+    driver.set_caller_palette_enabled(false);
+    driver.relayout();
+    driver.settle_for_capture(Duration::from_millis(2000));
+    // A host presents the frame settling made due; the offers after it find
+    // nothing.
+    driver.profile_frame();
+    for _ in 0..3 {
+        let schedule = driver.frame_schedule();
+        assert!(
+            !schedule.needs_redraw && !schedule.needs_animation_frame,
+            "an idle desk of arriving windows has nothing to draw: {schedule:?} from {:?}",
+            driver.redraw_sources()
+        );
+        assert!(
+            !driver.poll_frame().unwrap(),
+            "an offered frame draws nothing: {:?}",
+            driver.redraw_sources()
+        );
+    }
 }
