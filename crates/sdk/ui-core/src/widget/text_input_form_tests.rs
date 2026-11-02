@@ -6,7 +6,7 @@ use super::body_size;
 use super::draw_to_populate;
 use super::drive;
 use super::mods;
-use crate::synthetic_input::{char_key, cursor_moved, mouse_press, named_key};
+use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
 
 #[test]
 fn accessible_selection_preserves_anchor_and_focus_direction() {
@@ -294,6 +294,10 @@ fn submit_accessory_and_span_highlighting() {
         assert_eq!(node.children.len(), 1, "the go button shows while editing");
         assert_eq!(node.children[0].name.as_deref(), Some("Go"));
         assert_eq!(node.children[0].role, crate::a11y::Role::Button);
+        assert!(
+            !node.children[0].state.disabled,
+            "with something to go with, the go button is ready"
+        );
         let rect = Widget::synthetic_accessibility_rect(&ti, &[0]).expect("accessory rect");
         let mut doc = AutoCommit::new();
         drive(
@@ -307,6 +311,102 @@ fn submit_accessory_and_span_highlighting() {
         assert_eq!(seen.borrow().as_slice(), ["example.org"]);
         assert!(ti.take_submit(), "the polled signal fires too");
         assert_eq!(ti.value(), "example.org", "going is not an edit");
+
+        // Case `an_empty_field_keeps_its_go_button_dim_and_inert`.
+        ti.set_text("");
+        draw_to_populate(&mut ti);
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert_eq!(node.children.len(), 1, "an empty field still shows it");
+        assert!(
+            node.children[0].state.disabled,
+            "nothing typed: nothing to submit"
+        );
+        let target = node.children[0]
+            .action_target
+            .clone()
+            .expect("agents can reach it");
+        let root = automerge::ROOT;
+        assert!(
+            !Widget::perform_semantic_action(
+                &mut ti,
+                &target,
+                &crate::a11y::Action::Activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root,
+            ),
+            "activating a go button with nothing to go with does nothing"
+        );
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(rect.center().x, rect.center().y),
+            mods(false, false),
+        );
+        assert!(drive(&mut ti, &mut doc, &mouse_press(), mods(false, false)));
+        assert!(
+            !ti.take_submit(),
+            "a press on it submits nothing: the empty field is never refused"
+        );
+        assert!(ti.is_focused, "the press was the field's own");
+        assert!(
+            seen.borrow().as_slice() == ["example.org"],
+            "nothing new went"
+        );
+    }
+
+    // Case `a_secret_fields_show_control_steps_inboard_of_its_go_button`.
+    {
+        let mut ti = TextInput::local()
+            .with_secret(true)
+            .with_initial_value("sesame")
+            .with_trailing_accessory(
+                crate::icons::Icon::ArrowRight,
+                "Unlock",
+                AccessoryAction::Submit,
+            );
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
+        ti.set_focus(true);
+        draw_to_populate(&mut ti);
+        let go = Widget::synthetic_accessibility_rect(&ti, &[0]).expect("accessory rect");
+        let reveal = ti
+            .reveal_control_rect()
+            .expect("a secret field shows its own");
+        assert!(
+            (go.x1 - 240.0).abs() < 1e-9,
+            "the go button ends the field: {go:?}"
+        );
+        assert!(
+            reveal.x1 <= go.x0,
+            "the show/hide control steps inboard of it instead of under it: {reveal:?} beside {go:?}"
+        );
+        let mut doc = AutoCommit::new();
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(go.center().x, go.center().y),
+            mods(false, false),
+        );
+        assert!(drive(&mut ti, &mut doc, &mouse_press(), mods(false, false)));
+        assert!(ti.take_submit(), "a press on the arrow submits");
+        assert_eq!(ti.value(), "sesame", "going is not an edit");
+        assert!(!ti.is_revealed(), "the arrow is not the show control");
+
+        let mut doc = AutoCommit::new();
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(reveal.center().x, reveal.center().y),
+            mods(false, false),
+        );
+        assert!(drive(&mut ti, &mut doc, &mouse_press(), mods(false, false)));
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &mouse_release(),
+            mods(false, false)
+        ));
+        assert!(ti.is_revealed(), "the show control still shows");
+        assert!(!ti.take_submit(), "and showing is not submitting");
     }
 
     // Case `a_span_highlighter_colours_the_single_line`.
