@@ -32,9 +32,9 @@ fn source() -> String {
     joined
 }
 
-/// Ada's room with the shell, compiled from every file of the package as the session compiles
+/// Ada's workspace with the shell, compiled from every file of the package as the session compiles
 /// it, with the ids lock committed beside it.
-fn room() -> Replica {
+fn workspace() -> Replica {
     let source = source();
     // The shell `use`s the three apps its places read (`notes`, `tasks`, `chat`), so they
     // compile first, as the session compiles them.
@@ -234,7 +234,7 @@ fn flag(r: &Replica, name: &str) -> bool {
 
 #[test]
 fn a_settings_action_changes_the_record_and_undo_restores_it() {
-    let mut r = room();
+    let mut r = workspace();
     r.commit();
     assert!(
         is(&r, "bar_finish", "Finish", "solid"),
@@ -257,7 +257,7 @@ fn a_settings_action_changes_the_record_and_undo_restores_it() {
 
 #[test]
 fn applying_a_preset_changes_every_setting_it_names_and_undo_restores_them_all() {
-    let mut r = room();
+    let mut r = workspace();
     r.commit();
     choose(
         &r,
@@ -333,7 +333,7 @@ fn use_preset(r: &mut Replica, preset: &str) {
 
 #[test]
 fn choosing_a_preset_changes_the_layout_the_person_sees() {
-    let mut r = room();
+    let mut r = workspace();
     r.commit();
     // The default: a bar at the top with its parts, and a dock at the bottom along its
     // horizontal run.
@@ -397,7 +397,7 @@ fn the_macos_bar_carries_the_focused_windows_own_menus() {
             under(child, out);
         }
     }
-    let mut r = room();
+    let mut r = workspace();
     r.commit();
     r.host.root_of("so.tilo.lang.notes").unwrap();
     r.commit();
@@ -405,7 +405,7 @@ fn the_macos_bar_carries_the_focused_windows_own_menus() {
     r.commit();
     use_preset(&mut r, "macos");
     // The arrangement is the session's: the scenario writes it in this host, and nothing of it
-    // goes to the room.
+    // goes to the workspace.
     let arrangement = scenario(&r, APP, "a canvas of spaces");
     let meta = r.host.package(APP).unwrap().meta;
     let desk = meta
@@ -453,7 +453,7 @@ fn the_macos_bar_carries_the_focused_windows_own_menus() {
 
 #[test]
 fn a_bar_that_hides_until_reached_for_shows_when_the_pointer_comes_to_the_edge() {
-    let mut r = room();
+    let mut r = workspace();
     r.commit();
     use_preset(&mut r, "minimal");
     assert!(is(&r, "bar_showing", "Showing", "edge_reveal"));
@@ -473,7 +473,7 @@ fn a_bar_that_hides_until_reached_for_shows_when_the_pointer_comes_to_the_edge()
 
 #[test]
 fn a_bar_that_hides_when_a_window_overlaps_it_hides_only_while_one_does() {
-    let mut r = room();
+    let mut r = workspace();
     r.commit();
     use_preset(&mut r, "macos");
     assert!(is(&r, "dock_showing", "Showing", "no_overlap"));
@@ -497,7 +497,7 @@ fn a_bar_that_hides_when_a_window_overlaps_it_hides_only_while_one_does() {
 /// Settings' published resources: here none is published, so each reads as absent (off, empty).
 #[test]
 fn the_quick_settings_stand_over_the_desk() {
-    let mut r = room();
+    let mut r = workspace();
     let root = r.host.root_record(APP, "4jk2lkpt").unwrap();
     let meta = r.host.package(APP).unwrap().meta;
     let id = crate::fixtures::field_id(&meta, "Desk", "here");
@@ -568,6 +568,7 @@ fn undo(r: &mut Replica) {
     };
     let payload = serde_json::to_vec(&edit).unwrap();
     let action: HostHistoryEdit = serde_json::from_slice(&payload).unwrap();
+    // The history edit is on the workspace root, which a tree path names `room`.
     let context = ActionContext::for_resource("room", "history", "history")
         .with_invoker(ActionInvoker::actor(r.name.clone()));
     tilo_actions::apply_local_with_context(
@@ -608,14 +609,14 @@ fn scenario(r: &Replica, app: &str, name: &str) -> Value {
 
 #[test]
 fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_keeps_its_well() {
-    let mut r = room();
+    let mut r = workspace();
     r.host.root_of("so.tilo.lang.notes").unwrap();
     r.commit();
     scenario(&r, "so.tilo.lang.notes", "a week of notes");
     r.commit();
     let meta = r.host.package(APP).unwrap().meta;
     // The arrangement is the session's (`origin: session.arrangement`): the scenario writes it
-    // in this host, as the session's reading would, and nothing of it goes to the room.
+    // in this host, as the session's reading would, and nothing of it goes to the workspace.
     let arrangement = scenario(&r, APP, "a canvas of spaces");
     let desk = meta
         .views
@@ -653,7 +654,7 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
 /// stands as the conversation over it (shell.md §8.1) and keeps no well.
 #[test]
 fn a_placed_run_stands_on_the_canvas_as_its_conversation() {
-    let r = room();
+    let r = workspace();
     let meta = r.host.package(APP).unwrap().meta;
     let arrangement = scenario(&r, APP, "a conversation on the canvas");
     let desk = meta
@@ -687,7 +688,7 @@ fn a_placed_run_stands_on_the_canvas_as_its_conversation() {
 
 #[test]
 fn resources_standing_as_content_stand_on_the_spaces_canvas() {
-    let mut r = room();
+    let mut r = workspace();
     r.host.root_of("so.tilo.lang.notes").unwrap();
     r.commit();
     scenario(&r, "so.tilo.lang.notes", "a week of notes");

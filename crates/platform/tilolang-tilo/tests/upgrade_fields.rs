@@ -18,7 +18,7 @@ const APP: &str = "so.tilo.lang.notes";
 const SOURCE: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 
-/// The saved room a fixture holds as hex.
+/// The saved workspace a fixture holds as hex.
 fn saved(hex: &str) -> AutoCommit {
     let digits: Vec<u8> = hex.bytes().filter(u8::is_ascii_hexdigit).collect();
     let bytes: Vec<u8> = digits
@@ -65,11 +65,11 @@ fn note_ids(replica: &Replica) -> Vec<String> {
 
 /// Each note's body as plain text, as the fixture holds it: the fixture was written before
 /// items were flat, so a note is a map nested in the notebook's `items` collection, under the
-/// note's id, its map in the entry's `v`, its body a text object read whole. The room is walked
-/// rather than read at a path, so a note wherever the notebook stores it is found.
+/// note's id, its map in the entry's `v`, its body a text object read whole. The workspace is
+/// walked rather than read at a path, so a note wherever the notebook stores it is found.
 fn plain_bodies(doc: &AutoCommit, ids: &[String]) -> Vec<String> {
     use automerge::{ObjId, ObjType, ROOT, ReadDoc as _, Value as AmValue};
-    // Every map in the room, by the key it is stored under: a note's map is the `v` of an
+    // Every map in the workspace, by the key it is stored under: a note's map is the `v` of an
     // entry keyed by the note's id.
     fn walk(
         doc: &AutoCommit,
@@ -151,14 +151,14 @@ fn rich_body(replica: &Replica, id: &str) -> (FieldValue, ResourceRef) {
     (value, at)
 }
 
-/// The fixture's room, opened by the build keeping the body as rich text, and the ids of its
+/// The fixture's workspace, opened by the build keeping the body as rich text, and the ids of its
 /// notes: nothing is written yet, the notes still hold the plain text the old build wrote.
-fn room() -> (Replica, Vec<String>) {
-    let room = saved(include_str!("legacy/notes.hex"));
-    let replica = Replica::new("ada", room, &[(SOURCE, IDS)]).0;
+fn workspace() -> (Replica, Vec<String>) {
+    let workspace = saved(include_str!("legacy/notes.hex"));
+    let replica = Replica::new("ada", workspace, &[(SOURCE, IDS)]).0;
     assert!(
         replica.host.take_committed().is_empty(),
-        "opening the room wrote nothing"
+        "opening the workspace wrote nothing"
     );
     let notes = note_ids(&replica);
     assert!(!notes.is_empty(), "the fixture holds notes");
@@ -167,7 +167,7 @@ fn room() -> (Replica, Vec<String>) {
 
 #[test]
 fn every_bodys_words_survive_the_type_change() {
-    let (later, notes) = room();
+    let (later, notes) = workspace();
     // What the old build left: each note's body as a text object.
     let before = plain_bodies(&later.doc, &notes);
     assert!(before.iter().any(|text| !text.is_empty()), "{before:?}");
@@ -194,7 +194,7 @@ fn an_edit_after_the_upgrade_lands_as_a_rich_splice() {
         }
     }
 
-    let (mut later, notes) = room();
+    let (mut later, notes) = workspace();
     later.host.migrate();
     // The upgrade is committed through the executor, as any action is.
     for done in later.host.take_committed() {
@@ -240,7 +240,7 @@ fn an_edit_after_the_upgrade_lands_as_a_rich_splice() {
 
 #[test]
 fn an_upgrade_run_again_writes_nothing() {
-    let (mut later, _) = room();
+    let (mut later, _) = workspace();
     later.host.migrate();
     let first = later.host.take_committed();
     assert!(!first.is_empty(), "the first run wrote the notes");

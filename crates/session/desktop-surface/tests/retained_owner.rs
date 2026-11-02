@@ -91,7 +91,7 @@ struct Source {
 }
 impl TileSource for Source {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
-        let room = workspace.room().to_string();
+        let workspace = workspace.room().to_string();
         let signal = Signal::default();
         self.signals.borrow_mut().insert(tab.id, signal.clone());
         NEXT.with_borrow_mut(|slot| *slot = Some(signal));
@@ -108,9 +108,9 @@ impl TileSource for Source {
             opens: &[],
             create: factory,
         };
-        let records = self.owners.open(APP, &room).unwrap();
+        let records = self.owners.open(APP, &workspace).unwrap();
         let views = Rc::new(
-            ui::application_view::InstanceViewStore::new(self.root.clone(), "device", &room)
+            ui::application_view::InstanceViewStore::new(self.root.clone(), "device", &workspace)
                 .unwrap(),
         );
         let permissions = ui::permissions::SharedPermissions::new(
@@ -193,10 +193,9 @@ fn inactive_retained_workspace_services_only_its_exact_current_checked_owner_bef
         .find(|entry| entry.route.tab == bid.to_string())
         .unwrap()
         .route;
-    let command =
-        serde_json::from_value(serde_json::json!({"kind":"select","generation":"g","route":route}))
-            .unwrap();
-    handle.dispatch(&command, "g").unwrap();
+    handle
+        .dispatch(tilo_desktop_surface::navigation::DeskEffect::Focus { tab: route.tab })
+        .unwrap();
     driver.relayout();
     driver.service_pending_owner_models().unwrap();
     let a = signals.borrow()[&aid].clone();

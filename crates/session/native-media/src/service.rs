@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use runtime_collab::native_media::{
-    Command, Issue, PICTURES_HOLD, Request, Roster, Snapshot, State, WATCH_HOLD,
+    Command, Issue, PICTURES_HOLD, PictureSource, Request, Roster, Shown, Snapshot, State,
+    WATCH_HOLD,
 };
 use tilo_action_broker::services::{
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
@@ -122,11 +123,17 @@ struct Entry {
 
 /// What a watcher of a call sees change between ticks.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one independent flag per change"
+)]
 struct Seen {
     state: State,
     issue: Option<Issue>,
     muted: bool,
     capturing: bool,
+    camera: bool,
+    screen: bool,
 }
 
 impl Seen {
@@ -136,6 +143,8 @@ impl Seen {
             issue: entry.snapshot.issue,
             muted: entry.snapshot.muted,
             capturing: entry.snapshot.capture_active,
+            camera: entry.snapshot.camera,
+            screen: entry.snapshot.screen,
         }
     }
 }
@@ -338,12 +347,10 @@ impl NativeMediaService {
             }
             // A call carries no camera or screen here yet: this device says
             // so instead of showing a picture nobody receives.
-            Command::SetCamera { on: true } => self.unavailable_source(&key, Issue::CameraLost),
-            Command::SetScreen { on: true } => self.unavailable_source(&key, Issue::ScreenLost),
-            Command::SetVolume { .. }
-            | Command::Show { .. }
-            | Command::SetCamera { on: false }
-            | Command::SetScreen { on: false } => {
+            Command::SetCamera { on } => self.set_source(&key, PictureSource::Camera, on),
+            Command::SetScreen { on } => self.set_source(&key, PictureSource::Screen, on),
+            Command::Show { pictures } => self.show(&key, pictures),
+            Command::SetVolume { .. } => {
                 let calls = self
                     .0
                     .calls
@@ -526,13 +533,15 @@ impl NativeMediaService {
         Ok(Shared::snapshot(entry))
     }
 
-    /// A camera or screen this call cannot publish: say why, and change
-    /// nothing else.
+    /// Turn this person's camera or screen in the call on or off: the carrier
+    /// opens the capture (asking for it first) or stops it, and the call says
+    /// from the next answer what it sends. A camera this device has not got,
+    /// or will not be allowed, says why and stays off.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "`entry` borrows from the calls guard until the returned snapshot"
     )]
-    fn unavailable_source(&self, key: &Key, issue: Issue) -> Result<Snapshot, String> {
+    fn set_source(&self, key: &Key, source: PictureSource, on: bool) -> Result<Snapshot, String> {
         let mut calls = self
             .0
             .calls
@@ -541,7 +550,50 @@ impl NativeMediaService {
         let Some(entry) = calls.entries.get_mut(key) else {
             return Ok(idle());
         };
-        entry.snapshot.issue = Some(issue);
+        let Some(options) = entry.backend.clone() else {
+            return Ok(Shared::snapshot(entry));
+        };
+        let result = {
+            let mut backend = options.lock_recover();
+            match source {
+                PictureSource::Camera => backend.set_camera(on),
+                PictureSource::Screen => backend.set_screen(on),
+            }
+        };
+        match result {
+            Ok(()) => {
+                match source {
+                    PictureSource::Camera => entry.snapshot.camera = on,
+                    PictureSource::Screen => entry.snapshot.screen = on,
+                }
+                entry.snapshot.issue = None;
+            }
+            Err(issue) => entry.snapshot.issue = Some(issue),
+        }
+        let answer = Shared::snapshot(entry);
+        drop(calls);
+        self.0.changed.notify_waiters();
+        Ok(answer)
+    }
+
+    /// What this app shows now, each picture at the layer named: the call
+    /// encodes exactly these, and nothing of anyone or anything left out.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "`entry` borrows from the calls guard until the returned snapshot"
+    )]
+    fn show(&self, key: &Key, pictures: Vec<Shown>) -> Result<Snapshot, String> {
+        let calls = self
+            .0
+            .calls
+            .lock()
+            .map_err(|_| "native media unavailable")?;
+        let Some(entry) = calls.entries.get(key) else {
+            return Ok(idle());
+        };
+        if let Some(backend) = &entry.backend {
+            backend.lock_recover().show(pictures);
+        }
         Ok(Shared::snapshot(entry))
     }
 
@@ -603,8 +655,9 @@ impl NativeMediaService {
     }
 
     /// Hand the caller the pictures that arrived after `after`, as soon as
-    /// there are any or after [`PICTURES_HOLD`]: a call with no carrier
-    /// sends none, so the answer is the call's state and no pictures.
+    /// there are any or after [`PICTURES_HOLD`]: an app that asks again as
+    /// each answer lands draws every picture of the call, one after another,
+    /// without polling for them.
     fn pictures(&self, caller: Caller, after: u64) -> NativeMediaFuture {
         let service = self.clone();
         Box::pin(async move {
@@ -616,14 +669,36 @@ impl NativeMediaService {
                 let changed = service.0.changed.notified();
                 tokio::pin!(changed);
                 changed.as_mut().enable();
-                let state = service
-                    .0
-                    .calls
-                    .lock()
-                    .map_err(|_| "native media unavailable")?
-                    .entries
-                    .get(&key)
-                    .map_or(State::Idle, |entry| entry.snapshot.state);
+                let (state, signal, arrived) = {
+                    let calls = service
+                        .0
+                        .calls
+                        .lock()
+                        .map_err(|_| "native media unavailable")?;
+                    match calls.entries.get(&key) {
+                        Some(entry) => {
+                            let (signal, arrived) = entry.backend.as_ref().map_or(
+                                (None, (Vec::new(), after)),
+                                |backend| {
+                                    let mut backend = backend.lock_recover();
+                                    (backend.pictures_changed(), backend.pictures(after))
+                                },
+                            );
+                            (entry.snapshot.state, signal, arrived)
+                        }
+                        None => (State::Idle, None, (Vec::new(), after)),
+                    }
+                };
+                let (pictures, cursor) = arrived;
+                if !pictures.is_empty() {
+                    return Ok(Snapshot {
+                        state,
+                        issue: None,
+                        pictures,
+                        pictures_cursor: cursor,
+                        ..idle()
+                    });
+                }
                 if matches!(state, State::Idle | State::Ended | State::Unavailable)
                     || tokio::time::Instant::now() >= hold
                 {
@@ -634,8 +709,15 @@ impl NativeMediaService {
                         ..idle()
                     });
                 }
+                let woken = async {
+                    match signal {
+                        Some(signal) => signal.notified().await,
+                        None => std::future::pending().await,
+                    }
+                };
                 tokio::select! {
                     () = &mut changed => {}
+                    () = woken => {}
                     () = tokio::time::sleep_until(hold) => {}
                 }
             }

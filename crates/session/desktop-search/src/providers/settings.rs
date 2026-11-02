@@ -104,18 +104,18 @@ struct Row {
 
 /// Settings' pages, then the settings on them.
 pub struct Settings {
-    /// The room Settings opens in.
-    room: String,
+    /// The workspace Settings opens in.
+    workspace: String,
     rows: Vec<Row>,
     fields: Vec<Vec<(String, FieldWeight)>>,
     ranker: ui::search::ListIndex,
 }
 
 impl Settings {
-    /// The pages and settings, opening Settings in `room`.
+    /// The pages and settings, opening Settings in `workspace`.
     #[must_use]
-    pub fn new(room: impl Into<String>) -> Self {
-        Self::changing_in_place(room, &|_| false)
+    pub fn new(workspace: impl Into<String>) -> Self {
+        Self::changing_in_place(workspace, &|_| false)
     }
 
     /// [`Self::new`], leaving out the settings `in_place` names by id: those
@@ -124,7 +124,10 @@ impl Settings {
     /// actions. A row opening Settings at them would only stand beside the
     /// switch itself.
     #[must_use]
-    pub fn changing_in_place(room: impl Into<String>, in_place: &dyn Fn(&str) -> bool) -> Self {
+    pub fn changing_in_place(
+        workspace: impl Into<String>,
+        in_place: &dyn Fn(&str) -> bool,
+    ) -> Self {
         let mut rows = Vec::new();
         let mut fields = Vec::new();
         for page in index::PAGES {
@@ -189,7 +192,7 @@ impl Settings {
             });
         }
         Self {
-            room: room.into(),
+            workspace: workspace.into(),
             rows,
             fields,
             ranker: ui::search::ListIndex::default(),
@@ -210,7 +213,7 @@ impl Settings {
             icon: page_icon(row.slug),
             target: Target::Invoke(Box::new(InvokeTarget::open(
                 SETTINGS_APP,
-                &self.room,
+                &self.workspace,
                 &row.anchor,
             ))),
         }
@@ -291,7 +294,7 @@ mod tests {
 
     #[test]
     fn a_page_is_found_by_its_name_in_any_language_and_opens_at_its_anchor() {
-        let settings = Settings::new("room");
+        let settings = Settings::new("workspace");
         for needle in ["network", "wlan"] {
             let hits = settings.query(needle);
             let page = hits
@@ -312,7 +315,7 @@ mod tests {
 
     #[test]
     fn a_setting_named_leads_its_page_and_opens_at_the_setting() {
-        let settings = Settings::new("room");
+        let settings = Settings::new("workspace");
         let hits = settings.query("keyboard layout");
         let best = hits
             .iter()

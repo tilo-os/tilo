@@ -86,6 +86,19 @@ fn invoke_at(session: &mut Session, clock: std::time::Instant, action: &str) {
     ui::time::testing::with_monotonic_time(clock, || invoke(session, CHROME_RESOURCE, action));
 }
 
+/// Perform the chrome action with `arguments` at `clock`'s instant, so what it
+/// starts moves from there.
+fn invoke_with_at(
+    session: &mut Session,
+    clock: std::time::Instant,
+    action: &str,
+    arguments: &serde_json::Value,
+) {
+    ui::time::testing::with_monotonic_time(clock, || {
+        invoke_with(session, CHROME_RESOURCE, action, arguments);
+    });
+}
+
 /// A session drawing the desk in the light theme.
 fn light_session() -> Session {
     fn light() -> ui::application::ComponentRunnerInputs {
@@ -162,7 +175,7 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
         let b = mapped(&mut session, "so.tilo.file-explorer");
         settle(&mut session, 6);
         capture(&mut session, "two-windows");
-        invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
+        invoke(&mut session, CHROME_RESOURCE, "overview");
         settle(&mut session, 8);
         capture(&mut session, "overview");
         drop((a, b));
@@ -172,17 +185,17 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
     {
         let (mut session, _host) = session_with_quick_settings();
         settle(&mut session, 2);
-        invoke(&mut session, CHROME_RESOURCE, "toggle-quick-settings");
+        invoke(&mut session, CHROME_RESOURCE, "quick-settings");
         settle(&mut session, 8);
         capture(&mut session, "quick-settings");
     }
 
     // Search, opened from the desk.
     {
-        use tilo_desktop::desktop_actions::{DESK_RESOURCE, SEARCH_RESOURCE};
+        use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE};
         let mut session = session();
         settle(&mut session, 2);
-        invoke(&mut session, DESK_RESOURCE, "open-search");
+        invoke(&mut session, DESK_RESOURCE, "search");
         until_session(&mut session, |session| {
             find_resource(&session.resources(), SEARCH_RESOURCE).is_some()
         });
@@ -358,7 +371,7 @@ fn desk_scene_the_workspace_menu() {
     let mut session = session();
     let _clients = desk_of_three(&mut session);
     settle(&mut session, 8);
-    invoke(&mut session, CHROME_RESOURCE, "toggle-workspace-menu");
+    invoke(&mut session, CHROME_RESOURCE, "workspace-menu");
     settle(&mut session, 8);
     capture_to(&mut session, &dir, "workspace-menu");
 }
@@ -424,7 +437,7 @@ fn desk_scene_the_overview() {
         !directory_open(&session),
         "nothing is open over the desk before the overview is"
     );
-    invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
+    invoke(&mut session, CHROME_RESOURCE, "overview");
     settle(&mut session, 10);
     assert_ne!(
         session.accessible_labels(),
@@ -463,7 +476,7 @@ fn desk_scene_the_light_theme() {
     let mut session = light_session();
     settle(&mut session, 6);
     capture_to(&mut session, &dir, "desk-empty-light");
-    invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
+    invoke(&mut session, CHROME_RESOURCE, "overview");
     settle(&mut session, 10);
     capture_to(&mut session, &dir, "overview-light");
 }
@@ -487,7 +500,12 @@ fn desk_motion_frames_match_the_old_shells_films() {
 
     // The overview on its way open, and on its way closed.
     let mut clock = ui::time::now();
-    invoke_at(&mut session, clock, "show-overview");
+    invoke_with_at(
+        &mut session,
+        clock,
+        "overview",
+        &serde_json::json!({"open": true}),
+    );
     for (millis, name) in [
         (60_u64, "overview-open-60"),
         (60, "overview-open-120"),
@@ -500,7 +518,12 @@ fn desk_motion_frames_match_the_old_shells_films() {
         frame(&dir, "overview-open-60") != frame(&dir, "overview-open-200"),
         "the overview moves while it opens, rather than appearing at once"
     );
-    invoke_at(&mut session, clock, "hide-overview");
+    invoke_with_at(
+        &mut session,
+        clock,
+        "overview",
+        &serde_json::json!({"open": false}),
+    );
     for (millis, name) in [
         (60_u64, "overview-close-60"),
         (60, "overview-close-120"),
@@ -515,7 +538,7 @@ fn desk_motion_frames_match_the_old_shells_films() {
     );
 
     // The workspace menu on its way in.
-    invoke_at(&mut session, clock, "toggle-workspace-menu");
+    invoke_at(&mut session, clock, "workspace-menu");
     for (millis, name) in [
         (60_u64, "workspace-menu-60"),
         (60, "workspace-menu-120"),
@@ -524,7 +547,7 @@ fn desk_motion_frames_match_the_old_shells_films() {
         capture_at(&mut session, &dir, &mut clock, millis, name);
     }
     step_from(&mut session, &mut clock, 400);
-    invoke_at(&mut session, clock, "toggle-workspace-menu");
+    invoke_at(&mut session, clock, "workspace-menu");
 
     // A workspace switch on its way.
     ui::time::testing::with_monotonic_time(clock, || {
@@ -559,7 +582,7 @@ fn the_overview_pictures_the_desks_windows() {
         "nothing is pictured while the overview is away"
     );
 
-    invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
+    invoke(&mut session, CHROME_RESOURCE, "overview");
     settle(&mut session, 4);
     let pictures = session.overview_pictures();
     let (window, rect) = pictures
@@ -603,7 +626,7 @@ fn the_overview_pictures_a_private_window_as_its_placeholder() {
     let mut session = session();
     let _client = mapped(&mut session, "so.tilo.passwords");
     settle(&mut session, 4);
-    invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
+    invoke(&mut session, CHROME_RESOURCE, "overview");
     settle(&mut session, 4);
     let pictures = session.overview_pictures();
     let (_, rect) = pictures
@@ -669,7 +692,7 @@ fn the_desk_draws_the_persons_theme() {
             region_luminance(&shot.rgba, size, (400, 4, 480, 24)),
             region_luminance(&shot.rgba, size, (400, 300, 480, 200)),
         );
-        invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
+        invoke(&mut session, CHROME_RESOURCE, "overview");
         settle(&mut session, 10);
         let shot = session
             .compositor()

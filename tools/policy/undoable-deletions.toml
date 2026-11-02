@@ -73,11 +73,11 @@ what it is given back nor what it lost.
 action = "workspace.delete"
 file = "crates/session/shell/src/shell/actions/all.rs"
 reason = """
-Deleting a workspace deletes it here and, through the room's host, on the
-person's other devices, and this device leaves the room in the same step: it is
-joined again rather than undone. The other members' copies and the room's own
-record are not in this machine's document, so Undo cannot bring the workspace
-back — joining it again is how it returns.
+Deleting a workspace deletes it here and, through the workspace's host, on the
+person's other devices, and this device leaves the workspace in the same step: it
+is joined again rather than undone. The other members' copies and the
+workspace's own record are not in this machine's document, so Undo cannot bring
+the workspace back — joining it again is how it returns.
 """
 
 [[deletion]]

@@ -1,5 +1,5 @@
 [Unit]
-Description=Tilo room store image
+Description=Tilo store image
 Documentation=file:///usr/libexec/tilo-store-volume
 # Attaches the image of an image-backed store (an install without a store
 # partition). The store's fstab line requires this unit, so the mount waits

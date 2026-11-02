@@ -1,14 +1,14 @@
-//! A record every app of a room opens beside its own: the workspace's
+//! A record every app of a workspace opens beside its own: the workspace's
 //! emoji, kept by Chat and read and added to from any app's window, the
-//! same record on each, decided by the room's grants on Chat's resource.
+//! same record on each, decided by the workspace's grants on Chat's resource.
 
 use tilo_app::prelude::*;
 use tilo_app::tilo_workspace_emoji::{self as emoji, WorkspaceEmoji, workspace_emoji as verbs};
 
-/// The workspace's room, which both apps' windows are in.
-const ROOM: &str = "6f0c3a52-8e1b-4d6a-9c2f-3b7e5d1a4c90";
+/// The workspace both apps' windows are in.
+const WORKSPACE: &str = "6f0c3a52-8e1b-4d6a-9c2f-3b7e5d1a4c90";
 
-/// A note in a shared room.
+/// A note in a shared workspace.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Note {
     pub text: String,
@@ -36,7 +36,7 @@ impl ResourceApp for ChatApp {
     }
 }
 
-/// Another app of the room, drawing the workspace's emoji by name.
+/// Another app of the workspace, drawing the workspace's emoji by name.
 struct NotesApp;
 
 impl ResourceApp for NotesApp {
@@ -84,11 +84,15 @@ fn names(record: &WorkspaceRecord<WorkspaceEmoji>) -> Vec<String> {
 }
 
 #[test]
-fn every_app_of_the_room_reads_and_adds_to_the_one_record_its_owner_keeps() {
-    let mut chat = TestApp::<ChatApp>::in_workspace(ROOM).unwrap();
-    let mut notes = TestApp::<NotesApp>::in_workspace(ROOM).unwrap();
-    let kept = chat.workspace::<WorkspaceEmoji>(emoji::OWNER).unwrap();
-    let in_notes = notes.workspace::<WorkspaceEmoji>(emoji::OWNER).unwrap();
+fn every_app_of_the_workspace_reads_and_adds_to_the_one_record_its_owner_keeps() {
+    let mut chat = TestApp::<ChatApp>::in_workspace(WORKSPACE).unwrap();
+    let mut notes = TestApp::<NotesApp>::in_workspace(WORKSPACE).unwrap();
+    let kept = chat
+        .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
+        .unwrap();
+    let in_notes = notes
+        .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
+        .unwrap();
     let route = kept.record().route().unwrap();
     assert_eq!(route, in_notes.record().route().unwrap(), "one record");
     assert_eq!(route.app_id, emoji::OWNER, "on its owner's route");
@@ -126,9 +130,11 @@ fn every_app_of_the_room_reads_and_adds_to_the_one_record_its_owner_keeps() {
 }
 
 #[test]
-fn the_rooms_grants_on_the_owners_resource_decide_from_any_app() {
+fn the_workspaces_grants_on_the_owners_resource_decide_from_any_app() {
     let mut notes = TestApp::<NotesApp>::with_role(tilo_app::Role::Viewer).unwrap();
-    let record = notes.workspace::<WorkspaceEmoji>(emoji::OWNER).unwrap();
+    let record = notes
+        .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
+        .unwrap();
     assert!(!record.may("add-emoji"), "a viewer adds none");
     assert!(
         record
@@ -139,7 +145,9 @@ fn the_rooms_grants_on_the_owners_resource_decide_from_any_app() {
 
     // An editor adds and removes their own, but not someone else's.
     let mut notes = TestApp::<NotesApp>::with_role(tilo_app::Role::Editor).unwrap();
-    let record = notes.workspace::<WorkspaceEmoji>(emoji::OWNER).unwrap();
+    let record = notes
+        .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
+        .unwrap();
     assert!(record.may("add-emoji") && record.may("remove-emoji"));
     assert!(
         !record.may("remove-any-emoji"),
@@ -147,10 +155,14 @@ fn the_rooms_grants_on_the_owners_resource_decide_from_any_app() {
     );
 
     // No app keeps it but its owner.
-    assert!(notes.workspace::<WorkspaceEmoji>(NotesApp::ID).is_none());
+    assert!(
+        notes
+            .shared_workspace::<WorkspaceEmoji>(NotesApp::ID)
+            .is_none()
+    );
 }
 
-/// The first emoji added in a fresh room, from a refresh that runs while
+/// The first emoji added in a fresh workspace, from a refresh that runs while
 /// something reads the record's store (as a browser page's frame can):
 /// the action waits for the store instead of failing, and is applied, in
 /// the order asked for, once the store is free.
@@ -159,9 +171,11 @@ fn an_action_asked_for_while_the_store_is_in_use_waits_for_it() {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let mut chat = TestApp::<ChatApp>::in_workspace(ROOM).unwrap();
-    let kept = chat.workspace::<WorkspaceEmoji>(emoji::OWNER).unwrap();
-    assert!(names(&kept).is_empty(), "a fresh room has none yet");
+    let mut chat = TestApp::<ChatApp>::in_workspace(WORKSPACE).unwrap();
+    let kept = chat
+        .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
+        .unwrap();
+    assert!(names(&kept).is_empty(), "a fresh workspace has none yet");
     let settled = Rc::new(RefCell::new(Vec::new()));
     kept.record()
         .read(|_| {

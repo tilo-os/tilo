@@ -11,7 +11,7 @@
 //! unreachable worker only ever costs time, never a different answer.
 //!
 //! The inputs a job may read are only the content the invocation's own
-//! content parameters name ([`content_inputs`]), as the invoker's room
+//! content parameters name ([`content_inputs`]), as the invoker's workspace
 //! reaches it; never a path, an environment or an argument vector.
 
 use std::future::Future;
@@ -20,13 +20,14 @@ use std::time::Duration;
 
 use crate::{
     ARGUMENTS_JSON_PREFIX, ActionAddress, ActionOutput, ActionParam, Offload, content_hash,
+    remote::InvokeRequest,
 };
 
 /// One admitted invocation of an offloadable action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OffloadRequest {
-    /// The room (workspace) it was invoked in.
-    pub room: String,
+    /// The workspace it was invoked in.
+    pub workspace: String,
     pub app_id: String,
     /// The invoked action.
     pub address: ActionAddress,
@@ -63,6 +64,20 @@ pub trait ActionOffload: Send + Sync {
     /// Run `request` on the best-placed other device, or say why it should
     /// run here.
     fn offload(&self, request: OffloadRequest) -> OffloadFuture<'_>;
+
+    /// [`Self::offload`] for the invocation `request` was admitted from, as
+    /// this device's door would send it to another device: a route that runs
+    /// it elsewhere sends the invocation the person made, so the device that
+    /// runs it answers that one and a retry there is not a second run. A
+    /// route with no device to send it to keeps its own way of running it.
+    fn offload_invocation(
+        &self,
+        request: OffloadRequest,
+        invocation: InvokeRequest,
+    ) -> OffloadFuture<'_> {
+        let _ = invocation;
+        self.offload(request)
+    }
 
     /// The app's handler ran `request` here in `elapsed`: what placement
     /// weighs moving its inputs against next time.

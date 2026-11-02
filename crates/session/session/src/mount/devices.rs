@@ -3,12 +3,14 @@
 //!
 //! The session publishes the reading ([`crate::devices`]): `session:devices`
 //! carries the person's devices as the fabric says they are, what plays here
-//! that one of them can take, and the sounds that travel between them. One
-//! reading of it becomes the section's rows, the count on the root page and
-//! the devices an accessory can move to ([`land`]), and the panel is written
-//! only when that reading moved. A pressed row is answered here ([`follow`]):
-//! what plays here is sent to that device, or Settings opens where the device
-//! is managed.
+//! that one of them can take, the sounds that travel between them and the
+//! session one of them hands this one. One reading of it becomes the
+//! section's rows, the count on the root page, the devices an accessory can
+//! move to and the card's offer ([`land`]), and the panel is written only when
+//! that reading moved. A pressed row is one of that resource's actions, which
+//! the panel asks through the door: the session carries it out here
+//! ([`press`]), sending what plays here to that device or opening Settings
+//! where the device is managed.
 //!
 //! The same section lists the sounds this device can send to another, the
 //! routes those sounds travel on, and the devices asking for this device's
@@ -19,6 +21,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use serde_json::{Map, Value};
+use tilo_actions::ActionAddress;
 use tilo_desktop::overlays::Slot;
 use tilo_device_fabric::link::SharedLink;
 use tilo_device_fabric::{DeviceId, MediaSourceLocator, PersonalFabricAction};
@@ -38,11 +42,14 @@ pub(crate) struct Devices {
     /// The sound of this device's that a press on a device would send, as
     /// the reading carries it.
     pub(crate) chosen: Rc<RefCell<Option<u64>>>,
+    /// The presses the panel made on the rows, carried out by the loop.
+    pub(crate) pressed: Rc<RefCell<Vec<devices::Press>>>,
 }
 
 /// Land the person's devices in the panel: the Devices section's rows, the
-/// count on the root page and the devices an accessory can move to, as the
-/// session publishes them. Returns whether the panel shows that reading now.
+/// count on the root page, the devices an accessory can move to and the
+/// session another device offers, as the session publishes them. Returns
+/// whether the panel shows that reading now.
 pub(crate) fn land(shared: &Shared) -> bool {
     let Some(device) = &shared.device else {
         return false;
@@ -64,7 +71,9 @@ pub(crate) fn land(shared: &Shared) -> bool {
     let rows = reading.rows();
     let count = reading.count();
     let targets = reading.targets();
+    let offer = reading.offer.clone();
     *shared.devices.fed.borrow_mut() = Some(reading);
+    device.handoff(offer);
     device.update(|state| {
         state.device_rows = rows;
         state.personal_devices = Some(count);
@@ -73,21 +82,45 @@ pub(crate) fn land(shared: &Shared) -> bool {
     true
 }
 
-/// Answer a press on a row of the Devices section. Whether this was one of
+/// What a press on a row of the Devices section asks of the session: the
+/// resource's own verb, which the loop carries out. Whether this was one of
 /// the panel's effects this session knows.
 pub(crate) fn follow(shared: &Shared, request: &SessionRequest) -> bool {
     let SessionRequest::Effect(QsEffect::PressDevice { row, part }) = request else {
         return false;
     };
-    press(shared, row, *part);
+    let mut arguments = Map::new();
+    arguments.insert("row".into(), Value::from(row.clone()));
+    arguments.insert(
+        "part".into(),
+        serde_json::to_value(part).unwrap_or(Value::Null),
+    );
+    let address = ActionAddress::new(devices::RESOURCE, "press");
+    if let Err(error) = shared.doors.invoke(&address, &arguments) {
+        // The rows are the reading, so a press that did not reach the session
+        // changes nothing the person sees.
+        tracing::debug!(%error, row, "the press on a device did not reach the session");
+    }
     true
+}
+
+impl Shared {
+    /// Carry out the presses the published verb took and holds here: a press
+    /// on a row of the person's devices, which sends what plays here over the
+    /// fabric, wakes the device or opens Settings where it is managed.
+    pub(crate) fn carry_out_presses(&self) {
+        let pressed = std::mem::take(&mut *self.devices.pressed.borrow_mut());
+        for asked in pressed {
+            press(self, &asked.row, asked.part);
+        }
+    }
 }
 
 /// What pressing `part` of `row` does: pick a sound to send, send what was
 /// picked, answer a device asking for this one's sound, stop a route, or open
 /// Settings where a device is managed. A button a row does not offer, and a
 /// row whose device left the fabric, do nothing.
-fn press(shared: &Shared, row: &str, part: RowPart) {
+pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
     let Some(fabric) = &shared.fabric else {
         return;
     };
@@ -111,7 +144,12 @@ fn press(shared: &Shared, row: &str, part: RowPart) {
     let Ok(target) = DeviceId::new(row) else {
         return;
     };
-    let reading = devices::current(fabric, &shared.readings, &shared.devices.chosen);
+    let reading = devices::current(
+        fabric,
+        &shared.readings,
+        &shared.devices.chosen,
+        &shared.handoff,
+    );
     let Some(device) = reading.devices.into_iter().find(|device| device.id == row) else {
         return;
     };

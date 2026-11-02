@@ -5,7 +5,7 @@
 //! `tilo-launcher` confines with on Linux:
 //!
 //! - the app's one writable directory, located by [`launcher::appdir`] (per
-//!   room, per package) under `~/Library/Application Support/Tilo`, beside the
+//!   workspace, per package) under `~/Library/Application Support/Tilo`, beside the
 //!   runtime profile;
 //! - the user's grants, already evaluated into a
 //!   [`launcher::capabilities::CapabilityPlan`];
@@ -73,7 +73,7 @@ pub fn data_home(home: &Path) -> PathBuf {
 }
 
 pub fn container_dir(data_home: &Path, workspace_id: Option<&str>, package_id: &str) -> PathBuf {
-    appdir::host_app_dir(data_home, &appdir::room_slug(workspace_id), package_id)
+    appdir::host_app_dir(data_home, &appdir::workspace_slug(workspace_id), package_id)
 }
 
 /// Create the container (and its XDG tree and `tmp`) and return its path.
@@ -93,13 +93,13 @@ pub fn prepare_container(
 }
 
 /// The [`DARWIN_DIR_SUFFIX_ENV`] of the app whose container is `container`:
-/// one path component per room and package. `libsystem` accepts no `/` in
+/// one path component per workspace and package. `libsystem` accepts no `/` in
 /// it, and `+` is outside the alphabet of both components, so two containers
 /// never share a suffix.
 pub fn darwin_dir_suffix(container: &Path) -> Option<String> {
     let package = container.file_name()?.to_str()?;
-    let room = container.parent()?.file_name()?.to_str()?;
-    Some(format!("so.tilo+{room}+{package}"))
+    let workspace = container.parent()?.file_name()?.to_str()?;
+    Some(format!("so.tilo+{workspace}+{package}"))
 }
 
 /// The app's own directory below the per-user cache directory `user_cache`,
@@ -109,13 +109,13 @@ pub fn darwin_dir_suffix(container: &Path) -> Option<String> {
 /// # Errors
 ///
 /// Returns the error of creating it; `InvalidInput` when `container` has no
-/// room and package to name it after.
+/// workspace and package to name it after.
 pub fn prepare_darwin_cache(user_cache: &Path, container: &Path) -> io::Result<DarwinCache> {
     use std::os::unix::fs::DirBuilderExt as _;
     let suffix = darwin_dir_suffix(container).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "the container names no room and package",
+            "the container names no workspace and package",
         )
     })?;
     let dir = std::fs::canonicalize(user_cache)?.join(&suffix);
@@ -740,8 +740,8 @@ mod tests {
     #[test]
     fn each_container_gets_its_own_cache_directory() {
         let data = Path::new("/Users/u/Library/Application Support/Tilo");
-        let suffix = |room: &str, package: &str| {
-            darwin_dir_suffix(&container_dir(data, Some(room), package)).unwrap()
+        let suffix = |workspace: &str, package: &str| {
+            darwin_dir_suffix(&container_dir(data, Some(workspace), package)).unwrap()
         };
         assert_eq!(suffix("r", "so.tilo.notes"), "so.tilo+r+so.tilo.notes");
         assert_ne!(suffix("a.b", "c"), suffix("a", "b.c"));
@@ -931,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn containers_live_beside_the_runtime_profile_per_room_and_package() {
+    fn containers_live_beside_the_runtime_profile_per_workspace_and_package() {
         let home = Path::new("/Users/u");
         let data = data_home(home);
         assert_eq!(data, Path::new("/Users/u/Library/Application Support/Tilo"));

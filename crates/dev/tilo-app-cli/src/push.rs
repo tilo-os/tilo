@@ -1,13 +1,13 @@
-//! `tilo-app push`: run a build of an app, or a bot's program, in a room
-//! that is running now, for everyone in it.
+//! `tilo-app push`: run a build of an app, or a bot's program, in a
+//! workspace that is running now, for everyone in it.
 //!
-//! The room records which version of the app it runs (its `install-app`
+//! The workspace records which version of the app it runs (its `install-app`
 //! governance action); every member is to run it, and a change
 //! made with another version waits until its author has. A bot's program
-//! goes to the room's host as the room's request for that bot
+//! goes to the workspace's host as the workspace's request for that bot
 //! (`request-bot`), which the host runs at once, keeping the bot's
 //! installation. This machine acts as one of the developer's devices,
-//! enrolled like any other (`--identity`), and the room decides whether
+//! enrolled like any other (`--identity`), and the workspace decides whether
 //! that person may.
 
 use std::path::{Path, PathBuf};
@@ -21,11 +21,12 @@ pub struct PushArgs {
     /// App directory, or a file or directory inside it. Defaults to the
     /// current directory.
     path: Option<PathBuf>,
-    /// The room: `tilo-room:<relay>[@<ip:port>]/<workspace>/<room>`.
-    #[arg(long)]
-    room: String,
+    /// The workspace to push to, by its host's link:
+    /// `tilo-room:<relay>[@<ip:port>]/<workspace>/<room>`.
+    #[arg(long = "room")]
+    workspace: String,
     /// This machine's Tilo identity: a device of yours, enrolled for the
-    /// person the room knows (`tilo-enroll certify`). Defaults to
+    /// person the workspace knows (`tilo-enroll certify`). Defaults to
     /// `$TILO_IDENTITY`.
     #[arg(long)]
     identity: Option<PathBuf>,
@@ -48,19 +49,19 @@ pub struct PushArgs {
     version: Option<String>,
 }
 
-/// What `tilo-app push` sends the room: the governance action and its
+/// What `tilo-app push` sends the workspace: the governance action and its
 /// arguments.
 #[derive(Debug, PartialEq)]
 pub struct Push {
     pub action: &'static str,
     pub argument: Map<String, Value>,
-    /// The package file the room's host keeps for its members to fetch,
+    /// The package file the workspace's host keeps for its members to fetch,
     /// handed over before the action names it as `file`.
     pub upload: Option<PathBuf>,
 }
 
 pub fn run_push(args: PushArgs) -> Result<Value> {
-    let link: RoomLink = args.room.parse().map_err(anyhow::Error::msg)?;
+    let link: RoomLink = args.workspace.parse().map_err(anyhow::Error::msg)?;
     let push = if let Some(program) = &args.bot {
         bot_push(
             program,
@@ -165,7 +166,7 @@ fn newest_package(dist: &Path) -> Result<PathBuf> {
     })
 }
 
-/// The room's `install-app` for the package `package` built from the app in
+/// The workspace's `install-app` for the package `package` built from the app in
 /// `app_dir`: the surface its changes name (the BLAKE3 of the app's
 /// `surface.toml`), the package's `tapp:` hash and the key that signed it.
 ///
@@ -189,7 +190,7 @@ pub fn app_push(app_dir: &Path, package: &Path, dev: bool) -> Result<Push> {
     let surface_file = app_dir.join("surface.toml");
     let surface = std::fs::read(&surface_file).with_context(|| {
         format!(
-            "read {}: the room decides changes against it (`tilo-app surface`)",
+            "read {}: the workspace decides changes against it (`tilo-app surface`)",
             surface_file.display()
         )
     })?;
@@ -212,7 +213,7 @@ pub fn app_push(app_dir: &Path, package: &Path, dev: bool) -> Result<Push> {
     })
 }
 
-/// The room's `request-bot` carrying the program in `program`.
+/// The workspace's `request-bot` carrying the program in `program`.
 ///
 /// # Errors
 /// The program cannot be read or does not parse.

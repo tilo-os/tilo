@@ -150,7 +150,7 @@ impl WindowWarmth {
 mod tests {
     use super::*;
 
-    fn rooms() -> Vec<WorkspaceId> {
+    fn workspaces() -> Vec<WorkspaceId> {
         vec![WorkspaceId(1), WorkspaceId(2)]
     }
 
@@ -166,7 +166,7 @@ mod tests {
             warmth.due(Some(WorkspaceId(1)), now),
             "nothing looked at yet"
         );
-        assert!(warmth.update(&rooms(), Some(WorkspaceId(1)), now, &mut temperature));
+        assert!(warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut temperature));
         assert_eq!(
             warmth.active(),
             WindowAppearance {
@@ -197,18 +197,26 @@ mod tests {
     fn the_revision_moves_only_when_an_appearance_does() {
         let mut warmth = WindowWarmth::new(PresenceHue::Blue);
         let now = Instant::now();
-        warmth.update(&rooms(), Some(WorkspaceId(1)), now, &mut temperature);
+        warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut temperature);
         let first = warmth.revision();
-        assert!(!warmth.update(&rooms(), Some(WorkspaceId(1)), now, &mut temperature));
+        assert!(!warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut temperature));
         assert_eq!(warmth.revision(), first, "the same temperatures again");
         assert!(
-            warmth.update(&rooms(), Some(WorkspaceId(2)), now, &mut temperature),
-            "switching rooms changes what the chrome wears"
+            warmth.update(&workspaces(), Some(WorkspaceId(2)), now, &mut temperature),
+            "switching workspaces changes what the chrome wears"
         );
-        assert_eq!(warmth.revision(), first, "but no window's own room moved");
+        assert_eq!(
+            warmth.revision(),
+            first,
+            "but no window's own workspace moved"
+        );
         let mut cooler = |id: WorkspaceId| (id == WorkspaceId(1)).then_some(200.0);
-        warmth.update(&rooms(), Some(WorkspaceId(2)), now, &mut cooler);
-        assert_ne!(warmth.revision(), first, "a new wallpaper retints its room");
+        warmth.update(&workspaces(), Some(WorkspaceId(2)), now, &mut cooler);
+        assert_ne!(
+            warmth.revision(),
+            first,
+            "a new wallpaper retints its workspace"
+        );
         let second = warmth.revision();
         assert!(!warmth.set_your_colour(PresenceHue::Blue));
         assert!(warmth.set_your_colour(PresenceHue::Violet));
@@ -222,13 +230,13 @@ mod tests {
     fn a_temperature_within_half_a_degree_is_the_same_one() {
         let mut warmth = WindowWarmth::new(PresenceHue::Teal);
         let now = Instant::now();
-        warmth.update(&rooms(), Some(WorkspaceId(1)), now, &mut temperature);
+        warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut temperature);
         let first = warmth.revision();
         let mut barely = |id: WorkspaceId| (id == WorkspaceId(1)).then_some(40.4);
-        assert!(!warmth.update(&rooms(), Some(WorkspaceId(1)), now, &mut barely));
+        assert!(!warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut barely));
         assert_eq!(warmth.revision(), first);
         let mut justover = |id: WorkspaceId| (id == WorkspaceId(1)).then_some(40.5);
-        assert!(warmth.update(&rooms(), Some(WorkspaceId(1)), now, &mut justover));
+        assert!(warmth.update(&workspaces(), Some(WorkspaceId(1)), now, &mut justover));
         assert_ne!(warmth.revision(), first);
     }
 }

@@ -19,8 +19,7 @@ use std::rc::Rc;
 use serde_json::{Map, Value};
 use tilo_actions::remote::{
     ActionHost as _, Caller, CatalogueQuery, CatalogueRow, InvokeArgument, InvokeRequest,
-    MAX_CATALOGUE_PAGE, PendingPoll, RemoteActionTarget, workspace_provider,
-    workspace_provider_room,
+    MAX_CATALOGUE_PAGE, PendingPoll, RemoteActionTarget, provider_workspace, workspace_provider,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_automation::{SHORTCUTS_APP_ID, quick_action_arguments, quick_action_input};
@@ -104,7 +103,7 @@ impl ShortcutsProvider {
                 if !args.is_empty() {
                     arguments.extend(args.to_json());
                 }
-                if let Some(room) = workspace_provider_room(&target.provider)
+                if let Some(room) = provider_workspace(&target.provider)
                     && let Some(shortcut) = run_target(&target.address)
                 {
                     // A request that says where to go on from continues that

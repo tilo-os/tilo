@@ -32,7 +32,7 @@ const TOP_MARGIN: f64 = 4.0;
 
 fn tree(width: WindowWidth) -> WorkspaceTree {
     let ws_id = WorkspaceId(7);
-    let mut ws = Workspace::in_room(ws_id, RoomId::parse(ROOM).expect("room id"), "Desk");
+    let mut ws = Workspace::in_workspace(ws_id, RoomId::parse(ROOM).expect("room id"), "Desk");
     let tab = GROUP.saturating_add(5000);
     ws.strips = vec![Strip {
         id: STRIP,

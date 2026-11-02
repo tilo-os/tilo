@@ -7,12 +7,12 @@ and drives them through the flow a pair of users would take:
 
   1. the host mints an invite from the command palette (`/invite`),
   2. the peer pastes it into the palette's connect prompt (`/connect`),
-  3. a change the host makes to the room shows up in the peer's own
+  3. a change the host makes to the workspace shows up in the peer's own
      state,
   4. the host grants the peer a capability; the peer's own action gate
      starts permitting the action,
   5. the host revokes it; the peer's own action gate stops,
-  6. the peer tries to administer the room and is refused.
+  6. the peer tries to administer the workspace and is refused.
 
 Every claim is read back from the *other* session's `state_dump` or
 from its own `check_action`, never from the side that made the change.
@@ -52,7 +52,7 @@ DEMO_RESOURCE = "notes.notebook"
 # one that shows up on screen with a Revoke button next to it.
 DEMO_PATH = "/var/workspace/shared"
 
-# How long to wait for a room change to cross. Replication is pulled on
+# How long to wait for a workspace change to cross. Replication is pulled on
 # a fixed cadence, so this is that cadence plus room for a slow frame.
 SYNC_TIMEOUT_S = 25.0
 
@@ -426,7 +426,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
     claim("the new workspace is the active one",
           host_ws["id"], after_tree["workspaces"][before]["id"])
     note(f"host active workspace: {host_ws['name']} (id {host_ws['id']}, "
-         f"room {host_ws['room']})")
+         f"workspace {host_ws['room']})")
     claim("the workspace it just made has an owner", host_ws["owner"], host.user)
     claim("and the host may administer it",
           host.chrome()["may_administer_active"], True)
@@ -450,8 +450,8 @@ def run(host: Session, peer: Session, shots: str) -> None:
     step("4.", "the peer joins through the palette's connect prompt")
     peer_ws_before = peer.active_workspace()
     note(f"peer active workspace before: {peer_ws_before['name']} "
-         f"(room {peer_ws_before['room']})")
-    claim("peer starts in a different room",
+         f"(workspace {peer_ws_before['room']})")
+    claim("peer starts in a different workspace",
           peer_ws_before["room"] != host_ws["room"], True)
     peer.run_palette_command("connect to peer", expect_id="result:0")
     opened = wait_for(
@@ -466,24 +466,24 @@ def run(host: Session, peer: Session, shots: str) -> None:
         lambda: (peer.chrome()["peer_sync"]["status"] or "").startswith("Joined"),
         timeout=15)
     note(f"peer status: {peer.chrome()['peer_sync']['status']}")
-    claim("the peer joined a room", bool(status), True)
+    claim("the peer joined a workspace", bool(status), True)
     peer.key("Escape")
     peer_ws = peer.active_workspace()
-    claim("the peer is now in the host's room", peer_ws["room"], host_ws["room"])
-    # Joining also records who administers the room. The value comes from
-    # the invite's signature, so the peer knows the room's owner and
+    claim("the peer is now in the host's workspace", peer_ws["room"], host_ws["room"])
+    # Joining also records who administers the workspace. The value comes from
+    # the invite's signature, so the peer knows the workspace's owner and
     # capabilities may only ever arrive from that peer — including not
-    # from another guest of the same room.
-    claim("the peer records the inviter as the room's governance authority",
+    # from another guest of the same workspace.
+    claim("the peer records the inviter as the workspace's governance authority",
           peer.tree().get("room_authority", {}).get(peer_ws["room"]),
           {"Peer": f"iroh:{peer_id_of(host)}"})
-    claim("the host still governs the room it made",
+    claim("the host still governs the workspace it made",
           host.tree().get("room_authority", {}).get(host_ws["room"], "Local"),
           "Local")
     peer.snapshot(os.path.join(shots, "03-peer-joined.png"))
 
-    step("5.", "a change the host makes to the room reaches the peer")
-    marker = f"Shared room {int(time.time())}"
+    step("5.", "a change the host makes to the workspace reaches the peer")
+    marker = f"Shared workspace {int(time.time())}"
     rename_active_workspace(host, marker)
     claim("host renamed its workspace", host.active_workspace()["name"], marker)
     arrived = wait_for(lambda: peer.active_workspace()["name"] == marker)
@@ -493,7 +493,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
     # decides who may administer. Read it off the peer.
     claim("the peer's copy records the host as owner",
           peer.active_workspace()["owner"], host.user)
-    claim("the peer may not administer the room it joined",
+    claim("the peer may not administer the workspace it joined",
           peer.chrome()["may_administer_active"], False)
     host.snapshot(os.path.join(shots, "04-host-after-rename.png"))
     peer.snapshot(os.path.join(shots, "05-peer-after-rename.png"))
@@ -542,7 +542,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
     host.open_permissions_tab()
     host.snapshot(os.path.join(shots, "06-host-permissions-after-grant.png"))
 
-    step("8.", "the peer tries to administer the room, and is refused")
+    step("8.", "the peer tries to administer the workspace, and is refused")
     peer_grant = peer.grant("app:org.tilo.Rogue", "workspace", "write")
     note(f"peer grant -> {json.dumps(peer_grant)}")
     claim("the peer's grant was refused", "err" in peer_grant, True)
@@ -601,7 +601,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
           after_revoke.get("answer", {}).get("permitted"), False)
     # Snapshot the peer while its settings modal is still up: the row
     # that was there in shot 07 is gone, and the Permissions pill with
-    # it, because the room no longer holds a grant the tab can express.
+    # it, because the workspace no longer holds a grant the tab can express.
     peer.snapshot(os.path.join(shots, "09-peer-permissions-after-revoke.png"))
     note(f"peer permissions rows after revoke: {peer.revoke_rects()}")
     peer.close_ws_settings()

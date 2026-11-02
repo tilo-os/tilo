@@ -207,7 +207,7 @@ def start(args) -> int:
     display_file = session.run / "tilo-session" / "wayland-display"
     wait_for(display_file, compositor, args.timeout, "the compositor")
     env["WAYLAND_DISPLAY"] = display_file.read_text().strip()
-    # The workspace in front, which the app joins, is up once its room is.
+    # The workspace in front, which the app joins, is up once its workspace is.
     wait_for(display_file.with_name("workspace-id"), compositor, args.timeout, "the compositor")
     grant_files(session, app_dir)
     # The app sees the desktop a Tilo login gives its apps, so it leaves

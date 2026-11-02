@@ -1,13 +1,13 @@
 //! Telling this page's person when someone mentions them, wherever in the
-//! workspace: every record of the room the page holds is looked at as a
+//! workspace: every record of the workspace the page holds is looked at as a
 //! peer's change reaches it, open in a window or not
 //! ([`ui::mentions::in_record`]), and each new mention of the person is one
 //! notice through the host's notifications. Choosing it opens the place
 //! the mention is in, as any open goes: through the desktop's session, as
 //! this person.
 //!
-//! What was told is kept in the page's storage, per room and person, so a
-//! reload or a record arriving again tells nothing twice; what the room
+//! What was told is kept in the page's storage, per workspace and person, so a
+//! reload or a record arriving again tells nothing twice; what the workspace
 //! held before this device first followed one of its records is taken as
 //! seen.
 
@@ -29,15 +29,15 @@ pub(super) struct Mentions {
     key: String,
     last_ms: f64,
     /// Records reached since the last look, each with whether every change
-    /// that reached it came before the room had replayed what it held.
+    /// that reached it came before the workspace had replayed what it held.
     pending: std::collections::BTreeMap<(String, String), bool>,
     /// Places the person chose from a notice, for the next frame.
     opens: Arc<Mutex<Vec<Place>>>,
 }
 
 impl Mentions {
-    pub(super) fn new(room: &str, author: &str) -> Self {
-        let key = format!("tilo.mentions.{room}.{author}");
+    pub(super) fn new(workspace: &str, author: &str) -> Self {
+        let key = format!("tilo.mentions.{workspace}.{author}");
         let mut inbox = MentionInbox::new([author.to_owned()]);
         if let Some(state) = storage_get(&key) {
             inbox.restore(&state);
@@ -98,7 +98,7 @@ impl Desktop {
             let kind = crate::desktop::application(&app)
                 .map(|definition| definition.record_kind.as_str())
                 .unwrap_or_default();
-            // What the room held before this device followed the record is
+            // What the workspace held before this device followed the record is
             // not news.
             let quiet = replayed && !mentions.inbox.knows(&app, &record);
             let told = mentions.inbox.look(
@@ -143,14 +143,14 @@ impl Desktop {
         for place in chosen {
             let target = if place.record.is_empty() {
                 tilo_actions::remote::application_action_target(
-                    &self.room,
+                    &self.workspace,
                     &place.app,
                     place.resource.clone(),
                     tilo_actions::remote::APPLICATION_OPEN_ACTION,
                 )
             } else {
                 tilo_actions::remote::application_record_target(
-                    &self.room,
+                    &self.workspace,
                     &place.app,
                     &place.record,
                     place.resource.clone(),

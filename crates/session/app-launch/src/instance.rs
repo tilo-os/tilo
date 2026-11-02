@@ -22,7 +22,7 @@ use crate::launch::Launch;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Windows {
     /// One window: launching the app again raises the one it has. A Tilo
-    /// package keeps one, since one process serves its records for a room,
+    /// package keeps one, since one process serves its records for a workspace,
     /// and so does an app whose entry says `SingleMainWindow=true`.
     One,
     /// Another window each time it is opened: the desktop entry

@@ -384,7 +384,7 @@ impl AppServingPlane for Rest {
         page.providers = vec![tilo_actions::remote::CatalogueProvider {
             provider: "tilo.workspace".into(),
             app_id: "tilo.workspace".into(),
-            room: String::new(),
+            workspace: String::new(),
             record_id: String::new(),
             browsable: false,
         }];

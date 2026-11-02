@@ -154,7 +154,7 @@ mod tests {
         );
     }
 
-    /// A mount writes as its person's principal (a key, in a room): their
+    /// A mount writes as its person's principal (a key, in a workspace): their
     /// edits read by the name and colour presence shows them, not the key.
     #[test]
     fn a_person_presence_knows_reads_by_their_name_and_colour() {

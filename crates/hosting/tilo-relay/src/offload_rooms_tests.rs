@@ -153,7 +153,7 @@ impl Started {
 
 fn request(room: &str) -> OffloadRequest {
     OffloadRequest {
-        room: room.into(),
+        workspace: room.into(),
         app_id: "so.tilo.photos".into(),
         address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
         offload: tilo_actions::Offload {

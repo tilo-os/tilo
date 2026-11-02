@@ -29,8 +29,8 @@ use super::launch::LaunchInput;
 use super::root::ResourceRoot;
 
 pub(super) const INSTANCE: u64 = 7;
-/// The room a test opens the app in unless it names one.
-pub(super) const TEST_ROOM: &str = "test-workspace";
+/// The workspace a test opens the app in unless it names one.
+pub(super) const TEST_WORKSPACE: &str = "test-workspace";
 /// The device a test app runs on unless it names another.
 const TEST_DEVICE: &str = "test-device";
 
@@ -54,15 +54,15 @@ pub(crate) fn profile_directory() -> std::io::Result<tempfile::TempDir> {
 }
 
 enum Profile {
-    /// A private temporary profile, removed with the app, the room the app
+    /// A private temporary profile, removed with the app, the workspace the app
     /// opens in and the device it runs on.
     Temporary(Rc<tempfile::TempDir>, String, String),
     /// An explicit `--data-dir` profile the app itself would open.
     DataDir(PathBuf),
-    /// Another window a launcher opens on a temporary profile, in a room on
+    /// Another window a launcher opens on a temporary profile, in a workspace on
     /// a device:
     /// an instance of its own, whose fallback record is that window's own
-    /// unless the app keeps one per room, as the native host decides.
+    /// unless the app keeps one per workspace, as the native host decides.
     Window(Rc<tempfile::TempDir>, String, String, u64),
 }
 
@@ -116,7 +116,7 @@ impl Profile {
 
     /// The profile's content store, which the app keeps handed files and
     /// other bytes its record names in, instead of the person's. It stands in
-    /// for the device store of the one room the app is mounted in, so a
+    /// for the device store of the one workspace the app is mounted in, so a
     /// content reference resolves in it as on a device.
     fn content(&self) -> tilo_content::ContentStore {
         match self {
@@ -143,9 +143,9 @@ pub struct HeadlessApp<A: ResourceApp> {
     author: String,
     /// The last effect [`Self::effect`] invoked.
     last_effect: Option<tilo_actions::InvocationId>,
-    /// What a host replicating the record to a room published of it
-    /// ([`Self::shared_in_room`]); `None` while nobody replicates it.
-    room: Option<ui_core::state::DocumentFrontier>,
+    /// What a host replicating the record to a workspace published of it
+    /// ([`Self::shared_in_workspace`]); `None` while nobody replicates it.
+    workspace: Option<ui_core::state::DocumentFrontier>,
     /// Shared with the host: changing it is a role change the running app
     /// sees, as when the record's owner changes someone's access.
     permissions: SharedPermissions,
@@ -226,9 +226,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::with_role(Role::Owner)
     }
 
-    /// The app as its owner opens it on a fresh private profile, in
-    /// `workspace`: one of several windows of the app in one process, each in
-    /// a workspace of its own.
+    /// The app as its owner opens it on a fresh private profile, in `workspace`:
+    /// one of several windows of the app in one process, each in a workspace of
+    /// its own.
     pub fn in_workspace(workspace: &str) -> Result<Self, LaunchError> {
         Self::fresh(workspace, Role::Owner, AUTHOR)
     }
@@ -239,7 +239,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn on_device(device: &str) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned(), device.to_owned()),
+            Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), device.to_owned()),
             Role::Owner,
             AUTHOR,
             &[],
@@ -252,15 +252,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The app as a participant with `role` opens it on a fresh profile.
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
-        Self::fresh(TEST_ROOM, role, AUTHOR)
+        Self::fresh(TEST_WORKSPACE, role, AUTHOR)
     }
 
     /// The app as `person` with `role` opens it on a fresh private profile,
-    /// in `room`.
-    fn fresh(room: &str, role: Role, person: &str) -> Result<Self, LaunchError> {
+    /// in `workspace`.
+    fn fresh(workspace: &str, role: Role, person: &str) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile, room.to_owned(), TEST_DEVICE.to_owned()),
+            Profile::Temporary(profile, workspace.to_owned(), TEST_DEVICE.to_owned()),
             role,
             person,
             &[],
@@ -276,13 +276,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// ([`RecordEnv::shared_person`](super::RecordEnv::shared_person)) are
     /// theirs.
     pub fn for_person(person: &str) -> Result<Self, LaunchError> {
-        Self::fresh(TEST_ROOM, Role::Owner, person)
+        Self::fresh(TEST_WORKSPACE, Role::Owner, person)
     }
 
-    /// [`Self::for_person`], with the app open in the workspace `room`
-    /// (a room id), whose records sync on their routes.
-    pub fn for_person_in(person: &str, room: &str) -> Result<Self, LaunchError> {
-        Self::fresh(room, Role::Owner, person)
+    /// [`Self::for_person`], with the app open in the workspace `workspace`
+    /// (a workspace id), whose records sync on their routes.
+    pub fn for_person_in(person: &str, workspace: &str) -> Result<Self, LaunchError> {
+        Self::fresh(workspace, Role::Owner, person)
     }
 
     /// Open a fresh person profile with a service lent by its mounting host.
@@ -291,7 +291,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn for_person_with_lent<S: 'static>(person: &str, service: S) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             person,
             &[],
@@ -312,7 +312,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         let held = held.clone();
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             person,
             &[],
@@ -344,14 +344,14 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
-    /// The record `P` every app of the room opens that `owner` keeps, as
+    /// The record `P` every app of the workspace opens that `owner` keeps, as
     /// the app's views open it.
-    pub fn workspace<P: Resource>(
+    pub fn shared_workspace<P: Resource>(
         &mut self,
         owner: &'static str,
     ) -> Option<super::WorkspaceRecord<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot| root.storage.workspace::<P>(owner))
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_workspace::<P>(owner))
             .flatten()
     }
 
@@ -420,7 +420,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let scenario = scenario.as_deref();
         let profile = Rc::new(profile_directory().map_err(operation)?);
         let mut app = Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             AUTHOR,
             arguments,
@@ -442,7 +442,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             AUTHOR,
             &arguments,
@@ -454,7 +454,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Launch on a private receiving profile after hydrating an existing
-    /// record in the same room. The production installer validates its
+    /// record in the same workspace. The production installer validates its
     /// identity before the app can initialize or open it.
     pub fn launched_replica(
         arguments: &[&str],
@@ -467,13 +467,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let _installed = ui_core::record::transfer::install(
             native.store(),
             super::app::hooks::<A>().id(),
-            TEST_ROOM,
+            TEST_WORKSPACE,
             document,
         )
         .map_err(operation)?;
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             AUTHOR,
             &arguments,
@@ -485,8 +485,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// A new window of the app on a fresh profile that already holds
-    /// `documents`, each a record a window of the app kept in the test room
-    /// (`window_record`): how an app that now keeps one record per room
+    /// `documents`, each a record a window of the app kept in the test workspace
+    /// (`window_record`): how an app that now keeps one record per workspace
     /// first opens where it used to keep one per window.
     pub fn with_window_records(documents: &mut [tilo_resource::Doc]) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
@@ -497,7 +497,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 let _installed = ui_core::record::transfer::install(
                     native.store(),
                     super::app::hooks::<A>().id(),
-                    TEST_ROOM,
+                    TEST_WORKSPACE,
                     document,
                 )
                 .map_err(operation)?;
@@ -506,7 +506,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::open(
             Profile::Window(
                 profile,
-                TEST_ROOM.to_owned(),
+                TEST_WORKSPACE.to_owned(),
                 TEST_DEVICE.to_owned(),
                 INSTANCE + 1,
             ),
@@ -520,10 +520,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
-    /// A new window of an app that [keeps one record per room](ResourceApp::ROOM_RECORD)
-    /// on a fresh profile whose room record is already `document`: how a
-    /// room an earlier version of the app wrote opens.
-    pub fn with_room_record(document: &mut tilo_resource::Doc) -> Result<Self, LaunchError> {
+    /// A new window of an app that [keeps one record per workspace](ResourceApp::WORKSPACE_RECORD)
+    /// on a fresh profile whose workspace record is already `document`: how a
+    /// workspace an earlier version of the app wrote opens.
+    pub fn with_workspace_record(document: &mut tilo_resource::Doc) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         {
             let native =
@@ -531,7 +531,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             let _installed = ui_core::record::transfer::install_workspace_document(
                 native.store(),
                 super::app::hooks::<A>().id(),
-                TEST_ROOM,
+                TEST_WORKSPACE,
                 document,
             )
             .map_err(operation)?;
@@ -539,7 +539,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::open(
             Profile::Window(
                 profile,
-                TEST_ROOM.to_owned(),
+                TEST_WORKSPACE.to_owned(),
                 TEST_DEVICE.to_owned(),
                 INSTANCE + 1,
             ),
@@ -559,7 +559,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             AUTHOR,
             &arguments,
@@ -579,7 +579,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn handed(file: OpenFile) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             AUTHOR,
             &[],
@@ -599,7 +599,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn replaying(file: OpenFile) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
-            Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+            Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
             AUTHOR,
             &[],
@@ -665,7 +665,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             role,
             author: author.to_owned(),
             last_effect: None,
-            room: None,
+            workspace: None,
             permissions: opened.permissions,
             marker: std::marker::PhantomData,
         })
@@ -705,16 +705,16 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Change the participant's permissions while the app runs, as the host
-    /// does when the room's grants change. Takes effect on the next frame,
+    /// does when the workspace's grants change. Takes effect on the next frame,
     /// which this runs.
     pub fn set_permissions(&mut self, permissions: PermissionContext) {
         self.permissions.set(permissions);
         self.harness().relayout();
     }
 
-    /// Take the participant out of the room while the app runs: no role and
+    /// Take the participant out of the workspace while the app runs: no role and
     /// no grant left, as when the owner removes them.
-    pub fn leave_room(&mut self) {
+    pub fn leave_workspace(&mut self) {
         self.permissions
             .set(PermissionContext::stranger(self.author.as_str()));
         self.harness().relayout();
@@ -731,12 +731,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn relaunch(mut self, arguments: &[&str]) -> Result<Self, LaunchError> {
         self.close()?;
         let profile = match &self.profile {
-            Profile::Temporary(directory, room, device) => {
-                Profile::Temporary(Rc::clone(directory), room.clone(), device.clone())
+            Profile::Temporary(directory, workspace, device) => {
+                Profile::Temporary(Rc::clone(directory), workspace.clone(), device.clone())
             }
-            Profile::Window(directory, room, device, window) => {
-                Profile::Window(Rc::clone(directory), room.clone(), device.clone(), *window)
-            }
+            Profile::Window(directory, workspace, device, window) => Profile::Window(
+                Rc::clone(directory),
+                workspace.clone(),
+                device.clone(),
+                *window,
+            ),
             Profile::DataDir(directory) => Profile::DataDir(directory.clone()),
         };
         let role = self.role;
@@ -748,17 +751,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Close the app and open a new window of it on the same profile and in
-    /// the same room, as the launcher opens one: an instance it never had,
+    /// the same workspace, as the launcher opens one: an instance it never had,
     /// whose fallback record is a fresh record of that window's own unless
-    /// the app [keeps one per room](ResourceApp::ROOM_RECORD).
+    /// the app [keeps one per workspace](ResourceApp::WORKSPACE_RECORD).
     pub fn another_window(mut self) -> Result<Self, LaunchError> {
         self.close()?;
         let window = self.instance.wrapping_add(1).max(INSTANCE + 1);
         let profile = match &self.profile {
-            Profile::Temporary(directory, room, device)
-            | Profile::Window(directory, room, device, _) => {
-                Profile::Window(Rc::clone(directory), room.clone(), device.clone(), window)
-            }
+            Profile::Temporary(directory, workspace, device)
+            | Profile::Window(directory, workspace, device, _) => Profile::Window(
+                Rc::clone(directory),
+                workspace.clone(),
+                device.clone(),
+                window,
+            ),
             Profile::DataDir(_) => {
                 return Err(operation("a --data-dir profile has one window"));
             }
@@ -770,17 +776,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Open another window of the app beside this one, on the same profile
-    /// and in the same room, while this one stays open: two windows a
-    /// person has open at once. Its fallback record is the room's when the
-    /// app [keeps one per room](ResourceApp::ROOM_RECORD), so both show one
+    /// and in the same workspace, while this one stays open: two windows a
+    /// person has open at once. Its fallback record is the workspace's when the
+    /// app [keeps one per workspace](ResourceApp::WORKSPACE_RECORD), so both show one
     /// record; [`Self::deliver_changes_to`] carries edits between them.
     pub fn open_window(&self) -> Result<Self, LaunchError> {
         let window = self.instance.wrapping_add(1).max(INSTANCE + 1);
         let profile = match &self.profile {
-            Profile::Temporary(directory, room, device)
-            | Profile::Window(directory, room, device, _) => {
-                Profile::Window(Rc::clone(directory), room.clone(), device.clone(), window)
-            }
+            Profile::Temporary(directory, workspace, device)
+            | Profile::Window(directory, workspace, device, _) => Profile::Window(
+                Rc::clone(directory),
+                workspace.clone(),
+                device.clone(),
+                window,
+            ),
             Profile::DataDir(_) => {
                 return Err(operation("a --data-dir profile has one window"));
             }
@@ -798,7 +807,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Deliver this window's changes to the record to `other`, a window
-    /// showing the same record, as the room's broker fans each window's
+    /// showing the same record, as the workspace's broker fans each window's
     /// document changes out to every other window on the record; `other`
     /// takes them in and draws its next frame, without reopening. Whether
     /// `other` changed.
@@ -820,7 +829,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// Deliver what this window holds of `id`, a record the app keeps
     /// beside its own (a part of a chain), to `other`, which holds it too,
-    /// as the room's record sync sends a device a record it opened: `other`
+    /// as the workspace's record sync sends a device a record it opened: `other`
     /// takes it in and draws its next frame. Whether `other` changed.
     ///
     /// # Errors
@@ -843,14 +852,14 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(took_in)
     }
 
-    /// The room's hosts sent everything they hold of `id`, a record this
+    /// The workspace's hosts sent everything they hold of `id`, a record this
     /// window asked for, or none is connected to ask
     /// ([`ui_core::record::RecordStore::note_workspace_answered`]).
     pub fn workspace_answered(&mut self, id: RecordId) {
         self.records.note_workspace_answered(id);
     }
 
-    /// The room's default records of the app's windows kept on this
+    /// The workspace's default records of the app's windows kept on this
     /// profile, as [`SeedCx::window_records`](super::SeedCx::window_records)
     /// reads them.
     pub fn window_records(&self) -> Vec<(RecordId, tilo_resource::Doc)> {
@@ -1336,20 +1345,24 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The last action refused here ([`super::Dispatcher::refused`]): by
-    /// the door, or by the room after this window applied it.
+    /// the door, or by the workspace after this window applied it.
     pub fn refused(&mut self) -> Option<super::Refused> {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.dispatch.refused.get())
             .flatten()
     }
 
-    /// The room refused `changes` (Automerge hashes) of this window's
+    /// The workspace refused `changes` (Automerge hashes) of this window's
     /// record, `reason` what a person is told (a host replicating the
-    /// record reads it from the room's words with
+    /// record reads it from the workspace's words with
     /// `tilo_relay_protocol::refusal::plain_reason`): withdraw them and what
     /// was built on them, as that host does, and run the frame that tells
     /// the app. Whether anything was withdrawn.
-    pub fn refused_by_room(&mut self, changes: &[[u8; 32]], reason: &str) -> Result<bool, String> {
+    pub fn refused_by_workspace(
+        &mut self,
+        changes: &[[u8; 32]],
+        reason: &str,
+    ) -> Result<bool, String> {
         let refused: Vec<_> = changes
             .iter()
             .map(|hash| ui_core::automerge::ChangeHash(*hash))
@@ -1362,7 +1375,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(withdrawn.is_some())
     }
 
-    /// What the room kept that the app said it did
+    /// What the workspace kept that the app said it did
     /// ([`super::Dispatcher::say_when_kept`]): the last such text.
     pub fn said(&mut self) -> Option<String> {
         self.harness()
@@ -1370,30 +1383,30 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
-    /// From now on a host replicates this window's record to a room that
-    /// decides its changes, as a browser page in a room does: what the app
-    /// says it did waits for the room ([`Self::room_publishes`],
-    /// [`Self::room_keeps`]).
-    pub fn shared_in_room(&mut self) -> Result<(), String> {
+    /// From now on a host replicates this window's record to a workspace that
+    /// decides its changes, as a browser page in a workspace does: what the app
+    /// says it did waits for the workspace ([`Self::workspace_publishes`],
+    /// [`Self::workspace_keeps`]).
+    pub fn shared_in_workspace(&mut self) -> Result<(), String> {
         let (_, heads) = self
             .records
             .replication_snapshot(&self.checkout.id)
             .map_err(|error| error.to_string())?;
         let mut frontier = ui_core::state::DocumentFrontier::default();
         frontier.advance(heads);
-        self.room = Some(frontier);
+        self.workspace = Some(frontier);
         self.records.workspace_settled(&self.checkout.id);
         Ok(())
     }
 
     /// The host publishes what changed since it last did, as its next pass
     /// does; whether anything was published.
-    pub fn room_publishes(&mut self) -> Result<bool, String> {
+    pub fn workspace_publishes(&mut self) -> Result<bool, String> {
         self.settle();
         let frontier = self
-            .room
+            .workspace
             .as_mut()
-            .ok_or("the record is not shared in a room")?;
+            .ok_or("the record is not shared in a workspace")?;
         let (delta, heads) = self
             .records
             .replication_delta(&self.checkout.id, frontier)
@@ -1402,9 +1415,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(!delta.is_empty())
     }
 
-    /// The room answered every commit the host published, keeping them,
+    /// The workspace answered every commit the host published, keeping them,
     /// and the frame that tells the app runs.
-    pub fn room_keeps(&mut self) {
+    pub fn workspace_keeps(&mut self) {
         self.records.workspace_settled(&self.checkout.id);
         self.harness().relayout();
         self.settle();
@@ -1710,7 +1723,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Another replica's change to `record`, a record open in the app's
-    /// store (its own, or a part of a chain beside it), arriving as a room's
+    /// store (its own, or a part of a chain beside it), arriving as a workspace's
     /// replication delivers it: `edit` writes on that replica as it stands
     /// now, under its own actor, and the change is merged into the store.
     /// Nothing else runs: no frame is laid out or forced, so what the window
@@ -1946,12 +1959,12 @@ fn profile_host(
     permissions: &SharedPermissions,
 ) -> Result<(ApplicationHost, u64), LaunchError> {
     Ok(match profile {
-        Profile::Temporary(directory, room, device)
-        | Profile::Window(directory, room, device, _) => (
+        Profile::Temporary(directory, workspace, device)
+        | Profile::Window(directory, workspace, device, _) => (
             ApplicationHost::new_with_profile_lifetime(
                 directory.path().join("state"),
                 device.clone(),
-                room,
+                workspace,
                 author,
                 permissions.clone(),
                 tilo_actions::ActionContext::default(),
@@ -2195,7 +2208,11 @@ fn report_surface(
         open_app(
             opening,
             Launch {
-                profile: Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
+                profile: Profile::Temporary(
+                    profile,
+                    TEST_WORKSPACE.to_owned(),
+                    TEST_DEVICE.to_owned(),
+                ),
                 role: Role::Owner,
                 author: AUTHOR,
                 arguments: &[],
@@ -2297,7 +2314,7 @@ impl HostedApp {
     ) -> Result<Self, LaunchError> {
         let profile = Profile::Temporary(
             Rc::new(profile_directory().map_err(operation)?),
-            TEST_ROOM.to_owned(),
+            TEST_WORKSPACE.to_owned(),
             TEST_DEVICE.to_owned(),
         );
         Self::open_in(definition, author, profile)

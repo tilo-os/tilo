@@ -109,7 +109,13 @@ impl NativeEditor {
         self.owner.with_current(joined, |_| Ok(())).unwrap();
         let bytes = std::fs::read(self.directory.path().join("joined.json")).unwrap();
         let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let private = &stored["rooms"][room]["privateDirectConversations"];
+        // The record names its workspaces `workspaces`; `rooms` is only the name
+        // files written before it carry, which the reader still accepts.
+        let private = stored
+            .get("workspaces")
+            .and_then(|workspaces| workspaces.get(room))
+            .and_then(|workspace| workspace.get("privateDirectConversations"))
+            .expect("the owner file holds the joined workspace's private pairs");
         assert_eq!(private["pairs"], serde_json::json!({}));
         assert_eq!(private["invocations"], serde_json::json!({}));
         assert!(

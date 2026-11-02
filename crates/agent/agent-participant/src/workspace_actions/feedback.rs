@@ -71,7 +71,7 @@ pub(super) fn answer(
     mut query: FeedbackQuery,
 ) -> Result<FeedbackAnswer, ActionHostError> {
     let destination = Destination {
-        room: query.destination.room.clone(),
+        room: query.destination.workspace.clone(),
         provider: query.destination.provider.clone(),
         channel: query.destination.channel.clone(),
     };
@@ -85,7 +85,10 @@ pub(super) fn answer(
                 && route.workspace_id().ok() == Some(workspace)
         })
         .ok_or_else(|| unavailable("feedback source mismatch"))?;
-    if caller.room().is_some_and(|room| room != destination.room) {
+    if caller
+        .workspace()
+        .is_some_and(|workspace| workspace != destination.room)
+    {
         return Err(unavailable("feedback caller workspace mismatch"));
     }
     let caller = caller.in_workspace(destination.room.clone());

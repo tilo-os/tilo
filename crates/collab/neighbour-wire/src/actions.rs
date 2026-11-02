@@ -71,7 +71,7 @@ impl ActionSignatureError {
 
 /// One device's action message to another device of one workspace.
 ///
-/// `workspace` is the workspace's room id as text: one request names its
+/// `workspace` is the workspace's id as text: one request names its
 /// workspace, and a device answers it only for a workspace it holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DeviceAction {

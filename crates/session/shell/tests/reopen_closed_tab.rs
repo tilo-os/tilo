@@ -128,7 +128,7 @@ fn a_close_whose_workspace_is_gone_is_skipped() {
     let mut tree = desktop();
     let home = tree.desktop.workspaces[0].id;
     let away = WorkspaceId::new();
-    let mut elsewhere = Workspace::in_room(away, RoomId::new(), "Away");
+    let mut elsewhere = Workspace::in_workspace(away, RoomId::new(), "Away");
     elsewhere.strips = vec![Strip {
         id: StripId::new(),
         name: String::new(),

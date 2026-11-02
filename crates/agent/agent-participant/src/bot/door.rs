@@ -258,7 +258,7 @@ impl<P: DoorParticipant> BotDoor<P> {
             providers.push(CatalogueProvider {
                 provider: provider.clone(),
                 app_id: route.app_id.clone(),
-                room: workspace.clone(),
+                workspace: workspace.clone(),
                 record_id: route.record.clone(),
                 browsable: false,
             });

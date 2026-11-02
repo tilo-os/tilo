@@ -54,8 +54,8 @@ pub(crate) fn provision(
     // Materialize the empty app subtree, never another account's directory.
     let mut directory: File = ram.root.try_clone().map_err(|_| SendError::Unavailable)?;
     for part in [
-        launcher::appdir::ROOMS_DIR,
-        launcher::appdir::PERSONAL_ROOM,
+        launcher::appdir::WORKSPACES_DIR,
+        launcher::appdir::PERSONAL_WORKSPACE,
         super::SERVICE_PACKAGE,
     ] {
         directory = super::child_directory(

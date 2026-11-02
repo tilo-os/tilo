@@ -154,7 +154,7 @@ pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
 
 /// The person-record kinds `app_id`'s surface declares (its
 /// `ResourceApp::records`): the records it may keep in, or read from, the
-/// person's own room. Empty when this process holds no surface for it.
+/// person's own workspace. Empty when this process holds no surface for it.
 #[must_use]
 pub fn person_record_kinds(app_id: &str) -> Vec<String> {
     bytes_of(app_id)
@@ -240,7 +240,7 @@ pub fn with_footprints(
 /// is the record's creation by what it is, so it is claimed as one
 /// ([`collab_types::FrameworkChange::Genesis`]), as a store now names it when
 /// it writes it: a record whose first change is such a stamp is handed to a
-/// sealed room whole, with no change rewritten and no id changed.
+/// sealed workspace whole, with no change rewritten and no id changed.
 ///
 /// # Errors
 /// A change that names nothing and is no such stamp, or bytes that are no
@@ -294,7 +294,7 @@ fn is_schema_stamp(change: &automerge::Change) -> bool {
         })
 }
 
-/// Why a room refuses `mutation`, a change this process made to `record` of
+/// Why a workspace refuses `mutation`, a change this process made to `record` of
 /// `app_id`, by what the app's surface publishes, if it does: the check every
 /// receiver runs on its claims ([`collab_types::check_claims_by_kind`]), the
 /// grants aside, which the broker decides. `None` when this process holds no
@@ -387,7 +387,7 @@ mod tests {
 
     /// A change to a part of a record its app keeps apart (a PDF's
     /// comments) claims only that part: claimed on the whole record, the
-    /// room refuses it, since no action of it may write the whole record.
+    /// workspace refuses it, since no action of it may write the whole record.
     #[test]
     fn a_claim_names_the_units_its_action_may_write() {
         use collab_types::{ChangeClaim, ClaimedAction, ReceiptRefusal};
@@ -411,7 +411,7 @@ mod tests {
         let file = collab_types::surface::SurfaceFile::parse(FILE).unwrap();
         let receiver = collab_types::surface::KindSurface(file.resource(None).unwrap().clone());
         let record = collab_types::Record {
-            room: "room-1",
+            room: "workspace-1",
             app: "test.footprints",
             record: "paper-1",
         };

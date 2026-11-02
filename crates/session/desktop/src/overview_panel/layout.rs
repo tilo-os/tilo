@@ -76,8 +76,8 @@ pub(super) struct Metrics {
     pub caption_h: f64,
     pub caption_text_dy: f64,
     pub share_row_h: f64,
-    pub room_row_h: f64,
-    pub room_row_gap: f64,
+    pub workspace_row_h: f64,
+    pub workspace_row_gap: f64,
     pub row_pad: f64,
     pub chip_h: f64,
     /// Gutter above the picture inside the panel (`s3`).
@@ -123,8 +123,8 @@ impl Metrics {
             caption_h: s2 + lh(TextRole::Caption) + s1,
             caption_text_dy: s2,
             share_row_h: lh(TextRole::Body) + s3,
-            room_row_h: lh(TextRole::Heading) + s1 + lh(TextRole::Caption) + 2.0 * s3,
-            room_row_gap: s2,
+            workspace_row_h: lh(TextRole::Heading) + s1 + lh(TextRole::Caption) + 2.0 * s3,
+            workspace_row_gap: s2,
             row_pad: s4,
             chip_h: lh(TextRole::Caption) + s2,
             window_gap: s3,
@@ -289,12 +289,12 @@ impl OverviewPanel {
     /// Rows of the "go to" list: every workspace but the one you are in, then
     /// "New workspace" and "Join a workspace…".
     pub(super) fn list_slots(&self) -> usize {
-        let rooms = self
+        let workspaces = self
             .desk
             .cards
             .len()
             .saturating_sub(usize::from(self.here_index().is_some()));
-        rooms
+        workspaces
             .saturating_add(usize::from(self.can_add()))
             .saturating_add(usize::from(self.desk.can_join))
     }
@@ -303,7 +303,7 @@ impl OverviewPanel {
     pub(super) fn content_height(&self) -> f64 {
         let m = self.metrics;
         let k = f64_of_usize(self.list_slots());
-        (k * (m.room_row_h + m.room_row_gap) - m.room_row_gap).max(0.0)
+        (k * (m.workspace_row_h + m.workspace_row_gap) - m.workspace_row_gap).max(0.0)
     }
 
     /// The display is too small for a floating panel: the overview is a
@@ -338,7 +338,7 @@ impl OverviewPanel {
         let m = self.metrics;
         self.uses_full_window()
             || self.content_rect().height() - self.here_block_height() - m.section_gap - m.caption_h
-                < m.room_row_h
+                < m.workspace_row_h
     }
 
     pub(super) fn content_top(&self) -> f64 {
@@ -445,8 +445,9 @@ impl OverviewPanel {
         } else {
             self.scroll_y
         };
-        let y0 = self.list_top() - scroll + f64_of_usize(slot) * (m.room_row_h + m.room_row_gap);
-        Rect::new(c.x0, y0, c.x1, y0 + m.room_row_h)
+        let y0 = self.list_top() - scroll
+            + f64_of_usize(slot) * (m.workspace_row_h + m.workspace_row_gap);
+        Rect::new(c.x0, y0, c.x1, y0 + m.workspace_row_h)
     }
 
     /// The list slot workspace `idx` occupies: the workspace you are in has none (it
@@ -468,7 +469,7 @@ impl OverviewPanel {
         }
     }
 
-    fn rooms_in_list(&self) -> usize {
+    fn workspaces_in_list(&self) -> usize {
         self.desk
             .cards
             .len()
@@ -478,14 +479,14 @@ impl OverviewPanel {
     /// The "New workspace" row, after the last workspace.
     pub(super) fn add_rect(&self) -> Option<Rect> {
         self.can_add()
-            .then(|| self.list_slot_rect(self.rooms_in_list()))
+            .then(|| self.list_slot_rect(self.workspaces_in_list()))
     }
 
     /// The "Join a workspace…" row, after "New workspace".
     pub(super) fn join_rect(&self) -> Option<Rect> {
         self.desk.can_join.then(|| {
             self.list_slot_rect(
-                self.rooms_in_list()
+                self.workspaces_in_list()
                     .saturating_add(usize::from(self.can_add())),
             )
         })
@@ -553,14 +554,14 @@ impl OverviewPanel {
         let slot = if idx >= count {
             // New workspace, then Join.
             let past = idx.saturating_sub(count);
-            Some(self.rooms_in_list().saturating_add(past))
+            Some(self.workspaces_in_list().saturating_add(past))
         } else {
             self.slot_of(idx)
         };
         let (top, height) = match slot {
             Some(slot) => (
-                header + f64_of_usize(slot) * (m.room_row_h + m.room_row_gap),
-                m.room_row_h,
+                header + f64_of_usize(slot) * (m.workspace_row_h + m.workspace_row_gap),
+                m.workspace_row_h,
             ),
             None if whole => (0.0, m.here_h + self.windows_row_height()),
             None => return,
@@ -824,7 +825,7 @@ impl OverviewPanel {
             .press
             .filter(crate::overview::OverviewPress::is_dragging)?;
         self.hit_workspace(press.at)
-            .filter(|room| Some(*room) != self.here_index())
+            .filter(|index| Some(*index) != self.here_index())
     }
 
     /// The strip the keyboard is in: the selected window's, else the strip

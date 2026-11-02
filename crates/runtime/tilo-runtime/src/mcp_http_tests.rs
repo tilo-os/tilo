@@ -139,7 +139,7 @@ impl ActionHost for StubHost {
         page.providers = vec![CatalogueProvider {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
-            room: self.workspace.clone().unwrap_or_else(|| "workspace".into()),
+            workspace: self.workspace.clone().unwrap_or_else(|| "workspace".into()),
             record_id: self.record.clone().unwrap_or_default(),
             browsable: true,
         }];
@@ -792,7 +792,7 @@ fn client_metadata_cannot_replace_the_host_selected_mcp_audience() {
         assert_ne!(result["result"]["isError"], true, "{result}");
         let callers = host.callers.lock().unwrap().clone();
         assert_eq!(callers.len(), 1);
-        assert_eq!(callers[0].room(), Some(workspace));
+        assert_eq!(callers[0].workspace(), Some(workspace));
         assert!(
             matches!(
                 callers[0].principal(),

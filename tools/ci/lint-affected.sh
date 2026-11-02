@@ -13,7 +13,7 @@
 # (headless). The shipped-default builds (tools/ci/package_features.py
 # --default-builds) are a run of their own, `--default-builds NAME...`, which
 # local_affected.py starts beside the main one. `--check-only` type-checks every
-# target instead, for an architecture that is not linted.
+# target instead, with the same features, for an architecture that is not linted.
 #
 # Each builds in a target directory of its own ($CARGO_TARGET_DIR/lint, and
 # lint-defaults for the default builds): cargo locks a profile directory for a
@@ -61,6 +61,13 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}/lint"
 export CLIPPY_CHECK_DEFAULT_BUILDS=0
 status=0
 if [ "$check_only" = 1 ]; then
+    # The features tools/ci/clippy-check.sh lints with: a target whose Cargo.toml
+    # needs a package's test feature (tools/ci/package_features.py) is otherwise
+    # not a target of `--all-targets` at all, and a break in it would go unseen
+    # on the architectures whose only all-target check is this one.
+    feature_flags=$(python3 tools/ci/package_features.py "$@") || exit 2
+    read -r -a features <<<"$feature_flags"
+    set -- "$@" "${features[@]}"
     cargo check --locked --all-targets --keep-going "$@" || status=1
     exit "$status"
 fi

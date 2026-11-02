@@ -481,6 +481,11 @@ impl PowerService {
         {
             self.apply_active_profile(&profile);
         }
+        if let Some(monitor) = profile_monitor.as_ref()
+            && let Ok(profiles) = monitor.profiles().await
+        {
+            self.bridge.note_profiles(profiles);
+        }
 
         self.sample_history(deadlines).await;
         self.poll_battery().await;
@@ -717,6 +722,23 @@ impl PowerService {
                     self.release_sleep_delay_if_ready();
                 }
                 PowerCommand::UpdatePolicy(policy) => self.policy = policy,
+                PowerCommand::SetProfile(profile) => self.switch_profile(&profile).await,
+            }
+        }
+    }
+
+    /// Switch power-profiles-daemon to `profile`, and apply the idle policy
+    /// the profile resolves to: the daemon's own property stream confirms it
+    /// a moment later, and a machine without the daemon keeps its policy.
+    async fn switch_profile(&mut self, profile: &str) {
+        let Some(monitor) = self.power_profiles.clone() else {
+            warn!(target: "tilo::power", %profile, "no power profiles here: the profile was not switched");
+            return;
+        };
+        match monitor.set_active_profile(profile).await {
+            Ok(()) => self.apply_active_profile(profile),
+            Err(error) => {
+                warn!(target: "tilo::power", %error, %profile, "the power profile was not switched");
             }
         }
     }

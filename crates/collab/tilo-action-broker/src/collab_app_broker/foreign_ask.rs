@@ -158,7 +158,7 @@ fn asked_there(
             || "another device".to_owned(),
             |device| hex::encode(&device[..8]),
         ),
-        room: workspace.to_owned(),
+        workspace: workspace.to_owned(),
         resource_label: described.as_ref().map_or_else(
             || request.target.address.resource.clone(),
             |(r, _)| r.clone(),

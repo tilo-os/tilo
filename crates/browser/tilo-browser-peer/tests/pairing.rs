@@ -24,7 +24,7 @@
 mod participant;
 mod support;
 
-// This binary re-execs as the automerge worker (a governed room uses it).
+// This binary re-execs as the automerge worker (a governed workspace uses it).
 tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeSet;
@@ -51,8 +51,8 @@ use tilo_user_identity::{
 use tokio::task::JoinHandle;
 
 use support::{
-    door, enrol, enter, in_room, next_document, ready, redeem, route, start_host, start_peer,
-    start_peer_with_store, start_room_host, wait_for, workspace,
+    door, enrol, enter, in_workspace, next_document, ready, redeem, route, start_host, start_peer,
+    start_peer_with_store, start_workspace_host, wait_for, workspace,
 };
 
 fn new_key() -> SigningKey {
@@ -213,7 +213,9 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         host_device.cert.clone(),
         laptop.key.clone(),
     );
-    laptop_peer.join_placed(support::ROOM, "Workspace").unwrap();
+    laptop_peer
+        .join_placed(support::WORKSPACE, "Workspace")
+        .unwrap();
     ready(&[&laptop_peer]).await;
 
     // The phone opens the pairing link: it names Ada, and nothing else.
@@ -248,7 +250,9 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         phone_key.clone(),
         store.clone(),
     );
-    phone_peer.join_placed(support::ROOM, "Workspace").unwrap();
+    phone_peer
+        .join_placed(support::WORKSPACE, "Workspace")
+        .unwrap();
     ready(&[&phone_peer]).await;
     let snapshot = DocumentMutation::Snapshot(b"written on the laptop".to_vec());
     laptop_peer.publish(route(), &snapshot).unwrap();
@@ -275,7 +279,9 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     phone_peer.close();
     assert_eq!(store.load().unwrap().cert.as_ref(), Some(&cert));
     let reloaded = start_peer_with_store(page, cert, host_cert, phone_key, store);
-    reloaded.join_placed(support::ROOM, "Workspace").unwrap();
+    reloaded
+        .join_placed(support::WORKSPACE, "Workspace")
+        .unwrap();
     ready(&[&reloaded]).await;
     let later = DocumentMutation::Incremental(b"after the reload".to_vec());
     laptop_peer.publish(route(), &later).unwrap();
@@ -366,8 +372,8 @@ fn only_a_holder_of_the_named_root_answers_and_an_unanswered_request_expires() {
 }
 
 async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::testing::OwnProcess) {
-    // Alice's host governs a room Bob, Dave and Erin are guests of: each
-    // was invited through the room and came in on a browser.
+    // Alice's host governs a workspace Bob, Dave and Erin are guests of: each
+    // was invited through the workspace and came in on a browser.
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let bob = new_key();
@@ -375,8 +381,8 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
     let erin = new_key();
     let person = |key: &SigningKey| key.verifying_key().to_bytes();
     let state = tempfile::tempdir().unwrap();
-    let host = start_room_host(&alice, &host_device, state.path(), false).await;
-    let room = host.relay.rooms().unwrap().create("Lounge").await.unwrap();
+    let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
+    let workspace = host.relay.rooms().unwrap().create("Lounge").await.unwrap();
     for guest in [&bob, &dave, &erin] {
         let browser = new_key();
         let browser_cert = guest_certificate(
@@ -389,7 +395,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
         .unwrap();
         redeem(
             &host,
-            door(&host, &alice, &host_device, &room.room, person(guest)).await,
+            door(&host, &alice, &host_device, &workspace.room, person(guest)).await,
             &browser_cert,
             &browser,
         )
@@ -616,13 +622,13 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_paired_through_the_door_enters_the_room_as_the_person() {
-    // Alice's host keeps a public room; its door lets guests in.
+async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
+    // Alice's host keeps a public workspace; its door lets guests in.
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let state = tempfile::tempdir().unwrap();
-    let host = start_room_host(&alice, &host_device, state.path(), false).await;
-    let room = host.relay.rooms().unwrap().create("Lounge").await.unwrap();
+    let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
+    let workspace = host.relay.rooms().unwrap().create("Lounge").await.unwrap();
     let https = host.https();
 
     // Bob came in through the door on his laptop, whose page holds his root.
@@ -639,11 +645,11 @@ async fn a_device_paired_through_the_door_enters_the_room_as_the_person() {
     .unwrap();
     let laptop = enter(
         &host,
-        door(&host, &alice, &host_device, &room.room, user).await,
+        door(&host, &alice, &host_device, &workspace.room, user).await,
         &laptop_cert,
         &laptop_key,
         &host_device.cert,
-        room.workspace_id,
+        workspace.workspace_id,
     )
     .await;
 
@@ -666,18 +672,18 @@ async fn a_device_paired_through_the_door_enters_the_room_as_the_person() {
     // The door lets the phone in as Bob: one member, on two devices.
     let phone_peer = enter(
         &host,
-        door(&host, &alice, &host_device, &room.room, user).await,
+        door(&host, &alice, &host_device, &workspace.room, user).await,
         &cert,
         &phone_key,
         &host_cert,
-        room.workspace_id,
+        workspace.workspace_id,
     )
     .await;
     let summary = host
         .relay
         .rooms()
         .unwrap()
-        .summary(&room.room)
+        .summary(&workspace.room)
         .await
         .unwrap();
     let bobs: Vec<_> = summary
@@ -695,7 +701,7 @@ async fn a_device_paired_through_the_door_enters_the_room_as_the_person() {
         );
     }
     one_person_on_two_devices(
-        room.workspace_id,
+        workspace.workspace_id,
         &laptop,
         &phone_peer,
         user,
@@ -705,7 +711,7 @@ async fn a_device_paired_through_the_door_enters_the_room_as_the_person() {
 
     // The phone reconnects and is let in again, still as Bob.
     phone_peer.reconnect().unwrap();
-    in_room(&phone_peer, room.workspace_id).await;
+    in_workspace(&phone_peer, workspace.workspace_id).await;
     phone_peer.close();
     laptop.close();
     drop(host.web);

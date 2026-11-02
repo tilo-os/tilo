@@ -24,8 +24,10 @@ use std::time::Duration;
 use tilo_actions::ResourceSpec;
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::clipboard_history::{Copy, TEXT_MIME};
-use tilo_compositor::{Compositor, GestureEvent, InputEvent, KeyRepeat, OutputConfig, Selection};
-use tilo_desktop::desktop_actions::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND};
+use tilo_compositor::{Compositor, InputEvent, KeyRepeat, OutputConfig, Selection};
+use tilo_desktop::desk_verbs::{
+    CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND, launchpad_card_id,
+};
 use tilo_onboarding::OnboardingEffect;
 use tilo_quick_settings::QsEffect;
 use tilo_quick_settings::QuickSettingsState;
@@ -371,7 +373,7 @@ fn a_window_becomes_a_tab_of_the_strip_and_shows_where_the_strip_lays_it_out() {
     let tab = window_resource(&session, "org.example.Terminal")
         .expect("the desk publishes the window's tab");
     assert!(
-        tab.actions.iter().any(|action| action.id == "close"),
+        tab.actions.iter().any(|action| action.id == "close-tab"),
         "a window's tab can be closed by its address"
     );
     let layout = session.desktop().with_policy(|policy| policy.layout());
@@ -411,7 +413,7 @@ fn the_top_bar_draws_above_the_desk_and_opens_the_overview_by_its_action() {
         .collect::<std::collections::BTreeSet<_>>();
     assert!(band.len() > 2, "the bar draws in its band: {names:?}");
 
-    invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
+    invoke(&mut session, CHROME_RESOURCE, "overview");
     session.step(Duration::from_millis(1)).unwrap();
     let open = session.accessible_labels();
     assert_ne!(open, names, "the overview shows over the desk");
@@ -428,7 +430,7 @@ fn closing_a_windows_tab_asks_its_client_to_close() {
     let mut session = session();
     let mut client = mapped(&mut session, "org.example.Editor");
     let tab = window_resource(&session, "org.example.Editor").unwrap();
-    invoke(&mut session, tab.id.as_str(), "close");
+    invoke(&mut session, tab.id.as_str(), "close-tab");
     pump(&mut session, &mut [&mut client], |_, clients| {
         clients[0].seen.closed
     });
@@ -693,7 +695,12 @@ fn a_desktop_chord_works_while_a_window_has_the_keyboard_and_the_window_never_se
         client.seen.keys
     );
     // With the overview closed again, plain typing reaches the window.
-    invoke(&mut session, CHROME_RESOURCE, "hide-overview");
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "overview",
+        &serde_json::json!({"open": false}),
+    );
     pump(&mut session, &mut [&mut client], |_, _| true);
     tap(&mut session, keys::A);
     pump(&mut session, &mut [&mut client], |_, clients| {
@@ -1295,11 +1302,35 @@ fn a_session_that_cannot_check_a_password_never_locks() {
     );
 }
 
+/// The power menu opens from the session's published verb, so the panel's
+/// press and any other caller offered it put up the same menu.
+#[test]
+fn the_power_menu_opens_by_its_published_verb() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(
+        !session
+            .power_menu()
+            .is_some_and(|seat| seat.presentation().is_open()),
+        "the menu is down to begin with"
+    );
+
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "power-menu");
+    let menu = session.power_menu().expect("the power menu");
+    assert!(menu.presentation().is_open(), "the verb puts the menu up");
+    assert!(
+        !menu.rows().is_empty(),
+        "and it offers the person's choices"
+    );
+}
+
 #[test]
 fn quick_settings_opens_by_its_action_and_a_press_outside_closes_it() {
     let _settled = ui::motion::testing::settled();
     let (mut session, _host) = session_with_quick_settings();
-    invoke(&mut session, CHROME_RESOURCE, "toggle-quick-settings");
+    invoke(&mut session, CHROME_RESOURCE, "quick-settings");
     assert!(session.quick_settings_open());
     session.step(Duration::from_millis(1)).unwrap();
     // On the desk, far from the panel at the right.
@@ -1344,11 +1375,11 @@ fn the_empty_desks_launchpad_is_published_until_a_window_opens() {
         "chat", "notes", "tasks", "meet", "invite", "activity", "apps",
     ] {
         assert!(
-            publishes(&session, LAUNCHPAD_RESOURCE, card),
-            "the launchpad publishes {card}"
+            publishes(&session, &launchpad_card_id(card), "launchpad"),
+            "the launchpad publishes a row for {card}"
         );
     }
-    invoke(&mut session, LAUNCHPAD_RESOURCE, "apps");
+    invoke(&mut session, &launchpad_card_id("apps"), "launchpad");
     let _client = mapped(&mut session, "org.example.Terminal");
     assert!(
         find_resource(&session.resources(), LAUNCHPAD_RESOURCE).is_none(),
@@ -1405,60 +1436,6 @@ fn active_workspace(session: &Session) -> Option<u64> {
     session
         .handle()
         .read(|tree| tree.active_workspace().map(|workspace| workspace.id.0))
-}
-
-fn gesture(session: &mut Session, events: &[GestureEvent]) {
-    for event in events {
-        session
-            .compositor()
-            .input(InputEvent::Gesture(*event))
-            .unwrap();
-        session.step(Duration::from_millis(1)).unwrap();
-    }
-}
-
-#[test]
-fn touchpad_gestures_the_desktop_takes_switch_workspaces_and_open_the_overview() {
-    let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    session.step(Duration::from_millis(1)).unwrap();
-    let first = active_workspace(&session);
-    invoke(&mut session, CHROME_RESOURCE, "new-workspace");
-    let second = active_workspace(&session);
-    assert_ne!(first, second, "a new workspace opened");
-    // Four fingers down go to the workspace before, under natural
-    // scrolling (the default): the workspaces follow the fingers.
-    gesture(
-        &mut session,
-        &[
-            GestureEvent::SwipeBegin { fingers: 4 },
-            GestureEvent::SwipeUpdate { dx: 0.0, dy: 60.0 },
-            GestureEvent::SwipeUpdate { dx: 0.0, dy: 60.0 },
-            GestureEvent::SwipeEnd { cancelled: false },
-        ],
-    );
-    assert_eq!(active_workspace(&session), first, "back to the first");
-
-    let before = session.accessible_labels();
-    gesture(
-        &mut session,
-        &[
-            GestureEvent::PinchBegin { fingers: 3 },
-            GestureEvent::PinchUpdate {
-                dx: 0.0,
-                dy: 0.0,
-                scale: 0.6,
-                rotation: 0.0,
-            },
-            GestureEvent::PinchEnd { cancelled: false },
-        ],
-    );
-    session.step(Duration::from_millis(1)).unwrap();
-    assert_ne!(
-        session.accessible_labels(),
-        before,
-        "a pinch in opened the overview"
-    );
 }
 
 /// The resource publishing `action` among everything the session
@@ -1735,7 +1712,7 @@ fn quick_settings_publishes_its_effects_and_they_reach_the_device() {
         .expect("set the volume");
     assert_eq!(host.ran(), [QsEffect::SetVolume { level: 0.25 }]);
 
-    invoke(&mut session, CHROME_RESOURCE, "toggle-quick-settings");
+    invoke(&mut session, CHROME_RESOURCE, "quick-settings");
     assert!(session.quick_settings_open());
     session.step(Duration::from_millis(1)).unwrap();
     let open = session.compositor().screenshot("HEADLESS-1").unwrap();
@@ -1814,12 +1791,12 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
     session.step(Duration::from_millis(1)).unwrap();
     assert!(session.setup_up());
     assert!(
-        publisher(&session, "toggle-overview").is_none(),
+        publisher(&session, "overview").is_none(),
         "setup withholds the desktop's actions"
     );
     assert!(
         session
-            .invoke(CHROME_RESOURCE, "toggle-overview", &serde_json::Map::new())
+            .invoke(CHROME_RESOURCE, "overview", &serde_json::Map::new())
             .is_err(),
         "and refuses them"
     );
@@ -1836,7 +1813,7 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
     session.step(Duration::from_millis(1)).unwrap();
     assert!(!session.setup_up(), "skipping the tour finishes setup");
     assert!(
-        publisher(&session, "toggle-overview").is_some(),
+        publisher(&session, "overview").is_some(),
         "the desktop's actions are back"
     );
     assert!(publisher(&session, skip).is_none());
@@ -1855,7 +1832,10 @@ fn workspace_settings_renames_the_workspace_through_its_action() {
     seat.presentation().open(false);
     session.step(Duration::from_millis(1)).unwrap();
     let rename = WorkspaceSettingsEffect::RENAME.id;
-    let sheet = publisher(&session, rename).expect("the open sheet publishes renaming");
+    let sheet = publishers(&session, rename)
+        .into_iter()
+        .find(|resource| resource.starts_with("workspace-settings"))
+        .expect("the open sheet publishes renaming");
     session
         .invoke(
             &sheet,
@@ -2036,6 +2016,8 @@ fn pixel_at(picture: &image::RgbaImage, x: i32, y: i32) -> [u8; 4] {
 mod bars;
 #[path = "session/chrome.rs"]
 mod chrome;
+#[path = "session/gestures.rs"]
+mod gestures;
 #[path = "session/keyboard.rs"]
 mod keyboard;
 #[path = "session/lock.rs"]
@@ -2335,6 +2317,18 @@ fn add_strip(session: &Session, name: &str) {
     handle.replace_tree(tree);
 }
 
+/// The id of the strip named `name` in the workspace in front.
+fn strip_id(session: &Session, name: &str) -> String {
+    session.handle().read(|tree| {
+        tree.active_workspace()
+            .and_then(|workspace| workspace.strips.iter().find(|strip| strip.name == name))
+            .unwrap_or_else(|| panic!("no strip named {name}"))
+            .id
+            .0
+            .to_string()
+    })
+}
+
 /// The names of the workspaces, in order, and the strips of each.
 fn workspaces(session: &Session) -> Vec<(String, Vec<String>)> {
     session.handle().read(|tree| {
@@ -2513,11 +2507,12 @@ fn the_desktop_sends_a_window_where_the_overview_offers_to() {
     let _client = mapped(&mut session, "org.example.Editor");
     let tab = tab_of(&session, "org.example.Editor");
     add_strip(&session, "Second");
+    let second = strip_id(&session, "Second");
     invoke_with(
         &mut session,
         CHROME_RESOURCE,
-        "move-tab-to-strip",
-        &serde_json::json!({"tab": tab.to_string(), "strip": "Second"}),
+        "move-tab",
+        &serde_json::json!({"tab": tab.to_string(), "to": {"strip": second}}),
     );
     let holding = strips_holding(&session, tab);
     assert_eq!(
@@ -2548,7 +2543,7 @@ fn the_desktop_sends_a_window_where_the_overview_offers_to() {
         &mut session,
         CHROME_RESOURCE,
         "move-tab",
-        &serde_json::json!({"tab": tab.to_string(), "workspace": other.to_string()}),
+        &serde_json::json!({"tab": tab.to_string(), "to": {"workspace": other.to_string()}}),
     );
     let landed = tabs_in(&session, other);
     assert_eq!(landed, [tab], "the same window is in the other workspace");
@@ -2589,11 +2584,12 @@ fn the_desktop_names_and_moves_the_strips_the_overview_offers() {
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     add_strip(&session, "Second");
+    let second = strip_id(&session, "Second");
     invoke_with(
         &mut session,
         CHROME_RESOURCE,
-        "rename-strip",
-        &serde_json::json!({"strip": "Second", "name": "Later"}),
+        "rename",
+        &serde_json::json!({"strip": second, "name": "Later"}),
     );
     let (_, strips) = workspaces(&session).remove(0);
     assert_eq!(strips, ["Main", "Later"], "the strip was renamed");
@@ -2651,7 +2647,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
-    invoke(&mut session, CHROME_RESOURCE, "toggle-workspace-menu");
+    invoke(&mut session, CHROME_RESOURCE, "workspace-menu");
     let menu = session.accessible_labels().join("\n");
     for row in [
         "New workspace",
@@ -2678,7 +2674,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
             "the session offers {id}: {offered:?}"
         );
     }
-    invoke(&mut session, CHROME_RESOURCE, "toggle-workspace-menu");
+    invoke(&mut session, CHROME_RESOURCE, "workspace-menu");
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
     let settings = session
         .workspace_settings()
@@ -2746,7 +2742,7 @@ fn session_reading_a_device() -> Session {
 /// The Clipboard section, open in quick settings.
 fn open_clipboard(session: &mut Session) {
     if !session.quick_settings_open() {
-        invoke(session, CHROME_RESOURCE, "toggle-quick-settings");
+        invoke(session, CHROME_RESOURCE, "quick-settings");
     }
     session
         .invoke(

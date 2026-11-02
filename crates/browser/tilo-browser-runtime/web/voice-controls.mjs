@@ -10,7 +10,7 @@
  *
  * The camera and a shared screen work as on a Tilo device: the person turns
  * them on in the call (the browser asks for them), everyone learns who shows
- * what and who is muted or deafened from the room's call list (`cameras`,
+ * what and who is muted or deafened from the workspace's call list (`cameras`,
  * `screens`, `muted`, `deafened` in each roster), the
  * app says which pictures it shows (`show`) and collects them (`pictures`),
  * coded, to decode itself.
@@ -30,7 +30,7 @@ const PICTURES_HOLD_MS = 5000;
  * browser cannot carry never started (`unsupported`); one whose audio this
  * device could not start (no output to play it on) is `unavailable`, the
  * only issue a device's own failure reports. Every workspace has calls, so
- * no host answer reads as the room lacking voice. */
+ * no host answer reads as the workspace lacking voice. */
 export function endedIssue({admitted, reason, unsupported, audioFailed}) {
   if (unsupported) return 'unsupported';
   if (audioFailed) return 'unavailable';
@@ -130,7 +130,7 @@ export function rostersOf(calls, app, record) {
     });
 }
 
-export function createVoiceControls({voice, room, gesture = () => globalThis.navigator?.userActivation?.isActive === true, clock = Date, wait = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
+export function createVoiceControls({voice, workspace, gesture = () => globalThis.navigator?.userActivation?.isActive === true, clock = Date, wait = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
   let generation = 0;
   let owner;
   let inventory = '';
@@ -169,7 +169,7 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
   const stamped = status => ({...status, revision: revisionOf(status)});
   return {
     async execute(request) {
-      if (request.app !== 'so.tilo.chat' || request.room !== room || request.command?.version !== 1) throw new Error('unsupported local media route');
+      if (request.app !== 'so.tilo.chat' || request.workspace !== workspace || request.command?.version !== 1) throw new Error('unsupported local media route');
       const command = request.command.command;
       const route = key(request);
       const rosters = () => rostersOf(voice.calls, request.app, request.record);
@@ -277,10 +277,10 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
 }
 
 /** Pump the bound media lane on a mounted surface; stopping does not wait
- * for another command or a pending room lookup. */
-export function createMediaPump({runtime, id, voice, room, active, report = () => {}, clock = globalThis}) {
+ * for another command or a pending workspace lookup. */
+export function createMediaPump({runtime, id, voice, workspace, active, report = () => {}, clock = globalThis}) {
   let controls = services.get(voice);
-  if (!controls) {controls = createVoiceControls({voice, room}); services.set(voice, controls);}
+  if (!controls) {controls = createVoiceControls({voice, workspace}); services.set(voice, controls);}
   const routes = new Map();
   let closed = false;
   let timer;

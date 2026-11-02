@@ -482,13 +482,13 @@ fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
     app.set_role(tilo_app::permissions::Role::Viewer);
     let viewer = app.permissions();
     let mut standing = viewer.standing().clone();
-    let room = TreePath::workspace(&standing.policy.workspace);
+    let workspace = TreePath::workspace(&standing.policy.workspace);
     let person = Subject::person(standing.person.clone());
     standing.policy.grants.extend([
         Grant::new(
             "asks",
             person.clone(),
-            room.clone(),
+            workspace.clone(),
             KindSet::UNDOABLE,
             Answer::Ask,
             Subject::person("owner"),
@@ -496,7 +496,7 @@ fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
         Grant::new(
             "once",
             person,
-            room.app(ChecklistApp::ID),
+            workspace.app(ChecklistApp::ID),
             KindSet::UNDOABLE,
             Answer::Allow,
             Subject::person("owner"),

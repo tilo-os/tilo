@@ -236,7 +236,7 @@ impl OverviewPanel {
             let theme = ctx.theme;
             ctx.text.draw_style(
                 ctx.scene,
-                &t("overview-no-room"),
+                &t("overview-no-workspace"),
                 theme.tokens.colors.text_dim,
                 ctx.transform
                     .pre_translate((content.x0, here_rect.y0).into()),
@@ -245,7 +245,7 @@ impl OverviewPanel {
             );
             return;
         };
-        self.paint_here_room(ctx, content, here_rect, hi, card);
+        self.paint_here_workspace(ctx, content, here_rect, hi, card);
         if let Some(leave) = self.leave_rect(hi) {
             self.paint_leave(ctx, leave);
         }
@@ -262,7 +262,7 @@ impl OverviewPanel {
         );
     }
 
-    fn paint_here_room(
+    fn paint_here_workspace(
         &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
         content: Rect,
@@ -450,7 +450,7 @@ impl OverviewPanel {
             }
             let leave = self.leave_rect(idx);
             let trailing = leave.map_or(0.0, |leave| leave.width() + self.metrics.s3);
-            self.paint_room_row(
+            self.paint_workspace_row(
                 &mut ui::paint::PaintCtx::new(
                     &mut *ctx.scene,
                     ctx.transform,
@@ -470,7 +470,7 @@ impl OverviewPanel {
 
     /// One workspace in the "go to" list; `trailing` is kept free at its end for
     /// a control of its own (a site workspace's Leave).
-    fn paint_room_row(
+    fn paint_workspace_row(
         &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
         rect: Rect,

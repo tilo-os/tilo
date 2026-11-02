@@ -202,7 +202,7 @@ RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
 COPY os/etc/profile.d/tilo-apps.sh /etc/profile.d/tilo-apps.sh
 
 # Collaborative filesystem service. tilo-store-volume.service prepares the
-# room store volume (/var/lib/tilo/store) before it, giving installs without a
+# store volume (/var/lib/tilo/store) before it, giving installs without a
 # store partition an image-backed one attached by tilo-store-loop.service;
 # fs.service pulls both in, so neither needs enabling.
 COPY \
@@ -477,7 +477,7 @@ COPY \
 # this image), and afterwards on the installed system — `enrol` is also how a
 # volume is re-sealed to a replaced TPM, which is exactly the case where the
 # machine can only be reached with the recovery key. tilo-store-volume plans and
-# formats the room store partition for the installer and runs the store at boot.
+# formats the store partition for the installer and runs the store at boot.
 COPY --chmod=0755 \
     os/usr/libexec/tilo-disk-encrypt \
     os/usr/libexec/tilo-store-volume \

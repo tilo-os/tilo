@@ -953,7 +953,7 @@ fn morning_source_actions_from(
         .get(&workspace.id.raw())
         .map_or_else(Vec::new, |preferences| {
             preferences
-                .for_room(&workspace.room().to_string())
+                .for_workspace(&workspace.room().to_string())
                 .iter()
                 .flat_map(|source| {
                     let app = crate::shell::launcher::display_name_for_app_id_without_waiting(
@@ -1013,8 +1013,13 @@ impl ActivityHost for NativeActivityHost {
             .ok_or("the session's action broker is not running yet")?;
         // The session is opened on the undo's own thread: admitting it
         // reads the workspace, which the pane's caller may hold.
-        self.undos
-            .start(broker, undo.room, undo.invocation, undo.task_id, undo.steps)
+        self.undos.start(
+            broker,
+            undo.workspace,
+            undo.invocation,
+            undo.task_id,
+            undo.steps,
+        )
     }
     fn poll_task_run_undo(
         &self,
@@ -1384,7 +1389,7 @@ mod tests {
         let room = tree.active_workspace().expect("workspace").room();
         let record = RecordId::for_file("history-lock.qdoc");
         let kind = ui::RecordKind::new("document");
-        tree.room_records_held
+        tree.workspace_records_held
             .entry(room)
             .or_default()
             .insert(record.to_string(), kind.to_string());
@@ -1440,7 +1445,7 @@ mod tests {
         let room = tree.active_workspace().expect("workspace").room();
         let record = RecordId::for_file("activity-cold-read.qdoc");
         let kind = ui::RecordKind::new("document");
-        tree.room_records_held
+        tree.workspace_records_held
             .entry(room)
             .or_default()
             .insert(record.to_string(), kind.to_string());
@@ -1556,17 +1561,17 @@ mod tests {
         let preferences = HashMap::from([(
             4,
             MorningPreferences {
-                room: room.clone(),
+                workspace: room.clone(),
                 sources: vec![source.clone()],
             },
         )]);
         save_history_map_at(&path, "morning_sources", &preferences).unwrap();
         let reloaded: HashMap<u64, MorningPreferences> =
             load_history_map_at(Some(&path), "morning_sources");
-        assert_eq!(reloaded[&4].for_room(&room), &[source]);
+        assert_eq!(reloaded[&4].for_workspace(&room), &[source]);
         assert!(
             reloaded[&4]
-                .for_room(&uuid::Uuid::new_v4().to_string())
+                .for_workspace(&uuid::Uuid::new_v4().to_string())
                 .is_empty()
         );
         let observed: HashMap<u64, WorkspaceSeenFrontier> =
@@ -1597,7 +1602,7 @@ mod tests {
         let preferences = HashMap::from([(
             workspace.id.raw(),
             MorningPreferences {
-                room: workspace.room().to_string(),
+                workspace: workspace.room().to_string(),
                 sources: vec![MorningSource {
                     app: "so.tilo.weather".into(),
                     resource: "weather.location:fixture".into(),

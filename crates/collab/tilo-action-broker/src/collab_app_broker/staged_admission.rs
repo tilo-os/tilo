@@ -36,6 +36,7 @@ pub(super) struct Delivery {
     pub(super) offload: Option<(
         Arc<dyn tilo_actions::offload::ActionOffload>,
         tilo_actions::offload::OffloadRequest,
+        tilo_actions::remote::InvokeRequest,
     )>,
     pub(super) checkpoint: Option<(String, String, tilo_actions::ActionContract)>,
     pub(super) untrusted: bool,
@@ -210,11 +211,12 @@ impl AppBrokerState {
         registry.insert(id, pending);
         self.invocation_changed();
         let envelope = match (offload, self.offloads.lock()) {
-            (Some((route, request)), Ok(mut queued)) => {
+            (Some((route, request, invocation)), Ok(mut queued)) => {
                 queued.push(offload_door::QueuedOffload {
                     id,
                     peer_id,
                     request,
+                    invocation,
                     route,
                     envelope,
                     app: sender.clone(),

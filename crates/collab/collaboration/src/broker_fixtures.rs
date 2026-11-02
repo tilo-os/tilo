@@ -33,10 +33,10 @@ impl CollaborationManager {
     )]
     pub fn native_initial_fixture_for_test(
         app: &str,
-        room: Uuid,
+        workspace: Uuid,
         history: Vec<u8>,
     ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_fixture(app, room, history)
+        tests::native_initial_fixture(app, workspace, history)
     }
 
     /// Socket-backed ordering fixture on an actual acknowledged named route.
@@ -109,8 +109,8 @@ impl CollaborationManager {
         clippy::panic,
         reason = "a fixture for the toolkit's tests"
     )]
-    pub fn connected_fixture_for_test(app: &str, room: Uuid) -> Self {
-        tests::connected_manager_for(app, room)
+    pub fn connected_fixture_for_test(app: &str, workspace: Uuid) -> Self {
+        tests::connected_manager_for(app, workspace)
     }
 
     #[allow(
@@ -121,11 +121,11 @@ impl CollaborationManager {
     )]
     pub fn native_initial_fixture_gated_for_test(
         app: &str,
-        room: Uuid,
+        workspace: Uuid,
         history: Vec<u8>,
         gate: tokio::sync::oneshot::Receiver<()>,
     ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_fixture_gated(app, room, history, Some(gate))
+        tests::native_initial_fixture_gated(app, workspace, history, Some(gate))
     }
 
     /// Socket-backed committed-read fixture; the probe observes real recheck requests.
@@ -137,11 +137,11 @@ impl CollaborationManager {
     )]
     pub fn native_initial_parked_fixture_for_test(
         app: &str,
-        room: Uuid,
+        workspace: Uuid,
         history: Vec<u8>,
         gate: tokio::sync::oneshot::Receiver<()>,
     ) -> (Self, Box<dyn Fn() -> usize>) {
-        tests::native_initial_parked_fixture(app, room, history, gate)
+        tests::native_initial_parked_fixture(app, workspace, history, gate)
     }
 
     #[allow(
@@ -152,17 +152,17 @@ impl CollaborationManager {
     )]
     pub fn native_refresh_fixture_for_test(
         app: &str,
-        room: Uuid,
+        workspace: Uuid,
         history: Vec<u8>,
     ) -> (Self, NativeRefreshProbe) {
-        tests::native_refresh_fixture(app, room, history)
+        tests::native_refresh_fixture(app, workspace, history)
     }
 
     /// A native app's manager joining `route` in the background as
     /// [`Self::join_native`] does, over a fake broker that holds the join
     /// until the probe answers or refuses it, as a loaded broker does. The
     /// route's committed history is `history`, of the record kind `kind`;
-    /// the room stands as `room` until the probe says otherwise. Make it in
+    /// the workspace stands as `workspace` until the probe says otherwise. Make it in
     /// the app's wake scope, as a launch does.
     #[allow(
         clippy::unwrap_used,
@@ -174,15 +174,15 @@ impl CollaborationManager {
         route: RouteSpec,
         kind: &str,
         history: Vec<u8>,
-        room: runtime_collab::WorkspaceStatus,
+        workspace: runtime_collab::WorkspaceStatus,
     ) -> (Self, JoiningProbe) {
         let (answer, gate) = tokio::sync::oneshot::channel();
-        let (room_status, status) = tokio::sync::watch::channel(Ok(room));
-        let broker = FakeBroker {
-            captures: Arc::new(std::sync::Mutex::new(Captures {
+        let (workspace_status, status) = tokio::sync::watch::channel(Ok(workspace));
+        let broker = tests::FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(tests::Captures {
                 committed_history_fixture: Some(history),
                 join_gates: std::collections::VecDeque::from([gate]),
-                room_status: Some(status),
+                workspace_status: Some(status),
                 // The session's answer to the app's private requests, as the
                 // custodian gives it: sealing stores, release answers with
                 // the secret, anything else is not the session's.
@@ -221,7 +221,7 @@ impl CollaborationManager {
         );
         let probe = JoiningProbe {
             answer: std::sync::Mutex::new(Some(answer)),
-            room: room_status,
+            workspace: workspace_status,
             sent: Box::new(move || captures.lock().unwrap().signed_ops.len()),
         };
         (manager, probe)

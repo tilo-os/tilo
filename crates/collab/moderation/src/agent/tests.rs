@@ -82,9 +82,9 @@ impl Judge for FakeJudge {
     }
 }
 
-/// A room with one board, governed by `policy`, whose moderation agent acts
+/// A workspace with one board, governed by `policy`, whose moderation agent acts
 /// with the Moderator role (as the host delegates it).
-struct FakeRoom {
+struct FakeWorkspace {
     now: i64,
     policy: WorkspacePolicy,
     board: Replica<Board>,
@@ -92,7 +92,7 @@ struct FakeRoom {
     invoked: Vec<(String, String, String, serde_json::Value, String)>,
 }
 
-impl FakeRoom {
+impl FakeWorkspace {
     fn new() -> Self {
         let mut policy = WorkspacePolicy::new("r", OWNER);
         for (person, role) in [
@@ -132,7 +132,7 @@ impl FakeRoom {
     }
 }
 
-impl RoomDoor for FakeRoom {
+impl WorkspaceDoor for FakeWorkspace {
     fn now_ms(&self) -> i64 {
         self.now
     }
@@ -189,16 +189,23 @@ impl RoomDoor for FakeRoom {
 }
 
 /// Ada adds three cards; Mallory deletes them all; Ada reports Mallory.
-fn vandalised() -> FakeRoom {
-    let mut room = FakeRoom::new();
+fn vandalised() -> FakeWorkspace {
+    let mut workspace = FakeWorkspace::new();
     for text in ["one", "two", "three"] {
-        room.act(ADA, Board::ADD.with(text.to_owned()));
+        workspace.act(ADA, Board::ADD.with(text.to_owned()));
     }
-    let ids: Vec<_> = room.board.state().unwrap().cards.ids().cloned().collect();
+    let ids: Vec<_> = workspace
+        .board
+        .state()
+        .unwrap()
+        .cards
+        .ids()
+        .cloned()
+        .collect();
     for id in ids {
-        room.act(MALLORY, Board::DELETE.with(id));
+        workspace.act(MALLORY, Board::DELETE.with(id));
     }
-    let mut ada = room.moderation.fork().as_author(ADA);
+    let mut ada = workspace.moderation.fork().as_author(ADA);
     ada.apply(Moderation::REPORT.with(moderation::Report {
         person: MALLORY.into(),
         app: None,
@@ -207,8 +214,8 @@ fn vandalised() -> FakeRoom {
         reason: NonBlank::parse("deleted all our cards").expect("a test reason says something"),
     }))
     .unwrap();
-    room.moderation.sync_with(&mut ada).unwrap();
-    room.now = room
+    workspace.moderation.sync_with(&mut ada).unwrap();
+    workspace.now = workspace
         .board
         .versions()
         .iter()
@@ -216,38 +223,38 @@ fn vandalised() -> FakeRoom {
         .max()
         .unwrap_or_default()
         .saturating_add(1_000);
-    assert!(room.cards().is_empty());
-    room
+    assert!(workspace.cards().is_empty());
+    workspace
 }
 
 /// Looks, asks the model and enforces, as the host does.
 fn consider(
     agent: &ModerationAgent<FakeJudge>,
-    room: &mut FakeRoom,
+    workspace: &mut FakeWorkspace,
     moderation: &Moderation,
     person: &str,
 ) -> Result<Enforced, JudgeError> {
-    let look = ModerationAgent::<FakeJudge>::look(room, moderation, person);
+    let look = ModerationAgent::<FakeJudge>::look(workspace, moderation, person);
     let (verdict, model) = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
         .block_on(agent.verdict(&look))?;
     Ok(ModerationAgent::<FakeJudge>::enforce(
-        room, look, verdict, model,
+        workspace, look, verdict, model,
     ))
 }
 
 #[test]
 fn a_report_restricts_through_the_grant_and_takes_back_the_deletions() {
-    let mut room = vandalised();
+    let mut workspace = vandalised();
     let agent = ModerationAgent::new(FakeJudge::answering(Outcome::Restrict, Some(30), true));
-    let moderation = room.moderation.state().unwrap();
+    let moderation = workspace.moderation.state().unwrap();
     assert_eq!(
         ModerationAgent::<FakeJudge>::reported(&moderation),
         [MALLORY]
     );
 
-    let enforced = consider(&agent, &mut room, &moderation, MALLORY).unwrap();
+    let enforced = consider(&agent, &mut workspace, &moderation, MALLORY).unwrap();
     assert!(enforced.failures.is_empty(), "{:?}", enforced.failures);
 
     // The model saw the report and Mallory's three deletions, not Ada's adds.
@@ -256,18 +263,18 @@ fn a_report_restricts_through_the_grant_and_takes_back_the_deletions() {
     assert_eq!(seen[0].activity.len(), 3);
     assert!(seen[0].activity.iter().all(|item| item.destructive));
 
-    // The restriction is the room's expiring Deny, checked like any grant.
-    let until = room.now + 30 * 60_000;
-    let cx = Context::at(u64::try_from(room.now).unwrap());
+    // The restriction is the workspace's expiring Deny, checked like any grant.
+    let until = workspace.now + 30 * 60_000;
+    let cx = Context::at(u64::try_from(workspace.now).unwrap());
     assert_eq!(
-        room.policy.restricted_until(MALLORY, &cx),
+        workspace.policy.restricted_until(MALLORY, &cx),
         Some(u64::try_from(until).unwrap())
     );
-    assert!(room.policy.is_member(MALLORY));
+    assert!(workspace.policy.is_member(MALLORY));
 
     // One undo of Mallory's steps on the board, back to before the first.
-    assert_eq!(room.invoked.len(), 1);
-    let (app, record, action, args, run_id) = &room.invoked[0];
+    assert_eq!(workspace.invoked.len(), 1);
+    let (app, record, action, args, run_id) = &workspace.invoked[0];
     assert_eq!(
         (app.as_str(), record.as_str(), action.as_str()),
         ("test.app", "b1", "undo")
@@ -277,7 +284,7 @@ fn a_report_restricts_through_the_grant_and_takes_back_the_deletions() {
     assert_eq!(*run_id, format!("moderation:{}", enforced.decision.id));
 
     // The decision is recorded with its reasoning and settles the report.
-    let moderation = room.moderation.state().unwrap();
+    let moderation = workspace.moderation.state().unwrap();
     assert_eq!(moderation.open_reports().count(), 0);
     let decision = moderation.decisions.iter().next().unwrap();
     assert_eq!(decision.outcome, Outcome::Restrict);
@@ -290,15 +297,15 @@ fn a_report_restricts_through_the_grant_and_takes_back_the_deletions() {
 
 #[test]
 fn a_ban_removes_and_a_moderator_overturning_restores() {
-    let mut room = vandalised();
+    let mut workspace = vandalised();
     let agent = ModerationAgent::new(FakeJudge::answering(Outcome::Ban, None, true));
-    let moderation = room.moderation.state().unwrap();
-    consider(&agent, &mut room, &moderation, MALLORY).unwrap();
-    assert!(room.policy.is_banned(MALLORY));
-    assert!(!room.policy.is_member(MALLORY));
+    let moderation = workspace.moderation.state().unwrap();
+    consider(&agent, &mut workspace, &moderation, MALLORY).unwrap();
+    assert!(workspace.policy.is_banned(MALLORY));
+    assert!(!workspace.policy.is_member(MALLORY));
 
     // A human Moderator overturns; the host carries it out.
-    let mut helper = room.moderation.fork().as_author(HELPER);
+    let mut helper = workspace.moderation.fork().as_author(HELPER);
     let id = helper
         .state()
         .unwrap()
@@ -314,8 +321,8 @@ fn a_ban_removes_and_a_moderator_overturning_restores() {
             note: "Mallory was cleaning up test cards Ada asked her to.".into(),
         }))
         .unwrap();
-    room.moderation.sync_with(&mut helper).unwrap();
-    let decision = room
+    workspace.moderation.sync_with(&mut helper).unwrap();
+    let decision = workspace
         .moderation
         .state()
         .unwrap()
@@ -325,36 +332,38 @@ fn a_ban_removes_and_a_moderator_overturning_restores() {
         .unwrap()
         .clone();
     assert!(!decision.stands());
-    ModerationAgent::<FakeJudge>::restore(&mut room, &decision).unwrap();
-    assert!(!room.policy.is_banned(MALLORY));
-    let (_, _, action, args, _) = room.invoked.last().unwrap();
+    ModerationAgent::<FakeJudge>::restore(&mut workspace, &decision).unwrap();
+    assert!(!workspace.policy.is_banned(MALLORY));
+    let (_, _, action, args, _) = workspace.invoked.last().unwrap();
     assert_eq!(action, "undo");
     assert_eq!(args["run"], format!("moderation:{id}"));
 }
 
 #[test]
 fn the_agent_cannot_reach_a_moderator_and_records_that() {
-    let mut room = vandalised();
-    room.policy
+    let mut workspace = vandalised();
+    workspace
+        .policy
         .members
         .insert(MALLORY.to_owned(), Role::Moderator);
     let agent = ModerationAgent::new(FakeJudge::answering(Outcome::Restrict, Some(30), true));
-    let moderation = room.moderation.state().unwrap();
-    let enforced = consider(&agent, &mut room, &moderation, MALLORY).unwrap();
+    let moderation = workspace.moderation.state().unwrap();
+    let enforced = consider(&agent, &mut workspace, &moderation, MALLORY).unwrap();
     assert_eq!(enforced.decision.ruling.outcome, Outcome::NoAction);
     assert!(enforced.decision.ruling.reasoning.contains("Not enforced"));
-    assert!(room.invoked.is_empty(), "nothing taken back");
+    assert!(workspace.invoked.is_empty(), "nothing taken back");
     assert_eq!(
-        room.policy
-            .restricted_until(MALLORY, &Context::at(u64::try_from(room.now).unwrap())),
+        workspace
+            .policy
+            .restricted_until(MALLORY, &Context::at(u64::try_from(workspace.now).unwrap())),
         None
     );
 }
 
 #[test]
 fn a_report_about_someone_who_did_nothing_never_reaches_the_model() {
-    let mut room = vandalised();
-    let mut ada = room.moderation.fork().as_author(MALLORY);
+    let mut workspace = vandalised();
+    let mut ada = workspace.moderation.fork().as_author(MALLORY);
     ada.apply(Moderation::REPORT.with(moderation::Report {
         person: ADA.into(),
         app: None,
@@ -363,30 +372,43 @@ fn a_report_about_someone_who_did_nothing_never_reaches_the_model() {
         reason: NonBlank::parse("she is annoying").expect("a test reason says something"),
     }))
     .unwrap();
-    room.moderation.sync_with(&mut ada).unwrap();
+    workspace.moderation.sync_with(&mut ada).unwrap();
     // Ada's adds are older than the window.
-    room.now += LOOKBACK_MS + 1;
+    workspace.now += LOOKBACK_MS + 1;
     let agent = ModerationAgent::new(FakeJudge::answering(Outcome::Ban, None, true));
-    let moderation = room.moderation.state().unwrap();
-    let enforced = consider(&agent, &mut room, &moderation, ADA).unwrap();
+    let moderation = workspace.moderation.state().unwrap();
+    let enforced = consider(&agent, &mut workspace, &moderation, ADA).unwrap();
     assert_eq!(enforced.decision.ruling.outcome, Outcome::NoAction);
     assert!(agent.judge.seen.lock().unwrap().is_empty());
-    assert!(room.policy.is_member(ADA));
+    assert!(workspace.policy.is_member(ADA));
 }
 
 #[test]
 fn a_burst_of_deletions_is_noticed_without_a_report() {
-    let mut room = FakeRoom::new();
+    let mut workspace = FakeWorkspace::new();
     for index in 0..BURST_COUNT {
-        room.act(ADA, Board::ADD.with(format!("card {index}")));
+        workspace.act(ADA, Board::ADD.with(format!("card {index}")));
     }
-    room.now = room.board.versions().last().unwrap().time_ms + 1;
-    assert!(!ModerationAgent::<FakeJudge>::bursting(&mut room, MALLORY));
-    let ids: Vec<_> = room.board.state().unwrap().cards.ids().cloned().collect();
+    workspace.now = workspace.board.versions().last().unwrap().time_ms + 1;
+    assert!(!ModerationAgent::<FakeJudge>::bursting(
+        &mut workspace,
+        MALLORY
+    ));
+    let ids: Vec<_> = workspace
+        .board
+        .state()
+        .unwrap()
+        .cards
+        .ids()
+        .cloned()
+        .collect();
     for id in ids {
-        room.act(MALLORY, Board::DELETE.with(id));
+        workspace.act(MALLORY, Board::DELETE.with(id));
     }
-    room.now = room.board.versions().last().unwrap().time_ms + 1;
-    assert!(ModerationAgent::<FakeJudge>::bursting(&mut room, MALLORY));
-    assert!(!ModerationAgent::<FakeJudge>::bursting(&mut room, ADA));
+    workspace.now = workspace.board.versions().last().unwrap().time_ms + 1;
+    assert!(ModerationAgent::<FakeJudge>::bursting(
+        &mut workspace,
+        MALLORY
+    ));
+    assert!(!ModerationAgent::<FakeJudge>::bursting(&mut workspace, ADA));
 }

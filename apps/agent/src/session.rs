@@ -933,7 +933,7 @@ fn managed_context(cfg: &Config) -> Result<Option<crate::providers::ProviderSele
             && object.keys().all(|key| matches!(
                 key.as_str(),
                 "version"
-                    | "room"
+                    | "workspace"
                     | "agent"
                     | "launch"
                     | "runtime_epoch"
@@ -950,7 +950,7 @@ fn managed_context(cfg: &Config) -> Result<Option<crate::providers::ProviderSele
     };
     anyhow::ensure!(
         value.get("version").and_then(serde_json::Value::as_u64) == Some(1)
-            && text("room")? == cfg.cluster.to_string()
+            && text("workspace")? == cfg.cluster.to_string()
             && text("agent")? == cfg.agent_id
             && cfg.app_id == "so.tilo.agent"
             && cfg.model

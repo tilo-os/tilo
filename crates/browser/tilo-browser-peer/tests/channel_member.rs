@@ -16,7 +16,7 @@
 
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeSet;
@@ -32,10 +32,11 @@ use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{
-    ROOM, enrol, ready, route, start_host, start_peer, start_peer_with_store, wait_for, workspace,
+    WORKSPACE, enrol, ready, route, start_host, start_peer, start_peer_with_store, wait_for,
+    workspace,
 };
 
-/// A native participant's side of the room, driven by hand: publish a
+/// A native participant's side of the workspace, driven by hand: publish a
 /// message through the host the way a shell does.
 fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
     let (channel, retention) = neighbour_wire::retention(message, false).unwrap();
@@ -118,7 +119,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     publish(
         &session,
         &NeighbourMsg::MlsGovernance {
-            workspace: ROOM.into(),
+            workspace: WORKSPACE.into(),
             frame: Box::new(take(&mut laptop_peer, &vault).remove(0)),
             delivery: 1,
         },
@@ -155,7 +156,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     publish(&session, &seal(&laptop_peer, 1, "from the laptop"));
 
     // Publishing only queues the frames for the host. Until it retains the
-    // genesis, the room's replay names no governor and reads as ungoverned,
+    // genesis, the workspace's replay names no governor and reads as ungoverned,
     // so let a fresh member's replay prove all three are held first.
     let observer = enrol(&root, "observer", DeviceCapabilities::member());
     let observer_endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -201,7 +202,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     }
     observer_session.close().await;
 
-    // The browser joins the room over HTTPS and opens the note.
+    // The browser joins the workspace over HTTPS and opens the note.
     let peer = start_peer(
         Host::Https(host.https()),
         browser.cert.clone(),
@@ -209,7 +210,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         browser.key.clone(),
     );
     let events = peer.events();
-    // A reader of the status (the host's room actions on another thread)
+    // A reader of the status (the host's workspace actions on another thread)
     // that sees the note no longer awaiting keys finds its documents among
     // the events already: a record read as open is never read empty.
     let opened_when_unsealed = {
@@ -239,7 +240,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
             panic!("the note was never held for its keys, then opened");
         })
     };
-    peer.join_placed(support::ROOM, "Workspace").unwrap();
+    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
     peer.open_route(route.clone()).unwrap();
     ready(&[&peer]).await;
     // Written before it holds the keys: held, then sealed once admitted.
@@ -263,12 +264,13 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
-        // The room's host takes part as well: its own writes are not the browser's.
+        // The workspace's host takes part as well: its own writes are not the
+        // browser's.
         if support::is_host(&author) {
             continue;
         }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
-            // The page asks for the channels of the room's other records too.
+            // The page asks for the channels of the workspace's other records too.
             Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. })
                 if request.channel == channel =>
             {
@@ -282,7 +284,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
                     publish(
                         &session,
                         &NeighbourMsg::MlsGovernance {
-                            workspace: ROOM.into(),
+                            workspace: WORKSPACE.into(),
                             frame: Box::new(frame),
                             delivery: 2,
                         },
@@ -345,7 +347,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     // that epoch's key: it waits for the key instead of being refused.
     let phone = enrol(&root, "phone", DeviceCapabilities::member());
     let phone_device = Ed25519PublicKey::from_bytes(phone.key.verifying_key().to_bytes());
-    // The phone announces itself in the room, as every device does: the
+    // The phone announces itself in the workspace, as every device does: the
     // browser vouches only for devices whose certificate the host relayed,
     // and holds a commit adding any other until its certificate arrives.
     let phone_endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -393,7 +395,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         publish(
             &session,
             &NeighbourMsg::MlsGovernance {
-                workspace: ROOM.into(),
+                workspace: WORKSPACE.into(),
                 frame: Box::new(frame),
                 delivery: 3,
             },
@@ -519,7 +521,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     publish(
         &session,
         &NeighbourMsg::MlsGovernance {
-            workspace: ROOM.into(),
+            workspace: WORKSPACE.into(),
             frame: Box::new(take(&mut laptop_peer, &vault).remove(0)),
             delivery: 1,
         },
@@ -536,7 +538,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         )
     };
     let first = start();
-    first.join_placed(support::ROOM, "Workspace").unwrap();
+    first.join_placed(support::WORKSPACE, "Workspace").unwrap();
     first.open_route(route.clone()).unwrap();
     ready(&[&first]).await;
     first
@@ -557,7 +559,9 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     first.close();
 
     let reloaded = start();
-    reloaded.join_placed(support::ROOM, "Workspace").unwrap();
+    reloaded
+        .join_placed(support::WORKSPACE, "Workspace")
+        .unwrap();
     reloaded.open_route(route.clone()).unwrap();
     let browser_device = Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes());
     let allowed = BTreeSet::from([Ed25519PublicKey::from_bytes(laptop_device), browser_device]);
@@ -570,12 +574,13 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
-        // The room's host takes part as well: its own writes are not the browser's.
+        // The workspace's host takes part as well: its own writes are not the
+        // browser's.
         if support::is_host(&author) {
             continue;
         }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
-            // The page asks for the channels of the room's other records too.
+            // The page asks for the channels of the workspace's other records too.
             Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. })
                 if request.channel == channel =>
             {
@@ -585,7 +590,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
                     publish(
                         &session,
                         &NeighbourMsg::MlsGovernance {
-                            workspace: ROOM.into(),
+                            workspace: WORKSPACE.into(),
                             frame: Box::new(frame),
                             delivery: 2,
                         },
@@ -678,7 +683,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    peer.join_placed(support::ROOM, "Workspace").unwrap();
+    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
     peer.open_route(route.clone()).unwrap();
     ready(&[&peer]).await;
     peer.publish(
@@ -690,7 +695,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     publish(
         &session,
         &NeighbourMsg::MlsGovernance {
-            workspace: ROOM.into(),
+            workspace: WORKSPACE.into(),
             frame: Box::new(take(&mut laptop_peer, &vault).remove(0)),
             delivery: 1,
         },
@@ -711,12 +716,13 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
-        // The room's host takes part as well: its own writes are not the browser's.
+        // The workspace's host takes part as well: its own writes are not the
+        // browser's.
         if support::is_host(&author) {
             continue;
         }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
-            // The page asks for the channels of the room's other records too.
+            // The page asks for the channels of the workspace's other records too.
             Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. })
                 if request.channel == channel =>
             {
@@ -728,7 +734,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
                     publish(
                         &session,
                         &NeighbourMsg::MlsGovernance {
-                            workspace: ROOM.into(),
+                            workspace: WORKSPACE.into(),
                             frame: Box::new(frame),
                             delivery: 2,
                         },

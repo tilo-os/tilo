@@ -71,8 +71,8 @@ fn a_workspace_launch_opens_the_workspaces_default_record() {
         ],
     );
     let dirs = record_dirs(&host);
-    let room_default = ui::record::RecordId::room_default().storage_key();
-    assert!(dirs.contains(&room_default), "{dirs:?}");
+    let workspace_default = ui::record::RecordId::workspace_default().storage_key();
+    assert!(dirs.contains(&workspace_default), "{dirs:?}");
     assert!(
         !host.join("tilo/sheets/workbook.automerge").exists(),
         "the workbook is the record, not a file of the app's own"

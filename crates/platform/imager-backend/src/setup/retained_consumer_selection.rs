@@ -53,7 +53,7 @@ impl ReviewedConsumerSelection {
             || self.binding.operation_id != selected.operation_id
             || self.binding.app_id != selected.app_id
             || self.binding.package_sha256 != selected.package_sha256
-            || self.binding.room != selected.room
+            || self.binding.workspace != selected.room
             || self.binding.resource_record != "retained-home"
             || selected.resource_record != "retained-home"
             || self.binding.shell_context_sha256 != selected.context_sha256
@@ -61,7 +61,7 @@ impl ReviewedConsumerSelection {
             || self.signed_context.len() > 64 * 1024
             || self.binding.signed_shell_context_bytes()? != self.signed_context
             || hex::encode(Sha256::digest(&self.signed_context)) != selected.context_sha256
-            || self.binding.room
+            || self.binding.workspace
                 != runtime_collab::retained_person::personal_cluster(
                     &self.input.person_public_key(),
                 )

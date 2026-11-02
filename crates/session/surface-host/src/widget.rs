@@ -154,6 +154,13 @@ impl WidgetHost {
         &mut self.host
     }
 
+    /// The toolkit's host of the widget tree, to read what it says of itself without
+    /// changing it.
+    #[must_use]
+    pub const fn host(&self) -> &FrameHarness {
+        &self.host
+    }
+
     /// Where what the tree publishes stands: it may have changed only when
     /// this moved since it was last read.
     #[must_use]

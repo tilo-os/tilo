@@ -139,7 +139,7 @@ impl ShellNetwork {
     /// `None` when the outbox is empty.
     fn outbox_state(tree: &crate::shell::state::WorkspaceTree) -> Option<(u64, uuid::Uuid)> {
         let newest = tree.room_outbox.last()?;
-        Some((tree.desktop.room_epoch, newest.id))
+        Some((tree.desktop.workspace_epoch, newest.id))
     }
 
     /// Ask each entry's host, in order, and tell the tree how each answered
@@ -520,10 +520,13 @@ mod tests {
         document
             .put(automerge::ROOT, "name", workspace.name.clone())
             .expect("name");
-        tilo_desktop_model::projection::project_room_policy(&mut document, &workspace.policy)
+        tilo_desktop_model::projection::project_workspace_policy(&mut document, &workspace.policy)
             .expect("policy");
-        tilo_desktop_model::projection::project_room_sandbox(&mut document, &workspace.sandbox)
-            .expect("sandbox");
+        tilo_desktop_model::projection::project_workspace_sandbox(
+            &mut document,
+            &workspace.sandbox,
+        )
+        .expect("sandbox");
         tree.room_docs.insert(workspace.room(), document);
     }
 

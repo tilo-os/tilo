@@ -13,13 +13,14 @@
 //! (`/run/tilo/documents/<token>/<name>`). This is how `xdg-document-portal`
 //! solves the same problem.
 //!
-//! An app's view is keyed by the room it was launched into and its package
-//! ([`AppKey`]), so the same app in another workspace sees none of it, and no
-//! app can reach another's view: only its own subtree is bound. Documents
-//! stay private to this device ([`Documents::kept_in`] keeps them across
-//! sessions in a private file, so a recent file reopens where it was): they
-//! are never written into the room's shared capability list, which would
-//! replicate a private choice to every peer and widen the app's next launch.
+//! An app's view is keyed by the workspace it was launched into and its
+//! package ([`AppKey`]), so the same app in another workspace sees none of
+//! it, and no app can reach another's view: only its own subtree is bound.
+//! Documents stay private to this device ([`Documents::kept_in`] keeps them
+//! across sessions in a private file, so a recent file reopens where it
+//! was): they are never written into the workspace's shared capability
+//! list, which would replicate a private choice to every peer and widen the
+//! app's next launch.
 //!
 //! [`Documents`] is the table both sides share; [`host`] turns a path inside
 //! an app's view into the host file it names, refusing anything a choice did
@@ -54,30 +55,30 @@ pub fn mountpoint() -> Option<PathBuf> {
 /// The host directory that is `key`'s view, under the filesystem mounted at
 /// `mountpoint`: what the launcher binds at [`SANDBOX_DIR`].
 pub fn app_view(mountpoint: &Path, key: &AppKey) -> PathBuf {
-    mountpoint.join(&key.room).join(&key.app)
+    mountpoint.join(&key.workspace).join(&key.app)
 }
 
-/// Whose documents: the room an app was launched into and its package.
+/// Whose documents: the workspace an app was launched into and its package.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AppKey {
-    room: String,
+    workspace: String,
     app: String,
 }
 
 impl AppKey {
-    /// The key for `app` launched into `room`, or `None` when either is not
-    /// a name the documents filesystem can carry as one path component (a
-    /// room id is letters, digits and `-`; a package id adds `.` and `_`,
-    /// and does not start with `.`).
-    pub fn new(room: &str, app: &str) -> Option<Self> {
-        (is_room(room) && is_app(app)).then(|| Self {
-            room: room.to_owned(),
+    /// The key for `app` launched into `workspace`, or `None` when either is
+    /// not a name the documents filesystem can carry as one path component
+    /// (a workspace id is letters, digits and `-`; a package id adds `.` and
+    /// `_`, and does not start with `.`).
+    pub fn new(workspace: &str, app: &str) -> Option<Self> {
+        (is_workspace(workspace) && is_app(app)).then(|| Self {
+            workspace: workspace.to_owned(),
             app: app.to_owned(),
         })
     }
 
-    pub fn room(&self) -> &str {
-        &self.room
+    pub fn workspace(&self) -> &str {
+        &self.workspace
     }
 
     pub fn app(&self) -> &str {
@@ -85,7 +86,7 @@ impl AppKey {
     }
 }
 
-pub(crate) fn is_room(name: &str) -> bool {
+pub(crate) fn is_workspace(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
@@ -191,7 +192,7 @@ impl std::fmt::Display for GrantError {
 
 impl std::error::Error for GrantError {}
 
-/// What one app in one room was given, and the order it was chosen in.
+/// What one app in one workspace was given, and the order it was chosen in.
 #[derive(Default)]
 struct View {
     documents: BTreeMap<String, Document>,
@@ -275,7 +276,7 @@ impl Loading {
     }
 }
 
-/// The kept table: what each app in each room was given, each app's
+/// The kept table: what each app in each workspace was given, each app's
 /// documents newest first.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Record {
@@ -284,7 +285,10 @@ struct Record {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Kept {
-    room: String,
+    /// Written as `room`: a record kept by an earlier session loads as it
+    /// is, rather than forgetting every file the person chose.
+    #[serde(rename = "room")]
+    workspace: String,
     app: String,
     kind: String,
     host: PathBuf,
@@ -299,9 +303,9 @@ impl Documents {
     /// A table kept in `record`, a private file on this device, so a file
     /// chosen in an earlier session reopens where it was. Like the
     /// person's other portal answers it stays on this device: it is never
-    /// written into a room, which would replicate a private choice to every
-    /// peer and widen what the app is given at launch. A kept item that is
-    /// gone or no longer what it was chosen as is dropped when read.
+    /// written into a workspace, which would replicate a private choice to
+    /// every peer and widen what the app is given at launch. A kept item
+    /// that is gone or no longer what it was chosen as is dropped when read.
     ///
     /// The record is read on a thread of its own, so a session starts
     /// without waiting on the disk; anything that uses the table before it
@@ -335,9 +339,10 @@ impl Documents {
             .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok())
             .unwrap_or_default();
         for kept in kept.documents {
-            let (Some(key), Some(kind)) =
-                (AppKey::new(&kept.room, &kept.app), Kind::of_tag(&kept.kind))
-            else {
+            let (Some(key), Some(kind)) = (
+                AppKey::new(&kept.workspace, &kept.app),
+                Kind::of_tag(&kept.kind),
+            ) else {
                 continue;
             };
             let Ok(host) = resolve_choice(&kept.host, kind) else {
@@ -365,7 +370,7 @@ impl Documents {
                 .iter()
                 .flat_map(|(key, view)| {
                     view.by_recency().map(|document| Kept {
-                        room: key.room.clone(),
+                        workspace: key.workspace.clone(),
                         app: key.app.clone(),
                         kind: document.kind.tag().to_owned(),
                         host: document.host.clone(),
@@ -516,11 +521,11 @@ fn plain_name(path: &Path) -> Option<&OsStr> {
 }
 
 /// A document's token: the same for the same choice by the same app in the
-/// same room, and unguessable from outside without knowing all three.
+/// same workspace, and unguessable from outside without knowing all three.
 fn token(key: &AppKey, document: &Document) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"tilo-documents/1\0");
-    hasher.update(key.room.as_bytes());
+    hasher.update(key.workspace.as_bytes());
     hasher.update(b"\0");
     hasher.update(key.app.as_bytes());
     hasher.update(b"\0");
@@ -556,15 +561,18 @@ mod tests {
 
     #[test]
     fn keys_carry_only_names_one_path_component_can_hold() {
-        assert!(AppKey::new("room-1", "so.tilo.files").is_some());
-        for (room, app) in [
+        assert!(AppKey::new("workspace-1", "so.tilo.files").is_some());
+        for (workspace, app) in [
             ("", "so.tilo.files"),
             ("../x", "so.tilo.files"),
-            ("room", ".."),
-            ("room", "a/b"),
-            ("room", ".hidden"),
+            ("workspace", ".."),
+            ("workspace", "a/b"),
+            ("workspace", ".hidden"),
         ] {
-            assert!(AppKey::new(room, app).is_none(), "{room:?} {app:?}");
+            assert!(
+                AppKey::new(workspace, app).is_none(),
+                "{workspace:?} {app:?}"
+            );
         }
     }
 
@@ -582,7 +590,7 @@ mod tests {
             documents.document(&key(), &token).unwrap().host,
             file.canonicalize().unwrap()
         );
-        let other = AppKey::new("other-room", "so.tilo.totp").unwrap();
+        let other = AppKey::new("other-workspace", "so.tilo.totp").unwrap();
         assert!(documents.document(&other, &token).is_none());
         assert_ne!(documents.grant(&other, &file, Kind::Read).unwrap(), path);
     }
@@ -616,6 +624,29 @@ mod tests {
         );
         assert_eq!(next.tokens(&key()).len(), 1, "what is gone is forgotten");
         assert_eq!(next.grant(&key(), &kept, Kind::Read).unwrap(), path);
+    }
+
+    #[test]
+    fn a_record_written_under_the_room_key_still_opens_its_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("documents.json");
+        let kept = dir.path().join("kept.pdf");
+        std::fs::write(&kept, b"kept").unwrap();
+        let host = kept.canonicalize().unwrap();
+        std::fs::write(
+            &record,
+            serde_json::json!({
+                "documents": [{
+                    "room": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+                    "app": "so.tilo.totp",
+                    "kind": "read",
+                    "host": &host,
+                }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(Documents::kept_in(record).chosen(&key()), [host]);
     }
 
     #[cfg(unix)]
@@ -676,7 +707,7 @@ mod tests {
             [a.clone(), c.clone(), b.clone()],
             "choosing again makes it the newest"
         );
-        let other = AppKey::new("other-room", "so.tilo.totp").unwrap();
+        let other = AppKey::new("other-workspace", "so.tilo.totp").unwrap();
         assert!(documents.chosen(&other).is_empty(), "each app has its own");
         assert_eq!(
             Documents::kept_in(record).chosen(&key()),

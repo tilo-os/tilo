@@ -3,7 +3,7 @@ name = "tilo-room-host"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "The room host every Tilo device runs and the relay embeds: room governance, the member session stack, and the retained store beneath it."
+description = "The workspace host every Tilo device runs and the relay embeds: workspace governance, the member session stack, and the retained store beneath it."
 license = "MIT OR Apache-2.0"
 
 [lib]
@@ -72,6 +72,9 @@ tilo-automation = { path = "../../collab/automation" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 
 [dev-dependencies]
+# A dispatcher that answers as an app's own host: what a device's plane asks
+# through, and what a workspace's host answers beside it.
+tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 # The store's continuity tests count each thread's heap.
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tokio = { workspace = true, features = ["test-util"] }

@@ -1725,6 +1725,37 @@
           ]
         },
         {
+          "id": "invitations",
+          "label": "The invitations this device's person made into a workspace that can still be",
+          "description": "The invitations this device's person made into a workspace that can still be redeemed, in the words the workspace's host lists them by",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "workspace",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "cancel-invitation",
+          "label": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",
+          "description": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "invite",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "workspace",
+              "required": false,
+              "type": "text"
+            }
+          ]
+        },
+        {
           "id": "show-surface",
           "label": "Show the surface `surface` over the desk's windows, or close it when it is up",
           "description": "Show the surface `surface` over the desk's windows, or close it when it is up.",

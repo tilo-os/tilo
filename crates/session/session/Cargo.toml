@@ -137,6 +137,9 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+# The device's certificate authority the broker admits a join with: the
+# identity store's selected identity and the devices it certifies now.
+tilo-identity-authority = { path = "../identity-authority" }
 # The identity record the launcher bound and the person's own: the directories
 # whose changes a worker follows.
 runtime-identity = { path = "../../runtime/runtime-identity" }
@@ -151,6 +154,9 @@ tilo-service = { path = "../service" }
 # provider seam it asks for what the services publish. Its channel encryption
 # service governs the sealed channels a workspace's content is carried in.
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+# The content a record references, kept under this session's state and served
+# to the apps that read the record.
+tilo-content = { path = "../../system/content" }
 # The calls an app joins: which channel, who is in it, and this device's
 # own call as presence carries it.
 tilo-native-media = { path = "../native-media" }
@@ -236,7 +242,7 @@ tilo-bluetooth-agent = { path = "../bluetooth-agent" }
 tilo-tray-host = { path = "../tray-host" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 # The desktop's event sounds (a notification's ring, a screenshot's click).
-media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "pipewire"] }
+media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "pipewire", "realtime"] }
 # A call's frames, sealed with the channel's keys and carried as datagrams on
 # this session's own endpoint.
 tilo-call-lane = { path = "../../collab/tilo-call-lane" }
@@ -304,6 +310,9 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # certified room two of one person's devices ask each other in.
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
+# A change another device's app wrote, read back into a record: a receiver's
+# way of taking changes, which the session's own code uses too.
+tilo-automerge = { path = "../../doc/tilo-automerge" }
 
 [lints]
 workspace = true

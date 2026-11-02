@@ -5,25 +5,25 @@
 //! reproducible by reinstalling, and removing them costs nothing.
 //! The app's *state* is the user's: notes they wrote, settings they
 //! chose, whatever the app saved. It lives outside the payload, at
-//! `<data home>/tilo-rooms/<room>/<package>` — one directory per room
-//! per package, which is the partitioning `launcher::appdir` creates
-//! and an app has no way to opt out of.
+//! `<data home>/tilo-rooms/<workspace>/<package>` — one directory per
+//! workspace per package, which is the partitioning `launcher::appdir`
+//! creates and an app has no way to opt out of.
 //!
 //! Because the two are different in kind, they are removed by different
 //! decisions. `tilo-install uninstall` always removes the payload. It
 //! removes state only when told to, and this module exists so the
 //! telling is informed: it can enumerate exactly which directories
-//! would go, in which rooms, and how much they hold, before anything is
-//! deleted.
+//! would go, in which workspaces, and how much they hold, before
+//! anything is deleted.
 
 use std::path::{Path, PathBuf};
 
-/// One room's state directory for one package.
+/// One workspace's state directory for one package.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoomState {
-    /// Room slug as it appears on disk. `personal` is the room a launch
-    /// with no workspace behind it gets.
-    pub room: String,
+pub struct WorkspaceState {
+    /// Workspace slug as it appears on disk. `personal` is the workspace
+    /// a launch with no workspace behind it gets.
+    pub workspace: String,
     pub path: PathBuf,
     /// Bytes on disk, summed over the tree. Approximate by design —
     /// it is there to let a person judge "is this worth keeping", not
@@ -33,39 +33,42 @@ pub struct RoomState {
     pub files: usize,
 }
 
-/// The directory every room lives under. Mirrors
-/// `launcher::appdir::ROOMS_DIR`; kept as its own constant rather than
-/// a dependency because the installer must not link the launcher.
-pub const ROOMS_DIR: &str = "tilo-rooms";
+/// The directory every workspace lives under. Spelled `tilo-rooms`
+/// because that is the directory an installed machine already has and
+/// the one the launcher writes state into; renaming it would hide every
+/// app's saved data. Mirrors `launcher::appdir::WORKSPACES_DIR`; kept as
+/// its own constant rather than a dependency because the installer must
+/// not link the launcher.
+pub const WORKSPACES_DIR: &str = "tilo-rooms";
 
-/// Every room in which `package_id` has state.
+/// Every workspace in which `package_id` has state.
 ///
-/// Sorted by room name so two runs print the same thing. A package
+/// Sorted by workspace name so two runs print the same thing. A package
 /// that was never launched has none, and that is not an error.
-pub fn find(data_home: &Path, package_id: &str) -> Vec<RoomState> {
-    let rooms_root = data_home.join(ROOMS_DIR);
-    let Ok(rooms) = std::fs::read_dir(&rooms_root) else {
+pub fn find(data_home: &Path, package_id: &str) -> Vec<WorkspaceState> {
+    let workspaces_root = data_home.join(WORKSPACES_DIR);
+    let Ok(workspaces) = std::fs::read_dir(&workspaces_root) else {
         return Vec::new();
     };
     let component = sanitise(package_id);
     let mut out = Vec::new();
-    for room in rooms.flatten() {
-        if !room.path().is_dir() {
+    for workspace in workspaces.flatten() {
+        if !workspace.path().is_dir() {
             continue;
         }
-        let path = room.path().join(&component);
+        let path = workspace.path().join(&component);
         if !path.is_dir() {
             continue;
         }
         let (bytes, files) = measure(&path);
-        out.push(RoomState {
-            room: room.file_name().to_string_lossy().to_string(),
+        out.push(WorkspaceState {
+            workspace: workspace.file_name().to_string_lossy().to_string(),
             path,
             bytes,
             files,
         });
     }
-    out.sort_by(|a, b| a.room.cmp(&b.room));
+    out.sort_by(|a, b| a.workspace.cmp(&b.workspace));
     out
 }
 
@@ -75,7 +78,7 @@ pub fn find(data_home: &Path, package_id: &str) -> Vec<RoomState> {
 /// Failures are collected rather than aborting: a state directory that
 /// cannot be removed must not leave the *package* half-uninstalled, and
 /// the caller can report both outcomes.
-pub fn remove(states: &[RoomState]) -> (usize, Vec<(PathBuf, std::io::Error)>) {
+pub fn remove(states: &[WorkspaceState]) -> (usize, Vec<(PathBuf, std::io::Error)>) {
     let mut removed: usize = 0;
     let mut failures = Vec::new();
     for state in states {
@@ -91,7 +94,7 @@ pub fn remove(states: &[RoomState]) -> (usize, Vec<(PathBuf, std::io::Error)>) {
 }
 
 /// Total bytes across a list, for a one-line summary.
-pub fn total_bytes(states: &[RoomState]) -> u64 {
+pub fn total_bytes(states: &[WorkspaceState]) -> u64 {
     states.iter().map(|s| s.bytes).sum()
 }
 
@@ -178,25 +181,30 @@ fn measure(dir: &Path) -> (u64, usize) {
 mod tests {
     use super::*;
 
-    fn seed(data_home: &Path, room: &str, package: &str, body: &[u8]) -> PathBuf {
-        let dir = data_home.join(ROOMS_DIR).join(room).join(package);
+    fn seed(data_home: &Path, workspace: &str, package: &str, body: &[u8]) -> PathBuf {
+        let dir = data_home.join(WORKSPACES_DIR).join(workspace).join(package);
         std::fs::create_dir_all(dir.join(".local/share")).unwrap();
         std::fs::write(dir.join(".local/share/state.bin"), body).unwrap();
         dir
     }
 
     #[test]
-    fn package_state_is_found_per_room_measured_and_removed_in_isolation() {
+    fn package_state_is_found_per_workspace_measured_and_removed_in_isolation() {
         {
             let tmp = tempfile::tempdir().unwrap();
             seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
-            seed(tmp.path(), "e3f1-room-uuid", "so.tilo.notes", b"bbbbbbbb");
-            // Another package in the same room must not be swept in.
+            seed(
+                tmp.path(),
+                "e3f1-workspace-uuid",
+                "so.tilo.notes",
+                b"bbbbbbbb",
+            );
+            // Another package in the same workspace must not be swept in.
             seed(tmp.path(), "personal", "so.tilo.other", b"cccc");
 
             let found = find(tmp.path(), "so.tilo.notes");
-            let rooms: Vec<&str> = found.iter().map(|s| s.room.as_str()).collect();
-            assert_eq!(rooms, vec!["e3f1-room-uuid", "personal"]);
+            let workspaces: Vec<&str> = found.iter().map(|s| s.workspace.as_str()).collect();
+            assert_eq!(workspaces, vec!["e3f1-workspace-uuid", "personal"]);
             assert_eq!(total_bytes(&found), 12);
             assert!(found.iter().all(|s| s.files == 1));
         }

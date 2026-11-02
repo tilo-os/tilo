@@ -85,7 +85,7 @@ pub struct RemoteNotificationRoute {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub struct ScheduledNotificationTarget {
-    pub room: String,
+    pub workspace: String,
     pub token: String,
     pub occurrence_ms: i64,
     #[serde(default)]
@@ -99,9 +99,9 @@ pub struct ScheduledNotificationTarget {
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 impl ScheduledNotificationTarget {
     pub fn valid(&self) -> bool {
-        !self.room.is_empty()
-            && self.room.len() <= 128
-            && !self.room.chars().any(char::is_control)
+        !self.workspace.is_empty()
+            && self.workspace.len() <= 128
+            && !self.workspace.chars().any(char::is_control)
             && self.token.len() == 32
             && self.token.bytes().all(|byte| byte.is_ascii_hexdigit())
             && ui::notify::valid_activation(&self.uri)

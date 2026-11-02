@@ -23,8 +23,8 @@
 //! ([`RunAction::RecordAnswer`]) — on the run's own resource.
 //!
 //! What the session feeds it and only the session knows: who sits here (the
-//! asks are theirs), the room in front, which agents that room admits, and
-//! the room's grants, which decide the run's child actions
+//! asks are theirs), the workspace in front, which agents that workspace
+//! admits, and the workspace's grants, which decide the run's child actions
 //! ([`TrackerRuns::authorize_action`]). None of it is read from an action's
 //! arguments.
 
@@ -80,8 +80,8 @@ const MESSAGE_CHARS: usize = 16 * 1024;
 /// One run, as the session keeps it.
 struct Run {
     id: String,
-    /// The room it was asked in: the room whose agents run it.
-    room: String,
+    /// The workspace it was asked in: the workspace whose agents run it.
+    workspace: String,
     title: String,
     instruction: String,
     /// The agent, by its bare id.
@@ -324,41 +324,41 @@ impl Run {
     }
 }
 
-/// Who runs, where, and what the rooms' people may do there: what the
+/// Who runs, where, and what the workspaces' people may do there: what the
 /// session feeds its runs each pass, and never an action's arguments.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Here {
     /// The person at this session: every ask and steering is theirs.
     person: String,
-    /// The room in front: the one an ask is made in.
+    /// The workspace in front: the one an ask is made in.
     front: String,
-    /// Every workspace's room as the desk holds it, in its order. A run
-    /// belongs to the room it was asked in, so a person moving to another
-    /// workspace does not stall it.
-    rooms: Vec<RoomFacts>,
+    /// Every workspace as the desk holds it, in its order. A run belongs to
+    /// the workspace it was asked in, so a person moving to another workspace
+    /// does not stall it.
+    workspaces: Vec<WorkspaceFacts>,
 }
 
-/// One room as the desk holds it: what runs in it may do, and who may run.
+/// One workspace as the desk holds it: what runs in it may do, and who may run.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RoomFacts {
-    /// The room's id.
-    pub room: String,
+pub struct WorkspaceFacts {
+    /// The workspace's id.
+    pub workspace: String,
     /// The agents it admits now, by their bare id.
     pub agents: Vec<String>,
     /// Its grants: a run's child actions are admitted by these.
     pub policy: Option<tilo_action_policy::WorkspacePolicy>,
 }
 
-impl RoomFacts {
-    /// `room`, admitting `agents`, under the grants its people gave.
+impl WorkspaceFacts {
+    /// `workspace`, admitting `agents`, under the grants its people gave.
     #[must_use]
     pub fn new(
-        room: &str,
+        workspace: &str,
         agents: Vec<String>,
         policy: Option<tilo_action_policy::WorkspacePolicy>,
     ) -> Self {
         Self {
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
             agents,
             policy,
         }
@@ -396,13 +396,13 @@ impl Held {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// `room` as the desk holds it, or why this session cannot speak for it.
-    fn room(&self, room: &str) -> Result<&RoomFacts, String> {
+    /// `workspace` as the desk holds it, or why this session cannot speak for it.
+    fn workspace(&self, workspace: &str) -> Result<&WorkspaceFacts, String> {
         self.here
-            .rooms
+            .workspaces
             .iter()
-            .find(|facts| facts.room == room)
-            .ok_or_else(|| "this session holds no workspace of that room".into())
+            .find(|facts| facts.workspace == workspace)
+            .ok_or_else(|| "this session holds no such workspace".into())
     }
 }
 
@@ -416,16 +416,16 @@ impl AgentRuns {
         }
     }
 
-    /// Who sits here, the room in front, and every workspace's room with the
+    /// Who sits here, the workspace in front, and every workspace with the
     /// agents it admits and the grants its people gave. The session tells it
     /// every pass; it keeps what changed and nothing else.
-    pub fn here(&self, person: &str, front: &str, rooms: Vec<RoomFacts>) {
+    pub fn here(&self, person: &str, front: &str, workspaces: Vec<WorkspaceFacts>) {
         let moved = {
             let mut held = self.held.lock_recover();
             let here = Here {
                 person: person.to_owned(),
                 front: front.to_owned(),
-                rooms,
+                workspaces,
             };
             let moved = held.here != here;
             if moved {
@@ -473,7 +473,7 @@ impl AgentRuns {
     /// # Errors
     /// The ask names no agent, a blank title or instruction, an id already
     /// taken, a subject that does not read, or it is asked from a session
-    /// with no room in front to run in.
+    /// with no workspace in front to run in.
     pub fn ask(&self, ask: Ask) -> Result<wire::Asked, DoorError> {
         let title = cut(&ask.title);
         if title.is_empty() {
@@ -499,13 +499,13 @@ impl AgentRuns {
             ));
         }
         let subject = ask.subject.map(read_subject).transpose()?;
-        let (person, room) = {
+        let (person, workspace) = {
             let held = self.held.lock_recover();
             (held.here.person.clone(), held.here.front.clone())
         };
-        if room.is_empty() {
+        if workspace.is_empty() {
             return Err(DoorError::Unavailable {
-                code: "no-room".into(),
+                code: "no-workspace".into(),
                 reason: "this session is in no workspace to run the ask in".into(),
             });
         }
@@ -539,7 +539,7 @@ impl AgentRuns {
             });
             held.runs.push(Run {
                 id,
-                room,
+                workspace,
                 title,
                 instruction,
                 agent,
@@ -676,14 +676,14 @@ impl AgentRuns {
         Ok(())
     }
 
-    /// What the run channel of `room` reports of the run `issue` names.
+    /// What the run channel of `workspace` reports of the run `issue` names.
     ///
     /// The agent's own report: what it accepted, what it said, the messages
     /// it took in, and how it ended. A report for a run this session does
     /// not keep, or for another epoch of one it does, changes nothing.
     pub fn absorb_report(
         &self,
-        room: &str,
+        workspace: &str,
         issue: &str,
         epoch: u64,
         update: &runtime_collab::TaskRunUpdate,
@@ -696,7 +696,7 @@ impl AgentRuns {
         let found = held
             .runs
             .iter_mut()
-            .find(|run| run.id == id && run.room == room && run.epoch == epoch);
+            .find(|run| run.id == id && run.workspace == workspace && run.epoch == epoch);
         let Some(run) = found else {
             return;
         };
@@ -739,11 +739,11 @@ impl AgentRuns {
         self.wake();
     }
 
-    /// What run `epoch` of `issue` in `room` streams of its model turn now,
+    /// What run `epoch` of `issue` in `workspace` streams of its model turn now,
     /// while it goes: the newest snapshot of it, never written anywhere.
     pub fn absorb_presentation(
         &self,
-        room: &str,
+        workspace: &str,
         issue: &str,
         epoch: u64,
         presentation: Option<&runtime_collab::TaskPresentation>,
@@ -755,7 +755,7 @@ impl AgentRuns {
         let found = held
             .runs
             .iter_mut()
-            .find(|run| run.id == id && run.room == room && run.epoch == epoch);
+            .find(|run| run.id == id && run.workspace == workspace && run.epoch == epoch);
         let changed = found.is_some_and(|run| run.absorb(presentation));
         if changed {
             held.land();
@@ -766,30 +766,30 @@ impl AgentRuns {
         }
     }
 
-    /// The runs in `room` the broker delivers: every one of them, going or
+    /// The runs in `workspace` the broker delivers: every one of them, going or
     /// ended, as the tracker it reads them from.
     ///
     /// # Errors
-    /// The room is not one this session holds a workspace of.
-    pub fn tracked(&self, room: &str) -> Result<Vec<TrackerRun>, String> {
+    /// The workspace is not one this session holds.
+    pub fn tracked(&self, workspace: &str) -> Result<Vec<TrackerRun>, String> {
         let held = self.held.lock_recover();
-        held.room(room)?;
+        held.workspace(workspace)?;
         Ok(held
             .runs
             .iter()
-            .filter(|run| run.room == room)
+            .filter(|run| run.workspace == workspace)
             .map(Run::tracked)
             .collect())
     }
 
-    /// Whether `agent` is one this room admits now.
+    /// Whether `agent` is one this workspace admits now.
     ///
     /// # Errors
-    /// Another room, or the agent is not admitted there.
-    pub fn admits(&self, room: &str, agent: &str) -> Result<(), String> {
+    /// Another workspace, or the agent is not admitted there.
+    pub fn admits(&self, workspace: &str, agent: &str) -> Result<(), String> {
         let held = self.held.lock_recover();
         if held
-            .room(room)?
+            .workspace(workspace)?
             .agents
             .iter()
             .any(|admitted| admitted == agent)
@@ -800,26 +800,26 @@ impl AgentRuns {
         }
     }
 
-    /// `room`'s grants, as the desk holds them: what a run's child actions are
+    /// `workspace`'s grants, as the desk holds them: what a run's child actions are
     /// decided by, and nothing when its workspace is not open.
     #[must_use]
-    pub fn room_policy(&self, room: &str) -> Option<tilo_action_policy::WorkspacePolicy> {
+    pub fn workspace_policy(&self, workspace: &str) -> Option<tilo_action_policy::WorkspacePolicy> {
         self.held
             .lock_recover()
-            .room(room)
+            .workspace(workspace)
             .ok()
             .and_then(|facts| facts.policy.clone())
     }
 
-    /// Whether this session holds a workspace of `room`.
+    /// Whether this session holds the workspace `workspace`.
     #[must_use]
-    pub fn knows(&self, room: &str) -> bool {
-        self.held.lock_recover().room(room).is_ok()
+    pub fn knows(&self, workspace: &str) -> bool {
+        self.held.lock_recover().workspace(workspace).is_ok()
     }
 
-    /// The room in front, and nothing while there is none.
+    /// The workspace in front, and nothing while there is none.
     #[must_use]
-    pub fn room(&self) -> String {
+    pub fn front(&self) -> String {
         self.held.lock_recover().here.front.clone()
     }
 

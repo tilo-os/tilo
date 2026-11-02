@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use automerge::AutoCommit;
-use collaboration::record::save::{open_stored_adopting, record_document, room_document};
+use collaboration::record::save::{open_stored_adopting, record_document, workspace_document};
 use durable_store::{DurableStore, MemoryStore};
 use tilolang_runtime::{InvokeOutcome, Principal, Value};
 
@@ -109,7 +109,7 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
 
     // This device's copy of it, where a workspace this device governs keeps it.
     let documents: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
-    let mut workspace = room_document(&documents, VIEWS, WORKSPACE).unwrap();
+    let mut workspace = workspace_document(&documents, VIEWS, WORKSPACE).unwrap();
     workspace.save(&mut before.doc).unwrap();
 
     // Ada's own record of Views has no copy here yet: it starts as the workspace's record.
@@ -119,7 +119,7 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
         .storage_key();
     let (doc, _writer) = open_stored_adopting(
         record_document(&documents, VIEWS, WORKSPACE, &key).unwrap(),
-        Some(room_document(&documents, VIEWS, WORKSPACE).unwrap()),
+        Some(workspace_document(&documents, VIEWS, WORKSPACE).unwrap()),
     );
     let (after, _) = Replica::new("ada", doc, &[app!("tasks"), app!("chat"), app!("views")]);
 

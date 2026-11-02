@@ -1,5 +1,5 @@
 //! The workspace's emoji as every framework window offers them to its views
-//! ([`ui_core::workspace_emoji`]): the room's emoji record, held for the
+//! ([`ui_core::workspace_emoji`]): the workspace's emoji record, held for the
 //! window and registered against its wake scope, so `:name:` draws the same
 //! picture in any app, natively and in a browser.
 
@@ -205,7 +205,7 @@ impl EmojiSource for WindowEmoji {
             .get(name)
             .ok_or_else(|| format!("there is no emoji :{name}:"))?;
         // One's own is removed as such; anyone else's is moderation, which
-        // the room's roles decide.
+        // the workspace's roles decide.
         let removal = if emoji.added_by == record.me() {
             Record::REMOVE_EMOJI.with(actions::RemoveEmoji { name: name.into() })
         } else {

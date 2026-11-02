@@ -120,7 +120,7 @@ fn note(id: &str, title: &str) -> ResourceAt {
 /// The run's agent side: it takes the run up, says what it will do, runs a program that prints
 /// two notes, and answers.
 fn the_agent_finds_the_launch_notes(runs: &AgentRuns, run: &str) {
-    let room = runs.room();
+    let room = runs.front();
     let issue = wire::issue(run);
     runs.absorb_report(&room, &issue, 1, &runtime_collab::TaskRunUpdate::Accepted);
     runs.absorb_report(
@@ -238,7 +238,7 @@ fn the_conversation_draws_the_runs_words_and_steps_in_order() {
     let runs = Arc::new(AgentRuns::new(None));
     let mut session = session(&runs);
     // The session tells the runs who sits here and the room in front.
-    until(&mut session, |_| !runs.room().is_empty());
+    until(&mut session, |_| !runs.front().is_empty());
     let run = ask(&mut session, "Tidy the launch notes");
     the_agent_finds_the_launch_notes(&runs, &run);
 
@@ -314,7 +314,7 @@ fn pressing_a_reference_places_its_resource_on_the_canvas() {
     let runs = Arc::new(AgentRuns::new(None));
     let mut session = session(&runs);
     session.publish(Rc::new(RefCell::new(LaunchNotes)));
-    until(&mut session, |_| !runs.room().is_empty());
+    until(&mut session, |_| !runs.front().is_empty());
     let run = ask(&mut session, "Tidy the launch notes");
     the_agent_finds_the_launch_notes(&runs, &run);
     show_conversation(&mut session);
@@ -355,7 +355,7 @@ fn a_run_placed_on_the_canvas_is_the_shells_conversation_place() {
     let _settled = ui::motion::testing::settled();
     let runs = Arc::new(AgentRuns::new(None));
     let mut session = session(&runs);
-    until(&mut session, |_| !runs.room().is_empty());
+    until(&mut session, |_| !runs.front().is_empty());
     let run = ask(&mut session, "Tidy the launch notes");
     the_agent_finds_the_launch_notes(&runs, &run);
     until(&mut session, |session| desk(session).run_entries.len() == 4);

@@ -50,8 +50,8 @@ class InstallerCmdlineProjectionTest(unittest.TestCase):
         # ukify includes the input newline and a terminating NUL, then rounds
         # the PE raw section to its 512-byte FileAlignment.
         initial_bytes = len(" ".join(source).encode()) + 2
-        raw_room = ((initial_bytes + 511) // 512) * 512
-        self.assertLessEqual(len(" ".join(live).encode()), raw_room)
+        raw_bytes = ((initial_bytes + 511) // 512) * 512
+        self.assertLessEqual(len(" ".join(live).encode()), raw_bytes)
         self.assertIn("tilo.install", live)
         self.assertIn("tilo.mode=normal", live)
         self.assertIn("root=tilo-auto", live)

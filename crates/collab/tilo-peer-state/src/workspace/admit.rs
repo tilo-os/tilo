@@ -13,7 +13,7 @@ use automerge::AutoCommit;
 use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 
 use super::media;
-use tilo_desktop_model::projection::room_layout_choice;
+use tilo_desktop_model::projection::workspace_layout_choice;
 
 /// How the receiver knows the sender's standing in the workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -278,7 +278,7 @@ fn checked(
         return Err(WorkspaceRefusal::GovernanceWriter);
     }
     if !governs {
-        if before.and_then(room_layout_choice) != room_layout_choice(candidate) {
+        if before.and_then(workspace_layout_choice) != workspace_layout_choice(candidate) {
             return Err(WorkspaceRefusal::GovernanceWriter);
         }
         if before.map_or_else(Vec::new, crate::workspace_hosts_of)
@@ -357,7 +357,7 @@ fn may_write(
         return Ok(true);
     };
     let before = before.ok_or(WorkspaceRefusal::GovernanceMissing)?;
-    let policy = tilo_desktop_model::projection::room_policy_of(before, workspace);
+    let policy = tilo_desktop_model::projection::workspace_policy_of(before, workspace);
     let person = hex::encode(person);
     if policy.active_role(&person).is_none() {
         return Err(WorkspaceRefusal::WriteForbidden);

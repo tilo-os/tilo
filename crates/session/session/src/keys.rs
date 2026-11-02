@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use tilo_actions::{ActionAddress, DoorError};
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop::desk_widgets::DeskFold;
-use tilo_desktop::desktop_actions::CHROME_RESOURCE;
 use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_surface_host::DeskGesture;
@@ -748,14 +748,9 @@ impl Shared {
                 DeskGesture::SwitchWorkspace(delta) => {
                     Invocation::new(CHROME_RESOURCE, "switch-workspace").with("delta", delta)
                 }
-                DeskGesture::Overview(open) => Invocation::new(
-                    CHROME_RESOURCE,
-                    if open {
-                        "show-overview"
-                    } else {
-                        "hide-overview"
-                    },
-                ),
+                DeskGesture::Overview(open) => {
+                    Invocation::new(CHROME_RESOURCE, "overview").with("open", open)
+                }
             });
         }
     }

@@ -19,7 +19,7 @@ view launcher(d: Desk) {
     ui.FloatingPanel {
         header: {
             ui.TextInput(value: query, placeholder: "Search apps, windows, actions and files") {
-                on submit: session.open_search(query: .some(query))
+                on submit: session.search(query: .some(query))
             }
         }
         body: {
@@ -32,7 +32,7 @@ view launcher(d: Desk) {
             }
             if typed and windows.is_empty() {
                 ui.EmptyState("Nothing here matches", message: "Search everywhere for it", icon: .search) {
-                    on act: session.open_search(query: .some(query))
+                    on act: session.search(query: .some(query))
                 }
             }
             if not typed {
@@ -43,7 +43,7 @@ view launcher(d: Desk) {
             row(gap: .related, align: .center, wrap: true) {
                 if typed {
                     ui.Button("Search everywhere for {query}", icon: .search, role: .primary, size: .small) {
-                        on press: session.open_search(query: .some(query))
+                        on press: session.search(query: .some(query))
                     }
                 }
                 spacer

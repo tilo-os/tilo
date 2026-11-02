@@ -5,6 +5,8 @@ mod attachments;
 mod compose;
 #[cfg(feature = "live")]
 mod custody;
+#[cfg(feature = "live")]
+mod idle;
 mod presentation;
 mod shell;
 mod sync;

@@ -1,13 +1,13 @@
-//! A certified room's documents in the page: every record a mount has open
-//! and the room's desktop, replicated through the relay session in host
+//! A certified workspace's documents in the page: every record a mount has open
+//! and the workspace's desktop, replicated through the relay session in host
 //! order.
 //!
-//! One [`Room`] exists per started peer and joined room. It owns an event
+//! One [`Joined`] exists per started peer and joined workspace. It owns an event
 //! queue created when the peer started, so documents the host replays at
 //! admission are kept even before any mount exists. Mounts attach their
 //! record stores (and desktop, if they present one):
 //!
-//! - **Records** go out as Automerge deltas on the route `(app, room,
+//! - **Records** go out as Automerge deltas on the route `(app, workspace,
 //!   record)`, the native shell's own `AppDocument` wire; a record's first
 //!   publication in a session is a snapshot, which the host retains as the
 //!   route's checkpoint for peers that join later. Inbound mutations merge
@@ -16,18 +16,18 @@
 //!   the record's stored document so opening it later shows them.
 //! - **The desktop** is the desk's own document
 //!   ([`tilo_desktop_model::desktop_doc`]) on the route native peers and the
-//!   room host use for it, the one the native desk keeps: every workspace,
+//!   workspace host use for it, the one the native desk keeps: every workspace,
 //!   strip, group and window its own entry, so concurrent changes to
 //!   different ones all land. The page writes only what differs from what
 //!   the document holds, one change naming the person who made it, and an
 //!   inbound change reaches the surface through `replace_shared_tree`.
 //!
-//! Nothing is published before the host answered `Ready` for the room, so a
-//! page never announces a stale snapshot over what the room already holds.
+//! Nothing is published before the host answered `Ready` for the workspace, so a
+//! page never announces a stale snapshot over what the workspace already holds.
 //!
-//! A package's room-primary document travels with an empty record, as the
+//! A package's workspace-primary document travels with an empty record, as the
 //! native broker sends it; in the page's stores it is
-//! [`RecordId::package_primary`], kept at the room index.
+//! [`RecordId::package_primary`], kept at the workspace index.
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -47,22 +47,22 @@ use ui::collaboration::record_content::ContentLane;
 use ui::record::{RecordCheckout, RecordId, RecordStore};
 use ui::state::{DocumentFrontier, DocumentReplica};
 
-/// The desktop document's route. Changing it splits rooms by build.
+/// The desktop document's route. Changing it splits workspaces by build.
 pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 pub(crate) const DESKTOP_RECORD: &str = "desktop";
-/// How often a page asks again what the room lets its person do: a role the
-/// room grants or withdraws while they are in it reaches their page within
+/// How often a page asks again what the workspace lets its person do: a role the
+/// workspace grants or withdraws while they are in it reaches their page within
 /// this.
 const MODERATION_ASK_EVERY_MS: u64 = 15_000;
-/// How soon a page asks again when the room could not answer (the page was
+/// How soon a page asks again when the workspace could not answer (the page was
 /// between connections): what it knew stands meanwhile.
 const MODERATION_RETRY_MS: u64 = 3_000;
 
 thread_local! {
-    static ROOMS: RefCell<HashMap<u32, Rc<RefCell<Room>>>> = RefCell::new(HashMap::new());
+    static JOINED: RefCell<HashMap<u32, Rc<RefCell<Joined>>>> = RefCell::new(HashMap::new());
 }
 
-/// What a mount shares with its room.
+/// What a mount shares with the workspace.
 pub(crate) struct Attachment {
     pub stores: Rc<RefCell<Vec<RecordStore>>>,
     pub desktop: Option<(tilo_desktop_surface::DesktopHandle, crate::desktop::Shared)>,
@@ -74,7 +74,7 @@ pub(crate) struct Attachment {
     /// them, so every page's Activity says whose they were.
     pub author: String,
     /// What the mount's apps may offer their person: set to the role the
-    /// room answers they hold, so an app does not offer what the room
+    /// workspace answers they hold, so an app does not offer what the workspace
     /// would refuse.
     pub permissions: ui::permissions::SharedPermissions,
 }
@@ -84,16 +84,16 @@ struct Replica {
     snapshotted: bool,
 }
 
-/// How a page sends its desktop to the room.
+/// How a page sends its desktop to the workspace.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DesktopSending {
     /// Nothing sent yet: the next change goes as the whole document.
     Snapshot,
-    /// The room has the document: changes go as deltas.
+    /// The workspace has the document: changes go as deltas.
     Changes,
-    /// The room keeps no member's layout: it refused this page's desktop as
-    /// a public room does. The attached desktops are their people's own
-    /// from then on: sent to nobody, and not replaced by the room's.
+    /// The workspace keeps no member's layout: it refused this page's desktop as
+    /// a public workspace does. The attached desktops are their people's own
+    /// from then on: sent to nobody, and not replaced by the workspace's.
     KeptOwn,
 }
 
@@ -102,7 +102,7 @@ struct Mounted {
     records: HashMap<(String, String), Replica>,
 }
 
-pub(crate) struct Room {
+pub(crate) struct Joined {
     peer: PeerHandle,
     /// The certified device key, hex.
     device: String,
@@ -115,26 +115,26 @@ pub(crate) struct Room {
     ready: bool,
     mounts: HashMap<u64, Mounted>,
     desktop: DocumentReplica,
-    /// How this page sends its desktop to the room.
+    /// How this page sends its desktop to the workspace.
     desktop_sending: DesktopSending,
-    /// The room's desktop as this page last published or applied it.
+    /// The workspace's desktop as this page last published or applied it.
     desktop_value: Option<serde_json::Value>,
     /// This page's own desktop as it last wrote it into the record: a
     /// frame that changed nothing shared writes nothing.
     local_value: Option<serde_json::Value>,
-    /// Records the room delivered that no mount had open, as wire
+    /// Records the workspace delivered that no mount had open, as wire
     /// `(app, record)`.
     stored: BTreeSet<(String, String)>,
-    /// The heads of each such record as the room delivered it, until a mount
-    /// opens it. The room has everything up to them, so what the mount sends
+    /// The heads of each such record as the workspace delivered it, until a mount
+    /// opens it. The workspace has everything up to them, so what the mount sends
     /// first is what it changed after them, not the whole document: a
     /// checkpoint reaches only devices that lack the record, and the changes
     /// a window makes as it opens (taking a seat) would never reach the
     /// others.
     delivered: HashMap<(String, String), Vec<ui::automerge::ChangeHash>>,
-    /// Changes the room delivered for a record before the changes they
+    /// Changes the workspace delivered for a record before the changes they
     /// build on, as the incremental runs they came in, by wire
-    /// `(app, record)`. The room replays a record by author, each author's
+    /// `(app, record)`. The workspace replays a record by author, each author's
     /// checkpoint and then their deltas, so a late joiner can be sent the
     /// second player's seat before the table it sits at, and the dealer's
     /// deal before that seat. A saved document keeps only the changes it can
@@ -144,38 +144,38 @@ pub(crate) struct Room {
     /// Routes a delivered document failed to apply to: this page never
     /// answers a compaction request for them.
     unapplied: HashSet<DocumentRoute>,
-    /// Changes this page made to the room: to its records, sent, and to its
+    /// Changes this page made to the workspace: to its records, sent, and to its
     /// desktop's windows (opened, closed, moved), not the desktop it joined.
     authored: u64,
-    /// Whether the room lets this page's person close and move what others
+    /// Whether the workspace lets this page's person close and move what others
     /// made on the shared desktop: the attached desktop's flag, set from the
-    /// room's answer.
+    /// workspace's answer.
     moderates: Arc<AtomicBool>,
-    /// When the page next asks the room that (Unix milliseconds; 0: now).
+    /// When the page next asks the workspace that (Unix milliseconds; 0: now).
     moderation_due_ms: Arc<std::sync::atomic::AtomicU64>,
-    /// The role the room last answered this page's person holds: the
-    /// attached desktop's, so its policy offers what the room allows.
+    /// The role the workspace last answered this page's person holds: the
+    /// attached desktop's, so its policy offers what the workspace allows.
     standing: crate::desktop::Standing,
     /// The standing the mounts' permissions were last set to.
     followed: u8,
-    /// Nodes below the room the page's windows asked whether its person may
+    /// Nodes below the workspace the page's windows asked whether its person may
     /// change (an item someone shares), with the asked node's text form and
-    /// the room's last answer. Those it allows beyond their role (an item
+    /// the workspace's last answer. Those it allows beyond their role (an item
     /// shared with them to edit) are mirrored into the mounts' permissions;
     /// each is asked again with the person's role, so a share switched to
     /// view or ended stops letting their windows change it.
     permitted: BTreeMap<ui::permissions::TreePath, (String, bool)>,
-    /// The room's answers about those nodes, not applied yet.
+    /// The workspace's answers about those nodes, not applied yet.
     permit_answers: Arc<Mutex<Vec<(String, bool)>>>,
-    /// The room's members as its governance lists them, once heard: what
+    /// The workspace's members as its governance lists them, once heard: what
     /// someone no longer among them made on the desktop is released.
     members: Option<std::collections::BTreeSet<String>>,
-    /// How many commits of each record route this page published the room
+    /// How many commits of each record route this page published the workspace
     /// has not answered yet: once none is left, what the record's windows
     /// said they did is said (`RecordStore::workspace_settled`).
     in_flight: HashMap<DocumentRoute, usize>,
     /// Content the open records' windows lacked and the page asked the
-    /// room for, by the wire `(app, record)` that references it.
+    /// workspace for, by the wire `(app, record)` that references it.
     content: ContentWants<(String, String)>,
     /// Records a peer's change reached since the desktop last looked for
     /// mentions in them ([`take_touched`]), as wire `(app, record)`.
@@ -191,33 +191,33 @@ fn wire_record(id: &RecordId) -> &str {
     }
 }
 
-/// The page's storage key of wire record `record` of `app` in `room`.
-fn storage_key(app: &str, room: &str, record: &str) -> Result<StorageKey, &'static str> {
+/// The page's storage key of wire record `record` of `app` in `workspace`.
+fn storage_key(app: &str, workspace: &str, record: &str) -> Result<StorageKey, &'static str> {
     if record.is_empty() {
-        return Ok(StorageKey::workspace_index(app, room));
+        return Ok(StorageKey::workspace_index(app, workspace));
     }
     let id = RecordId::parse(record).ok_or("not a record id")?;
-    Ok(StorageKey::record(app, room, id.storage_key()))
+    Ok(StorageKey::record(app, workspace, id.storage_key()))
 }
 
-/// Start replicating `room` for peer `id`. `events` must have been created
+/// Start replicating `workspace` for peer `id`. `events` must have been created
 /// when the peer started.
 pub(crate) fn open(
     id: u32,
     device: String,
     peer: PeerHandle,
     events: PeerEvents,
-    room: &str,
+    workspace: &str,
     (store, kept): (Rc<MemoryStore>, Kept),
 ) -> Result<(), String> {
-    let workspace =
-        tilo_relay_protocol::room_workspace_id(room).map_err(|_| "room must be a uuid")?;
-    let room = Room {
+    let workspace_id = tilo_relay_protocol::room_workspace_id(workspace)
+        .map_err(|_| "a workspace must be a uuid")?;
+    let joined = Joined {
         peer,
         device,
         events,
-        uuid: room.to_owned(),
-        workspace,
+        uuid: workspace.to_owned(),
+        workspace: workspace_id,
         store,
         kept,
         ready: false,
@@ -242,20 +242,20 @@ pub(crate) fn open(
         content: ContentWants::default(),
         touched: BTreeSet::new(),
     };
-    ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
+    JOINED.with_borrow_mut(|replicas| replicas.insert(id, Rc::new(RefCell::new(joined))));
     pump(id);
     Ok(())
 }
 
-/// How many changes to the room peer `id` made: records it sent, and
+/// How many changes to the workspace peer `id` made: records it sent, and
 /// windows the person opened, closed or moved.
 pub(crate) fn authored(id: u32) -> u64 {
-    room(id).map_or(0, |room| room.borrow().authored)
+    replica_of(id).map_or(0, |joined| joined.borrow().authored)
 }
 
-/// The certified device key (hex) of peer `id`, if it replicates a room.
+/// The certified device key (hex) of peer `id`, if it replicates a workspace.
 pub(crate) fn device_of(id: u32) -> Option<String> {
-    room(id).map(|room| room.borrow().device.clone())
+    replica_of(id).map(|joined| joined.borrow().device.clone())
 }
 
 /// `mutations` with every snapshot ahead of the incremental runs, each kind
@@ -275,50 +275,50 @@ fn heads_of(bytes: &[u8]) -> Option<Vec<ui::automerge::ChangeHash>> {
     (!heads.is_empty()).then_some(heads)
 }
 
-/// Whether peer `id`'s room holds record `record` (wire form) of `app`:
+/// Whether peer `id`'s workspace holds record `record` (wire form) of `app`:
 /// open in a mount, or delivered and stored for whoever opens it.
 pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
-    room(id).is_some_and(|room| {
-        let room = room.borrow();
-        room.stored.contains(&(app.to_owned(), record.to_owned()))
-            || room.open_records().any(|(a, r)| a == app && r == record)
-            || storage_key(app, &room.uuid, record)
+    replica_of(id).is_some_and(|replica| {
+        let joined = replica.borrow();
+        joined.stored.contains(&(app.to_owned(), record.to_owned()))
+            || joined.open_records().any(|(a, r)| a == app && r == record)
+            || storage_key(app, &joined.uuid, record)
                 .ok()
-                .and_then(|key| room.store.read(&key).ok().flatten())
+                .and_then(|key| joined.store.read(&key).ok().flatten())
                 .is_some_and(|stored| heads_of(&stored.bytes).is_some())
     })
 }
 
-/// The room's records peer `id` holds, open in a mount or delivered, as
+/// The workspace's records peer `id` holds, open in a mount or delivered, as
 /// wire `(app, record)`, sorted.
 pub(crate) fn records(id: u32) -> Vec<(String, String)> {
-    let Some(room) = room(id) else {
+    let Some(joined) = replica_of(id) else {
         return Vec::new();
     };
-    let room = room.borrow();
-    let mut records = room.stored.clone();
-    records.extend(room.open_records());
+    let joined = joined.borrow();
+    let mut records = joined.stored.clone();
+    records.extend(joined.open_records());
     records.into_iter().collect()
 }
 
 /// The records a peer's change reached since this was last taken, as wire
-/// `(app, record)`, and whether the room had replayed what it held by then:
-/// before that, what arrives is what the room already held.
+/// `(app, record)`, and whether the workspace had replayed what it held by then:
+/// before that, what arrives is what the workspace already held.
 pub(crate) fn take_touched(id: u32) -> (bool, Vec<(String, String)>) {
-    let Some(room) = room(id) else {
+    let Some(joined) = replica_of(id) else {
         return (false, Vec::new());
     };
-    let mut room = room.borrow_mut();
-    let touched = std::mem::take(&mut room.touched);
-    (room.ready, touched.into_iter().collect())
+    let mut joined = joined.borrow_mut();
+    let touched = std::mem::take(&mut joined.touched);
+    (joined.ready, touched.into_iter().collect())
 }
 
 /// Wire record `record` of `app` as peer `id` holds it now: the open
 /// record a mount has, else the document the page keeps for it.
 pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
-    let room = room(id)?;
-    let room = room.borrow();
-    for mounted in room.mounts.values() {
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    for mounted in joined.mounts.values() {
         for store in mounted.attachment.stores.borrow().iter() {
             if store.package_and_home().0 != app {
                 continue;
@@ -335,62 +335,63 @@ pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCo
             }
         }
     }
-    let key = storage_key(app, &room.uuid, record).ok()?;
-    let stored = room.store.read(&key).ok().flatten()?;
+    let key = storage_key(app, &joined.uuid, record).ok()?;
+    let stored = joined.store.read(&key).ok().flatten()?;
     AutoCommit::load(&stored.bytes).ok()
 }
 
-/// The name of the workspace in front on peer `id`'s room desktop, once the
-/// room delivered or the page published one.
+/// The name of the workspace in front on peer `id`'s workspace desktop, once the
+/// workspace delivered or the page published one.
 pub(crate) fn workspace_name(id: u32) -> Option<String> {
-    let room = room(id)?;
-    let room = room.borrow();
-    room.desktop_value
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    joined
+        .desktop_value
         .as_ref()
         .and_then(tilo_desktop_surface::history_log::workspace_name)
 }
 
-/// The room's desktop document with every peer's changes, for Activity.
-/// `None` until the room delivered or published one.
+/// The workspace's desktop document with every peer's changes, for Activity.
+/// `None` until the workspace delivered or published one.
 pub(crate) fn desktop_history(id: u32) -> Option<AutoCommit> {
-    let room = room(id)?;
-    let room = room.borrow();
-    let doc = room.desktop.document();
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    let doc = joined.desktop.document();
     (!doc.base_heads().is_empty()).then(|| doc.clone())
 }
 
-/// The room's desk document, for the profile's copy of it: what the person's
-/// desk is once the room has answered.
+/// The workspace's desk document, for the profile's copy of it: what the person's
+/// desk is once the workspace has answered.
 pub(crate) fn desk_bytes(id: u32) -> Option<Vec<u8>> {
-    let room = room(id)?;
-    let bytes = room.borrow_mut().desktop.document_mut().save();
+    let joined = replica_of(id)?;
+    let bytes = joined.borrow_mut().desktop.document_mut().save();
     (!bytes.is_empty()).then_some(bytes)
 }
 
 /// Read the retained desktop's frontier without cloning its whole history.
 pub(crate) fn desktop_history_heads(id: u32) -> Option<Vec<ui::automerge::ChangeHash>> {
-    let room = room(id)?;
-    let room = room.borrow();
-    let heads = room.desktop.document().base_heads();
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    let heads = joined.desktop.document().base_heads();
     (!heads.is_empty()).then_some(heads)
 }
 
 pub(crate) fn close(id: u32) {
     crate::feedback_code::forget_feedback_startup(id);
     crate::feedback_code::forget(id);
-    ROOMS.with_borrow_mut(|rooms| rooms.remove(&id));
+    JOINED.with_borrow_mut(|replicas| replicas.remove(&id));
 }
 
-/// The store peer `id` keeps the room's documents in when it is kept in
+/// The store peer `id` keeps the workspace's documents in when it is kept in
 /// no profile: a mount through it opens its records from there, where
-/// what the room delivers is kept, instead of from a profile of its own.
+/// what the workspace delivers is kept, instead of from a profile of its own.
 pub(crate) fn page_store(id: u32) -> Option<Rc<MemoryStore>> {
-    let room = room(id)?;
-    let room = room.borrow();
-    (room.kept == Kept::InPage).then(|| Rc::clone(&room.store))
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    (joined.kept == Kept::InPage).then(|| Rc::clone(&joined.store))
 }
 
-/// Where a peer keeps the room's documents.
+/// Where a peer keeps the workspace's documents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kept {
     /// In the person's profile, with everything else of theirs.
@@ -400,24 +401,24 @@ pub(crate) enum Kept {
     InPage,
 }
 
-fn room(id: u32) -> Option<Rc<RefCell<Room>>> {
-    ROOMS.with_borrow(|rooms| rooms.get(&id).cloned())
+fn replica_of(id: u32) -> Option<Rc<RefCell<Joined>>> {
+    JOINED.with_borrow(|replicas| replicas.get(&id).cloned())
 }
 
-/// The room peer `id` replicates, by its uuid.
-pub(crate) fn room_uuid(id: u32) -> Option<String> {
-    Some(room(id)?.borrow().uuid.clone())
+/// The workspace peer `id` replicates, by its uuid.
+pub(crate) fn workspace_uuid(id: u32) -> Option<String> {
+    Some(replica_of(id)?.borrow().uuid.clone())
 }
 
-/// Wire record `record` of `app` in peer `id`'s room `workspace`, saved as
-/// the room committed it: without edits still being typed.
+/// Wire record `record` of `app` in peer `id`'s workspace `workspace`, saved as
+/// the workspace committed it: without edits still being typed.
 pub(crate) fn committed_record(
     id: u32,
     workspace: &str,
     app: &str,
     record: &str,
 ) -> Option<Vec<u8>> {
-    if room_uuid(id)? != workspace {
+    if workspace_uuid(id)? != workspace {
         return None;
     }
     let mut doc = record_document(id, app, record)?;
@@ -427,45 +428,45 @@ pub(crate) fn committed_record(
     Some(doc.save())
 }
 
-/// Ask peer `id`'s room `request` through the host's rooms door; `done`
+/// Ask peer `id`'s workspace `request` through the host's workspaces door; `done`
 /// gets its answer.
 ///
 /// # Errors
-/// The peer replicates no room, or its session is gone.
-pub(crate) fn rooms_then(
+/// The peer replicates no workspace, or its session is gone.
+pub(crate) fn host_then(
     id: u32,
     request: impl FnOnce(&str) -> tilo_relay_protocol::rooms::RoomsRequest,
     done: tilo_browser_peer::RoomsCompletion,
 ) -> Result<(), String> {
-    let room = room(id).ok_or("this page joined no room")?;
-    let room = room.borrow();
-    room.peer.rooms_then(request(&room.uuid), done)
+    let joined = replica_of(id).ok_or("this page joined no workspace")?;
+    let joined = joined.borrow();
+    joined.peer.rooms_then(request(&joined.uuid), done)
 }
 
-/// The room told peer `id`'s person whether they may change things at
-/// `node` (its text form): their windows let them where the room will keep
+/// The workspace told peer `id`'s person whether they may change things at
+/// `node` (its text form): their windows let them where the workspace will keep
 /// it, and stop where it no longer would.
 pub(crate) fn permit(id: u32, node: &str, may: bool) {
-    let Some(room) = room(id) else {
+    let Some(joined) = replica_of(id) else {
         return;
     };
-    let mut room = room.borrow_mut();
-    if room.note_permit(node, may) {
-        room.apply_standing();
-        for mounted in room.mounts.values() {
+    let mut joined = joined.borrow_mut();
+    if joined.note_permit(node, may) {
+        joined.apply_standing();
+        for mounted in joined.mounts.values() {
             (mounted.attachment.notify)();
         }
     }
 }
 
-/// Attach mount `mount` to peer `id`'s room.
+/// Attach mount `mount` to peer `id`'s workspace.
 pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
-    let Some(room) = room(id) else {
+    let Some(joined) = replica_of(id) else {
         return false;
     };
     {
-        let mut room = room.borrow_mut();
-        if let (Some(value), Some((handle, shared))) = (&room.desktop_value, &attachment.desktop)
+        let mut joined = joined.borrow_mut();
+        if let (Some(value), Some((handle, shared))) = (&joined.desktop_value, &attachment.desktop)
             && let Err(error) = crate::desktop::apply_shared(handle, shared, value)
         {
             warn(&format!("shared desktop not applied: {error}"));
@@ -473,16 +474,16 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
         if let Some((_, shared)) = &attachment.desktop {
             shared
                 .own_layout
-                .set(room.desktop_sending == DesktopSending::KeptOwn);
-            shared.watching.set(room.peer.watching());
-            shared.members.replace(room.members.clone());
-            room.moderates = Arc::clone(&shared.moderates);
-            room.standing.share(&shared.standing);
+                .set(joined.desktop_sending == DesktopSending::KeptOwn);
+            shared.watching.set(joined.peer.watching());
+            shared.members.replace(joined.members.clone());
+            joined.moderates = Arc::clone(&shared.moderates);
+            joined.standing.share(&shared.standing);
         }
-        room.moderation_due_ms.store(0, Ordering::Relaxed);
-        // The new mount's apps learn what the room answered.
-        room.followed = 0;
-        room.mounts.insert(
+        joined.moderation_due_ms.store(0, Ordering::Relaxed);
+        // The new mount's apps learn what the workspace answered.
+        joined.followed = 0;
+        joined.mounts.insert(
             mount,
             Mounted {
                 attachment,
@@ -495,18 +496,18 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
 }
 
 pub(crate) fn detach(id: u32, mount: u64) {
-    if let Some(room) = room(id) {
+    if let Some(joined) = replica_of(id) {
         publish(id);
-        room.borrow_mut().mounts.remove(&mount);
+        joined.borrow_mut().mounts.remove(&mount);
     }
 }
 
 /// Apply everything the host delivered since the last call.
 pub(crate) fn pump(id: u32) {
-    let Some(room) = room(id) else {
+    let Some(joined) = replica_of(id) else {
         return;
     };
-    let notify = room.borrow_mut().receive();
+    let notify = joined.borrow_mut().receive();
     for notify in notify {
         notify();
     }
@@ -515,36 +516,36 @@ pub(crate) fn pump(id: u32) {
 
 /// Send what attached mounts changed since the last call.
 pub(crate) fn publish(id: u32) {
-    if let Some(room) = room(id) {
-        let mut room = room.borrow_mut();
-        room.send();
-        room.ask_content();
-        // Every frame passes here, so the room is asked again on time
+    if let Some(joined) = replica_of(id) {
+        let mut joined = joined.borrow_mut();
+        joined.send();
+        joined.ask_content();
+        // Every frame passes here, so the workspace is asked again on time
         // whether or not anything arrived from it.
-        room.ask_standing_when_due();
-        room.follow_standing();
+        joined.ask_standing_when_due();
+        joined.follow_standing();
     }
 }
 
-/// Take what the room answered about this page's person since the last
+/// Take what the workspace answered about this page's person since the last
 /// frame, before the frame decides whether it has anything to do: an
 /// answer that changes what their windows may do marks them changed, so an
 /// idle page draws it at once instead of whenever something else wakes it.
 pub(crate) fn follow_answers(id: u32) {
-    if let Some(room) = room(id) {
-        room.borrow_mut().follow_standing();
+    if let Some(joined) = replica_of(id) {
+        joined.borrow_mut().follow_standing();
     }
 }
 
-/// Ask the room now for content the open records' windows lack.
+/// Ask the workspace now for content the open records' windows lack.
 pub(crate) fn ask_content(id: u32) {
-    if let Some(room) = room(id) {
-        room.borrow_mut().ask_content();
+    if let Some(joined) = replica_of(id) {
+        joined.borrow_mut().ask_content();
     }
 }
 
-/// What a person reads when the room refused a change `app` made: that it
-/// was not kept, and the room's reason in plain words.
+/// What a person reads when the workspace refused a change `app` made: that it
+/// was not kept, and the workspace's reason in plain words.
 fn refused_change(app: &str, plain: &str) -> String {
     let title = crate::desktop::applications()
         .into_iter()
@@ -565,8 +566,8 @@ fn warn(message: &str) {
     )));
 }
 
-impl Room {
-    /// Ask the room, at most every [`MODERATION_ASK_EVERY_MS`], what it
+impl Joined {
+    /// Ask the workspace, at most every [`MODERATION_ASK_EVERY_MS`], what it
     /// lets this page's person do: whether they write, moderate (and so
     /// close and move what others made on its shared desktop) and govern
     /// it. The answers set the desktop's flag and the role the mounts' apps
@@ -608,7 +609,7 @@ impl Room {
                         Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) => *may,
                         Ok(other) => {
                             warn(&format!(
-                                "the room did not say what this page may do: {other:?}"
+                                "the workspace did not say what this page may do: {other:?}"
                             ));
                             false
                         }
@@ -641,7 +642,7 @@ impl Room {
                 }),
             ) {
                 warn(&format!(
-                    "could not ask the room what this page may do: {error}"
+                    "could not ask the workspace what this page may do: {error}"
                 ));
                 self.moderation_due_ms
                     .store(now.saturating_add(MODERATION_RETRY_MS), Ordering::Relaxed);
@@ -650,7 +651,7 @@ impl Room {
         }
     }
 
-    /// Hold the room's answer whether this page's person may change `node`
+    /// Hold the workspace's answer whether this page's person may change `node`
     /// (its text form); whether what their windows may do changed.
     fn note_permit(&mut self, node: &str, may: bool) -> bool {
         let Ok(path) = node.parse::<ui::permissions::TreePath>() else {
@@ -665,7 +666,7 @@ impl Room {
         }
     }
 
-    /// Ask the room again about every node this page's windows asked of,
+    /// Ask the workspace again about every node this page's windows asked of,
     /// with the person's role: what a share gives changes when it is
     /// switched or ends, whether or not the app that asked is running.
     fn ask_permits(&self) {
@@ -696,14 +697,14 @@ impl Room {
                 }),
             ) {
                 warn(&format!(
-                    "could not ask the room what this page may change: {error}"
+                    "could not ask the workspace what this page may change: {error}"
                 ));
                 return;
             }
         }
     }
 
-    /// Give every mount's apps the role the room last answered, once per
+    /// Give every mount's apps the role the workspace last answered, once per
     /// answer that changed it.
     fn follow_standing(&mut self) {
         let answers = std::mem::take(
@@ -729,7 +730,7 @@ impl Room {
         self.apply_standing();
     }
 
-    /// Set every mount's permissions to the role the room last answered,
+    /// Set every mount's permissions to the role the workspace last answered,
     /// with what it permits beyond it.
     fn apply_standing(&mut self) {
         let Some(role) = self.standing.role() else {
@@ -751,7 +752,7 @@ impl Room {
             // than at the next change of their record.
             attachment.changed.set(true);
             // A window waiting to learn whether its person starts the
-            // room's record now knows.
+            // workspace's record now knows.
             if let Some((handle, shared)) = &attachment.desktop {
                 shared.retry_waiting(handle);
             }
@@ -759,19 +760,19 @@ impl Room {
     }
 
     /// What `value`, this page's desktop, closes, moves or renames on the
-    /// room's desktop that its person did not make and may not moderate:
-    /// the room refuses such a write, so it is never sent. Said in words
+    /// workspace's desktop that its person did not make and may not moderate:
+    /// the workspace refuses such a write, so it is never sent. Said in words
     /// the person reads; `None` when it touches nothing of anyone else's.
     fn rearranges_others(&self, value: &serde_json::Value, author: &str) -> Option<String> {
         if self.moderates.load(Ordering::Relaxed) {
             return None;
         }
-        let room = self.desktop_value.as_ref()?;
+        let before_value = self.desktop_value.as_ref()?;
         let parse = |value: &serde_json::Value| {
             serde_json::from_value::<tilo_desktop_model::ownership::SharedDesktop>(value.clone())
                 .ok()
         };
-        let (Some(before), Some(after)) = (parse(room), parse(value)) else {
+        let (Some(before), Some(after)) = (parse(before_value), parse(value)) else {
             return None;
         };
         let acts = tilo_desktop_model::ownership::foreign_acts(
@@ -791,7 +792,7 @@ impl Room {
         )
     }
 
-    /// Every record a mount has open in this room, as wire `(app, record)`.
+    /// Every record a mount has open in this workspace, as wire `(app, record)`.
     fn open_records(&self) -> impl Iterator<Item = (String, String)> + '_ {
         self.mounts.values().flat_map(|mounted| {
             let stores = mounted.attachment.stores.borrow();
@@ -901,7 +902,7 @@ impl Room {
         }
         self.follow_members(&mut woken);
         // Withdrawn before what arrived since is merged: a peer's change can
-        // never build on one the room refused.
+        // never build on one the workspace refused.
         for (route, changes, reason) in refusals {
             self.withdraw(&route, &changes, &reason, &mut woken);
         }
@@ -940,7 +941,7 @@ impl Room {
         notify
     }
 
-    /// Ask the room for the content open records' windows lack: what they
+    /// Ask the workspace for the content open records' windows lack: what they
     /// queued on the records' lanes ([`ContentLane`]). Content a window
     /// stored for others is not offered from a page.
     fn ask_content(&mut self) {
@@ -973,13 +974,13 @@ impl Room {
 
     /// Answer device `from`'s request for content a record of an app this
     /// page has open references, from what the page keeps: a file a visitor
-    /// posted here, which the room's host asks for to keep its own copy.
+    /// posted here, which the workspace's host asks for to keep its own copy.
     fn content_wanted(&self, from: [u8; 32], request: &[u8]) {
         let device = self.peer.status().device;
         let apps: BTreeSet<String> = self.open_records().map(|(app, _)| app).collect();
         let pieces =
-            tilo_browser_peer::content::answer(&device, &from, request, |app, room, hash| {
-                if room != self.uuid || !apps.contains(app) {
+            tilo_browser_peer::content::answer(&device, &from, request, |app, workspace, hash| {
+                if workspace != self.uuid || !apps.contains(app) {
                     return None;
                 }
                 crate::page_content::page_content().read(hash)
@@ -1019,15 +1020,15 @@ impl Room {
         let personal = route.app_id == DESKTOP_APP
             && reason.trim() == tilo_relay_protocol::refusal::PERSONAL_LAYOUT;
         if personal {
-            // Expected in a public room, not a fault: said once, quietly.
+            // Expected in a public workspace, not a fault: said once, quietly.
             if self.desktop_sending != DesktopSending::KeptOwn {
-                debug("this room keeps each member's layout to themselves");
+                debug("this workspace keeps each member's layout to themselves");
                 self.keep_own_layout(woken);
             }
             return;
         }
         warn(&format!(
-            "{}/{}: the room refused a change: {reason}",
+            "{}/{}: the workspace refused a change: {reason}",
             route.app_id, route.record
         ));
         if route.app_id == DESKTOP_APP {
@@ -1058,7 +1059,7 @@ impl Room {
                         if let Some(heads) = withdrawn {
                             // What the person just did is taken back: say so
                             // over the desktop, whatever the app shows, so a
-                            // change the room refused never looks kept.
+                            // change the workspace refused never looks kept.
                             if let Some((handle, _)) = &mounted.attachment.desktop {
                                 handle.acknowledge(refused_change(&route.app_id, plain));
                             }
@@ -1137,7 +1138,7 @@ impl Room {
         }
     }
 
-    /// The room answered one commit of `route` this page published. Once it
+    /// The workspace answered one commit of `route` this page published. Once it
     /// answered all of them, what the record's windows said they did is
     /// theirs to say: a refused change was withdrawn first, with what was
     /// said of it.
@@ -1469,7 +1470,7 @@ impl Room {
                     let delivered = &mut self.delivered;
                     let replica = mounted.records.entry(key.clone()).or_insert_with(|| {
                         match delivered.remove(&key) {
-                            // The room has the record as it delivered it.
+                            // The workspace has the record as it delivered it.
                             Some(heads) => {
                                 let mut frontier = DocumentFrontier::default();
                                 frontier.advance(heads);
@@ -1510,7 +1511,7 @@ impl Room {
             // A first snapshot carries what was there already; an
             // increment is what this page changed.
             let authored = matches!(mutation, DocumentMutation::Incremental(_));
-            // The room answers each frame the publication is split into.
+            // The workspace answers each frame the publication is split into.
             let commits = mutation.encode_frames().map_or(1, |frames| frames.len());
             if self.peer.publish(route.clone(), &mutation).is_err() {
                 return;
@@ -1533,10 +1534,10 @@ impl Room {
         self.send_desktop();
     }
 
-    /// A room whose layout is personal, as a public room's is, shares no
+    /// A workspace whose layout is personal, as a public workspace's is, shares no
     /// member's windows or layout: what this person arranges is theirs
-    /// alone, never sent, and nothing of it is undone. Known from the room's
-    /// governance as soon as the page hears it, or from the room refusing
+    /// alone, never sent, and nothing of it is undone. Known from the workspace's
+    /// governance as soon as the page hears it, or from the workspace refusing
     /// this page's desktop as personal.
     fn keep_own_layout(&mut self, woken: &mut HashSet<u64>) {
         self.desktop_sending = DesktopSending::KeptOwn;
@@ -1548,10 +1549,10 @@ impl Room {
         }
     }
 
-    /// [`Self::keep_own_layout`] once the room's governance says its layout
+    /// [`Self::keep_own_layout`] once the workspace's governance says its layout
     /// is personal, as the peer heard it (`PeerStatus::personal_rooms`):
-    /// asked on joining, for a scope heard before this room listened, and
-    /// whenever a room's scope changes.
+    /// asked on joining, for a scope heard before this workspace listened, and
+    /// whenever a workspace's scope changes.
     fn follow_layout(&mut self, woken: &mut HashSet<u64>) {
         if self.desktop_sending != DesktopSending::KeptOwn
             && self.peer.status().personal_rooms.contains(&self.uuid)
@@ -1560,7 +1561,7 @@ impl Room {
         }
     }
 
-    /// The room's members as the peer last heard its governance list them:
+    /// The workspace's members as the peer last heard its governance list them:
     /// the attached desktops release what someone who left made.
     fn follow_members(&mut self, woken: &mut HashSet<u64>) {
         let members = self.peer.status().room_members.get(&self.uuid).cloned();
@@ -1591,7 +1592,7 @@ impl Room {
             return;
         };
         // The desk as it reads to a peer: what it says moved is what the
-        // room decides on, and an unchanged desk writes nothing.
+        // workspace decides on, and an unchanged desk writes nothing.
         let value = serde_json::to_value(&desktop).unwrap_or(serde_json::Value::Null);
         if self.local_value.as_ref() == Some(&value) {
             return;
@@ -1599,12 +1600,13 @@ impl Room {
         if let Some(refusal) = self.rearranges_others(&value, &author) {
             // Whatever moved someone else's window that the desktop did not
             // refuse first (a race with their own move) is undone here: it
-            // springs back to where the room has it, nothing is sent, and
+            // springs back to where the workspace has it, nothing is sent, and
             // the person is told why.
-            if let Some(room) = &self.desktop_value {
+            if let Some(before_value) = &self.desktop_value {
                 for mounted in self.mounts.values() {
                     if let Some((handle, shared)) = &mounted.attachment.desktop {
-                        if let Err(error) = crate::desktop::return_to(handle, shared, room) {
+                        if let Err(error) = crate::desktop::return_to(handle, shared, before_value)
+                        {
                             warn(&format!("shared desktop not restored: {error}"));
                         }
                         handle.acknowledge(refusal.clone());
@@ -1683,7 +1685,7 @@ fn outbound(
     Ok((!delta.is_empty()).then_some((DocumentMutation::Incremental(delta), heads)))
 }
 
-/// Who wrote the newest change of the room's desktop, as its message names
+/// Who wrote the newest change of the workspace's desktop, as its message names
 /// them (`history_log::commit`).
 fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {
     tilo_desktop_model::shared_record::read(doc, None)

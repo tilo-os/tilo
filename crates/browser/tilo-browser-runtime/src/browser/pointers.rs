@@ -1,4 +1,4 @@
-//! Room members' pointers over a mount: where this person's pointer is,
+//! Workspace members' pointers over a mount: where this person's pointer is,
 //! said relative to what it is over, and where everyone else's lands in
 //! this page's own layout. Both go through
 //! [`tilo_relay_protocol::live::PointerLayout`], the mapping native shells
@@ -161,7 +161,7 @@ fn layout(m: &Mount) -> PointerLayout {
 }
 
 /// This person's pointer at `(x, y)` on the surface (CSS pixels), as the
-/// room's live layer carries it ([`JsPointer`] JSON): relative to the
+/// workspace's live layer carries it ([`JsPointer`] JSON): relative to the
 /// window it is over, else to the shown strip. `None` over nothing either
 /// names, which publishes no pointer.
 ///
@@ -254,7 +254,7 @@ impl Mount {
     }
 }
 
-/// The room's members' pointers over this mount: `[{publisher, pointer,
+/// The workspace's members' pointers over this mount: `[{publisher, pointer,
 /// name?, agent?, activity?, chat?: {text, typing, opacity}, reaction?:
 /// {emoji, rise, opacity}}]`, each `pointer` relative to what it is over
 /// ([`JsPointer`]), `name` and `agent` as the member's own presence gives

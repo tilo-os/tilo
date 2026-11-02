@@ -535,7 +535,7 @@ mod door_tests {
         };
         InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
-            target: RemoteActionTarget::room_governance(room, verb),
+            target: RemoteActionTarget::workspace_governance(room, verb),
             argument: if argument.is_empty() {
                 InvokeArgument::None
             } else {

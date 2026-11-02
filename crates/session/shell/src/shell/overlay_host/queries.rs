@@ -568,9 +568,17 @@ impl ShellOverlayHost {
         // content tree, and the host outlives it.
         let row: &GroupRow = unsafe { &*ptr };
         let rect = ui::widget::Widget::get_rect(row);
+        // Each display's lane of a row moves with that display's slide, so
+        // the row's own rect (placed by the first display's slide) can
+        // overlap the deck while every lane of it is a screen away: ask the
+        // deck whether any display shows the row.
         let on_screen = self.strip_deck().is_none_or(|deck| {
-            let area = ui::widget::Widget::get_rect(deck);
-            area.area() <= 0.0 || rect.intersect(area).area() > 0.0
+            (0..deck.len())
+                .find(|&index| {
+                    deck.row(index)
+                        .is_some_and(|shown| std::ptr::eq(shown, row))
+                })
+                .is_none_or(|index| deck.on_screen(index))
         });
         (rect.area() > 0.0 && on_screen).then_some(rect)
     }

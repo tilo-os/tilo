@@ -4,8 +4,9 @@
 //! restarts. A destination receipt binds that identity, destination and payload
 //! digest; local dispatch alone cannot mark a submission delivered.
 //!
-//! Hosts supply their existing durable profile store and authenticated room
-//! transport. This crate neither captures surfaces nor connects accounts.
+//! Hosts supply their existing durable profile store and authenticated
+//! workspace transport. This crate neither captures surfaces nor connects
+//! accounts.
 
 mod capture;
 mod composer;
@@ -70,13 +71,18 @@ pub mod destination {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub struct Destination {
+    /// The workspace the report goes to.
+    // Stored and sent as `room`: a queued submission's digest, its receipt and
+    // every filed report are keyed so, and the native session reads the field
+    // by that name.
     pub room: String,
     pub provider: String,
     pub channel: String,
 }
 
 impl Destination {
-    /// Validate the bounded identifiers supplied by the admitted room host.
+    /// Validate the bounded identifiers supplied by the admitted workspace
+    /// host.
     ///
     /// # Errors
     /// Refuses empty, oversized or control-character identifiers.
@@ -280,6 +286,27 @@ mod submission_tests {
                 ..Default::default()
             },
         }
+    }
+
+    #[test]
+    fn a_destination_keeps_the_key_it_was_stored_and_sent_under() {
+        // A queued submission's digest, its receipt and every filed report are
+        // keyed `room`: renaming the field without this key would orphan them.
+        let destination: Destination = serde_json::from_value(serde_json::json!({
+            "room": "w", "provider": "p", "channel": "c"
+        }))
+        .unwrap();
+        assert_eq!(destination.room, "w");
+        assert_eq!(
+            serde_json::to_value(&destination).unwrap(),
+            serde_json::json!({"room": "w", "provider": "p", "channel": "c"})
+        );
+        let keys: Vec<&str> = <Destination as tilo_resource::Model>::SHAPE
+            .fields()
+            .iter()
+            .map(|field| field.key)
+            .collect();
+        assert_eq!(keys, ["room", "provider", "channel"]);
     }
 
     #[test]

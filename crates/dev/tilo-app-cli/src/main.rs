@@ -99,8 +99,8 @@ enum Command {
     Apply(publishing::ApplyArgs),
     /// Upload packages and ask the registry to list them.
     Publish(publishing::PublishArgs),
-    /// Run a build of this app, or a bot's program, in a running room, for
-    /// everyone in it.
+    /// Run a build of this app, or a bot's program, in a running workspace,
+    /// for everyone in it.
     Push(tilo_app_cli::push::PushArgs),
 }
 
@@ -683,14 +683,14 @@ impl TargetOptions {
 /// `--share` for `run` and `dev --platform web`.
 #[derive(Clone, Copy, clap::Args)]
 struct ShareArgs {
-    /// Open the app in a room other people join, each from their own
+    /// Open the app in a workspace other people join, each from their own
     /// browser window as a person of their own (`--platform web`). The SDK's
-    /// room host runs on this machine and admits everyone who opens the
+    /// workspace host runs on this machine and admits everyone who opens the
     /// printed join page.
     #[arg(long)]
     share: bool,
 
-    /// With `--share`, start an empty room instead of reopening the last.
+    /// With `--share`, start an empty workspace instead of reopening the last.
     #[arg(long, requires = "share")]
     fresh: bool,
 }

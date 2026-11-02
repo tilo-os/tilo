@@ -944,8 +944,8 @@ fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
 /// one already open, not a new empty one), and it takes messages as a channel does.
 #[test]
 fn a_direct_message_opens_with_a_person_and_takes_their_messages() {
-    // A room with Ben in it: everyone the workspace has, from its own membership.
-    let mut policy = tilo_action_policy::WorkspacePolicy::new("room-dm", "ada");
+    // A workspace with Ben in it: everyone the workspace has, from its own membership.
+    let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace-dm", "ada");
     policy
         .members
         .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
@@ -959,7 +959,7 @@ fn a_direct_message_opens_with_a_person_and_takes_their_messages() {
     ada.commit();
     let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
     ben.host.sync_from(&ben.doc);
-    // The room's membership, as the host hands it to the runtime.
+    // The workspace's membership, as the host hands it to the runtime.
     ada.host.runtime().set_members(
         vec![
             tilolang_runtime::members::Member::person("ada", "owner"),
@@ -1026,7 +1026,7 @@ fn a_direct_message_opens_with_a_person_and_takes_their_messages() {
     // It takes a message from Ben, which Ada reads as any conversation's: an item created by
     // `insert` is held in its holder's record, and the store's index of records learns of it
     // on the next scan, as a `commit` and a sync does.
-    // Ada's own sync first: the room's host scans the records, so the new conversation is
+    // Ada's own sync first: the workspace's host scans the records, so the new conversation is
     // one the store can find.
     ada.commit();
     ben.host.sync_from(&ada.doc);
@@ -1148,7 +1148,7 @@ fn an_empty_workspace_offers_one_new_channel_button() {
 /// (`workspace.me`) is the person the window is open for, each replica its own.
 #[test]
 fn a_places_person_is_a_row_of_them_and_your_own_conversation_is_your_notes() {
-    let mut policy = tilo_action_policy::WorkspacePolicy::new("room-dm", "ada");
+    let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace-dm", "ada");
     policy
         .members
         .insert("ben".to_owned(), tilo_action_policy::Role::Editor);

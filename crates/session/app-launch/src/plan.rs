@@ -3,8 +3,8 @@
 //! Two very different things are started here, and the plan says which:
 //!
 //! - a Tilo package, through `tilo-launcher run`, which builds the package's
-//!   sandbox from its signed manifest, the room it is launched into and the
-//!   grants written for it ([`Room::write_grants`]);
+//!   sandbox from its signed manifest, the workspace it is launched into and the
+//!   grants written for it ([`Workspace::write_grants`]);
 //! - one of the machine's own applications, through its `.desktop` entry:
 //!   Flatpak, `AppImage`, a program the person added, or one of the system's.
 //!   It runs unconfined, as the person, exactly as [`desktop_entry::launch`]
@@ -23,7 +23,7 @@ use desktop_entry::launch::{HostLaunch, LaunchEnv};
 use crate::env::SessionEnvironment;
 use crate::instance::package_identities;
 use crate::launch::{Launch, Open};
-use crate::room::Room;
+use crate::workspace::Workspace;
 
 /// Where `tilo-launcher` is installed.
 const INSTALLED_LAUNCHER: &str = "/usr/libexec/tilo/tilo-launcher";
@@ -81,7 +81,7 @@ pub enum PlanError {
     /// a notice.
     #[error("{0} starts no process")]
     NothingToStart(String),
-    /// The room's grants could not be written, so the app would start with
+    /// The workspace's grants could not be written, so the app would start with
     /// fewer permissions than the person granted: refuse rather than launch
     /// it half-granted.
     #[error("the grants for {app} could not be written: {source}")]
@@ -126,8 +126,8 @@ pub struct Planned {
 pub struct PlanContext<'a> {
     /// The session's displays, bus and the person's variables.
     pub environment: &'a SessionEnvironment,
-    /// The room this launch belongs to.
-    pub room: &'a Room,
+    /// The workspace this launch belongs to.
+    pub workspace: &'a Workspace,
     /// The `tilo-launcher` to start packages through.
     pub launcher: Option<PathBuf>,
     /// The identity record this workspace's apps are given, when the session
@@ -226,14 +226,13 @@ impl Planned {
         open: Option<&Open>,
         context: &PlanContext<'_>,
     ) -> Result<Self, PlanError> {
-        let capabilities =
-            context
-                .room
-                .write_grants(package.id)
-                .map_err(|source| PlanError::Grants {
-                    app: package.id.to_owned(),
-                    source,
-                })?;
+        let capabilities = context
+            .workspace
+            .write_grants(package.id)
+            .map_err(|source| PlanError::Grants {
+                app: package.id.to_owned(),
+                source,
+            })?;
         let mut args = vec![
             "run".to_owned(),
             "--manifest".to_owned(),
@@ -241,9 +240,9 @@ impl Planned {
             "--payload-root".to_owned(),
             package.payload_root.display().to_string(),
         ];
-        if context.room.is_workspace() {
+        if context.workspace.is_workspace() {
             args.push("--workspace-id".to_owned());
-            args.push(context.room.id.clone());
+            args.push(context.workspace.id.clone());
         }
         // Always passed, so the launcher checks every capability against
         // this id rather than trusting the file to already be filtered.
@@ -383,10 +382,13 @@ fn from_host_launch(planned: HostLaunch, kind: Kind) -> Planned {
 mod tests {
     use super::*;
 
-    fn context<'a>(environment: &'a SessionEnvironment, room: &'a Room) -> PlanContext<'a> {
+    fn context<'a>(
+        environment: &'a SessionEnvironment,
+        workspace: &'a Workspace,
+    ) -> PlanContext<'a> {
         PlanContext {
             environment,
-            room,
+            workspace,
             launcher: Some(PathBuf::from("/usr/libexec/tilo/tilo-launcher")),
             identity: None,
             render_node: None,
@@ -417,11 +419,11 @@ mod tests {
     }
 
     #[test]
-    fn a_package_launches_through_the_launcher_with_its_room_and_the_sessions_displays() {
+    fn a_package_launches_through_the_launcher_with_its_workspace_and_the_sessions_displays() {
         let directory = tempfile::tempdir().expect("a directory");
-        let room = Room::under(directory.path(), "room-9");
+        let workspace = Workspace::under(directory.path(), "workspace-9");
         let environment = displays();
-        let context = context(&environment, &room);
+        let context = context(&environment, &workspace);
         let package = Package {
             id: "so.tilo.notes",
             title: "Notes",
@@ -448,7 +450,7 @@ mod tests {
                 "--payload-root",
                 "/home/you/.local/share/tilo/apps/so.tilo.notes/payload",
                 "--workspace-id",
-                "room-9",
+                "workspace-9",
                 "--app-id",
                 "so.tilo.notes",
                 "--wayland-socket",
@@ -482,10 +484,10 @@ mod tests {
     #[test]
     fn a_launch_without_a_launcher_or_an_installed_package_starts_nothing() {
         let directory = tempfile::tempdir().expect("a directory");
-        let room = Room::under(directory.path(), "room");
+        let workspace = Workspace::under(directory.path(), "workspace");
         let environment = displays();
         let launch = Launch::parse("so.tilo.notes").expect("a package launch");
-        let mut context = context(&environment, &room);
+        let mut context = context(&environment, &workspace);
         context.launcher = None;
         assert!(matches!(
             Planned::of(&launch, &context),
@@ -552,9 +554,9 @@ mod tests {
     #[test]
     fn a_record_launch_opens_the_app_on_that_record() {
         let directory = tempfile::tempdir().expect("a directory");
-        let room = Room::under(directory.path(), "room-9");
+        let workspace = Workspace::under(directory.path(), "workspace-9");
         let environment = displays();
-        let context = context(&environment, &room);
+        let context = context(&environment, &workspace);
         let record = collaboration::record::RecordId::for_file("/home/you/Notes.note");
         let launch = Launch::parse(&format!("record:so.tilo.notes:{}", record.as_str()))
             .expect("a record launch");

@@ -51,7 +51,7 @@ pub const MAX_FORMER_IDS: usize = 8;
 pub struct RecordId(String);
 
 impl RecordId {
-    /// Internal custody key for a package's existing room-primary document.
+    /// Internal custody key for a package's existing workspace-primary document.
     /// It never travels as a record id on the collaboration wire.
     pub fn package_primary() -> Self {
         Self("@tilo:package-primary".into())
@@ -145,17 +145,17 @@ impl RecordId {
         Self(format!("tab:{tab:016x}"))
     }
 
-    /// The record an app opens in a room when nothing names another one:
-    /// the first window of the app on any device of the room, native or
+    /// The record an app opens in a workspace when nothing names another one:
+    /// the first window of the app on any device of the workspace, native or
     /// browser, so they all meet on one document. Constant, so every
-    /// device derives the same id without asking; the room scopes it.
-    pub fn room_default() -> Self {
+    /// device derives the same id without asking; the workspace scopes it.
+    pub fn workspace_default() -> Self {
         Self::window_default(0)
     }
 
     /// The record a fresh window (`instance`, the launcher's tab id) of an
     /// app that keeps a record per window opens when nothing names another
-    /// one. Window `0` is [`Self::room_default`], what a launch outside the
+    /// one. Window `0` is [`Self::workspace_default`], what a launch outside the
     /// launcher opens. See `NativeProcessHost` for which apps get one.
     pub fn window_default(instance: u64) -> Self {
         Self::derived("default", &Self::for_tab(instance))
@@ -196,7 +196,7 @@ impl RecordId {
 
     /// Part `index` of the chained record `self`: a record that grows
     /// without end is kept as numbered parts, each a record of its own. A
-    /// room's host replays a joining device only the chain's head, the
+    /// workspace's host replays a joining device only the chain's head, the
     /// highest part it holds; every earlier part is sent to a device when
     /// it opens it. Two writers that start part `n + 1` start the same
     /// record. The wire form is `neighbour_wire::record_part`'s.
@@ -267,7 +267,7 @@ impl RecordId {
             .or_else(|| self.child_of().map(|(parent, _)| parent))
     }
 
-    /// `self` declared on-demand: a room's host does not replay it to a
+    /// `self` declared on-demand: a workspace's host does not replay it to a
     /// joining device, and sends it to a device when it opens it. The wire
     /// form is `neighbour_wire::on_demand_record`'s.
     #[must_use]
@@ -275,10 +275,10 @@ impl RecordId {
         Self::derived("on-demand", self)
     }
 
-    /// Adopt an id read back from a document, a room index, or the wire.
+    /// Adopt an id read back from a document, a workspace index, or the wire.
     /// Invalid, oversized, or non-canonical names fail closed: IDs name
     /// collaboration routes and storage directories, so accepting arbitrary
-    /// strings here would turn a room index into an allocation oracle.
+    /// strings here would turn a workspace index into an allocation oracle.
     pub fn parse(s: &str) -> Option<Self> {
         valid_record_id(s, 0).then(|| Self(s.to_string()))
     }
@@ -371,7 +371,7 @@ fn valid_record_id(s: &str, depth: usize) -> bool {
             .is_some_and(|next| valid_record_id(target, next))
 }
 
-/// Whether `value` is a label that can travel in a room index or record
+/// Whether `value` is a label that can travel in a workspace index or record
 /// stamp: at most `max` bytes of ASCII letters, digits, `.`, `_` and `-`,
 /// beginning with a letter.
 #[must_use]
@@ -454,7 +454,7 @@ impl RecordKind {
         &self.0
     }
 
-    /// Whether this can safely travel in a room index or record stamp.
+    /// Whether this can safely travel in a workspace index or record stamp.
     pub fn is_valid(&self) -> bool {
         valid_label(&self.0, MAX_RECORD_KIND_BYTES)
     }
@@ -486,7 +486,7 @@ impl RecordRef {
 }
 
 /// A record named together with its type — what a widget declares it is
-/// working on, and what a room index holds.
+/// working on, and what a workspace index holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordCheckout {
     pub id: RecordId,
@@ -494,7 +494,7 @@ pub struct RecordCheckout {
     /// Records this one references, and what each means. Declared here
     /// (not written by the app) because a reference has two halves only
     /// the host can write: it goes into this record's document, and the
-    /// target is brought into the room index so it doesn't dangle. One
+    /// target is brought into the workspace index so it doesn't dangle. One
     /// level deep.
     pub references: Vec<(RecordCheckout, String)>,
     /// Identities this record was known by before — a file record that used
@@ -505,7 +505,7 @@ pub struct RecordCheckout {
 }
 
 impl RecordCheckout {
-    /// The record a desktop tab of `app_id` shows: the room's package-primary
+    /// The record a desktop tab of `app_id` shows: the workspace's package-primary
     /// record for Chat, the tab's own record for every other app. Keeps the
     /// tab identity, so a tab dragged elsewhere keeps its document.
     pub fn for_component_tab(app_id: &str, tab: u64, kind: RecordKind) -> Self {
@@ -551,7 +551,7 @@ impl RecordCheckout {
         self
     }
 
-    /// Room indexes contain names supplied by collaborators.  Keep the
+    /// Workspace indexes contain names supplied by collaborators.  Keep the
     /// transport boundary typed and bounded before a host considers one.
     pub fn is_valid(&self) -> bool {
         RecordId::parse(self.id.as_str()).is_some()
@@ -589,7 +589,7 @@ impl RecordCheckout {
 }
 
 impl RecordId {
-    /// Whether a room's hosts send this record to a device only once it
+    /// Whether a workspace's hosts send this record to a device only once it
     /// asks for it: a [`Self::part`] of a chain (the head too, which a
     /// device that joined before it started asks for) or an
     /// [`Self::on_demand`] record. Opening one reads what this device holds

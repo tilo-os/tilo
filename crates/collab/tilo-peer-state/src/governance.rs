@@ -71,7 +71,7 @@ pub fn admit_invited_member(
         .map_err(|error| error.to_string())?
         .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
         .ok_or("governed workspace id is missing")?;
-    let policy = tilo_desktop_model::projection::room_policy_of(document, &declared_workspace);
+    let policy = tilo_desktop_model::projection::workspace_policy_of(document, &declared_workspace);
     let grant = crate::workspace::membership::invitation_admits(
         &policy,
         &declared_workspace,

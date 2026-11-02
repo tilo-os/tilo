@@ -79,7 +79,7 @@ impl AppBrokerState {
         let CallerPrincipal::Person(person) = caller.principal() else {
             return None;
         };
-        let workspace = caller.room()?;
+        let workspace = caller.workspace()?;
         let InvokeArgument::Json(arguments) = &invoke.argument else {
             return None;
         };

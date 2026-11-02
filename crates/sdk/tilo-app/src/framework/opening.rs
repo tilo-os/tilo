@@ -1,6 +1,6 @@
 //! A window shown before its record ([`ResourceApp::opening`](super::ResourceApp::opening)).
 //!
-//! The room's record opens off the frame
+//! The workspace's record opens off the frame
 //! ([`RecordStore::begin_opening`](ui_core::record::RecordStore::begin_opening)); meanwhile the
 //! window's component is an [`OpeningRoot`] over what the app shows before it. Once the record
 //! is decoded, the window, about to sync, asks the root for the component to show in its
@@ -112,14 +112,14 @@ impl AppWidget for OpeningRoot {
         match self.record.take_in(false) {
             Ok(false) => return None,
             Ok(true) => {}
-            Err(error) => tracing::warn!(%error, "the room's record did not open"),
+            Err(error) => tracing::warn!(%error, "the workspace's record did not open"),
         }
         let build = self.build.take()?;
         let shown = std::mem::replace(&mut self.shown, Box::new(ui_core::widget::Absent::new()));
         match build(shown) {
             Ok(replacement) => Some(replacement),
             Err(error) => {
-                tracing::error!(%error, "the room's record opened, and its window did not");
+                tracing::error!(%error, "the workspace's record opened, and its window did not");
                 None
             }
         }

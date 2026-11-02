@@ -33,7 +33,7 @@ impl ResourceApp for NotesShell {
     /// A workspace is the unit of collaboration, so its collaborators share the
     /// notebook too. Notes from before this keep their per-window records;
     /// the workspace's notebook adopts them when it is created ([`Self::seed`]).
-    const ROOM_RECORD: bool = true;
+    const WORKSPACE_RECORD: bool = true;
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
         let author = UserId(cx.me().unwrap_or("local").to_owned());

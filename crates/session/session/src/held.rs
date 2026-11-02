@@ -19,7 +19,7 @@ impl Session {
             .as_ref()
             .map(|engine| {
                 engine
-                    .rooms()
+                    .workspaces()
                     .iter()
                     .map(std::string::ToString::to_string)
                     .collect()

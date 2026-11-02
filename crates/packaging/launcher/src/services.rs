@@ -67,7 +67,7 @@ pub const SHELL_UI_SERVICE: &str = "shell-ui";
 pub const SHELL_UI_LAUNCH_PROTOCOL: u16 = 1;
 /// The session shell's authenticated file chooser (`tilo_dialogs::shell`),
 /// served alongside any desktop portal. Not declared by manifests: every app
-/// launched into a room is handed a connection naming itself and the room.
+/// launched into a workspace is handed a connection naming itself and the workspace.
 pub const CHOOSER_SERVICE: &str = "chooser";
 const CHOOSER_PROTOCOL: u16 = 1;
 pub const COMPAT_SERVICE: &str = "compat";
@@ -97,7 +97,7 @@ pub const USH_LAUNCH_MAGIC: [u8; 4] = *b"QUS1";
 /// `{"protocol":1,"app_id":"…"}`.
 const USH_HANDOFF_FRAMING: Framing = Framing::little_endian(1024).reject_empty();
 /// Document media. Not declared by manifests: every app is handed a
-/// capability scoped to itself and its room, so a document's images live in
+/// capability scoped to itself and its workspace, so a document's images live in
 /// the device content store rather than in the app's sandbox.
 pub const BLOB_SERVICE: &str = "blobs";
 /// The filesystem daemon's document-media socket (`runtime_fs::blobs`).
@@ -411,7 +411,7 @@ pub fn resolve_identity_bind_for_contract(
     }))
 }
 
-/// Name the app and room an identity connection signs for, as the first
+/// Name the app and workspace an identity connection signs for, as the first
 /// thing on it.
 ///
 /// # Errors
@@ -451,7 +451,7 @@ fn write_identity_handshake_negotiated(
 }
 
 /// The first line the launcher writes on a chooser connection: the app and
-/// the room it runs in, read by the shell before anything the app sends.
+/// the workspace it runs in, read by the shell before anything the app sends.
 ///
 /// # Errors
 ///
@@ -467,9 +467,9 @@ pub fn chooser_handshake(app_id: &str, workspace_id: &str) -> serde_json::Result
 }
 
 /// Connect the session shell's chooser service on the app's behalf and name
-/// the app and its room before the sandboxed app can write to it.
+/// the app and its workspace before the sandboxed app can write to it.
 ///
-/// A launch outside a room, or a session whose shell serves no chooser,
+/// A launch outside a workspace, or a session whose shell serves no chooser,
 /// degrades to `Ok(None)`.
 ///
 /// # Errors
@@ -523,7 +523,7 @@ fn resolve_chooser_bind_at(
 }
 
 /// Connect the compositor's render broker on the app's behalf and name the
-/// app and its room before the sandboxed app can write to it: the broker
+/// app and its workspace before the sandboxed app can write to it: the broker
 /// picks the render service that draws the app from this, never from the
 /// app (`tilo_render_protocol::broker`). The app finds the connection in
 /// `TILO_SVC_RENDER_FD`.
@@ -587,7 +587,7 @@ pub fn blob_socket() -> PathBuf {
 }
 
 /// Connect the filesystem daemon's document-media service on the app's
-/// behalf and fix the connection's scope — this app in this room — before
+/// behalf and fix the connection's scope — this app in this workspace — before
 /// the sandboxed app can write to it. The app therefore never names its own
 /// scope, and cannot reach the socket itself.
 ///
@@ -624,10 +624,10 @@ fn resolve_blob_bind_at(
         return Ok(None);
     }
     // The same partition the app's private directory uses, so a launch with
-    // no workspace lands in the personal room.
-    let room = crate::appdir::room_slug(workspace_id);
-    if !blob_scope_component(&room) || !blob_scope_component(app_id) {
-        tracing::warn!(app_id, room, "no document media scope for this launch");
+    // no workspace lands in the personal workspace.
+    let workspace = crate::appdir::workspace_slug(workspace_id);
+    if !blob_scope_component(&workspace) || !blob_scope_component(app_id) {
+        tracing::warn!(app_id, workspace, "no document media scope for this launch");
         return Ok(None);
     }
     // Say which: a missing socket is the media service not running, a
@@ -657,9 +657,11 @@ fn resolve_blob_bind_at(
             return Ok(None);
         }
     };
-    write_blob_handoff(&mut stream, app_id, &room).map_err(|source| ServiceError::OpenFailed {
-        path: path.to_path_buf(),
-        source,
+    write_blob_handoff(&mut stream, app_id, &workspace).map_err(|source| {
+        ServiceError::OpenFailed {
+            path: path.to_path_buf(),
+            source,
+        }
     })?;
     Ok(Some(ResolvedService {
         name: BLOB_SERVICE.to_string(),
@@ -668,11 +670,15 @@ fn resolve_blob_bind_at(
     }))
 }
 
-fn write_blob_handoff(stream: &mut UnixStream, app_id: &str, room: &str) -> std::io::Result<()> {
+fn write_blob_handoff(
+    stream: &mut UnixStream,
+    app_id: &str,
+    workspace: &str,
+) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(&serde_json::json!({
         "protocol": BLOB_HANDOFF_PROTOCOL,
         "principal": "app",
-        "room": room,
+        "workspace": workspace,
         "app_id": app_id,
     }))
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
@@ -964,7 +970,7 @@ fn resolve_service_binds_inner(
     Ok(out)
 }
 
-/// Name the app and room a collaboration connection is for, as the first
+/// Name the app and workspace a collaboration connection is for, as the first
 /// thing on it: what the broker attests against the session's launch record.
 pub use runtime_portal::launch_handoff::{
     write as write_collab_handoff, write_executing as write_collab_executing_handoff,
@@ -1273,27 +1279,27 @@ mod tests {
                 }
                 frames
             });
-            let room = resolve_blob_bind_at(&path, "so.tilo.notes", Some("room-7"), false)
+            let workspace = resolve_blob_bind_at(&path, "so.tilo.notes", Some("room-7"), false)
                 .expect("resolve")
                 .expect("blob bind");
-            assert_eq!(room.name, BLOB_SERVICE);
-            assert_eq!(room.child_fd, BLOB_CHILD_FD);
+            assert_eq!(workspace.name, BLOB_SERVICE);
+            assert_eq!(workspace.child_fd, BLOB_CHILD_FD);
             let personal = resolve_blob_bind_at(&path, "so.tilo.notes", None, false)
                 .expect("resolve")
                 .expect("personal blob bind");
             let frames = reader.join().expect("reader");
-            drop((room, personal));
+            drop((workspace, personal));
             assert_eq!(frames[0].0, BLOB_HANDOFF_MAGIC);
             assert_eq!(
                 frames[0].1,
                 serde_json::json!({
                     "protocol": 1,
                     "principal": "app",
-                    "room": "room-7",
+                    "workspace": "room-7",
                     "app_id": "so.tilo.notes",
                 })
             );
-            assert_eq!(frames[1].1["room"], crate::appdir::PERSONAL_ROOM);
+            assert_eq!(frames[1].1["workspace"], crate::appdir::PERSONAL_WORKSPACE);
 
             assert!(
                 resolve_blob_bind_at(
@@ -1352,9 +1358,9 @@ mod tests {
 
             assert!(
                 resolve_chooser_bind_at(&path, "so.tilo.sheets", None, false)
-                    .expect("no room")
+                    .expect("no workspace")
                     .is_none(),
-                "the shell cannot scope a launch outside a room"
+                "the shell cannot scope a launch outside a workspace"
             );
             assert!(
                 resolve_chooser_bind_at(&path, "so.tilo.sheets", Some("room-7"), true)
@@ -1952,7 +1958,7 @@ impl EnrolledServiceContext {
         &self.channel_id
     }
     pub fn agent_context_json(&self) -> Result<String, String> {
-        serde_json::to_string(&serde_json::json!({ "version": 1, "room": self.binding.room, "agent": self.binding.agent, "launch": self.binding.launch, "runtime_epoch": self.runtime_epoch, "channel_id": self.channel_id, "provider": self.provider })).map_err(|e| e.to_string())
+        serde_json::to_string(&serde_json::json!({ "version": 1, "workspace": self.binding.workspace, "agent": self.binding.agent, "launch": self.binding.launch, "runtime_epoch": self.runtime_epoch, "channel_id": self.channel_id, "provider": self.provider })).map_err(|e| e.to_string())
     }
     /// Take the connected services exactly once for the matching launch.
     pub fn take_for_launch(

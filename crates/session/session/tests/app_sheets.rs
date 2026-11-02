@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desktop_actions::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
+use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_session::{Options, Session};
 
 const WIDTH: i32 = 1280;
@@ -148,7 +148,7 @@ fn search(session: &mut Session, query: &str) {
         .expect("an object")
         .clone();
     session
-        .invoke(DESK_RESOURCE, "open-search", &arguments)
+        .invoke(DESK_RESOURCE, "search", &arguments)
         .expect("the desk opens search");
     until(session, "search's rows", |session| {
         !rows(session).is_empty()
@@ -164,7 +164,7 @@ fn choose_row(session: &mut Session, title: &str) {
     let chosen = row(session, title).expect("the row asked for");
     let arguments = serde_json::Map::new();
     session
-        .invoke(chosen.id.as_str(), "choose", &arguments)
+        .invoke(chosen.id.as_str(), "choose-search-row", &arguments)
         .expect("the row is chosen");
 }
 

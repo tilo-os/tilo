@@ -2587,7 +2587,7 @@ impl StatePeer {
             .core
             .workspace_doc
             .as_deref()
-            .and_then(tilo_desktop_model::projection::room_members);
+            .and_then(tilo_desktop_model::projection::workspace_members);
         let workspace = &self.core.workspace;
         let allows = |act: &tilo_desktop_model::ownership::Touched| {
             member.allows(&act_node(workspace, act), ActionKind::Undoable, now)

@@ -1,5 +1,5 @@
-//! The launch kind "tilolang host": one process per room and author that runs that author's
-//! tilolang apps in that room, each as an instance (`docs/designs/app-language/ui-host.md`).
+//! The launch kind "tilolang host": one process per workspace and author that runs that author's
+//! tilolang apps in that workspace, each as an instance (`docs/designs/app-language/ui-host.md`).
 //!
 //! It is no app launch. It has no manifest, no app id and no app storage, and its sandbox is
 //! narrower than any app's:
@@ -8,7 +8,7 @@
 //!   executable, its binary `bin/tilolang-host` the only program;
 //! - the Tilo runtime its apps name, verified the same way, read-only: the loader and libraries
 //!   that binary runs on, as an app's entrypoint binary runs on its app's runtime;
-//! - one directory of its own, read-write: the storage of its room and author, which the session
+//! - one directory of its own, read-write: the storage of its workspace and author, which the session
 //!   names, keyed by package inside. Landlock can only narrow, so it holds that directory from
 //!   its start;
 //! - its door, the one descriptor it inherits (at [`DOOR_CHILD_FD`]);

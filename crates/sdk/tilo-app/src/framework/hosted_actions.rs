@@ -93,7 +93,7 @@ impl HostedActionsLink {
 }
 
 /// The root of a host's app: publishes the link's resources and admits the
-/// link's operations ([module docs](self)). It takes no room.
+/// link's operations ([module docs](self)). It takes no workspace.
 pub struct HostedActions {
     link: HostedActionsLink,
     kind: AppKind,

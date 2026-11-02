@@ -9,6 +9,7 @@ use ui::record::RecordCheckout;
 use ui::widget::{AppWidget, TileHost};
 
 pub struct TileRequest<'a> {
+    /// The workspace the tile is resolved in.
     pub room: RoomId,
     pub tab: &'a Tab,
 }

@@ -19,7 +19,7 @@ const MAX_ACCOUNT_CHARS: usize = 128;
 pub struct Appearance {
     /// The shown name: trimmed, NFC-normalized, 1..=80 characters.
     pub name: String,
-    /// BLAKE3 hex of an image in the room's content store.
+    /// BLAKE3 hex of an image in the workspace's content store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
     /// The outside account this stands for.
@@ -34,7 +34,7 @@ pub struct Persona {
     pub service: String,
     /// The account's stable id on that service.
     pub account: String,
-    /// The room member (their root key, hex) the account is linked to, as
+    /// The workspace member (their root key, hex) the account is linked to, as
     /// the bot speaking for it keeps the link: the shown name is then that
     /// member's own, not one made to look like it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -65,8 +65,8 @@ pub enum AppearanceError {
     /// Not a raster image.
     #[error("the avatar is not a PNG, JPEG, WebP or GIF image")]
     AvatarNotImage,
-    /// Not in the room's content store.
-    #[error("the avatar is not in the room's content store")]
+    /// Not in the workspace's content store.
+    #[error("the avatar is not in the workspace's content store")]
     AvatarMissing,
     /// The bytes do not hash to the name.
     #[error("the avatar's bytes do not match its hash")]
@@ -206,10 +206,10 @@ pub fn refuse_here(
     }
 }
 
-/// Admit `appearance` on a request from `caller`, for the room-action door:
+/// Admit `appearance` on a request from `caller`, for the workspace-action door:
 /// only a bot whose installation `allows_personas` may show another name, the
 /// appearance must be valid, and its avatar must be an image `avatar` finds
-/// in the room's content store under its own hash.
+/// in the workspace's content store under its own hash.
 ///
 /// # Errors
 /// [`crate::remote::ActionHostError::Refused`] for a caller that may not show

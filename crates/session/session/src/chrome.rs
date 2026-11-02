@@ -21,12 +21,11 @@ use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
 use tilo_desktop_model::ownership::Authors;
-use tilo_desktop_surface::navigation::Command;
+use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::notifications::Notification;
 use tilo_desktop_surface::{DesktopHandle, DesktopNotifications};
 use tilo_surface_host::{Placement as SurfacePlacement, WidgetHost};
 
-use crate::GENERATION;
 use crate::notifications::NoticeSignals;
 
 /// The app whose live activity the bar shows as its clock.
@@ -612,11 +611,12 @@ impl crate::Shared {
                 .push(ChromeIntent::ShowActivity(None)),
             other => match other.app_target() {
                 Some((app, _)) => {
-                    let launch = Command::Launch {
-                        generation: GENERATION.into(),
+                    let launch = ChromeEffect::OpenApp {
                         app: app.into(),
+                        beside: None,
+                        background: None,
                     };
-                    if let Err(error) = self.handle.dispatch(&launch, GENERATION) {
+                    if let Err(error) = self.handle.dispatch(launch) {
                         tracing::warn!(%error, app, "launchpad");
                     }
                 }

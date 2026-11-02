@@ -135,8 +135,10 @@ impl NotebookFixture {
     /// Write the notebook into its record, the workspace's default, once, and
     /// make it durable.
     pub fn write_notebook(&self) -> RecordCheckout {
-        let checkout =
-            RecordCheckout::new(RecordId::room_default(), RecordKind::new("notes.notebook"));
+        let checkout = RecordCheckout::new(
+            RecordId::workspace_default(),
+            RecordKind::new("notes.notebook"),
+        );
         let actions = self.actions();
         self.records
             .reserve_record(&checkout)

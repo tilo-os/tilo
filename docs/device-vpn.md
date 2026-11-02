@@ -132,7 +132,7 @@ follows them and makes the tunnel match.
   devices on another version would then refuse whole.)
 - **Client states:** connecting, connected (since when), reconnecting (with
   whether the kill switch blocks meanwhile), refused (the exit does not count
-  this device as the person's, its switch is off, or it has no room), and
+  this device as the person's, its switch is off, or it has no workspace), and
   failed (the helper is not installed, refused the route, or "only my home
   network" found none). A tunnel that drops reconnects with backoff (one
   second doubling to a minute); a refusal that may change by itself is asked

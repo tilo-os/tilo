@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import select
 import subprocess
 import signal
 import sys
@@ -22,16 +23,21 @@ class BrowserFixture:
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
         self.process = None
+        self.events = None
+        self.pending = ''
+        self.announced = set()
         self.detached = detached
         self.failure = failure
         browser = self.root / 'chrome'
         browser.write_text('''#!/usr/bin/env python3
 import json,os,pathlib,signal,sys,time
 root=pathlib.Path(os.environ['FIXTURE_ROOT'])
+ack=open(os.environ['FIXTURE_ACK'],'w',buffering=1)
 profile=pathlib.Path(next(a.split('=',1)[1] for a in sys.argv if a.startswith('--user-data-dir=')))
 profile.mkdir(parents=True)
 with (root/'launches').open('a') as stream: stream.write(json.dumps(str(profile))+'\\n')
 def stop(*args):
+ print('closing',file=ack,flush=True)
  (root/'closing').touch()
  while not (root/'release-browser').exists(): time.sleep(.005)
  if not profile.exists(): (root/'early-removal').touch()
@@ -59,22 +65,39 @@ sys.exit(1)
         node.write_text('''#!/usr/bin/env python3
 import os,pathlib,sys,time
 root=pathlib.Path(os.environ['FIXTURE_ROOT'])
+ack=open(os.environ['FIXTURE_ACK'],'w',buffering=1)
+print('worker-ready',file=ack,flush=True)
 (root/'worker-ready').touch()
 while not (root/'release-worker').exists(): time.sleep(.005)
 sys.exit(int(os.environ['PROBE_STATUS']))
 ''')
         for executable in (browser, curl, node):
             executable.chmod(0o755)
+        os.mkfifo(self.root / 'events')
+
+    def attach(self):
+        """Open the announcement pipe before the driver starts, so its writers
+        never block on it and no announcement can be missed."""
+        if self.events is not None:
+            os.close(self.events)
+        self.events = os.open(self.root / 'events', os.O_RDONLY | os.O_NONBLOCK)
+        self.pending = ''
+        self.announced = set()
 
     def start(self):
         for name in ('browser-ready', 'worker-ready', 'closing', 'closed', 'release-browser', 'release-worker'):
             (self.root / name).unlink(missing_ok=True)
+        self.attach()
         environment = dict(os.environ, CHROME=str(self.root / 'chrome'), RUNNER_TEMP=str(self.root),
-                           FIXTURE_ROOT=str(self.root), DETACHED='1' if self.detached else '0',
+                           FIXTURE_ROOT=str(self.root), FIXTURE_ACK=str(self.root / 'events'),
+                           DETACHED='1' if self.detached else '0',
                            PROBE_STATUS='7' if self.failure else '0', TILO_WEB_SMOKE_SHARDS='1',
-                           # The fixture browser always honours TERM; its close
-                           # must not race the supervisor's escalation to KILL.
-                           TILO_OWNED_BROWSER_TERM_GRACE_SECS=str(HANG_BOUND),
+                           # The fixture browser always honours TERM, so its
+                           # close never needs a long escalation budget — but the
+                           # budget it gets has to end inside this test's hang
+                           # guard: a close that spends it would otherwise reach
+                           # the guard first and read like a hang.
+                           TILO_OWNED_BROWSER_TERM_GRACE_SECS=str(HANG_BOUND / 2),
                            PATH=f'{self.root}:{os.environ["PATH"]}')
         self.process = subprocess.Popen(['bash', str(DRIVER), 'http://fixture', 'calculator'],
                                         cwd=REPO, env=environment, stdout=subprocess.PIPE,
@@ -83,11 +106,38 @@ sys.exit(int(os.environ['PROBE_STATUS']))
         return self.process
 
     def wait(self, name):
-        deadline = time.monotonic() + HANG_BOUND
-        while not (self.root / name).exists():
-            if self.process.poll() is not None or time.monotonic() >= deadline:
-                raise AssertionError(f'driver did not reach {name}')
-            time.sleep(.005)
+        """Wait on the fixture's announcement itself, not on the path it is
+        recorded at: the kernel hands the pipe's byte over as soon as the
+        fixture makes it, while a path lookup can trail behind on a loaded
+        runner far enough that any budget this test picks expires first. The
+        pipe also ends once every writer is gone, so a driver that exits
+        without announcing ends this wait instead of leaving it counting."""
+        while name not in self.announced:
+            if '\n' not in self.pending:
+                ready, _, _ = select.select([self.events], [], [], HANG_BOUND)
+                if not ready:
+                    raise AssertionError(
+                        f'driver did not reach {name}: no announcement within {HANG_BOUND:g}s')
+                chunk = os.read(self.events, 4096)
+                if not chunk:
+                    raise AssertionError(
+                        f'driver did not reach {name}: every writer is gone{self.report()}')
+                self.pending += chunk.decode()
+                continue
+            announcement, _, self.pending = self.pending.partition('\n')
+            self.announced.add(announcement.strip())
+
+    def report(self):
+        """What the driver said about its close, including the supervisor's own
+        account of one it had to escalate. Read once its writers are gone, the
+        driver is on its way out with that account already in its pipes."""
+        if self.process is None:
+            return ''
+        try:
+            stdout, stderr = self.process.communicate(timeout=HANG_BOUND)
+        except subprocess.TimeoutExpired:
+            return ''
+        return f'; driver exited {self.process.returncode}: {(stdout + stderr).strip()}'
 
     def finish(self, *, terminate=False, duplicate=False):
         if terminate:
@@ -111,6 +161,9 @@ sys.exit(int(os.environ['PROBE_STATUS']))
             if self.process.poll() is None:
                 self.process.terminate()
             self.process.communicate(timeout=HANG_BOUND)
+        if self.events is not None:
+            os.close(self.events)
+            self.events = None
         self.directory.cleanup()
 
 
@@ -335,6 +388,54 @@ time.sleep(float(sys.argv[2]))
             if process.poll() is None:
                 process.kill()
             process.communicate(timeout=HANG_BOUND)
+
+
+class BrowserExitStatus(unittest.TestCase):
+    def test_close_request_during_the_recorded_exit_keeps_an_abnormal_status(self):
+        """The root's own status is read before a close request is acted on: a
+        request arriving while its descendants are still being stopped says
+        nothing about a browser that had already ended on its own."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = '''
+import os, pathlib, signal, sys, time
+root = pathlib.Path(sys.argv[1])
+child = os.fork()
+if child == 0:
+    def saw_term(*_args):
+        (root / 'writer-stopping').touch()
+        time.sleep(.5)
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, saw_term)
+    (root / 'writer-ready').touch()
+    while True:
+        time.sleep(.05)
+else:
+    while not (root / 'writer-ready').exists():
+        time.sleep(.005)
+    sys.exit(7)
+'''
+            process = subprocess.Popen(
+                [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
+                 sys.executable, '-c', script, str(root)],
+                # The writer leaves on its own, so the supervisor never escalates:
+                # the wait is the writer's close, not a kill it has to observe.
+                env=dict(os.environ, TILO_OWNED_BROWSER_TERM_GRACE_SECS='60'),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                deadline = time.monotonic() + HANG_BOUND
+                while not (root / 'writer-stopping').exists():
+                    self.assertIsNone(process.poll(), 'supervisor exited before stopping its descendants')
+                    self.assertLess(time.monotonic(), deadline, 'supervisor never stopped its descendants')
+                    time.sleep(.005)
+                process.terminate()
+                stdout, stderr = process.communicate(timeout=HANG_BOUND)
+                self.assertEqual(process.returncode, 1, stdout + stderr)
+                self.assertIn('exited on its own with status 7', stderr)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=HANG_BOUND)
 
 
 if __name__ == '__main__':

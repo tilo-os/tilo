@@ -5,7 +5,7 @@
  * used through its public API only.
  *
  * Broadcasts (see tilo-moq src/live.rs; frames in tilo-relay-protocol live.rs):
- *   `tilo-live/<room hex>/<publisher hex>`   this member's namespace, with
+ *   `tilo-live/<workspace hex>/<publisher hex>`   this member's namespace, with
  *     `presence`             latest-value datagrams (single-frame groups when
  *                            datagrams are unavailable)
  *   `<namespace>/ops/<hex record>`           one per record this member is
@@ -49,7 +49,7 @@ export function validateLiveEndpoint(value) {
 }
 function validateNamespace(value) {
   if (!Array.isArray(value) || value.length !== 3 || value[0] !== LIVE_ROOT || !HEX64.test(value[1]) || !HEX64.test(value[2])) {
-    throw new TypeError('live namespace must be ("tilo-live", room hex, publisher hex)');
+    throw new TypeError('live namespace must be ("tilo-live", workspace hex, publisher hex)');
   }
   return [...value];
 }
@@ -69,14 +69,14 @@ export function createLiveTransport({library, carrier = openCarrier, serverCerti
   async function connect({endpoint, authorization, namespace, directions, signal}) {
     signal?.throwIfAborted?.();
     const url = validateLiveEndpoint(endpoint);
-    const [root, room, self] = validateNamespace(namespace);
+    const [root, workspace, self] = validateNamespace(namespace);
     if (!(authorization instanceof Uint8Array) || authorization.byteLength === 0 || authorization.byteLength > MAX_AUTHORIZATION_BYTES) {
       throw new TypeError('live authorization must be 1..2048 grant bytes');
     }
     if (!directions || (!directions.publish && !directions.subscribe)) throw new TypeError('live directions required');
     const moq = await libraryPromise;
-    const own = moq.Path.from(root, room, self);
-    const roomPath = moq.Path.from(root, room);
+    const own = moq.Path.from(root, workspace, self);
+    const workspacePath = moq.Path.from(root, workspace);
     const outgoing = new moq.Origin.Producer();
     const incoming = new moq.Origin.Producer();
     const opened = await carrier({url, grant: new Uint8Array(authorization), serverCertificateHashes, signal});
@@ -172,7 +172,7 @@ export function createLiveTransport({library, carrier = openCarrier, serverCerti
         const oldest = [...records.entries()].sort((a, b) => a[1].usedAt - b[1].usedAt)[0][0];
         closeOps(oldest);
       }
-      const recordBroadcast = outgoing.createBroadcast(moq.Path.from(root, room, self, name));
+      const recordBroadcast = outgoing.createBroadcast(moq.Path.from(root, workspace, self, name));
       const track = recordBroadcast.createTrack(RECORD_TRACK, {timescale: moq.Time.Timescale.MICRO, maxAge: 2000});
       recordBroadcast.announce();
       entry = {broadcast: recordBroadcast, track, group: undefined, frames: 0, timer: undefined, usedAt: monotonicNow()};
@@ -196,12 +196,12 @@ export function createLiveTransport({library, carrier = openCarrier, serverCerti
       return true;
     }
 
-    /** Announcements of other members under ("tilo-live", room). */
+    /** Announcements of other members under ("tilo-live", workspace). */
     function watchMembers({onMember}) {
       if (closed) throw new Error('live session closed');
       if (!directions.subscribe) throw new Error('live session not authorized to subscribe');
       let active = true;
-      const announcements = incoming.announced(moq.Path.Pattern.subtree(roomPath));
+      const announcements = incoming.announced(moq.Path.Pattern.subtree(workspacePath));
       const known = new Set();
       const cleanup = () => {
         if (!active) return;
@@ -215,7 +215,7 @@ export function createLiveTransport({library, carrier = openCarrier, serverCerti
           while (active) {
             const event = await announcements.next();
             if (!event) break;
-            const member = moq.Path.stripPrefix(roomPath, event.prefix);
+            const member = moq.Path.stripPrefix(workspacePath, event.prefix);
             if (!member || !HEX64.test(member) || member === self) continue;
             const live = moq.Announce?.isActive ? moq.Announce.isActive(event.kind) : event.kind !== 'retracted';
             if (live && event.kind === 'announced' && known.has(member)) {
@@ -262,7 +262,7 @@ export function createLiveTransport({library, carrier = openCarrier, serverCerti
       cleanups.add(cleanup);
       void (async () => {
         try {
-          const resolved = await requestBroadcast(incoming, moq.Path.from(root, room, publisher));
+          const resolved = await requestBroadcast(incoming, moq.Path.from(root, workspace, publisher));
           request = resolved.request;
           if (!active) { request.close(); return; }
           track = resolved.broadcast.track(name).subscribe({...options});
@@ -325,7 +325,7 @@ export function createLiveTransport({library, carrier = openCarrier, serverCerti
     }
 
     return {
-      namespace: [root, room, self],
+      namespace: [root, workspace, self],
       directions: {...directions},
       publishPresence,
       publishOps,

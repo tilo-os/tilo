@@ -71,6 +71,7 @@ members = [
     "crates/platform/tilo-handoff",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
+    "crates/session/identity-authority",
     "crates/collab/tilo-identity-ceremony",
     "crates/session/desktop",
     "crates/session/lock-screen",

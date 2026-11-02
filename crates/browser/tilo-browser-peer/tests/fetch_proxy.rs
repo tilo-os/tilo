@@ -77,7 +77,7 @@ async fn session(peer: &PeerHandle) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "room-host", DeviceCapabilities::host());
+    let host_device = enrol(&root, "workspace-host", DeviceCapabilities::host());
     let laptop = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host_serving(
@@ -145,7 +145,7 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
         matches!(refused, Err(tilo_net::NetError::Connect { .. })),
         "{refused:?}"
     );
-    // The counters a room host's metrics page appends.
+    // The counters a workspace host's metrics page appends.
     let metrics = state.path().join("metrics.d/fetch-proxy.prom");
     wait_for("the fetch proxy's counters", || {
         let text = std::fs::read_to_string(&metrics).unwrap_or_default();

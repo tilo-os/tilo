@@ -230,7 +230,7 @@ async fn an_untrusted_contract_marks_every_observation_of_its_invocation() {
 #[test]
 fn an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it() {
     let (state, person, mut app) = fixture_tagged(vec![tilo_actions::ATTENDED_TAG.to_owned()]);
-    let workspace = person.room().unwrap().to_owned();
+    let workspace = person.workspace().unwrap().to_owned();
     let agent = Caller::local_person("a1".repeat(32))
         .in_workspace(workspace)
         .in_new_execution()
@@ -291,7 +291,7 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
     state.set_app_action_consent(Arc::new(Sheet(sheet)));
     let agent = Caller::local_person("a1".repeat(32))
-        .in_workspace(person.room().unwrap().to_owned())
+        .in_workspace(person.workspace().unwrap().to_owned())
         .in_new_execution()
         .delegated_to("scribe");
     let mut invoke = request();
@@ -351,7 +351,7 @@ fn ask_to_update(
     let (sheet, asked) = tokio::sync::mpsc::unbounded_channel();
     state.set_app_action_consent(Arc::new(Sheet(sheet)));
     let agent = Caller::local_person("a1".repeat(32))
-        .in_workspace(person.room().unwrap().to_owned())
+        .in_workspace(person.workspace().unwrap().to_owned())
         .in_new_execution()
         .delegated_to("scribe");
     let mut invoke = request();
@@ -571,7 +571,7 @@ async fn wrong_peer_stale_progress_and_post_terminal_updates_emit_nothing() {
 #[test]
 fn actions_without_a_host_minted_run_do_not_invent_execution_presence() {
     let (state, caller, mut app) = fixture();
-    let ordinary = Caller::local_person("a1".repeat(32)).in_workspace(caller.room().unwrap());
+    let ordinary = Caller::local_person("a1".repeat(32)).in_workspace(caller.workspace().unwrap());
     let mut events = state.subscribe_execution_activity();
     assert!(matches!(
         state
@@ -992,8 +992,8 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
         "the denied edit was refused"
     );
     assert!(app.try_recv().is_err(), "the denied edit reaches no app");
-    let owner =
-        Caller::local_person("a1".repeat(32)).in_workspace(continued.room().unwrap().to_owned());
+    let owner = Caller::local_person("a1".repeat(32))
+        .in_workspace(continued.workspace().unwrap().to_owned());
     assert!(matches!(
         state
             .action_invoke(&owner, Some(7), None, &invoke("erase"))
@@ -1025,7 +1025,7 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
 #[test]
 fn an_invocation_id_two_callers_share_continues_neither() {
     let (state, agent, _app) = continuation_fixture();
-    let workspace = agent.room().unwrap().to_owned();
+    let workspace = agent.workspace().unwrap().to_owned();
     let other = "b2".repeat(32);
     state
         .stable_invocation_subscribers
@@ -1161,7 +1161,7 @@ fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
         "retirement and refused cancellation must not cancel an admitted job"
     );
 
-    let legacy = Caller::local_person("a1".repeat(32)).in_workspace(caller.room().unwrap());
+    let legacy = Caller::local_person("a1".repeat(32)).in_workspace(caller.workspace().unwrap());
     legacy.retire_execution();
     assert!(matches!(
         state
@@ -1459,7 +1459,7 @@ fn agent_answered(
         grants
     });
     let workspace = person_caller
-        .room()
+        .workspace()
         .expect("the fixture's workspace")
         .to_owned();
     let answered = state
@@ -1554,7 +1554,7 @@ fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
         tilo_action_policy::roles::AgentPreset::Observer.grants(workspace, "scribe", &person)
     });
     let workspace = owner_caller
-        .room()
+        .workspace()
         .expect("the fixture's workspace")
         .to_owned();
     let member = Caller::local_agent("scribe")
@@ -1597,7 +1597,7 @@ fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
 #[test]
 fn a_store_disclosure_with_a_malformed_operation_is_refused_with_the_reason() {
     let (state, person, _app) = fixture();
-    let workspace = person.room().unwrap().to_owned();
+    let workspace = person.workspace().unwrap().to_owned();
     let mut surfaces = state.published_surfaces();
     let surface = surfaces.first_mut().unwrap();
     surface.app_id = "so.tilo.store".into();

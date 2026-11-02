@@ -95,7 +95,7 @@ impl WorkspaceTree {
                 recorded
             };
             let mut workspace =
-                Workspace::in_room(id, room, crate::shell::i18n::t("workspace-joined-name"));
+                Workspace::in_workspace(id, room, crate::shell::i18n::t("workspace-joined-name"));
             let strip = self.mint_strip_id();
             workspace.strips = vec![Strip {
                 id: strip,
@@ -108,7 +108,7 @@ impl WorkspaceTree {
             binding.made.push((room, id));
         }
         if !binding.is_empty() {
-            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+            self.desktop.workspace_epoch = self.desktop.workspace_epoch.wrapping_add(1);
         }
         binding
     }
@@ -157,7 +157,7 @@ impl WorkspaceTree {
         } else {
             // The slot becomes the room's workspace, under its own id and in
             // its place, with its windows.
-            let mut joined = Workspace::in_room(left.id, room, left.name.clone());
+            let mut joined = Workspace::in_workspace(left.id, room, left.name.clone());
             joined.strips = strips;
             joined.arrangement = arrangement;
             self.desktop.workspaces.insert(index, joined);
@@ -165,7 +165,7 @@ impl WorkspaceTree {
         binding.joined.push((slot, placeholder, room));
         let records = self
             .desktop
-            .room_records_held
+            .workspace_records_held
             .get(&placeholder)
             .is_some_and(|records| !records.is_empty());
         if holds_anything(&left) || records || holds_files(placeholder) {
@@ -176,7 +176,7 @@ impl WorkspaceTree {
                 "workspace-kept-before-joining",
                 &[("name", left.name.clone().into())],
             );
-            let mut kept = Workspace::in_room(id, placeholder, name);
+            let mut kept = Workspace::in_workspace(id, placeholder, name);
             kept.policy = left.policy.clone();
             kept.sandbox = std::mem::take(&mut left.sandbox);
             kept.presets = std::mem::take(&mut left.presets);
@@ -212,7 +212,7 @@ impl WorkspaceTree {
         // more: its workspace is the joined room's now.
         self.pending_placements.remove(&room);
         self.room_docs.remove(&room);
-        self.desktop.room_records_held.remove(&room);
+        self.desktop.workspace_records_held.remove(&room);
     }
 
     /// The invariant of the one record, for tests and checks: every room the
@@ -264,8 +264,8 @@ pub(crate) fn room_holds_files(data_home: &std::path::Path, room: RoomId) -> boo
     };
     if present(
         &data_home
-            .join(launcher::appdir::ROOMS_DIR)
-            .join(launcher::appdir::room_slug(Some(&name))),
+            .join(launcher::appdir::WORKSPACES_DIR)
+            .join(launcher::appdir::workspace_slug(Some(&name))),
     ) {
         return true;
     }

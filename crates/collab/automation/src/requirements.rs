@@ -1,6 +1,6 @@
-//! What a program needs from a room and its host, derived from its steps and
-//! triggers alone. A directory entry lists exactly this, and the registry
-//! refuses a listing that says anything else.
+//! What a program needs from a workspace and its host, derived from its
+//! steps and triggers alone. A directory entry lists exactly this, and the
+//! registry refuses a listing that says anything else.
 
 use std::collections::BTreeSet;
 

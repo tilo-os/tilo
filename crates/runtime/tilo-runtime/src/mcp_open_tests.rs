@@ -496,7 +496,7 @@ impl ActionHost for Writer {
                     .map(|peer| CatalogueProvider {
                         provider: peer.to_string(),
                         app_id: APP.into(),
-                        room: "workspace".into(),
+                        workspace: "workspace".into(),
                         record_id: String::new(),
                         browsable: true,
                     })

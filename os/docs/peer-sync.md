@@ -11,7 +11,7 @@ can use `--disable-peer-sync`.
 
 Invites carry a signed Iroh `EndpointAddr`; no multicast discovery or fixed
 TCP port is required. The inviter and invitee authenticate the endpoint id
-embedded in the token before room state is accepted.
+embedded in the token before workspace state is accepted.
 
 ## Persistent host
 
@@ -78,25 +78,25 @@ A Fedora Desktop may have an enrolled home peer but no local Files daemon or
 namespace. Do not infer a new empty workspace from this, or from an offline
 peer. The saved `home-peers.json` under the host's existing identity root
 (`$XDG_DATA_HOME/tilo`, normally `~/.local/share/tilo`) identifies the enrolled
-device, relay service and relay room IDs to probe:
+device, relay service and relay workspace IDs to probe:
 
 ```sh
 tilo-relay-admin home-peer-files-status \
   --identity-root "$HOME/.local/share/tilo" \
   --device ENROLLED_DEVICE_PUBLIC_KEY --service RELAY_SERVICE_PUBLIC_KEY \
-  --workspace-id REGISTERED_RELAY_ROOM_ID
+  --workspace-id REGISTERED_RELAY_WORKSPACE_ID
 ```
 
 This read-only command uses the existing device key, verified certificate and
-signed revocation cache. It restricts the query to a room registered to that
+signed revocation cache. It restricts the query to a workspace registered to that
 exact home peer and person, then uses the ordinary authenticated Iroh content
 finder. It prints the public Files namespace UUID and endpoint identifiers;
 it does not print or save the returned ticket, refresh the peer registry,
 create an identity, grant access, or start a Files mount. A timeout or denied
 query leaves the existence of remote data unknown. Probe the saved candidate
-rooms before deciding whether explicit new initialization is appropriate.
+workspaces before deciding whether explicit new initialization is appropriate.
 
-The relay room ID is a routing key, not a Files namespace UUID. A successful
+The relay workspace ID is a routing key, not a Files namespace UUID. A successful
 probe identifies a recovery source; actual namespace recovery must still use
 the existing authenticated Files join path and corresponding authority.
 
@@ -105,7 +105,7 @@ An older host may still have `<identity-root>/home-peers.json`. To inspect that
 existing record without creating or migrating trust, pass
 `--registry /path/to/existing/home-peers.json` explicitly. The selected record
 must still match this person's verified certificate, exact enrolled device
-and service, and saved room. The command neither copies the legacy record nor
+and service, and saved workspace. The command neither copies the legacy record nor
 changes which registry other services use.
 
 ## Fedora primary Files service and explicit first run
@@ -121,7 +121,7 @@ The standard host cache is `$XDG_STATE_HOME/tilo/files`, normally
 `workspace-authority.bin` must already exist. Before mounting, the entry point
 `fs serve-primary` checks the existing certified person/device, signed
 revocations, matching namespace authority, and an explicit read/write Files
-path capability. A room
+path capability. A workspace
 administration grant is insufficient. Failed readiness exits without making
 an empty mount. The service suppresses the daemon's ticket-bearing stdout.
 
@@ -187,7 +187,7 @@ signed policy.
 The read-only candidate probe still discards returned tickets. A separate
 `tilo-relay-admin files-workspace-join` source path restores an explicitly
 selected existing namespace into an absent absolute cache directory. It requires
-the existing certified person/device, the exact enrolled host/service/room,
+the existing certified person/device, the exact enrolled host/service/workspace,
 `--files-workspace-id` and `--confirm-existing-files-access`, and both the existing
 local Files read/write policy and the peer's current governor-signed Files
 authority. Identity enrollment alone does not authorize Files access. This is

@@ -169,7 +169,7 @@ pub fn every_hit(host: &Host) -> Vec<Hit> {
 /// offers it bound to itself.
 const OPEN_ACTION: &str = "open";
 
-/// Every hit of the room as the session's persistent search index keeps it: one [`IndexEntry`]
+/// Every hit of the workspace as the session's persistent search index keeps it: one [`IndexEntry`]
 /// per resource with text, short metadata only (never a prose body), keyed by the resource's
 /// published id and opening it through its package's `open` action at that anchor. This is what
 /// a live tilolang instance publishes on its connection, so a Mail message or a note is found by

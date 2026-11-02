@@ -623,8 +623,8 @@ fn app_crate(project: &Project) -> Result<WebCrate> {
     })
 }
 
-/// The page that shows `app` full tab in the person's own room, relative to
-/// the bundle: the link grammar's `app/#/me/<app-id>`.
+/// The page that shows `app` full tab in the person's own workspace, relative
+/// to the bundle: the link grammar's `app/#/me/<app-id>`.
 fn app_entry(app: &str) -> String {
     format!("app/#/me/{app}")
 }

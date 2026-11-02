@@ -113,6 +113,43 @@ pub struct ParamSurface {
         deserialize_with = "crate::field_type::field_type_or_text"
     )]
     pub ty: FieldType,
+    /// The parameter this one is a field of on the wire: a parameter that is a plain record
+    /// of named fields is published as those fields, and a call's arguments for them travel
+    /// nested under its name again ([`nest_arguments`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<String>,
+}
+
+/// The arguments of a call of `verb`, as `(name, value)`, with each argument of a parameter
+/// published as a field of another ([`ParamSurface::within`]) nested back under that
+/// parameter's name: what the action's door reads.
+#[must_use]
+pub fn nest_arguments(
+    verb: &VerbSurface,
+    arguments: Vec<(String, serde_json::Value)>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    for (name, value) in arguments {
+        let within = verb
+            .params
+            .iter()
+            .find(|param| param.name == name)
+            .and_then(|param| param.within.clone());
+        match within {
+            Some(outer) => {
+                let nested = out
+                    .entry(outer)
+                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                if let serde_json::Value::Object(fields) = nested {
+                    fields.insert(name, value);
+                }
+            }
+            None => {
+                out.insert(name, value);
+            }
+        }
+    }
+    out
 }
 
 /// One stored field.

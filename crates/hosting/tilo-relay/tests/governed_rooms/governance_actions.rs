@@ -5,9 +5,9 @@
 //! `tilo.host` actions, to the relay's own person only, and a member's own
 //! business as `tilo.member` actions.
 use tilo_actions::remote::{
-    ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ROOM_GOVERNANCE_PROVIDER,
-    ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
-    room_governance_resource,
+    ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
+    RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
+    workspace_governance_resource,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_relay::rooms::{HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, LIST_ROOMS};
@@ -210,7 +210,7 @@ fn invite(room: &str) -> RemoteActionMessage {
     argument.insert("role".into(), "editor".into());
     RemoteActionMessage::Invoke(InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget::room_governance(room, "invite"),
+        target: RemoteActionTarget::workspace_governance(room, "invite"),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,
@@ -264,7 +264,7 @@ async fn the_owner_invites_through_the_rooms_action_and_an_editor_cannot() {
         RemoteActionMessage::CatalogueRequest {
             correlation: 1,
             query: CatalogueQuery {
-                provider: Some(ROOM_GOVERNANCE_PROVIDER.into()),
+                provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
                 ..CatalogueQuery::default()
             },
         },
@@ -417,8 +417,8 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
             &host,
             room.workspace_id,
             invocation(
-                ROOM_GOVERNANCE_PROVIDER,
-                room_governance_resource(&room.room),
+                WORKSPACE_GOVERNANCE_PROVIDER,
+                workspace_governance_resource(&room.room),
                 "remove-member",
                 serde_json::json!({ "person": hex::encode(bob.user_pk) }),
             ),

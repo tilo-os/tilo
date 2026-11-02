@@ -127,7 +127,7 @@ pub(crate) fn open_at(
 ) -> Result<(), ActionError> {
     let slot = SlotKey {
         app: app.to_owned(),
-        room: room.to_owned(),
+        workspace: room.to_owned(),
         record: String::new(),
     };
     let entry = IndexEntry {
@@ -219,7 +219,7 @@ fn opening(
 ) -> Option<(PublishedSurface, PublishedAction, InvokeArgument)> {
     let mut candidates: Vec<PublishedSurface> = surfaces
         .into_iter()
-        .filter(|surface| surface.app_id == slot.app && surface.route.cluster_id == slot.room)
+        .filter(|surface| surface.app_id == slot.app && surface.route.cluster_id == slot.workspace)
         .collect();
     candidates.sort_by_key(|surface| {
         (
@@ -285,7 +285,7 @@ fn open_entry(
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room().to_string() == slot.room)
+            .find(|workspace| workspace.room().to_string() == slot.workspace)
             .map(crate::shell::state::Workspace::room);
         room.map(|room| state.local_user_for_room(&room))
     };
@@ -300,7 +300,7 @@ fn open_entry(
     } else {
         launchable_provider(&surface)
     };
-    invoke_opening(door, &slot.room, &person, provider, &action, argument)
+    invoke_opening(door, &slot.workspace, &person, provider, &action, argument)
 }
 
 /// Open the window of `app` in the workspace of `room` that the shell
@@ -334,7 +334,7 @@ pub(crate) fn open_in_window(
     };
     let slot = SlotKey {
         app: app.to_owned(),
-        room: room.to_owned(),
+        workspace: room.to_owned(),
         record: String::new(),
     };
     let entry = IndexEntry {
@@ -467,7 +467,7 @@ impl SearchProvider for AppContentProvider {
             .desktop
             .active_workspace()
             .map(|workspace| workspace.room().to_string());
-        if here.as_deref() == Some(slot.room.as_str()) {
+        if here.as_deref() == Some(slot.workspace.as_str()) {
             SearchProximity::CurrentWorkspace
         } else {
             SearchProximity::Global

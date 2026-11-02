@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig, Screenshot};
-use tilo_desktop::desktop_actions::DISPLAY_KIND;
+use tilo_desktop::desk_verbs::DISPLAY_KIND;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::power::PowerSeat;
@@ -291,7 +291,7 @@ fn displays(session: &Session) -> Vec<ResourceSpec> {
 fn focuses(session: &mut Session, client: &mut TestClient, index: usize) {
     let display = displays(session)[index].id.clone();
     session
-        .invoke(display.as_str(), "focus", &serde_json::Map::new())
+        .invoke(display.as_str(), "focus-display", &serde_json::Map::new())
         .unwrap_or_else(|error| panic!("{display:?} focus: {error:?}"));
     for _ in 0..4 {
         client.exchange();

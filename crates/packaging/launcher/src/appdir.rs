@@ -8,23 +8,23 @@
 //! `~/.local/share/<pkg>` — lands inside without changing a line, and an
 //! app cannot opt out because there's no field to opt out with.
 //!
-//! ## Per-room partitioning falls out of the location
+//! ## Per-workspace partitioning falls out of the location
 //!
-//! The host location is `<data home>/tilo-rooms/<room>/<package>`. The
-//! room is [`crate::sandbox::WORKSPACE_ID_ENV`], the same value the
+//! The host location is `<data home>/tilo-workspaces/<workspace>/<package>`. The
+//! workspace is [`crate::sandbox::WORKSPACE_ID_ENV`], the same value the
 //! collaboration cluster is keyed on, so two launches of one app into
-//! two rooms get two directories, neither able to name the other's.
+//! two workspaces get two directories, neither able to name the other's.
 //!
-//! A launch with no room gets the [`PERSONAL_ROOM`]: one directory like any
+//! A launch with no workspace gets the [`PERSONAL_WORKSPACE`]: one directory like any
 //! other, unreachable from a workspace.
 //!
 //! ## The person's own records are one directory per app
 //!
-//! Some of an app's data belongs to the person rather than to any room:
+//! Some of an app's data belongs to the person rather than to any workspace:
 //! what they watched, the words they taught the keyboard. Those records
-//! live in the person's own room and must be one record on the device whatever room the app is
+//! live in the person's own workspace and must be one record on the device whatever workspace the app is
 //! opened in, so the launcher binds one more directory, the same for every
-//! room: `<data home>/tilo-person/<package>` at [`SANDBOX_PERSON_DIR`],
+//! workspace: `<data home>/tilo-person/<package>` at [`SANDBOX_PERSON_DIR`],
 //! named by [`PERSON_DIR_ENV`]. The app keeps nothing else there.
 
 use std::io;
@@ -40,13 +40,13 @@ pub const APP_DIR_ENV: &str = "TILO_APP_DIR";
 
 /// The directory a launch with no workspace belongs to. A slug like any
 /// other, deliberately not a UUID, so it cannot collide with a workspace id.
-pub const PERSONAL_ROOM: &str = "personal";
+pub const PERSONAL_WORKSPACE: &str = "personal";
 
-/// Directory under the user's data home that holds every room.
-pub const ROOMS_DIR: &str = "tilo-rooms";
+/// Directory under the user's data home that holds every workspace.
+pub const WORKSPACES_DIR: &str = "tilo-rooms";
 
 /// Directory under the user's data home that holds each app's records of
-/// the person's own, shared by the app's launches in every room.
+/// the person's own, shared by the app's launches in every workspace.
 pub const PERSON_DIR: &str = "tilo-person";
 
 /// Where the app's person directory appears inside the sandbox.
@@ -63,10 +63,10 @@ pub const PERSON_DIR_ENV: &str = "TILO_PERSON_DIR";
 /// any other. Everything outside `[A-Za-z0-9._-]` becomes `_`, which
 /// removes `/` and `\0`, and the pure-dots cases (`.`, `..`) are
 /// replaced outright since they name a directory rather than creating one.
-pub fn room_slug(workspace_id: Option<&str>) -> String {
+pub fn workspace_slug(workspace_id: Option<&str>) -> String {
     let raw = workspace_id.unwrap_or("").trim();
     if raw.is_empty() {
-        return PERSONAL_ROOM.to_string();
+        return PERSONAL_WORKSPACE.to_string();
     }
     let mapped: String = raw
         .chars()
@@ -81,11 +81,13 @@ pub fn room_slug(workspace_id: Option<&str>) -> String {
     // `.` and `..` survive the character filter and are the two names
     // that resolve somewhere other than a child.
     if mapped.chars().all(|c| c == '.') {
+        // The prefix names a directory already created on some devices.
         return format!("room_{}", hex_digest(raw));
     }
     // A very long id would hit NAME_MAX and fail the mkdir with an
-    // error that says nothing about rooms.
+    // error that says nothing about workspaces.
     if mapped.len() > 128 {
+        // The prefix names a directory already created on some devices.
         return format!("room_{}", hex_digest(raw));
     }
     mapped
@@ -105,11 +107,11 @@ pub fn host_data_home() -> Option<PathBuf> {
     tilo_paths::xdg::data_home()
 }
 
-/// Host location of one package's directory in one room.
-pub fn host_app_dir(data_home: &Path, room: &str, package_id: &str) -> PathBuf {
+/// Host location of one package's directory in one workspace.
+pub fn host_app_dir(data_home: &Path, workspace: &str, package_id: &str) -> PathBuf {
     data_home
-        .join(ROOMS_DIR)
-        .join(room)
+        .join(WORKSPACES_DIR)
+        .join(workspace)
         .join(sanitise_component(package_id))
 }
 
@@ -149,8 +151,8 @@ pub fn prepare_host_app_dir(
     workspace_id: Option<&str>,
     package_id: &str,
 ) -> io::Result<PathBuf> {
-    let room = room_slug(workspace_id);
-    let dir = host_app_dir(data_home, &room, package_id);
+    let workspace = workspace_slug(workspace_id);
+    let dir = host_app_dir(data_home, &workspace, package_id);
     std::fs::create_dir_all(&dir)?;
     // The XDG tree the environment will point at, created up front so a
     // first-run write doesn't have to create its own parent. The app owns
@@ -246,7 +248,7 @@ fn refuse_symlink(path: &Path) -> io::Result<()> {
 }
 
 /// Host location of one package's person directory: the same for every
-/// room it is launched into.
+/// workspace it is launched into.
 pub fn host_person_dir(data_home: &Path, package_id: &str) -> PathBuf {
     data_home
         .join(PERSON_DIR)
@@ -393,12 +395,12 @@ mod tests {
     #[test]
     fn a_symlinked_xdg_component_refuses_the_launch() {
         let data = tempfile::tempdir().expect("data home");
-        let dir = prepare_host_app_dir(data.path(), Some("room"), "so.tilo.notes")
+        let dir = prepare_host_app_dir(data.path(), Some("workspace"), "so.tilo.notes")
             .expect("a fresh app directory");
         let elsewhere = tempfile::tempdir().expect("a directory the app must not reach");
         std::fs::remove_dir_all(dir.join(".local")).expect("remove");
         std::os::unix::fs::symlink(elsewhere.path(), dir.join(".local")).expect("plant");
-        let error = prepare_host_app_dir(data.path(), Some("room"), "so.tilo.notes")
+        let error = prepare_host_app_dir(data.path(), Some("workspace"), "so.tilo.notes")
             .expect_err("a symlinked component must refuse the launch");
         assert!(error.to_string().contains("symbolic link"), "{error}");
         assert!(
@@ -411,9 +413,9 @@ mod tests {
     }
 
     #[test]
-    fn app_directory_paths_are_confined_per_room_and_package() {
-        // Phase `a_room_name_can_never_escape_its_parent`.
-        // The room name is the one path component an outside caller
+    fn app_directory_paths_are_confined_per_workspace_and_package() {
+        // Phase `a_workspace_name_can_never_escape_its_parent`.
+        // The workspace name is the one path component an outside caller
         // supplies, so it is the one that has to be unable to escape.
         {
             let data = Path::new("/data");
@@ -425,9 +427,9 @@ mod tests {
                 "a/../../b",
                 ".",
                 "\0evil",
-                "room\nname",
+                "workspace\nname",
             ] {
-                let slug = room_slug(Some(hostile));
+                let slug = workspace_slug(Some(hostile));
                 assert!(
                     !slug.contains('/'),
                     "{hostile:?} produced a multi-component slug {slug:?}"
@@ -452,13 +454,13 @@ mod tests {
                 );
             }
         }
-        // Phase `a_package_id_can_never_escape_its_room`.
+        // Phase `a_package_id_can_never_escape_its_workspace`.
         // Same argument for the package id: it comes out of a manifest, which
         // is the thing being distrusted.
         {
             let data = Path::new("/data");
             for hostile in ["..", "../../etc", "/", "a/b"] {
-                let dir = host_app_dir(data, PERSONAL_ROOM, hostile);
+                let dir = host_app_dir(data, PERSONAL_WORKSPACE, hostile);
                 assert!(
                     dir.starts_with("/data/tilo-rooms/personal/"),
                     "{hostile:?} escaped to {}",
@@ -474,20 +476,20 @@ mod tests {
                 );
             }
         }
-        // Phase `two_rooms_are_two_directories`.
-        // Two rooms are two directories. This is the whole of per-room
+        // Phase `two_workspaces_are_two_directories`.
+        // Two workspaces are two directories. This is the whole of per-workspace
         // partitioning at the filesystem layer.
         {
             let data = Path::new("/data");
-            let a = host_app_dir(data, &room_slug(Some("room-a")), "so.tilo.notes");
-            let b = host_app_dir(data, &room_slug(Some("room-b")), "so.tilo.notes");
+            let a = host_app_dir(data, &workspace_slug(Some("workspace-a")), "so.tilo.notes");
+            let b = host_app_dir(data, &workspace_slug(Some("workspace-b")), "so.tilo.notes");
             assert_ne!(a, b);
             assert!(!a.starts_with(&b) && !b.starts_with(&a));
         }
         {
-            assert_eq!(room_slug(None), PERSONAL_ROOM);
-            assert_eq!(room_slug(Some("")), PERSONAL_ROOM);
-            assert_eq!(room_slug(Some("   ")), PERSONAL_ROOM);
+            assert_eq!(workspace_slug(None), PERSONAL_WORKSPACE);
+            assert_eq!(workspace_slug(Some("")), PERSONAL_WORKSPACE);
+            assert_eq!(workspace_slug(Some("   ")), PERSONAL_WORKSPACE);
         }
     }
 
@@ -563,19 +565,21 @@ mod tests {
         }
         {
             let tmp = tempfile::tempdir().unwrap();
-            let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
+            let dir =
+                prepare_host_app_dir(tmp.path(), Some("workspace-a"), "so.tilo.notes").unwrap();
             assert!(dir.join(".local/share").is_dir());
             assert!(dir.join(".config").is_dir());
             assert!(dir.join(".cache").is_dir());
-            assert_eq!(dir, tmp.path().join("tilo-rooms/room-a/so.tilo.notes"));
+            assert_eq!(dir, tmp.path().join("tilo-rooms/workspace-a/so.tilo.notes"));
         }
         {
             let tmp = tempfile::tempdir().unwrap();
-            let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
+            let dir =
+                prepare_host_app_dir(tmp.path(), Some("workspace-a"), "so.tilo.notes").unwrap();
             std::fs::write(dir.join("startup-7.json"), "{}").unwrap();
             std::fs::write(dir.join("startup-notes.txt"), "mine").unwrap();
             std::fs::create_dir(dir.join("startup-album.json")).unwrap();
-            prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
+            prepare_host_app_dir(tmp.path(), Some("workspace-a"), "so.tilo.notes").unwrap();
             assert!(!dir.join("startup-7.json").exists());
             assert!(dir.join("startup-notes.txt").is_file(), "not a trace");
             assert!(
@@ -599,7 +603,10 @@ mod private_service_tests {
             .unwrap();
         let package = "so.tilo.imager.home-export";
         let dir = prepare_private_host_app_dir(working.path(), None, package).unwrap();
-        assert_eq!(dir, host_app_dir(working.path(), PERSONAL_ROOM, package));
+        assert_eq!(
+            dir,
+            host_app_dir(working.path(), PERSONAL_WORKSPACE, package)
+        );
         assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
         assert_eq!(
             std::fs::metadata(&dir).unwrap().uid(),
@@ -633,7 +640,7 @@ mod private_service_tests {
         assert_eq!(std::fs::read_dir(working.path()).unwrap().count(), 0);
         std::fs::set_permissions(working.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(outside.path().join("personal"), b"unchanged").unwrap();
-        std::os::unix::fs::symlink(outside.path(), working.path().join(ROOMS_DIR)).unwrap();
+        std::os::unix::fs::symlink(outside.path(), working.path().join(WORKSPACES_DIR)).unwrap();
         assert_eq!(
             prepare_private_host_app_dir(working.path(), None, "so.test")
                 .unwrap_err()

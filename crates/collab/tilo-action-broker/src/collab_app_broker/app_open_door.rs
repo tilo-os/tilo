@@ -31,7 +31,7 @@
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller,
     InvocationReceipt, InvokeRequest, ReceiptStatus, RemoteActionMessage, application_provider,
-    workspace_provider_room,
+    provider_workspace,
 };
 
 use super::{AppBrokerState, InvocationCaller};
@@ -194,7 +194,7 @@ impl Continued {
 fn opens_application(invoke: &InvokeRequest) -> bool {
     let target = &invoke.target;
     target.address.action == APPLICATION_OPEN_ACTION
-        && ((workspace_provider_room(&target.provider).is_some()
+        && ((provider_workspace(&target.provider).is_some()
             && target
                 .address
                 .resource

@@ -16,9 +16,9 @@ pub const MAX_RESTRICT_MINUTES: u32 = 7 * 24 * 60;
 pub const MAX_ACTIVITY: usize = 200;
 
 /// The instructions every judgement starts from.
-pub const INSTRUCTIONS: &str = "You moderate a public, shared Tilo room where anonymous \
+pub const INSTRUCTIONS: &str = "You moderate a public, shared Tilo workspace where anonymous \
 guests chat and edit documents together. You are given reports about one person and that \
-person's recent actions, as recorded by the room's history. Decide what to do:\n\
+person's recent actions, as recorded by the workspace's history. Decide what to do:\n\
 - \"no-action\": the reports do not hold up, or the actions are ordinary use, jokes or \
 disagreement.\n\
 - \"restrict\": clear abuse that a pause should stop: spam, flooding, harassment, \

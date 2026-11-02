@@ -198,3 +198,98 @@ fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
         );
     }
 }
+
+/// A session with nobody attached: what the verbs of the clipboard can be
+/// invoked on directly.
+fn plain_session() -> Session {
+    Session::headless(
+        Options::default(),
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
+    )
+    .expect("session")
+}
+
+/// The history as its reading lists it: each copy's key, its text and
+/// whether the person keeps it, newest first.
+fn listed(session: &Session) -> Vec<(String, Option<String>, bool)> {
+    session
+        .read(CLIPBOARD_RESOURCE)
+        .expect("the session publishes the clipboard")
+        .as_array()
+        .expect("the history is a list")
+        .iter()
+        .map(|copy| {
+            (
+                copy["key"].as_str().expect("a key").to_owned(),
+                copy["text"].as_str().map(str::to_owned),
+                copy["pinned"].as_bool().expect("a pin"),
+            )
+        })
+        .collect()
+}
+
+/// The key of the copy whose text is `text`.
+fn key_of(session: &Session, text: &str) -> String {
+    listed(session)
+        .into_iter()
+        .find(|(_, copied, _)| copied.as_deref() == Some(text))
+        .map_or_else(|| panic!("{text} is not in the history"), |(key, _, _)| key)
+}
+
+fn invoke(session: &mut Session, action: &str, arguments: serde_json::Value) {
+    session
+        .invoke(
+            CLIPBOARD_RESOURCE,
+            action,
+            &serde_json::from_value(arguments).expect("an object of arguments"),
+        )
+        .unwrap_or_else(|error| panic!("{action}: {error}"));
+}
+
+/// What the person does with the history is what the clipboard resource
+/// offers: keeping a copy, dropping one, and clearing the rest.
+#[test]
+fn the_history_is_pinned_removed_and_cleared_through_its_published_verbs() {
+    let mut session = plain_session();
+    // The history is the device's, kept across sessions: what this test
+    // copied is named so a run never reads another's copies.
+    let kept_text = format!("keep me {}", std::process::id());
+    let dropped_text = format!("let me go {}", std::process::id());
+    copy(&mut session, &kept_text);
+    copy(&mut session, &dropped_text);
+    let kept = key_of(&session, &kept_text);
+    let dropped = key_of(&session, &dropped_text);
+
+    invoke(
+        &mut session,
+        "pin",
+        serde_json::json!({ "copy": kept, "pinned": true }),
+    );
+    assert!(
+        listed(&session).contains(&(kept.clone(), Some(kept_text.clone()), true)),
+        "the copy the person kept is pinned: {:?}",
+        listed(&session)
+    );
+
+    invoke(
+        &mut session,
+        "remove",
+        serde_json::json!({ "copy": dropped }),
+    );
+    assert!(
+        !listed(&session).iter().any(|(key, _, _)| *key == dropped),
+        "the copy they dropped is gone: {:?}",
+        listed(&session)
+    );
+
+    invoke(&mut session, "clear", serde_json::json!({}));
+    let left = listed(&session);
+    assert!(
+        left.contains(&(kept, Some(kept_text), true)),
+        "clearing the history keeps what the person pinned: {left:?}"
+    );
+    assert!(
+        left.iter().all(|(_, _, pinned)| *pinned),
+        "nothing the person did not pin is kept: {left:?}"
+    );
+}

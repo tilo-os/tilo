@@ -634,7 +634,7 @@ impl Instance {
     }
 
     /// Why the scenario [`stage`](Self::stage) named failed, or a package it uses failed its
-    /// first scenario, once the host ran it: a capture refuses to picture a half-staged room.
+    /// first scenario, once the host ran it: a capture refuses to picture a half-staged workspace.
     pub fn take_stage_failure(&mut self) -> Option<String> {
         self.stage_failed.take()
     }

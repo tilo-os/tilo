@@ -182,7 +182,7 @@ pub struct Caller {
     principal: CallerPrincipal,
     user_public_key: Option<[u8; 32]>,
     device_public_key: Option<[u8; 32]>,
-    room: Option<String>,
+    workspace: Option<String>,
     foreign: bool,
     // Transport-issued execution scope, never accepted from request context.
     // It narrows invocation ownership without changing the policy principal.
@@ -209,7 +209,7 @@ impl Caller {
             principal: CallerPrincipal::Person(hex::encode(user_public_key)),
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
-            room: None,
+            workspace: None,
             foreign: false,
             execution: None,
             acting_for: None,
@@ -227,7 +227,7 @@ impl Caller {
             principal: CallerPrincipal::Person(principal.into()),
             user_public_key: None,
             device_public_key: None,
-            room: None,
+            workspace: None,
             foreign: false,
             execution: None,
             acting_for: None,
@@ -244,7 +244,7 @@ impl Caller {
             principal: CallerPrincipal::Agent(agent_id.into()),
             user_public_key: None,
             device_public_key: None,
-            room: None,
+            workspace: None,
             foreign: false,
             execution: None,
             acting_for: None,
@@ -263,7 +263,7 @@ impl Caller {
             principal: CallerPrincipal::App(app_id.into()),
             user_public_key: None,
             device_public_key: None,
-            room: None,
+            workspace: None,
             foreign: false,
             execution: None,
             acting_for: None,
@@ -287,7 +287,7 @@ impl Caller {
             principal: CallerPrincipal::Agent(agent_id.into()),
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
-            room: None,
+            workspace: None,
             foreign: false,
             execution: None,
             acting_for: None,
@@ -310,7 +310,7 @@ impl Caller {
             principal: CallerPrincipal::Bot(installation.into()),
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
-            room: None,
+            workspace: None,
             foreign: false,
             execution: None,
             acting_for: Some(hex::encode(user_public_key)),
@@ -403,7 +403,7 @@ impl Caller {
     /// Whether this agent is one the person's own device handed its session to
     /// ([`Self::delegated_to`]): it carries the delegation a device gives its
     /// agents. An agent admitted as a member that acts for a person
-    /// ([`Self::acting_for`]) carries only what the room grants it.
+    /// ([`Self::acting_for`]) carries only what the workspace grants it.
     #[must_use]
     pub fn is_session_delegated(&self) -> bool {
         self.session_delegated
@@ -471,11 +471,11 @@ impl Caller {
         }
     }
 
-    /// Confine the caller to one workspace: the connection was admitted to
-    /// that workspace only, so nothing outside it is offered or reachable.
+    /// Confine the caller to one workspace: the connection was admitted to that
+    /// workspace only, so nothing outside it is offered or reachable.
     #[must_use]
     pub fn in_workspace(mut self, workspace: impl Into<String>) -> Self {
-        self.room = Some(workspace.into());
+        self.workspace = Some(workspace.into());
         self
     }
 
@@ -484,10 +484,10 @@ impl Caller {
         &self.principal
     }
 
-    /// The room this caller is confined to, if any.
+    /// The workspace this caller is confined to, if any.
     #[must_use]
-    pub fn room(&self) -> Option<&str> {
-        self.room.as_deref()
+    pub fn workspace(&self) -> Option<&str> {
+        self.workspace.as_deref()
     }
 
     /// The user root a remote device chains to.
@@ -520,35 +520,35 @@ pub struct RemoteActionTarget {
     pub address: ActionAddress,
 }
 
-/// The provider a room's own governance actions (membership, roles, grants,
+/// The provider a workspace's own governance actions (membership, roles, grants,
 /// bans) are answered under. It is the host's, not an app's, so it is the
 /// one provider a caller names without reading it from a catalogue page.
-pub const ROOM_GOVERNANCE_PROVIDER: &str = "tilo.workspace";
-/// The resource kind of a room's governance resource.
-pub const ROOM_GOVERNANCE_KIND: &str = "workspace.permissions";
+pub const WORKSPACE_GOVERNANCE_PROVIDER: &str = "tilo.workspace";
+/// The resource kind of a workspace's governance resource.
+pub const WORKSPACE_GOVERNANCE_KIND: &str = "workspace.permissions";
 
 impl RemoteActionTarget {
     /// The governance action `verb` (one of
-    /// `tilo_action_policy::roles::governance`) on the room `room`.
+    /// `tilo_action_policy::roles::governance`) on the workspace `workspace`.
     #[must_use]
-    pub fn room_governance(room: &str, verb: &str) -> Self {
+    pub fn workspace_governance(workspace: &str, verb: &str) -> Self {
         Self {
-            provider: ROOM_GOVERNANCE_PROVIDER.to_owned(),
-            address: ActionAddress::new(room_governance_resource(room), verb),
+            provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+            address: ActionAddress::new(workspace_governance_resource(workspace), verb),
         }
     }
 }
 
 #[must_use]
-pub fn room_governance_resource(room: &str) -> String {
-    format!("{ROOM_GOVERNANCE_KIND}:{room}")
+pub fn workspace_governance_resource(workspace: &str) -> String {
+    format!("{WORKSPACE_GOVERNANCE_KIND}:{workspace}")
 }
 
 /// Pairing a nearby device with the person's identity. The host runs it —
 /// LAN discovery, and the approval an administrator authenticates — so no
 /// application starts a privileged process. It is answered under the
 /// host's provider, which a caller names without reading a catalogue, for
-/// the person at this device in the room their connection was admitted to.
+/// the person at this device in the workspace their connection was admitted to.
 pub mod device_pairing {
     use super::{ActionAddress, RemoteActionTarget};
 
@@ -582,7 +582,7 @@ pub mod device_pairing {
 /// them is open: each section a record published with its field edits and
 /// verbs (`settings:<kind>`), changed through them as that app's window
 /// changes them. It is answered under the host's provider for the person at
-/// this device in the room their connection was admitted to.
+/// this device in the workspace their connection was admitted to.
 pub mod settings_records {
     /// The provider the host answers the person's settings under.
     pub const PROVIDER: &str = "tilo.settings";
@@ -593,7 +593,7 @@ pub mod settings_records {
 /// active selector, device fleets — and runs every step, so no application
 /// reads a secret or signs with the root key. It is answered under the
 /// host's provider, which a caller names without reading a catalogue, for
-/// the person at this device in the room their connection was admitted to.
+/// the person at this device in the workspace their connection was admitted to.
 pub mod identity_admin {
     use serde::{Deserialize, Serialize};
 
@@ -611,7 +611,7 @@ pub mod identity_admin {
     pub const REMOVE: &str = "remove";
     /// Move identity `id`'s key from a plain file into protected storage.
     pub const PROTECT: &str = "protect";
-    /// The devices trusted under the room's identity, as [`FleetDevice`]s.
+    /// The devices trusted under the workspace's identity, as [`FleetDevice`]s.
     pub const DEVICES: &str = "devices";
     /// Root-sign a device's permanent revocation (`device`, `reason`,
     /// `confirm`).
@@ -693,6 +693,23 @@ impl InvokeArgument {
             )),
         }
     }
+
+    /// What [`Self::to_slot`] carries, as the wire field it came from. A
+    /// slot no typed object is written behind is text, which is what an
+    /// action taking a prompt collects.
+    #[must_use]
+    pub fn from_slot(slot: Option<&str>) -> Self {
+        match slot {
+            None => Self::None,
+            Some(text) => match text
+                .strip_prefix(ARGUMENTS_JSON_PREFIX)
+                .and_then(|json| serde_json::from_str(json).ok())
+            {
+                Some(object) => Self::Json(object),
+                None => Self::Text(text.to_owned()),
+            },
+        }
+    }
 }
 
 /// A request to run one published action.
@@ -739,7 +756,7 @@ pub struct InvokeRequest {
     pub wait_ms: Option<u32>,
     /// The name and avatar a bot asks to show for this action. Only a door
     /// that can check the caller is a bot allowed it admits one
-    /// (the room-action door a bot host drives); every other door refuses the request
+    /// (the workspace-action door a bot host drives); every other door refuses the request
     /// ([`crate::appearance::refuse_here`]) rather than dropping the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<crate::Appearance>,
@@ -776,16 +793,16 @@ impl InvokeRequest {
 /// Action id that closes a running application's windows in a workspace.
 pub const APPLICATION_CLOSE_ACTION: &str = "close";
 
-/// The provider token for the actions workspace `room` itself offers.
+/// The provider token for the actions workspace `workspace` itself offers.
 #[must_use]
-pub fn workspace_provider(room: &str) -> String {
-    format!("{WORKSPACE_PROVIDER}:{room}")
+pub fn workspace_provider(workspace: &str) -> String {
+    format!("{WORKSPACE_PROVIDER}:{workspace}")
 }
 
-/// The room a workspace provider token names, or `None` for an application
+/// The workspace a workspace provider token names, or `None` for an application
 /// provider.
 #[must_use]
-pub fn workspace_provider_room(provider: &str) -> Option<&str> {
+pub fn provider_workspace(provider: &str) -> Option<&str> {
     provider
         .strip_prefix(WORKSPACE_PROVIDER)
         .and_then(|rest| rest.strip_prefix(':'))
@@ -1090,13 +1107,13 @@ pub trait ActionHost {
         Pending::ready(Err(ActionHostError::ConfirmationRequired))
     }
 
-    /// Where this host's callers put content into their room's content
+    /// Where this host's callers put content into their workspace's content
     /// store ([`ContentPuts`]); `None` for a host without one.
     fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
         None
     }
 
-    /// Where an agent task reads its room's records outside their apps ([`RecordReads`]);
+    /// Where an agent task reads its workspace's records outside their apps ([`RecordReads`]);
     /// `None` for a host without them.
     fn record_reads(&self) -> Option<std::sync::Arc<dyn RecordReads>> {
         None
@@ -1116,7 +1133,7 @@ pub trait ActionHost {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RemoteActionMessage {
     /// Inspect existing feedback admission or read an existing canonical ack.
-    /// This never invokes a document mutation or grants room access.
+    /// This never invokes a document mutation or grants workspace access.
     FeedbackRequest {
         correlation: u64,
         query: feedback::FeedbackQuery,
@@ -1166,7 +1183,7 @@ pub enum RemoteActionMessage {
         invocation: InvocationId,
         result: Result<(), ActionHostError>,
     },
-    /// Ask a device for a room record it holds, from `query.offset` on.
+    /// Ask a device for a workspace record it holds, from `query.offset` on.
     /// The same authenticated device-to-device route as an action, but
     /// answered by the device from what its app last made durable, not by
     /// an action host: a record is readable where it is kept whether or not
@@ -1216,10 +1233,11 @@ pub const MAX_FETCHED_RECORD_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordQuery {
-    pub room: String,
+    #[serde(rename = "workspace", alias = "room")]
+    pub workspace: String,
     /// The application whose record it is.
     pub app: String,
-    /// The record's id in that room.
+    /// The record's id in that workspace.
     pub record: String,
     /// Where in the stored document this piece starts.
     pub offset: u64,
@@ -1858,10 +1876,10 @@ mod tests {
     }
 
     /// Camera's "Open Photos" opens a window of the person's own, as the
-    /// launcher does: a room's grants have nothing to consent to, so a guest
+    /// launcher does: a workspace's grants have nothing to consent to, so a guest
     /// is not asked first.
     #[test]
-    fn opening_an_app_needs_no_room_consent() {
+    fn opening_an_app_needs_no_workspace_consent() {
         for spec in [
             ApplicationLaunch::app("so.tilo.photos").spec("open-photos", "Open Photos", ""),
             ApplicationLaunch::content_spec("so.tilo.photos", "open-capture", "Open", ""),
@@ -1924,30 +1942,36 @@ mod tests {
     }
 
     #[test]
-    fn an_application_action_target_names_its_room_and_app() {
-        let target = application_action_target("room-1", "so.tilo.chat", "chat.workspace", "call");
+    fn an_application_action_target_names_its_workspace_and_app() {
+        let target =
+            application_action_target("workspace-1", "so.tilo.chat", "chat.workspace", "call");
         assert_eq!(
             application_provider(&target.provider),
-            Some(("room-1", "so.tilo.chat"))
+            Some(("workspace-1", "so.tilo.chat"))
         );
         assert_eq!(target.address, ActionAddress::new("chat.workspace", "call"));
         for other in [
             "7",
-            "workspace:room-1",
-            "application:room-1",
+            "workspace:workspace-1",
+            "application:workspace-1",
             "application::so.tilo.chat",
-            "application:room-1:",
-            "application:room-1:a:",
+            "application:workspace-1:",
+            "application:workspace-1:a:",
         ] {
             assert_eq!(application_provider(other), None, "{other}");
         }
         assert_eq!(application_provider_record(&target.provider), None);
 
-        let target =
-            application_record_target("room-1", "so.tilo.notes", "uuid:7", "notes.page:1", "open");
+        let target = application_record_target(
+            "workspace-1",
+            "so.tilo.notes",
+            "uuid:7",
+            "notes.page:1",
+            "open",
+        );
         assert_eq!(
             application_provider(&target.provider),
-            Some(("room-1", "so.tilo.notes"))
+            Some(("workspace-1", "so.tilo.notes"))
         );
         assert_eq!(
             application_provider_record(&target.provider),
@@ -2285,7 +2309,7 @@ mod tests {
         let request = RemoteActionMessage::RecordRequest {
             correlation: 4,
             query: RecordQuery {
-                room: "room".into(),
+                workspace: "workspace".into(),
                 app: "dev.tilo.notes".into(),
                 record: "uuid:1".into(),
                 offset: 0,
@@ -2393,7 +2417,7 @@ mod tests {
         let first = alice().in_new_execution();
         let second = alice().in_new_execution();
         assert_eq!(first.principal(), second.principal());
-        assert_eq!(first.room(), second.room());
+        assert_eq!(first.workspace(), second.workspace());
         assert_ne!(first.execution_id(), second.execution_id());
         let host = CountingHost::new();
         let id = InvocationId::new();
@@ -2565,9 +2589,21 @@ mod tests {
             Some("hi")
         );
         assert_eq!(
-            InvokeArgument::Json(object).to_slot(),
+            InvokeArgument::Json(object.clone()).to_slot(),
             Some(format!("{ARGUMENTS_JSON_PREFIX}{{\"n\":2}}"))
         );
+        // A slot read back names the argument it was written from, so a
+        // device that sends an invocation on runs what it admitted.
+        for argument in [
+            InvokeArgument::None,
+            InvokeArgument::Text("hi".into()),
+            InvokeArgument::Json(object),
+        ] {
+            assert_eq!(
+                InvokeArgument::from_slot(argument.to_slot().as_deref()),
+                argument
+            );
+        }
     }
 
     fn a_remote_device_is_the_person_its_root_names() {
@@ -2577,10 +2613,10 @@ mod tests {
             &CallerPrincipal::Person("ab".repeat(32)),
             "every device of one person is the same principal"
         );
-        assert_eq!(caller.room(), None);
-        let agent = Caller::local_agent("helper").in_workspace("room-1");
+        assert_eq!(caller.workspace(), None);
+        let agent = Caller::local_agent("helper").in_workspace("workspace-1");
         assert_eq!(agent.principal(), &CallerPrincipal::Agent("helper".into()));
-        assert_eq!(agent.room(), Some("room-1"));
+        assert_eq!(agent.workspace(), Some("workspace-1"));
         assert_eq!(agent.device_public_key(), None);
     }
 

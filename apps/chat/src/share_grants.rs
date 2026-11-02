@@ -150,7 +150,7 @@ impl ChatApp {
     /// person may change what it shares (on a view-only share: whether
     /// they may anyway).
     pub(crate) fn follow_share_grants(&mut self) {
-        let Ok(workspace) = ui::framework::reference::room() else {
+        let Ok(workspace) = ui::framework::reference::workspace() else {
             return;
         };
         let shares: Vec<(String, bool, bool, ShareAccess, Option<TreePath>)> = self

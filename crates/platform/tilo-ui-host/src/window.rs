@@ -953,11 +953,12 @@ impl AppWindow {
 
     // ----- what the person did -------------------------------------------------------------
 
-    /// Whether the window holds something for the app it has not sent yet: a layout that gave
-    /// a view a new space ([`Self::follow_spaces`]) tells the app at the next
-    /// [`Self::flush`], and a host that flushes only when it has work owes one then.
+    /// Whether the window holds a message for the app it has not sent: a space a layout gave a
+    /// view, what the person did, a row asked for. An embedder that only sends when it has
+    /// something to say asks this, so a window nothing touches still hands the app what its
+    /// frame gave its views.
     #[must_use]
-    pub fn telling(&self) -> bool {
+    pub fn owes(&self) -> bool {
         !self.out.is_empty()
     }
 

@@ -418,6 +418,8 @@ impl Host {
                     })
                 })
                 .collect::<Vec<_>>();
+            // The kind is the one records on disk carry ([`crate::RECORD_KIND`]), spelled the
+            // same so a reader of the answer knows it.
             return Ok(json!({ "kind": "tilolang.room", "records": records }));
         };
         let unknown = || format!("no resource `{item}`; read the app for the records it holds");

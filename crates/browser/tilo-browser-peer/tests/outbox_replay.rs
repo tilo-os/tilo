@@ -16,7 +16,7 @@
 mod participant;
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
@@ -33,7 +33,7 @@ use support::{admitted, enrol, next_document, ready, route, start_host, start_pe
 /// them; a barrier called meanwhile waits with it until the host has made it
 /// durable, however late a participant admits the page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_barrier_covers_an_edit_held_for_the_rooms_replay() {
+async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
@@ -59,7 +59,7 @@ async fn a_barrier_covers_an_edit_held_for_the_rooms_replay() {
     )
     .unwrap();
     let receipt = peer.barrier().unwrap();
-    peer.join_placed(support::ROOM, "Workspace").unwrap();
+    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
     wait_for("the barrier", || async { receipt.try_recv().ok() })
         .await
         .unwrap();
@@ -107,7 +107,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         Arc::new(browser.key.clone()),
         store.clone(),
     );
-    peer.join_placed(support::ROOM, "Workspace").unwrap();
+    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
     peer.open_route(route()).unwrap();
     ready(&[&peer]).await;
     admitted(&peer).await;
@@ -154,7 +154,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         observer.key.clone(),
     );
     observer_peer
-        .join_placed(support::ROOM, "Workspace")
+        .join_placed(support::WORKSPACE, "Workspace")
         .unwrap();
     observer_peer.open_route(route()).unwrap();
     let mut events = Vec::new();

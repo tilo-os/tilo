@@ -2,15 +2,16 @@
 //!
 //! It shows every workspace and pictures the strips and windows of the one
 //! you are in ([`tilo_desktop::overview_panel::OverviewPanel`], the overview
-//! the browser desktop draws too), and publishes what can be done from it
-//! as its actions: go to a workspace or a window, move a window to another
-//! workspace or strip, close one, make, join or leave a workspace, rename
-//! and move a strip. The shell mounts it in its own process and lends it a
-//! seat ([`OverviewSeat`]): what the desktop holds, in; what was chosen,
-//! out, for the shell to carry out; and the pictures of the windows, which
-//! the compositor draws where the overview names them, since their buffers
-//! are other clients'. On its own (its window, a capture, a test) it shows
-//! a fixed desktop ([`fixture`]).
+//! the browser desktop draws too). It publishes no verbs of its own: what
+//! can be done from it — going to a workspace or a window, moving a window
+//! to another workspace or strip, closing one, making, joining or leaving a
+//! workspace, naming and moving a strip — is the desk's and the chrome's
+//! vocabulary, which the shell carries out. The shell mounts it in its own
+//! process and lends it a seat ([`OverviewSeat`]): what the desktop holds,
+//! in; what was chosen, out, for the shell to carry out; and the pictures of
+//! the windows, which the compositor draws where the overview names them,
+//! since their buffers are other clients'. On its own (its window, a
+//! capture, a test) it shows a fixed desktop ([`fixture`]).
 
 pub mod fixture;
 mod seat;
@@ -29,18 +30,18 @@ ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 /// The app the shell mounts the overview as.
 pub const APP_ID: &str = "so.tilo.overview";
 
-/// The overview's resource: the door its effects are published on. It
-/// holds nothing; what it does reaches the desktop, not a document.
+/// The overview's resource. It holds nothing and publishes no verbs: what
+/// can be done from the overview is the desktop's vocabulary.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Overview {}
 
 #[resource(kind = "overview.desktop", label = "Overview")]
 impl Overview {}
 
-/// What can be done from the overview. Each acts on this device's desktop:
-/// its workspaces, their strips and their windows.
-#[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "so.tilo.overview.desktop")]
+/// The overview's own verbs: the two an overlay has. Everything else that
+/// can be done from it is the desk's and the chrome's vocabulary.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.overview")]
 pub enum OverviewEffect {
     /// Show the overview
     #[effect(
@@ -54,72 +55,6 @@ pub enum OverviewEffect {
     /// Close the overview
     #[effect(view, own_device, idempotent)]
     Close,
-    /// Go to workspace
-    #[effect(
-        own_device,
-        idempotent,
-        keywords = "switch workspace, change workspace, open workspace"
-    )]
-    SwitchWorkspace {
-        #[param("The workspace to go to, by name or id")]
-        workspace: String,
-    },
-    /// Go to window
-    #[effect(own_device, idempotent, keywords = "focus window, switch window")]
-    FocusWindow {
-        #[param("The window to go to, by title or id")]
-        window: String,
-    },
-    /// Move window to workspace
-    #[effect(own_device)]
-    MoveWindow {
-        #[param("The window to move, by title or id")]
-        window: String,
-        #[param("The workspace to move it to, by name or id")]
-        workspace: String,
-    },
-    /// Move window to strip
-    #[effect(own_device)]
-    MoveWindowToStrip {
-        #[param("The window to move, by title or id")]
-        window: String,
-        #[param("The strip of this workspace to move it to, by name or id")]
-        strip: String,
-    },
-    /// Close window
-    #[effect(own_device, keywords = "close tab")]
-    CloseWindow {
-        #[param("The window to close, by title or id")]
-        window: String,
-    },
-    /// New workspace
-    #[effect(own_device, keywords = "create workspace, add workspace")]
-    CreateWorkspace,
-    /// Join a workspace
-    #[effect(view, own_device, keywords = "directory, community, invitation")]
-    JoinWorkspace,
-    /// Leave workspace
-    #[effect(own_device, destructive)]
-    LeaveWorkspace {
-        #[param("The site's workspace to leave, by name or id")]
-        workspace: String,
-    },
-    /// Rename strip
-    #[effect(own_device, idempotent)]
-    RenameStrip {
-        #[param("The strip of this workspace to rename, by name or id")]
-        strip: String,
-        #[param("Its new name")]
-        name: String,
-    },
-    /// Move strip
-    #[effect(own_device)]
-    MoveStrip {
-        #[param("The strip of this workspace to move, by name or id")]
-        strip: String,
-        #[param("Places to move it by; negative moves it up")]
-        by: i64,
-    },
 }
 
 /// The screenshot scenarios.
@@ -184,16 +119,6 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn going_somewhere_and_editing_the_desktop_are_separate_doors() {
-        assert_eq!(OverviewEffect::Open.id(), "open");
-        let rename = OverviewEffect::RenameStrip {
-            strip: "Writing".into(),
-            name: "Drafts".into(),
-        };
-        assert_ne!(rename.id(), OverviewEffect::Close.id());
-    }
 
     #[test]
     fn every_key_resolves_to_a_real_string() {

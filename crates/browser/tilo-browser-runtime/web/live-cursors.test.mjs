@@ -87,7 +87,7 @@ test('a pointer over nothing the runtime names is not published as a point', () 
   cursors.close();
 });
 
-test('hands the runtime remote pointers to draw and stops requesting frames once the room is idle', () => {
+test('hands the runtime remote pointers to draw and stops requesting frames once the workspace is idle', () => {
   let clock = 0;
   const {layer, f, drawn, cursors, last} = mount({clock: () => clock});
   f.run();

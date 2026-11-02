@@ -31,7 +31,7 @@ pub struct DesktopTree {
     /// — a restored value could match a live reader's cache and
     /// suppress the first resync.
     #[serde(skip)]
-    pub room_epoch: u64,
+    pub workspace_epoch: u64,
     /// Mutations performed outside retained chrome (for example the local
     /// action broker or a lifecycle callback) increment this so chrome can
     /// invalidate retained panes. Process-local: restoring a persisted
@@ -70,11 +70,11 @@ pub struct DesktopTree {
     /// Mirror of each workspace's record index (record id → kind), pushed by
     /// the host so replication can reach it. Not persisted.
     #[serde(skip, default)]
-    pub room_records_held: HashMap<RoomId, BTreeMap<String, String>>,
+    pub workspace_records_held: HashMap<RoomId, BTreeMap<String, String>>,
     /// References that arrived from a peer and have not been folded into
     /// the local index yet. Drained by the host.
     #[serde(skip, default)]
-    pub room_records_inbound: Vec<(RoomId, String, String)>,
+    pub workspace_records_inbound: Vec<(RoomId, String, String)>,
     /// The salt of the device this tree belongs to: the high 16 bits of
     /// every id the tree mints, and the namespace replication treats as its
     /// own. `0` until the device's session sets it. Kept beside the state
@@ -87,7 +87,7 @@ impl Default for DesktopTree {
     fn default() -> Self {
         Self {
             schema_version: STATE_SCHEMA_VERSION,
-            room_epoch: 0,
+            workspace_epoch: 0,
             external_revision: 0,
             workspaces: Vec::new(),
             active: WorkspaceId::default(),
@@ -96,8 +96,8 @@ impl Default for DesktopTree {
             outputs: OutputPartition::default(),
             fullscreen: None,
             collaborators: Vec::new(),
-            room_records_held: HashMap::new(),
-            room_records_inbound: Vec::new(),
+            workspace_records_held: HashMap::new(),
+            workspace_records_inbound: Vec::new(),
             salt: 0,
         }
     }
@@ -126,8 +126,8 @@ impl DesktopTree {
     /// How many times a peer's changes have landed in this tree.
     /// Monotonic per session, not persisted — read by the frame loop,
     /// which bumps the chrome revision when it moves.
-    pub fn room_epoch(&self) -> u64 {
-        self.room_epoch
+    pub fn workspace_epoch(&self) -> u64 {
+        self.workspace_epoch
     }
 
     pub fn active_workspace(&self) -> Option<&Workspace> {

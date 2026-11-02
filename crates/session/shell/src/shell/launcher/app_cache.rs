@@ -37,7 +37,16 @@ pub(super) static APP_CACHE_STAMP: Mutex<Option<Vec<Option<RegistryStamp>>>> = M
 /// A memoised snapshot answers only while the registries are the ones it was read from: the
 /// watch that expires it runs on its own thread, and an app launched right after an install
 /// completed must start the installed package, not the one before it.
+///
+/// On the compositor's loop ([`super::on_loop`]) it is the list the loop is served
+/// ([`installed_apps_without_waiting`]), which the registry's watch and every install keep
+/// current: the loop never stats or reads a registry. What it launches is resolved again off
+/// the loop, where this check holds ([`super::execute_installed_inner`]).
 pub(super) fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
+    if super::on_loop() {
+        let apps = installed_apps_without_waiting();
+        return Ok((APP_CACHE_REVISION.load(Ordering::Acquire), apps));
+    }
     let stamps = registry_stamps();
     {
         let cache = lock(&APP_CACHE);

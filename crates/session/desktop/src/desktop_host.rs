@@ -21,13 +21,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_desktop_model::commands::{
-    DesktopCommand, TabLocation, TabPlacement, apply_command, apply_to_active_workspace,
-    move_tab_to_workspace,
-};
+use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
 use tilo_desktop_model::{DesktopTree, RoomId, Strip, StripId, TabId, Workspace, WorkspaceId};
-use tilo_desktop_surface::navigation::{ActivityView, Command, Route, RouteIds};
+use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, DeskEffect, Destination};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource};
+use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
@@ -38,10 +36,8 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 
 use crate::about::TiloMenu;
 use crate::chrome::{ChromeIntent, TopBarPresence};
+use crate::desk_verbs::{chrome_resource, desk_resource, launchpad_resource};
 use crate::desk_widgets::music::MusicAction;
-use crate::desktop_actions::{
-    DesktopAction, OPERATION, chrome_resource, desk_resource, launchpad_resource,
-};
 use crate::emoji_picker::{EmojiLink, EmojiPicker};
 use crate::fullscreen_hint::FullscreenHint;
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
@@ -387,20 +383,24 @@ impl DeskLayer {
 }
 
 impl DeskLayer {
-    /// Carry out a desk action; false for one of the chrome's.
-    fn perform(&self, action: &DesktopAction) -> bool {
-        match action {
-            DesktopAction::FocusTab { tab } => {
-                self.handle.focus_tab(*tab);
+    /// Carry out a verb of the desk's.
+    fn perform(&self, verb: &DeskEffect) -> bool {
+        match verb {
+            DeskEffect::Focus { tab } => {
+                return tab.parse().is_ok_and(|tab| self.handle.focus_tab(tab));
             }
-            DesktopAction::CloseTab { tab } => close_tab(&self.handle, *tab),
-            DesktopAction::OpenSearch { query } => self.handle.open_search(query.clone()),
-            DesktopAction::SearchFor { query } => self.handle.set_search_query(query.clone()),
-            DesktopAction::ChooseSearchRow { row, argument } => self.handle.choose_search_row(
+            DeskEffect::CloseTab { tab } => {
+                let Ok(tab) = tab.parse::<u64>() else {
+                    return false;
+                };
+                close_tab(&self.handle, tab);
+            }
+            DeskEffect::Search { query } => self.handle.open_search(query.clone()),
+            DeskEffect::ChooseSearchRow { row, argument } => self.handle.choose_search_row(
                 usize::try_from(*row).unwrap_or(usize::MAX),
                 argument.clone(),
             ),
-            DesktopAction::Launchpad { card } => {
+            DeskEffect::Launchpad { card } => {
                 if card == "apps" {
                     self.handle.open_applications();
                 } else if let Some(card) = LaunchpadAction::ALL
@@ -412,18 +412,20 @@ impl DeskLayer {
                     return false;
                 }
             }
-            DesktopAction::StepFocus { steps } => {
+            DeskEffect::StepFocus { steps } => {
                 self.handle
                     .step_focus(i32::try_from(*steps).unwrap_or_default());
             }
-            DesktopAction::FocusDisplay { display } => {
-                self.handle.focus_display(*display);
+            DeskEffect::FocusDisplay { display } => {
+                let Ok(display) = display.parse::<u32>() else {
+                    return false;
+                };
+                self.handle.focus_display(display);
             }
-            DesktopAction::MoveToDisplay { steps } => {
+            DeskEffect::MoveToDisplay { steps } => {
                 self.handle
                     .move_focused_to_display(i32::try_from(*steps).unwrap_or_default());
             }
-            _ => return false,
         }
         true
     }
@@ -455,7 +457,7 @@ impl ui::resources::PublishesResources for DeskLayer {
 
 impl ui::host_operation::ResourceOperations for DeskLayer {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[OPERATION]
+        &[DeskEffect::OPERATION]
     }
 
     fn start_operation(
@@ -465,8 +467,9 @@ impl ui::host_operation::ResourceOperations for DeskLayer {
         path: &ui::automerge::ObjId,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
         if let Some(request) = op.unscoped()
-            && let Some(action) = DesktopAction::decode(request.type_id, request.payload)
-            && self.perform(&action)
+            && request.type_id == DeskEffect::OPERATION
+            && let Ok(verb) = DeskEffect::from_payload(request.payload)
+            && self.perform(&verb)
         {
             return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
@@ -1048,16 +1051,8 @@ impl DesktopChrome {
     /// or nothing when it was cancelled.
     fn take_switcher(&self, outcome: SwitcherOutcome) -> bool {
         if let SwitcherOutcome::Commit(address) = outcome {
-            let workspace = self.handle.read(|tree| tree.active);
-            let route = Route::from_ids(RouteIds {
-                workspace,
-                strip: address.strip,
-                group: address.group,
-                tab: address.tab,
-            });
-            self.dispatch(&Command::Select {
-                generation: self.generation.clone(),
-                route,
+            self.dispatch(DeskEffect::Focus {
+                tab: address.tab.to_string(),
             });
             return true;
         }
@@ -1123,8 +1118,8 @@ impl DesktopChrome {
         }
     }
 
-    fn dispatch(&self, command: &Command) {
-        if let Err(error) = self.handle.dispatch(command, &self.generation) {
+    fn dispatch(&self, verb: impl Into<tilo_desktop_surface::navigation::Verb>) {
+        if let Err(error) = self.handle.dispatch(verb) {
             tracing::warn!(%error, "desktop chrome");
         }
     }
@@ -1136,8 +1131,7 @@ impl DesktopChrome {
             .handle
             .read(|tree| tree.active_workspace().map(|w| w.id.0.to_string()));
         if let Some(workspace) = workspace {
-            self.dispatch(&Command::WorkspaceActivity {
-                generation: self.generation.clone(),
+            self.dispatch(ChromeEffect::Activity {
                 workspace,
                 view: ActivityView::CatchUp,
                 author,
@@ -1156,9 +1150,9 @@ impl DesktopChrome {
                     tree.workspaces.get(next).map(|w| w.id.0.to_string())
                 });
                 match next {
-                    Some(workspace) => self.dispatch(&Command::Workspace {
-                        generation: self.generation.clone(),
-                        workspace,
+                    Some(workspace) => self.dispatch(ChromeEffect::SwitchWorkspace {
+                        workspace: Some(workspace),
+                        delta: None,
                     }),
                     // Stepping past the end says which end it was.
                     None if delta > 0 => self
@@ -1267,9 +1261,9 @@ impl DesktopChrome {
         match choice {
             WorkspaceMenuChoice::Switch(key) => {
                 if let Some(workspace) = key.strip_prefix(WORKSPACE_KEY) {
-                    self.dispatch(&Command::Workspace {
-                        generation: self.generation.clone(),
-                        workspace: workspace.to_owned(),
+                    self.dispatch(ChromeEffect::SwitchWorkspace {
+                        workspace: Some(workspace.to_owned()),
+                        delta: None,
                     });
                 } else if let Some(id) = key.strip_prefix(HOST_KEY) {
                     self.asks
@@ -1367,54 +1361,57 @@ impl DesktopChrome {
         if pick.closes() {
             self.overview.set_open(false, Vec::new());
         }
-        // The ones with a published action are that action; the rest are
-        // the desk's own.
-        let action = match pick {
+        // The ones with a published verb are that verb; the rest are the
+        // desk's own.
+        let verb = match pick {
             OverviewPick::Window(tab) => {
                 self.handle.focus_tab(*tab);
                 None
             }
-            OverviewPick::Workspace(id) => {
-                self.dispatch(&Command::Workspace {
-                    generation: self.generation.clone(),
-                    workspace: id.0.to_string(),
-                });
-                None
-            }
+            OverviewPick::Workspace(id) => Some(ChromeEffect::SwitchWorkspace {
+                workspace: Some(id.0.to_string()),
+                delta: None,
+            }),
             OverviewPick::NewWorkspace => {
                 self.new_workspace(None, None);
                 None
             }
-            OverviewPick::JoinWorkspace => Some(DesktopAction::JoinWorkspace),
-            OverviewPick::LeaveWorkspace(id) => Some(DesktopAction::LeaveWorkspace {
+            OverviewPick::JoinWorkspace => Some(ChromeEffect::JoinWorkspace),
+            OverviewPick::LeaveWorkspace(id) => Some(ChromeEffect::LeaveWorkspace {
                 workspace: Some(id.0.to_string()),
             }),
             OverviewPick::CloseWindow(tab) => {
                 self.close_window(*tab);
                 None
             }
-            OverviewPick::MoveWindow { tab, to } => Some(DesktopAction::MoveTab {
-                tab: *tab,
-                to: to.0.to_string(),
+            OverviewPick::MoveWindow { tab, to } => Some(ChromeEffect::MoveTab {
+                tab: tab.to_string(),
+                to: Destination {
+                    workspace: Some(to.0.to_string()),
+                    ..Destination::default()
+                },
             }),
-            OverviewPick::MoveWindowToStrip { tab, strip: to } => {
-                Some(DesktopAction::MoveTabToStrip {
-                    tab: *tab,
-                    strip: to.0.to_string(),
-                })
-            }
-            OverviewPick::RenameStrip { strip: id, name } => Some(DesktopAction::RenameStrip {
-                strip: id.0.to_string(),
+            OverviewPick::MoveWindowToStrip { tab, strip: to } => Some(ChromeEffect::MoveTab {
+                tab: tab.to_string(),
+                to: Destination {
+                    strip: Some(to.0.to_string()),
+                    ..Destination::default()
+                },
+            }),
+            OverviewPick::RenameStrip { strip: id, name } => Some(ChromeEffect::Rename {
+                strip: Some(id.0.to_string()),
                 name: name.clone(),
+                group: None,
+                workspace: None,
             }),
-            OverviewPick::MoveStrip { strip: id, before } => Some(DesktopAction::MoveStrip {
+            OverviewPick::MoveStrip { strip: id, before } => Some(ChromeEffect::MoveStrip {
                 strip: id.0.to_string(),
                 before: before.map(|strip| strip.0.to_string()),
             }),
             OverviewPick::Dismiss => None,
         };
-        if let Some(action) = action {
-            self.perform(&action);
+        if let Some(verb) = verb {
+            let _ = self.perform(&verb);
         }
     }
 
@@ -1465,85 +1462,6 @@ impl DesktopChrome {
             .ok_or_else(missing)
     }
 
-    /// Where the window `tab` stands, in any workspace.
-    fn locate(&self, tab: TabId) -> Option<(WorkspaceId, TabLocation)> {
-        self.handle.read(|tree| {
-            tree.workspaces.iter().find_map(|workspace| {
-                workspace
-                    .strips
-                    .iter()
-                    .find_map(|strip| {
-                        strip
-                            .window_groups
-                            .iter()
-                            .find(|group| group.tabs.iter().any(|held| held.id == tab))
-                            .map(|group| (strip.id.0, group.id))
-                    })
-                    .map(|(strip, group)| (workspace.id, TabLocation { strip, group, tab }))
-            })
-        })
-    }
-
-    /// Change the workspace `at` by `command`, and keep the result.
-    fn change_workspace(&self, at: WorkspaceId, command: &DesktopCommand) -> Result<(), String> {
-        let mut tree = self.handle.read(Clone::clone);
-        let workspace = tree
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == at)
-            .ok_or_else(|| crate::i18n::t("desktop-workspace-gone"))?;
-        apply_command(
-            workspace,
-            command,
-            &mut || Ok(self.handle.mint_id()),
-            &mut |_, _| Err(crate::i18n::t("desktop-move-no-record")),
-        )?;
-        self.handle.replace_tree(tree);
-        Ok(())
-    }
-
-    /// Move the window `tab` to the workspace `to`, or onto the strip
-    /// `strip` of the workspace it is in.
-    fn move_window(
-        &self,
-        tab: TabId,
-        to: Option<WorkspaceId>,
-        strip: Option<StripId>,
-    ) -> Result<(), String> {
-        match (to, strip) {
-            (Some(to), _) => {
-                let mut tree = self.handle.read(Clone::clone);
-                move_tab_to_workspace(&mut tree, tab, to, &mut || Ok(self.handle.mint_id()))?;
-                self.handle.replace_tree(tree);
-                Ok(())
-            }
-            (None, Some(strip)) => {
-                let (at, location) = self
-                    .locate(tab)
-                    .ok_or_else(|| crate::i18n::t("desktop-window-not-here"))?;
-                let known = self.handle.read(|tree| {
-                    tree.workspaces.iter().any(|workspace| {
-                        workspace.id == at && workspace.strips.iter().any(|held| held.id == strip)
-                    })
-                });
-                if !known {
-                    return Err(crate::i18n::t("desktop-strip-not-here"));
-                }
-                self.change_workspace(
-                    at,
-                    &DesktopCommand::MoveTab {
-                        location,
-                        placement: TabPlacement::NewGroup {
-                            strip: strip.0,
-                            after: None,
-                        },
-                    },
-                )
-            }
-            (None, None) => Err(crate::i18n::t("desktop-nothing-to-move-to")),
-        }
-    }
-
     /// Leave the workspace `id` (the one the person is in when absent):
     /// struck from this device's desktop, the person going to the next one
     /// when it was the one they were in.
@@ -1583,20 +1501,21 @@ impl DesktopChrome {
         Ok(())
     }
 
-    /// Make a workspace after the others and go there; with `room`, the
-    /// workspace sharing that workspace, joining it when this computer has none (a
+    /// Make a workspace after the others and go there; with `join`, the
+    /// workspace holding that id, joining it when this computer has none (a
     /// workspace that exists is a workspace that exists, so joining one is holding
-    /// its workspace, which needs no workspace of the person's own to make).
-    fn new_workspace(&self, room: Option<&str>, name: Option<&str>) {
+    /// it, which needs no workspace of the person's own to make).
+    fn new_workspace(&self, join: Option<&str>, name: Option<&str>) {
         let mut tree = self.handle.read(Clone::clone);
         let name = Self::name_of(name, tree.workspaces.len());
-        let mut workspace = if let Some(room) = room {
-            let Some(room) = RoomId::parse(room) else {
-                self.handle
-                    .acknowledge(tilo_desktop_surface::i18n::t("desktop-joined-room-unknown"));
+        let mut workspace = if let Some(id) = join {
+            let Some(joined) = RoomId::parse(id) else {
+                self.handle.acknowledge(tilo_desktop_surface::i18n::t(
+                    "desktop-joined-workspace-unknown",
+                ));
                 return;
             };
-            if let Some(held) = tree.workspaces.iter().find(|held| held.room() == room) {
+            if let Some(held) = tree.workspaces.iter().find(|held| held.room() == joined) {
                 // Already held, here or from another device: go there rather
                 // than make a second workspace of one workspace.
                 let held = held.id;
@@ -1604,7 +1523,7 @@ impl DesktopChrome {
                 self.handle.replace_tree(tree);
                 return;
             }
-            Workspace::in_room(WorkspaceId::of_room(room), room, name)
+            Workspace::in_workspace(WorkspaceId::of_room(joined), joined, name)
         } else {
             if let Err(refusal) = self.rules.may_create_workspace() {
                 self.handle.acknowledge(refusal);
@@ -1672,11 +1591,7 @@ impl DesktopChrome {
             Some((workspace.id.0.to_string(), strip.id.0.to_string()))
         });
         if let Some((workspace, strip)) = next {
-            self.dispatch(&Command::Strip {
-                generation: self.generation.clone(),
-                workspace,
-                strip,
-            });
+            self.dispatch(ChromeEffect::ShowStrip { workspace, strip });
             true
         } else {
             false
@@ -1718,10 +1633,9 @@ impl DesktopChrome {
         let Some(route) = self.handle.snapshot(&self.generation, Vec::new()).active else {
             return;
         };
-        self.dispatch(&Command::Maximize {
-            generation: self.generation.clone(),
-            route,
-            maximized: target,
+        self.dispatch(ChromeEffect::Maximize {
+            group: route.group,
+            on: target,
         });
     }
 
@@ -1736,10 +1650,9 @@ impl DesktopChrome {
         let Some(route) = self.handle.snapshot(&self.generation, Vec::new()).active else {
             return;
         };
-        self.dispatch(&Command::Fullscreen {
-            generation: self.generation.clone(),
-            route,
-            fullscreen: !covering,
+        self.dispatch(ChromeEffect::Fullscreen {
+            group: route.group,
+            on: !covering,
         });
     }
 
@@ -1998,9 +1911,7 @@ impl DesktopChrome {
             // chord to whatever holds the keyboard: the desktop answers it
             // either way, as the shell it replaces did.
             ShortcutAction::ReopenClosedTab => {
-                self.dispatch(&Command::Reopen {
-                    generation: self.generation.clone(),
-                });
+                self.dispatch(ChromeEffect::ReopenClosed);
             }
             // A window covers the display it stands on by covering the whole
             // strip, bar's room included: the chord and the window menu's
@@ -2173,88 +2084,113 @@ impl DesktopChrome {
             || self.compact.iter().any(TopBarChrome::holds_itself_shown)
     }
 
-    /// Carry out a chrome action; false for one of the desk's.
-    fn perform(&mut self, action: &DesktopAction) -> bool {
-        if let Some(done) = self.perform_workspace_action(action) {
-            return done;
+    /// Carry out a verb of the chrome's: whether it did, or why it could
+    /// not, which the door that asked answers as a refusal.
+    fn perform(&mut self, verb: &ChromeEffect) -> Result<bool, String> {
+        if let Some(done) = self.perform_workspace_action(verb) {
+            return Ok(done);
         }
-        let intent = match action {
-            DesktopAction::RevealTopBar => {
+        if let Some(done) = self.perform_surface_verb(verb) {
+            self.report(done.clone());
+            return done.map(|()| true);
+        }
+        let intent = match verb {
+            ChromeEffect::RevealTopBar => {
                 self.reveals.borrow_mut().reveal_by_key(ui::time::now());
-                return true;
+                return Ok(true);
             }
-            DesktopAction::ToggleOverview => ChromeIntent::ToggleOverview,
-            DesktopAction::ToggleQuickSettings => ChromeIntent::ToggleQuickSettings,
-            DesktopAction::ToggleTiloMenu => ChromeIntent::ToggleTiloMenu,
-            DesktopAction::ToggleWorkspaceMenu => ChromeIntent::ToggleWorkspaceMenu,
-            DesktopAction::SwitchWorkspace { delta } => {
-                ChromeIntent::SwitchWorkspace(i32::try_from(*delta).unwrap_or_default())
-            }
-            DesktopAction::ShowPerson { person } => ChromeIntent::ShowPerson(person.clone()),
-            DesktopAction::ToggleCollaborators => ChromeIntent::ToggleCollaborators,
-            DesktopAction::StepStrip { steps } => {
-                self.step_strip(isize::try_from(*steps).unwrap_or_default());
-                return true;
-            }
-            DesktopAction::NewWorkspace { room, name } => {
-                self.new_workspace(room.as_deref(), name.as_deref());
-                return true;
-            }
-            DesktopAction::Overview { open } => {
-                if self.overview_open() != *open {
+            ChromeEffect::Overview { open } => {
+                let open = open.unwrap_or(!self.overview_open());
+                if self.overview_open() != open {
                     self.toggle_overview();
                 }
-                return true;
+                return Ok(true);
             }
-            DesktopAction::Shortcut { action } => {
+            ChromeEffect::TiloMenu { open } => {
+                let open = open.unwrap_or(!self.tilo_menu.is_menu_open());
+                if self.tilo_menu.is_menu_open() == open {
+                    return Ok(true);
+                }
+                ChromeIntent::ToggleTiloMenu
+            }
+            ChromeEffect::QuickSettings => ChromeIntent::ToggleQuickSettings,
+            ChromeEffect::WorkspaceMenu => ChromeIntent::ToggleWorkspaceMenu,
+            ChromeEffect::SwitchWorkspace {
+                delta: Some(delta), ..
+            } => ChromeIntent::SwitchWorkspace(i32::try_from(*delta).unwrap_or_default()),
+            ChromeEffect::ShowPerson { person } => ChromeIntent::ShowPerson(person.clone()),
+            ChromeEffect::ToggleCollaborators => ChromeIntent::ToggleCollaborators,
+            ChromeEffect::ShowStrips => ChromeIntent::ShowStrips,
+            ChromeEffect::StepStrip { steps } => {
+                self.step_strip(isize::try_from(*steps).unwrap_or_default());
+                return Ok(true);
+            }
+            ChromeEffect::NewWorkspace { workspace, name } => {
+                self.new_workspace(workspace.as_deref(), name.as_deref());
+                return Ok(true);
+            }
+            ChromeEffect::Shortcut { action } => {
                 let Ok(action) = serde_json::from_value::<ShortcutAction>(
                     serde_json::Value::String(action.clone()),
                 ) else {
-                    return false;
+                    return Ok(false);
                 };
                 if !self.shortcut(action) {
                     self.asks.borrow_mut().push(DesktopAsk::Shortcut(action));
                 }
-                return true;
+                return Ok(true);
             }
-            DesktopAction::FocusTab { .. }
-            | DesktopAction::CloseTab { .. }
-            | DesktopAction::OpenSearch { .. }
-            | DesktopAction::SearchFor { .. }
-            | DesktopAction::ChooseSearchRow { .. }
-            | DesktopAction::Launchpad { .. }
-            | DesktopAction::MoveTab { .. }
-            | DesktopAction::MoveTabToStrip { .. }
-            | DesktopAction::RenameStrip { .. }
-            | DesktopAction::MoveStrip { .. }
-            | DesktopAction::JoinWorkspace
-            | DesktopAction::LeaveWorkspace { .. }
-            | DesktopAction::WorkspaceSettings
-            | DesktopAction::StepFocus { .. }
-            | DesktopAction::FocusDisplay { .. }
-            | DesktopAction::MoveToDisplay { .. } => return false,
+            _ => return Ok(false),
         };
         self.apply_intent(intent);
-        true
+        Ok(true)
+    }
+
+    /// Carry out a verb of the surface's, the ones a page's commands carry
+    /// too: the desk admits each against the tree it changes and applies it
+    /// on its next pass, so nothing here decides twice.
+    fn perform_surface_verb(&self, verb: &ChromeEffect) -> Option<Result<(), String>> {
+        let surface = matches!(
+            verb,
+            ChromeEffect::OpenApp { .. }
+                | ChromeEffect::ShowApp { .. }
+                | ChromeEffect::MoveTab { .. }
+                | ChromeEffect::CloseWindow { .. }
+                | ChromeEffect::SplitRight { .. }
+                | ChromeEffect::NewGroup { .. }
+                | ChromeEffect::SetWidth { .. }
+                | ChromeEffect::Equalize { .. }
+                | ChromeEffect::Maximize { .. }
+                | ChromeEffect::Fullscreen { .. }
+                | ChromeEffect::Rename { .. }
+                | ChromeEffect::NewStrip { .. }
+                | ChromeEffect::ReopenClosed
+                | ChromeEffect::ShareWindow { .. }
+                | ChromeEffect::StopDesktopControl { .. }
+                | ChromeEffect::SwitchWorkspace {
+                    workspace: Some(_),
+                    ..
+                }
+                | ChromeEffect::ShowStrip { .. }
+                | ChromeEffect::Pan { .. }
+                | ChromeEffect::Scroll { .. }
+                | ChromeEffect::History { .. }
+                | ChromeEffect::Activity { .. }
+                | ChromeEffect::CloseActivity { .. }
+                | ChromeEffect::Notifications { .. }
+        );
+        surface.then(|| self.handle.dispatch(verb.clone()))
     }
 
     /// What the desk itself does to offers of workspaces and strips, by
     /// address: `None` for an action of another kind.
-    fn perform_workspace_action(&self, action: &DesktopAction) -> Option<bool> {
-        match action {
-            DesktopAction::MoveTab { tab, to } => {
-                let at = self.workspace_named(to);
-                let moved = at.and_then(|to| self.move_window(*tab, Some(to), None));
-                self.report(moved);
-                Some(true)
-            }
-            DesktopAction::MoveTabToStrip { tab, strip } => {
-                let held = self.strip_named(strip);
-                let moved = held.and_then(|strip| self.move_window(*tab, None, Some(strip)));
-                self.report(moved);
-                Some(true)
-            }
-            DesktopAction::RenameStrip { strip, name } => {
+    fn perform_workspace_action(&self, verb: &ChromeEffect) -> Option<bool> {
+        match verb {
+            ChromeEffect::Rename {
+                strip: Some(strip),
+                name,
+                ..
+            } => {
                 let renamed = self.strip_named(strip).and_then(|strip| {
                     self.edit_workspace(&DesktopCommand::RenameStrip {
                         strip: strip.0,
@@ -2265,7 +2201,23 @@ impl DesktopChrome {
                 self.report(renamed);
                 Some(true)
             }
-            DesktopAction::MoveStrip { strip, before } => {
+            ChromeEffect::Rename {
+                workspace: Some(workspace),
+                name,
+                ..
+            } => {
+                let renamed = self.workspace_named(workspace).and_then(|workspace| {
+                    let active = self.handle.read(|tree| tree.active);
+                    (active == workspace)
+                        .then_some(())
+                        .ok_or_else(|| "Workspace is no longer active".to_owned())?;
+                    self.edit_workspace(&DesktopCommand::RenameWorkspace { name: name.clone() })
+                        .map(drop)
+                });
+                self.report(renamed);
+                Some(true)
+            }
+            ChromeEffect::MoveStrip { strip, before } => {
                 let moved = self.strip_named(strip).and_then(|strip| {
                     let before = before
                         .as_deref()
@@ -2280,13 +2232,13 @@ impl DesktopChrome {
                 self.report(moved);
                 Some(true)
             }
-            DesktopAction::JoinWorkspace => {
+            ChromeEffect::JoinWorkspace => {
                 self.asks
                     .borrow_mut()
                     .push(DesktopAsk::HostAction(JOIN_WORKSPACE.to_owned()));
                 Some(true)
             }
-            DesktopAction::LeaveWorkspace { workspace } => {
+            ChromeEffect::LeaveWorkspace { workspace } => {
                 let left = workspace
                     .as_deref()
                     .map_or(Ok(None), |id| self.workspace_named(id).map(Some))
@@ -2294,7 +2246,7 @@ impl DesktopChrome {
                 self.report(left);
                 Some(true)
             }
-            DesktopAction::WorkspaceSettings => {
+            ChromeEffect::WorkspaceSettings => {
                 self.asks
                     .borrow_mut()
                     .push(DesktopAsk::HostAction(WORKSPACE_SETTINGS.to_owned()));
@@ -2313,7 +2265,7 @@ impl ui::resources::PublishesResources for DesktopChrome {
 
 impl ui::host_operation::ResourceOperations for DesktopChrome {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[OPERATION]
+        &[ChromeEffect::OPERATION]
     }
 
     fn start_operation(
@@ -2323,8 +2275,9 @@ impl ui::host_operation::ResourceOperations for DesktopChrome {
         path: &ui::automerge::ObjId,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
         if let Some(request) = op.unscoped()
-            && let Some(action) = DesktopAction::decode(request.type_id, request.payload)
-            && self.perform(&action)
+            && request.type_id == ChromeEffect::OPERATION
+            && let Ok(verb) = ChromeEffect::from_payload(request.payload)
+            && self.perform(&verb)?
         {
             return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),

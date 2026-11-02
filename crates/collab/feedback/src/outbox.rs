@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_retries_and_receipts_from_other_rooms_are_refused() {
+    fn conflicting_retries_and_receipts_from_other_workspaces_are_refused() {
         let store = Rc::new(MemoryStore::new());
         let report = submission();
         let mut outbox = Outbox::open(store, key()).unwrap();

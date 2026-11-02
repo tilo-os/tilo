@@ -547,7 +547,7 @@ impl RuntimeActionHost {
 
     fn admitted(&self, caller: &Caller) -> bool {
         let Some(workspace) = caller
-            .room()
+            .workspace()
             .filter(|workspace| *workspace != self.workspace)
         else {
             return true;

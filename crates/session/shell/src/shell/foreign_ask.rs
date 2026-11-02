@@ -91,7 +91,7 @@ pub(crate) fn ask_here(
     if !net.holds_root(person) {
         return None;
     }
-    let room = crate::shell::state::RoomId::parse(&question.room)?;
+    let room = crate::shell::state::RoomId::parse(&question.workspace)?;
     net.workspace_of_room(room)?;
     let sheet = crate::network::agent_questions::Sheet::session();
     let ask = crate::network::agent_questions::request_for_foreign(question, &hex::encode(person));

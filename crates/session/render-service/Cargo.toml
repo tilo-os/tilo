@@ -6,7 +6,7 @@ publish.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "A room's render service: the one process that draws toolkit apps on the GPU. Validates each app's scenes, rasterizes them with vello into dma-bufs the compositor imports like any client buffer, and keeps every app's memory and pixels apart."
+description = "A workspace's render service: the one process that draws toolkit apps on the GPU. Validates each app's scenes, rasterizes them with vello into dma-bufs the compositor imports like any client buffer, and keeps every app's memory and pixels apart."
 
 [dependencies]
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }

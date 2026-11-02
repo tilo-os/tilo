@@ -1,6 +1,6 @@
 //! The code editor's common actions are found by every word people use for them.
 
-use ui::tilo_resource::{Effect as _, Resource as _, declaration_spec};
+use ui::tilo_resource::{Effect as _, EffectDecl, Resource as _, declaration_spec};
 
 /// Each word people use for one of the app's common actions ranks that
 /// action among the app's first three, on the fields every search ranks an
@@ -17,7 +17,7 @@ fn people_find_code_editor_actions_by_the_words_they_use() {
     actions.extend(
         <crate::effects::CodeEditorEffect>::declarations()
             .iter()
-            .map(|effect| effect.spec(<crate::effects::CodeEditorEffect>::OPERATION)),
+            .map(EffectDecl::spec_of::<crate::effects::CodeEditorEffect>),
     );
     let mut missed = Vec::new();
     for (query, id) in [

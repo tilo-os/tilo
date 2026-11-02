@@ -1,4 +1,4 @@
-//! A room's tilolang records as session resources: a note made through the notes app's own
+//! A workspace's tilolang records as session resources: a note made through the notes app's own
 //! action is published, its reading is what a runtime loading notes as another app's package
 //! reads back, and a change to the note moves the reading.
 
@@ -29,7 +29,7 @@ view note_card(n: notes.Note) {
 }
 "#;
 
-/// Ada's room with its notebook, published.
+/// Ada's workspace with its notebook, published.
 fn service() -> (RecordService, tilolang_runtime::Meta) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[NOTES]);
     ada.host.root_of(APP).unwrap();

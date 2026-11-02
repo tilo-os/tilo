@@ -3,7 +3,7 @@
 //! Field edits on another record than the app's own: a settings section and
 //! the person's own record, bound by path in a view of their own, published
 //! beside the app's resource with their field edits and verbs, changed only
-//! by their person whatever their role in the room, checked by the model's
+//! by their person whatever their role in the workspace, checked by the model's
 //! invariants and recorded in the record's history. A host without a window
 //! (the session) holds an app's settings sections and changes them through
 //! the same field edits.
@@ -285,7 +285,7 @@ fn the_persons_record_is_edited_by_path_as_the_person_whatever_their_role() {
         .unwrap();
     assert!(!playback.with(|state| state.autoplay));
 
-    // Someone else in the room does not change it; software acting for
+    // Someone else in the workspace does not change it; software acting for
     // the person does.
     let bob = tilo_actions::ActionInvoker::actor("b0".repeat(32));
     assert!(
@@ -310,7 +310,7 @@ fn the_persons_record_is_edited_by_path_as_the_person_whatever_their_role() {
     assert!(playback.with(|state| state.muted.contains(&"music".to_owned())));
     assert!(!playback.with(|state| state.muted.contains(&"sports".to_owned())));
 
-    // A viewer of the room still changes their own record.
+    // A viewer of the workspace still changes their own record.
     app.set_role(Role::Viewer);
     app.harness().relayout();
     let control = checkbox(&mut app, "autoplay");
@@ -321,7 +321,7 @@ fn the_persons_record_is_edited_by_path_as_the_person_whatever_their_role() {
 
 // A verb of the person's own record keeps what it does: a destructive one
 // Undo takes back is undoable, so it runs at once and asks nothing, while
-// what a grant must allow is reading, so the room's roles do not gate it.
+// what a grant must allow is reading, so the workspace's roles do not gate it.
 #[test]
 fn a_verb_of_the_persons_record_is_undoable_and_needs_only_reading() {
     let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
@@ -350,7 +350,7 @@ fn a_verb_of_the_persons_record_is_undoable_and_needs_only_reading() {
         serde_json::json!({ "channel": "news" }),
     )
     .unwrap();
-    // A viewer of the room runs it on their own record, unasked, and Undo
+    // A viewer of the workspace runs it on their own record, unasked, and Undo
     // takes it back.
     app.set_role(Role::Viewer);
     app.call_on("person:test.playback", "unmute-all", serde_json::json!({}))

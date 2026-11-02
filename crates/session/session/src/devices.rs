@@ -1,5 +1,6 @@
 //! The person's other devices, published: what each one is, what it can take
-//! from this one, and the sounds that travel between them.
+//! from this one, the sounds that travel between them, and the session one of
+//! them hands this one.
 //!
 //! `session:devices` is one reading of the device fabric and of the remote
 //! audio service, the same reading the Quick Settings Devices section lists,
@@ -13,6 +14,12 @@
 //! session publishes none: what a device can take is read from what this
 //! session does know — it is online, it is not this device, and a player here
 //! has a stream to send.
+//!
+//! What a press on a row does needs the fabric, the wakes and the search, so
+//! it is the session's own: the resource publishes the press
+//! ([`DevicesAction::Press`]) and the loop carries it out
+//! ([`crate::mount::devices::press`]), as it carries out every other verb
+//! published here.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -24,7 +31,9 @@ use tilo_device_fabric::link::SharedLink;
 use tilo_quick_settings::hosted::{
     DevicesReading, PersonalDevice, SendableSound, SoundAsk, SoundRoute,
 };
-use tilo_service::{Service, Started, reading};
+use tilo_quick_settings::{MediaOffer, RowPart};
+use tilo_resource::Effect;
+use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_speaker_service::remote_audio::{self, RemoteAudioPhase};
 
 use crate::i18n::t;
@@ -35,8 +44,26 @@ pub const RESOURCE: &str = "session:devices";
 /// What kind of resource [`RESOURCE`] is.
 pub const KIND: &str = "session.devices";
 
+/// What the resource offers beside its reading: a press on one of its rows.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.devices")]
+pub enum DevicesAction {
+    /// Press one of the person's devices
+    #[effect(own_device)]
+    Press {
+        /// The row's key, as the reading lists it.
+        #[param("The row, as the reading lists it")]
+        row: String,
+        /// What was pressed on it: its body, the action it names, or its
+        /// answer to a device asking for this one's sound.
+        #[param("The part of the row that was pressed")]
+        part: RowPart,
+    },
+}
+
 /// The person's devices as the fabric reads them, what plays here that they
-/// can take, and the remote audio the service reports, as one reading.
+/// can take, the remote audio the service reports, and the session one of
+/// them hands this one, as one reading.
 ///
 /// A sound the picker dropped is no longer one this device can send, and the
 /// service keeps a sound only while it can still be sent, so a pick that
@@ -46,6 +73,7 @@ pub(crate) fn current(
     fabric: &SharedLink,
     readings: &crate::status::Shared,
     chosen: &RefCell<Option<u64>>,
+    handoff: &RefCell<Option<MediaOffer>>,
 ) -> DevicesReading {
     let playing = fabric
         .require_media()
@@ -99,6 +127,7 @@ pub(crate) fn current(
         playing,
         devices,
         chosen: *chosen.borrow(),
+        offer: handoff.borrow().clone(),
     }
 }
 
@@ -145,35 +174,61 @@ pub(crate) struct Served {
     readings: crate::status::Shared,
     /// The sound of this device's that a press on a device would send.
     chosen: Rc<RefCell<Option<u64>>>,
+    /// The session another of the person's devices handed this one, until
+    /// the person continues it here.
+    handoff: Rc<RefCell<Option<MediaOffer>>>,
+    /// The presses the person made on the rows, waiting for the loop that
+    /// holds the fabric, the wakes and the search.
+    pressed: Rc<RefCell<Vec<Press>>>,
     /// The reading last reported, so a pass that changed nothing is no
     /// revision.
     published: RefCell<Option<DevicesReading>>,
 }
 
+/// What a press on a row of the Devices section asks of the session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Press {
+    pub(crate) row: String,
+    pub(crate) part: RowPart,
+}
+
 impl Served {
-    /// The service publishing what `fabric`, `readings` and `chosen` read.
+    /// The service publishing what `fabric`, `readings`, `chosen` and
+    /// `handoff` read, whose presses `pressed` carries to the loop.
     pub(crate) fn new(
         fabric: SharedLink,
         readings: crate::status::Shared,
         chosen: Rc<RefCell<Option<u64>>>,
+        handoff: Rc<RefCell<Option<MediaOffer>>>,
+        pressed: Rc<RefCell<Vec<Press>>>,
     ) -> Self {
         Self {
             fabric,
             readings,
             chosen,
+            handoff,
+            pressed,
             published: RefCell::new(None),
         }
     }
 
     /// The reading as it stands now.
     fn current(&self) -> DevicesReading {
-        current(&self.fabric, &self.readings, &self.chosen)
+        current(&self.fabric, &self.readings, &self.chosen, &self.handoff)
     }
 }
 
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![ResourceSpec::new(RESOURCE, KIND, t("session-devices"))]
+        let mut resource =
+            offer::<DevicesAction>(ResourceSpec::new(RESOURCE, KIND, t("session-devices")));
+        // The panel keeps the words the rest of the desktop names them by.
+        for spec in &mut resource.actions {
+            if spec.id == "press" {
+                spec.type_mut().label = t("session-devices-press");
+            }
+        }
+        vec![resource]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
@@ -188,12 +243,20 @@ impl Service for Served {
         &mut self,
         resource: &str,
         action: &str,
-        _arguments: &Map<String, Value>,
+        arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
-        // What a press on a device does is the session's own: it sends what
-        // plays here over the fabric, or opens Settings where the device is
-        // managed, so there is nothing here to invoke.
-        Err(DoorError::Unknown(ActionAddress::new(resource, action)))
+        if resource != RESOURCE {
+            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+        }
+        match decode::<DevicesAction>(&self.resources(), resource, action, arguments)? {
+            // What a press does is the session's own: it sends what plays
+            // here over the fabric, wakes the device, or opens Settings where
+            // the device is managed.
+            DevicesAction::Press { row, part } => {
+                self.pressed.borrow_mut().push(Press { row, part });
+            }
+        }
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 
     fn poll(&mut self) -> bool {

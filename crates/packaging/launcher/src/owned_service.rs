@@ -554,7 +554,7 @@ fn run_admitted_inner(
     let mut owner = NamespaceOwner::new(authority, cancellation)?;
     owner.endpoint = crate::appdir::host_app_dir(
         &data_home,
-        crate::appdir::PERSONAL_ROOM,
+        crate::appdir::PERSONAL_WORKSPACE,
         &manifest.package_id,
     )
     .join("provider.sock");

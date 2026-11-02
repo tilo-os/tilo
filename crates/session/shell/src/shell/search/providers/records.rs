@@ -403,7 +403,7 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let mut rooms = Vec::new();
         for name in names {
-            let ws = Workspace::in_room(WorkspaceId::new(), RoomId::new(), *name);
+            let ws = Workspace::in_workspace(WorkspaceId::new(), RoomId::new(), *name);
             rooms.push(ws.room());
             tree.desktop.workspaces.push(ws);
         }

@@ -29,7 +29,7 @@ pub enum FsPolicyViolation {
     #[error(
         "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
          choose where it writes.\n  \
-         The launcher gives every app one directory — per room, per package — binds it at \
+         The launcher gives every app one directory — per workspace, per package — binds it at \
          {app_dir} and points HOME, XDG_DATA_HOME, XDG_CONFIG_HOME, XDG_STATE_HOME and \
          XDG_CACHE_HOME inside it. Remove the `[sandbox.fs]` block; anything the app writes \
          under those paths already lands there.\n  \

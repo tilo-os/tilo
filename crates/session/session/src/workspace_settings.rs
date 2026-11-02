@@ -15,7 +15,7 @@ use tilo_action_policy::{Answer, Role};
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::collaborators::PeopleNames;
-use tilo_desktop::desktop_actions::DESK_RESOURCE;
+use tilo_desktop::desk_verbs::DESK_RESOURCE;
 use tilo_desktop::workspace_settings::{self as domain, agent_access};
 use tilo_desktop_model::{DesktopTree, UserId, Workspace, role_from_id, role_id};
 use tilo_desktop_surface::DesktopHandle;
@@ -320,7 +320,7 @@ fn ownership_query(handle: &DesktopHandle, person: &UserId) -> String {
 fn open_search(invocations: &Invocations, query: String) {
     invocations
         .borrow_mut()
-        .push(Invocation::new(DESK_RESOURCE, "open-search").with("query", query));
+        .push(Invocation::new(DESK_RESOURCE, "search").with("query", query));
 }
 
 /// Apply `edit` to the workspace in front as `person`, and keep the tree

@@ -27,7 +27,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_actions::ResourceSpec;
 use tilo_app_launch::Connects as _;
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desktop_actions::{DESK_RESOURCE, SEARCH_RESOURCE, WINDOW_KIND};
+use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
@@ -145,7 +145,7 @@ fn choose(session: &mut Session, query: &str, title: &str) {
     invoke(
         session,
         DESK_RESOURCE,
-        "open-search",
+        "search",
         serde_json::json!({"query": query}),
     );
     until(session, "search shows the app", |session| {
@@ -162,7 +162,12 @@ fn choose(session: &mut Session, query: &str, title: &str) {
         .into_iter()
         .find(|row| row.label.starts_with(title))
         .expect("the row");
-    invoke(session, row.id.as_str(), "choose", serde_json::json!({}));
+    invoke(
+        session,
+        row.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
 }
 
 #[test]
@@ -455,7 +460,7 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
             app: PROBE.to_owned(),
             open: None,
         },
-        &apps.room_named(&room),
+        &apps.workspace_named(&room),
     )
     .expect("the app starts");
     until(session, "the app runs", |_| started.exists());

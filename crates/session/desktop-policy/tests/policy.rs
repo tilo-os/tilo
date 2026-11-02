@@ -14,7 +14,7 @@ use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{GroupId, TileContent};
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::{DesktopPolicy, Layout, Window};
-use tilo_desktop_surface::navigation::Command;
+use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
 use ui::kurbo::Rect;
 
 const WIDTH: f64 = 1200.0;
@@ -139,10 +139,8 @@ fn a_window_the_person_closes_is_reported_once_for_the_client_to_close() {
     assert!(policy.take_closed().is_empty());
 
     let route = policy.handle().snapshot("g", vec![]).active.unwrap();
-    let close: Command =
-        serde_json::from_value(serde_json::json!({"kind":"close","generation":"g","route":route}))
-            .unwrap();
-    policy.handle().dispatch(&close, "g").unwrap();
+    let close = DeskEffect::CloseTab { tab: route.tab };
+    policy.handle().dispatch(close).unwrap();
     settle(&mut driver);
 
     assert_eq!(policy.take_closed(), [2]);
@@ -468,11 +466,12 @@ fn a_launch_with_no_window_behind_it_is_queued_for_the_session() {
     let (mut driver, mut policy) = mount();
     assert!(policy.take_launches().is_empty());
 
-    let launch: Command = serde_json::from_value(serde_json::json!({
-        "kind": "launch", "generation": "g", "app": "host:org.example.Probe.desktop"
-    }))
-    .unwrap();
-    policy.handle().dispatch(&launch, "g").unwrap();
+    let launch = ChromeEffect::OpenApp {
+        app: "host:org.example.Probe.desktop".into(),
+        beside: None,
+        background: None,
+    };
+    policy.handle().dispatch(launch).unwrap();
     settle(&mut driver);
 
     assert_eq!(policy.take_launches(), ["host:org.example.Probe.desktop"]);

@@ -395,7 +395,7 @@ DTB. The live medium carries no UKI constructor: for a split kernel,
 `prepare-dev-installer-target.py --rpms-ref` builds the UKI on the runner with
 the boot adapter's `uki-tools` stage and ships it beside the OCI layout as
 `target-uki.efi`; the installer checks its kernel, initramfs and DTB against the
-selected image and writes only the installed command line into the room
+selected image and writes only the installed command line into the space
 reserved for it. It verifies the installed OCI manifest, origin, composefs and
 bootc payload digest before adding the TILO_BOOT mount. A sealed target retains its original
 origin and loader entry; a split target changes only its boot representation.

@@ -1,10 +1,10 @@
-//! Joining a room someone else's host governs, from a page with no session
+//! Joining a workspace someone else's host governs, from a page with no session
 //! there (`/join`; see [`tilo_relay_protocol::rooms`]).
 //!
 //! The joining person is not a user of that host: their page holds its own
 //! user root beside its device key and certifies the device itself
-//! ([`guest_certificate`]). The host admits the device through the room's
-//! governed roster once the room's owner admits the request, never as one
+//! ([`guest_certificate`]). The host admits the device through the workspace's
+//! governed roster once the workspace's owner admits the request, never as one
 //! of the host user's devices.
 
 use tilo_relay_client::DeviceSigner;
@@ -54,7 +54,7 @@ pub async fn join(client: &dyn HttpClient, step: &JoinStep) -> Result<JoinReply,
 }
 
 /// Ask to join with `invitation` as the device `cert` signed by `signer`,
-/// named `name` to the room's owner: redeem it, check the host's challenge
+/// named `name` to the workspace's owner: redeem it, check the host's challenge
 /// names exactly this invitation, device and request, and answer it.
 /// Resolves to [`JoinReply::Waiting`] once the request waits for the owner,
 /// or to the host's refusal.

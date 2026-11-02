@@ -28,8 +28,8 @@ pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
         TriggerSpec::AppOpened { app_id } => {
             format!("when the app opens {}", quoted(app_id))
         }
-        TriggerSpec::WorkspaceJoined { room } => match room {
-            Some(room) => format!("when someone joins workspace {}", quoted(room)),
+        TriggerSpec::WorkspaceJoined { room: wanted } => match wanted {
+            Some(workspace) => format!("when someone joins workspace {}", quoted(workspace)),
             None => "when someone joins a workspace".to_owned(),
         },
         TriggerSpec::FileChanged { capability } => {
@@ -216,12 +216,14 @@ pub(super) fn trigger_of(text: &str) -> Result<TriggerSpec, String> {
         if rest.trim() == "a workspace" {
             return Ok(TriggerSpec::WorkspaceJoined { room: None });
         }
-        // The room follows the noun the writer puts before it; `workspace` is
-        // optional so the line reads as well without it.
+        // The name follows the noun the writer puts before it; `workspace`
+        // is optional so the line reads as well without it.
         let asked = rest.trim_start().strip_prefix("workspace ").unwrap_or(rest);
-        let (room, after) = text_at(asked)?;
+        let (workspace, after) = text_at(asked)?;
         require_nothing_after(after, "the workspace")?;
-        return Ok(TriggerSpec::WorkspaceJoined { room: Some(room) });
+        return Ok(TriggerSpec::WorkspaceJoined {
+            room: Some(workspace),
+        });
     }
     if let Some(rest) = text.strip_prefix("when a file changes in ") {
         let (capability, after) = text_at(rest)?;

@@ -21,7 +21,7 @@ const WORKSPACE_PREFIX: &str = "workspace:";
 const WINDOW_PREFIX: &str = "window:";
 const CALL_PREFIX: &str = "call:";
 
-/// Chat holds a room's voice channels: each channel has a call row with the
+/// Chat holds a workspace's voice channels: each channel has a call row with the
 /// action that joins its call.
 const CHAT_APP: &str = "so.tilo.chat";
 const CHAT_RECORD_KIND: &str = "chat.workspace";
@@ -90,8 +90,8 @@ pub struct WindowHere {
 pub struct WorkspaceHere {
     /// The workspace's id, as the desktop numbers it.
     pub id: u64,
-    /// The room it is, as its id travels: where Chat's call is joined.
-    pub room: String,
+    /// The workspace it is, as its id travels: where Chat's call is joined.
+    pub workspace: String,
     pub name: String,
     /// The workspace in front.
     pub active: bool,
@@ -160,7 +160,7 @@ impl Happening {
             // Who is here: the people panel, as the bar's faces open it.
             Target::Invoke(Box::new(InvokeTarget::action(
                 crate::model::DESKTOP_APP,
-                &workspace.room,
+                &workspace.workspace,
                 CHROME_RESOURCE,
                 SHOW_COLLABORATORS,
             )))
@@ -223,7 +223,7 @@ impl Happening {
             outcome: Some(crate::i18n::t("search-launcher-outcome-join")),
             target: Target::Invoke(Box::new(InvokeTarget::action(
                 CHAT_APP,
-                &workspace.room,
+                &workspace.workspace,
                 channel_row(&call.channel),
                 JOIN_CALL,
             ))),
@@ -312,7 +312,7 @@ mod tests {
     fn workspace() -> WorkspaceHere {
         WorkspaceHere {
             id: 3,
-            room: "room-3".into(),
+            workspace: "workspace-3".into(),
             name: "Studio".into(),
             active: true,
             people: vec![person("ada", "Ada", Some(7)), person("bo", "Bo", None)],
@@ -365,7 +365,7 @@ mod tests {
             panic!("a call is joined by asking Chat, not by the desk");
         };
         assert_eq!(invoke.app, "so.tilo.chat");
-        assert_eq!(invoke.room, "room-3");
+        assert_eq!(invoke.workspace, "workspace-3");
         assert_eq!(
             invoke.address,
             tilo_actions::ActionAddress::new("chat.workspace/channels/c_voice/call", "join-call")
@@ -385,7 +385,7 @@ mod tests {
     fn the_search_over_every_workspace_lists_the_others_too() {
         let mut other = WorkspaceHere {
             id: 4,
-            room: "room-4".into(),
+            workspace: "workspace-4".into(),
             name: "Elsewhere".into(),
             active: false,
             ..workspace()

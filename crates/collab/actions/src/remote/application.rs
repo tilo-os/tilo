@@ -9,12 +9,12 @@ use super::{
     workspace_provider,
 };
 
-/// The target that opens `app_id` into workspace `room`. An invocation may
+/// The target that opens `app_id` into workspace `workspace`. An invocation may
 /// carry the content hash of bytes to open read-only as its text argument.
 #[must_use]
-pub fn application_open_target(room: &str, app_id: &str) -> RemoteActionTarget {
+pub fn application_open_target(workspace: &str, app_id: &str) -> RemoteActionTarget {
     RemoteActionTarget {
-        provider: workspace_provider(room),
+        provider: workspace_provider(workspace),
         address: ActionAddress::new(
             format!("{APPLICATION_RESOURCE_PREFIX}{app_id}"),
             APPLICATION_OPEN_ACTION,
@@ -74,11 +74,11 @@ impl ApplicationLaunch {
 
     /// Resolve the destination only from the host's admitted workspace route.
     #[must_use]
-    pub fn target(&self, room: &str) -> RemoteActionTarget {
+    pub fn target(&self, workspace: &str) -> RemoteActionTarget {
         self.action.as_ref().map_or_else(
-            || application_open_target(room, &self.app_id),
+            || application_open_target(workspace, &self.app_id),
             |action| {
-                application_action_target(room, &self.app_id, &action.resource, &action.action)
+                application_action_target(workspace, &self.app_id, &action.resource, &action.action)
             },
         )
     }
@@ -166,7 +166,7 @@ impl ApplicationLaunch {
 
     /// Opening an app is what the launcher does for whoever is at this
     /// desktop: it opens a window of their own and reaches no one else, so
-    /// a room's grants have nothing to consent to ([`crate::OWN_DEVICE_SCOPE`]).
+    /// a workspace's grants have nothing to consent to ([`crate::OWN_DEVICE_SCOPE`]).
     fn launched_here(mut spec: crate::ActionSpec) -> crate::ActionSpec {
         spec.type_mut()
             .contract
@@ -203,18 +203,18 @@ impl ApplicationLaunch {
 pub const APPLICATION_PROVIDER: &str = "application";
 
 /// The target of the action `app_id` offers on `resource` in workspace
-/// `room`. The host delivers it to the running app, or launches the app into
+/// `workspace`. The host delivers it to the running app, or launches the app into
 /// the workspace first and delivers it once the app offers the action; the
 /// app's own published contract admits it either way.
 #[must_use]
 pub fn application_action_target(
-    room: &str,
+    workspace: &str,
     app_id: &str,
     resource: impl Into<String>,
     action: impl Into<String>,
 ) -> RemoteActionTarget {
     RemoteActionTarget {
-        provider: format!("{APPLICATION_PROVIDER}:{room}:{app_id}"),
+        provider: format!("{APPLICATION_PROVIDER}:{workspace}:{app_id}"),
         address: ActionAddress::new(resource, action),
     }
 }
@@ -224,22 +224,22 @@ pub fn application_action_target(
 /// Opening a reference is the resource's `open` on this target.
 #[must_use]
 pub fn application_record_target(
-    room: &str,
+    workspace: &str,
     app_id: &str,
     record: &str,
     resource: impl Into<String>,
     action: impl Into<String>,
 ) -> RemoteActionTarget {
-    let mut target = application_action_target(room, app_id, resource, action);
+    let mut target = application_action_target(workspace, app_id, resource, action);
     target.provider = format!("{}:{record}", target.provider);
     target
 }
 
-/// The room and application an [`application_action_target`] provider
+/// The workspace and application an [`application_action_target`] provider
 /// token names, or `None` for any other provider.
 #[must_use]
 pub fn application_provider(provider: &str) -> Option<(&str, &str)> {
-    application_parts(provider).map(|(room, app_id, _)| (room, app_id))
+    application_parts(provider).map(|(workspace, app_id, _)| (workspace, app_id))
 }
 
 /// The record an [`application_record_target`] provider token names, or
@@ -250,7 +250,7 @@ pub fn application_provider_record(provider: &str) -> Option<&str> {
 }
 
 fn application_parts(provider: &str) -> Option<(&str, &str, Option<&str>)> {
-    let (room, rest) = provider
+    let (workspace, rest) = provider
         .strip_prefix(APPLICATION_PROVIDER)?
         .strip_prefix(':')?
         .split_once(':')?;
@@ -258,6 +258,6 @@ fn application_parts(provider: &str) -> Option<(&str, &str, Option<&str>)> {
         Some((app_id, record)) => (app_id, Some(record)),
         None => (rest, None),
     };
-    (!room.is_empty() && !app_id.is_empty() && record.is_none_or(|record| !record.is_empty()))
-        .then_some((room, app_id, record))
+    (!workspace.is_empty() && !app_id.is_empty() && record.is_none_or(|record| !record.is_empty()))
+        .then_some((workspace, app_id, record))
 }

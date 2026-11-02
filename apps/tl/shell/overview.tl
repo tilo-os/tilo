@@ -26,7 +26,7 @@ view overview(d: Desk) {
             }
         }
         ui.TextInput(value: query, placeholder: "Search windows across your workspaces") {
-            on submit: session.open_search(query: .some(query))
+            on submit: session.search(query: .some(query))
         }
         rooms_here(d)
         if query == "" {
@@ -95,20 +95,20 @@ view window_menu(d: Desk, w: Win) {
         ui.MenuItem("Go there", icon: .arrow_right) {
             on choose: session.focus(window(w))
         }
-        for s in strip_names(d, w.workspace) {
-            if s != w.strip {
-                ui.MenuItem("Move to {s}", icon: .arrow_right) {
-                    on choose: session.move_tab_to_strip(tab: w.key, strip: s)
+        for s in strip_keys(d, w.workspace) {
+            if s != w.strip_key {
+                ui.MenuItem("Move to {strip_name(d, s)}", icon: .arrow_right) {
+                    on choose: session.move_tab(tab: w.key, strip: .some(s), workspace: .none, display: .none)
                 }
             }
         }
         for r in d.rooms.filter(r -> r.name != w.workspace) {
             ui.MenuItem("Move to {r.name}", icon: .layers) {
-                on choose: session.move_tab(tab: w.key, workspace: r.name)
+                on choose: session.move_tab(tab: w.key, strip: .none, workspace: .some(r.key), display: .none)
             }
         }
         ui.MenuItem("Close", icon: .x, destructive: true) {
-            on choose: session.close(window(w))
+            on choose: session.close_tab(window(w))
         }
     }
 }
@@ -136,7 +136,7 @@ view window_line(d: Desk, w: Win) {
                     on choose: session.focus(window(w))
                 }
                 ui.MenuItem("Move here", icon: .arrow_down) {
-                    on choose: session.move_tab(tab: w.key, workspace: d.workspace)
+                    on choose: session.move_tab(tab: w.key, strip: .none, workspace: .some(current_room(d)), display: .none)
                 }
             }
         }
@@ -150,7 +150,24 @@ fn window_strips(windows: List<Win>) -> List<Text> {
     return in_order.group(s -> s).map(p -> p.key)
 }
 
-/// The names of the strips of `workspace`, as the desk's windows name them.
-fn strip_names(d: Desk, workspace: Text) -> List<Text> {
-    return window_strips(d.windows.filter(w -> w.workspace == workspace))
+/// The ids of the strips of `workspace`, most recent first, as the desk's windows name them.
+fn strip_keys(d: Desk, workspace: Text) -> List<Text> {
+    let in_order = d.windows.filter(w -> w.workspace == workspace).sort_by(w -> w.recency).map(w -> w.strip_key).filter(s -> s != "")
+    return in_order.group(s -> s).map(p -> p.key)
+}
+
+/// The name of the strip `key`, as its windows name it.
+fn strip_name(d: Desk, key: Text) -> Text {
+    if let w = d.windows.filter(w -> w.strip_key == key).first() {
+        return w.strip
+    }
+    return ""
+}
+
+/// The id of the workspace in front.
+fn current_room(d: Desk) -> Text {
+    if let r = d.rooms.filter(r -> r.current).first() {
+        return r.key
+    }
+    return ""
 }

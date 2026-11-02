@@ -273,7 +273,7 @@ impl UndoLog {
     }
 
     /// Begin again over `doc`, a document whose history lost changes (the
-    /// room refused them): no step names a change it no longer holds. The
+    /// workspace refused them): no step names a change it no longer holds. The
     /// revision still moves forward, so a host sees the history changed.
     pub fn restart(&mut self, doc: &mut AutoCommit) {
         let revision = self.revision;

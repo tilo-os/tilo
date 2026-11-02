@@ -2,11 +2,13 @@
 //! muted, says why it cannot be heard, and ends when it leaves or when its
 //! app's connection does.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use runtime_collab::native_media::{Command, Input, Issue, Request, Snapshot, State};
+use runtime_collab::native_media::{
+    Command, Input, Issue, Picture, PictureLayer, PictureSource, Request, Shown, Snapshot, State,
+};
 
 use super::{Caller, NativeMediaService};
 use crate::media::{CallTarget, MediaFactory, MediaSession, Prepare};
@@ -15,17 +17,38 @@ use crate::media::{CallTarget, MediaFactory, MediaSession, Prepare};
 /// microphone `inputs` names.
 struct Carrier {
     inputs: Vec<Input>,
+    state: Arc<CallState>,
 }
 
 impl MediaFactory for Carrier {
     fn prepare(&self, _target: CallTarget) -> Prepare {
         let inputs = self.inputs.clone();
-        Box::pin(async move { Ok(Box::new(Call { inputs }) as Box<dyn MediaSession>) })
+        let state = Arc::clone(&self.state);
+        Box::pin(async move {
+            Ok(Box::new(Call {
+                inputs,
+                state,
+                camera: false,
+                screen: false,
+            }) as Box<dyn MediaSession>)
+        })
     }
+}
+
+/// What the app and the call exchange about pictures: what it shows, and
+/// what arrived for it.
+#[derive(Default)]
+struct CallState {
+    shown: Mutex<Vec<Shown>>,
+    pictures: Mutex<Vec<Picture>>,
+    arrived: Arc<tokio::sync::Notify>,
 }
 
 struct Call {
     inputs: Vec<Input>,
+    state: Arc<CallState>,
+    camera: bool,
+    screen: bool,
 }
 
 impl MediaSession for Call {
@@ -39,6 +62,54 @@ impl MediaSession for Call {
 
     fn start_capture(&mut self, _input: &str) -> Result<(), Issue> {
         Ok(())
+    }
+
+    fn show(&mut self, pictures: Vec<Shown>) {
+        *self.state.shown.lock().expect("the app's pictures") = pictures;
+    }
+
+    fn set_camera(&mut self, on: bool) -> Result<(), Issue> {
+        self.camera = on;
+        Ok(())
+    }
+
+    fn set_screen(&mut self, on: bool) -> Result<(), Issue> {
+        self.screen = on;
+        Ok(())
+    }
+
+    fn pictures(&mut self, after: u64) -> (Vec<Picture>, u64) {
+        let taken = std::mem::take(
+            &mut *self
+                .state
+                .pictures
+                .lock()
+                .expect("the pictures that arrived"),
+        );
+        let cursor = after.saturating_add(taken.len() as u64);
+        (taken, cursor)
+    }
+
+    fn pictures_changed(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(Arc::clone(&self.state.arrived))
+    }
+}
+
+/// A carrier whose call publishes no pictures: it says so instead of showing
+/// one nobody receives.
+struct Silent;
+
+impl MediaFactory for Silent {
+    fn prepare(&self, _target: CallTarget) -> Prepare {
+        Box::pin(async move { Ok(Box::new(NoPictures) as Box<dyn MediaSession>) })
+    }
+}
+
+struct NoPictures;
+
+impl MediaSession for NoPictures {
+    fn tick(&mut self, _now: Instant) -> Result<State, Issue> {
+        Ok(State::Live)
     }
 }
 
@@ -89,9 +160,18 @@ fn send(service: &NativeMediaService, who: &Caller, request: Request) -> Result<
 /// An unsettled call: the carrier was handed a channel and has not said
 /// where the call stands yet.
 fn service(inputs: Vec<Input>) -> NativeMediaService {
+    service_with(inputs).0
+}
+
+/// A service and what its carrier's call took in and handed back.
+fn service_with(inputs: Vec<Input>) -> (NativeMediaService, Arc<CallState>) {
+    let state = Arc::new(CallState::default());
     let service = NativeMediaService::new();
-    assert!(service.install_factory(Arc::new(Carrier { inputs })));
-    service
+    assert!(service.install_factory(Arc::new(Carrier {
+        inputs,
+        state: Arc::clone(&state),
+    })));
+    (service, state)
 }
 
 /// The call's status as an app reads it, once its carrier says where it
@@ -273,7 +353,8 @@ async fn a_call_ends_when_the_app_that_joined_it_disconnects() {
 /// a picture nobody receives.
 #[tokio::test]
 async fn a_camera_the_call_cannot_publish_says_so() {
-    let service = service(vec![microphone()]);
+    let service = NativeMediaService::new();
+    assert!(service.install_factory(Arc::new(Silent)));
     let who = caller(Arc::new(AtomicBool::new(true)));
 
     send(&service, &who, request(1, join("c_voice"))).expect("an app joins a voice channel");
@@ -287,6 +368,94 @@ async fn a_camera_the_call_cannot_publish_says_so() {
         .expect("an app shares its screen");
     assert_eq!(screen.issue, Some(Issue::ScreenLost));
     assert!(!screen.screen);
+}
+
+/// The camera and the screen an app turns on say so, and what it shows
+/// reaches the call as it said it.
+#[tokio::test]
+async fn an_app_says_which_pictures_it_shows_and_their_state_says_which_it_sends() {
+    let (service, state) = service_with(vec![microphone()]);
+    let who = caller(Arc::new(AtomicBool::new(true)));
+    send(&service, &who, request(1, join("c_voice"))).expect("an app joins a voice channel");
+    settled(&service, &who).await;
+
+    let camera = send(&service, &who, request(2, Command::SetCamera { on: true }))
+        .expect("a call that publishes a camera says so");
+    assert!(camera.camera, "the call's camera is on");
+    assert_eq!(camera.issue, None);
+    let screen = send(&service, &who, request(3, Command::SetScreen { on: true }))
+        .expect("a call that shares a screen says so");
+    assert!(screen.screen, "the call's screen is shared");
+    assert_eq!(screen.issue, None);
+
+    let shown = vec![Shown {
+        person: "ab".repeat(32),
+        source: PictureSource::Camera,
+        layer: PictureLayer::Low,
+    }];
+    send(
+        &service,
+        &who,
+        request(
+            0,
+            Command::Show {
+                pictures: shown.clone(),
+            },
+        ),
+    )
+    .expect("an app shows what its tiles hold");
+    assert_eq!(
+        *state.shown.lock().expect("the app's pictures"),
+        shown,
+        "the call receives exactly the pictures the app shows"
+    );
+
+    let off = send(&service, &who, request(4, Command::SetCamera { on: false }))
+        .expect("an app turns its camera off");
+    assert!(!off.camera, "the call stops sending a camera nobody shows");
+}
+
+/// Pictures are answered as the call receives them, with the cursor the app
+/// reads the next ones from.
+#[tokio::test]
+async fn pictures_are_answered_as_they_arrive_and_move_the_cursor() {
+    let (service, state) = service_with(vec![microphone()]);
+    let who = caller(Arc::new(AtomicBool::new(true)));
+    send(&service, &who, request(1, join("c_voice"))).expect("an app joins a voice channel");
+    settled(&service, &who).await;
+
+    let picture = Picture {
+        person: "ab".repeat(32),
+        stream: "cd".repeat(32),
+        source: PictureSource::Screen,
+        object: vec![1; 64],
+    };
+    let waiting = service.pictures(who.clone(), 0);
+    let arriving = {
+        let state = Arc::clone(&state);
+        let picture = picture.clone();
+        async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            state
+                .pictures
+                .lock()
+                .expect("the pictures that arrived")
+                .push(picture);
+            state.arrived.notify_waiters();
+        }
+    };
+    let (answered, ()) = tokio::join!(waiting, arriving);
+    let answered = answered.expect("the pictures that arrived");
+    assert_eq!(answered.pictures, vec![picture]);
+    assert_eq!(answered.pictures_cursor, 1, "the next read starts after it");
+
+    // Nothing new arrived: the answer is empty and the cursor stays put.
+    let empty = service
+        .pictures(who, answered.pictures_cursor)
+        .await
+        .expect("an answer with no pictures");
+    assert!(empty.pictures.is_empty());
+    assert_eq!(empty.pictures_cursor, 1);
 }
 
 /// A watch is answered the moment the call's status moves, not on a poll,

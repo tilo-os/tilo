@@ -718,7 +718,7 @@ mod tests {
 
     fn request() -> OffloadRequest {
         OffloadRequest {
-            room: ROOM.into(),
+            workspace: ROOM.into(),
             app_id: "so.tilo.photos".into(),
             address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
             offload: tilo_actions::Offload {

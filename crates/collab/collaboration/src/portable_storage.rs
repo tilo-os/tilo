@@ -13,7 +13,7 @@ mod tests {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let key = StorageKey::Record {
             package: "app".into(),
-            workspace: "room".into(),
+            workspace: "workspace".into(),
             record: "record".into(),
         };
         let woken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -47,7 +47,7 @@ mod tests {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let key = StorageKey::Record {
             package: "app".into(),
-            workspace: "room".into(),
+            workspace: "workspace".into(),
             record: "record".into(),
         };
         let mut doc = automerge::AutoCommit::new();
@@ -81,7 +81,7 @@ mod tests {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let key = StorageKey::Primary {
             package: "test".into(),
-            workspace: "room".into(),
+            workspace: "workspace".into(),
         };
         let mut doc = automerge::AutoCommit::new();
         DOCUMENT_DECODES.with(|count| count.set(0));
@@ -107,7 +107,7 @@ mod tests {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let key = StorageKey::Primary {
             package: "test".into(),
-            workspace: "room".into(),
+            workspace: "workspace".into(),
         };
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "value", 1).unwrap();
@@ -131,7 +131,7 @@ mod tests {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let key = StorageKey::Primary {
             package: "test".into(),
-            workspace: "room".into(),
+            workspace: "workspace".into(),
         };
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "value", 1).unwrap();
@@ -172,7 +172,7 @@ mod tests {
     fn status_retains_exact_prior_commit_across_newer_pending_and_failed_writes() {
         let cache = PortableStorage::new("profile", "device").unwrap();
         let key = StorageKey::Admission {
-            workspace: "room".into(),
+            workspace: "workspace".into(),
         };
         cache.put(key.clone(), vec![1], None).unwrap();
         let first = cache.pending_writes().remove(0);
@@ -198,7 +198,7 @@ mod tests {
         assert!(cache.pending_writes().is_empty());
         let key = StorageKey::Record {
             package: "app".into(),
-            workspace: "room".into(),
+            workspace: "workspace".into(),
             record: "record".into(),
         };
         let mut doc = automerge::AutoCommit::new();
@@ -207,7 +207,7 @@ mod tests {
         cache
             .put(
                 StorageKey::Admission {
-                    workspace: "room".into(),
+                    workspace: "workspace".into(),
                 },
                 vec![1, 2, 3],
                 None,
@@ -235,7 +235,7 @@ mod tests {
     fn cache_flush_requires_matching_durable_ack_and_retains_failed_bytes() {
         let cache = PortableStorage::new("profile-a", "device-a").unwrap();
         let key = StorageKey::View {
-            workspace: "room".into(),
+            workspace: "workspace".into(),
             instance: 3,
         };
         cache.put(key.clone(), vec![1, 2], None).unwrap();
@@ -258,7 +258,7 @@ mod tests {
         let a = PortableStorage::new("a", "device").unwrap();
         let b = PortableStorage::new("b", "device").unwrap();
         let key = StorageKey::View {
-            workspace: "room".into(),
+            workspace: "workspace".into(),
             instance: 1,
         };
         a.put(key.clone(), vec![1], None).unwrap();

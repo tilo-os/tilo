@@ -12,7 +12,7 @@
 //! Shape: `{ active: uint, authors_v1?: {actor → author},
 //! window_records_v1?: {tab id → record id}, window_authors_v1?: {strip or
 //! tab id → person},
-//! view_v1: json, workspaces: [ { id, name, room, owner?,
+//! view_v1: json, workspaces: [ { id, name, workspace, owner?,
 //! members: {person → json role}, members_joined_v1: {person → json Unix ms}, grants: {id → json}, sandbox: {id → json},
 //! presets_v1: {key → json},
 //! effect_receipts_v1: {invocation → json},
@@ -42,8 +42,8 @@ use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::partition::OutputPartition;
 use crate::projection::{
-    ROOM_AUTOMATIONS_KEY, ROOM_EFFECT_RECEIPTS_KEY, ROOM_MEMBERS_JOINED_KEY,
-    ROOM_SCHEDULE_CLAIMS_KEY,
+    WORKSPACE_AUTOMATIONS_KEY, WORKSPACE_EFFECT_RECEIPTS_KEY, WORKSPACE_MEMBERS_JOINED_KEY,
+    WORKSPACE_SCHEDULE_CLAIMS_KEY,
 };
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::serde_ids::deserialize_id_map;
@@ -352,7 +352,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     sync_blob_map(
         doc,
         entry,
-        ROOM_MEMBERS_JOINED_KEY,
+        WORKSPACE_MEMBERS_JOINED_KEY,
         ws.policy
             .joined
             .iter()
@@ -386,7 +386,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     sync_blob_map(
         doc,
         entry,
-        ROOM_EFFECT_RECEIPTS_KEY,
+        WORKSPACE_EFFECT_RECEIPTS_KEY,
         ws.effect_receipts
             .iter()
             .map(|receipt| (receipt.invocation.0.to_string(), receipt)),
@@ -394,7 +394,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     sync_blob_map(
         doc,
         entry,
-        ROOM_AUTOMATIONS_KEY,
+        WORKSPACE_AUTOMATIONS_KEY,
         ws.shortcuts
             .iter()
             .map(|shortcut| (shortcut.id().to_owned(), shortcut)),
@@ -402,7 +402,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     sync_blob_map(
         doc,
         entry,
-        ROOM_SCHEDULE_CLAIMS_KEY,
+        WORKSPACE_SCHEDULE_CLAIMS_KEY,
         ws.schedule_claims.iter().map(|claim| (claim.key(), claim)),
     );
     write_arrangement(doc, entry, &ws.arrangement);
@@ -716,30 +716,31 @@ fn read_presets(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<Preset>> {
 }
 
 fn read_shortcuts(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::SavedShortcut> {
-    let mut shortcuts: Vec<tilo_automation::SavedShortcut> = obj(doc, entry, ROOM_AUTOMATIONS_KEY)
-        .map(|map| {
-            doc.keys(&map)
-                .filter_map(|key| {
-                    let blob = doc.bytes_at(&map, key.as_str())?;
-                    tilo_automation::SavedShortcut::parse(std::str::from_utf8(&blob).ok()?).ok()
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut shortcuts: Vec<tilo_automation::SavedShortcut> =
+        obj(doc, entry, WORKSPACE_AUTOMATIONS_KEY)
+            .map(|map| {
+                doc.keys(&map)
+                    .filter_map(|key| {
+                        let blob = doc.bytes_at(&map, key.as_str())?;
+                        tilo_automation::SavedShortcut::parse(std::str::from_utf8(&blob).ok()?).ok()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
     shortcuts.compact_sort_by(|left, right| left.id().cmp(right.id()));
     shortcuts
 }
 
 fn read_schedule_claims(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::ScheduleClaim> {
     let mut claims: Vec<tilo_automation::ScheduleClaim> =
-        read_blob_map(doc, entry, ROOM_SCHEDULE_CLAIMS_KEY).unwrap_or_default();
+        read_blob_map(doc, entry, WORKSPACE_SCHEDULE_CLAIMS_KEY).unwrap_or_default();
     claims.compact_sort_by_key(tilo_automation::ScheduleClaim::key);
     claims
 }
 
 fn read_effect_receipts(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceEffectReceipt> {
     let mut receipts: Vec<WorkspaceEffectReceipt> =
-        read_blob_map(doc, entry, ROOM_EFFECT_RECEIPTS_KEY).unwrap_or_default();
+        read_blob_map(doc, entry, WORKSPACE_EFFECT_RECEIPTS_KEY).unwrap_or_default();
     receipts.compact_sort_by_key(|receipt| receipt.completed_at);
     receipts
 }
@@ -773,7 +774,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     for (id_raw, entry) in &entries {
         let name = doc.str_at(entry, "name").unwrap_or_default();
         let ws_id = WorkspaceId::from(*id_raw);
-        let room = doc
+        let identity = doc
             .str_at(entry, "room")
             .and_then(|v| RoomId::parse(v.as_str()))
             .filter(|r| !r.is_nil());
@@ -787,8 +788,8 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
                 existing.name = name;
                 existing
             }
-            None => match room {
-                Some(room) => Workspace::in_room(ws_id, room, name),
+            None => match identity {
+                Some(identity) => Workspace::in_workspace(ws_id, identity, name),
                 None => Workspace::new(ws_id, name),
             },
         };
@@ -797,7 +798,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             ws.policy.owner = Some(owner);
         }
         ws.policy.members = members.into_iter().collect();
-        ws.policy.joined = read_keyed_blob_map(doc, entry, ROOM_MEMBERS_JOINED_KEY)
+        ws.policy.joined = read_keyed_blob_map(doc, entry, WORKSPACE_MEMBERS_JOINED_KEY)
             .unwrap_or_default()
             .into_iter()
             .collect();
@@ -1009,7 +1010,7 @@ pub fn append_workspace(
     doc: &mut AutoCommit,
     workspace_id: WorkspaceId,
     name: &str,
-    room: RoomId,
+    identity: RoomId,
 ) -> bool {
     let Some(list) = obj(doc, &ROOT, WORKSPACES_KEY)
         .or_else(|| doc.put_object(&ROOT, WORKSPACES_KEY, ObjType::List).ok())
@@ -1022,8 +1023,8 @@ pub fn append_workspace(
     };
     let _ = doc.put(&entry, "id", ScalarValue::Uint(workspace_id.raw()));
     let _ = doc.put(&entry, "name", name.to_string());
-    let _ = doc.put(&entry, "room", room.to_string());
-    let workspace = Workspace::in_room(workspace_id, room, name);
+    let _ = doc.put(&entry, "room", identity.to_string());
+    let workspace = Workspace::in_workspace(workspace_id, identity, name);
     sync_blob_map(
         doc,
         &entry,
@@ -1078,7 +1079,7 @@ pub fn set_owner(doc: &mut AutoCommit, workspace_id: WorkspaceId, owner: &str) -
 }
 
 /// Whether `doc` holds the desk this module writes: a root holding the
-/// workspace list. A document of another shape — a room document, or a
+/// workspace list. A document of another shape — a workspace document, or a
 /// shared desktop record written entry by entry before the desk was one
 /// document — is not one.
 #[must_use]
@@ -1125,7 +1126,7 @@ pub fn set_records(doc: &mut AutoCommit, records: &[(TabId, String)]) {
 }
 
 /// Who made each strip and opened each window, by strip or tab id, as person
-/// ids: who may close, move or rename what is on a desk a room shares
+/// ids: who may close, move or rename what is on a desk a workspace shares
 /// ([`crate::ownership`]). Each entry is its own, so the people writing
 /// their own windows at once keep what each of them said.
 #[must_use]
@@ -1155,7 +1156,7 @@ pub fn set_window_authors(doc: &mut AutoCommit, authors: &crate::ownership::Auth
     }
 }
 
-/// The root keys a room's desktop record kept when every window was its own
+/// The root keys a workspace's desktop record kept when every window was its own
 /// entry there, before the desk was one document.
 const RECORD_KEYS: [&str; 3] = ["strips", "groups", "windows"];
 
@@ -1245,8 +1246,8 @@ pub fn set_member_joined(
     joined: Option<u64>,
 ) -> bool {
     match joined {
-        Some(at) => upsert_blob(doc, workspace_id, ROOM_MEMBERS_JOINED_KEY, person, &at),
-        None => delete_blob(doc, workspace_id, ROOM_MEMBERS_JOINED_KEY, person),
+        Some(at) => upsert_blob(doc, workspace_id, WORKSPACE_MEMBERS_JOINED_KEY, person, &at),
+        None => delete_blob(doc, workspace_id, WORKSPACE_MEMBERS_JOINED_KEY, person),
     }
 }
 
@@ -1275,7 +1276,7 @@ pub fn upsert_shortcut(
     upsert_blob(
         doc,
         workspace_id,
-        ROOM_AUTOMATIONS_KEY,
+        WORKSPACE_AUTOMATIONS_KEY,
         shortcut.id(),
         shortcut,
     )
@@ -1286,7 +1287,7 @@ pub fn remove_shortcut(doc: &mut AutoCommit, workspace_id: WorkspaceId, shortcut
     let Some(entry) = workspace_entry(doc, workspace_id) else {
         return false;
     };
-    let Some(shortcuts) = obj(doc, &entry, ROOM_AUTOMATIONS_KEY) else {
+    let Some(shortcuts) = obj(doc, &entry, WORKSPACE_AUTOMATIONS_KEY) else {
         return false;
     };
     doc.get(&shortcuts, shortcut_id).ok().flatten().is_some()
@@ -1302,7 +1303,7 @@ pub fn upsert_schedule_claim(
     upsert_blob(
         doc,
         workspace_id,
-        ROOM_SCHEDULE_CLAIMS_KEY,
+        WORKSPACE_SCHEDULE_CLAIMS_KEY,
         &claim.key(),
         claim,
     )
@@ -1315,7 +1316,13 @@ pub fn upsert_effect_receipt(
     receipt: &WorkspaceEffectReceipt,
 ) -> bool {
     let key = receipt.invocation.0.to_string();
-    upsert_blob(doc, workspace_id, ROOM_EFFECT_RECEIPTS_KEY, &key, receipt)
+    upsert_blob(
+        doc,
+        workspace_id,
+        WORKSPACE_EFFECT_RECEIPTS_KEY,
+        &key,
+        receipt,
+    )
 }
 
 /// Delete one tab, or its whole group when the tab was the group's last.

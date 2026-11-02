@@ -8,7 +8,7 @@ use super::{
 impl CertifiedEndpointIdentity {
     /// The identity a task agent joins with: the presentation carrying the
     /// device's certificate and task delegation from `credentials`, proved
-    /// by the task key's signature over the room's join bytes, and that key
+    /// by the task key's signature over the workspace's join bytes, and that key
     /// to sign its writes.
     ///
     /// # Errors
@@ -36,7 +36,7 @@ impl CertifiedEndpointIdentity {
 /// The channel keys of a task agent's routes, asked of the identity service
 /// its launcher handed the process, as every launched app's are: the task
 /// key signs and its delegation admits, but the keys that seal and open the
-/// room's records are the device's to hand out, for the routes its person
+/// workspace's records are the device's to hand out, for the routes its person
 /// may read. The service is reached on the first ask, so a process with
 /// none (a test) is told the keys are unavailable rather than failing to
 /// start.
@@ -96,7 +96,7 @@ mod tests {
 
     use super::CertifiedEndpointIdentity;
 
-    /// A room that seals its records refuses every write of a connection
+    /// A workspace that seals its records refuses every write of a connection
     /// with no channel keys, so a task agent that joined without them could
     /// write nothing, its reports included, and its run stopped unanswered.
     #[test]

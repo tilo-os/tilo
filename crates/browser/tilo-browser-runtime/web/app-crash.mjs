@@ -1,4 +1,4 @@
-/** Windows whose application crashed the runtime, kept per room.
+/** Windows whose application crashed the runtime, kept per workspace.
  * The browser build aborts on a panic: the module cannot run again and the
  * page must start over. The runtime's panic hook names the window whose
  * application was running; the next load shows that window's error instead
@@ -18,9 +18,9 @@ export function createCrashQuarantine({storage=globalThis.localStorage,now=Date.
   const current=()=>read().filter(entry=>typeof entry?.room==='string'&&typeof entry.tab==='string'&&now()-entry.at<TTL_MS);
   const write=list=>{try{storage?.setItem(KEY,JSON.stringify(list.slice(-LIMIT)));}catch{}};
   return {
-    /** `[{tab, message}]` for `room`, as `quarantine_windows` takes them. */
+    /** `[{tab, message}]` for `workspace`, as `quarantine_windows` takes them. */
     entries(room){return current().filter(entry=>entry.room===room).map(({tab,message})=>({tab,message}));},
-    /** Keep `tab` out of `room`'s next load. False when it already was: its
+    /** Keep `tab` out of `workspace`'s next load. False when it already was: its
      * application ran anyway, and starting over would crash again. */
     record(room,{tab,message}){
       const list=current(),id=String(tab);

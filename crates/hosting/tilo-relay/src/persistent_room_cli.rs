@@ -172,7 +172,7 @@ pub struct PersistentArgs {
         default_value = "personal",
         value_parser = parse_layout
     )]
-    pub layout: tilo_desktop_model::projection::RoomLayout,
+    pub layout: tilo_desktop_model::projection::WorkspaceLayout,
     /// An app the room's members write through: it authors the room's
     /// content, so a member whose role lets them change the room (a guest
     /// is an Editor) can talk in its Chat; repeatable. Settled at every
@@ -510,8 +510,8 @@ fn token_digest(token: &[u8]) -> [u8; 32] {
 }
 
 /// `--layout`: `shared` or `personal`.
-fn parse_layout(scope: &str) -> Result<tilo_desktop_model::projection::RoomLayout, String> {
-    tilo_desktop_model::projection::RoomLayout::from_id(scope)
+fn parse_layout(scope: &str) -> Result<tilo_desktop_model::projection::WorkspaceLayout, String> {
+    tilo_desktop_model::projection::WorkspaceLayout::from_id(scope)
         .ok_or_else(|| format!("{scope:?} is not a layout scope: say shared or personal"))
 }
 
@@ -1248,7 +1248,7 @@ pub(crate) async fn seed_apps(
     let catalogue = tilo_agent_participant::AppCatalogue::native();
     let pending: Vec<&String> = apps.iter().filter(|app| !seeded.contains(*app)).collect();
     for app in pending {
-        let record = tilo_relay::room_bots::room_record(&catalogue, app);
+        let record = tilo_relay::room_bots::workspace_record(&catalogue, app);
         rooms
             .prepare_application(room, cert, &catalogue, app, &record)
             .await
@@ -1302,7 +1302,7 @@ pub(crate) async fn settle_chat(
         return Ok(());
     }
     let catalogue = tilo_agent_participant::AppCatalogue::native();
-    let record = tilo_relay::room_bots::room_record(&catalogue, crate::room_chat::CHAT_APP);
+    let record = tilo_relay::room_bots::workspace_record(&catalogue, crate::room_chat::CHAT_APP);
     rooms
         .author_application(
             room,
@@ -2715,7 +2715,7 @@ mod tests {
     #[test]
     fn a_site_rooms_layout_is_personal_unless_its_host_says_otherwise() {
         use clap::Parser as _;
-        use tilo_desktop_model::projection::RoomLayout;
+        use tilo_desktop_model::projection::WorkspaceLayout;
         #[derive(clap::Parser)]
         struct Args {
             #[command(flatten)]
@@ -2723,13 +2723,13 @@ mod tests {
         }
         assert_eq!(
             Args::parse_from(["relay"]).persistent.layout,
-            RoomLayout::Personal
+            WorkspaceLayout::Personal
         );
         assert_eq!(
             Args::parse_from(["relay", "--layout", "shared"])
                 .persistent
                 .layout,
-            RoomLayout::Shared
+            WorkspaceLayout::Shared
         );
         assert!(Args::try_parse_from(["relay", "--layout", "public"]).is_err());
     }

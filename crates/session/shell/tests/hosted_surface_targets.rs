@@ -162,7 +162,7 @@ fn the_overview_is_driven_by_its_control_names() {
     assert!(frame.root::<ShellOverlayHost>().overview_open());
     frame
         .perform_semantic_named(
-            &format!("overview-room:{}", other.raw()),
+            &format!("overview-workspace:{}", other.raw()),
             None,
             &Action::Activate,
         )

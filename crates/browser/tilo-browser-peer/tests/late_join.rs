@@ -16,7 +16,7 @@
 mod participant;
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::atomic::Ordering;
@@ -63,7 +63,7 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
         host_device.cert.clone(),
         author.key,
     );
-    author.join_placed(support::ROOM, "Workspace").unwrap();
+    author.join_placed(support::WORKSPACE, "Workspace").unwrap();
     ready(&[&author]).await;
     let checkpoint = DocumentMutation::Snapshot(noise(5 * 1024 * 1024 / 2, 1));
     author.publish(route(), &checkpoint).unwrap();
@@ -89,7 +89,7 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
         host_device.cert.clone(),
         joiner.key,
     );
-    joiner.join_placed(support::ROOM, "Workspace").unwrap();
+    joiner.join_placed(support::WORKSPACE, "Workspace").unwrap();
     let mut received: Vec<DocumentMutation> = Vec::new();
     wait_for("the checkpoint and its tail", || {
         received.extend(

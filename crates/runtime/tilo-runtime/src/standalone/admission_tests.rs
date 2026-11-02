@@ -89,7 +89,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     let certificate = joined.custody.device_cert.clone();
     let actor =
         tilo_action_broker::collab_app_broker::principal_id_for_root(certificate.user_public_key);
-    let mut workspace = TestWorkspace::in_room(TestWorkspaceId(42), placed, "Runtime doors");
+    let mut workspace = TestWorkspace::in_workspace(TestWorkspaceId(42), placed, "Runtime doors");
     workspace.set_owner(actor.clone());
     let workspace_id = workspace.room().to_string();
     let mut tree = WorkspaceTree {

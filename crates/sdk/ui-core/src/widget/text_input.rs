@@ -647,8 +647,8 @@ pub type SpanHighlighter =
 pub type MistakeMarker = Box<dyn Fn(&str) -> Vec<std::ops::Range<usize>>>;
 
 /// Where a detected address opens: a web link as it is (a bare host gets
-/// `https://`), an email address as `mailto:`; mentions and room aliases are
-/// not links.
+/// `https://`), an email address as `mailto:`; mentions and workspace
+/// aliases are not links.
 fn link_target(what: crate::text_detect::Detected, text: &str) -> Option<String> {
     use crate::text_detect::Detected;
     match what {
@@ -666,7 +666,7 @@ fn link_target(what: crate::text_detect::Detected, text: &str) -> Option<String>
             (target.starts_with("https://") || target.starts_with("http://")).then_some(target)
         }
         Detected::Email => Some(format!("mailto:{text}")),
-        Detected::Mention | Detected::RoomAlias => None,
+        Detected::Mention | Detected::WorkspaceAlias => None,
     }
 }
 

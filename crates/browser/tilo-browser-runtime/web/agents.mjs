@@ -1,9 +1,9 @@
 /**
- * `peer.agents`: the agents working in this room, seen and steered from the
+ * `peer.agents`: the agents working in this workspace, seen and steered from the
  * page.
  *
- * Agents are participants of the room like this page: each is a device of
- * the user with a root-signed delegation (label, cursor colour, rooms,
+ * Agents are participants of the workspace like this page: each is a device of
+ * the user with a root-signed delegation (label, cursor colour, workspaces,
  * apps). The host supervises them and answers the agent vocabulary of
  * `tilo_relay_protocol::agents` as `tilo_actions` remote actions addressed
  * to its own device — the same frames `actionsV1` uses for apps:
@@ -13,7 +13,7 @@
  *   → `{grant, pairingCode}`: the host asks the user's approving device,
  *   which approves the agent and signs its delegation in one step; the
  *   grant's `state` in `status()` goes `pending` → `approved` (or `denied`);
- * - `spawn({grant, task, room?, id?})` → `{agentId, taskId}` and
+ * - `spawn({grant, task, workspace?, id?})` → `{agentId, taskId}` and
  *   `message(agentId, text, {id?})` → `{taskId}`. `id` (a UUID) is the
  *   caller's idempotency id: it names the invocation, so a call resent with
  *   the same id after a timeout or a reload gets the host's first answer
@@ -37,7 +37,7 @@
  *
  * - `catalogue(query)` → `CataloguePage`: one provider per open record
  *   (`record:<app>:<record>`) with every action it publishes, declared and
- *   projected controls, and the room's provider offering `app.<app>#open`;
+ *   projected controls, and the workspace's provider offering `app.<app>#open`;
  * - `invoke(target, argument, {confirm})` → `ActionOutput`, where `target`
  *   is `{provider, address}` copied from a row.
  *
@@ -77,20 +77,20 @@ function hostError(error) {
 /**
  * @param options.peer           the wasm `WasmPeer` (`sendRemoteAction`, `takeRemoteActionEvents`)
  * @param options.runtime        the wasm module (`verifyAgentDelegation`)
- * @param options.room           room uuid
+ * @param options.workspace      workspace uuid
  * @param options.hostDevice     the host's device key (hex): `host.hostCert.device_public_key`
  * @param options.userPublicKey  the user root (hex) delegations must verify against
- * @param options.live           the room's live layer, for `cursors()`
+ * @param options.live           the workspace's live layer, for `cursors()`
  */
 export function createAgents({
-  peer, runtime, room, hostDevice, userPublicKey, live,
+  peer, runtime, workspace, hostDevice, userPublicKey, live,
   newId = () => globalThis.crypto.randomUUID(),
   wallNow = () => Date.now(),
   timeoutMs = DEFAULT_TIMEOUT_MS,
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
 }) {
-  if (!peer || !room || !hostDevice) throw new TypeError('peer, room and hostDevice are required');
+  if (!peer || !workspace || !hostDevice) throw new TypeError('peer, workspace and hostDevice are required');
   const pending = new Map(); // invocation id or `catalogue:<n>` -> {resolve, reject, timer, to}
   let correlation = 0;
   let closed = false;
@@ -155,7 +155,7 @@ export function createAgents({
     });
     entry.promise = promise;
     try {
-      peer.sendRemoteAction(room, to, frame);
+      peer.sendRemoteAction(workspace, to, frame);
     } catch (error) {
       settle(key, waiting => waiting.reject(error));
     }
@@ -231,7 +231,7 @@ export function createAgents({
     verify,
     actions,
     /**
-     * Every agent cursor in the room now: the live layer's interpolated
+     * Every agent cursor in the workspace now: the live layer's interpolated
      * remote state of publishers whose presence says `agent`.
      */
     cursors(nowMs) {

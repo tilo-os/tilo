@@ -8,12 +8,31 @@ use super::{
 };
 use tilo_action_policy::roles::AgentPreset;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 const APP: &str = "so.tilo.desktop";
 const RECORD: &str = "membership";
 const WORKSPACE: &str = "desktop:workspace";
 const AGENT_PREFIX: &str = "desktop:agent:";
+
+/// Which of a workspace's two published surfaces: this device's own membership
+/// changes, and the workspace's governance under the provider every client
+/// names without a catalogue page.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Surface {
+    Membership,
+    Governance,
+}
+
+impl Surface {
+    /// The application a surface's actions are published as.
+    pub(super) const fn app_id(self) -> &'static str {
+        match self {
+            Self::Membership => APP,
+            Self::Governance => tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
+        }
+    }
+}
 const GRANT_APP_AUTHORSHIP: &str = "grant-app-authorship";
 
 impl AppBrokerState {
@@ -92,15 +111,19 @@ impl AppBrokerState {
                 let (action, argument) = bot_invocation(command)?;
                 (WORKSPACE.into(), action, Some(argument))
             }
-            WorkspaceMembershipCommand::Member { .. } => {
-                return Err(
-                    "a change to the workspace's people is its person's own, made at their device"
-                        .into(),
-                );
-            }
+            WorkspaceMembershipCommand::Member { change } => (
+                governance_resource(workspace),
+                change.action(),
+                Some(encoded(change)?),
+            ),
+            WorkspaceMembershipCommand::Settings(SettingsChange::Rename { name }) => (
+                governance_resource(workspace),
+                "rename",
+                Some(encoded(&serde_json::json!({ "name": name }))?),
+            ),
             WorkspaceMembershipCommand::Settings(_) => {
                 return Err(
-                    "a change to the workspace's settings is its person's own, made at their device"
+                    "a workspace's saved grant sets and app permissions change where its person changes them"
                         .into(),
                 );
             }
@@ -375,6 +398,119 @@ impl AppBrokerState {
         )
     }
 
+    /// Start one change to a workspace's people, addressed under the provider
+    /// every client names without a catalogue page: the change is made here,
+    /// where its person is, and admitted by every device
+    /// ([`people_command`]).
+    pub(super) fn start_governance_action(
+        self: &Arc<Self>,
+        caller: &tilo_actions::remote::Caller,
+        origin: Option<&super::InvocationCaller>,
+        original_request: &tilo_actions::remote::InvokeRequest,
+        request: &tilo_actions::remote::InvokeRequest,
+        argument: Option<&str>,
+    ) -> Result<super::action_host::Started, tilo_actions::remote::ActionHostError> {
+        use tilo_actions::remote::ActionHostError;
+        let address = &request.target.address;
+        let Some(workspace) = address
+            .resource
+            .strip_prefix(&format!(
+                "{}:",
+                tilo_actions::remote::WORKSPACE_GOVERNANCE_KIND
+            ))
+            .filter(|workspace| !workspace.is_empty())
+        else {
+            return Err(ActionHostError::UnknownAction);
+        };
+        let Some((surface, action)) =
+            self.governance_surface(workspace, &address.resource, &address.action)
+        else {
+            return Err(ActionHostError::UnknownAction);
+        };
+        let Some((committed, actor, now)) =
+            self.decide_for(caller, workspace, |committed, actor, now| {
+                (committed.clone(), actor.clone(), now)
+            })
+        else {
+            return Err(ActionHostError::UnknownAction);
+        };
+        // A workspace's people change at its own host person's device, never
+        // by an agent acting for them.
+        if actor.direct_person().is_none() {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let need = action.contract.need();
+        let node = tilo_action_policy::roles::governance_action(workspace, &address.action);
+        if !actor
+            .answer_in(&committed, &node, need.kind, now)
+            .admits(actor.direct())
+        {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let token = self.confirmation_token(
+            surface.peer_id,
+            &surface.app_id,
+            &action,
+            argument,
+            &actor,
+            request.confirmation.as_ref(),
+            &self.witness_binding(actor.id(), workspace, original_request),
+        )?;
+        self.start_invocation_confirmed_for_origin(
+            surface.peer_id,
+            &address.resource,
+            &address.action,
+            super::InvocationInputs {
+                original_request: Some(original_request),
+                caller: Some(caller),
+                requested: Some(request.invocation),
+                execution: super::ExecutionScope::for_call(caller, request.invocation),
+                argument,
+                actor: &actor,
+                confirmation_token: token.as_deref(),
+                context: request.context.clone(),
+            },
+            origin.cloned(),
+        )
+        .map(super::action_host::Started::Staged)
+        .map_err(super::action_host::refusal)
+    }
+
+    /// The published surface of `workspace`'s governance offering `action` on
+    /// `resource`, with the action it publishes: one surface, so a change goes
+    /// to the one place that makes it.
+    fn governance_surface(
+        &self,
+        workspace: &str,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        let offered = {
+            let surfaces = self.surfaces.lock().ok()?;
+            surfaces
+                .values()
+                .filter(|surface| {
+                    surface.live
+                        && surface.app_id == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+                        && surface.route.cluster_id == workspace
+                })
+                .filter_map(|surface| {
+                    let action = surface
+                        .actions
+                        .iter()
+                        .find(|candidate| {
+                            candidate.resource == resource && candidate.action == action
+                        })?
+                        .clone();
+                    Some((surface.clone(), action))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut offered = offered.into_iter();
+        let one = offered.next()?;
+        offered.next().is_none().then_some(one)
+    }
+
     /// Whether `workspace`'s membership actions are published on this broker.
     pub(crate) fn membership_published(&self, workspace: &str) -> bool {
         self.workspace_membership_peers
@@ -479,54 +615,80 @@ impl AppBrokerState {
             if service.keeps_checkpoints(&workspace) {
                 actions.extend(super::workspace_checkpoints::actions());
             }
-
-            let existing = self
-                .workspace_membership_peers
-                .lock()
-                .map_err(|_| "membership service registry unavailable")?
-                .get(&workspace)
-                .copied();
-            if let Some(peer) = existing {
-                let changed = {
-                    let mut surfaces = self
-                        .surfaces
-                        .lock()
-                        .map_err(|_| "membership surfaces unavailable")?;
-                    surfaces.get_mut(&peer).is_some_and(|surface| {
-                        if surface.actions == actions {
-                            return false;
-                        }
-                        surface.actions = actions;
-                        true
-                    })
-                };
-                if changed {
-                    self.publish_changed_action_catalogue();
-                }
-                continue;
+            let governance = people_actions(&governance_resource(&workspace));
+            let membership = self.publish_workspace_surface(
+                Surface::Membership,
+                &workspace,
+                actions,
+                service.clone(),
+            )?;
+            let people = self.publish_workspace_surface(
+                Surface::Governance,
+                &workspace,
+                governance,
+                service.clone(),
+            )?;
+            if membership || people {
+                self.publish_changed_action_catalogue();
             }
-            self.start_workspace_membership_service(workspace, actions, service.clone())?;
         }
         Ok(())
     }
 
-    fn start_workspace_membership_service(
+    /// Publish `actions` as the workspace's `surface` and say the action
+    /// catalogue changed, or say the same actions are published already: a
+    /// workspace keeps one surface of each kind, replaced in place as what it
+    /// offers changes.
+    fn publish_workspace_surface(
         self: &Arc<Self>,
+        surface: Surface,
+        workspace: &str,
+        actions: Vec<PublishedAction>,
+        service: Arc<dyn crate::services::WorkspaceMemberships>,
+    ) -> Result<bool, String> {
+        let peers = self.workspace_surface_peers(surface);
+        let existing = peers
+            .lock()
+            .map_err(|_| "workspace surface registry unavailable")?
+            .get(workspace)
+            .copied();
+        if let Some(peer) = existing {
+            let changed = {
+                let mut surfaces = self
+                    .surfaces
+                    .lock()
+                    .map_err(|_| "membership surfaces unavailable")?;
+                surfaces.get_mut(&peer).is_some_and(|published| {
+                    if published.actions == actions {
+                        return false;
+                    }
+                    published.actions = actions;
+                    true
+                })
+            };
+            return Ok(changed);
+        }
+        self.start_workspace_surface(surface, workspace.to_owned(), actions, service)
+    }
+
+    fn start_workspace_surface(
+        self: &Arc<Self>,
+        which: Surface,
         workspace: String,
         actions: Vec<PublishedAction>,
         service: Arc<dyn crate::services::WorkspaceMemberships>,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let peer = self.next_service_peer_id();
         let surface = PublishedSurface {
             peer_id: peer,
-            app_id: APP.into(),
+            app_id: which.app_id().into(),
             route: CrdtRoute::record(APP, &workspace, RECORD),
             live: true,
             actions,
         };
-        self.workspace_membership_peers
+        self.workspace_surface_peers(which)
             .lock()
-            .map_err(|_| "membership service registry unavailable")?
+            .map_err(|_| "workspace surface registry unavailable")?
             .insert(workspace.clone(), peer);
         let served_workspace = workspace.clone();
         self.serve_published(
@@ -547,13 +709,12 @@ impl AppBrokerState {
                 if removed {
                     state.publish_changed_action_catalogue();
                 }
-                if let Ok(mut peers) = state.workspace_membership_peers.lock() {
+                if let Ok(mut peers) = state.workspace_surface_peers(which).lock() {
                     peers.remove(&workspace);
                 }
             },
         )?;
-        self.publish_changed_action_catalogue();
-        Ok(())
+        Ok(true)
     }
 
     async fn execute_workspace_checkpoint(
@@ -650,6 +811,9 @@ impl AppBrokerState {
 }
 
 fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembershipCommand, String> {
+    if let Some(command) = people_command(envelope)? {
+        return Ok(command);
+    }
     let command = if let Some(command) = bot_command(envelope)? {
         command
     } else if envelope.resource == WORKSPACE && envelope.action == "add-agent" {
@@ -705,6 +869,57 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
     };
     command.validate()?;
     Ok(command)
+}
+
+/// The address a change to a workspace's people is made at: the governance
+/// resource every client names, `workspace.permissions:<workspace>`.
+fn governance_resource(workspace: &str) -> String {
+    tilo_actions::remote::workspace_governance_resource(workspace)
+}
+
+/// `value` as an invocation's argument, under the prefix the broker's own
+/// actions carry.
+fn encoded(value: &impl serde::Serialize) -> Result<String, String> {
+    let json = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    Ok(format!("{}{json}", tilo_actions::ARGUMENTS_JSON_PREFIX))
+}
+
+/// The change to a workspace's people `envelope` asks for, when its address is
+/// the workspace's governance: a role, a removal, a ban or a restriction, or
+/// the workspace's own name. `None` for every other address.
+fn people_command(
+    envelope: &InvocationEnvelope,
+) -> Result<Option<WorkspaceMembershipCommand>, String> {
+    let prefix = format!("{}:", tilo_actions::remote::WORKSPACE_GOVERNANCE_KIND);
+    let Some(workspace) = envelope.resource.strip_prefix(&prefix) else {
+        return Ok(None);
+    };
+    if workspace.is_empty() {
+        return Err("a workspace's governance names its workspace".into());
+    }
+    if envelope.action == "rename" {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Rename {
+            name: String,
+        }
+        let rename: Rename =
+            serde_json::from_str(bounded_argument(envelope, "the workspace's name")?)
+                .map_err(|error| error.to_string())?;
+        return Ok(Some(WorkspaceMembershipCommand::Settings(
+            SettingsChange::Rename { name: rename.name },
+        )));
+    }
+    let change: tilo_action_policy::Change =
+        serde_json::from_str(bounded_argument(envelope, "the change")?)
+            .map_err(|error| error.to_string())?;
+    if change.action() != envelope.action {
+        return Err(format!(
+            "`{}` is not a change to {workspace}'s people",
+            envelope.action
+        ));
+    }
+    Ok(Some(WorkspaceMembershipCommand::Member { change }))
 }
 
 /// The bot commands an envelope names: their arguments are the whole
@@ -886,6 +1101,104 @@ fn membership_actions(workspace: &tilo_desktop_model::Workspace, now: u64) -> Ve
             }),
     );
     actions
+}
+
+/// The changes to a workspace's people, as the workspace's governance offers
+/// them: the verbs its clients already name (`tilo_action_policy::roles::
+/// governance`), made here at this device and admitted by every device.
+fn people_actions(resource: &str) -> Vec<PublishedAction> {
+    use tilo_action_policy::roles::governance;
+    let person = || {
+        tilo_actions::ActionParam::required(
+            "person",
+            tilo_actions::ParamType::Text,
+            "The member's person: their user root key, 64 hex characters.",
+        )
+    };
+    let role = || {
+        tilo_actions::ActionParam::required(
+            "role",
+            tilo_actions::ParamType::Text,
+            "The role they get: viewer, commenter, editor or moderator.",
+        )
+    };
+    vec![
+        people_action(
+            resource,
+            governance::ADD_MEMBER,
+            "People",
+            "Add a member",
+            vec![person(), role()],
+        ),
+        people_action(
+            resource,
+            governance::SET_ROLE,
+            "People",
+            "Change a member's role",
+            vec![person(), role()],
+        ),
+        people_action(
+            resource,
+            governance::REMOVE_MEMBER,
+            "People",
+            "Remove a member",
+            vec![person()],
+        ),
+        people_action(resource, governance::BAN, "People", "Ban", vec![person()]),
+        people_action(
+            resource,
+            governance::UNBAN,
+            "People",
+            "Lift a ban",
+            vec![person()],
+        ),
+        people_action(
+            resource,
+            governance::RESTRICT,
+            "People",
+            "Restrict a member",
+            vec![
+                person(),
+                tilo_actions::ActionParam::required(
+                    "until_ms",
+                    tilo_actions::ParamType::Integer,
+                    "Until when they may change nothing, in Unix milliseconds.",
+                ),
+            ],
+        ),
+        people_action(
+            resource,
+            governance::UNRESTRICT,
+            "People",
+            "Lift a restriction",
+            vec![person()],
+        ),
+        people_action(
+            resource,
+            "rename",
+            "Workspace",
+            "Rename the workspace",
+            vec![tilo_actions::ActionParam::required(
+                "name",
+                tilo_actions::ParamType::Text,
+                "The workspace's new name.",
+            )],
+        ),
+    ]
+}
+
+/// One of them, published as the workspace's governance resource its clients
+/// already look for.
+fn people_action(
+    resource: &str,
+    action: &str,
+    label: &str,
+    action_label: &str,
+    params: Vec<tilo_actions::ActionParam>,
+) -> PublishedAction {
+    let mut published = membership_action(resource, action, label, action_label, params);
+    published.resource_kind = tilo_actions::remote::WORKSPACE_GOVERNANCE_KIND.into();
+    published
 }
 
 /// The membership action and arguments a bot command travels as.
@@ -1438,11 +1751,13 @@ mod tests {
                     (WORKSPACE, "set-bot-appearance"),
                     (WORKSPACE, "request-bot"),
                     (WORKSPACE, "withdraw-bot-request"),
+                ];
+                expected.extend([
                     ("desktop:checkpoints", "capture"),
                     ("desktop:checkpoints", "inspect"),
                     ("desktop:checkpoints", "name-bind"),
                     ("desktop:checkpoints", "find"),
-                ];
+                ]);
                 assert_membership_action_set(&state, &workspace, &expected);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(
@@ -1677,6 +1992,79 @@ mod tests {
     }
 
     #[test]
+    fn a_change_to_the_workspaces_people_is_the_governance_action_it_names() {
+        use tilo_action_policy::Change;
+        let governance = governance_resource("8f0ee7bd-30e8-4e2f-9f17-2e57cbcf84b2");
+        for change in [
+            Change::SetRole {
+                person: "a".repeat(64),
+                role: tilo_action_policy::Role::Editor,
+            },
+            Change::Ban {
+                person: "b".repeat(64),
+            },
+            Change::Restrict {
+                person: "c".repeat(64),
+                until_ms: 1_790_000_000_000,
+            },
+            Change::Unrestrict {
+                person: "c".repeat(64),
+            },
+        ] {
+            let request = envelope(
+                &governance,
+                change.action(),
+                Some(serde_json::to_value(&change).unwrap()),
+            );
+            assert_eq!(
+                membership_command(&request).unwrap(),
+                WorkspaceMembershipCommand::Member {
+                    change: change.clone()
+                },
+                "{} travels as its own change",
+                change.action()
+            );
+            assert_eq!(
+                encoded(&change).unwrap(),
+                request.argument.clone().unwrap(),
+                "the change the broker publishes is the argument it reads back"
+            );
+        }
+        let rename = envelope(&governance, "rename", Some(serde_json::json!("Plans")));
+        assert!(
+            membership_command(&rename).is_err(),
+            "a name is not a bare string"
+        );
+        assert_eq!(
+            membership_command(&envelope(
+                &governance,
+                "rename",
+                Some(serde_json::json!({"name": "Plans"})),
+            ))
+            .unwrap(),
+            WorkspaceMembershipCommand::Settings(SettingsChange::Rename {
+                name: "Plans".into()
+            })
+        );
+        let ban = serde_json::to_value(Change::Ban {
+            person: "b".repeat(64),
+        })
+        .unwrap();
+        assert!(
+            membership_command(&envelope(&governance, "unban", Some(ban.clone()))).is_err(),
+            "a verb names the change it makes"
+        );
+        assert!(
+            membership_command(&envelope(WORKSPACE, "ban", Some(ban))).is_err(),
+            "a change to the people is made on the workspace's governance, not elsewhere"
+        );
+        assert!(
+            membership_command(&envelope(WORKSPACE, "add-agent", None)).is_err(),
+            "the closed membership verbs keep their own arguments"
+        );
+    }
+
+    #[test]
     fn membership_actions_are_admin_only() {
         let workspace =
             tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Membership");
@@ -1688,5 +2076,147 @@ mod tests {
         assert!(actions.iter().any(|action| {
             action.resource == WORKSPACE && action.action == "grant-app-authorship"
         }));
+        // The changes to the workspace's people are the governance resource a
+        // client names without a catalogue page.
+        let governance = governance_resource(&workspace.room().to_string());
+        let people = people_actions(&governance);
+        assert_eq!(
+            people.len(),
+            8,
+            "every change the people's governance takes"
+        );
+        assert!(people.iter().all(|action| {
+            action.resource == governance
+                && action.resource_kind == tilo_actions::remote::WORKSPACE_GOVERNANCE_KIND
+                && action.contract.kind == tilo_actions::ActionKind::Outside
+        }));
+        assert!(people.iter().any(|action| action.action == "ban"));
+    }
+
+    /// The changes to a workspace's people are published where every client
+    /// names them, and a change reaches the one surface that makes it.
+    #[tokio::test]
+    async fn the_workspaces_people_are_offered_under_the_provider_clients_name() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut tree = crate::test_support::WorkspaceTree::default();
+                tree.desktop
+                    .workspaces
+                    .push(tilo_desktop_model::Workspace::new(
+                        tilo_desktop_model::WorkspaceId(1),
+                        "Governed",
+                    ));
+                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let tree = tree.shared();
+                let state = AppBrokerState::new_configured(
+                    &Arc::new(super::super::FanoutState::new()),
+                    Arc::new(std::sync::Mutex::new(
+                        super::super::BrokerChannels::default(),
+                    )),
+                    super::super::PeerPublisher::disabled(),
+                    Some(tree.authority()),
+                    None,
+                    None,
+                    HostServices {
+                        workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
+                        ..Default::default()
+                    },
+                )
+                .0;
+                state.refresh_workspace_membership_services().unwrap();
+                let resource = governance_resource(&workspace);
+                let (surface, offered) = state
+                    .governance_surface(&workspace, &resource, "set-role")
+                    .expect("the people's changes are published");
+                assert_eq!(
+                    surface.app_id,
+                    tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+                );
+                assert_eq!(offered.resource_kind, "workspace.permissions");
+                assert_eq!(surface.actions.len(), 8);
+                assert!(
+                    state
+                        .governance_surface(&workspace, &resource, "call")
+                        .is_none(),
+                    "a verb the workspace's people do not offer names nothing here"
+                );
+                assert!(
+                    state
+                        .governance_surface(
+                            "another-workspace",
+                            &governance_resource("another-workspace"),
+                            "set-role"
+                        )
+                        .is_none(),
+                    "a workspace this device does not publish is not answered for"
+                );
+                drop(state);
+            })
+            .await;
+    }
+
+    /// A governance request that names no published change starts nothing: the
+    /// surface it would run on is the one that offers it.
+    #[tokio::test]
+    async fn a_governance_request_naming_no_published_change_starts_nothing() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut tree = crate::test_support::WorkspaceTree::default();
+                tree.desktop
+                    .workspaces
+                    .push(tilo_desktop_model::Workspace::new(
+                        tilo_desktop_model::WorkspaceId(1),
+                        "Governed",
+                    ));
+                let workspace = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let tree = tree.shared();
+                let state = AppBrokerState::new_configured(
+                    &Arc::new(super::super::FanoutState::new()),
+                    Arc::new(std::sync::Mutex::new(
+                        super::super::BrokerChannels::default(),
+                    )),
+                    super::super::PeerPublisher::disabled(),
+                    Some(tree.authority()),
+                    None,
+                    None,
+                    HostServices {
+                        workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
+                        ..Default::default()
+                    },
+                )
+                .0;
+                state.refresh_workspace_membership_services().unwrap();
+                let caller =
+                    tilo_actions::remote::Caller::local_person("someone").in_workspace(&workspace);
+                let request = |resource: &str, action: &str| tilo_actions::remote::InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.into(),
+                        address: tilo_actions::ActionAddress::new(resource, action),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::None,
+                    confirmation: None,
+                    context: None,
+                    revision: None,
+                    wait_ms: None,
+                    appearance: None,
+                    on_behalf_of: None,
+                };
+                for (resource, action) in [
+                    (governance_resource(&workspace), "call"),
+                    ("desktop:workspace".to_owned(), "add-agent"),
+                ] {
+                    let request = request(&resource, action);
+                    assert!(
+                        matches!(
+                            state.start_governance_action(&caller, None, &request, &request, None),
+                            Err(tilo_actions::remote::ActionHostError::UnknownAction)
+                        ),
+                        "{action} on {resource} is not one of the people's changes"
+                    );
+                }
+                drop(state);
+            })
+            .await;
     }
 }

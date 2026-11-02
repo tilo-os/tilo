@@ -128,7 +128,7 @@ pub(crate) fn page_provider_admin() -> ui::models::ProviderAdministration {
 }
 
 /// Whether the page's own model service has a provider to ask: something
-/// to lend a report's review rather than the room's model.
+/// to lend a report's review rather than the workspace's model.
 pub(crate) fn page_models_set_up() -> bool {
     ProviderConfig::load()
         .profiles

@@ -12,9 +12,11 @@ pub struct ItemRef {
     pub label: String,
 }
 
-/// One committed change to a record in the room, as a trigger sees it.
+/// One committed change to a record in the workspace, as a trigger sees it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecordEvent {
+    /// The workspace's id. It keeps the key `room` on the wire: a program
+    /// reads it as `event.room`, and the bot host fills it in.
     pub room: String,
     /// The record's id.
     pub record: String,
@@ -65,12 +67,12 @@ impl RecordEvent {
 }
 
 /// The event the history entry `context` of change `change` (hex hash) to
-/// record `record` of `kind` in `room` describes. Every host reads an
-/// entry through this one function, so a person's devices and a room's
+/// record `record` of `kind` in `workspace` describes. Every host reads an
+/// entry through this one function, so a person's devices and a workspace's
 /// host see the same event.
 #[must_use]
 pub fn event_of(
-    room: &str,
+    workspace: &str,
     record: &str,
     kind: &str,
     change: &str,
@@ -85,7 +87,7 @@ pub fn event_of(
             .map(|facet| facet.value.clone())
     };
     RecordEvent {
-        room: room.to_owned(),
+        room: workspace.to_owned(),
         record: record.to_owned(),
         kind: kind.to_owned(),
         change: change.to_owned(),
@@ -182,12 +184,14 @@ pub struct ConnectorEvent {
 }
 
 /// Something an application declared next to its actions, published as a
-/// change to a record of its own kind in the room (`mail.message`,
+/// change to a record of its own kind in the workspace (`mail.message`,
 /// `calendar.event`). The kind carries the declaring app, so no host code
 /// knows any one app's events.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppEvent {
-    /// The room whose record announced it.
+    /// The workspace whose record announced it. The field keeps the name
+    /// `room`, as a host compares it with the workspace an armed program
+    /// watches.
     pub room: String,
     pub app_id: String,
     /// The announced event kind, such as `mail.message`.

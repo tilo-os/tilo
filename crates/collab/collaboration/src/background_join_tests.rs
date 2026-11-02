@@ -103,10 +103,10 @@ fn a_joining_manager_builds_on_its_local_replica_and_takes_the_answer_as_an_even
 }
 
 /// While the broker holds the join it says why, and the manager follows
-/// each change as an event: the room waits, then the broker cannot be
+/// each change as an event: the workspace waits, then the broker cannot be
 /// reached. The join's answer clears it.
 #[test]
-fn a_joining_manager_follows_the_brokers_room_status() {
+fn a_joining_manager_follows_the_brokers_workspace_status() {
     let mut scope = crate::wake::WakeScope::new();
     let wakes = wakes_of(&mut scope);
     let placing = runtime_collab::WorkspaceStatus::Waiting {
@@ -122,27 +122,32 @@ fn a_joining_manager_follows_the_brokers_room_status() {
             placing,
         )
     };
-    poll_on_wakes(&mut manager, &wakes, "the room's wait", |manager, _| {
-        manager.join_hold()
-            == Some(crate::JoinHold::RoomWaiting {
-                reason: "Placing the workspace on its host".into(),
-                detail: None,
-            })
-    });
-    broker.set_room(runtime_collab::WorkspaceStatus::Waiting {
+    poll_on_wakes(
+        &mut manager,
+        &wakes,
+        "the workspace's wait",
+        |manager, _| {
+            manager.join_hold()
+                == Some(crate::JoinHold::WorkspaceWaiting {
+                    reason: "Placing the workspace on its host".into(),
+                    detail: None,
+                })
+        },
+    );
+    broker.set_workspace_status(runtime_collab::WorkspaceStatus::Waiting {
         reason: "Waiting for the host".into(),
         detail: Some("the host is offline".into()),
     });
     poll_on_wakes(&mut manager, &wakes, "the next wait", |manager, _| {
         matches!(
             manager.join_hold(),
-            Some(crate::JoinHold::RoomWaiting {
+            Some(crate::JoinHold::WorkspaceWaiting {
                 detail: Some(_),
                 ..
             })
         )
     });
-    broker.room_unreachable("the broker went away");
+    broker.workspace_unreachable("the broker went away");
     poll_on_wakes(
         &mut manager,
         &wakes,

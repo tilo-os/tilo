@@ -1,0 +1,75 @@
+desktop:chrome desktop (Desktop)
+  activity Show a workspace's history
+  close-activity Close the workspace's history
+  close-window Close a window
+  equalize Equalize widths
+  fullscreen Fill the display with a window
+  history Move through a window's own history
+  join-workspace Show the workspaces this computer may join
+  leave-workspace Leave a workspace
+  maximize Maximize a window
+  move-strip Move a strip
+  move-tab Move a tab elsewhere
+  new-group New group
+  new-strip New strip
+  new-workspace New workspace
+  notifications Open or close the notification centre
+  open-app Open an app
+  overview Open or close the overview
+  pan Pan a strip
+  quick-settings Open or close quick settings
+  rename Rename something
+  reopen-closed Reopen what was closed last
+  reveal-top-bar Show the top bar over a full screen window
+  scroll Scroll a window
+  set-width Set width
+  share-window Share a window
+  shortcut Run a desktop shortcut
+  show-app Show an app
+  show-person Show a person
+  show-strip Show a strip
+  show-strips Show the strips
+  split-right Split right
+  step-strip Step through the strips
+  stop-desktop-control Take back the desktop control a window holds
+  switch-workspace Switch workspace
+  tilo-menu Open or close the Tilo menu
+  toggle-collaborators Open or close who is here
+  workspace-menu Open or close the workspace menu
+  workspace-settings Open the workspace's settings
+desktop:desk desktop (Windows)
+  choose-search-row Choose a search row
+  close-tab Close a tab
+  focus Focus a window
+  focus-display Focus a display
+  launchpad Choose a launchpad card
+  move-to-display Move the window in front to another display
+  search Search the desktop
+  step-focus Step through the windows
+  desktop:tab:7 desktop.window (Notes)
+    close-tab Close a tab
+    focus Focus a window
+  desktop:tab:8 desktop.window (Mail)
+    close-tab Close a tab
+    focus Focus a window
+  desktop:display:1 desktop.display (Display 1)
+    focus-display Focus a display
+  desktop:search desktop.search (scr)
+    search Search the desktop
+    desktop:search:row:0 desktop.search-row (Scratch)
+      choose-search-row Scratch
+desktop:launchpad desktop (Launchpad)
+  desktop:launchpad:chat desktop.launchpad-card (Discuss)
+    launchpad Discuss
+  desktop:launchpad:notes desktop.launchpad-card (Notes)
+    launchpad Notes
+  desktop:launchpad:tasks desktop.launchpad-card (Tasks)
+    launchpad Tasks
+  desktop:launchpad:meet desktop.launchpad-card (Start a call)
+    launchpad Start a call
+  desktop:launchpad:invite desktop.launchpad-card (Invite people)
+    launchpad Invite people
+  desktop:launchpad:activity desktop.launchpad-card (Catch up)
+    launchpad Catch up
+  desktop:launchpad:apps desktop.launchpad-card (Open an app)
+    launchpad Open an app

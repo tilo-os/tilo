@@ -179,8 +179,8 @@ impl MediaLane {
 /// governance resource's (`workspace.permissions:<workspace>`).
 fn host_runs(provider: &str) -> bool {
     provider.starts_with("record:")
-        || tilo_actions::remote::workspace_provider_room(provider).is_some()
-        || provider == tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER
+        || tilo_actions::remote::provider_workspace(provider).is_some()
+        || provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
 }
 
 /// Why the lane refuses an invocation of `provider` with `queued` already

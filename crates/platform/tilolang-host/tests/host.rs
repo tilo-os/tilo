@@ -1894,7 +1894,7 @@ fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_wh
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
     // The record as the store wrote it before a record's first change named itself.
     let stamp = {
-        let mut store = collaboration::record::save::room_document(
+        let mut store = collaboration::record::save::workspace_document(
             &documents,
             APP,
             &route.cluster_id.to_string(),

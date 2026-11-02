@@ -364,8 +364,8 @@ mod tests {
 
     #[test]
     fn semantics_follow_key_not_name_or_pointer_and_departures_retire_controls() {
-        let room = "11111111-1111-4111-8111-111111111111";
-        let source = cursor(room, "Ada");
+        let workspace = "11111111-1111-4111-8111-111111111111";
+        let source = cursor(workspace, "Ada");
         let target = source.action_target();
         let mut cursors = PersonCursors::default();
         cursors.publish(vec![source.clone()], "Message");
@@ -395,7 +395,7 @@ mod tests {
             "modal suppression cannot queue a later activation"
         );
         cursors.refresh(false);
-        let mut renamed = cursor(room, "Other label");
+        let mut renamed = cursor(workspace, "Other label");
         renamed.marker = Rect::new(30.0, 40.0, 62.0, 72.0);
         assert_eq!(target, renamed.action_target());
         cursors.activation.set(Some(source));
@@ -428,8 +428,8 @@ mod tests {
     }
 
     #[test]
-    fn invalid_room_or_device_handle_cannot_be_a_person_target() {
-        let mut source = cursor("not-a-room", "Ada");
+    fn invalid_workspace_or_device_handle_cannot_be_a_person_target() {
+        let mut source = cursor("not-a-workspace", "Ada");
         assert!(!source.valid());
         source.workspace = "11111111-1111-4111-8111-111111111111".into();
         source.person_key = "peer@4".into();

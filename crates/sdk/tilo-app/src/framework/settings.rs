@@ -131,12 +131,12 @@ pub(crate) struct ViewStorage {
     /// ([`Records::kept_by`](super::Records::kept_by)): views show them and
     /// bind to them, the window neither publishes nor runs their actions.
     kept_by: RefCell<HashMap<String, &'static str>>,
-    /// The store of the app's records in the room, for the records it
+    /// The store of the app's records in the workspace, for the records it
     /// keeps beside its own: not in a view of a past version.
-    room: Option<super::chain::RoomRecords>,
+    records: Option<super::chain::WorkspaceRecords>,
     /// The chains the views opened ([`super::Chain`]).
     chains: super::chain::Chains,
-    /// The records every app of the room opens, when the host keeps them:
+    /// The records every app of the workspace opens, when the host keeps them:
     /// not in a view of a past version.
     workspace: Option<Rc<super::workspace::WorkspaceState>>,
     /// The workspace's emoji, as the window's views draw them.
@@ -149,14 +149,14 @@ pub(crate) struct ViewStorage {
 pub(crate) struct Hosted {
     pub(crate) person: Option<ui_core::record::person::PersonRecords>,
     pub(crate) device: Option<String>,
-    /// The store of the app's records in the room, who edits there and
+    /// The store of the app's records in the workspace, who edits there and
     /// what they may do.
-    pub(crate) room: Option<(
+    pub(crate) records: Option<(
         ui_core::record::RecordStore,
         String,
         ui_core::permissions::LivePermissions,
     )>,
-    /// The records every app of the room opens, and the window's wake
+    /// The records every app of the workspace opens, and the window's wake
     /// scope, against which the workspace's emoji are registered.
     pub(crate) workspace: Option<(
         ui_core::record::workspace::WorkspaceRecords,
@@ -168,7 +168,7 @@ pub(crate) struct Hosted {
 pub(crate) struct Attached {
     person: Option<super::person::PersonState>,
     device: Option<String>,
-    room: Option<super::chain::RoomRecords>,
+    records: Option<super::chain::WorkspaceRecords>,
     workspace: Option<Rc<super::workspace::WorkspaceState>>,
     emoji: Option<Rc<super::workspace_emoji::WindowEmoji>>,
 }
@@ -176,7 +176,7 @@ pub(crate) struct Attached {
 impl Hosted {
     pub(crate) fn attach(self, app_id: &'static str, app_title: &'static str) -> Attached {
         let permissions = self
-            .room
+            .records
             .as_ref()
             .map(|(_, _, permissions)| permissions.clone());
         let workspace = self.workspace.map(|(records, wake)| {
@@ -197,7 +197,7 @@ impl Hosted {
             // The app's own records of a kind are kept with its others in
             // the workspace it is open in.
             person: self.person.map(|records| {
-                let own = self.room.as_ref().and_then(|(store, _, _)| {
+                let own = self.records.as_ref().and_then(|(store, _, _)| {
                     let (_, workspace) = store.package_and_home();
                     records
                         .in_workspace(&workspace)
@@ -209,9 +209,9 @@ impl Hosted {
                 super::person::PersonState::new(records, own, app_id, app_title)
             }),
             device: self.device,
-            room: self
-                .room
-                .map(|(store, me, permissions)| super::chain::RoomRecords {
+            records: self
+                .records
+                .map(|(store, me, permissions)| super::chain::WorkspaceRecords {
                     store,
                     me,
                     permissions: Some(permissions),
@@ -233,7 +233,7 @@ impl ViewStorage {
             held_sections: RefCell::default(),
             section_doors: RefCell::default(),
             kept_by: RefCell::default(),
-            room: hosted.room,
+            records: hosted.records,
             chains: super::chain::Chains::default(),
             workspace: hosted.workspace,
             emoji: hosted.emoji,
@@ -242,24 +242,25 @@ impl ViewStorage {
 
     /// The chain of `P` the app keeps beside its record, opened on first
     /// use, its actions reading the app's record from `base`. `None` where
-    /// the window keeps no records in a room (a view of a past version).
+    /// the window keeps no records in a workspace (a view of a past version).
     pub(crate) fn chain<P: super::Chained>(
         &self,
         base: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::chain::ChainState<P>>> {
-        super::controls::opened_in_room::<P>();
-        self.chains.open::<P>(self.room.as_ref(), base)
+        super::controls::opened_in_workspace::<P>();
+        self.chains.open::<P>(self.records.as_ref(), base)
     }
 
     /// The children of `C` the parent lists, held on first use, the parent
     /// read from `parent`. `None` where the window keeps no records in a
-    /// room (a view of a past version).
+    /// workspace (a view of a past version).
     pub(crate) fn children<C: super::children::ChildRecord>(
         &self,
         parent: impl Fn() -> Rc<<C::Parent as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::children::ChildrenState<C>>> {
-        super::controls::opened_in_room::<C>();
-        self.chains.open_children::<C>(self.room.as_ref(), parent)
+        super::controls::opened_in_workspace::<C>();
+        self.chains
+            .open_children::<C>(self.records.as_ref(), parent)
     }
 
     /// Answer one published action of a chain the views opened, invoked by
@@ -279,8 +280,8 @@ impl ViewStorage {
 
     /// The store of the app's records in the workspace; `None` in a view of
     /// a past version.
-    pub(crate) fn room_store(&self) -> Option<&ui_core::record::RecordStore> {
-        self.room.as_ref().map(|room| &room.store)
+    pub(crate) fn workspace_store(&self) -> Option<&ui_core::record::RecordStore> {
+        self.records.as_ref().map(|records| &records.store)
     }
 
     /// This device's id, in a live window.
@@ -292,11 +293,11 @@ impl ViewStorage {
     pub(crate) fn person<P: tilo_resource::Resource>(
         &self,
     ) -> Option<super::person::PersonRecord<P>> {
-        super::controls::opened_in_room::<P>();
+        super::controls::opened_in_workspace::<P>();
         self.person.as_ref()?.open::<P>()
     }
 
-    /// Open the record `P` every app of the room opens that this app
+    /// Open the record `P` every app of the workspace opens that this app
     /// keeps.
     pub(crate) fn workspace_record<P: tilo_resource::Resource>(&self) {
         if let Some(workspace) = &self.workspace {
@@ -304,9 +305,9 @@ impl ViewStorage {
         }
     }
 
-    /// The record `P` every app of the room opens that `owner` keeps,
+    /// The record `P` every app of the workspace opens that `owner` keeps,
     /// opened on first use.
-    pub(crate) fn workspace<P: tilo_resource::Resource>(
+    pub(crate) fn shared_workspace<P: tilo_resource::Resource>(
         &self,
         owner: &'static str,
     ) -> Option<super::workspace::WorkspaceRecord<P>> {

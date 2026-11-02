@@ -24,7 +24,7 @@ fn desk(workspace: &str) -> DesktopTree {
     let workspace = RoomId::parse(workspace).expect("a workspace id");
     let id = tilo_desktop_model::WorkspaceId::of_room(workspace);
     assert_eq!(topic(&workspace.as_uuid().to_string()), id.raw());
-    let workspace = Workspace::in_room(id, workspace, "Desk");
+    let workspace = Workspace::in_workspace(id, workspace, "Desk");
     DesktopTree {
         workspaces: vec![workspace.clone()],
         active: workspace.id,
@@ -62,7 +62,7 @@ fn list_of(
     );
     let workspace = RoomId::parse(workspace).expect("a workspace id");
     directory
-        .add_room_workspace(
+        .add_workspace_with_topic(
             workspace_topic_id(workspace),
             &workspace.to_string(),
             "Desk",

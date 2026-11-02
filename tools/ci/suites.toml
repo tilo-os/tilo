@@ -776,6 +776,7 @@ readers = [
   "crates/lang/tilolang-cli/src/layout_check.rs",
   "crates/lang/tilolang-cli/tests/build.rs",
   "crates/lang/tilolang-cli/tests/native_types.rs",
+  "crates/lang/tilolang-cli/tests/check.rs",
 ]
 
 [[cargo]]
@@ -802,8 +803,15 @@ readers = [
 [[cargo]]
 package = "tilolang-tilo"
 # The collaboration tests compile the built-in packages and the rich-text fixture from their sources.
-inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/"]
+# The platform apps embed the device's published surface and Settings' committed one.
+inputs = [
+  "apps/tl/",
+  "crates/lang/tilolang/tests/fixtures/",
+  "crates/session/session/device-surface.json",
+  "apps/settings/surface.toml",
+]
 readers = [
+  "crates/platform/tilolang-tilo/src/platform_apps.rs",
   "crates/platform/tilolang-tilo/tests/agent_queries.rs",
   "crates/platform/tilolang-tilo/tests/budgets.rs",
   "crates/platform/tilolang-tilo/tests/bundle.rs",
@@ -881,8 +889,8 @@ readers = [
 
 [[cargo]]
 package = "tilo-relay"
-# The room's bot runner is tested with the Discord bridge's program as it
-# ships, the import it plans resuming after the room refused part of a run.
+# A workspace's bot runner is tested with the Discord bridge's program as it
+# ships, the import it plans resuming after the workspace refused part of a run.
 inputs = ["apps/discord/bridge/program.json"]
 readers = [
   "crates/hosting/tilo-relay/src/room_bots/tests.rs",
@@ -1431,8 +1439,11 @@ inputs = [
   # The ask-agent chord's test finds the apps that share a selection in their
   # sources and checks each manifest asks for the shell-ui service.
   "apps/*.rs",
+  # The first-party apps the e2e tests install ship their manifest and surface.
+  "apps/*/surface.toml",
 ]
 readers = [
+  "crates/session/shell/tests/support/first_party_apps.rs",
   "crates/session/shell/src/bin/shots/driver/downloaded_scene.rs",
   "crates/session/shell/src/shell/doc_open.rs",
   "crates/session/shell/src/shell/search/relevance_tests.rs",
@@ -1459,14 +1470,29 @@ package = "tilo-session"
 # each binary is installed; the shell package it compiles from source.
 inputs = [
   "apps/tl/shell/",
+  # The shell screen test loads Notes from its sources beside the shell, and
+  # the session package test checks the session's committed description.
+  "apps/tl/notes/",
+  "apps/tl/session/",
   "os/usr/lib/systemd/system/shell-firstboot.service",
   "os/components.toml",
   # The registry both vaults decode, as builds that kept lifecycle records wrote it.
   "crates/session/fixtures/",
+  # The tilolang apps a development session seeds, and the notebook the shell's tests place.
+  "apps/tl/notes/",
+  "apps/tl/tasks/",
+  "apps/tl/chat/",
+  "apps/tl/mail/",
 ]
 readers = [
   "crates/session/session/tests/firstboot.rs",
+  "crates/session/session/tests/shell_screen.rs",
+  "crates/session/session/tests/session_package.rs",
+  "crates/session/session/tests/repl_door.rs",
   "crates/session/session/src/channels/vault.rs",
+  "crates/session/session/src/seeded_apps.rs",
+  "crates/session/session/tests/repl_door.rs",
+  "crates/session/session/tests/shell_screen.rs",
 ]
 
 [[cargo]]

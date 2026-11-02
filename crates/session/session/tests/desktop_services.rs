@@ -167,7 +167,11 @@ fn until<T>(session: &mut Session, mut asked: impl FnMut(&mut Session) -> Option
 
 /// An app's notification with its own image is shown by the banners and
 /// kept in the centre; the button the person presses on the banner reaches
-/// the app.
+/// the app, and so does opening it from the centre.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one app's notification, banner to centre"
+)]
 #[test]
 fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
     let bus = PrivateBus::start();
@@ -204,7 +208,7 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
     .expect("session");
 
     let runtime = desktop.runtime();
-    let (app, id, mut invoked) = runtime.block_on(async {
+    let (app, proxy, id, mut invoked) = runtime.block_on(async {
         let app = zbus::connection::Builder::address(bus.address())
             .unwrap()
             .build()
@@ -241,7 +245,7 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
             .await
             .unwrap();
         let id: u32 = reply.body().deserialize().unwrap();
-        (app, id, invoked)
+        (app, proxy, id, invoked)
     });
 
     let archive = until(&mut session, |session| {
@@ -267,6 +271,88 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
         .banners()
         .command(tilo_notification_banners::Command::Activate(archive));
     let chosen = until(&mut session, |_| hear.try_recv().ok());
-    drop(app);
     assert_eq!(chosen, Some((id, "archive".to_owned())));
+
+    // Opening it from the centre is the same press, and the centre's
+    // published verb carries it to the app that sent it. A notification the
+    // person opens later has left the banners and waits in the centre.
+    let second = runtime.block_on(async {
+        let posted = async |title: &'static str| {
+            let reply = proxy
+                .call_method(
+                    "Notify",
+                    &(
+                        "Mail",
+                        0_u32,
+                        "",
+                        title,
+                        "From Ada",
+                        vec!["archive", "Archive"],
+                        HashMap::<String, zbus::zvariant::Value>::new(),
+                        0_i32,
+                    ),
+                )
+                .await
+                .unwrap();
+            reply.body().deserialize::<u32>().unwrap()
+        };
+        let second = posted("Invoice").await;
+        // The banners hold a few; the ones they push off retire to the
+        // centre.
+        for title in [
+            "Receipt",
+            "Reminder",
+            "Statement",
+            "Notice",
+            "Update",
+            "Digest",
+        ] {
+            let _ = posted(title).await;
+        }
+        second
+    });
+    let centre = until(&mut session, |session| {
+        let centre = session.read(tilo_session::NOTIFICATIONS_RESOURCE)?;
+        let rows = centre.get("rows")?.as_array()?;
+        rows.iter()
+            .any(|row| row.get("id").and_then(Value::as_u64) == Some(u64::from(second)))
+            .then_some(centre)
+    });
+    assert!(
+        centre.is_some(),
+        "the centre keeps the notification the person opens: {:?}",
+        session.read(tilo_session::NOTIFICATIONS_RESOURCE)
+    );
+    let mut invoked = runtime.block_on(async {
+        proxy
+            .receive_signal("ActionInvoked")
+            .await
+            .expect("the app hears what it is asked")
+    });
+    let (heard, hear) = std::sync::mpsc::channel();
+    runtime.spawn(async move {
+        use futures_util::StreamExt as _;
+        if let Some(signal) = invoked.next().await {
+            let _ = heard.send(signal.body().deserialize::<(u32, String)>().unwrap());
+        }
+    });
+    session
+        .invoke(
+            tilo_session::NOTIFICATIONS_RESOURCE,
+            "open",
+            &Map::from_iter([("notification".to_owned(), Value::from(u64::from(second)))]),
+        )
+        .expect("open the notification");
+    let opened = until(&mut session, |_| hear.try_recv().ok());
+    // The app's own connection is closed where the runtime it was made on
+    // runs: dropping it outside would need a reactor that is gone.
+    runtime.block_on(async {
+        drop(proxy);
+        drop(app);
+    });
+    assert_eq!(
+        opened,
+        Some((second, "archive".to_owned())),
+        "opening it in the centre reaches the app that sent it"
+    );
 }

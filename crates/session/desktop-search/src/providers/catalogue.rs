@@ -49,8 +49,8 @@ enum Row {
 }
 
 pub struct StoreCatalogue {
-    /// The room an app's action runs in.
-    room: String,
+    /// The workspace an app's action runs in.
+    workspace: String,
     entries: Vec<CatalogueEntry>,
     rows: Vec<Row>,
     fields: Vec<Vec<(String, FieldWeight)>>,
@@ -58,9 +58,9 @@ pub struct StoreCatalogue {
 }
 
 impl StoreCatalogue {
-    /// Search `offered`, running an app's actions in `room`.
+    /// Search `offered`, running an app's actions in `workspace`.
     #[must_use]
-    pub fn new(offered: Vec<CatalogueEntry>, room: impl Into<String>) -> Self {
+    pub fn new(offered: Vec<CatalogueEntry>, workspace: impl Into<String>) -> Self {
         let mut rows = Vec::new();
         let mut fields = Vec::new();
         for (at, entry) in offered.iter().enumerate() {
@@ -95,7 +95,7 @@ impl StoreCatalogue {
             }
         }
         Self {
-            room: room.into(),
+            workspace: workspace.into(),
             entries: offered,
             rows,
             fields,
@@ -173,7 +173,7 @@ impl StoreCatalogue {
                     ResourceKind::Action,
                     Target::Invoke(Box::new(InvokeTarget::action(
                         &entry.id,
-                        &self.room,
+                        &self.workspace,
                         &offer.resource,
                         &offer.action,
                     ))),
@@ -276,7 +276,7 @@ mod tests {
             label: "Show tasks".into(),
             description: None,
         }];
-        let catalogue = StoreCatalogue::new(vec![sheets, calendar], "room");
+        let catalogue = StoreCatalogue::new(vec![sheets, calendar], "workspace");
         let app = &catalogue.query("sheets")[0];
         assert_eq!(
             app.target,
@@ -292,7 +292,7 @@ mod tests {
             panic!("an offered action runs by address");
         };
         assert_eq!(target.app, "so.tilo.calendar");
-        assert_eq!(target.room, "room");
+        assert_eq!(target.workspace, "workspace");
         assert_eq!(
             target.address,
             tilo_actions::ActionAddress::new("calendar.calendar", "show-tasks")
@@ -303,7 +303,7 @@ mod tests {
     fn a_flathub_app_opens_its_store_page_and_never_installs() {
         let mut steam = entry("com.valvesoftware.Steam", "Steam", flathub());
         steam.not_built_for_this_device = true;
-        let catalogue = StoreCatalogue::new(vec![steam], "room");
+        let catalogue = StoreCatalogue::new(vec![steam], "workspace");
         let hits = catalogue.query("steam");
         assert_eq!(
             hits[0].target,

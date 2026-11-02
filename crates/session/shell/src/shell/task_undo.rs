@@ -63,7 +63,7 @@ pub(crate) fn undo_task_run(
     )
     .ok_or("the action door did not answer")?
     .providers;
-    let targets = undo_targets(&providers, caller.room().unwrap_or_default(), steps);
+    let targets = undo_targets(&providers, caller.workspace().unwrap_or_default(), steps);
     if targets.is_empty() {
         return Err("open the documents this task changed to undo it".into());
     }
@@ -114,7 +114,7 @@ fn undo_targets(
     steps: &[(String, String)],
 ) -> Vec<UndoTarget> {
     let live = |provider: &&CatalogueProvider| {
-        provider.room == room && provider.provider.parse::<u64>().is_ok()
+        provider.workspace == room && provider.provider.parse::<u64>().is_ok()
     };
     let mut targets: Vec<UndoTarget> = Vec::new();
     for (app, record) in steps {
@@ -329,7 +329,7 @@ mod tests {
         CatalogueProvider {
             provider: token.into(),
             app_id: app.into(),
-            room: "room".into(),
+            workspace: "room".into(),
             record_id: record.into(),
             browsable: true,
         }
@@ -343,7 +343,7 @@ mod tests {
             provider("3", "so.tilo.file-explorer", "files"),
             provider("so.tilo.sheets", "so.tilo.sheets", ""),
             CatalogueProvider {
-                room: "elsewhere".into(),
+                workspace: "elsewhere".into(),
                 ..provider("4", "so.tilo.file-explorer", "files")
             },
         ];

@@ -92,11 +92,11 @@ fn the_surface_report_names_verbs_fields_and_unpublished_bindings() {
     );
     assert!(
         report["resources"][1].get("person").is_none(),
-        "kept in the room the app is open in, like its own: {report}"
+        "kept in the workspace the app is open in, like its own: {report}"
     );
     assert!(
         report["resources"][0].get("person").is_none(),
-        "the app's own record is the room's: {report}"
+        "the app's own record is the workspace's: {report}"
     );
     assert!(report["view"].is_null(), "{report}");
 

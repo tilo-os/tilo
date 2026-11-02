@@ -322,7 +322,7 @@ fn a_job_is_born_in_a_leaf_of_its_own_beside_its_app() {
 
 /// The kernel half of the boundary: even a process that could reach a
 /// writable cgroupfs (no app can, see
-/// `room_confinement::an_app_can_neither_see_nor_reach_the_cgroup_hierarchy`)
+/// `workspace_confinement::an_app_can_neither_see_nor_reach_the_cgroup_hierarchy`)
 /// cannot move itself out of its app's cgroup namespace or change its own
 /// cgroup's limits. bwrap gives every app that namespace, rooted at its app
 /// cgroup; the probe makes one the same way.

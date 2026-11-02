@@ -26,17 +26,17 @@ mod tests {
 
     /// A plausible half-hour: owner, one grant, one revoke, one rename,
     /// one window opened.
-    fn busy_room() -> (WorkspaceTree, WorkspaceId, String) {
-        busy_room_written_by(None)
+    fn busy_workspace() -> (WorkspaceTree, WorkspaceId, String) {
+        busy_workspace_written_by(None)
     }
 
-    /// [`busy_room`], but the half-hour is a collaborator's: what Catch up
+    /// [`busy_workspace`], but the half-hour is a collaborator's: what Catch up
     /// exists to show.
-    fn peers_busy_room() -> (WorkspaceTree, WorkspaceId, String) {
-        busy_room_written_by(Some(ActorId::from(b"ada-device".as_slice())))
+    fn peers_busy_workspace() -> (WorkspaceTree, WorkspaceId, String) {
+        busy_workspace_written_by(Some(ActorId::from(b"ada-device".as_slice())))
     }
 
-    fn busy_room_written_by(peer: Option<ActorId>) -> (WorkspaceTree, WorkspaceId, String) {
+    fn busy_workspace_written_by(peer: Option<ActorId>) -> (WorkspaceTree, WorkspaceId, String) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let reader = tree.doc.get_actor().clone();
         if let Some(peer) = peer {
@@ -56,7 +56,7 @@ mod tests {
                     Access::Read,
                 ),
             )
-            .expect("the owner may grant in their own room");
+            .expect("the owner may grant in their own workspace");
         tree.grant_in_workspace(
             ws_id,
             &user,
@@ -66,7 +66,7 @@ mod tests {
                 Access::Read,
             ),
         )
-        .expect("the owner may grant in their own room");
+        .expect("the owner may grant in their own workspace");
         assert!(tree.revoke_in_workspace(ws_id, &user, &granted));
 
         if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
@@ -82,7 +82,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let first = tree.active;
         let second = tree.append_empty_workspace("Second");
-        tree.commit_room_change();
+        tree.commit_workspace_change();
         let mut pane = native_pane();
         pane.refresh(&mut tree);
         let reads = || {
@@ -94,7 +94,7 @@ mod tests {
         let derived = format!("{:?}", pane.derived);
         for n in 0..12 {
             tree.set_active(if n % 2 == 0 { second } else { first });
-            tree.commit_room_change();
+            tree.commit_workspace_change();
             let (diffs, forks) = reads();
             let logged = pane.history_log.changes_read();
             pane.refresh(&mut tree);
@@ -154,7 +154,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let first = tree.active;
         let second = tree.append_empty_workspace("Second");
-        tree.commit_room_change();
+        tree.commit_workspace_change();
         if let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|w| w.id == first) {
             workspace.name = "Renamed before switching".to_string();
         }
@@ -172,7 +172,7 @@ mod tests {
         let rows = pane.derived.len();
         for n in 0..250 {
             tree.set_active(if n % 2 == 0 { second } else { first });
-            tree.commit_room_change();
+            tree.commit_workspace_change();
             pane.refresh(&mut tree);
         }
         assert_eq!(renamed(&pane), 1, "the rename is still in Activity");
@@ -193,7 +193,7 @@ mod tests {
     fn a_switch_written_with_an_edit_replays_the_edit() {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let second = tree.append_empty_workspace("Second");
-        tree.commit_room_change();
+        tree.commit_workspace_change();
         let mut pane = native_pane();
         pane.refresh(&mut tree);
         tree.set_active(second);
@@ -331,7 +331,7 @@ mod tests {
 
     fn agent_task_fixture() -> (WorkspaceTree, RecordStore, WorkspaceActivityPane, RecordId) {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room();
+        let workspace = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("campaign-brief.tilo-doc");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
@@ -341,7 +341,7 @@ mod tests {
         let agent_hex = agent.to_hex_string();
         let issuer_hex = issuer.to_hex_string();
         records.with(&record, |doc| {
-            ui::record::init(doc, &record, &checkout.kind, &room.to_string());
+            ui::record::init(doc, &record, &checkout.kind, &workspace.to_string());
             doc.set_actor(agent);
             for (time, field, value, action) in [
                 (20, "intro", "A concrete opening", "Rewrite opening"),
@@ -387,8 +387,8 @@ mod tests {
             tilo_resource::history::commit_stamped_at(doc, 23);
         });
         tree.desktop
-            .room_records_held
-            .entry(room)
+            .workspace_records_held
+            .entry(workspace)
             .or_default()
             .insert(record.to_string(), checkout.kind.to_string());
 
@@ -424,9 +424,9 @@ mod tests {
     /// by a person or an agent's task, is still part of the workspace's
     /// history.
     #[test]
-    fn an_apps_room_document_is_part_of_the_workspace_history() {
+    fn an_apps_workspace_document_is_part_of_the_workspace_history() {
         struct WorkspaceDocuments {
-            room: tilo_desktop_model::RoomId,
+            workspace: tilo_desktop_model::RoomId,
             id: RecordId,
             document: Vec<u8>,
         }
@@ -438,9 +438,9 @@ mod tests {
             }
             fn workspace_documents(
                 &self,
-                room: tilo_desktop_model::RoomId,
+                workspace: tilo_desktop_model::RoomId,
             ) -> Vec<ui::RecordCheckout> {
-                if room == self.room {
+                if workspace == self.workspace {
                     vec![ui::RecordCheckout::new(
                         self.id.clone(),
                         ui::RecordKind::new("document"),
@@ -452,7 +452,7 @@ mod tests {
         }
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room();
+        let workspace = tree.desktop.active_workspace().expect("workspace").room();
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "body", "Hallo").unwrap();
         let context = ui::tilo_actions::ActionContext::for_resource(
@@ -468,7 +468,7 @@ mod tests {
                 .with_message(context.change_message().unwrap()),
         );
         let local = WorkspaceDocuments {
-            room,
+            workspace,
             id: RecordId::parse("uuid:5f0e9c1a-2b3d-4e5f-8a9b-0c1d2e3f4a5b").unwrap(),
             document: doc.save(),
         };
@@ -484,7 +484,7 @@ mod tests {
                     .and_then(|context| context.group.as_ref())
                     .is_some_and(|group| group.id == "task:translate")
             }),
-            "the task's change in the room document is in the history"
+            "the task's change in the workspace document is in the history"
         );
     }
 
@@ -508,13 +508,13 @@ mod tests {
         }
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room();
+        let workspace = tree.desktop.active_workspace().expect("workspace").room();
         let record = RecordId::for_file("campaign-brief.tilo-doc");
         let kind = ui::RecordKind::new("document");
         let agent = ActorId::from(b"writing-agent".as_slice());
         let agent_hex = agent.to_hex_string();
         let mut doc = automerge::AutoCommit::new();
-        ui::record::init(&mut doc, &record, &kind, &room.to_string());
+        ui::record::init(&mut doc, &record, &kind, &workspace.to_string());
         doc.set_actor(agent);
         doc.put(automerge::ROOT, "intro", "A concrete opening")
             .unwrap();
@@ -548,8 +548,8 @@ mod tests {
         .expect("task receipt");
         tilo_resource::history::commit_stamped_at(&mut doc, 21);
         tree.desktop
-            .room_records_held
-            .entry(room)
+            .workspace_records_held
+            .entry(workspace)
             .or_default()
             .insert(record.to_string(), kind.to_string());
         let disk = CountingDisk {
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn a_window_someone_opened_is_listed_in_history_but_is_not_news() {
-        let (mut tree, workspace, _) = busy_room();
+        let (mut tree, workspace, _) = busy_workspace();
         let host = Rc::new(crate::activity::testing::TestHost::default());
         let mut pane = WorkspaceActivityPane::new();
         pane.set_host(host);
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn a_workspace_first_seen_on_this_device_has_nothing_new() {
-        let (mut tree, workspace, user) = busy_room();
+        let (mut tree, workspace, user) = busy_workspace();
         let host = Rc::new(crate::activity::testing::TestHost::default());
         let mut pane = WorkspaceActivityPane::new();
         pane.set_host(host.clone());
@@ -719,7 +719,7 @@ mod tests {
                 Access::Read,
             ),
         )
-        .expect("the owner may grant in their own room");
+        .expect("the owner may grant in their own workspace");
         tree.seed_doc_from_cache();
         tree.doc.set_actor(reader);
         pane.refresh(&mut tree);
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn closing_unpainted_catch_up_keeps_unseen_work_pending() {
-        let (mut tree, workspace, _) = peers_busy_room();
+        let (mut tree, workspace, _) = peers_busy_workspace();
         let mut pane = native_pane();
         pane.refresh(&mut tree);
         let unread = pane.glance_signal(workspace.raw()).1;
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn catch_up_is_default_and_closing_advances_only_private_frontier() {
-        let (mut tree, workspace, _) = peers_busy_room();
+        let (mut tree, workspace, _) = peers_busy_workspace();
         let before = tree.doc.get_heads();
         let mut pane = native_pane();
         pane.refresh(&mut tree);
@@ -777,13 +777,13 @@ mod tests {
         assert_eq!(
             tree.doc.get_heads(),
             before,
-            "reading history is not a room edit"
+            "reading history is not a workspace edit"
         );
     }
 
     #[test]
     fn every_catch_up_card_cites_exactly_the_changes_it_summarises() {
-        let (mut tree, workspace, _) = peers_busy_room();
+        let (mut tree, workspace, _) = peers_busy_workspace();
         let mut pane = native_pane();
         pane.begin_view(workspace.raw());
         pane.refresh(&mut tree);
@@ -843,7 +843,7 @@ mod tests {
 
     #[test]
     fn refreshed_catch_up_keeps_the_open_session_and_does_not_acknowledge_late_work() {
-        let (mut tree, workspace, user) = peers_busy_room();
+        let (mut tree, workspace, user) = peers_busy_workspace();
         let mut pane = native_pane();
         pane.begin_view(workspace.raw());
         pane.refresh(&mut tree);
@@ -921,16 +921,16 @@ mod tests {
 
     #[test]
     fn catch_up_persists_only_what_the_app_showed() {
-        let (mut tree, workspace, _) = peers_busy_room();
+        let (mut tree, workspace, _) = peers_busy_workspace();
         let records = RecordStore::in_memory();
-        let room_id = tree.active_workspace().expect("room").room();
-        let room = room_id.to_string();
+        let workspace_ref = tree.active_workspace().expect("workspace").room();
+        let workspace_id = workspace_ref.to_string();
         for n in 0..12 {
             let id = RecordId::for_file(format!("result-{n}.note"));
             let kind = ui::RecordKind::new("note");
             assert!(records.open_record(&ui::RecordCheckout::new(id.clone(), kind.clone())));
             records.with(&id, |doc| {
-                ui::record::init(doc, &id, &kind, &room);
+                ui::record::init(doc, &id, &kind, &workspace_id);
                 doc.commit();
                 doc.set_actor(ActorId::from(b"ada-device".as_slice()));
                 doc.put(automerge::ROOT, "body", format!("Result {n}"))
@@ -945,8 +945,8 @@ mod tests {
                 );
             });
             tree.desktop
-                .room_records_held
-                .entry(room_id)
+                .workspace_records_held
+                .entry(workspace_ref)
                 .or_default()
                 .insert(id.to_string(), kind.to_string());
         }
@@ -1081,8 +1081,8 @@ mod tests {
     }
 
     #[test]
-    fn rows_come_from_the_rooms_own_change_graph() {
-        let (mut tree, _, _) = busy_room();
+    fn rows_come_from_the_workspaces_own_change_graph() {
+        let (mut tree, _, _) = busy_workspace();
         let pane = pane_over(&mut tree);
         assert!(
             pane.entries().len() >= 3,
@@ -1118,7 +1118,7 @@ mod tests {
 
     #[test]
     fn a_selected_row_publishes_diff_restore_and_undo_as_actions() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         pane.set_view(ActivityView::Explore);
         show_summary(&mut pane);
@@ -1167,7 +1167,7 @@ mod tests {
 
     #[test]
     fn app_native_handoff_focuses_the_exact_version_without_marking_it_unseen() {
-        let (mut tree, workspace, _) = busy_room();
+        let (mut tree, workspace, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         let unread_before = pane.passive_unread;
         let id = HistoryEntryId::from_bytes([9; 16]);
@@ -1211,8 +1211,8 @@ mod tests {
     }
 
     /// A second workspace with its own governance, interleaved in one document.
-    fn two_room_tree() -> (WorkspaceTree, WorkspaceId, WorkspaceId) {
-        let (mut tree, first, user) = busy_room();
+    fn two_workspace_tree() -> (WorkspaceTree, WorkspaceId, WorkspaceId) {
+        let (mut tree, first, user) = busy_workspace();
         let second = tree.append_empty_workspace("Research");
         tree.adopt_ownerless_workspaces(&user);
         tree.grant_in_workspace(
@@ -1224,14 +1224,14 @@ mod tests {
                 Access::Read,
             ),
         )
-        .expect("owner may grant in the second room too");
+        .expect("owner may grant in the second workspace too");
         tree.set_active(first);
         (tree, first, second)
     }
 
     #[test]
-    fn this_rooms_scope_excludes_another_workspaces_governance() {
-        let (mut tree, _first, _second) = two_room_tree();
+    fn this_workspaces_scope_excludes_another_workspaces_governance() {
+        let (mut tree, _first, _second) = two_workspace_tree();
         let mut pane = pane_over(&mut tree);
         assert_eq!(
             pane.scope(),
@@ -1242,11 +1242,11 @@ mod tests {
         let scoped: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(
             !scoped.iter().any(|s| s.contains("research.example")),
-            "the other room's network grant leaked into this room: {scoped:?}"
+            "the other workspace's network grant leaked into this one: {scoped:?}"
         );
         assert!(
             scoped.iter().any(|s| s.contains("/home/user/notes")),
-            "this room's own grant is present: {scoped:?}"
+            "this workspace's own grant is present: {scoped:?}"
         );
 
         let all_tree = { tree.desktop.workspaces.clone() };
@@ -1255,11 +1255,11 @@ mod tests {
         let widened: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(
             widened.iter().any(|s| s.contains("research.example")),
-            "widening the scope must reveal the other room: {widened:?}"
+            "widening the scope must reveal the other workspace: {widened:?}"
         );
         assert!(
             widened.len() > scoped.len(),
-            "the whole tree is strictly more than one room: {} vs {}",
+            "the whole tree is strictly more than one workspace: {} vs {}",
             widened.len(),
             scoped.len()
         );
@@ -1267,7 +1267,7 @@ mod tests {
 
     #[test]
     fn a_widened_row_names_the_workspace_it_happened_in() {
-        let (mut tree, _first, _second) = two_room_tree();
+        let (mut tree, _first, _second) = two_workspace_tree();
         let mut pane = pane_over(&mut tree);
         pane.set_scope(WorkspaceScope::AllWorkspaces, &tree);
         let named_rows: Vec<String> = pane
@@ -1280,7 +1280,7 @@ mod tests {
             .collect();
         assert!(
             named_rows.iter().any(|s| s.contains("Research")),
-            "a row must name the room it happened in: {named_rows:?}"
+            "a row must name the workspace it happened in: {named_rows:?}"
         );
         let distinct: std::collections::HashSet<&String> = named_rows.iter().collect();
         assert_eq!(
@@ -1292,7 +1292,7 @@ mod tests {
 
     #[test]
     fn switching_the_active_workspace_re_scopes_without_a_document_change() {
-        let (mut tree, first, second) = two_room_tree();
+        let (mut tree, first, second) = two_workspace_tree();
         let mut pane = pane_over(&mut tree);
         let in_first: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(in_first.iter().any(|s| s.contains("/home/user/notes")));
@@ -1302,18 +1302,18 @@ mod tests {
         let in_second: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
         assert!(
             in_second.iter().any(|s| s.contains("research.example")),
-            "the second room's own grant: {in_second:?}"
+            "the second workspace's own grant: {in_second:?}"
         );
         assert!(
             !in_second.iter().any(|s| s.contains("/home/user/notes")),
-            "the first room's grant must not follow us: {in_second:?}"
+            "the first workspace's grant must not follow us: {in_second:?}"
         );
         let _ = first;
     }
 
     #[test]
-    fn a_whole_tree_flush_belongs_to_no_single_room() {
-        let (mut tree, _first, _second) = two_room_tree();
+    fn a_whole_tree_flush_belongs_to_no_single_workspace() {
+        let (mut tree, _first, _second) = two_workspace_tree();
         let mut pane = pane_over(&mut tree);
         assert!(
             pane.entries()
@@ -1332,7 +1332,7 @@ mod tests {
 
     #[test]
     fn the_local_users_own_rows_are_attributed_to_them() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let pane = pane_over(&mut tree);
         let me = crate::activity::testing::LOCAL_USER.to_string();
         assert!(!me.is_empty(), "there is always a local user id");
@@ -1355,13 +1355,13 @@ mod tests {
     fn every_row_carries_a_real_timestamp() {
         // The whole date filter rests on this — an epoch row can never be
         // selected by a date range.
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let pane = pane_over(&mut tree);
         assert!(!pane.entries().is_empty());
         for e in pane.entries() {
             assert!(
                 e.timestamp > SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000),
-                "row {:?} is stamped at {:?} — the room's commits are not carrying a clock",
+                "row {:?} is stamped at {:?} — the workspace's commits are not carrying a clock",
                 e.summary,
                 e.timestamp
             );
@@ -1464,7 +1464,7 @@ mod tests {
 
     #[test]
     fn contributor_filter_narrows_to_one_person() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
 
         let mut peer = automerge::AutoCommit::new();
         peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
@@ -1496,7 +1496,7 @@ mod tests {
         let mut pane = pane_over(&mut tree);
         assert!(
             pane.contributors().len() >= 2,
-            "two actors wrote to this room; contributors = {:?}",
+            "two actors wrote to this workspace; contributors = {:?}",
             pane.contributors()
         );
         // bootstrap_demo seeds a Research collaborator id "bob" named "Bob"
@@ -1534,7 +1534,7 @@ mod tests {
     #[test]
     fn action_type_chips_narrow_by_entry_kind() {
         use ui::widget::activity_timeline::ChipKind;
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         let all = pane.visible_len();
 
@@ -1542,7 +1542,7 @@ mod tests {
         let gov = pane.visible_len();
         assert!(
             gov > 0,
-            "grants and revokes are governance; the room has some"
+            "grants and revokes are governance; the workspace has some"
         );
         assert!(gov < all, "governance is a subset: {gov} of {all}");
         for i in 0..pane.visible_len() {
@@ -1559,7 +1559,7 @@ mod tests {
 
     #[test]
     fn reverting_a_row_writes_a_new_forward_change() {
-        let (mut tree, ws_id, user) = busy_room();
+        let (mut tree, ws_id, user) = busy_workspace();
         let mut pane = pane_over(&mut tree);
 
         let before_name = tree
@@ -1593,7 +1593,7 @@ mod tests {
                 .find(|w| w.id == ws_id)
                 .map(|w| w.name.as_str()),
             Some("Design review"),
-            "the room is back to the state the row named"
+            "the workspace is back to the state the row named"
         );
         assert!(
             pane.entries().len() > versions_before + 1,
@@ -1609,7 +1609,7 @@ mod tests {
 
     #[test]
     fn reverting_an_unknown_row_is_a_no_op() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         let before = tree.doc.get_heads();
         assert!(!pane.revert_to(&mut tree, &HistoryEntryId([0x5a; 16])));
@@ -1618,7 +1618,7 @@ mod tests {
 
     #[test]
     fn governance_rows_never_offer_revert() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         pane.timeline_mut()
             .set_active_chip(ui::widget::activity_timeline::ChipKind::Governance);
@@ -1639,8 +1639,8 @@ mod tests {
     }
 
     #[test]
-    fn a_capability_is_described_in_the_rooms_vocabulary() {
-        let (mut tree, _, _) = busy_room();
+    fn a_capability_is_described_in_the_workspaces_vocabulary() {
+        let (mut tree, _, _) = busy_workspace();
         let pane = pane_over(&mut tree);
         let grant = pane
             .entries()
@@ -1658,14 +1658,14 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_room_and_a_filtered_one_do_not_read_the_same() {
+    fn an_empty_workspace_and_a_filtered_one_do_not_read_the_same() {
         let mut empty = WorkspaceTree::default();
         let pane = pane_over(&mut empty);
         let (title, detail) = pane.timeline().empty_state_lines();
         assert_eq!(title, "No activity yet");
         assert!(detail.is_none(), "nothing to explain when nothing happened");
 
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         pane.set_author_filter(Some("nobody-by-that-name".to_string()));
         assert_eq!(pane.visible_len(), 0);
@@ -1684,7 +1684,7 @@ mod tests {
 
     #[test]
     fn contributors_are_only_people_who_actually_did_something() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         tree.desktop
             .collaborators
             .push(tilo_desktop_model::Collaborator::new(
@@ -1701,7 +1701,7 @@ mod tests {
 
     #[test]
     fn activity_header_digest_reduces_the_same_scoped_rows() {
-        let (mut tree, _, _) = peers_busy_room();
+        let (mut tree, _, _) = peers_busy_workspace();
         let pane = pane_over(&mut tree);
         let others = pane
             .entries()
@@ -1716,7 +1716,7 @@ mod tests {
 
     #[test]
     fn catch_up_leaves_out_the_readers_own_work() {
-        let (mut tree, workspace, _) = busy_room();
+        let (mut tree, workspace, _) = busy_workspace();
         let mut pane = native_pane();
         pane.refresh(&mut tree);
         assert_eq!(pane.view(), ActivityView::CatchUp);
@@ -1771,7 +1771,7 @@ mod tests {
         let ada = ui::permissions::UserId("ada".into());
         presence.names.insert(ada.clone(), "Ada".into());
         presence.set_pointer(
-            &ui::presence::PresenceKey::desktop_pointer("design-room"),
+            &ui::presence::PresenceKey::desktop_pointer("design-workspace"),
             ada,
             (420.0, 260.0),
         );
@@ -1786,7 +1786,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_lived_room_stays_bounded() {
+    fn a_long_lived_workspace_stays_bounded() {
         // Well past the producer's ceiling, all of it real: each iteration is
         // the same mirror the drop handler calls when a file is dropped into
         // a workspace. The pane must show the recent end of the history
@@ -1810,7 +1810,7 @@ mod tests {
         let pane = pane_over(&mut tree);
         assert!(
             pane.entries().len() <= ui::history_source::DEFAULT_MAX_ENTRIES,
-            "the pane derived {} rows from a 240-change room",
+            "the pane derived {} rows from a 240-change workspace",
             pane.entries().len()
         );
         assert!(
@@ -1846,8 +1846,8 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn the_rooms_history_reads_as_bands_rather_than_one_row_per_change() {
-        let (mut tree, _, _) = busy_room();
+    fn the_workspaces_history_reads_as_bands_rather_than_one_row_per_change() {
+        let (mut tree, _, _) = busy_workspace();
         let pane = pane_over(&mut tree);
         assert!(pane.entries().len() >= 4);
         // Bands, not a wall: every rendered line is either a band header or a
@@ -1857,7 +1857,7 @@ mod tests {
             .count();
         assert!(
             bands >= 1,
-            "a room with governance, edits and a deletion must produce at least one band"
+            "a workspace with governance, edits and a deletion must produce at least one band"
         );
         // Every band describes itself without a name, and describes itself
         // honestly — a count it did not measure would be the failure here.
@@ -1873,8 +1873,8 @@ mod tests {
     }
 
     #[test]
-    fn naming_a_band_round_trips_through_the_room_document() {
-        let (mut tree, _, _) = busy_room();
+    fn naming_a_band_round_trips_through_the_workspace_document() {
+        let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         let entries = pane.entries().to_vec();
         let (start, end) = (entries[1].id, entries[3].id);
@@ -1885,7 +1885,7 @@ mod tests {
                 record_id: None,
                 start,
                 end,
-                label: "Set up the room".to_string(),
+                label: "Set up the workspace".to_string(),
             },
         );
         assert!(wrote, "the name went into the document");
@@ -1894,7 +1894,7 @@ mod tests {
         // tree finds it.
         let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
         assert_eq!(ranges.len(), 1);
-        assert_eq!(ranges[0].label, "Set up the room");
+        assert_eq!(ranges[0].label, "Set up the workspace");
         assert_eq!(ranges[0].start, start);
         assert_eq!(ranges[0].end, Some(end));
 
@@ -1904,7 +1904,7 @@ mod tests {
             .filter_map(|i| fresh.timeline().group_title_at_row(i))
             .collect();
         assert!(
-            titles.contains(&"Set up the room"),
+            titles.contains(&"Set up the workspace"),
             "the band is on screen for anyone who opens the pane: {titles:?}"
         );
     }
@@ -1914,7 +1914,7 @@ mod tests {
         // The name is already on screen as the band's title. A "1 field" row
         // directly under it would be noise, so the producer filters the marker
         // change out — and the change count must not move.
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         let before = pane.entries().len();
         let entries = pane.entries().to_vec();
@@ -1936,7 +1936,7 @@ mod tests {
 
     #[test]
     fn un_naming_removes_the_band_and_leaves_the_changes_alone() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         let entries = pane.entries().to_vec();
         let (start, end) = (entries[1].id, entries[3].id);
@@ -1976,7 +1976,7 @@ mod tests {
 
     #[test]
     fn two_people_naming_the_same_run_converge_on_one_band() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         let entries = pane.entries().to_vec();
         let (start, end) = (entries[1].id, entries[3].id);
@@ -2023,7 +2023,7 @@ mod tests {
 
     #[test]
     fn a_peers_name_is_attributed_to_the_peer_not_to_whoever_is_looking() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         let entries = pane.entries().to_vec();
         let (start, end) = (entries[1].id, entries[3].id);
@@ -2054,7 +2054,7 @@ mod tests {
     fn restoring_to_a_band_boundary_lands_on_the_state_at_that_boundary() {
         // The band header's [Restore] passes the band's last change, so this is
         // the production path for "restore to the end of this version".
-        let (mut tree, ws_id, _) = busy_room();
+        let (mut tree, ws_id, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
 
         // Find the change that named the workspace, and the state just after it.
@@ -2092,7 +2092,7 @@ mod tests {
                 .find(|w| w.id == ws_id)
                 .map(|w| w.name.clone()),
             Some("Design review".to_string()),
-            "the room is back in the state that boundary produced"
+            "the workspace is back in the state that boundary produced"
         );
         // Forward, not a rewind: the change we rolled past is still in the graph.
         assert!(
@@ -2124,7 +2124,7 @@ mod tests {
 
     #[test]
     fn selected_named_bands_can_be_split_and_merged() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = busy_workspace();
         let mut pane = pane_over(&mut tree);
         let entries = pane.entries().to_vec();
         assert!(pane.apply_name(
@@ -2161,7 +2161,7 @@ mod tests {
         reason = "an end-to-end test scenario that reads top to bottom"
     )]
     fn catch_up_redraws_work_session_boundaries_without_rewriting_history() {
-        let (mut tree, _, _) = peers_busy_room();
+        let (mut tree, _, _) = peers_busy_workspace();
         let mut pane = pane_over(&mut tree);
         let original_ids = pane
             .entries()
@@ -2338,7 +2338,7 @@ mod tests {
                 .map(|author| author.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["ada"],
-            "receipt-backed history is attributed to its authenticated action actor, not the room host"
+            "receipt-backed history is attributed to its authenticated action actor, not the workspace host"
         );
         assert!(pane.digest.briefs[finance].work_session_id.is_none());
         assert!(pane.digest.briefs[onboarding].work_session_id.is_none());
@@ -2391,13 +2391,13 @@ mod tests {
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "one room, one labelled kind of change per step, each compared with a fresh pane"
+        reason = "one workspace, one labelled kind of change per step, each compared with a fresh pane"
     )]
     fn incremental_refresh_matches_full_replay_for_feed_undo_and_attribution() {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let home = tree.active;
         let second = tree.append_empty_workspace("Second");
-        tree.commit_room_change();
+        tree.commit_workspace_change();
         let mut pane = native_pane();
         pane.refresh(&mut tree);
 
@@ -2428,10 +2428,10 @@ mod tests {
         // The catalogues those rows loaded were added after this refresh
         // read the log; the next change reads it under them.
         tree.set_active(second);
-        tree.commit_room_change();
+        tree.commit_workspace_change();
         pane.refresh(&mut tree);
         tree.set_active(home);
-        tree.commit_room_change();
+        tree.commit_workspace_change();
         pane.refresh(&mut tree);
 
         let mut next_tab = 92_000_u64;
@@ -2444,7 +2444,7 @@ mod tests {
             let kind = match step % 6 {
                 0 => {
                     tree.set_active(second);
-                    tree.commit_room_change();
+                    tree.commit_workspace_change();
                     "switch away"
                 }
                 1 => {
@@ -2455,7 +2455,7 @@ mod tests {
                         format!("Tab {next_tab}"),
                         b"{}".to_vec(),
                     ));
-                    tree.commit_room_change();
+                    tree.commit_workspace_change();
                     "open a tab"
                 }
                 2 => {
@@ -2469,7 +2469,7 @@ mod tests {
                         tilo_actions::EffectReceiptStatus::Succeeded,
                     ));
                     tree.set_active(home);
-                    tree.commit_room_change();
+                    tree.commit_workspace_change();
                     let theirs = peer.export_changes_since(&synced);
                     tree.apply_changes(&theirs)
                         .expect("the peer's change merges");
@@ -2482,16 +2482,16 @@ mod tests {
                         format!("Bea's tab {next_tab}"),
                         b"{}".to_vec(),
                     ));
-                    peer.commit_room_change();
+                    peer.commit_workspace_change();
                     let theirs = peer.export_changes_since(&synced);
                     tree.apply_changes(&theirs).expect("the peer's tab merges");
                     "a peer's tab"
                 }
                 4 => {
                     tree.set_active(second);
-                    tree.commit_room_change();
+                    tree.commit_workspace_change();
                     tree.set_active(home);
-                    tree.commit_room_change();
+                    tree.commit_workspace_change();
                     "two switches between refreshes"
                 }
                 _ => "nothing new",
@@ -2665,7 +2665,7 @@ mod tasks_link_tests {
         let undo = host.undos.borrow().last().cloned().unwrap();
         assert_eq!(undo.task_id, "task:1");
         assert_eq!(
-            undo.room,
+            undo.workspace,
             tree.active_workspace().unwrap().room().to_string()
         );
         assert_eq!(
@@ -3011,7 +3011,7 @@ mod morning_source_tests {
         }
     }
     #[test]
-    fn morning_sources_survive_restart_without_crossing_rooms_or_acknowledging_work() {
+    fn morning_sources_survive_restart_without_crossing_workspaces_or_acknowledging_work() {
         let (mut tree, mut pane) = fixture();
         let host = Rc::new(Host::default());
         pane.set_host(host.clone());
@@ -3021,14 +3021,14 @@ mod morning_source_tests {
         assert_eq!(pane.chosen_morning_sources().len(), 1);
         assert_eq!(pane.seen_frontiers, before);
         let key = pane.chosen_morning_sources()[0].key();
-        let room = tree.workspaces[0].room();
+        let workspace = tree.workspaces[0].room();
         let mut restarted = WorkspaceActivityPane::new();
         restarted.set_host(host.clone());
         restarted.load_frontiers();
         restarted.refresh(&mut tree);
         assert_eq!(restarted.chosen_morning_sources().len(), 1);
         let outcome = restarted.apply_selection_history_action(
-            &format!("{MORNING_OPEN}{room}.{key}"),
+            &format!("{MORNING_OPEN}{workspace}.{key}"),
             &mut tree,
             None,
         );
@@ -3037,35 +3037,35 @@ mod morning_source_tests {
         restarted.refresh(&mut tree);
         assert!(
             restarted.chosen_morning_sources().is_empty(),
-            "even the same workspace id cannot borrow another room's choices"
+            "even the same workspace id cannot borrow another workspace's choices"
         );
         restarted.apply_selection_history_action(
-            &format!("{MORNING_SOURCE}.{room}"),
+            &format!("{MORNING_SOURCE}.{workspace}"),
             &mut tree,
             None,
         );
         assert!(
             restarted.chosen_morning_sources().is_empty(),
-            "a queued source choice cannot cross the originating room"
+            "a queued source choice cannot cross the originating workspace"
         );
         assert!(
             restarted
                 .apply_selection_history_action(
-                    &format!("{MORNING_OPEN}{room}.{key}"),
+                    &format!("{MORNING_OPEN}{workspace}.{key}"),
                     &mut tree,
                     None
                 )
                 .open_target
                 .is_none()
         );
-        tree.workspaces[0] = same_id_in(&tree.workspaces[0], room);
+        tree.workspaces[0] = same_id_in(&tree.workspaces[0], workspace);
         restarted.refresh(&mut tree);
         assert_eq!(restarted.chosen_morning_sources().len(), 1);
         restarted.set_scope(WorkspaceScope::AllWorkspaces, &tree);
         assert!(
             restarted
                 .apply_selection_history_action(
-                    &format!("{MORNING_OPEN}{room}.{key}"),
+                    &format!("{MORNING_OPEN}{workspace}.{key}"),
                     &mut tree,
                     None
                 )
@@ -3079,7 +3079,7 @@ mod morning_source_tests {
             "missing or revoked resource evidence is unavailable, never fabricated"
         );
         restarted.apply_selection_history_action(
-            &format!("{MORNING_REMOVE}{room}.{key}"),
+            &format!("{MORNING_REMOVE}{workspace}.{key}"),
             &mut tree,
             None,
         );
@@ -3200,7 +3200,7 @@ mod morning_source_tests {
     }
 
     #[test]
-    fn morning_payload_commands_reach_only_this_room_and_change_no_history() {
+    fn morning_payload_commands_reach_only_this_workspace_and_change_no_history() {
         use tilo_actions::remote::workspace_activity::SourceCommand;
         let (mut tree, mut pane) = fixture();
         pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
@@ -3232,7 +3232,7 @@ mod morning_source_tests {
             host.commands
                 .borrow()
                 .iter()
-                .all(|(room, _, _)| *room == pane.room)
+                .all(|(workspace, _, _)| *workspace == pane.workspace)
         );
         let foreign = uuid::Uuid::new_v4().to_string();
         pane.apply_selection_history_action(
@@ -3260,12 +3260,12 @@ mod morning_source_tests {
         });
         pane.set_host(host.clone());
         for index in 1..crate::activity::morning::MAX_SOURCES {
-            let room = pane.room.clone();
+            let workspace = pane.workspace.clone();
             pane.morning_sources
                 .get_mut(&pane.morning_workspace)
                 .unwrap()
                 .toggle(
-                    &room,
+                    &workspace,
                     super::MorningSource {
                         app: "so.tilo.weather".into(),
                         resource: format!("deleted:{index}"),
@@ -3314,7 +3314,7 @@ mod morning_source_tests {
         }
         fn morning_payload(
             &self,
-            _room: &str,
+            _workspace: &str,
             _source: &super::MorningSource,
         ) -> Option<crate::activity::morning::MorningPayload> {
             Some(crate::activity::morning::MorningPayload {
@@ -3335,13 +3335,13 @@ mod morning_source_tests {
         }
         fn submit_morning_command(
             &self,
-            room: &str,
+            workspace: &str,
             source: &super::MorningSource,
             command: super::MorningCommand,
         ) -> Result<(), String> {
             self.commands
                 .borrow_mut()
-                .push((room.into(), source.clone(), command));
+                .push((workspace.into(), source.clone(), command));
             Ok(())
         }
     }
@@ -3368,17 +3368,20 @@ mod reader_tests {
     }
 }
 
-/// A workspace of `workspace` under `room`'s id, with its windows and its
-/// grants rehomed: what a device holds when one id has named two workspaces (a
-/// workspace never changes its room).
+/// A workspace with `workspace`'s id in another workspace, with its windows and
+/// its grants rehomed: what a device holds when one id has named two workspaces
+/// (a workspace id never changes its workspace).
 fn same_id_in(
     workspace: &tilo_desktop_model::Workspace,
-    room: tilo_desktop_model::RoomId,
+    other_workspace: tilo_desktop_model::RoomId,
 ) -> tilo_desktop_model::Workspace {
-    let mut other =
-        tilo_desktop_model::Workspace::in_room(workspace.id, room, workspace.name.clone());
+    let mut other = tilo_desktop_model::Workspace::in_workspace(
+        workspace.id,
+        other_workspace,
+        workspace.name.clone(),
+    );
     other.strips.clone_from(&workspace.strips);
     other.policy = workspace.policy.clone();
-    other.policy.rehome(room.to_string());
+    other.policy.rehome(other_workspace.to_string());
     other
 }

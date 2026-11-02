@@ -3743,7 +3743,7 @@ impl NetworkModel {
     }
 
     /// Scan, then read the networks in range, when the last look is
-    /// [`SCAN_EVERY`] old: the list follows the room while the page is
+    /// [`SCAN_EVERY`] old: the list keeps up while the page is
     /// open, with no Refresh to press. The status never waits for it.
     fn scan_when_due(&mut self, now: ui::time::Instant) {
         let due = self.scans_networks()

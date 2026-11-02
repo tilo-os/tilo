@@ -3,7 +3,7 @@
 
 use super::tests::desk_with;
 use super::*;
-use crate::navigation::Route;
+use crate::navigation::{ChromeEffect, Route};
 use ui::widget::{TileContent, TileHost};
 
 /// The apps this desk runs, each opening a tab named by its id.
@@ -72,15 +72,11 @@ fn open_beside(
     background: bool,
 ) {
     handle
-        .dispatch(
-            &Command::TabOpenBeside {
-                generation: "g".into(),
-                app: "so.tilo.notes".into(),
-                beside,
-                background,
-            },
-            "g",
-        )
+        .dispatch(ChromeEffect::OpenApp {
+            app: "so.tilo.notes".into(),
+            beside: Some(beside.tab),
+            background: Some(background),
+        })
         .unwrap();
     frame.relayout();
 }
@@ -135,15 +131,11 @@ fn a_refused_launch_leaves_no_tab() {
     let (mut frame, handle) = mount();
     let before = handle.snapshot("g", vec![]).entries;
     handle
-        .dispatch(
-            &Command::TabOpenBeside {
-                generation: "g".into(),
-                app: "org.example.other".into(),
-                beside: before[0].route.clone(),
-                background: false,
-            },
-            "g",
-        )
+        .dispatch(ChromeEffect::OpenApp {
+            app: "org.example.other".into(),
+            beside: Some(before[0].route.tab.clone()),
+            background: None,
+        })
         .unwrap();
     frame.relayout();
 

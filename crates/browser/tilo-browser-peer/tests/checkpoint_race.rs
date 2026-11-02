@@ -19,7 +19,7 @@
 mod participant;
 mod support;
 
-// Placing the room has the host build its governance in an automerge worker.
+// Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
@@ -66,8 +66,8 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     let https = || Host::Https(host.https());
     let a = start_peer(https(), a.cert, host_device.cert.clone(), a.key);
     let b = start_peer(https(), b.cert, host_device.cert.clone(), b.key);
-    a.join_placed(support::ROOM, "Workspace").unwrap();
-    b.join_placed(support::ROOM, "Workspace").unwrap();
+    a.join_placed(support::WORKSPACE, "Workspace").unwrap();
+    b.join_placed(support::WORKSPACE, "Workspace").unwrap();
     ready(&[&a, &b]).await;
 
     let mut base = AutoCommit::new();
@@ -96,7 +96,7 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     durable(&a).await;
 
     let joiner = start_peer(https(), c.cert, host_device.cert.clone(), c.key);
-    joiner.join_placed(support::ROOM, "Workspace").unwrap();
+    joiner.join_placed(support::WORKSPACE, "Workspace").unwrap();
     let mut doc = AutoCommit::new();
     wait_for("the late joiner to converge", || {
         for event in joiner.drain() {

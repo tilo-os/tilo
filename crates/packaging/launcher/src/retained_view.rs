@@ -407,7 +407,8 @@ pub struct ConsumerLaunchBinding {
     pub command: ConsumerCommand,
     pub manifest_path: String,
     pub payload_root: String,
-    pub room: String,
+    #[serde(rename = "workspace", alias = "room")]
+    pub workspace: String,
     pub resource_record: String,
     pub intent_sha256: String,
     pub policy_sha256: String,
@@ -422,7 +423,7 @@ impl ConsumerLaunchBinding {
     /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn validate(&self) -> io::Result<()> {
         if !uuid(&self.operation_id)
-            || !uuid(&self.room)
+            || !uuid(&self.workspace)
             || self.resource_record.is_empty()
             || self.resource_record.len() > 512
             || self.resource_record.chars().any(char::is_control)
@@ -459,7 +460,7 @@ impl ConsumerLaunchBinding {
                 &self.app_id,
                 &self.publisher_hex,
                 &self.package_sha256,
-                &self.room,
+                &self.workspace,
                 "retained-home",
                 &self.command.program,
                 &self.command.args,
@@ -790,8 +791,8 @@ impl RetainedViewAdmission {
             let challenge: ConsumerChallenge = receive_json(&mut io)?;
             challenge.validate()?;
             challenge.command.matches_current()?;
-            let room = collab_types::personal_cluster(&challenge.person).to_string();
-            if opts.workspace_id.as_deref() != Some(room.as_str()) {
+            let workspace = collab_types::personal_cluster(&challenge.person).to_string();
+            if opts.workspace_id.as_deref() != Some(workspace.as_str()) {
                 return Err(RunError::InvalidServiceLaunch(
                     "retained view requires certified personal cluster".into(),
                 ));
@@ -1000,7 +1001,7 @@ fn binding_for(
             .to_str()
             .ok_or(io::ErrorKind::InvalidData)?
             .into(),
-        room: opts
+        workspace: opts
             .workspace_id
             .clone()
             .ok_or(io::ErrorKind::InvalidData)?,
@@ -1275,7 +1276,7 @@ impl RootConsumerChannel {
         if binding.operation_id != challenge.operation_id
             || binding.shell_context_sha256 != challenge.shell_context_sha256
             || binding.resource_record != challenge.resource_record
-            || binding.room != collab_types::personal_cluster(&challenge.person).to_string()
+            || binding.workspace != collab_types::personal_cluster(&challenge.person).to_string()
         {
             return Err(refused(
                 "retained consumer declaration differs from protected challenge",
@@ -1624,7 +1625,7 @@ mod tests {
             },
             manifest_path: String::new(),
             payload_root: String::new(),
-            room: String::new(),
+            workspace: String::new(),
             resource_record: String::new(),
             intent_sha256: String::new(),
             policy_sha256: String::new(),
@@ -1898,7 +1899,7 @@ mod tests {
             },
             manifest_path: "/var/lib/tilo/apps/files/app.toml".into(),
             payload_root: "/var/lib/tilo/apps/files/payload".into(),
-            room: "00000000-0000-4000-8000-000000000002".into(),
+            workspace: "00000000-0000-4000-8000-000000000002".into(),
             resource_record: "retained-home".into(),
             intent_sha256: "44".repeat(32),
             policy_sha256: "55".repeat(32),
@@ -2190,8 +2191,8 @@ impl SelectedParentAdmission {
             challenge.validate()?;
             selected_edit_request_id(&challenge.resource_record)?;
             challenge.command.matches_current()?;
-            let room = collab_types::personal_cluster(&challenge.person).to_string();
-            if opts.workspace_id.as_deref() != Some(room.as_str()) {
+            let workspace = collab_types::personal_cluster(&challenge.person).to_string();
+            if opts.workspace_id.as_deref() != Some(workspace.as_str()) {
                 return Err(RunError::InvalidServiceLaunch(
                     "selected parent requires certified personal cluster".into(),
                 ));

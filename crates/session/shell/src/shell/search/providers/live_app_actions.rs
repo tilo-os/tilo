@@ -2255,12 +2255,12 @@ impl LiveAppActionsProvider {
             roots.extend(
                 page.providers
                     .into_iter()
-                    .filter(|provider| provider.browsable && provider.room == room)
+                    .filter(|provider| provider.browsable && provider.workspace == room)
                     .filter_map(|provider| {
                         Some(ActionDirectoryRoot {
                             peer_id: provider.provider.parse().ok()?,
                             app_id: provider.app_id,
-                            cluster_id: provider.room,
+                            cluster_id: provider.workspace,
                             record_id: provider.record_id,
                         })
                     }),

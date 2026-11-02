@@ -123,18 +123,18 @@ pub fn status_line(
     })
 }
 
-/// Who `row` is to live presence in `room` (the workspace in front when
+/// Who `row` is to live presence in `workspace` (the workspace in front when
 /// `None`): their own id when presence knows it, else the one presence
 /// names as they are named.
 #[must_use]
 pub fn presence_id(
     presence: &PresenceCtx,
-    room: Option<&str>,
+    workspace: Option<&str>,
     row: &RosterRow,
 ) -> Option<ui::permissions::UserId> {
     let direct = ui::permissions::UserId(row.id.clone());
-    let said = match room {
-        Some(room) => presence.has_availability_in(room, &direct),
+    let said = match workspace {
+        Some(workspace) => presence.has_availability_in(workspace, &direct),
         None => presence.has_availability(&direct),
     };
     if presence.names.contains_key(&direct) || said {

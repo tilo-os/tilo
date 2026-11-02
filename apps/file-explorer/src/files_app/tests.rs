@@ -2620,7 +2620,10 @@ mod command_path_tests {
                 serde_json::Value::String(arg.1.to_string_lossy().into_owned()),
             )]);
             let address = door::published(&resources, &resource, action).unwrap();
-            let encoded = door::encode_json(&resources, &address, &arguments).unwrap();
+            // A path the effect cannot take is the door's refusal, answered
+            // before the window is asked to do anything.
+            let encoded = door::encode_json(&resources, &address, &arguments)
+                .map_err(|error| error.to_string())?;
             let kind = if action == "go-to" {
                 OperationKind::View
             } else {

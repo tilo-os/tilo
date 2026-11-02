@@ -10,6 +10,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 #[test]
 fn every_package_in_apps_tl_checks_clean() {
@@ -28,7 +29,7 @@ fn every_package_in_apps_tl_checks_clean() {
         let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
             .arg("check")
             .arg(dir)
-            .output()
+            .output_locked()
             .unwrap();
         if !output.status.success() {
             failed.push(format!(

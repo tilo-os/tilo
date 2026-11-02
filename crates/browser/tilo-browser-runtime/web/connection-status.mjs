@@ -48,7 +48,7 @@ export function connectionStatus({peer = null, desktop = null, mounted = false, 
   if (failed) return {state: failed.kind, sentence: failed.sentence, detail: failed.detail};
   if (!mounted || !presented(desktop?.phase)) return {state: 'connecting', sentence: null, detail: null};
   // A session still finding its transport, or its host still admitting its
-  // rooms, is on its way rather than cut off, and says so in its own line:
+  // workspaces, is on its way rather than cut off, and says so in its own line:
   // nothing to add here.
   if (pending(peer)) return {state: 'connecting', sentence: null, detail: null};
   return {state: 'online', sentence: null, detail: null};
@@ -80,7 +80,7 @@ function failureOf({peer, desktop, saved, messages}) {
   if (health?.admission?.phase === 'failed') {
     return {
       kind: 'admission',
-      detail: 'the host did not admit this device’s room',
+      detail: 'the host did not admit this device’s workspace',
       sentence: said('admission'),
     };
   }

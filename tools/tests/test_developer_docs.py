@@ -170,6 +170,20 @@ class DeveloperDocsTests(unittest.TestCase):
         self.assertIn("(/docs/developers/)", (out / "pages/index.md").read_text())
         self.assertIsNone(json.loads((out / "manifest.json").read_text())["api"])
 
+    def test_a_site_that_publishes_one_book_links_the_other_at_the_repository(self) -> None:
+        # The site serves this book only, so an address in the other book's
+        # base would be a dead route; --related-books repository keeps the
+        # link on the source tree.
+        self.second_book()
+        self.start("[Development](../development/index.md)\n")
+        out = self.root / "one-book-out"
+        self.assertEqual(self.run_tool("--root", str(self.root), "--manifest",
+                                      "docs/developers/pages.toml", "export",
+                                      "--related-books", "repository",
+                                      "--out", str(out)), 0)
+        self.assertIn("(https://forge.example/tilo/tilo/src/branch/main/docs/development/index.md)",
+                      (out / "pages/index.md").read_text())
+
     def test_default_check_checks_the_related_book_too(self) -> None:
         self.second_book()
         self.start("Hello\n")

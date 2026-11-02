@@ -161,7 +161,7 @@ class Journey:
         wait_for(shown, "APK rendered " + expression + " = " + answer, timeout=30)
         self.evidence.append({"step": name, "expression": expression, "answer": answer,
                               "png_sha256": digest(self.output / (name + ".png")),
-                              "frame": self.frame(), "room": self.workspace()["room"]})
+                              "frame": self.frame(), "workspace": self.workspace()["room"]})
 
     def type_expression(self, expression):
         frame = wait_for(self.frame, "input surface")
@@ -173,8 +173,8 @@ class Journey:
         self.invoke("actions", "tab.close")
         wait_for(lambda: not self.tabs(), "tab close")
 
-    def history(self, room):
-        base = self.profile / "data/tilo-rooms" / room / self.package
+    def history(self, workspace):
+        base = self.profile / "data/tilo-rooms" / workspace / self.package
         paths = list(base.rglob("history"))
         if len(paths) != 1:
             return b""
@@ -294,7 +294,7 @@ def main():
                           "production_binaries": {binary: digest(REPO / "target/debug" / binary)
                                                   for binary in ("shell", "tilo-launcher")},
                           "apk_sha256": APK_SHA, "runtime_receipt_sha256": args.runtime_receipt_sha256,
-                          "evidence": journey.evidence, "first_room": first["room"], "second_room": second["room"],
+                          "evidence": journey.evidence, "first_workspace": first["room"], "second_workspace": second["room"],
                           "confinement": confinement, "signed_tilo_admission": False, "real_device": False}
             finally:
                 if process.poll() is None:

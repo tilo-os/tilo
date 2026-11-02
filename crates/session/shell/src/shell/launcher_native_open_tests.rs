@@ -239,7 +239,7 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
                 .grants)
         })
         .unwrap();
-    let mut workspace = tilo_desktop_model::Workspace::in_room(
+    let mut workspace = tilo_desktop_model::Workspace::in_workspace(
         tilo_desktop_model::WorkspaceId(71),
         room,
         "Admitted viewer launch",

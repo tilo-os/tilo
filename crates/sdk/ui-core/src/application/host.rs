@@ -93,7 +93,7 @@ impl NativeProcessHost {
             default_record: if launcher_instance {
                 RecordId::window_default(resolved.instance_id)
             } else {
-                RecordId::room_default()
+                RecordId::workspace_default()
             },
             workspace_scoped: resolved.workspace_scoped,
         })
@@ -1394,7 +1394,7 @@ mod native_process_tests {
             .unwrap();
         assert_eq!(
             standalone_record.context.record().id,
-            RecordId::room_default()
+            RecordId::workspace_default()
         );
         drop(standalone_record);
         drop(standalone);
@@ -1421,7 +1421,10 @@ mod native_process_tests {
             .prepare_default(
                 &definition,
                 51,
-                RecordCheckout::new(RecordId::room_default(), definition.record_kind.clone()),
+                RecordCheckout::new(
+                    RecordId::workspace_default(),
+                    definition.record_kind.clone(),
+                ),
                 None,
                 probe::runner_inputs(),
             )
@@ -1438,7 +1441,7 @@ mod native_process_tests {
         let old = restored
             .prepare_launch(&definition, None, probe::runner_inputs())
             .unwrap();
-        assert_eq!(old.context.record().id, RecordId::room_default());
+        assert_eq!(old.context.record().id, RecordId::workspace_default());
         assert!(matches!(old.target, LaunchTarget::Record { .. }));
         drop(old);
         drop(restored);
@@ -1810,7 +1813,7 @@ mod native_process_tests {
                 Some(id)
             );
         }
-        assert_eq!(RecordId::window_default(0), RecordId::room_default());
+        assert_eq!(RecordId::window_default(0), RecordId::workspace_default());
         for other in [
             RecordId::package_primary(),
             RecordId::for_tab(0x42),
