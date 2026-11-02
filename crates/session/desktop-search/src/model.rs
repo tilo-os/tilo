@@ -450,8 +450,11 @@ impl SourceCosts {
 pub struct SearchStream {
     needle: String,
     row_budget: usize,
-    /// The sources not asked yet, by id.
-    pending: Vec<String>,
+    /// The sources not asked yet, by their place among the sources: two
+    /// sources may search the same kind of thing under one id (an app's
+    /// open providers and the index of what apps published), and each is
+    /// asked for its own rows.
+    pending: Vec<usize>,
     /// The rows so far, each with its strength on the shared scale.
     merged: Vec<(Hit, f32)>,
     /// Where the row of a thing stands in `merged`, so two sources offering
@@ -470,10 +473,7 @@ impl SearchStream {
             needle: needle.to_owned(),
             row_budget,
             pending: if bounded {
-                sources
-                    .iter()
-                    .map(|source| source.id().to_owned())
-                    .collect()
+                (0..sources.len()).collect()
             } else {
                 Vec::new()
             },
@@ -546,7 +546,7 @@ impl SearchStream {
     ) -> bool {
         let listed = self.answered;
         let mut did_ask = false;
-        while let Some(index) = self.next_index(costs, listed, deadline) {
+        while let Some(index) = self.next_index(sources, costs, listed, deadline) {
             if !self.ask(index, sources, costs, used) {
                 continue;
             }
@@ -569,8 +569,8 @@ impl SearchStream {
         costs: &mut SourceCosts,
         used: &dyn Fn(&Hit) -> f32,
     ) -> bool {
-        let id = self.pending.remove(index);
-        let Some(source) = sources.iter().find(|source| source.id() == id) else {
+        let at = self.pending.remove(index);
+        let Some(source) = sources.get(at).copied() else {
             return false;
         };
         let started = ui::time::now();
@@ -618,9 +618,18 @@ impl SearchStream {
     /// frame's time, one measured faster than the budget whenever it still
     /// fits, and one measured slower only in a frame after the search
     /// listed rows, so a slow source never holds up the first rows.
-    fn next_index(&self, costs: &SourceCosts, listed: bool, deadline: Instant) -> Option<usize> {
-        for (index, id) in self.pending.iter().enumerate() {
-            let Some(took) = costs.measured(id) else {
+    fn next_index(
+        &self,
+        sources: &[&dyn Source],
+        costs: &SourceCosts,
+        listed: bool,
+        deadline: Instant,
+    ) -> Option<usize> {
+        for (index, at) in self.pending.iter().enumerate() {
+            let Some(source) = sources.get(*at) else {
+                continue;
+            };
+            let Some(took) = costs.measured(source.id()) else {
                 return Some(index);
             };
             if took <= deadline.saturating_duration_since(ui::time::now()) {
@@ -1027,6 +1036,56 @@ mod tests {
         world.commands.hits.push(shared);
         let groups = search("share", &world.all(), 0, &|_| 0.0);
         assert_eq!(rows(&groups), ["window-actions:Share"]);
+    }
+
+    /// Two sources that search the same kind of thing under one id (an
+    /// app's open providers and the index of what apps published) both
+    /// answer: a search asks each source it was given, never the first one
+    /// that carries the id.
+    #[test]
+    fn two_sources_sharing_an_id_both_answer() {
+        let one = Fixed {
+            id: "app-content",
+            rank: 0,
+            hits: vec![hit(
+                "app-content",
+                "n1",
+                "Groceries for the weekend",
+                ResourceKind::Note,
+                20,
+                Target::Cancel {
+                    app: "notes".into(),
+                    workspace: "Main".into(),
+                    invocation: "close".into(),
+                },
+            )],
+        };
+        let two = Fixed {
+            id: "app-content",
+            rank: 0,
+            hits: vec![hit(
+                "app-content",
+                "n2",
+                "Groceries list",
+                ResourceKind::Note,
+                20,
+                Target::Cancel {
+                    app: "notes".into(),
+                    workspace: "Main".into(),
+                    invocation: "close".into(),
+                },
+            )],
+        };
+        let sources: Vec<&dyn Source> = vec![&one, &two];
+        let groups = search("groceries", &sources, 0, &|_| 0.0);
+        assert_eq!(
+            rows(&groups),
+            [
+                "app-content:Groceries for the weekend",
+                "app-content:Groceries list"
+            ],
+            "both sources answered"
+        );
     }
 
     /// What the person chose before leads among equal matches: the ranking
