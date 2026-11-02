@@ -10,7 +10,7 @@ someone being able to see who did it.
 
 This document is the contract for app developers and for the framework
 (`crates/sdk/tilo-resource`, `crates/sdk/tilo-resource-macros`,
-`crates/sdk/tilo-app`). Who may invoke what is in [permissions.md](permissions.md).
+`crates/sdk/tilo-app`). Who may invoke what is in [permissions.md](permissions.md); what runs where, and what an app process can reach, is in [apps.md](apps.md).
 
 ## 1. The model
 
