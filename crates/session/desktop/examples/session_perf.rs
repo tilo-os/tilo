@@ -452,8 +452,11 @@ fn run() -> Result<(), String> {
         typing = measure_frames(&mut harness, "typing", 60);
     }
 
-    // Idle: frames offered with nothing to draw. The first ones settle the
-    // frames above; every one after that must find no work.
+    // Idle: frames offered with nothing to draw. The frames above ran
+    // microseconds apart, so the clock barely moved and a window's entrance
+    // still counts as moving; settle the animations on the toolkit's clock
+    // first, as a capture does, and then no offered frame may find work.
+    harness.settle_for_capture(ui::time::Duration::from_millis(2000));
     let mut idle_frames = 0usize;
     let mut idle_worked = 0usize;
     let start = Instant::now();
@@ -537,6 +540,7 @@ fn run() -> Result<(), String> {
                 "frames": phase.frames,
                 "wall_us": phase.wall_us,
                 "allocs": phase.allocs,
+                "allocs_per_frame": phase.allocs_per_frame(),
                 "bytes": phase.bytes,
                 "p50_us": report.total.p50_us,
                 "p95_us": report.total.p95_us,

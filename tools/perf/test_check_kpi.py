@@ -49,6 +49,19 @@ class Budgets(unittest.TestCase):
         base.update(overrides)
         return base
 
+    def tree_measurement(self) -> dict:
+        """A desktop x86 run, as the harness reports it, inside the tree's budgets."""
+        return {
+            "kind": "session",
+            "device": "x86",
+            "profile": "arriving",
+            "build_us": 3900,
+            "first_frame_us": 280,
+            "steady": {"p95_us": 210, "allocs_per_frame": 660, "draw_p95_us": 180},
+            "idle_working_frames": 0,
+            "idle_us_per_frame": 90,
+        }
+
     def test_within_budget_passes(self) -> None:
         failures, _ = check_kpi.check(self.measurement(), self.budgets)
         self.assertEqual(failures, [])
@@ -140,7 +153,7 @@ class Budgets(unittest.TestCase):
             path = pathlib.Path(directory) / "m.json"
             import json
 
-            path.write_text(json.dumps(self.measurement(profile="arriving")))
+            path.write_text(json.dumps(self.tree_measurement()))
             run = subprocess.run(
                 [sys.executable, str(check_kpi.__file__), "check", str(path)],
                 capture_output=True,

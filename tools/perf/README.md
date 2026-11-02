@@ -64,6 +64,6 @@ budget follows a measurement: set it from a run on the class, with the
 headroom noted in its comment, and lower it when the measurement improves.
 `test_check_kpi.py` proves the check fails when a budget is exceeded.
 
-Steady-state allocations are budgeted at zero: a frame that allocates is a
-frame that will stutter when the allocator does something other than hand back
-a cached block.
+Per-frame allocations are budgeted from the same run (`steady.allocs_per_frame`): a
+frame that allocates more than it did is a frame that will stutter when the
+allocator does something other than hand back a cached block.
