@@ -15,7 +15,6 @@ name = "tilo-legacy"
 path = "src/main.rs"
 
 [dependencies]
-tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 collab-types = { path = "../../collab/collab-types" }
 fnv.workspace = true
 legacy-agent-protocol = { path = "../legacy-agent-protocol" }

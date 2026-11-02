@@ -8712,7 +8712,6 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-files",
  "tilo-libvirt-domain",
- "tilo-lock",
  "tilo-paths",
  "tilo-sandbox-core",
  "wire-frame",
