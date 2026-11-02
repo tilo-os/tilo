@@ -234,6 +234,11 @@ fn a_window_is_named_by_what_it_shows_and_by_the_person_above_that() {
     policy.retitle(1, "Notes");
     settle(&mut driver);
     assert_eq!(title_of(&policy, tab), "Notes");
+    // A window that names nothing keeps the name it has: the bar is never
+    // left with no title in it.
+    policy.retitle(1, "");
+    settle(&mut driver);
+    assert_eq!(title_of(&policy, tab), "Notes");
 }
 
 /// What the tab `tab` is called.

@@ -242,10 +242,15 @@ impl Tab {
     /// The window is called `title` now: its own title, or, while its app
     /// names what the window shows, that name — the desk resolves the two.
     /// While a person's name stands, it is kept for when the name is cleared,
-    /// and the tab goes on showing the name. Returns whether anything
-    /// changed: a window sending the same title again (terminals do,
-    /// continuously) is no change.
+    /// and the tab goes on showing the name. A window that names nothing
+    /// keeps the name it has: a bar with no title names nothing to the
+    /// person looking at the desk. Returns whether anything changed: a window
+    /// sending the same title again (terminals do, continuously) is no
+    /// change.
     pub fn set_window_title(&mut self, title: &str) -> bool {
+        if title.trim().is_empty() {
+            return false;
+        }
         let shown = self.app_title.as_mut().unwrap_or(&mut self.title);
         if shown == title {
             return false;
@@ -460,6 +465,22 @@ mod tab_name_tests {
         tab.set_window_title("vim");
         assert!(!tab.set_window_title("vim"));
         assert_eq!(tab.title, "Build");
+    }
+
+    #[test]
+    fn a_window_that_names_nothing_keeps_the_name_it_has() {
+        let mut tab = terminal("Notes");
+        assert!(!tab.set_window_title(""));
+        assert_eq!(tab.title, "Notes");
+        assert!(!tab.set_window_title("   "), "blank is blank");
+        assert_eq!(tab.title, "Notes");
+        // Also while a person's name stands: their name stays, and the
+        // window's own name it goes back to is the last one it gave.
+        tab.rename("Read later");
+        tab.set_window_title("Garden plan");
+        assert!(!tab.set_window_title(""));
+        assert!(tab.rename(""));
+        assert_eq!(tab.title, "Garden plan");
     }
 
     #[test]
