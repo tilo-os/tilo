@@ -145,7 +145,7 @@ impl DesktopSurface {
     /// what it shows, so the tab's name — in its bar, the overview and
     /// search — is this, and the window's own title only stands where its
     /// app names nothing. Returns whether that changed.
-    fn publish_window_names(&mut self) -> bool {
+    fn publish_window_names(&self) -> bool {
         let mut names = std::collections::BTreeMap::new();
         for group in self.rows.values().flat_map(|row| row.groups.iter()) {
             for tab in group.tabs() {
