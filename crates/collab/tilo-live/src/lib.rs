@@ -100,7 +100,7 @@ impl Task {
     }
 }
 
-#[cfg(feature = "relay")]
+#[cfg(feature = "plane")]
 impl Drop for Task {
     fn drop(&mut self) {
         if let Some(task) = self.0.take() {
