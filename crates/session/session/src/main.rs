@@ -515,7 +515,7 @@ fn desktop_services(
 #[cfg(target_os = "linux")]
 fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
     use tilo_session::{
-        ActionPlane, DeviceHost, KillSwitch, Options, QuickSettings, SessionConfig,
+        ActionPlane, DeviceHost, Options, QuickSettings, SessionConfig, Vpn,
         displays::{Backlights, Screens},
     };
     let owned = machine.is_owned();
@@ -557,7 +557,7 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
         state: tilo_paths::state_dir(),
         // A session in a window of another desktop leaves the machine's
         // traffic to the session that owns it.
-        kill_switch: owned.then(KillSwitch::machine),
+        vpn: owned.then(Vpn::machine),
         ..Options::default()
     }
 }

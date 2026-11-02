@@ -12,8 +12,7 @@ use ui::application::ComponentRunnerInputs;
 use crate::displays::Backlights;
 use crate::rotation::Accelerometer;
 use crate::{
-    AppActions, KillSwitch, Launches, OnboardingView, SearchOptions, Service, SessionAction,
-    SessionConfig,
+    AppActions, Launches, OnboardingView, SearchOptions, Service, SessionAction, SessionConfig, Vpn,
 };
 use crate::{
     capture, controllers, desktop_services, engine, fabric, mount, portal_link, surfaces, sync,
@@ -142,10 +141,11 @@ pub struct Options {
     /// they copied there joins the clipboard here.
     pub fabric: Option<tilo_device_fabric::link::SharedLink>,
     pub wake_seams: mount::wake::Seams,
-    /// The person's VPN profile kill switches, when this session runs on a
-    /// machine with the helper: a profile set to connect and not connected
-    /// blocks traffic while its switch is on. Without one, nothing does.
-    pub kill_switch: Option<KillSwitch>,
+    /// The device VPN, when this session runs on a machine with the helper:
+    /// a VPN profile set to connect and not connected blocks traffic while
+    /// its kill switch is on, and this device routes through another of the
+    /// person's devices while they choose one. Without one, nothing does.
+    pub vpn: Option<Vpn>,
     /// Whether the apps this session runs read and invoke what its services
     /// publish, and on which socket. Off, the apps it starts reach no
     /// service at all.
@@ -327,7 +327,7 @@ impl Default for Options {
             collab: true,
             fabric: None,
             wake_seams: mount::wake::Seams::default(),
-            kill_switch: None,
+            vpn: None,
             action_plane: ActionPlane::default(),
             agent_door: None,
             admit_repl: Vec::new(),

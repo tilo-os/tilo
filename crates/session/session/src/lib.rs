@@ -151,7 +151,7 @@ pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
 pub use launches::Launches;
 pub use lists::{AppLists, Lists};
-pub use mount::vpn::KillSwitch;
+pub use mount::vpn::Vpn;
 pub use mount::wake::{Seams as WakeSeams, WakeInterfaces};
 pub use notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
 pub use options::{ActionPlane, Machine, Options, QuickSettings, no_session_actions};
@@ -264,6 +264,10 @@ struct Shared {
     device: Option<DeviceHost>,
     /// The person's device fabric, while this session runs on one.
     fabric: Option<tilo_device_fabric::link::SharedLink>,
+    /// The device VPN, while this session runs on a machine with the helper:
+    /// its profiles' kill switches, and the route through another of the
+    /// person's devices, which follows the pass.
+    vpn: Option<mount::vpn::Routes>,
     /// The person's devices as the panel was last fed them.
     devices: mount::devices::Devices,
     /// The session's displays as the panel was last fed them.
@@ -1069,12 +1073,11 @@ impl Session {
         }
         let sources = config::Sources::from_config(&options.config);
         let mut doors = Doors::default();
-        // The VPN profiles' kill switch runs for the session's lifetime: a
-        // profile set to connect and down blocks traffic while its switch
-        // is on, and what blocks is published for Settings.
-        if let Some(kill_switch) = options.kill_switch.take() {
-            kill_switch.start();
-        }
+        // The device VPN runs for the session's lifetime: the profiles' kill
+        // switches from the start, and the route through another of the
+        // person's devices as the session's passes find this device's
+        // endpoint. What both do is published for Settings.
+        let vpn = options.vpn.take().map(mount::vpn::Vpn::start);
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
         let notices = tilo_desktop_surface::DesktopNotifications::default();
@@ -1720,6 +1723,7 @@ impl Session {
             hosted: !options.machine.is_owned(),
             device,
             fabric,
+            vpn,
             devices: mount::devices::Devices::default(),
             displays: mount::displays::Displays::default(),
             panel_power: mount::panel_power::PanelPower::default(),
@@ -2450,8 +2454,7 @@ impl Session {
             self.displays.awaiting_confirmation().is_some(),
             &self.shared.invocations,
         );
-        let place = self.sheet_place();
-        self.place_sheets(place);
+        self.place_sheets(self.sheet_place());
         // Each round can ask for another (a key's shortcut the chrome
         // leaves to the session); a few rounds settle any chain.
         for _ in 0..4 {
@@ -2529,6 +2532,7 @@ impl Session {
             self.shared.settings.sync(fabric.as_ref());
             // The person's sleeping devices, and the probes that follow them.
             self.shared.waking.follow(&self.shared);
+            self.follow_device_vpn(fabric);
             // What this pass offered the clipboard, and what the pumps just
             // changed, is this device's next word to its other devices.
             if let Some(sync) = &self.shared.sync {
@@ -2536,6 +2540,18 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// Follow where this device routes through another of the person's
+    /// devices, and which of them could carry it: the route follows what they
+    /// chose on the pass they chose it on.
+    fn follow_device_vpn(&self, fabric: &tilo_device_fabric::link::SharedLink) {
+        if let Some(vpn) = &self.shared.vpn {
+            vpn.follow(
+                Some(fabric),
+                self.shared.sync.as_ref().and_then(|sync| sync.endpoint()),
+            );
+        }
     }
 
     /// Keep the workspaces this session takes part in current with the
