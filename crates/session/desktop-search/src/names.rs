@@ -34,15 +34,17 @@ pub fn window_name(app_id: &str, title: &str) -> String {
 }
 
 /// Whether `said` is a name of the app rather than a place in it: the name
-/// the app is listed under, or its id written as words, which is what a
-/// window bar says for an app run without its list ("so.tilo.file-explorer"
-/// is "Files" everywhere, and "File Explorer" in its own empty window).
+/// the app is listed under, the id written as words or the id itself, which
+/// is what a window bar says for an app run without its list
+/// ("so.tilo.file-explorer" is "Files" everywhere, and "File Explorer" in
+/// its own empty window).
 #[must_use]
 pub fn is_apps_own_name(app_id: &str, said: &str) -> bool {
     let said = ui::search::fold_search_text(said.trim());
     !said.is_empty()
         && (said == ui::search::fold_search_text(&app_name(app_id))
-            || said == ui::search::fold_search_text(&humanized(app_id)))
+            || said == ui::search::fold_search_text(&humanized(app_id))
+            || said == ui::search::fold_search_text(package_id(app_id)))
 }
 
 /// [`window_name`] for a caller that already has the app's name.
@@ -130,6 +132,14 @@ mod tests {
         ));
         assert!(!is_apps_own_name("so.tilo.file-explorer", "Downloads"));
         assert!(!is_apps_own_name("so.tilo.notes", ""));
+        // A bar that writes the app's id is the app without its list, not a
+        // title: "org.example.Only" is the same window as "Only".
+        assert!(is_apps_own_name("org.example.Only", "org.example.Only"));
+        assert!(is_apps_own_name(
+            "host:org.example.Only.desktop",
+            "org.example.Only"
+        ));
+        assert_eq!(window_name("org.example.Only", "org.example.Only"), "Only");
         assert_eq!(
             window_name("so.tilo.file-explorer", "File Explorer"),
             "Files"

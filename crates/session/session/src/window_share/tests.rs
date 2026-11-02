@@ -357,9 +357,9 @@ fn rows<'a>(reading: &'a Value, array: &str) -> &'a [Value] {
 
 /// The tab of the desk the window of `app` became.
 fn tab_of(session: &Session, app: &str) -> u64 {
-    fn find(resources: &[ResourceSpec], app: &str) -> Option<u64> {
+    fn find(resources: &[ResourceSpec], label: &str) -> Option<u64> {
         resources.iter().find_map(|resource| {
-            if resource.kind == WINDOW_KIND && resource.label == app {
+            if resource.kind == WINDOW_KIND && resource.label == label {
                 resource
                     .id
                     .0
@@ -367,11 +367,12 @@ fn tab_of(session: &Session, app: &str) -> u64 {
                     .next()
                     .and_then(|tab| tab.parse().ok())
             } else {
-                find(&resource.children, app)
+                find(&resource.children, label)
             }
         })
     }
-    find(&session.resources(), app).unwrap_or_else(|| panic!("no window of {app} on the desk"))
+    let label = tilo_desktop_search::names::window_name(app, app);
+    find(&session.resources(), &label).unwrap_or_else(|| panic!("no window of {app} on the desk"))
 }
 
 /// The compositor's identifier of the window of `app`, as a share names it.

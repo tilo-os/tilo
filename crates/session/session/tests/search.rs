@@ -616,16 +616,34 @@ fn search_for(session: &mut Session, query: &str) {
         "search",
         serde_json::json!({ "query": query }),
     );
-    for _ in 0..40 {
+    // The search's own rows (the answer and the way to the web) stand from
+    // the first frame, so the field showing rows is not yet the sources
+    // having answered: the field is asked until its rows stop changing.
+    let mut last: Option<Vec<String>> = None;
+    let mut steady = 0;
+    for _ in 0..400 {
         session.step(Duration::from_millis(1)).expect("step");
-        let searched = find(&session.resources(), SEARCH_RESOURCE).is_some_and(|search| {
+        let search = find(&session.resources(), SEARCH_RESOURCE);
+        let labels = search.as_ref().map(|search| {
+            search
+                .children
+                .iter()
+                .map(|row| row.label.clone())
+                .collect()
+        });
+        let relevant = search.is_some_and(|search| {
             search.label == query && (!search.children.is_empty() || query.is_empty())
         });
-        if searched {
-            break;
+        if relevant && labels == last {
+            steady += 1;
+            if steady == 5 {
+                break;
+            }
+        } else {
+            steady = 0;
         }
+        last = labels;
     }
-    session.step(Duration::from_millis(1)).expect("step");
 }
 
 /// The row whose label is exactly `title`.

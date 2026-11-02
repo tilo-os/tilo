@@ -435,6 +435,9 @@ mod tests {
             "replicated data type.",
         ])));
         answer_with(&models, "what is a CRDT?".into(), &sender);
+        // The gateway returns, so nothing more comes: the thread that would
+        // have written more is gone with its end of the channel.
+        drop(sender);
         let changed = ask.poll();
         assert!(changed, "what arrived is worth drawing");
         let row = ask.row("what is a CRDT?");
