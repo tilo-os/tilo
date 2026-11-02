@@ -404,6 +404,30 @@ impl WindowShares {
         self.send_outgoing(desk, sync);
     }
 
+    /// When the shares next need a pass of their own: a viewer's ask for a
+    /// window said again before its host stops hearing it, an ask that stops
+    /// counting as this device still viewing what it asked for, or the next
+    /// frame of a shared window that has someone to send it to.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        let asked_again = self
+            .watching
+            .values()
+            .filter_map(|watched| watched.asked_at.checked_add(VIEW_AGAIN));
+        let expired = self
+            .asked
+            .values()
+            .filter_map(|asked| asked.at.checked_add(VIEW_EXPIRY));
+        let frames = self.hosted.values().filter_map(|hosted| {
+            if hosted.share.viewer_ids().is_empty() {
+                return None;
+            }
+            let rate = hosted.share.rate().max(1);
+            let frame = Duration::from_secs_f64(1.0 / f64::from(rate));
+            hosted.captured_at.and_then(|at| at.checked_add(frame))
+        });
+        asked_again.chain(expired).chain(frames).min()
+    }
+
     /// Carry out what the person asked: start and stop shares, let a member
     /// control one, and ask to view another member's.
     fn carry_out(

@@ -3039,8 +3039,9 @@ impl Session {
     /// between: a frame a projection or a shared screen is due, a minute of
     /// the desk's clock, a banner leaving, a presence beat, a listing asked
     /// again, a frame of a recording, a probe of a device being woken, a
-    /// saved window giving up. `None` when nothing does, and the loop waits
-    /// for an event alone.
+    /// saved window giving up, a schedule's tick, a sample of the
+    /// accelerometer, a shared window's next frame. `None` when nothing
+    /// does, and the loop waits for an event alone.
     pub fn next_deadline(&self) -> Option<Instant> {
         let locked = self.compositor.locked();
         let stream = self.display_sheet.video_stream();
@@ -3064,6 +3065,8 @@ impl Session {
                 .as_ref()
                 .and_then(capture_studio::CaptureStudio::next_deadline),
             self.automation.next_deadline(),
+            self.rotation.next_deadline(),
+            self.shared.window_shares.borrow().next_deadline(),
         ];
         deadlines.into_iter().flatten().min()
     }
