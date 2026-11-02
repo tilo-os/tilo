@@ -28,6 +28,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -56,16 +57,37 @@ pub const OPENED_BY_THIS_BUILD: bool = cfg!(any(debug_assertions, feature = "dev
 
 /// Where the socket is opened, given whether this build opens one (`opens`,
 /// [`OPENED_BY_THIS_BUILD`]) and the path the command line named: `None` in a build that opens
-/// none, whatever was named; the named path, else `$TILO_TEST_CONTROL`'s.
+/// none, whatever was named; the named path, else `$TILO_TEST_CONTROL`'s, else the default
+/// `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` the tools that drive a desktop go to —
+/// what a dev image's login binds with nothing named, so `tilo-vmd` finds it where it looks.
 #[must_use]
 pub fn path(opens: bool, named: Option<&str>) -> Option<PathBuf> {
+    path_in(
+        opens,
+        named,
+        std::env::var_os(ENV),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+    )
+}
+
+/// [`path`] for the values it reads, so what it decides can be checked without the environment.
+fn path_in(
+    opens: bool,
+    named: Option<&str>,
+    env: Option<OsString>,
+    runtime_dir: Option<OsString>,
+) -> Option<PathBuf> {
     if !opens {
         return None;
     }
-    named
+    let named = named
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os(ENV).map(PathBuf::from))
-        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| env.map(PathBuf::from))
+        .filter(|path| !path.as_os_str().is_empty());
+    named.or_else(|| {
+        tilo_paths::login::session_dir(runtime_dir)
+            .map(|directory| directory.join(tilo_paths::login::TEST_CONTROL_SOCKET_FILE))
+    })
 }
 
 /// The socket at `path`, when one is named, opened; `None`, saying why, when
@@ -84,6 +106,7 @@ pub(crate) fn open_named(path: Option<&Path>, wake: Wake) -> Option<TestControl>
 /// What the session is, for the answers that read it: the doors every hosted surface's actions
 /// go through, the desk's tree, what stands over it, the workspaces this computer holds, and
 /// whether the person locked the screen.
+#[derive(Clone, Copy)]
 pub(crate) struct Desk<'a> {
     pub(crate) doors: &'a Doors,
     pub(crate) handle: &'a DesktopHandle,
@@ -208,6 +231,7 @@ fn serve_connection(stream: UnixStream, asks: &Sender<Asked>, wake: &Wake) {
 }
 
 /// The answer to `request`, run against `compositor`.
+/// The answer to `request`, run against `compositor`.
 fn answered(
     request: &str,
     compositor: &mut Compositor,
@@ -218,19 +242,38 @@ fn answered(
         Ok(request) => request,
         Err(error) => return refusal("parse_error", &error.to_string()),
     };
-    let number = |name: &str| request.get(name).and_then(Json::as_f64);
-    let button = |name: &str| match request.get(name).and_then(Json::as_str) {
-        None => Ok(BUTTON_LEFT),
-        Some("left") => Ok(BUTTON_LEFT),
-        Some("right") => Ok(BUTTON_RIGHT),
-        Some("middle") => Ok(BUTTON_MIDDLE),
-        Some(other) => Err(refusal(
-            "parse_error",
-            &format!("`{name}` is `left`, `right` or `middle`, not `{other}`"),
-        )),
+    let Some(op) = request.get("op").and_then(Json::as_str) else {
+        return refusal("parse_error", "a request names its `op`");
     };
-    match request.get("op").and_then(Json::as_str) {
-        Some("snapshot") => {
+    if let Some(answer) = asked_of_desk(op, &request, compositor, desk) {
+        return answer;
+    }
+    if let Some(answer) = asked_of_pointer(op, &request, compositor) {
+        return answer;
+    }
+    if let Some(answer) = asked_of_keys(op, &request, compositor, held) {
+        return answer;
+    }
+    refusal(
+        "unsupported",
+        &format!(
+            "this session's test control answers `snapshot`, `click_at`, `click_named`, \
+             `drag`, `key`, `key_down`, `key_up`, `list_targets`, `modifiers`, \
+             `pointer_button`, `pointer_move`, `provision_test_identity`, `scroll`, \
+             `state_dump`, `type` and `windows`, not `{op}`"
+        ),
+    )
+}
+
+/// The answer to what `op` asks of the desk and its hosted surfaces, when it asks of them.
+fn asked_of_desk(
+    op: &str,
+    request: &Json,
+    compositor: &mut Compositor,
+    desk: &Desk<'_>,
+) -> Option<Json> {
+    Some(match op {
+        "snapshot" => {
             let path = request
                 .get("path")
                 .and_then(Json::as_str)
@@ -240,47 +283,76 @@ fn answered(
                 Err((code, message)) => refusal(code, &message),
             }
         }
-        Some("provision_test_identity") => provision_test_identity(),
-        Some("click_at") => {
-            let (Some(x), Some(y)) = (number("x"), number("y")) else {
-                return refusal("parse_error", "`click_at` takes `x` and `y`");
+        "provision_test_identity" => provision_test_identity(),
+        "list_targets" => {
+            let targets: Vec<Json> = desk
+                .doors
+                .controls()
+                .into_iter()
+                .map(|(name, (x, y, w, h))| json!({"name": name, "rect": [x, y, w, h]}))
+                .collect();
+            json!({"targets": targets})
+        }
+        "click_named" => {
+            let Some(name) = request.get("name").and_then(Json::as_str) else {
+                return Some(refusal("parse_error", "`click_named` takes `name`"));
             };
-            let button = match button("button") {
+            match desk.doors.press(name) {
+                Ok(()) => json!({"ok": {}}),
+                Err(error) => refusal("unknown_target", &error),
+            }
+        }
+        "state_dump" => desk.handle.read(|tree| state_dump(tree, desk)),
+        "windows" => desk
+            .handle
+            .read(|tree| json!({"answer": {"windows": window_rows(tree)}})),
+        _ => return None,
+    })
+}
+
+/// The answer to what `op` asks of the pointer, when it asks of it.
+fn asked_of_pointer(op: &str, request: &Json, compositor: &mut Compositor) -> Option<Json> {
+    Some(match op {
+        "click_at" => {
+            let (Some(x), Some(y)) = (number(request, "x"), number(request, "y")) else {
+                return Some(refusal("parse_error", "`click_at` takes `x` and `y`"));
+            };
+            let button = match button(request, "button") {
                 Ok(button) => button,
-                Err(refusal) => return refusal,
+                Err(refusal) => return Some(refusal),
             };
             if let Err(error) = compositor.input(InputEvent::PointerMotion { x, y }) {
-                return refusal("input_failed", &error.to_string());
+                return Some(refusal("input_failed", &error.to_string()));
             }
             tap(compositor, button)
         }
-        Some("pointer_move") => {
-            let (Some(x), Some(y)) = (number("x"), number("y")) else {
-                return refusal("parse_error", "`pointer_move` takes `x` and `y`");
+        "pointer_move" => {
+            let (Some(x), Some(y)) = (number(request, "x"), number(request, "y")) else {
+                return Some(refusal("parse_error", "`pointer_move` takes `x` and `y`"));
             };
             answer(compositor.input(InputEvent::PointerMotion { x, y }))
         }
-        Some("pointer_button") => {
+        "pointer_button" => {
             let Some(pressed) = request.get("pressed").and_then(Json::as_bool) else {
-                return refusal("parse_error", "`pointer_button` takes `pressed`");
+                return Some(refusal("parse_error", "`pointer_button` takes `pressed`"));
             };
-            let button = match button("button") {
+            let button = match button(request, "button") {
                 Ok(button) => button,
-                Err(refusal) => return refusal,
+                Err(refusal) => return Some(refusal),
             };
             answer(compositor.input(InputEvent::PointerButton { button, pressed }))
         }
-        Some("drag") => {
+        "drag" => {
             let (Some(x_from), Some(y_from), Some(x_to), Some(y_to)) = (
-                number("x_from"),
-                number("y_from"),
-                number("x_to"),
-                number("y_to"),
+                number(request, "x_from"),
+                number(request, "y_from"),
+                number(request, "x_to"),
+                number(request, "y_to"),
             ) else {
-                return refusal(
+                return Some(refusal(
                     "parse_error",
                     "`drag` takes `x_from`, `y_from`, `x_to` and `y_to`",
-                );
+                ));
             };
             let steps = request
                 .get("steps")
@@ -292,18 +364,18 @@ fn answered(
                 reason = "a drag's steps are clamped to a thousand"
             )]
             let steps = steps as u32;
-            let button = match button("button") {
+            let button = match button(request, "button") {
                 Ok(button) => button,
-                Err(refusal) => return refusal,
+                Err(refusal) => return Some(refusal),
             };
             match drag(compositor, button, (x_from, y_from), (x_to, y_to), steps) {
                 Ok(()) => json!({"ok": {}}),
                 Err(error) => refusal("input_failed", &error),
             }
         }
-        Some("scroll") => {
-            let dx = number("dx").unwrap_or(0.0);
-            let dy = number("dy").unwrap_or(0.0);
+        "scroll" => {
+            let dx = number(request, "dx").unwrap_or(0.0);
+            let dy = number(request, "dy").unwrap_or(0.0);
             // A notch up is the old wire's positive `dy`; the compositor speaks the protocol's
             // axis, which counts down as positive.
             answer(compositor.input(InputEvent::PointerAxis {
@@ -311,14 +383,26 @@ fn answered(
                 vertical: -dy,
             }))
         }
-        Some("key") => match key_code(&request, compositor) {
+        _ => return None,
+    })
+}
+
+/// The answer to what `op` asks of the keyboard, when it asks of it.
+fn asked_of_keys(
+    op: &str,
+    request: &Json,
+    compositor: &mut Compositor,
+    held: &RefCell<BTreeSet<u32>>,
+) -> Option<Json> {
+    Some(match op {
+        "key" => match key_code(request, compositor) {
             Some(code) => {
                 for pressed in [true, false] {
                     if let Err(error) = compositor.input(InputEvent::Key {
                         keycode: code,
                         pressed,
                     }) {
-                        return refusal("input_failed", &error.to_string());
+                        return Some(refusal("input_failed", &error.to_string()));
                     }
                 }
                 json!({"ok": {}})
@@ -328,33 +412,33 @@ fn answered(
                 "`key` takes a named key or one character the keyboard types",
             ),
         },
-        Some("key_down") => match key_code(&request, compositor) {
+        "key_down" => match key_code(request, compositor) {
             Some(code) => {
                 if let Err(error) = compositor.input(InputEvent::Key {
                     keycode: code,
                     pressed: true,
                 }) {
-                    return refusal("input_failed", &error.to_string());
+                    return Some(refusal("input_failed", &error.to_string()));
                 }
                 held.borrow_mut().insert(code);
                 json!({"ok": {}})
             }
             None => refusal("parse_error", "`key_down` takes a named key"),
         },
-        Some("key_up") => match key_code(&request, compositor) {
+        "key_up" => match key_code(request, compositor) {
             Some(code) => {
                 if let Err(error) = compositor.input(InputEvent::Key {
                     keycode: code,
                     pressed: false,
                 }) {
-                    return refusal("input_failed", &error.to_string());
+                    return Some(refusal("input_failed", &error.to_string()));
                 }
                 held.borrow_mut().remove(&code);
                 json!({"ok": {}})
             }
             None => refusal("parse_error", "`key_up` takes a named key"),
         },
-        Some("modifiers") => {
+        "modifiers" => {
             let wanted = [
                 (KEY_CTRL, request.get("ctrl").and_then(Json::as_bool)),
                 (KEY_SHIFT, request.get("shift").and_then(Json::as_bool)),
@@ -371,7 +455,7 @@ fn answered(
                     keycode: code,
                     pressed,
                 }) {
-                    return refusal("input_failed", &error.to_string());
+                    return Some(refusal("input_failed", &error.to_string()));
                 }
                 if pressed {
                     held.borrow_mut().insert(code);
@@ -381,47 +465,34 @@ fn answered(
             }
             json!({"ok": {}})
         }
-        Some("type") => {
+        "type" => {
             let Some(text) = request.get("text").and_then(Json::as_str) else {
-                return refusal("parse_error", "`type` takes `text`");
+                return Some(refusal("parse_error", "`type` takes `text`"));
             };
             match type_text(compositor, text) {
                 Ok(()) => json!({"ok": {}}),
                 Err(error) => refusal("input_failed", &error),
             }
         }
-        Some("list_targets") => {
-            let targets: Vec<Json> = desk
-                .doors
-                .controls()
-                .into_iter()
-                .map(|(name, (x, y, w, h))| json!({"name": name, "rect": [x, y, w, h]}))
-                .collect();
-            json!({"targets": targets})
-        }
-        Some("click_named") => {
-            let Some(name) = request.get("name").and_then(Json::as_str) else {
-                return refusal("parse_error", "`click_named` takes `name`");
-            };
-            match desk.doors.press(name) {
-                Ok(()) => json!({"ok": {}}),
-                Err(error) => refusal("unknown_target", &error),
-            }
-        }
-        Some("state_dump") => desk.handle.read(|tree| state_dump(tree, desk)),
-        Some("windows") => desk
-            .handle
-            .read(|tree| json!({"answer": {"windows": window_rows(tree)}})),
-        Some(op) => refusal(
-            "unsupported",
-            &format!(
-                "this session's test control answers `snapshot`, `click_at`, `click_named`, \
-                 `drag`, `key`, `key_down`, `key_up`, `list_targets`, `modifiers`, \
-                 `pointer_button`, `pointer_move`, `provision_test_identity`, `scroll`, \
-                 `state_dump`, `type` and `windows`, not `{op}`"
-            ),
-        ),
-        None => refusal("parse_error", "a request names its `op`"),
+        _ => return None,
+    })
+}
+
+/// `request`'s `name` field, when it is a number.
+fn number(request: &Json, name: &str) -> Option<f64> {
+    request.get(name).and_then(Json::as_f64)
+}
+
+/// The button `request`'s `name` field names: `left` unless it says `right` or `middle`.
+fn button(request: &Json, name: &str) -> Result<u32, Json> {
+    match request.get(name).and_then(Json::as_str) {
+        None | Some("left") => Ok(BUTTON_LEFT),
+        Some("right") => Ok(BUTTON_RIGHT),
+        Some("middle") => Ok(BUTTON_MIDDLE),
+        Some(other) => Err(refusal(
+            "parse_error",
+            &format!("`{name}` is `left`, `right` or `middle`, not `{other}`"),
+        )),
     }
 }
 
@@ -712,15 +783,51 @@ mod tests {
 
     #[test]
     fn only_a_development_build_opens_the_socket_it_is_named() {
+        let runtime = Some(OsString::from("/run/user/1000"));
         assert_eq!(
-            path(true, Some("/run/user/1000/control.sock")),
+            path_in(true, Some("/run/user/1000/control.sock"), None, None),
             Some(PathBuf::from("/run/user/1000/control.sock"))
         );
-        assert_eq!(path(false, Some("/run/user/1000/control.sock")), None);
+        assert_eq!(
+            path_in(
+                false,
+                Some("/run/user/1000/control.sock"),
+                None,
+                runtime.clone()
+            ),
+            None
+        );
         assert_eq!(
             OPENED_BY_THIS_BUILD,
             cfg!(any(debug_assertions, feature = "dev-overrides"))
         );
+    }
+
+    #[test]
+    fn a_socket_nothing_names_opens_where_the_tools_look() {
+        let runtime = Some(OsString::from("/run/user/1000"));
+        assert_eq!(
+            path_in(true, None, None, runtime),
+            Some(PathBuf::from(
+                "/run/user/1000/tilo-session/test-control.sock"
+            ))
+        );
+        // A tool that names one keeps it, and the environment names the next.
+        assert_eq!(
+            path_in(
+                true,
+                Some("/tmp/named.sock"),
+                Some(OsString::from("/tmp/env.sock")),
+                None
+            ),
+            Some(PathBuf::from("/tmp/named.sock"))
+        );
+        assert_eq!(
+            path_in(true, None, Some(OsString::from("/tmp/env.sock")), None),
+            Some(PathBuf::from("/tmp/env.sock"))
+        );
+        assert_eq!(path_in(true, None, None, None), None);
+        assert_eq!(path_in(true, None, Some(OsString::new()), None), None);
     }
 
     #[test]

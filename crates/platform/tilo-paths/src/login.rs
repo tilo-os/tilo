@@ -16,6 +16,10 @@ pub const SESSION_DIR: &str = "tilo-session";
 pub const AGENT_SOCKET_FILE: &str = "agent.sock";
 /// The device admin's control socket's file name in [`SESSION_DIR`].
 pub const ADMIN_CONTROL_SOCKET_FILE: &str = "admin-control.sock";
+/// The development test-control socket's file name in [`SESSION_DIR`]: what
+/// `tilo-control` and the tools that drive a desktop reach for unless they are
+/// told another path.
+pub const TEST_CONTROL_SOCKET_FILE: &str = "test-control.sock";
 /// File in [`SESSION_DIR`] naming the room of the workspace in front: the
 /// room a command started now (an app run from a terminal, or by
 /// `tilo-app dev`) joins, as an app the shell starts joins the room it names
