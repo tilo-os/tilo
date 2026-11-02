@@ -3,16 +3,25 @@
 //! `op`, and one answer per line: `{"ok": {..}}`, `{"answer": ..}`, `{"state": ..}`,
 //! `{"targets": ..}` or `{"err": {"code": .., "message": ..}}`.
 //!
-//! Two sockets serve it:
+//! Two sockets serve it, and each answers exactly its own half:
 //!
 //! - the development test-control socket (`tilo-session --test-control PATH`, or
 //!   `$TILO_TEST_CONTROL`, honoured by development builds only, at
 //!   `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` when neither names one), which binds
-//!   whatever the developer asked for;
+//!   whatever the developer asked for and answers every op of the protocol below;
 //! - the owner's own door, `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock` for a session
 //!   that owns the machine (a headless one serves `headless-owner-control.sock`), which
 //!   admits only programs of the account whose desktop this is, in its own namespaces, and
-//!   refuses every other connection before reading a byte ([`admin_path`]).
+//!   refuses every other connection before reading a byte ([`admin_path`], [`owner_decision`]).
+//!
+//! The owner's door serves what a person's own scripts need to drive their desktop through
+//! the model it publishes — the action model (`actions_enumerate`, `actions_invoke`,
+//! `actions_status` and `actions_cancel`), the state it shows (`state_dump`, `watch` and
+//! `windows`) — and refuses every other op with `not_permitted` ([`Op::owner_serves`],
+//! [`served`]). Injected input, screenshots of the person's screen, hosted surfaces'
+//! controls, fixtures and the test identity live on a development session's socket only.
+//! Nothing is invoked there while the screen is locked, and the state it shows carries
+//! nothing the lock hides.
 //!
 //! What it answers, as the tools that drive a desktop need it:
 //!
@@ -136,6 +145,10 @@ fn path_in(
 /// `admin-control.sock` in `$XDG_RUNTIME_DIR/tilo-session` for a session that owns the machine,
 /// else `headless-owner-control.sock` there for a headless one, whose machine this is but whose
 /// seat it is not. `None` for a session that owns no machine and named no path.
+///
+/// A path the door is served at is not yet the account's right to be served: the seat's own
+/// socket is the device's, and [`owner_decision`] decides whether this session is the account
+/// that owns the device.
 #[must_use]
 pub fn admin_path(owned: bool, headless: bool, named: Option<PathBuf>) -> Option<PathBuf> {
     admin_path_in(owned, headless, named, std::env::var_os("XDG_RUNTIME_DIR"))
@@ -163,6 +176,54 @@ fn admin_path_in(
     tilo_paths::login::session_dir(runtime_dir).map(|directory| directory.join(file))
 }
 
+/// Why a session serves no owner's door.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NotServed {
+    /// The account does not administer the machine: it is not a member of `wheel`.
+    NotAdministrator,
+    /// The account's identity does not own the device, or it has none yet.
+    NotDeviceOwner,
+    /// The device's ownership could not be read; reported, never guessed.
+    OwnershipUnreadable(String),
+}
+
+impl std::fmt::Display for NotServed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAdministrator => f.write_str(
+                "this account is not in the `wheel` group, which administers this machine",
+            ),
+            Self::NotDeviceOwner => f.write_str("this account's identity does not own this device"),
+            Self::OwnershipUnreadable(error) => {
+                write!(f, "the device's ownership could not be read: {error}")
+            }
+        }
+    }
+}
+
+/// Whether this session serves the owner's door, from the two facts that make its account the
+/// device's own: a member of the machine's administrator group (`wheel`, which the image's
+/// `sudo` and polkit rules both name), whose identity is the one that claimed the device at
+/// its first login. A session in another desktop's window, whose machine this is not, serves
+/// none.
+///
+/// # Errors
+///
+/// [`NotServed`], saying which of the two the account is not.
+pub fn owner_decision(
+    in_admin_group: bool,
+    owns_device: io::Result<bool>,
+) -> Result<(), NotServed> {
+    if !in_admin_group {
+        return Err(NotServed::NotAdministrator);
+    }
+    match owns_device {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(NotServed::NotDeviceOwner),
+        Err(error) => Err(NotServed::OwnershipUnreadable(error.to_string())),
+    }
+}
+
 /// What the session is, for the answers that read it: the doors every hosted surface's actions
 /// go through, the desk's tree, what stands over it, the workspaces this computer holds, and
 /// whether the person locked the screen.
@@ -185,7 +246,11 @@ pub(crate) fn serve(control: Option<&Control>, compositor: &mut Compositor, desk
 
 /// One request a connection sent the loop, and where its answer goes.
 struct Asked {
+    /// The op it asks, which the socket it came in on serves.
+    op: Op,
     request: Json,
+    /// The socket it came in on: the owner's door answers some ops differently.
+    gate: Gate,
     answer: Sender<Json>,
 }
 
@@ -212,12 +277,193 @@ struct Socket {
 }
 
 /// Who a socket serves.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Gate {
     /// The developer's own socket: whoever the developer started it for.
     Dev,
     /// The owner's door: this account's own programs, and only theirs.
     Owner,
+}
+
+/// One op of the control protocol, as a request's `op` names it.
+///
+/// [`Op::ALL`] is every op the protocol answers. The development socket answers all of them;
+/// the owner's door serves the semantic half only ([`Op::owner_serves`], [`served`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Op {
+    ActionsCancel,
+    ActionsEnumerate,
+    ActionsInvoke,
+    ActionsStatus,
+    ClickAt,
+    ClickNamed,
+    Drag,
+    Key,
+    KeyDown,
+    KeyUp,
+    ListTargets,
+    Modifiers,
+    Pinch,
+    PointerButton,
+    PointerMove,
+    ProvisionTestIdentity,
+    Scroll,
+    SearchRows,
+    Snapshot,
+    StateDump,
+    Swipe,
+    Type,
+    Watch,
+    Windows,
+}
+
+impl Op {
+    /// Every op the protocol answers, in the order the refusal names them.
+    const ALL: [Self; 24] = [
+        Self::ActionsCancel,
+        Self::ActionsEnumerate,
+        Self::ActionsInvoke,
+        Self::ActionsStatus,
+        Self::ClickAt,
+        Self::ClickNamed,
+        Self::Drag,
+        Self::Key,
+        Self::KeyDown,
+        Self::KeyUp,
+        Self::ListTargets,
+        Self::Modifiers,
+        Self::Pinch,
+        Self::PointerButton,
+        Self::PointerMove,
+        Self::ProvisionTestIdentity,
+        Self::Scroll,
+        Self::SearchRows,
+        Self::Snapshot,
+        Self::StateDump,
+        Self::Swipe,
+        Self::Type,
+        Self::Watch,
+        Self::Windows,
+    ];
+
+    /// The op `request` names, or `None` for one the protocol does not answer at all.
+    fn of(request: &Json) -> Option<Self> {
+        Some(match request.get("op").and_then(Json::as_str)? {
+            "actions_cancel" => Self::ActionsCancel,
+            "actions_enumerate" => Self::ActionsEnumerate,
+            "actions_invoke" => Self::ActionsInvoke,
+            "actions_status" => Self::ActionsStatus,
+            "click_at" => Self::ClickAt,
+            "click_named" => Self::ClickNamed,
+            "drag" => Self::Drag,
+            "key" => Self::Key,
+            "key_down" => Self::KeyDown,
+            "key_up" => Self::KeyUp,
+            "list_targets" => Self::ListTargets,
+            "modifiers" => Self::Modifiers,
+            "pinch" => Self::Pinch,
+            "pointer_button" => Self::PointerButton,
+            "pointer_move" => Self::PointerMove,
+            "provision_test_identity" => Self::ProvisionTestIdentity,
+            "scroll" => Self::Scroll,
+            "search_rows" => Self::SearchRows,
+            "snapshot" => Self::Snapshot,
+            "state_dump" => Self::StateDump,
+            "swipe" => Self::Swipe,
+            "type" => Self::Type,
+            "watch" => Self::Watch,
+            "windows" => Self::Windows,
+            _ => return None,
+        })
+    }
+
+    /// The name the protocol writes it as.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::ActionsCancel => "actions_cancel",
+            Self::ActionsEnumerate => "actions_enumerate",
+            Self::ActionsInvoke => "actions_invoke",
+            Self::ActionsStatus => "actions_status",
+            Self::ClickAt => "click_at",
+            Self::ClickNamed => "click_named",
+            Self::Drag => "drag",
+            Self::Key => "key",
+            Self::KeyDown => "key_down",
+            Self::KeyUp => "key_up",
+            Self::ListTargets => "list_targets",
+            Self::Modifiers => "modifiers",
+            Self::Pinch => "pinch",
+            Self::PointerButton => "pointer_button",
+            Self::PointerMove => "pointer_move",
+            Self::ProvisionTestIdentity => "provision_test_identity",
+            Self::Scroll => "scroll",
+            Self::SearchRows => "search_rows",
+            Self::Snapshot => "snapshot",
+            Self::StateDump => "state_dump",
+            Self::Swipe => "swipe",
+            Self::Type => "type",
+            Self::Watch => "watch",
+            Self::Windows => "windows",
+        }
+    }
+
+    /// Whether the owner's door serves it: the action model and the state it shows, which is
+    /// what a person's own scripts drive their desktop through. Synthetic input, screenshots
+    /// of the person's screen, the hosted surfaces' controls, the fixtures and the test
+    /// identity are nobody's but a development session's.
+    const fn owner_serves(self) -> bool {
+        matches!(
+            self,
+            Self::ActionsCancel
+                | Self::ActionsEnumerate
+                | Self::ActionsInvoke
+                | Self::ActionsStatus
+                | Self::StateDump
+                | Self::Watch
+                | Self::Windows
+        )
+    }
+}
+
+/// Whether the socket at `gate` answers `op`: the one place the protocol's ops are divided
+/// between the two doors.
+fn served(gate: Gate, op: Op) -> bool {
+    match gate {
+        Gate::Dev => true,
+        Gate::Owner => op.owner_serves(),
+    }
+}
+
+/// The answer the owner's door gives what only a development socket serves.
+fn not_this_doors(op: Op) -> Json {
+    refusal(
+        "not_permitted",
+        &format!(
+            "the owner's control door serves the action model and the state it shows \
+             (`actions_cancel`, `actions_enumerate`, `actions_invoke`, `actions_status`, \
+             `state_dump`, `watch` and `windows`), not `{}`; synthetic input and screenshots \
+             exist only on a development session's test-control socket",
+            op.name()
+        ),
+    )
+}
+
+/// The answer for an `op` the protocol does not answer at all, naming the ones the socket
+/// `gate` serves.
+fn unsupported(gate: Gate, request: &Json) -> Json {
+    let answers = Op::ALL
+        .iter()
+        .filter(|op| served(gate, **op))
+        .map(|op| format!("`{}`", op.name()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    refusal(
+        "unsupported",
+        &format!(
+            "this socket answers {answers}, not `{}`",
+            request.get("op").and_then(Json::as_str).unwrap_or_default()
+        ),
+    )
 }
 
 /// What a connection asks on: the loop's queue and its wake, and the actions and change signal
@@ -240,6 +486,7 @@ impl Control {
             workspace: Mutex::new(String::new()),
             ledger: Mutex::new(BTreeMap::new()),
             next: AtomicU64::new(1),
+            locked: AtomicBool::new(false),
         });
         let door = Arc::new(Door {
             asks: Mutex::new(asks),
@@ -282,12 +529,21 @@ impl Control {
             tree.active_workspace()
                 .map(|workspace| workspace.room().to_string())
         }));
+        self.door.actions.set_locked(desk.locked);
         self.publish(desk);
         for socket in &self.sockets {
             socket.accept();
         }
-        while let Ok(Asked { request, answer }) = self.asked.try_recv() {
-            let _ = answer.send(loop_answer(&request, compositor, desk, &self.held));
+        while let Ok(Asked {
+            op,
+            request,
+            gate,
+            answer,
+        }) = self.asked.try_recv()
+        {
+            let _ = answer.send(loop_answer(
+                op, &request, gate, compositor, desk, &self.held,
+            ));
         }
     }
 
@@ -344,9 +600,10 @@ impl Socket {
                 continue;
             }
             let door = Arc::clone(&self.door);
+            let gate = self.gate;
             let spawned = std::thread::Builder::new()
                 .name("tilo-control".into())
-                .spawn(move || serve_connection(stream, &door));
+                .spawn(move || serve_connection(stream, gate, &door));
             if let Err(error) = spawned {
                 tracing::warn!(%error, "control: a connection could not be served");
             }
@@ -394,8 +651,9 @@ fn refuse_owner(mut stream: UnixStream, refusal: &PeerRefusal) {
 type Writer = Arc<Mutex<UnixStream>>;
 
 /// Read `stream`'s requests one line at a time, answer each, and write its answer, until the
-/// client closes it or the session ends.
-fn serve_connection(stream: UnixStream, door: &Door) {
+/// client closes it or the session ends. `gate` is the socket it came in on: an op that socket
+/// does not serve is refused here, before it reaches anything ([`served`]).
+fn serve_connection(stream: UnixStream, gate: Gate, door: &Door) {
     if let Err(error) = stream.set_nonblocking(false) {
         tracing::debug!(%error, "control: a connection cannot block");
         return;
@@ -414,13 +672,17 @@ fn serve_connection(stream: UnixStream, door: &Door) {
         }
         let answer = match serde_json::from_str::<Json>(&line) {
             Err(error) => refusal("parse_error", &error.to_string()),
-            Ok(request) => match asked_here(&request, &writer, &mut watching, door) {
-                Some(answer) => answer,
-                // The loop answers every request it takes; a session that ends drops it
-                // unanswered.
-                None => match ask_loop(&request, door) {
+            Ok(request) => match Op::of(&request) {
+                None => unsupported(gate, &request),
+                Some(op) if !served(gate, op) => not_this_doors(op),
+                Some(op) => match asked_here(op, &request, &writer, &mut watching, gate, door) {
                     Some(answer) => answer,
-                    None => return,
+                    // The loop answers every request it takes; a session that ends drops it
+                    // unanswered.
+                    None => match ask_loop(op, &request, gate, door) {
+                        Some(answer) => answer,
+                        None => return,
+                    },
                 },
             },
         };
@@ -434,13 +696,15 @@ fn serve_connection(stream: UnixStream, door: &Door) {
 }
 
 /// Hand `request` to the loop and wait for its answer; `None` when the session ended.
-fn ask_loop(request: &Json, door: &Door) -> Option<Json> {
+fn ask_loop(op: Op, request: &Json, gate: Gate, door: &Door) -> Option<Json> {
     let (answer, answered) = channel();
     door.asks
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .send(Asked {
+            op,
             request: request.clone(),
+            gate,
             answer,
         })
         .ok()?;
@@ -467,8 +731,9 @@ impl Watching {
 }
 
 /// Stream the desk's state to `writer` until it stops watching, off the change signal the loop
-/// publishes on: nothing here polls, and a change wakes the wait.
-fn stream_state(writer: &Writer, door: &Door) -> Watching {
+/// publishes on: nothing here polls, and a change wakes the wait. What `gate` may see of it is
+/// what it is sent ([`owner_shown`]).
+fn stream_state(writer: &Writer, gate: Gate, door: &Door) -> Watching {
     let changes = Arc::clone(&door.changes);
     // Read before attaching: the state attached for is published after this.
     let mut seen = changes.generation();
@@ -485,7 +750,7 @@ fn stream_state(writer: &Writer, door: &Door) -> Watching {
                 let Some(dump) = dump else {
                     continue;
                 };
-                if talk(&writer, &dump.to_string()).is_err() {
+                if talk(&writer, &owner_shown(gate, dump).to_string()).is_err() {
                     break;
                 }
             }
@@ -502,23 +767,31 @@ fn stream_state(writer: &Writer, door: &Door) -> Watching {
 /// The answer to what `op` asks only of the actions and the change signal, when it asks of
 /// them: answered where the connection asked, so a wait holds no frame.
 fn asked_here(
+    op: Op,
     request: &Json,
     writer: &Writer,
     watching: &mut Option<Watching>,
+    gate: Gate,
     door: &Door,
 ) -> Option<Json> {
-    Some(match request.get("op").and_then(Json::as_str)? {
-        "actions_enumerate" => actions_enumerate(request, &door.actions, &door.changes),
-        "actions_invoke" => actions_invoke(request, &door.actions),
-        "actions_status" => actions_status(request, &door.actions),
-        "actions_cancel" => actions_cancel(request, &door.actions),
-        "watch" => watch(request, writer, watching, door),
+    Some(match op {
+        Op::ActionsEnumerate => actions_enumerate(request, &door.actions, &door.changes),
+        Op::ActionsInvoke => actions_invoke(request, &door.actions, gate),
+        Op::ActionsStatus => actions_status(request, &door.actions),
+        Op::ActionsCancel => actions_cancel(request, &door.actions),
+        Op::Watch => watch(request, writer, watching, gate, door),
         _ => return None,
     })
 }
 
 /// Start or stop streaming the desk's state to a connection (`watch`).
-fn watch(request: &Json, writer: &Writer, watching: &mut Option<Watching>, door: &Door) -> Json {
+fn watch(
+    request: &Json,
+    writer: &Writer,
+    watching: &mut Option<Watching>,
+    gate: Gate,
+    door: &Door,
+) -> Json {
     let wanted = request
         .get("watching")
         .and_then(Json::as_bool)
@@ -530,23 +803,22 @@ fn watch(request: &Json, writer: &Writer, watching: &mut Option<Watching>, door:
         return json!({"ok": {}});
     }
     if watching.is_none() {
-        *watching = Some(stream_state(writer, door));
+        *watching = Some(stream_state(writer, gate, door));
     }
     json!({"ok": {}})
 }
 
 /// The answer to what `op` asks of the desk, the pointer, the gestures and the keyboard, on
-/// the loop's pass; a refusal for an `op` nobody answers.
+/// the loop's pass.
 fn loop_answer(
+    op: Op,
     request: &Json,
+    gate: Gate,
     compositor: &mut Compositor,
     desk: &Desk<'_>,
     held: &RefCell<BTreeSet<u32>>,
 ) -> Json {
-    let Some(op) = request.get("op").and_then(Json::as_str) else {
-        return refusal("parse_error", "a request names its `op`");
-    };
-    if let Some(answer) = asked_of_desk(op, request, compositor, desk) {
+    if let Some(answer) = asked_of_desk(gate, op, request, compositor, desk) {
         return answer;
     }
     if let Some(answer) = asked_of_pointer(op, request, compositor) {
@@ -558,27 +830,23 @@ fn loop_answer(
     if let Some(answer) = asked_of_keys(op, request, compositor, held) {
         return answer;
     }
+    // A served op always has an answer above.
     refusal(
         "unsupported",
-        &format!(
-            "this session's control answers `actions_cancel`, `actions_enumerate`, \
-             `actions_invoke`, `actions_status`, `click_at`, `click_named`, `drag`, `key`, \
-             `key_down`, `key_up`, `list_targets`, `modifiers`, `pinch`, `pointer_button`, \
-             `pointer_move`, `provision_test_identity`, `scroll`, `snapshot`, `state_dump`, \
-             `swipe`, `type`, `watch` and `windows`, not `{op}`"
-        ),
+        &format!("`{}` answers nothing here", op.name()),
     )
 }
 
 /// The answer to what `op` asks of the desk and its hosted surfaces, when it asks of them.
 fn asked_of_desk(
-    op: &str,
+    gate: Gate,
+    op: Op,
     request: &Json,
     compositor: &mut Compositor,
     desk: &Desk<'_>,
 ) -> Option<Json> {
     Some(match op {
-        "snapshot" => {
+        Op::Snapshot => {
             let path = request
                 .get("path")
                 .and_then(Json::as_str)
@@ -588,8 +856,8 @@ fn asked_of_desk(
                 Err((code, message)) => refusal(code, &message),
             }
         }
-        "provision_test_identity" => provision_test_identity(),
-        "list_targets" => {
+        Op::ProvisionTestIdentity => provision_test_identity(),
+        Op::ListTargets => {
             let targets: Vec<Json> = desk
                 .doors
                 .controls()
@@ -598,7 +866,7 @@ fn asked_of_desk(
                 .collect();
             json!({"targets": targets})
         }
-        "click_named" => {
+        Op::ClickNamed => {
             let Some(name) = request.get("name").and_then(Json::as_str) else {
                 return Some(refusal("parse_error", "`click_named` takes `name`"));
             };
@@ -607,7 +875,7 @@ fn asked_of_desk(
                 Err(error) => refusal("unknown_target", &error),
             }
         }
-        "search_rows" => {
+        Op::SearchRows => {
             let (query, rows) = desk.handle.search_rows();
             let rows: Vec<Json> = rows
                 .iter()
@@ -622,18 +890,24 @@ fn asked_of_desk(
                 .collect();
             json!({"answer": {"query": query, "rows": rows}})
         }
-        "state_dump" => desk.handle.read(|tree| state_dump(tree, desk)),
-        "windows" => desk
-            .handle
-            .read(|tree| json!({"answer": {"windows": window_rows(tree)}})),
+        Op::StateDump => owner_shown(gate, desk.handle.read(|tree| state_dump(tree, desk))),
+        Op::Windows => {
+            // Nothing shows a window while the screen is locked.
+            let rows = if gate == Gate::Owner && desk.locked {
+                Vec::new()
+            } else {
+                desk.handle.read(|tree| window_rows(tree))
+            };
+            json!({"answer": {"windows": rows}})
+        }
         _ => return None,
     })
 }
 
 /// The answer to what `op` asks of the pointer, when it asks of it.
-fn asked_of_pointer(op: &str, request: &Json, compositor: &mut Compositor) -> Option<Json> {
+fn asked_of_pointer(op: Op, request: &Json, compositor: &mut Compositor) -> Option<Json> {
     Some(match op {
-        "click_at" => {
+        Op::ClickAt => {
             let (Some(x), Some(y)) = (number(request, "x"), number(request, "y")) else {
                 return Some(refusal("parse_error", "`click_at` takes `x` and `y`"));
             };
@@ -646,13 +920,13 @@ fn asked_of_pointer(op: &str, request: &Json, compositor: &mut Compositor) -> Op
             }
             tap(compositor, button)
         }
-        "pointer_move" => {
+        Op::PointerMove => {
             let (Some(x), Some(y)) = (number(request, "x"), number(request, "y")) else {
                 return Some(refusal("parse_error", "`pointer_move` takes `x` and `y`"));
             };
             answer(compositor.input(InputEvent::PointerMotion { x, y }))
         }
-        "pointer_button" => {
+        Op::PointerButton => {
             let Some(pressed) = request.get("pressed").and_then(Json::as_bool) else {
                 return Some(refusal("parse_error", "`pointer_button` takes `pressed`"));
             };
@@ -662,7 +936,7 @@ fn asked_of_pointer(op: &str, request: &Json, compositor: &mut Compositor) -> Op
             };
             answer(compositor.input(InputEvent::PointerButton { button, pressed }))
         }
-        "drag" => {
+        Op::Drag => {
             let (Some(x_from), Some(y_from), Some(x_to), Some(y_to)) = (
                 number(request, "x_from"),
                 number(request, "y_from"),
@@ -693,7 +967,7 @@ fn asked_of_pointer(op: &str, request: &Json, compositor: &mut Compositor) -> Op
                 Err(error) => refusal("input_failed", &error),
             }
         }
-        "scroll" => {
+        Op::Scroll => {
             let dx = number(request, "dx").unwrap_or(0.0);
             let dy = number(request, "dy").unwrap_or(0.0);
             // A notch up is the old wire's positive `dy`; the compositor speaks the protocol's
@@ -708,10 +982,10 @@ fn asked_of_pointer(op: &str, request: &Json, compositor: &mut Compositor) -> Op
 }
 
 /// The answer to what `op` asks of the seat's gesture tracker, when it asks of it.
-fn asked_of_gestures(op: &str, request: &Json, compositor: &mut Compositor) -> Option<Json> {
+fn asked_of_gestures(op: Op, request: &Json, compositor: &mut Compositor) -> Option<Json> {
     let events = match op {
-        "swipe" => swipe_events(request),
-        "pinch" => pinch_events(request),
+        Op::Swipe => swipe_events(request),
+        Op::Pinch => pinch_events(request),
         _ => return None,
     };
     Some(match events {
@@ -819,13 +1093,13 @@ fn inject(compositor: &mut Compositor, events: &[GestureEvent]) -> Json {
 
 /// The answer to what `op` asks of the keyboard, when it asks of it.
 fn asked_of_keys(
-    op: &str,
+    op: Op,
     request: &Json,
     compositor: &mut Compositor,
     held: &RefCell<BTreeSet<u32>>,
 ) -> Option<Json> {
     Some(match op {
-        "key" => match key_code(request, compositor) {
+        Op::Key => match key_code(request, compositor) {
             Some(code) => {
                 for pressed in [true, false] {
                     if let Err(error) = compositor.input(InputEvent::Key {
@@ -842,7 +1116,7 @@ fn asked_of_keys(
                 "`key` takes a named key or one character the keyboard types",
             ),
         },
-        "key_down" => match key_code(request, compositor) {
+        Op::KeyDown => match key_code(request, compositor) {
             Some(code) => {
                 if let Err(error) = compositor.input(InputEvent::Key {
                     keycode: code,
@@ -855,7 +1129,7 @@ fn asked_of_keys(
             }
             None => refusal("parse_error", "`key_down` takes a named key"),
         },
-        "key_up" => match key_code(request, compositor) {
+        Op::KeyUp => match key_code(request, compositor) {
             Some(code) => {
                 if let Err(error) = compositor.input(InputEvent::Key {
                     keycode: code,
@@ -868,7 +1142,7 @@ fn asked_of_keys(
             }
             None => refusal("parse_error", "`key_up` takes a named key"),
         },
-        "modifiers" => {
+        Op::Modifiers => {
             let wanted = [
                 (KEY_CTRL, request.get("ctrl").and_then(Json::as_bool)),
                 (KEY_SHIFT, request.get("shift").and_then(Json::as_bool)),
@@ -895,7 +1169,7 @@ fn asked_of_keys(
             }
             json!({"ok": {}})
         }
-        "type" => {
+        Op::Type => {
             let Some(text) = request.get("text").and_then(Json::as_str) else {
                 return Some(refusal("parse_error", "`type` takes `text`"));
             };
@@ -920,6 +1194,9 @@ struct Actions {
     /// The number a tool was answered with, and the invocation it names.
     ledger: Mutex<BTreeMap<u64, InvocationId>>,
     next: AtomicU64,
+    /// Whether the screen is locked, as the loop last read it: the owner's door invokes
+    /// nothing there.
+    locked: AtomicBool,
 }
 
 /// How long a host may take to answer a request at all.
@@ -959,6 +1236,15 @@ impl Actions {
         let number = self.next.fetch_add(1, Ordering::Relaxed);
         self.ledger.lock_recover().insert(number, invocation);
         number
+    }
+
+    /// Whether the screen is locked, as the loop last read it, and where it stands now.
+    fn set_locked(&self, locked: bool) {
+        self.locked.store(locked, Ordering::Relaxed);
+    }
+
+    fn locked(&self) -> bool {
+        self.locked.load(Ordering::Relaxed)
     }
 
     /// The invocation a tool's number names, while this session remembers it.
@@ -1274,8 +1560,16 @@ fn decode_cursor(token: &str) -> Option<(String, Vec<u8>)> {
     Some((revision.to_owned(), hex::decode(cursor).ok()?))
 }
 
-/// The answer to `actions_invoke`: the receipt, by a number the tools follow it with.
-fn actions_invoke(request: &Json, actions: &Actions) -> Json {
+/// The answer to `actions_invoke`: the receipt, by a number the tools follow it with. The
+/// owner's door invokes nothing while the screen is locked: what a person's own scripts run is
+/// what the person at the device could run, and a locked desktop runs nothing.
+fn actions_invoke(request: &Json, actions: &Actions, gate: Gate) -> Json {
+    if gate == Gate::Owner && actions.locked() {
+        return refusal(
+            "locked",
+            "the session is locked; unlock it at the device, then invoke again",
+        );
+    }
     let Some(provider) = request.get("provider").and_then(Json::as_str) else {
         return refusal("parse_error", "`actions_invoke` takes `provider`");
     };
@@ -1318,7 +1612,11 @@ fn actions_invoke(request: &Json, actions: &Actions) -> Json {
         wait_ms: None,
         appearance: None,
     };
-    let receipt = match actions.host.invoke(&caller, invoke).wait_timeout(HOST_WAIT) {
+    let receipt = match actions
+        .host
+        .invoke_at_seat(&caller, invoke)
+        .wait_timeout(HOST_WAIT)
+    {
         Ok(Some(Ok(receipt))) => receipt,
         Ok(Some(Err(error))) => return action_refusal(&error),
         Ok(None) | Err(_) => return refusal("unavailable", "the action did not start"),
@@ -1640,6 +1938,41 @@ fn type_text(compositor: &mut Compositor, text: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// What a socket at `gate` may see of the state `dump`: a development socket sees the desk as
+/// it is, and the owner's door sees it too — except while the screen is locked, where it learns
+/// that it is and nothing of what the lock covers: no windows, no workspaces, no titles or the
+/// text in them.
+fn owner_shown(gate: Gate, dump: Json) -> Json {
+    if gate == Gate::Dev || !locked_in(&dump) {
+        return dump;
+    }
+    let mut dump = dump;
+    let Some(state) = dump.get_mut("state").and_then(Json::as_object_mut) else {
+        return dump;
+    };
+    state.insert("workspace_tree".into(), Json::Null);
+    state.insert("held_workspaces".into(), json!([]));
+    if let Some(open) = state
+        .get_mut("chrome")
+        .and_then(|chrome| chrome.get_mut("overlays"))
+        .and_then(Json::as_object_mut)
+    {
+        for shown in open.values_mut() {
+            *shown = Json::Bool(false);
+        }
+    }
+    dump
+}
+
+/// Whether a state dump says the screen is locked.
+fn locked_in(dump: &Json) -> bool {
+    dump.get("state")
+        .and_then(|state| state.get("chrome"))
+        .and_then(|chrome| chrome.get("session_locked"))
+        .and_then(Json::as_bool)
+        == Some(true)
 }
 
 /// The desk as it is now: its tree without its history, the workspaces this computer holds, what
@@ -2001,6 +2334,97 @@ mod tests {
             Some(PathBuf::from("/run/somewhere.sock"))
         );
         assert_eq!(admin_path_in(true, false, None, None), None);
+    }
+
+    #[test]
+    fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
+        // Every op of the protocol, and the door that serves it: the owner's door is for a
+        // person's own scripts, which drive the desktop through the model it publishes and
+        // read the state it shows — never through the pointer, the keyboard or a picture of
+        // the screen.
+        let owner = [
+            Op::ActionsCancel,
+            Op::ActionsEnumerate,
+            Op::ActionsInvoke,
+            Op::ActionsStatus,
+            Op::StateDump,
+            Op::Watch,
+            Op::Windows,
+        ];
+        for op in Op::ALL {
+            let served_there = owner.contains(&op);
+            assert!(served(Gate::Dev, op), "a development socket answers {op:?}");
+            assert_eq!(
+                served(Gate::Owner, op),
+                served_there,
+                "the owner's door and {op:?}"
+            );
+            assert_eq!(
+                Op::of(&json!({"op": op.name()})),
+                Some(op),
+                "{op:?} reads back as {}",
+                op.name()
+            );
+        }
+        // Every op the protocol answers is in the list, each once.
+        let mut names: Vec<&str> = Op::ALL.iter().map(|op| op.name()).collect();
+        assert_eq!(names.len(), 24, "the protocol's ops");
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), Op::ALL.len(), "{names:?}");
+        assert_eq!(Op::of(&json!({"op": "nonsense"})), None);
+    }
+
+    #[test]
+    fn a_locked_desk_shows_the_owner_door_nothing_the_lock_hides() {
+        let dump = |locked: bool| {
+            json!({"state": {
+                "workspace_tree": {"workspaces": [{"name": "Work"}]},
+                "held_workspaces": [{"workspace": 1, "room": "room-1"}],
+                "chrome": {
+                    "session_locked": locked,
+                    "in_transition": false,
+                    "overlays": {"quick_settings": true, "overview": false},
+                },
+                "peers": Json::Null,
+                "sharing": Json::Null,
+            }})
+        };
+        // Unlocked, the owner's door sees the desk as the development socket does.
+        assert_eq!(
+            owner_shown(Gate::Owner, dump(false)),
+            dump(false),
+            "an unlocked desk is shown whole"
+        );
+        // Locked, it learns that the screen is locked, and nothing of what the lock covers.
+        let locked = owner_shown(Gate::Owner, dump(true));
+        assert_eq!(locked["state"]["chrome"]["session_locked"], true);
+        assert_eq!(locked["state"]["workspace_tree"], Json::Null);
+        assert_eq!(locked["state"]["held_workspaces"], json!([]));
+        assert_eq!(
+            locked["state"]["chrome"]["overlays"],
+            json!({"quick_settings": false, "overview": false})
+        );
+        // A development socket sees the desk it drives, locked or not.
+        assert_eq!(owner_shown(Gate::Dev, dump(true)), dump(true));
+    }
+
+    #[test]
+    fn the_owner_door_is_the_account_that_owns_the_device() {
+        assert_eq!(owner_decision(true, Ok(true)), Ok(()));
+        assert_eq!(
+            owner_decision(true, Ok(false)),
+            Err(NotServed::NotDeviceOwner)
+        );
+        // A member of `wheel` whose device ownership cannot be read is refused, not guessed at.
+        assert!(matches!(
+            owner_decision(true, Err(io::Error::other("no key"))),
+            Err(NotServed::OwnershipUnreadable(_))
+        ));
+        assert_eq!(
+            owner_decision(false, Ok(true)),
+            Err(NotServed::NotAdministrator)
+        );
     }
 
     #[test]
