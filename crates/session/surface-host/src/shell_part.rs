@@ -353,6 +353,7 @@ pub struct NoticeActionReading {
 }
 
 mod runs;
+mod settings;
 pub use runs::{EntryRefReading, RunEntryReading, RunReading};
 
 /// A timer or stopwatch running in Clocks, as the bar's clock reads it.
