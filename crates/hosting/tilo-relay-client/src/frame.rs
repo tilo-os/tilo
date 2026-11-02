@@ -1,7 +1,7 @@
 //! Length-prefixed frame codec for relay streams.
 //!
 //! Every message on a relay stream — the handshake, discovery and management
-//! exchanges, compute sessions and the post-handshake [`Envelope`] pipe — is
+//! exchanges, and the post-handshake [`Envelope`] pipe — is
 //! one frame: a little-endian `u32` byte count followed by that many bytes of
 //! postcard. A zero-length frame is never sent, and readers enforce a caller
 //! chosen upper bound before allocating.

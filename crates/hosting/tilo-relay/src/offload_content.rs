@@ -36,7 +36,7 @@ pub enum BindError {
 
 /// The workspace content an always-on device's filesystem replica keeps
 /// (`fs replica`, one store per home-peer workspace), as [`HeldContent`]
-/// for the compute worker running beside it.
+/// for the work the daemon takes beside it.
 ///
 /// The replica process holds its stores open, so this reads their
 /// file-backed versions without opening them
