@@ -21349,6 +21349,7 @@ dependencies = [
  "tilo-settings-service",
  "tilo-sheets",
  "tilo-speaker-service",
+ "tilo-startup-metrics",
  "tilo-surface-host",
  "tilo-system-service",
  "tilo-test-env",

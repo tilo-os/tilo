@@ -1,0 +1,211 @@
+// Startup of the web shell, measured in a real browser.
+//
+// The page already marks its startup phases (`tilo:module`, `tilo:wasm-ready`,
+// `tilo:storage`, `tilo:assets`, `tilo:mounted`, `tilo:first-frame`), all on the
+// navigation timeline, so a slow phase names itself instead of hiding in
+// "loading". This runner serves a built bundle, opens a page, waits for the
+// first presented frame and reports the marks plus the wasm transfer.
+//
+//   node tools/perf/web_startup.mjs --bundle DIR [--device CLASS] [--page index.html]
+//                                   [--json PATH] [--timeout MS]
+//
+// `--device` labels the machine the way `tools/perf/kpi-budgets.toml` does
+// (`web-desktop`, `web-opi`, ...); it defaults to `$TILO_PERF_DEVICE`.
+import {launch, serve, sleep} from '../../tools/web/chrome.mjs';
+import {writeFileSync} from 'node:fs';
+import {join} from 'node:path';
+
+const PHASES = ['module', 'wasm-ready', 'storage', 'assets', 'mounted', 'first-frame'];
+
+/** Records the interval between presented frames until the page is read. */
+const FRAME_RECORDER = () => {
+  window.__tiloFrames = [];
+  let last = 0;
+  const tick = now => {
+    if (last) window.__tiloFrames.push(now - last);
+    last = now;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+};
+
+/** `p`th percentile of `values`, nearest rank, and their count and maximum. */
+function summary(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const at = p => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+  return {
+    count: sorted.length,
+    p50_ms: at(0.5),
+    p95_ms: at(0.95),
+    max_ms: sorted[sorted.length - 1],
+  };
+}
+
+function arguments_(argv) {
+  const options = {page: 'index.html', timeout: 120000};
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i];
+    if (flag === '--help' || flag === '-h') {
+      console.log(`web_startup --bundle DIR [--device CLASS] [--page PAGE] [--json PATH] [--timeout MS]
+
+Measures a page load from navigation start to the first presented desktop
+frame: the page's own startup marks, the wasm module's transfer and compile,
+the JavaScript heap after the first frame, and the frames it presents while
+the strip pans.`);
+      process.exit(0);
+    }
+    const value = argv[i + 1];
+    if (value === undefined) throw new Error(`${flag} needs a value`);
+    i += 1;
+    if (flag === '--bundle') options.bundle = value;
+    else if (flag === '--device') options.device = value;
+    else if (flag === '--page') options.page = value;
+    else if (flag === '--json') options.json = value;
+    else if (flag === '--timeout') options.timeout = Number(value);
+    else throw new Error(`unknown argument ${flag}`);
+  }
+  options.device ??= process.env.TILO_PERF_DEVICE ?? 'web-desktop';
+  if (!options.bundle) throw new Error('--bundle is required (a directory build.sh wrote)');
+  return options;
+}
+
+/** The page's marks, by name, in milliseconds from navigation start. */
+const readMarks = () => {
+  const marks = {};
+  for (const entry of performance.getEntriesByType('mark')) {
+    const name = entry.name.startsWith('tilo:') ? entry.name.slice('tilo:'.length) : null;
+    if (name) marks[name] = entry.startTime;
+  }
+  const wasm = performance
+    .getEntriesByType('resource')
+    .find(entry => entry.name.endsWith('.wasm'));
+  return {
+    marks,
+    wasm: wasm && {
+      duration_ms: wasm.duration,
+      transfer_bytes: wasm.transferSize,
+      decoded_bytes: wasm.decodedBodySize,
+    },
+    heap_mib: performance.memory ? performance.memory.usedJSHeapSize / 1048576 : null,
+  };
+};
+
+const main = async () => {
+  const options = arguments_(process.argv.slice(2));
+  const served = await serve(options.bundle);
+  const browser = await launch();
+  try {
+    const tab = await browser.tab();
+    const navigation = await tab.navigate(`${served.url}/${options.page}`);
+    if (navigation.errorText) throw new Error(navigation.errorText);
+    const deadline = Date.now() + options.timeout;
+    let present;
+    for (;;) {
+      present = await tab.evaluate(`(${readMarks.toString()})()`).catch(() => null);
+      if (present?.marks['first-frame'] !== undefined) break;
+      const failed = await tab
+        .evaluate(`document.body?.innerText?.slice(0, 400) ?? ''`)
+        .catch(() => '');
+      if (Date.now() > deadline) {
+        throw new Error(
+          `no first frame within ${options.timeout} ms${failed ? `; page says: ${failed}` : ''}\n${tab.log.join('\n')}`,
+        );
+      }
+      if (tab.log.some(line => line.startsWith('EXC '))) break;
+      await sleep(100);
+    }
+    // The frame after the first is what a person sees as "it answers": wait
+    // for one more presented state, then read the settled numbers.
+    const settled = await tab
+      .waitFor(`(${readMarks.toString()})().marks['first-frame'] !== undefined && performance.getEntriesByType('mark').length > 6`, {
+        timeout: Math.max(1000, options.timeout - (Date.now() - (deadline - options.timeout))),
+      })
+      .then(() => tab.evaluate(`(${readMarks.toString()})()`))
+      .catch(() => present);
+    const marks = settled.marks;
+    const firstFrame = marks['first-frame'];
+    // Frames the page presented while the strip pans: the animation a person
+    // feels first, and the only place the page's own frame cost shows
+    // (headless Chrome has no compositor to blame for a slow one).
+    const frames = await tab
+      .evaluate(`(${FRAME_RECORDER.toString()})()`)
+      .then(async () => {
+        const size = await tab.evaluate('({w: innerWidth, h: innerHeight})');
+        const x = Math.round(size.w / 2);
+        const y = Math.round(size.h / 2);
+        for (let step = 0; step < 6; step += 1) {
+          await tab.send('Input.dispatchMouseEvent', {
+            type: 'mouseWheel',
+            x,
+            y,
+            deltaX: 160,
+            deltaY: 0,
+          });
+          await sleep(80);
+        }
+        await sleep(900);
+        return tab.evaluate('window.__tiloFrames ?? []');
+      })
+      .then(summary)
+      .catch(() => null);
+    const gaps = {};
+    let previous = 0;
+    for (const phase of PHASES) {
+      if (marks[phase] === undefined) continue;
+      gaps[phase] = marks[phase] - previous;
+      previous = marks[phase];
+    }
+    const measurement = {
+      kind: 'web_startup',
+      device: options.device,
+      page: options.page,
+      first_frame_ms: firstFrame,
+      marks_ms: marks,
+      gaps_ms: gaps,
+      wasm: settled.wasm ?? null,
+      heap_mib: settled.heap_mib ?? null,
+      frames: frames ?? null,
+      errors: tab.log.filter(line => line.startsWith('EXC ')),
+    };
+    console.log(`device ${measurement.device}  page ${measurement.page}`);
+    console.log(`first frame      ${firstFrame.toFixed(1)} ms`);
+    for (const [phase, ms] of Object.entries(gaps)) {
+      console.log(`  ${phase.padEnd(14)} ${ms.toFixed(1)} ms`);
+    }
+    if (measurement.wasm) {
+      console.log(
+        `wasm             ${(measurement.wasm.transfer_bytes / 1048576).toFixed(1)} MiB transferred, ` +
+          `${(measurement.wasm.duration_ms / 1000).toFixed(2)} s`,
+      );
+    }
+    if (measurement.heap_mib !== null) {
+      console.log(`heap             ${measurement.heap_mib.toFixed(0)} MiB`);
+    }
+    if (measurement.frames) {
+      const {count, p50_ms, p95_ms, max_ms} = measurement.frames;
+      console.log(
+        `frames           ${count} over a pan: p50 ${p50_ms.toFixed(1)} ms, ` +
+          `p95 ${p95_ms.toFixed(1)} ms, max ${max_ms.toFixed(1)} ms`,
+      );
+    }
+    if (measurement.errors.length) console.log(measurement.errors.join('\n'));
+    if (options.json) {
+      writeFileSync(options.json, JSON.stringify(measurement, null, 2));
+      console.log(`wrote ${options.json}`);
+    }
+    await tab.close();
+    return measurement.errors.length ? 1 : 0;
+  } finally {
+    await browser.close();
+    await served.close();
+  }
+};
+
+main().then(
+  code => process.exit(code),
+  error => {
+    console.error(error.message ?? String(error));
+    process.exit(2);
+  },
+);

@@ -44,6 +44,10 @@ globalThis.__tiloRuntimePanic=raw=>{
   let crash;try{crash=JSON.parse(raw);}catch{return;}
   for(const listener of crashListeners)listener(crash);
 };
+// One startup timeline from navigation start, so a slow phase names itself
+// instead of hiding in "loading". tools/perf/web_startup.mjs reads it.
+const mark=name=>{try{performance.mark(`tilo:${name}`);}catch{}};
+mark('module');
 const fontLoader=createFontLoader({baseURL:import.meta.url});
 const fonts=retryableMemo(()=>fontLoader.startup());
 const ready=retryableMemo(()=>init());
@@ -464,11 +468,14 @@ export async function mountDesktop(target,options={}) {
     if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
     const startupFonts=fonts();void startupFonts.catch(()=>{});
     await ready();if(!registry.current(token))throw Error('mount disposed');
+    mark('wasm-ready');
     const acquired=await durableHost.open(config.profile,config.device,{settings:options.settings??browserSettings()});
+    mark('storage');
     if(closed||!registry.current(token)){await acquired.release();throw Error("mount disposed");}
     storage=acquired;
     // Apps' own files (OPFS) are mirrored before any app reads them.
     const [assets,entries]=await Promise.all([startupFonts,storage.hydrate(),runtime.mirror_files(config.profile)]);
+    mark('assets');
     if(!registry.current(token))throw Error('mount disposed');
     // WebKit's GPU process holds the page's load-time surfaces for a moment;
     // starting the renderer (and its pipeline compilation) on top of them
@@ -493,9 +500,10 @@ export async function mountDesktop(target,options={}) {
       // before another presentation or a queued page callback can replace it.
       // This path reads only JS/Canvas state, never re-enters the WASM mount.
       const state=JSON.parse(raw);
-      if(state.phase){if(state.presentation===true)state.observedPresentedAtMs=performance.now();semanticPresentation.present(state);capture.present(state);}
+      if(state.phase){if(state.presentation===true){state.observedPresentedAtMs=performance.now();mark('first-frame');}semanticPresentation.present(state);capture.present(state);}
       queueMicrotask(()=>update(raw));
     });
+    mark('mounted');
     inputScope.capture();
     const publishModifiers=event=>{if(inputScope.capture())runtime.modifiers(id,...modifierSnapshot(event));};
     const clearModifiers=()=>{if(inputScope.capture())runtime.modifiers(id,false,false,false,false);};

@@ -1,0 +1,565 @@
+//! Session performance: the desktop the person lands on, measured with no GPU.
+//!
+//! The measured surface is the one both hosts show
+//! ([`tilo_desktop_surface::DesktopSurface`]): the session draws it under its
+//! windows, the page draws it with its apps inside. Two tile profiles cover
+//! what the hosts put in a window's tab, because they cost different things:
+//!
+//! * `arriving` — the native session: a window's pixels are the client's own
+//!   buffer, so a tab's tile is only the arriving placeholder and the frame is
+//!   the desk's chrome (strips, tab bars, edges);
+//! * `apps` — the page: every tab mounts its app component and the surface
+//!   draws it (word processor, chat and notes in the fixture).
+//!
+//! Numbers per profile, all from the production frame path
+//! ([`ui::headless::FrameHarness`]):
+//!
+//! * `build` — constructing the surface from its tree;
+//! * `first-frame` — from there to a drawn frame (startup);
+//! * `steady` — 120 forced frames with nothing changed: what a frame owes
+//!   while something animates;
+//! * `typing` — 60 keystrokes into a focused document (the `apps` profile);
+//! * `idle` — frames offered after settling that find no work to do.
+//!
+//! Every phase reports its allocations: a steady frame must not allocate.
+//! Output is a table, or `--json PATH` for the budget check in `tools/perf/`.
+//!
+//! ```text
+//! cargo run -p tilo-desktop --release --example session_perf -- \
+//!     --profile arriving --json out.json
+//! ```
+//! `TILO_PERF_DEVICE` labels the machine in the JSON (`opi3b`, `x86`, ...).
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::print_stdout,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
+    reason = "a benchmark reports to stdout and treats a failed setup as fatal"
+)]
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
+
+use tilo_desktop::resolver::{
+    ApplicationCatalogTileResolver, ComponentContextSource, TileRequest, TileResolver,
+};
+use tilo_desktop_model::{
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+};
+use tilo_desktop_surface::{DesktopSurface, TileSource};
+use ui::application::{
+    ApplicationCatalog, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget,
+    RestoreInput,
+};
+use ui::application_view::InstanceViewStore;
+use ui::headless::FrameHarness;
+use ui::profiling::{FRAME_BUDGET_US, FrameTiming, PerfReport, StatSummary};
+use ui::record::{RecordOwners, RecordStore};
+use ui::state::State;
+use ui::widget::TileHost;
+
+/// Counts allocations while a phase is being measured. Disabled by default,
+/// so setup cost is not attributed to a frame.
+struct Counting;
+
+static MEASURING: AtomicBool = AtomicBool::new(false);
+static ALLOCS: AtomicU64 = AtomicU64::new(0);
+static BYTES: AtomicU64 = AtomicU64::new(0);
+
+#[global_allocator]
+static ALLOCATOR: Counting = Counting;
+
+// SAFETY: every operation delegates to `System` with the caller's own layout
+// and pointers; the counters are relaxed atomics that never affect them.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc(layout) };
+        if !ptr.is_null() && MEASURING.load(Ordering::Relaxed) {
+            ALLOCS.fetch_add(1, Ordering::Relaxed);
+            BYTES.fetch_add(
+                u64::try_from(layout.size()).unwrap_or(u64::MAX),
+                Ordering::Relaxed,
+            );
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) };
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let new = unsafe { System.realloc(ptr, layout, new_size) };
+        if !new.is_null() && MEASURING.load(Ordering::Relaxed) {
+            ALLOCS.fetch_add(1, Ordering::Relaxed);
+            BYTES.fetch_add(
+                u64::try_from(new_size).unwrap_or(u64::MAX),
+                Ordering::Relaxed,
+            );
+        }
+        new
+    }
+}
+
+fn start_allocations() {
+    ALLOCS.store(0, Ordering::Relaxed);
+    BYTES.store(0, Ordering::Relaxed);
+    MEASURING.store(true, Ordering::Relaxed);
+}
+
+/// `(calls, bytes)` since [`start_allocations`].
+fn stop_allocations() -> (u64, u64) {
+    MEASURING.store(false, Ordering::Relaxed);
+    (
+        ALLOCS.load(Ordering::Relaxed),
+        BYTES.load(Ordering::Relaxed),
+    )
+}
+
+/// Which content a window's tab holds ([`Source`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Profile {
+    /// The native session: the client's own buffer covers the window.
+    Arriving,
+    /// The page: the tab mounts and draws its app.
+    Apps,
+}
+
+impl Profile {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Arriving => "arriving",
+            Self::Apps => "apps",
+        }
+    }
+}
+
+struct Host {
+    owners: RecordOwners,
+    views: Rc<InstanceViewStore>,
+    wakes: Vec<ui::wake::WakeHandle>,
+}
+
+impl ComponentContextSource for Host {
+    fn prepare(
+        &mut self,
+        definition: &'static ApplicationDefinition,
+        request: &TileRequest<'_>,
+        target: &LaunchTarget,
+    ) -> Result<(HostContext, RestoreInput), ui::launch::LaunchError> {
+        let records = self.owners.open(definition.app_id(), "workspace").unwrap();
+        let context = HostContext::prepare(
+            definition,
+            HostContextInputs {
+                records,
+                views: self.views.clone(),
+                device_id: "device".into(),
+                instance_id: request.tab.id,
+                permissions: ui::permissions::SharedPermissions::new(
+                    ui::permissions::PermissionContext::member(
+                        "author",
+                        ui::permissions::Role::Owner,
+                    ),
+                ),
+                author: ui::permissions::UserId("author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            target,
+        )?;
+        self.wakes.push(context.wake_handle());
+        Ok((context, RestoreInput::None))
+    }
+}
+
+/// What a window's tab shows, built the first time its strip is shown.
+struct Source {
+    profile: Profile,
+    resolver: ApplicationCatalogTileResolver<Host>,
+    wake: std::sync::Arc<dyn Fn() + Send + Sync>,
+    failures: Vec<ui::launch::LaunchError>,
+}
+
+impl TileSource for Source {
+    fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
+        if self.profile == Profile::Arriving {
+            return TileHost::new(ui::widget::TileContent::Arriving);
+        }
+        self.resolver
+            .resolve(TileRequest {
+                room: workspace.room(),
+                tab,
+            })
+            .mount(&mut self.failures, std::sync::Arc::clone(&self.wake))
+    }
+}
+
+/// Three workspaces of two strips, two windows each, `tabs` tabs per window:
+/// a session someone has used for a while, not an empty one.
+fn fixture(
+    profile: Profile,
+    tabs_per_window: usize,
+) -> (
+    DesktopTree,
+    ApplicationCatalogTileResolver<Host>,
+    Vec<RecordStore>,
+) {
+    let cache = ui::portable_storage::PortableStorage::new("profile", "device").unwrap();
+    let mut owners = RecordOwners::portable(cache.clone());
+    let views = Rc::new(InstanceViewStore::portable(cache, "workspace").unwrap());
+    let mut catalog = ApplicationCatalog::new();
+    let definitions = [
+        word_processor::definition(),
+        chat::definition(),
+        notes::definition(),
+    ];
+    let mut retained = vec![];
+    let mut workspaces = vec![];
+    let mut next_tab: u64 = 10;
+    for (w, name) in ["Work", "Design", "Reading"].into_iter().enumerate() {
+        let mut workspace = Workspace::new(WorkspaceId(w as u64 + 1), name);
+        let mut strips = vec![];
+        for s in 0..2usize {
+            let mut groups = vec![];
+            for g in 0..2usize {
+                let mut tabs = vec![];
+                for (which, definition) in definitions.iter().take(tabs_per_window).enumerate() {
+                    let id = next_tab;
+                    next_tab += 1;
+                    catalog.register(definition).unwrap();
+                    if profile == Profile::Apps {
+                        let store = owners.open(definition.app_id(), "workspace").unwrap();
+                        let checkout = tilo_desktop::records::component_record(
+                            definition.app_id(),
+                            id,
+                            definition.record_kind.clone(),
+                        );
+                        store.create_record(&checkout).unwrap();
+                        store.with(&checkout.id, |doc| match which {
+                            0 => word_processor::initialize_empty_document(doc).unwrap(),
+                            1 => chat::demo::start(doc, "author", "Author", "AU").unwrap(),
+                            _ => notes::read::initialize(doc),
+                        });
+                        retained.push(store);
+                    }
+                    tabs.push(Tab {
+                        id,
+                        title: format!("{name} {s}.{g}"),
+                        tile: TileContent::LocalApp {
+                            app_id: definition.app_id().to_string(),
+                            label: definition.title.to_string(),
+                            note: String::new(),
+                        },
+                        app_title: None,
+                    });
+                }
+                groups.push(WindowGroup {
+                    id: (w * 4 + s * 2 + g) as u64 + 3,
+                    active_tab: next_tab - tabs_per_window as u64,
+                    tabs,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                });
+            }
+            strips.push(Strip {
+                id: StripId((w * 2 + s) as u64 + 2),
+                name: format!("Strip {s}"),
+                window_groups: groups,
+            });
+        }
+        workspace.strips = strips;
+        workspaces.push(workspace);
+    }
+    let tree = DesktopTree {
+        active: workspaces[0].id,
+        workspaces,
+        ..Default::default()
+    };
+    let resolver = ApplicationCatalogTileResolver {
+        catalog,
+        host: Host {
+            owners,
+            views,
+            wakes: vec![],
+        },
+    };
+    (tree, resolver, retained)
+}
+
+/// One measured phase.
+#[derive(Default)]
+struct Phase {
+    wall_us: u64,
+    allocs: u64,
+    bytes: u64,
+    frames: usize,
+    report: Option<PerfReport>,
+}
+
+impl Phase {
+    fn allocs_per_frame(&self) -> f64 {
+        if self.frames == 0 {
+            return 0.0;
+        }
+        self.allocs as f64 / self.frames as f64
+    }
+}
+
+fn report_of(name: &str, samples: Vec<FrameTiming>) -> PerfReport {
+    PerfReport::from_samples(name, samples, FRAME_BUDGET_US)
+}
+
+fn measure_frames(harness: &mut FrameHarness, name: &str, frames: usize) -> Phase {
+    harness.begin_profiling();
+    for _ in 0..3 {
+        harness.profile_frame();
+    }
+    harness.clear_profile_samples();
+    start_allocations();
+    let start = Instant::now();
+    for _ in 0..frames {
+        harness.profile_frame();
+    }
+    let wall_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let (allocs, bytes) = stop_allocations();
+    let samples = harness.take_profile_samples();
+    Phase {
+        wall_us,
+        allocs,
+        bytes,
+        frames,
+        report: Some(report_of(name, samples)),
+    }
+}
+
+fn stat(summary: &StatSummary) -> String {
+    format!(
+        "p50 {:>7.2} ms  p95 {:>7.2} ms  max {:>7.2} ms",
+        summary.p50_us as f64 / 1000.0,
+        summary.p95_us as f64 / 1000.0,
+        summary.max_us as f64 / 1000.0
+    )
+}
+
+/// Peak resident set in MiB, from `/proc/self/status` (native Linux only).
+fn peak_rss_mib() -> Option<f64> {
+    let text = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = text.lines().find(|line| line.starts_with("VmHWM:"))?;
+    let kib: f64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib / 1024.0)
+}
+
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("session_perf: {message}");
+            std::process::ExitCode::from(2)
+        }
+    }
+}
+
+fn run() -> Result<(), String> {
+    let mut json_path = None;
+    let mut tabs_per_window = 3usize;
+    let mut profile = Profile::Arriving;
+    let mut args = std::env::args().skip(1);
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--json" => json_path = Some(args.next().expect("--json needs a path")),
+            "--tabs" => {
+                tabs_per_window = args
+                    .next()
+                    .expect("--tabs needs a count")
+                    .parse()
+                    .expect("--tabs takes a number");
+            }
+            "--profile" => {
+                profile = match args.next().expect("--profile needs a name").as_str() {
+                    "arriving" => Profile::Arriving,
+                    "apps" => Profile::Apps,
+                    other => return Err(format!("--profile takes arriving or apps, not {other}")),
+                }
+            }
+            "--help" | "-h" => {
+                println!(
+                    "session_perf [--json PATH] [--profile arriving|apps] [--tabs N]\n\
+                     Measures the shared desktop surface: build, first frame, steady frames, \
+                     typing and idle frames. TILO_PERF_DEVICE labels the machine (opi3b, x86)."
+                );
+                return Ok(());
+            }
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    let tabs_per_window = tabs_per_window.clamp(1, 3);
+
+    let (tree, resolver, _retained) = fixture(profile, tabs_per_window);
+    let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(|| {});
+
+    // Startup: the surface from its tree, as both hosts make it.
+    start_allocations();
+    let start = Instant::now();
+    let (surface, handle) = DesktopSurface::new(
+        tree,
+        7,
+        Box::new(Source {
+            profile,
+            resolver,
+            wake,
+            failures: vec![],
+        }),
+    );
+    let build_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let (build_allocs, build_bytes) = stop_allocations();
+
+    // Startup: the first drawn frame.
+    let mut harness = FrameHarness::new(State::new(), Box::new(surface), (1600, 1000));
+    start_allocations();
+    let start = Instant::now();
+    harness.begin_profiling();
+    harness.profile_frame();
+    let first_frame_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let (first_allocs, first_bytes) = stop_allocations();
+    let first_samples = harness.take_profile_samples();
+
+    // Steady: forced frames with nothing changed (the animation frame).
+    let steady = measure_frames(&mut harness, "steady", 120);
+
+    // Interactive: typing into the focused document, where the profile mounts
+    // apps at all.
+    let mut typing = Phase::default();
+    if profile == Profile::Apps {
+        harness
+            .perform_named("word_processor", &ui::a11y::Action::Focus)
+            .ok();
+        typing = measure_frames(&mut harness, "typing", 60);
+    }
+
+    // Idle: frames offered with nothing to draw. The first ones settle the
+    // frames above; every one after that must find no work.
+    let mut idle_frames = 0usize;
+    let mut idle_worked = 0usize;
+    let start = Instant::now();
+    for _ in 0..600 {
+        idle_frames += 1;
+        if harness.poll_frame().unwrap() {
+            idle_worked += 1;
+        }
+    }
+    let idle_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    drop(handle);
+
+    let device = std::env::var("TILO_PERF_DEVICE").unwrap_or_else(|_| "unlabelled".into());
+    let total = steady.report.as_ref().unwrap().total;
+    let steady_lines = steady
+        .report
+        .as_ref()
+        .map(|report| {
+            [
+                ("sync", &report.sync),
+                ("build_layout", &report.build_layout),
+                ("apply_layout", &report.apply_layout),
+                ("draw", &report.draw),
+                ("total", &report.total),
+            ]
+            .into_iter()
+            .map(|(name, summary)| format!("  {name:<13} {}", stat(summary)))
+            .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    println!("device {device}, profile {}", profile.name());
+    println!(
+        "build            {:>8.2} ms   {} allocs",
+        build_us as f64 / 1000.0,
+        build_allocs
+    );
+    println!(
+        "first frame      {:>8.2} ms   {} allocs   {}",
+        first_frame_us as f64 / 1000.0,
+        first_allocs,
+        first_samples
+            .first()
+            .map(|frame| format!(
+                "layout {:.2} ms, draw {:.2} ms",
+                (frame.build_layout_us + frame.apply_layout_us) as f64 / 1000.0,
+                frame.draw_us as f64 / 1000.0
+            ))
+            .unwrap_or_default()
+    );
+    println!("steady (120 frames, nothing changed)");
+    for line in &steady_lines {
+        println!("{line}");
+    }
+    println!(
+        "  allocations  {:.1} per frame   ({:.1} KiB per frame)",
+        steady.allocs_per_frame(),
+        steady.bytes as f64 / 1024.0 / steady.frames as f64
+    );
+    if let Some(report) = &typing.report {
+        println!("typing (60 keys)");
+        println!("  total         {}", stat(&report.total));
+        println!("  draw          {}", stat(&report.draw));
+        println!("  allocations  {:.1} per key", typing.allocs_per_frame());
+    }
+    println!(
+        "idle             {idle_worked} of {idle_frames} frames did work   \
+         {:.1} µs per offered frame",
+        idle_us as f64 / idle_frames as f64
+    );
+    if let Some(rss) = peak_rss_mib() {
+        println!("peak RSS         {rss:>8.1} MiB");
+    }
+
+    if let Some(path) = json_path {
+        let frames = |phase: &Phase| -> serde_json::Value {
+            let Some(report) = &phase.report else {
+                return serde_json::Value::Null;
+            };
+            serde_json::json!({
+                "frames": phase.frames,
+                "wall_us": phase.wall_us,
+                "allocs": phase.allocs,
+                "bytes": phase.bytes,
+                "p50_us": report.total.p50_us,
+                "p95_us": report.total.p95_us,
+                "max_us": report.total.max_us,
+                "draw_p95_us": report.draw.p95_us,
+                "layout_p95_us": report.build_layout.p95_us + report.apply_layout.p95_us,
+            })
+        };
+        let first = first_samples.first();
+        let value = serde_json::json!({
+            "kind": "session",
+            "device": device,
+            "profile": profile.name(),
+            "tabs_per_window": tabs_per_window,
+            "build_us": build_us,
+            "build_allocs": build_allocs,
+            "build_bytes": build_bytes,
+            "first_frame_us": first_frame_us,
+            "first_frame_allocs": first_allocs,
+            "first_frame_bytes": first_bytes,
+            "first_frame_layout_us": first.map_or(0, |f| f.build_layout_us + f.apply_layout_us),
+            "first_frame_draw_us": first.map_or(0, |f| f.draw_us),
+            "steady": frames(&steady),
+            "typing": frames(&typing),
+            "idle_offered_frames": idle_frames,
+            "idle_working_frames": idle_worked,
+            "idle_us_per_frame": idle_us as f64 / idle_frames as f64,
+            "peak_rss_mib": peak_rss_mib(),
+            "total_p50_us": total.p50_us,
+            "total_p95_us": total.p95_us,
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+        println!("wrote {path}");
+    }
+    Ok(())
+}
