@@ -114,6 +114,7 @@ mod search_ask;
 pub mod seeded_apps;
 pub mod session_package;
 mod setup;
+mod shared_desktop;
 mod shared_displays;
 mod sheets;
 pub mod shell;
@@ -370,6 +371,10 @@ struct Shared {
     sync: Option<Rc<sync::Client>>,
     /// This device's workspaces: what the desk shows of them, and what a join takes in.
     engine: Option<std::sync::Arc<engine::Engine>>,
+    /// The workspaces' shared desktops, as their records hold them: what each
+    /// device that shows a workspace puts on its own desk, and what this one
+    /// writes back.
+    shared_desktops: shared_desktop::SharedDesktops,
     /// The engine revision the desk's copy of each workspace's people was
     /// last taken from: what nothing new of a workspace's governance has
     /// passed since.
@@ -466,6 +471,44 @@ fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
 }
 
 impl Shared {
+    /// Show each workspace's shared desktop as the workspace holds it, and
+    /// write back what this device changed there: what every device in a
+    /// workspace sees of its strips and windows
+    /// ([`shared_desktop::SharedDesktops`]).
+    fn follow_shared_desktops(&self) {
+        let Some(engine) = &self.engine else {
+            return;
+        };
+        // Every workspace this device holds has had its record read, and
+        // nothing of the workspaces moved since: there is nothing to read,
+        // lay out or write.
+        if self.shared_desktops.settled(
+            engine.owner().revision(),
+            &self.handle.read(|tree| tree.clone()),
+        ) {
+            return;
+        }
+        // What the records hold, folded into a copy of the desk: what this
+        // device opened or moved since was written first, so the fold comes
+        // back with this device's own change in it and nothing is undone.
+        let mut tree = self.handle.read(Clone::clone);
+        self.shared_desktops
+            .capture(engine, self.sync.as_deref(), &tree);
+        let device = self
+            .sync
+            .as_ref()
+            .map_or_else(String::new, |sync| sync.publisher().to_string());
+        if self.shared_desktops.follow(engine, &device, &mut tree) {
+            // The tree this device drew is the tree it shows: what the record
+            // holds is already placed, and swapping it in whole keeps the
+            // windows this device shows where its own view left them.
+            self.handle.replace_tree(tree.clone());
+        }
+        // A window the person opens here is this device's to place: the
+        // record lacks it until the next write, and folding keeps it.
+        self.shared_desktops.note_unrecorded(engine, &tree);
+    }
+
     /// The door that decides what a person's line in a run's conversation reads and changes
     /// (shell.md §8.1): each line runs as the person there, in the run's own program host.
     pub(crate) fn lend_conversations(&self, plane: Option<&Plane>, front: &str) {
@@ -1637,6 +1680,7 @@ impl Session {
             folder_import: RefCell::new(None),
             sync,
             engine,
+            shared_desktops: shared_desktop::SharedDesktops::default(),
             membership_fed: Cell::new(None),
             _channels: channels,
             personal,
@@ -2192,6 +2236,15 @@ impl Session {
         self.shared.doors.accessible_labels()
     }
 
+    /// The other people whose pointers the desk drew on this session, as the
+    /// last frame drew them: their name and the point, in the surface's
+    /// coordinates. Drawn over the window each is on, whatever the roster
+    /// shows.
+    #[must_use]
+    pub fn drawn_peer_pointers(&self) -> Vec<(String, (f64, f64))> {
+        self.shared.people.borrow().drawn_pointers()
+    }
+
     /// What an assistive client reads of the session's own surfaces now: the
     /// place each surface publishes at, its window name and the tree behind
     /// it, as the AT-SPI exporter hands them over. What a test drives is the
@@ -2527,6 +2580,11 @@ impl Session {
         };
         self.shared.handle.read(|tree| sync.follow_desktop(tree));
         sync.follow();
+        // A workspace's strips and windows are the workspace's: what its
+        // members put there — before this device joined, and since — is this
+        // device's desk too, and what this device arranges there is theirs to
+        // see.
+        self.shared.follow_shared_desktops();
         // This device's call, as everyone in the workspace reads it, and
         // theirs as this session's apps show them: a join or leave reaches a
         // channel's roster on the pass it happened on.

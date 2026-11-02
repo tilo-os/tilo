@@ -53,6 +53,9 @@ struct Shown {
     /// Who else's pointer is over which tab, as the last frame drew them:
     /// their name and where they are.
     pointers: Vec<(String, String)>,
+    /// Where each other person's pointer was drawn on this desk, as the last
+    /// frame drew it: their name and the point, in the surface's coordinates.
+    cursors: Vec<(String, (f64, f64))>,
     /// Where the desk is drawn, as the surface last laid out.
     area: Rect,
 }
@@ -115,6 +118,12 @@ impl People {
     /// Draw in the person's theme, as their settings now have it.
     pub(crate) fn set_theme(&self, theme: ui::Theme) {
         self.host.borrow_mut().set_theme(theme);
+    }
+
+    /// The other people's pointers as the last frame drew them: their name
+    /// and the point, in the surface's coordinates.
+    pub(crate) fn drawn_pointers(&self) -> Vec<(String, (f64, f64))> {
+        self.shown.borrow().cursors.clone()
     }
 }
 
@@ -641,6 +650,10 @@ impl Widget for Panel {
         // Everyone else's pointer, over the tile of the tab they are on.
         let (cursors, places) = peer_cursors(&self.handle, &shown.rows, &over);
         shown.pointers = places;
+        shown.cursors = cursors
+            .iter()
+            .map(|cursor| (cursor.label.clone(), cursor.pos))
+            .collect();
         if !cursors.is_empty() {
             let area = shown.area;
             ui::presence::draw_peer_cursors(scene, transform, area, text, theme, &cursors);
@@ -689,7 +702,10 @@ fn peer_cursors(
     if over.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let tab_rects: HashMap<u64, Rect> = handle.shown_tabs().into_iter().collect();
+    // A window this device has open but has not laid its content out for
+    // still has its tile where it stands: the pointer over it is drawn there.
+    let tiles = handle.shown_tiles();
+    let tab_rects: HashMap<u64, Rect> = tiles.into_iter().collect();
     let titles: HashMap<u64, String> = handle.read(|tree| {
         tree.active_workspace()
             .into_iter()

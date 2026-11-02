@@ -2808,13 +2808,16 @@ impl Widget for DesktopSurface {
     /// one, so a host that only draws what asks needs no separate schedule.
     /// What the host above the windows did with the search palette since the
     /// last pass is work for this one: a row it chose, a scope it widened, a
-    /// query field it typed into.
+    /// query field it typed into. So is a tree replaced from outside — a
+    /// workspace's desktop its members changed: the desk's rows are only
+    /// brought to it by a pass, and none would come for it otherwise.
     fn needs_redraw(&self) -> bool {
         let work = {
             let shared = self.shared.borrow();
             shared.search_request.is_some()
                 || !shared.queue.is_empty()
                 || shared.search_revision != self.seen_search
+                || shared.replaced
         };
         // The desk asks its search sources a frame at a time, and cuts its
         // rows to the card once the card gives its room: a search with such
@@ -2828,6 +2831,7 @@ impl Widget for DesktopSurface {
         let shown = self.shown;
         self.unbuilt.iter().any(|&(strip, _)| Some(strip) == shown)
             || !self.shared.borrow().queue.is_empty()
+            || self.shared.borrow().replaced
             || self
                 .children()
                 .into_iter()
