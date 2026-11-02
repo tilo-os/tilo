@@ -264,6 +264,9 @@ struct Shared {
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
     services: Rc<RefCell<Services>>,
+    /// The services the session serves its apps and devices itself, kept for
+    /// as long as it runs (`mount::doors::TABLE` says which).
+    table: mount::doors::Doors,
     /// The windows this session shares with its workspaces, and the streams it receives from them.
     window_shares: Rc<RefCell<window_share::WindowShares>>,
     /// The runs of what people ask this session's agents to do, fed every
@@ -1338,6 +1341,24 @@ impl Session {
                 .as_ref()
                 .map(|desktop| desktop.questions().clone())
         });
+        // Every service this session serves, from the one table that says
+        // who serves each: the identity an app signs in through, the
+        // machine's readings an app the launcher connects reads, and the
+        // data this device used. They start here, before any app does.
+        let table = mount::doors::start(mount::doors::Serving {
+            desk: action_plane
+                .as_ref()
+                .map(|plane| std::sync::Arc::clone(&plane.desk)),
+            keys: engine
+                .as_ref()
+                .map_or_else(Default::default, |engine| engine.keys()),
+            questions: questions.clone(),
+            consents: options
+                .desktop
+                .as_ref()
+                .and_then(|desktop| desktop.consents())
+                .cloned(),
+        });
         let session_doors =
             std::sync::Arc::new(agent_door::SessionDoors::new(options.wake.handle()));
         let door = agent_door::mount_named(
@@ -1479,6 +1500,7 @@ impl Session {
             waiting: RefCell::default(),
             readings,
             services,
+            table,
             window_shares,
             agent_runs,
             hosted: !options.machine.is_owned(),
@@ -2283,7 +2305,7 @@ impl Session {
         self.shared.serve_activity();
         self.follow_collaboration();
         self.follow_automation();
-        self.shared.follow_personal();
+        self.shared.follow_records();
         // Who each workspace on the desk is whose, after the workspaces this
         // pass brought: the person's own are theirs, and one joined keeps its
         // host's owner.

@@ -524,6 +524,26 @@ impl DeskAuthority {
     }
 }
 
+/// The desk as the identity service reads it: an app signs in the person's
+/// workspace through the desk this session shows, so the workspace the
+/// request names is the one the person sees it in.
+impl tilo_identity_host::broker::WorkspaceMembership for DeskAuthority {
+    fn with_workspace(
+        &self,
+        workspace: &tilo_desktop_model::RoomId,
+        read: &mut dyn FnMut(&tilo_desktop_model::Workspace),
+    ) {
+        let tree = self.tree.lock_recover();
+        if let Some(held) = tree
+            .workspaces
+            .iter()
+            .find(|held| &held.room() == workspace)
+        {
+            read(held);
+        }
+    }
+}
+
 impl WorkspaceAuthority for DeskAuthority {
     fn with_tree(
         &self,

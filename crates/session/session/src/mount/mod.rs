@@ -10,6 +10,7 @@ pub(crate) mod clipboard;
 pub(crate) mod clipboard_files;
 pub mod comforts;
 pub(crate) mod devices;
+pub(crate) mod doors;
 pub mod drives;
 pub mod firstboot;
 pub(crate) mod host_shell;
