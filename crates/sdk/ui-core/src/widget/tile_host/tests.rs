@@ -1020,7 +1020,7 @@ fn a_tile_nothing_has_painted_asks_for_no_frame_of_its_own() {
 fn a_painted_placeholder_asks_for_the_frame_its_next_step_shows_in() {
     let t0 = crate::time::now();
     let theme = Theme::default();
-    let (host, _) = crate::time::testing::with_monotonic_time(t0, || {
+    let host = crate::time::testing::with_monotonic_time(t0, || {
         let mut host = TileHost::new(TileContent::Arriving);
         host.rect = Rect::new(50.0, 50.0, 350.0, 250.0);
         let _ = paint(&mut host, &theme);
@@ -1029,7 +1029,7 @@ fn a_painted_placeholder_asks_for_the_frame_its_next_step_shows_in() {
             !Widget::needs_redraw(&host),
             "the step standing was the one painted"
         );
-        (host, ())
+        host
     });
     crate::time::testing::with_monotonic_time(t0 + crate::arriving::GRACE, || {
         assert!(
