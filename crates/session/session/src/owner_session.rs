@@ -240,11 +240,9 @@ impl Session {
         );
         match followed {
             Some(Follow::Lock) => self.lock_by_person()?,
-            Some(Follow::Unlock) => {
-                self.compositor.unlock()?;
-                // An unlock lands as a transition: follow it at once.
-                self.follow_lock()?;
-            }
+            // The person unlocked on one of their other devices: this device
+            // unlocks the way it does when they type the password here.
+            Some(Follow::Unlock) => self.unlock_by_person()?,
             None => {}
         }
         // What this device says of itself is what it is now: a lock or

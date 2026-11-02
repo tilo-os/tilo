@@ -156,9 +156,15 @@ impl crate::Session {
         }
         // The screen leaves before the desk comes back: the lock ends once it
         // has dissolved, or once it has had long enough to, and the screen
-        // goes with the lock.
+        // goes with the lock. A screen that is not up has nothing to leave,
+        // and the lock lifts at once rather than waiting on an animation
+        // nothing draws.
         if lock.shown().unlocking {
-            if !lock.dissolve_finished() {
+            let leaving = self
+                .lock_screen()
+                .is_some_and(|surface| self.surfaces.running(&surface.name))
+                && !lock.dissolve_finished();
+            if leaving {
                 // Keep the loop turning while the screen leaves; it is one
                 // short animation, and nothing else is going on.
                 self.unlocking.wake.wake_by_ref();
@@ -169,6 +175,15 @@ impl crate::Session {
             return self.follow_lock();
         }
         Ok(())
+    }
+
+    /// The person's session was unlocked — here with their password, or on
+    /// another of their devices: the screen that showed the lock leaves, and
+    /// the compositor lifts the lock once it has, so a lock followed from
+    /// elsewhere comes down the way one taken here does.
+    pub(crate) fn unlock_by_person(&mut self) -> Result<(), Error> {
+        self.shared.lock.unlocked();
+        self.follow_lock()
     }
 
     /// Start the lock screen, if it does not run: a locked session is shown by

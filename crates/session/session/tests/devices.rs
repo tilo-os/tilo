@@ -43,6 +43,7 @@ use tilo_quick_settings::device::Device;
 use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::hosted::{ASK_KEY, HostedActions, ROUTE_KEY, SOUND_KEY};
 use tilo_quick_settings::{QsEffect, RowPart};
+use tilo_session::surfaces::Surface;
 use tilo_session::{
     AppActions, AppLists, DeviceHost, Lists, Options, QuickSettings, Session, WakeInterfaces,
     WakeSeams,
@@ -523,6 +524,14 @@ fn session_with(
             },
             user: "ada".to_owned(),
             verifier: std::sync::Arc::new(Sesame),
+            surfaces: vec![
+                Surface::new(
+                    "lock",
+                    tilo_test_env::sibling_binary("tilo-lock-screen", "tilo-lock-screen"),
+                )
+                .person("ada")
+                .lock(),
+            ],
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
