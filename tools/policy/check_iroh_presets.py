@@ -46,9 +46,7 @@ DECISION = "crates/system/endpoint-reachability/src/directory.rs"
 EXEMPT = {
     # The registry transport dials the registry with an address it was given.
     # The relay's own diagnostic probes.
-    "crates/hosting/tilo-relay/src/relay_offers.rs": "relay diagnostic probe",
     "crates/hosting/tilo-relay/src/files_probe.rs": "relay diagnostic probe",
-    "crates/hosting/tilo-relay/src/environment_cli.rs": "relay diagnostic probe",
     "crates/hosting/tilo-relay/src/admin.rs": "relay admin client",
     # `tilo app push`: one command dialing the workspace host its link names.
     "crates/hosting/tilo-relay-session/src/rooms/govern.rs": "workspace governance client of one command",

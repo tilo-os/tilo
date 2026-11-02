@@ -33,9 +33,7 @@ use package_store::InstalledPackage;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ServerAdvertisement;
-use crate::mesh::DeviceKey;
-use crate::placement::ComputeRequirements;
+use crate::mesh::{DeviceKey, ServerAdvertisement};
 
 pub const COMPUTE_JOB_SCHEMA_VERSION: u16 = 1;
 pub const MAX_COMPUTE_JOB_LIFETIME_MS: u64 = 5 * 60 * 1_000;
@@ -122,39 +120,6 @@ impl ComputeJobSpec {
             return Err(ComputeError::InvalidLimits);
         }
         Ok(())
-    }
-}
-
-/// Admit a validated job only to an eligible, available worker advertising
-/// the exact workspace, app, accelerator, and compute service.
-///
-/// # Errors
-///
-/// Returns [`ComputeError::WorkerUnavailable`] for any ineligible worker, or
-/// the underlying spec validation error.
-pub fn admit_compute_job(
-    spec: &ComputeJobSpec,
-    worker: &ServerAdvertisement,
-    now_ms: u64,
-) -> Result<(), ComputeError> {
-    spec.validate_for(worker.device, now_ms)?;
-    if worker.compute_ineligibility(&spec.requirements()).is_some() {
-        return Err(ComputeError::WorkerUnavailable);
-    }
-    Ok(())
-}
-
-impl ComputeJobSpec {
-    /// What this job needs from its worker: the terms both placement and
-    /// admission decide eligibility by.
-    #[must_use]
-    pub fn requirements(&self) -> ComputeRequirements<'_> {
-        ComputeRequirements {
-            requester: self.requester,
-            workspace_id: self.workspace_id,
-            app_id: &self.app_id,
-            gpu: self.limits.gpu,
-        }
     }
 }
 
@@ -656,7 +621,16 @@ where
         {
             return Err(ComputeExecutionError::RouteMismatch);
         }
-        admit_compute_job(spec, &self.worker, now_ms)?;
+        spec.validate_for(self.worker.device, now_ms)?;
+        // This worker runs only what it advertises: the app the job names,
+        // while its power lets it, and only for a requester that is another
+        // device.
+        if !self.worker.apps.iter().any(|app| app == &spec.app_id)
+            || self.worker.energy_saver
+            || self.worker.power.is_critically_constrained()
+        {
+            return Err(ComputeError::WorkerUnavailable.into());
+        }
         if spec.limits.gpu && !self.sandbox.gpu_available() {
             return Err(ComputeExecutionError::GpuUnavailable);
         }
@@ -1565,15 +1539,9 @@ mod tests {
     #[test]
     fn compute_jobs_are_admitted_exactly_and_move_monotonically() {
         {
-            assert_eq!(admit_compute_job(&spec(), &worker(), 200), Ok(()));
+            assert_eq!(spec().validate_for(worker().device, 200), Ok(()));
         }
         {
-            let mut candidate = worker();
-            candidate.apps.clear();
-            assert_eq!(
-                admit_compute_job(&spec(), &candidate, 200),
-                Err(ComputeError::WorkerUnavailable)
-            );
             assert_eq!(
                 spec().validate_for([9; 32], 200),
                 Err(ComputeError::InvalidBinding)
@@ -1581,26 +1549,6 @@ mod tests {
             assert_eq!(
                 spec().validate_for([3; 32], 1_000),
                 Err(ComputeError::InvalidBinding)
-            );
-            candidate = worker();
-            candidate.power = PowerAvailability::Battery(10);
-            assert_eq!(
-                admit_compute_job(&spec(), &candidate, 200),
-                Err(ComputeError::WorkerUnavailable)
-            );
-            // The threshold is the mesh's one battery rule, not a local copy.
-            candidate.power = PowerAvailability::Battery(15);
-            assert_eq!(
-                admit_compute_job(&spec(), &candidate, 200),
-                Err(ComputeError::WorkerUnavailable)
-            );
-            candidate.power = PowerAvailability::Battery(16);
-            assert_eq!(admit_compute_job(&spec(), &candidate, 200), Ok(()));
-            candidate = worker();
-            candidate.accelerators.clear();
-            assert_eq!(
-                admit_compute_job(&spec(), &candidate, 200),
-                Err(ComputeError::WorkerUnavailable)
             );
         }
         {

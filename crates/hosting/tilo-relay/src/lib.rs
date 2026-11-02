@@ -114,7 +114,7 @@ use tilo_room_host::{authority_epoch, handshake, room_access};
 
 pub use tilo_relay_client::frame;
 pub use tilo_relay_protocol::{
-    auth, certify, config, home_peer, live, mesh, placement, policy, process_lease,
+    auth, certify, config, home_peer, live, mesh, policy, process_lease,
 };
 pub use tilo_relay_session::{antientropy, client, coedit, position};
 
@@ -136,7 +136,7 @@ pub use compute::{
     ComputeContentStore, ComputeError, ComputeExecutionError, ComputeJobLifecycle, ComputeJobPhase,
     ComputeJobResult, ComputeJobSpec, ComputeOutputSource, ComputePackageCatalogue,
     ComputeResourceLimits, ComputeSandbox, ComputeSandboxInvocation, ComputeWorker, HeldContent,
-    InstalledComputeCatalogue, LauncherComputeSandbox, admit_compute_job,
+    InstalledComputeCatalogue, LauncherComputeSandbox,
 };
 pub use config::RelayConfig;
 #[cfg(not(target_arch = "wasm32"))]
