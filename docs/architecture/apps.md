@@ -100,7 +100,33 @@ through the typed action values the other app publishes. Composing another app's
 view inline (the canvas) runs that app's view code under that app's authority,
 not the caller's ([shell.md §8](../designs/app-language/shell.md)).
 
-## 6. What a hostile app can do
+## 6. Permissions change without app code
+
+No app code checks a permission or knows that one exists. The session decides
+at three points, and only there: when it delivers a reading, when it admits an
+action, and when it drains an outbox entry. Grants are policy data
+([security architecture](../security/architecture.md) §6), so a new kind of grant
+is a new rule at those points, never an app change:
+
+- **Scopes are whatever the session knows at those points:** the resource or
+  path, the actor, the place the view shows it in (a strip, a window, a canvas
+  place), the device, and the time. "Only in this strip", "for the next hour",
+  "read-only while shared in a call", "this agent, these three records": each is
+  a grant over those facts.
+- **The place travels with every reading and action.** The session tags each
+  reading it delivers, and each action it admits, with the place it belongs to,
+  even when one view process serves several places. A per-place grant therefore
+  needs nothing the protocol doesn't already carry.
+- **Denial is absence** (§6.2 there): a reading that isn't delivered, an action
+  that isn't offered. An app already handles "nothing here" and "no such
+  action", so it can't tell a new restriction from a quiet state, and needs no
+  code for it.
+- **Creators, not owners.** A workspace's resources belong to the workspace. Who
+  made or changed something is in its history, and a person's own records
+  (`records: .own`) are theirs. A grant can name any of these facts; no app
+  declares an owner.
+
+## 7. What a hostile app can do
 
 - See what it was shown: the readings of its own resources, and of others' it was granted.
 - Submit actions as itself within its grants, and as the person only during a
@@ -113,7 +139,7 @@ background, sign anything, learn a key, or talk to another device. Its sandbox
 ([threat-model.md](../security/threat-model.md)) still bounds what its native
 code can do to the machine.
 
-## 7. What changes from today
+## 8. What changes from today
 
 Today the framework runs inside the app process. The SDK (`crates/collab/collaboration`,
 `sdk_join_identity`) loads the identity broker the launcher passed in,
