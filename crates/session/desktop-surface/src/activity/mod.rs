@@ -8,6 +8,7 @@ use std::{
 };
 use tilo_desktop_model::DesktopTree;
 
+pub mod describer;
 pub mod index;
 pub mod morning;
 pub mod view_actions;

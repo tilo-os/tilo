@@ -282,6 +282,26 @@ impl DeskDoc {
         self.doc.borrow().clone()
     }
 
+    /// Write what `write` decides into the desk's document — a description of
+    /// a change, a name over a run of them — as one change by this device,
+    /// and keep it. Whether anything was written: a `write` that decides
+    /// nothing leaves the document as it was.
+    pub(crate) fn write_metadata(&self, write: impl FnOnce(&mut AutoCommit) -> bool) -> bool {
+        let mut doc = self.doc.borrow_mut();
+        if !write(&mut doc) {
+            doc.rollback();
+            return false;
+        }
+        if doc.pending_ops() == 0 {
+            return false;
+        }
+        doc.commit_with(CommitOptions::default().with_time(crate::activity::now_seconds()));
+        if let Some(at) = &self.path {
+            tilo_durable_writer::keep(at.clone(), doc.save());
+        }
+        true
+    }
+
     /// The changes the desk is at, so a reader can tell it moved.
     pub(crate) fn heads(&self) -> Vec<ChangeHash> {
         self.doc.borrow().base_heads()

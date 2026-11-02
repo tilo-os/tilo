@@ -27,6 +27,7 @@
 
 mod a11y_settings;
 mod activity;
+mod activity_models;
 mod activity_provider;
 pub mod agent_door;
 mod app_icons;
@@ -500,7 +501,11 @@ impl Shared {
             self.open_from_history(&workspace, &target);
         }
         self.activity.tell_followers();
-        if self.activity.take_woken() {
+        // What the history says its changes were, and the names over the runs
+        // of them, are written into the desk's document as models answer; the
+        // desk draws a frame to read them.
+        let described = self.activity.describe();
+        if self.activity.take_woken() || described {
             // A window asked the activity model something: the desk draws a
             // frame, which serves it.
             self.desktop.with_widgets(WidgetHost::relayout);

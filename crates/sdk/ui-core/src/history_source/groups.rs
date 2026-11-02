@@ -45,6 +45,23 @@ use tilo_automerge::read::int_at;
 /// timeline unreadable.
 pub const MAX_LABEL_LEN: usize = 120;
 
+/// The `by` of a name a model wrote, in place of a person's actor hex. A
+/// generated name is the document's guess at what a run of changes was: it is
+/// replaced by anyone who names the same range, and it is never shown as
+/// somebody's words ([`NamedRange::named_by`] stays empty for it).
+pub const GENERATED_BY: &str = "describer";
+
+/// Whether the name at `record_id` was written by a model rather than a
+/// person. A record this device cannot read counts as a person's: never
+/// overwrite what another writer may have said.
+pub fn name_is_generated(doc: &AutoCommit, record_id: &str) -> bool {
+    doc.get(automerge::ROOT, record_id)
+        .ok()
+        .flatten()
+        .and_then(|(_, rec)| doc.str_at(&rec, "by"))
+        .is_some_and(|by| by == GENERATED_BY)
+}
+
 /// Records that do not parse (a corrupted key, a missing label) are skipped
 /// rather than guessed at — a band in the wrong place is worse than no band.
 pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<NamedRange> {
@@ -78,7 +95,11 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
             label,
             start,
             end,
-            named_by: by.map(|a| authors.resolve(&a)),
+            // A generated name is nobody's: it is the document saying what a
+            // run of changes was, so no person is credited with it.
+            named_by: by
+                .filter(|by| by != GENERATED_BY)
+                .map(|a| authors.resolve(&a)),
             created,
         });
     }
@@ -97,9 +118,21 @@ pub fn name_range(
     end: Option<&HistoryEntryId>,
     label: &str,
 ) -> String {
+    let by = doc.get_actor().to_hex_string();
+    name_range_by(doc, start, end, label, &by)
+}
+
+/// [`name_range`], with the `by` written into the record: a person's actor
+/// hex, or [`GENERATED_BY`] for a name a model wrote.
+pub fn name_range_by(
+    doc: &mut AutoCommit,
+    start: &HistoryEntryId,
+    end: Option<&HistoryEntryId>,
+    label: &str,
+    by: &str,
+) -> String {
     let key = format!("{GROUPS_KEY}{}", hex16(start));
     let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
-    let by = doc.get_actor().to_hex_string();
     let at = i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX);
     // Replacing the whole record rather than patching fields keeps a rename and
     // a re-scope atomic: a peer never observes the new label against the old

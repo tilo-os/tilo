@@ -68,8 +68,9 @@ pub use detail::{HistoryResourceTarget, HistorySelectionDetail, contains_opaque_
 pub use digest::{ActivityBrief, ActivityBriefAction, ActivityDigest};
 pub use facets::HistoryFacetIndex;
 pub use groups::{
-    GROUPS_KEY, clear_name, close_range, is_group_marker, merge_named_ranges, move_named_boundary,
-    name_range, read_named_ranges, split_named_range,
+    GENERATED_BY, GROUPS_KEY, clear_name, close_range, is_group_marker, merge_named_ranges,
+    move_named_boundary, name_is_generated, name_range, name_range_by, read_named_ranges,
+    split_named_range,
 };
 pub use log::HistoryLog;
 pub use narrative::{

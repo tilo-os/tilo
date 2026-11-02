@@ -24,14 +24,16 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
 use durable_store::{DurableStore, StorageKey};
 use serde_json::Value;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceId};
 use tilo_desktop_surface::HistorySource;
+use tilo_desktop_surface::activity::describer::{Describer, Job};
 use tilo_desktop_surface::activity::{
     ActivityHost, ActivitySnapshot, DetachedRecordHistory, HistoryOrigin, WorkspaceDeparture,
     WorkspaceSeenFrontier, morning,
@@ -39,6 +41,7 @@ use tilo_desktop_surface::activity::{
 use tilo_desktop_surface::history_log;
 use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
 use tilo_files::native::Watched;
+use tilo_lock::MutexRecover as _;
 use ui::record::RecordCheckout;
 
 use crate::activity_provider::ActivityWire;
@@ -97,7 +100,24 @@ struct Inner {
     /// The revision the model last served its reads at, as the apps
     /// following them were last told.
     served: Cell<Option<u64>>,
+    /// What the desk's history says its changes were, as a model answered it.
+    describer: RefCell<Describer>,
+    /// Answers the model gave, waiting for the desk's thread to write them.
+    described: Arc<Mutex<Vec<(Job, String)>>>,
+    /// Whether a model is being asked right now: one request at a time keeps
+    /// a long history from spending the person's provider on a burst.
+    describing: Arc<AtomicBool>,
+    /// The desk's changes the describer last read, so a pass with nothing new
+    /// asks nothing.
+    described_heads: RefCell<Vec<automerge::ChangeHash>>,
+    /// When a model was last looked for: a provider the person configures
+    /// while the session runs is taken up without a frame per lookup.
+    looked_for_model: Cell<Option<Instant>>,
 }
+
+/// How often a session with nothing new on its desk looks again for a model
+/// the person may have configured meanwhile.
+const LOOK_FOR_MODEL: Duration = Duration::from_secs(30);
 
 impl Activity {
     /// This session's activity: the desk's document under `state` (kept in
@@ -128,6 +148,11 @@ impl Activity {
             woken,
             wire: RefCell::default(),
             served: Cell::default(),
+            describer: RefCell::default(),
+            described: Arc::default(),
+            describing: Arc::default(),
+            described_heads: RefCell::default(),
+            looked_for_model: Cell::default(),
         }))
     }
 
@@ -192,6 +217,63 @@ impl Activity {
     /// taken: the desk draws a frame to answer it.
     pub(crate) fn take_woken(&self) -> bool {
         self.0.woken.swap(false, Ordering::AcqRel)
+    }
+
+    /// Say what the desk's changes were, and name the runs of them, when the
+    /// desk moved since they were last read: one request at a time, off the
+    /// desk's thread, written into the desk's document when the answer comes
+    /// so every member reads the same words. Whether the document changed and
+    /// the desk has something new to show.
+    pub(crate) fn describe(&self) -> bool {
+        let mut wrote = false;
+        let answers = std::mem::take(&mut *self.0.described.lock_recover());
+        {
+            let mut describer = self.0.describer.borrow_mut();
+            for (job, answer) in answers {
+                wrote |= if answer.is_empty() {
+                    // No model answered: nothing is described in its place.
+                    describer.failed(&job);
+                    false
+                } else {
+                    self.0
+                        .desk
+                        .write_metadata(|doc| describer.apply(doc, &job, &answer))
+                };
+            }
+        }
+        if self.0.describing.load(Ordering::Acquire) {
+            return wrote;
+        }
+        let heads = self.0.desk.heads();
+        let look_again = self
+            .0
+            .looked_for_model
+            .get()
+            .is_none_or(|at| at.elapsed() >= LOOK_FOR_MODEL);
+        if heads == *self.0.described_heads.borrow() && !look_again {
+            return wrote;
+        }
+        *self.0.described_heads.borrow_mut() = heads;
+        let mut describer = self.0.describer.borrow_mut();
+        describer.set_enabled(crate::activity_models::configured());
+        let Some(job) = describer.next(&mut self.0.desk.document()) else {
+            self.0.looked_for_model.set(Some(Instant::now()));
+            return wrote;
+        };
+        drop(describer);
+        self.0.looked_for_model.set(Some(Instant::now()));
+        self.0.describing.store(true, Ordering::Release);
+        let answers = Arc::clone(&self.0.described);
+        let describing = Arc::clone(&self.0.describing);
+        let woken = Arc::clone(&self.0.woken);
+        std::thread::spawn(move || {
+            let answer = crate::activity_models::ask(&job).unwrap_or_default();
+            answers.lock_recover().push((job, answer));
+            describing.store(false, Ordering::Release);
+            // The desk draws a frame to write the answer where it belongs.
+            woken.store(true, Ordering::Release);
+        });
+        wrote
     }
 
     /// The `RoomId` of `workspace`, as `tree` holds it.

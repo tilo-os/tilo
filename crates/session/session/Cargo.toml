@@ -111,6 +111,10 @@ tilo-workspace-join = { path = "../../collab/workspace-join" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # The models an agent may plan with: the person's own provider settings.
 agent-provider-config = { path = "../../agent/provider-config" }
+# The session asks the model gateway as Activity, the way an app it starts
+# does, for the history's descriptions and group names.
+tilo-model-client = { path = "../../agent/model-client", features = ["runtime-client"] }
+tilo-rt = { workspace = true }
 # The sanctioned blocking HTTP client, which installs the crypto provider.
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking", "json"] }
 reqwest = { workspace = true, features = ["blocking", "json"] }

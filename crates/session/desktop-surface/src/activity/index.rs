@@ -360,6 +360,14 @@ impl Default for WorkspaceHistoryIndex {
     }
 }
 
+/// The rows of `doc`, each saying what a model described it as when one did:
+/// a description stands in place of the change's own summary, never beside
+/// it, and never replaces its author, time or kind.
+fn described(mut rows: Vec<HistoryEntry>, doc: &AutoCommit) -> Vec<HistoryEntry> {
+    crate::activity::describer::shown(&mut rows, doc);
+    rows
+}
+
 impl WorkspaceHistoryIndex {
     pub fn new() -> Self {
         Self {
@@ -629,12 +637,15 @@ impl WorkspaceHistoryIndex {
             let origin = record.origin();
             documents.insert(origin.key(), doc.get_heads());
             // What people did: a record's genesis names no one.
-            let rows = HistorySource::new()
-                .with_authors(self.authors.clone())
-                .with_artifact_kind(artifact_kind(&record.checkout.kind))
-                .with_max_entries(limit)
-                .without_record_genesis()
-                .entries(&mut doc);
+            let rows = described(
+                HistorySource::new()
+                    .with_authors(self.authors.clone())
+                    .with_artifact_kind(artifact_kind(&record.checkout.kind))
+                    .with_max_entries(limit)
+                    .without_record_genesis()
+                    .entries(&mut doc),
+                &doc,
+            );
             insert_rows(&mut by_id, &origin, rows);
             coverage.indexed_records = coverage.indexed_records.saturating_add(1);
         }
@@ -963,11 +974,14 @@ impl WorkspaceHistoryIndex {
         let tree_rows = supplied.map_or_else(
             || {
                 let mut doc = committed_snapshot(tree.document());
-                HistorySource::new()
-                    .with_authors(self.authors.clone())
-                    .with_artifact_kind(ArtifactKind::Cluster)
-                    .with_max_entries(limit)
-                    .entries(&mut doc)
+                described(
+                    HistorySource::new()
+                        .with_authors(self.authors.clone())
+                        .with_artifact_kind(ArtifactKind::Cluster)
+                        .with_max_entries(limit)
+                        .entries(&mut doc),
+                    &doc,
+                )
             },
             <[HistoryEntry]>::to_vec,
         );
@@ -982,11 +996,14 @@ impl WorkspaceHistoryIndex {
             let authors = self.authors.clone();
             let inserted_live = records.read(&record.id, |doc| {
                 let mut doc = committed_snapshot(doc);
-                let rows = HistorySource::new()
-                    .with_authors(authors)
-                    .with_artifact_kind(kind)
-                    .with_max_entries(limit)
-                    .entries(&mut doc);
+                let rows = described(
+                    HistorySource::new()
+                        .with_authors(authors)
+                        .with_artifact_kind(kind)
+                        .with_max_entries(limit)
+                        .entries(&mut doc),
+                    &doc,
+                );
                 insert_rows(&mut by_id, &origin, rows);
             });
             if inserted_live.is_some() {
@@ -999,11 +1016,14 @@ impl WorkspaceHistoryIndex {
                 cold.insert(record.id.clone(), doc);
             }
             if let Some(doc) = cold.get_mut(&record.id) {
-                let rows = HistorySource::new()
-                    .with_authors(self.authors.clone())
-                    .with_artifact_kind(kind)
-                    .with_max_entries(limit)
-                    .entries(doc);
+                let rows = described(
+                    HistorySource::new()
+                        .with_authors(self.authors.clone())
+                        .with_artifact_kind(kind)
+                        .with_max_entries(limit)
+                        .entries(doc),
+                    doc,
+                );
                 insert_rows(&mut by_id, &origin, rows);
             }
         }

@@ -107,6 +107,9 @@ const CANVAS_APP: &str = "so.tilo.canvas";
 /// The desktop's report composer: its review asks a model which words of a
 /// report are personal, a completion without tools, as Chat's are.
 const FEEDBACK_APP: &str = "so.tilo.feedback-composer";
+/// The session's history: what its changes were, and the names over the runs
+/// of them, asked as one completion without tools, as Chat's are.
+const ACTIVITY_APP: &str = "so.tilo.activity";
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 /// Face batches are intentionally small.  A large library is scanned as
 /// bounded background batches by Photos, never materialized into one giant
@@ -559,6 +562,7 @@ async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<Handoff, St
             && handoff.app_id != AGENT_APP
             && handoff.app_id != CHAT_APP
             && handoff.app_id != FEEDBACK_APP
+            && handoff.app_id != ACTIVITY_APP
             && handoff.app_id != PHOTOS_APP
             && handoff.app_id != CANVAS_APP)
     {
@@ -609,7 +613,7 @@ pub(super) async fn handle_streaming(
         }
         request @ (Request::Complete { .. } | Request::CompleteDefault { .. })
             if app_id == AGENT_APP
-                || ((app_id == CHAT_APP || app_id == FEEDBACK_APP)
+                || ((app_id == CHAT_APP || app_id == FEEDBACK_APP || app_id == ACTIVITY_APP)
                     && crate::caller::chat_completion(&request)) =>
         {
             return complete_request(http, request, emit)
@@ -2903,11 +2907,12 @@ mod tests {
 
     use super::*;
 
-    /// The report composer may ask a model which words are personal, a
-    /// completion without tools, and nothing more; an app it does not
-    /// know may ask nothing.
+    /// The report composer may ask a model which words are personal, and the
+    /// session's history may ask what a change was: a completion without
+    /// tools, and nothing more. An app the gateway does not know may ask
+    /// nothing.
     #[tokio::test]
-    async fn the_report_composer_completes_text_and_is_refused_tools() {
+    async fn the_report_composer_and_the_history_complete_text_and_are_refused_tools() {
         use agent_provider_config::protocol::{
             Message, ModelRequest, Role, ToolChoice, ToolDefinition,
         };
@@ -2940,6 +2945,21 @@ mod tests {
         assert_eq!(
             other.model_error.map(|error| error.kind),
             Some(ErrorKind::PermissionDenied)
+        );
+        let titled = handle(
+            ACTIVITY_APP,
+            ask(vec![ToolDefinition {
+                name: "send_mail".into(),
+                description: "Send mail".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }]),
+            &http,
+        )
+        .await;
+        assert_eq!(
+            titled.model_error.map(|error| error.kind),
+            Some(ErrorKind::PermissionDenied),
+            "the history names runs, never calls tools"
         );
     }
 
