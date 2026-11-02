@@ -61,6 +61,7 @@ use tilo_identity_host::{
 };
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_peer_state::{PeerPersonal, PersonalStore, PersonalSync};
+use tilo_store_link::StoreService;
 use workspace::{ProfileGrants, ProfileWorkspace};
 use workspaces::Workspaces;
 
@@ -72,6 +73,8 @@ const PERSONAL_STORE: &str = "state/tilo/personal/documents";
 /// Where the workspace host this runtime runs keeps its workspaces: the
 /// directory profiles already keep it in.
 const HOST_STORE: &str = "room-host";
+/// Where this device keeps the workspace state it holds for their members.
+const STORE: &str = "store";
 
 /// A standalone service session over one profile. Drop applications first.
 pub struct Standalone {
@@ -176,6 +179,7 @@ impl Standalone {
             &actor,
             Arc::clone(&channels),
             Arc::clone(&fanout),
+            workspace_store(root, &joined, &workspace)?,
         );
         let workspaces = Arc::new(Workspaces::new(&workspace, &joined));
         let identity_socket = root.join(IDENTITY_SOCKET);
@@ -1020,6 +1024,22 @@ fn joined_workspaces_and_keys(
         channels,
     )?;
     Ok((joined, keys))
+}
+
+/// The store this profile keeps for the workspaces it holds, under the
+/// profile's own root: the workspaces it governs whole, the ones it only holds
+/// for their members as work it takes on. A profile that governs nothing keeps
+/// no store.
+fn workspace_store(
+    root: &Path,
+    joined: &Joined,
+    workspace: &ProfileWorkspace,
+) -> io::Result<Option<StoreService>> {
+    let own = RoomId::parse(&workspace.workspace())
+        .ok_or_else(|| io::Error::other("invalid runtime workspace"))?;
+    joined
+        .store(&root.join(STORE), own, workspace.governs())
+        .map_err(io::Error::other)
 }
 
 /// The workspaces this profile joined, synced as this device over an endpoint

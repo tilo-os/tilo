@@ -17,8 +17,20 @@
 //! Membership is not decided here: the store admits the connecting device
 //! by the [`Access`](tilo_store_node::Access) its embedder gave it, and the
 //! replica refuses a frame the workspace's roster does not back.
+//!
+//! The store device's side is here too: [`MembershipAccess`] is the engine's
+//! membership answering for a store, and [`StoreService`] is the service that
+//! keeps what it is given and serves it, with the appetite its device's mesh
+//! policy gives it ([`appetite`]).
 
 #![deny(rust_2018_idioms)]
+
+pub mod access;
+pub mod service;
+
+pub use access::{MembershipAccess, held_workspace};
+pub use service::{StoreService, WORK_BYTES, appetite};
+pub use tilo_store_node::ALPN;
 
 use iroh::EndpointAddr;
 use neighbour_wire::NeighbourMsg;

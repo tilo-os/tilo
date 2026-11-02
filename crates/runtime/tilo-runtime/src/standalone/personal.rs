@@ -26,19 +26,23 @@ use tilo_action_broker::collab_inbound::{self, RemoteDocument};
 use tilo_action_policy::{Standing, WorkspacePolicy};
 use tilo_identity_host::registry::IdentityProfile;
 use tilo_peer_state::{PERSONAL_ALPN, PeerPersonal, PersonalSync};
+use tilo_store_link::StoreService;
 
 /// How often the person's devices are read again from the identity's device
 /// fleet, and a sibling without a link is dialled: a device is offline as
 /// often as it is on, and a revocation is written by another device.
 const REDIAL: Duration = Duration::from_secs(300);
 
-/// A runtime's door to the person's other devices. Dropping it stops the
-/// door: the links end with the tasks, and the endpoint it answers on is the
-/// runtime's.
+/// A runtime's door to the person's other devices, and to the members of the
+/// workspaces this device keeps. Dropping it stops the door: the links end
+/// with the tasks, and the endpoint it answers on is the runtime's.
 pub(crate) struct PersonalDoor {
     _router: iroh::protocol::Router,
     siblings: tokio::task::JoinHandle<()>,
     delivery: tokio::task::JoinHandle<()>,
+    /// The workspaces' store, while this device keeps one: its handler is in
+    /// the same router, and it lives as long as the door does.
+    _workspaces: Option<StoreService>,
 }
 
 impl Drop for PersonalDoor {
@@ -63,7 +67,9 @@ struct Person {
 impl PersonalDoor {
     /// Serve the person's store on `endpoint`, opened for the identity
     /// `identity` this profile acts as: returns the store the broker keeps
-    /// their own records in and the door that carries them.
+    /// their own records in and the door that carries them. `workspaces` is
+    /// the store this device keeps for the workspaces it holds, served on the
+    /// same endpoint and admitted by the same membership, when it keeps one.
     pub(crate) fn serve(
         endpoint: iroh::Endpoint,
         store: (PeerPersonal, ed25519_dalek::SigningKey),
@@ -71,6 +77,7 @@ impl PersonalDoor {
         principal: &str,
         channels: Arc<Mutex<BrokerChannels>>,
         fanout: Arc<FanoutState>,
+        workspaces: Option<StoreService>,
     ) -> (PersonalSync, Self) {
         let sync = PersonalSync::over(store.0, store.1);
         let door = Self::open(
@@ -83,34 +90,43 @@ impl PersonalDoor {
             },
             channels,
             fanout,
+            workspaces,
         );
         (sync, door)
     }
 
     /// Answer `sync`'s link on `endpoint`, keep the store told of the
     /// person's devices and dial the siblings among them, and hand what a
-    /// sibling writes to `channels` and `fanout`, which local apps read.
+    /// sibling writes to `channels` and `fanout`, which local apps read. The
+    /// workspaces this device keeps answer on the same router, from the same
+    /// accept loop, so an endpoint never answers one of its protocols and
+    /// drops another's.
     fn open(
         endpoint: iroh::Endpoint,
         sync: PersonalSync,
         person: Person,
         channels: Arc<Mutex<BrokerChannels>>,
         fanout: Arc<FanoutState>,
+        workspaces: Option<StoreService>,
     ) -> Self {
         let runtime = tilo_rt::app().handle();
         let router = {
             // The router answers on the runtime's own async executor, as the
             // runtime's other long-lived work does.
             let _entered = runtime.enter();
-            iroh::protocol::Router::builder(endpoint.clone())
-                .accept(PERSONAL_ALPN, sync.clone())
-                .spawn()
+            let mut router = iroh::protocol::Router::builder(endpoint.clone())
+                .accept(PERSONAL_ALPN, sync.clone());
+            if let Some(workspaces) = &workspaces {
+                router = router.accept(tilo_store_link::ALPN, workspaces.handler());
+            }
+            router.spawn()
         };
         let principal = person.principal.clone();
         Self {
             _router: router,
             siblings: runtime.spawn(keep_links(endpoint, sync.clone(), person)),
             delivery: runtime.spawn(deliver(sync, principal, channels, fanout)),
+            _workspaces: workspaces,
         }
     }
 }
