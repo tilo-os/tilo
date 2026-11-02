@@ -183,6 +183,7 @@ directory-join = Beitreten
 directory-open = Öffnen
 directory-joining = Wird beigetreten…
 directory-join-named = { $name } beitreten
+directory-joining-named = { $name } wird beigetreten
 directory-open-named = { $name } öffnen
 directory-try-again = Erneut versuchen
 directory-community-tag = von { $host }

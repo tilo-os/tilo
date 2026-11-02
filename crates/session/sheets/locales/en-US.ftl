@@ -184,6 +184,7 @@ directory-join = Join
 directory-open = Open
 directory-joining = Joining…
 directory-join-named = Join { $name }
+directory-joining-named = Joining { $name }
 directory-open-named = Open { $name }
 directory-try-again = Try again
 directory-community-tag = { $host }'s own
