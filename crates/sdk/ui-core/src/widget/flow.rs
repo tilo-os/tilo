@@ -54,6 +54,12 @@ pub(super) struct Flow {
     /// permission change moves what a gated child paints with nothing in
     /// the tree marking it, so a cache from another generation is stale.
     cache_permissions: u64,
+    /// The input generation the cache was painted at
+    /// ([`crate::input_generation`]): a child that reads an event or a
+    /// document revision without keeping a flag of its own paints other
+    /// pixels once input has been handed to the tree, and the cache does
+    /// not know it.
+    cache_input: u64,
     cache_present: bool,
     descendant_caches_released: bool,
     /// The cache holds floating surfaces over the blurred material. A reused
@@ -153,6 +159,7 @@ impl Flow {
             cache_rect: Rect::ZERO,
             cache_theme: None,
             cache_permissions: 0,
+            cache_input: 0,
             cache_present: false,
             descendant_caches_released: false,
             cache_carries_material: false,
@@ -485,10 +492,12 @@ impl Flow {
             .is_none_or(|drawn| !drawn.is(theme));
         let tracked = crate::scene_parts::is_tracked(scene);
         let permissions_moved = self.cache_permissions != presence.paint_permission_generation();
+        let input_moved = self.cache_input != crate::input_generation::generation();
         let needs_rebuild = !self.cache_present
             || size_changed
             || theme_changed
             || permissions_moved
+            || input_moved
             || any_child_dirty
             || self.cache_carries_material
             || self.drawn_shifted
@@ -599,6 +608,7 @@ impl Flow {
                 self.cache_theme = Some(Box::new(DrawnTheme::of(theme)));
             }
             self.cache_permissions = presence.paint_permission_generation();
+            self.cache_input = crate::input_generation::generation();
             self.cache_present = true;
             self.descendant_caches_released = false;
             presence.viewport.set(prev_vp);
@@ -653,6 +663,10 @@ impl Flow {
             || self.disclosing_any
             || !self.ghosts.is_empty()
             || self.extents.len() != self.children.len()
+            // A near view draws only what stands around the viewport: input
+            // handed to the tree since the cache was made may have changed
+            // what the rest paints, so this frame draws whole.
+            || self.cache_input != crate::input_generation::generation()
         {
             return false;
         }

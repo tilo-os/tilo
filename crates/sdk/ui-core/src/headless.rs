@@ -1744,6 +1744,7 @@ impl FrameHarness {
             node_id: self.child_node,
             taffy: &self.taffy,
         };
+        crate::input_generation::note();
         if let Some(history) = &mut self.history {
             // child_node is the History composition, not the app's node.
             // Use its retained mapping without a host frame or focus routing.
@@ -2237,9 +2238,15 @@ impl FrameHarness {
     fn update_root(&mut self) -> bool {
         let (root, state) = (&mut self.root, &self.state);
         let permissions = self.permissions.clone();
-        self.presence.with_permissions(permissions, || {
+        let changed = self.presence.with_permissions(permissions, || {
             crate::presence::frame::lend(&self.presence, || root.update(&state.doc, &state.root))
-        })
+        });
+        if changed {
+            // What the model moved reaches widgets that paint it without a
+            // flag of their own.
+            crate::input_generation::note();
+        }
+        changed
     }
 
     /// The frame's sync: what the widgets took up is written, the document

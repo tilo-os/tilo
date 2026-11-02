@@ -226,6 +226,7 @@ pub mod image_decoders;
 pub mod image_store;
 pub mod ime;
 pub mod input;
+pub mod input_generation;
 pub mod interaction;
 pub mod keycaps;
 pub mod keys;

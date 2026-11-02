@@ -1,7 +1,12 @@
 use super::*;
+use std::cell::Cell;
+use std::rc::Rc;
+
 use crate::launch::ShotFrame;
 use crate::time::{Duration, testing::with_monotonic_time};
 use crate::widget::{Chip, Column, Tooltip};
+use std::collections::HashMap;
+use taffy::{Size, Style};
 use vello::kurbo::Rect;
 
 /// One frame of `widget` at `at`: sync, layout, draw.
@@ -68,5 +73,82 @@ fn a_leaf_changed_by_a_setter_repaints() {
     assert!(
         !with_monotonic_time(t0 + Duration::from_millis(16), || chip.needs_redraw()),
         "and it rests after that frame"
+    );
+}
+
+/// Paints a width it reads from outside itself, and keeps no flag of its
+/// own: what it draws is whatever it was handed last.
+struct Readout {
+    width: Rc<Cell<f32>>,
+    rect: Rect,
+}
+
+impl Widget for Readout {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let style = Style {
+            size: Size::from_lengths(200.0, 40.0),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+    crate::rect_geometry!();
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _text: &mut crate::text_render::TextRenderer,
+        _theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        let width = f64::from(self.width.get());
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            vello::peniko::Color::BLACK,
+            None,
+            &Rect::new(0.0, 0.0, width, 40.0),
+        );
+    }
+    fn name(&self) -> &'static str {
+        "Readout"
+    }
+}
+
+#[test]
+fn input_handed_to_the_tree_repaints_what_the_cache_kept() {
+    let t0 = crate::time::now();
+    let mut frame = ShotFrame::new((320, 120), Theme::dark());
+    let width = Rc::new(Cell::new(40.0f32));
+    let mut column = Column::new().push(Box::new(Readout {
+        width: Rc::clone(&width),
+        rect: Rect::ZERO,
+    }));
+
+    let first = frame_at(&mut frame, &mut column, t0);
+    crate::widget::Widget::mark_drawn(&mut column);
+    let at_rest = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(16));
+    assert!(
+        first.encoding_eq(&at_rest),
+        "a frame that nothing reached replays the drawing the cache kept"
+    );
+
+    width.set(140.0);
+    let unreported = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(32));
+    assert!(
+        at_rest.encoding_eq(&unreported),
+        "what no input carried and no flag reported is what the cache holds"
+    );
+
+    crate::input_generation::note();
+    let handed = frame_at(&mut frame, &mut column, t0 + Duration::from_millis(48));
+    assert!(
+        !at_rest.encoding_eq(&handed),
+        "input reached the tree: a widget that paints it without a flag of \
+         its own paints it again, not the drawing kept from before"
     );
 }

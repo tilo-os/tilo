@@ -129,6 +129,9 @@ impl App {
         synthesized_touch: bool,
     ) -> bool {
         let _entry = self.enter_wake_scope();
+        // What the event changed reaches widgets that paint it without a
+        // flag of their own ([`crate::input_generation`]).
+        crate::input_generation::note();
         self.input.pointer.track_buttons(&event);
         if self
             .input
