@@ -127,6 +127,9 @@ impl PanelHost for FixtureHost {
             feed.update(|state| {
                 let visible = crate::faces::visible_controls(&state.arrangement, state);
                 arrange(&mut state.arrangement, &visible, &effect);
+                if effect == QsEffect::DismissRefusal {
+                    state.refusal = None;
+                }
             });
         }
         self.ran.borrow_mut().push(effect);

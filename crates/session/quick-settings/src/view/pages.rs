@@ -1,7 +1,7 @@
 //! The panel's pages: the notifications kept since they arrived (grouped by
 //! app, with Clear all and its Undo, and why fresh ones are held), one
-//! notification read in full, and one Bluetooth accessory with the devices
-//! it can move to.
+//! notification read in full, and one Bluetooth accessory with where this
+//! device stands with it.
 
 use ui::TextRole;
 use ui::framework::ViewCx;
@@ -185,20 +185,6 @@ fn notification_row(cx: &ViewCx<QuickSettings>, row: &NotificationRow) -> Elemen
     }) {
         item = item.action_binding(Icon::X, t("qs-notification-dismiss"), binding);
     }
-    if let Some(agent) = &row.agent
-        && let Some(binding) = actions.effect(&QsEffect::HandNotificationToAgent {
-            notification: row.id,
-        })
-    {
-        item = item.action_binding(
-            Icon::Bot,
-            t_args(
-                "qs-notification-hand-to",
-                &[("agent", agent.as_str().into())],
-            ),
-            binding,
-        );
-    }
     let item: Element = Box::new(if row.opens {
         actions.bind_effect_invocation(
             item,
@@ -299,8 +285,8 @@ pub(super) fn reader(cx: &ViewCx<QuickSettings>, id: u64, parts: &Parts) -> Elem
     })
 }
 
-/// One accessory: disconnect it here, or move it to another of the
-/// person's devices (one already paired with it).
+/// One accessory: which of the person's devices it is certified with, and
+/// the one thing this panel does to it, disconnect it.
 pub(super) fn accessory(cx: &ViewCx<QuickSettings>, address: &str, parts: &Parts) -> Element {
     let address = address.to_owned();
     cx.switch(&parts.accessory, move |cx, accessory| {
@@ -316,15 +302,7 @@ pub(super) fn accessory(cx: &ViewCx<QuickSettings>, address: &str, parts: &Parts
             .with_no_padding()
             .with_rhythm(Rhythm::Related)
             .with_id("qs-accessory")
-            .push(header(
-                cx,
-                &t_args("qs-bluetooth-move", &[("accessory", name.into())]),
-                &t("qs-back-to-controls"),
-                None,
-            ))
-            .push(Box::new(
-                Text::new(&t("qs-bluetooth-move-note")).with_role(TextRole::Caption),
-            ));
+            .push(header(cx, name, &t("qs-back-to-controls"), None));
         let here = ListRow::new("qs-accessory-here", t("qs-bluetooth-this-device"))
             .icon(Icon::Bluetooth)
             .secondary(t_args(
@@ -351,28 +329,17 @@ pub(super) fn accessory(cx: &ViewCx<QuickSettings>, address: &str, parts: &Parts
             }
             Some(targets) => {
                 for target in targets {
-                    let movable = !target.local && target.online;
-                    let row = ListRow::new(format!("qs-accessory-to-{}", target.id), &target.label)
-                        .icon(Icon::Monitor)
-                        .secondary(t(if target.local {
-                            "qs-bluetooth-this-certified"
-                        } else if target.online {
-                            "qs-bluetooth-move-here"
-                        } else {
-                            "qs-devices-offline"
-                        }))
-                        .with_enabled(movable);
-                    rows.push(Box::new(if movable {
-                        actions.bind_effect_invocation(
-                            row,
-                            &QsEffect::HandOffBluetooth {
-                                address: address.clone(),
-                                device: target.id.clone(),
-                            },
-                        )
-                    } else {
-                        row
-                    }));
+                    rows.push(Box::new(
+                        ListRow::new(format!("qs-accessory-to-{}", target.id), &target.label)
+                            .icon(Icon::Monitor)
+                            .secondary(t(if target.local {
+                                "qs-bluetooth-this-certified"
+                            } else if target.online {
+                                "qs-devices-online"
+                            } else {
+                                "qs-devices-offline"
+                            })),
+                    ));
                 }
             }
         }

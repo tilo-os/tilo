@@ -604,23 +604,49 @@ fn a_notification_nothing_can_open_is_read_in_full_and_back_returns_to_the_list(
 }
 
 #[test]
-fn an_accessory_moves_only_to_a_device_that_is_online_and_not_this_one() {
+fn an_accessory_shows_where_each_device_stands_and_only_disconnect_acts() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("accessory");
-    // Offline, and this one: nothing to move to.
-    let _ = app.harness().click_named("qs-accessory-to-tablet");
-    app.settle();
-    let _ = app.harness().click_named("qs-accessory-to-laptop");
-    app.settle();
-    click(&mut app, "qs-accessory-to-desk");
+    // The other devices are there to be read: this device's standing with
+    // the accessory, and whether each is in reach. None of them takes a
+    // press, because nothing here can pair it elsewhere.
+    for device in ["tablet", "laptop", "desk"] {
+        assert!(has(&mut app, &format!("qs-accessory-to-{device}")));
+        click(&mut app, &format!("qs-accessory-to-{device}"));
+    }
+    assert!(host.ran().is_empty(), "nothing is handed off from here");
+    click(&mut app, "qs-accessory-here");
     assert_eq!(
         host.ran(),
-        [QsEffect::HandOffBluetooth {
+        [QsEffect::DisconnectBluetooth {
             address: "00:1B:66:A1:B2:C3".into(),
-            device: "desk".into(),
         }]
     );
+}
+
+/// A press the device or the session refuses says why over the page it
+/// belongs to, and stays until the person puts it away.
+#[test]
+fn a_refusal_stands_over_the_page_until_the_person_puts_it_away() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("controls");
+    assert!(!has(&mut app, "qs-refusal"), "nothing is refused yet");
+    host.update(|state| state.refusal = Some("the lock did not answer".into()));
+    app.settle();
+    let refusal = target(&mut app, "qs-refusal");
+    let tile = target(&mut app, "qs-tile-wifi");
+    let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
+    assert!(refusal.y1 <= tile.y0, "the reason stands over the page");
+    assert!(
+        refusal.x0 >= card.x0 && refusal.x1 <= card.x1,
+        "the reason stays inside the card: {refusal:?} in {card:?}"
+    );
+    assert!(has(&mut app, "qs-refusal-dismiss"));
+    click(&mut app, "qs-refusal-dismiss");
+    app.settle();
+    assert_eq!(host.ran(), [QsEffect::DismissRefusal]);
+    assert!(!has(&mut app, "qs-refusal"), "put away");
 }
 
 #[test]
