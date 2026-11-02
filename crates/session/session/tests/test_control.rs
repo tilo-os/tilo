@@ -19,7 +19,8 @@
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -198,87 +199,241 @@ fn the_seeded_apps_publish_their_records_to_the_session() {
     }
 }
 
+/// Whether a filesystem is mounted at `at`.
+fn mounted(at: &Path) -> bool {
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .unwrap()
+        .lines()
+        .any(|entry| entry.split(' ').nth(4) == Some(at.to_str().unwrap()))
+}
+
+/// A headless `tilo-session`, started as `dist/dev/shell-run.sh` starts its first pass, in a
+/// runtime directory and a process group of its own.
+struct StartedSession {
+    child: std::process::Child,
+    /// The directory of its sockets and of the mount, kept until the test ends.
+    runtime: tempfile::TempDir,
+    /// The home it reads, kept until the test ends.
+    _home: tempfile::TempDir,
+    control: PathBuf,
+    /// Where the files people choose for apps are mounted.
+    documents: PathBuf,
+}
+
+impl StartedSession {
+    /// The session, up once it printed its test-control socket, the last of what it prints.
+    fn start() -> Self {
+        let runtime = private_home();
+        let home = tempfile::tempdir().unwrap();
+        let control = runtime.path().join("test-control.sock");
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_tilo-session"))
+            .args([
+                "--backend",
+                "headless",
+                "--no-x11",
+                "--session-bus",
+                "none",
+                "--system-bus",
+                "none",
+                "--test-control",
+                control.to_str().unwrap(),
+            ])
+            .env("XDG_RUNTIME_DIR", runtime.path())
+            .env("TILO_IDENTITY_ROOT", home.path().join("identity"))
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path().join(".config"))
+            .env("XDG_DATA_HOME", home.path().join(".local/share"))
+            .env("XDG_STATE_HOME", home.path().join(".local/state"))
+            .env("XDG_CACHE_HOME", home.path().join(".cache"))
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("DISPLAY")
+            .env_remove("TILO_AGENT_DOOR")
+            // A stop of the whole group, as a session is stopped in a terminal or
+            // by a script, reaches it through this group.
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .spawn_locked()
+            .expect("tilo-session starts");
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        while line.trim_end() != format!("TILO_TEST_CONTROL={}", control.display()) {
+            line.clear();
+            assert!(
+                out.read_line(&mut line).unwrap() > 0,
+                "the session ended before it listened: {:?}",
+                child.wait()
+            );
+        }
+        Self {
+            documents: runtime.path().join("tilo").join("documents"),
+            child,
+            runtime,
+            _home: home,
+            control,
+        }
+    }
+
+    /// The session and its mount, when this machine can mount FUSE.
+    fn started() -> Option<Self> {
+        let session = Self::start();
+        if mounted(&session.documents) {
+            return Some(session);
+        }
+        tilo_test_env::capability_unavailable(
+            tilo_test_env::Capability::Fuse,
+            format_args!(
+                "the session mounted nothing at {}",
+                session.documents.display()
+            ),
+        );
+        None
+    }
+
+    /// The throwaway identity, as `tilo-control raw` asks for it.
+    fn mint_identity(&self) {
+        let mut stream = UnixStream::connect(&self.control).expect("the test-control socket");
+        stream
+            .write_all(b"{\"op\":\"provision_test_identity\"}\n")
+            .unwrap();
+        let mut minted = String::new();
+        BufReader::new(stream).read_line(&mut minted).unwrap();
+        let minted: Value = serde_json::from_str(&minted).expect("a JSON answer");
+        assert_eq!(minted["answer"]["throwaway"], true, "{minted}");
+    }
+
+    /// The group the session leads: `kill(2)` reads a negative pid as every process in that
+    /// process group.
+    fn group(&self) -> libc::pid_t {
+        libc::pid_t::try_from(self.child.id())
+            .expect("a pid fits a pid_t")
+            .wrapping_neg()
+    }
+
+    /// Sends `signal` to the session's process group: `kill(2)` reads only the pid and the
+    /// signal number.
+    fn signal_group(&self, signal: libc::c_int) {
+        let group = self.group();
+        // SAFETY: a pid and a signal number are all kill(2) reads.
+        let sent = unsafe { libc::kill(group, signal) };
+        assert_eq!(
+            sent,
+            0,
+            "signal {signal} to the session's process group: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+impl Drop for StartedSession {
+    /// A test that failed before it ended the session still leaves none behind.
+    fn drop(&mut self) {
+        if self.child.try_wait().is_ok_and(|ended| ended.is_none()) {
+            let group = self.group();
+            // SAFETY: a pid and a signal number are all kill(2) reads.
+            let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+            let _ = self.child.wait();
+        }
+    }
+}
+
 /// `tilo-session`, started as `dist/dev/shell-run.sh` starts its first pass: its test-control
 /// socket mints the throwaway identity the next session opens its desk with. Ended by SIGTERM,
 /// it ends as it does on its own: the process exits cleanly, the files people choose for apps,
 /// which it mounted, are unmounted, and its socket is gone.
 #[test]
 fn a_session_ended_by_sigterm_unmounts_what_it_mounted() {
-    let runtime = private_home();
-    let home = tempfile::tempdir().unwrap();
-    let control = runtime.path().join("test-control.sock");
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_tilo-session"))
-        .args([
-            "--backend",
-            "headless",
-            "--no-x11",
-            "--session-bus",
-            "none",
-            "--system-bus",
-            "none",
-            "--test-control",
-            control.to_str().unwrap(),
-        ])
-        .env("XDG_RUNTIME_DIR", runtime.path())
-        .env("TILO_IDENTITY_ROOT", home.path().join("identity"))
-        .env("HOME", home.path())
-        .env("XDG_CONFIG_HOME", home.path().join(".config"))
-        .env("XDG_DATA_HOME", home.path().join(".local/share"))
-        .env("XDG_STATE_HOME", home.path().join(".local/state"))
-        .env("XDG_CACHE_HOME", home.path().join(".cache"))
-        .env_remove("WAYLAND_DISPLAY")
-        .env_remove("DISPLAY")
-        .env_remove("TILO_AGENT_DOOR")
-        .stdout(std::process::Stdio::piped())
-        .spawn_locked()
-        .expect("tilo-session starts");
-    // It is up once it printed its control socket, the last of what it prints.
-    let mut out = BufReader::new(child.stdout.take().unwrap());
-    let mut line = String::new();
-    while line.trim_end() != format!("TILO_TEST_CONTROL={}", control.display()) {
-        line.clear();
-        assert!(
-            out.read_line(&mut line).unwrap() > 0,
-            "the session ended before it listened: {:?}",
-            child.wait()
-        );
-    }
-    let documents = runtime.path().join("tilo").join("documents");
-    let mounted = |at: &Path| {
-        std::fs::read_to_string("/proc/self/mountinfo")
-            .unwrap()
-            .lines()
-            .any(|entry| entry.split(' ').nth(4) == Some(at.to_str().unwrap()))
+    let Some(mut session) = StartedSession::started() else {
+        return;
     };
-    if !mounted(&documents) {
-        tilo_test_env::capability_unavailable(
-            tilo_test_env::Capability::Fuse,
-            format_args!("the session mounted nothing at {}", documents.display()),
-        );
-    }
-
-    // The throwaway identity, as `tilo-control raw` asks for it.
-    let mut stream = UnixStream::connect(&control).expect("the test-control socket");
-    stream
-        .write_all(b"{\"op\":\"provision_test_identity\"}\n")
-        .unwrap();
-    let mut minted = String::new();
-    BufReader::new(stream).read_line(&mut minted).unwrap();
-    let minted: Value = serde_json::from_str(&minted).expect("a JSON answer");
-    assert_eq!(minted["answer"]["throwaway"], true, "{minted}");
-
-    let signalled = std::process::Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status_locked()
-        .expect("kill runs");
-    assert!(signalled.success(), "the session is sent SIGTERM");
-    let status = child.wait().unwrap();
+    session.mint_identity();
+    session.signal_group(libc::SIGTERM);
+    let status = session.child.wait().unwrap();
     assert!(status.success(), "the session ends cleanly: {status:?}");
     assert!(
-        !mounted(&documents),
+        !mounted(&session.documents),
         "the files people choose for apps are unmounted"
     );
-    assert!(!control.exists(), "the test-control socket is removed");
+    assert!(
+        !session.control.exists(),
+        "the test-control socket is removed"
+    );
+}
+
+/// A stop of the session's whole process group signals every member, and a wrapper that was
+/// signalled with the group passes the signal on: the session is asked twice, and the second
+/// must not end it before it has put away what it mounted.
+#[test]
+fn a_session_stopped_with_its_whole_group_ends_cleanly_and_unmounts_what_it_mounted() {
+    let Some(mut session) = StartedSession::started() else {
+        return;
+    };
+    session.mint_identity();
+    session.signal_group(libc::SIGTERM);
+    // SAFETY: a pid and a signal number are all kill(2) reads.
+    let _ = unsafe {
+        libc::kill(
+            libc::pid_t::try_from(session.child.id()).expect("a pid fits a pid_t"),
+            libc::SIGTERM,
+        )
+    };
+    let status = session.child.wait().unwrap();
+    assert!(status.success(), "the session ends cleanly: {status:?}");
+    assert!(
+        !mounted(&session.documents),
+        "the files people choose for apps are unmounted"
+    );
+    assert!(
+        !session.control.exists(),
+        "the test-control socket is removed"
+    );
+}
+
+/// The person pressing interrupt again while the session ends means it: the signal's own action
+/// ends the process then, cleanup or not.
+#[test]
+fn a_second_sigint_ends_the_session_at_once() {
+    let Some(mut session) = StartedSession::started() else {
+        return;
+    };
+    session.mint_identity();
+    // Standard signals do not queue, so one sent before the session has read
+    // the last would arrive as the same one: interrupt it until it is gone.
+    let group = session.group();
+    // SAFETY: a pid and a signal number are all kill(2) reads.
+    while session.child.try_wait().unwrap().is_none() {
+        unsafe { libc::kill(group, libc::SIGINT) };
+    }
+    let status = session.child.wait().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGINT), "{status:?}");
+    tilo_test_env::wait_until("the killed session's mount to be removed", || {
+        !mounted(&session.documents)
+    });
+}
+
+/// A session killed outright leaves nothing of its mount behind: the process that watched it
+/// unmounts, and the next session can mount, and remove, the directory it used.
+#[test]
+fn a_session_killed_outright_leaves_no_mount_behind() {
+    let Some(mut session) = StartedSession::started() else {
+        return;
+    };
+    session.mint_identity();
+    session.signal_group(libc::SIGKILL);
+    let status = session.child.wait().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
+    tilo_test_env::wait_until("the killed session's mount to be removed", || {
+        !mounted(&session.documents)
+    });
+    std::fs::remove_dir_all(session.runtime.path())
+        .expect("the runtime directory the killed session left is removed");
+    // The next session mounts there as any session does.
+    let again = tilo_documents::mount::mount(tilo_documents::Documents::new(), &session.documents)
+        .expect("a session mounts the documents where the killed one had them");
+    drop(again);
+    assert!(
+        !mounted(&session.documents),
+        "the documents are unmounted when their session drops them"
+    );
 }
 
 /// How many pixels of `shot` in `rect` (logical, at scale 1) are as light as text on the

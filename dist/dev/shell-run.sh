@@ -105,7 +105,7 @@ cleanup() {
     # A second signal must not cut the cleanup short and leave the session up.
     trap '' INT TERM HUP
     stop_session
-    rm -rf "$scratch" 2>/dev/null || { sleep 1; rm -rf "$scratch"; } || true
+    rm -rf "$scratch" 2>/dev/null || true
 }
 trap cleanup EXIT
 trap 'exit 130' INT
