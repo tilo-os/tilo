@@ -1521,6 +1521,7 @@ impl Session {
             &options,
             questions.clone(),
             std::sync::Arc::clone(&session_doors),
+            engine.as_ref().map(std::sync::Arc::clone),
         );
         // The control sockets `tilo-control` reaches, when the session was
         // started with one: the development socket and the device admin's,

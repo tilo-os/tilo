@@ -17,7 +17,9 @@
 use std::collections::BTreeMap;
 
 use crate::engine::Engine;
-use tilo_action_policy::{Change, Role, WorkspacePolicy};
+use tilo_action_policy::roles::AgentPreset;
+use tilo_action_policy::{Change, Grant, Role, Subject, WorkspacePolicy};
+use tilo_desktop::workspace_settings as domain;
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{RoomId, UserId, Workspace};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
@@ -162,9 +164,11 @@ impl crate::Shared {
 
 /// Write the people `policy` — the workspace's governance — names into
 /// `workspace`: the part each of them takes there, when each was admitted, the
-/// owner aside, whom the desk's policy names on its own. The grants are the
-/// desk's own list, which the workspace's governance fills through the
-/// changes it accepts. Whether anything changed.
+/// owner aside, whom the desk's policy names on its own, and the agents it
+/// admits, each with the grants governance gave it. The grants a person gives
+/// to a person on a node below the workspace, and the ones a consent or an
+/// invite makes for this session, are the desk's own and stay. Whether
+/// anything changed.
 fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     let owner = policy.owner.as_deref();
     let members: BTreeMap<UserId, Role> = policy
@@ -174,12 +178,90 @@ fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
         .map(|(person, role)| (person.clone(), *role))
         .collect();
     let joined = policy.joined.clone();
-    if workspace.policy.members == members && workspace.policy.joined == joined {
+    let agents = governed_agent_grants(policy);
+    let held = agent_grants(workspace);
+    if workspace.policy.members == members && workspace.policy.joined == joined && held == agents {
         return false;
     }
     workspace.policy.members = members;
     workspace.policy.joined = joined;
+    if held != agents {
+        workspace
+            .policy
+            .grants
+            .retain(|grant| !matches!(grant.subject, Subject::Agent(_)));
+        workspace.policy.grants.extend(agents);
+    }
     true
+}
+
+/// The grants `policy` — a workspace's governance — gives its agents, in a
+/// settled order so two readings of the same policy compare equal.
+fn governed_agent_grants(policy: &WorkspacePolicy) -> Vec<Grant> {
+    let mut grants: Vec<Grant> = policy
+        .grants
+        .iter()
+        .filter(|grant| matches!(grant.subject, Subject::Agent(_)))
+        .cloned()
+        .collect();
+    grants.sort_by(|a, b| a.id.cmp(&b.id));
+    grants
+}
+
+/// The grants the desk `workspace` holds for agents, in the same order.
+fn agent_grants(workspace: &Workspace) -> Vec<Grant> {
+    let mut grants: Vec<Grant> = workspace
+        .policy
+        .grants
+        .iter()
+        .filter(|grant| matches!(grant.subject, Subject::Agent(_)))
+        .cloned()
+        .collect();
+    grants.sort_by(|a, b| a.id.cmp(&b.id));
+    grants
+}
+
+/// Admit `agent` to the workspace `workspace` of `tree` as `actor` with the
+/// Observer preset's grants, through the workspace's governance when
+/// `engine` holds it: the one way an agent becomes a member, whether the
+/// person admitted it on the settings sheet or the agent door admitted it on
+/// its sheet. The desk keeps the change only once the workspace took it; a
+/// refusal leaves `tree` as it was and says why. Whether `tree` changed.
+///
+/// # Errors
+/// The workspace is gone, `actor` does not administer it, or this device
+/// could not write the change into the workspace.
+pub(crate) fn admit_agent(
+    engine: Option<&Engine>,
+    tree: &mut tilo_desktop_model::DesktopTree,
+    workspace: &RoomId,
+    actor: &UserId,
+    agent: &str,
+) -> Result<bool, String> {
+    let now = tilo_clock::unix_now();
+    let tree = &mut *tree;
+    let Some(held) = tree
+        .workspaces
+        .iter_mut()
+        .find(|held| held.room() == *workspace)
+    else {
+        return Err(tilo_sheets::word("agent-door-workspace-gone"));
+    };
+    if held.agent_role_at(agent, now).is_some() {
+        return Ok(false);
+    }
+    let edit = domain::admit_agent(held, actor, agent, AgentPreset::Observer);
+    if edit.is_empty() {
+        return Err(tilo_sheets::words(
+            "agent-door-not-administrator",
+            &[("agent", agent)],
+        ));
+    }
+    if let Some(engine) = engine {
+        let membership = Membership::of(engine, *workspace);
+        membership.write(&membership.changes(held, &edit))?;
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -571,6 +653,119 @@ mod tests {
             role_of(&engine, &person),
             Some(MemberRole::Editor),
             "the workspace has her again"
+        );
+    }
+
+    /// An agent is admitted through the workspace's governance, whichever
+    /// door took it: the settings sheet's and the agent door's are one
+    /// change, so every device has the agent as a member, and this desk's
+    /// grants for agents are the governance's projection, not a roster of
+    /// their own.
+    #[test]
+    fn an_agent_is_admitted_through_the_workspaces_governance() {
+        use tilo_action_policy::{Answer, KindSet, TreePath};
+        let (engine, workspace, person, _state) = workspace_here("ada");
+        let owner = engine
+            .policy(WORKSPACE)
+            .expect("the workspace's people")
+            .owner
+            .expect("the workspace's owner");
+        let now = tilo_clock::unix_now();
+        let mut tree = tilo_desktop_model::DesktopTree {
+            workspaces: vec![workspace.clone()],
+            ..tilo_desktop_model::DesktopTree::default()
+        };
+        // A grant this session's own consent made for one guest: the desk's
+        // own, not part of who the workspace has, and not the projection's
+        // to replace.
+        let consent = Grant::new(
+            "consent-session-guest",
+            Subject::person("guest"),
+            TreePath::workspace(&workspace.policy.workspace),
+            KindSet::READ,
+            Answer::Allow,
+            Subject::person(&owner),
+        );
+        tree.workspaces[0].grant(consent.clone());
+        assert_eq!(
+            tree.workspaces[0].agent_role_at("claude", now),
+            None,
+            "the desk has no agent yet"
+        );
+
+        assert!(
+            admit_agent(
+                Some(&engine),
+                &mut tree,
+                &workspace.room(),
+                &owner,
+                "claude"
+            )
+            .expect("the workspace admits the agent"),
+            "the agent was admitted"
+        );
+        let policy = engine.policy(WORKSPACE).expect("the workspace's people");
+        assert!(
+            policy
+                .grants
+                .iter()
+                .any(|grant| matches!(&grant.subject, Subject::Agent(agent) if agent == "claude")),
+            "the workspace's governance holds the agent's grants, so every device has it"
+        );
+        assert!(
+            project(&mut tree.workspaces[0], &policy),
+            "the desk's grants for agents are the governance's projection"
+        );
+        assert!(
+            tree.workspaces[0].agent_role_at("claude", now).is_some(),
+            "the agent acts in the workspace this desk has"
+        );
+        assert!(
+            tree.workspaces[0]
+                .policy
+                .grants
+                .iter()
+                .any(|grant| grant.id == consent.id),
+            "the grant this session's consent made is the desk's own and stays"
+        );
+        assert!(
+            !admit_agent(
+                Some(&engine),
+                &mut tree,
+                &workspace.room(),
+                &owner,
+                "claude"
+            )
+            .expect("the workspace takes the same admission again"),
+            "a client admitted again changes nothing"
+        );
+
+        // A person who does not administer the workspace admits no agent:
+        // the refusal is the workspace's, and nothing is written anywhere.
+        assert!(
+            admit_agent(
+                Some(&engine),
+                &mut tree,
+                &workspace.room(),
+                &person,
+                "other"
+            )
+            .is_err(),
+            "an editor admits no agent"
+        );
+        assert_eq!(
+            tree.workspaces[0].agent_role_at("other", now),
+            None,
+            "the desk has no agent the workspace refused"
+        );
+        assert!(
+            engine
+                .policy(WORKSPACE)
+                .expect("the workspace's people")
+                .grants
+                .iter()
+                .all(|grant| !matches!(&grant.subject, Subject::Agent(agent) if agent == "other")),
+            "and the workspace has none either"
         );
     }
 

@@ -57,14 +57,12 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tilo_action_broker::collab_app_broker::AppBrokerState;
-use tilo_action_policy::roles::AgentPreset;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     ConfirmedInvocation, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_clock::unix_now;
 use tilo_compositor::ReadableWatch;
-use tilo_desktop::workspace_settings as domain;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_runtime::session_door::{Consent, Hello, SESSION_PROVIDER};
@@ -250,6 +248,10 @@ pub(crate) struct Loop {
     /// What the connections ask of the session's own doors, answered on the
     /// loop's pass.
     doors: Arc<SessionDoors>,
+    /// The workspace governance this device holds: where an agent's admission
+    /// is written, so it is a member everywhere the workspace is, not only on
+    /// this desk.
+    engine: Option<Arc<crate::engine::Engine>>,
 }
 
 impl Mounted {
@@ -272,6 +274,7 @@ pub(crate) fn mount_named(
     options: &crate::Options,
     questions: Option<Questions>,
     doors: Arc<SessionDoors>,
+    engine: Option<Arc<crate::engine::Engine>>,
 ) -> Option<Mounted> {
     let path = options.agent_door.as_deref()?;
     match mount(
@@ -282,6 +285,7 @@ pub(crate) fn mount_named(
         options.state.as_deref(),
         &options.admit_repl,
         doors,
+        engine,
     ) {
         Ok(mounted) => Some(mounted),
         Err(error) => {
@@ -306,6 +310,7 @@ pub(crate) fn mount(
     state: Option<&Path>,
     admits: &[PathBuf],
     doors: Arc<SessionDoors>,
+    engine: Option<Arc<crate::engine::Engine>>,
 ) -> io::Result<Mounted> {
     let listener = bind_private(path)?;
     listener.set_nonblocking(true)?;
@@ -355,6 +360,7 @@ pub(crate) fn mount(
         admits,
         person_session: std::collections::HashSet::new(),
         doors,
+        engine,
     };
     Ok(Mounted { door })
 }
@@ -618,7 +624,8 @@ impl Loop {
     }
 
     /// Make `agent` a member of the workspace `workspace` with the Observer
-    /// preset's grants, unless it already is one.
+    /// preset's grants, through the workspace's governance, unless it already
+    /// is one.
     ///
     /// # Errors
     /// The workspace is gone, or the person does not administer it.
@@ -629,21 +636,19 @@ impl Loop {
         agent: &str,
         person: &str,
     ) -> Result<(), String> {
-        let now = unix_now();
         let mut tree = handle.read(Clone::clone);
-        let Some(workspace) = tree
+        let Some(room) = tree
             .workspaces
-            .iter_mut()
+            .iter()
             .find(|held| held.room().to_string() == workspace)
+            .map(tilo_desktop_model::Workspace::room)
         else {
             return Err(word("agent-door-workspace-gone"));
         };
-        if workspace.agent_role_at(agent, now).is_some() {
-            return Ok(());
-        }
         let actor = person.to_owned();
-        if domain::admit_agent(workspace, &actor, agent, AgentPreset::Observer).is_empty() {
-            return Err(words("agent-door-not-administrator", &[("agent", agent)]));
+        if !crate::membership::admit_agent(self.engine.as_deref(), &mut tree, &room, &actor, agent)?
+        {
+            return Ok(());
         }
         handle.replace_tree(tree.clone());
         if let Some(desk) = &self.desk {
