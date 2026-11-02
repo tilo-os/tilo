@@ -4,7 +4,8 @@
 //! while its seat's presentation says so. The seat is how the session and
 //! the services behind it talk to the sheet: what it shows in, what the
 //! person chose out. Its actions are published through its door while it
-//! is up.
+//! is up. Which display each sheet covers is placed here too, from the one
+//! the person is working on.
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
@@ -14,6 +15,8 @@ use tilo_surface_host::{AppHost, Placement};
 use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
 use ui::host_operation::ResourceOperationStart;
 use ui::vello::kurbo::Rect;
+
+use crate::Session;
 
 /// A display's rectangle, in logical pixels: the display a sheet covers.
 pub(crate) type Place = (i32, i32, u32, u32);
@@ -301,6 +304,76 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
         self.outputs = outputs.to_vec();
         self.follow_place();
+    }
+}
+
+impl Session {
+    /// Where every sheet goes: the display the person is working on, so a
+    /// question appears in front of what it is about and the power menu
+    /// where they are looking. `None` while the desk knows no such display
+    /// (one display needs no telling apart), which leaves a sheet on the
+    /// first display there is.
+    fn sheet_place(&self) -> Option<Place> {
+        let display = self.shared.handle.focused_display()?;
+        let monitor = self
+            .shared
+            .handle
+            .read(|tree| tree.outputs.monitor_of(display).map(str::to_owned))?;
+        let (x, y, w, h) = self
+            .compositor
+            .outputs()
+            .into_iter()
+            .filter(|output| output.enabled)
+            .find(|output| output.monitor == monitor)
+            .and_then(|output| output.rect)?;
+        Some((
+            x,
+            y,
+            u32::try_from(w.max(1)).unwrap_or(1),
+            u32::try_from(h.max(1)).unwrap_or(1),
+        ))
+    }
+
+    /// Tell every sheet which display it covers: the one the person is
+    /// working on, whenever the desk names another.
+    pub(crate) fn place_sheets(&self) {
+        let place = self.sheet_place();
+        for presentation in self.sheet_presentations() {
+            presentation.place_at(place);
+        }
+    }
+
+    /// Every mounted sheet's presentation, in the order it draws.
+    fn sheet_presentations(&self) -> impl Iterator<Item = &tilo_sheets::Presentation> {
+        let shared = &self.shared;
+        [
+            shared.power.as_ref().map(tilo_sheets::Seat::presentation),
+            shared
+                .workspace_settings
+                .as_ref()
+                .map(tilo_sheets::Seat::presentation),
+            shared
+                .directory
+                .as_ref()
+                .map(tilo_sheets::Seat::presentation),
+            shared.portal.as_ref().map(tilo_sheets::Seat::presentation),
+            shared
+                .file_picker
+                .as_ref()
+                .map(tilo_sheets::Seat::presentation),
+            shared.shortcut_guide.presentation(),
+            shared
+                .display_confirm
+                .as_ref()
+                .map(tilo_sheets::Seat::presentation),
+            self.display_sheet.presentation(),
+            self.capture_studio
+                .as_ref()
+                .map(crate::capture_studio::CaptureStudio::presentation),
+            shared.dictation.presentation(),
+        ]
+        .into_iter()
+        .flatten()
     }
 }
 

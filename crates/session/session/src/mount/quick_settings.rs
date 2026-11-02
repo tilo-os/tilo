@@ -5,7 +5,9 @@
 //! centre, a device's page in Settings — the device host queues as
 //! [`SessionRequest`]s, and this answers them. A request no section here
 //! answers goes on to `mount`'s own modules, and one nothing answers is
-//! logged rather than dropped without trace.
+//! logged rather than dropped without trace. What the panel shows of the
+//! clipboard and the notification centre is fed here from what their
+//! services publish, when it changed.
 
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
@@ -14,6 +16,7 @@ use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_quick_settings::QsEffect;
 use tilo_quick_settings::device::{DeviceHost, SessionRequest};
 
+use crate::controls::CLIPBOARD_RESOURCE;
 use crate::{SESSION_RESOURCE, Shared, notifications};
 
 /// The settings app, which quick settings opens.
@@ -152,8 +155,8 @@ pub(crate) fn answer(shared: &Shared) {
             }
         }
     }
-    shared.feed_notifications();
-    shared.feed_clipboard();
+    feed_notifications(shared);
+    feed_clipboard(shared);
 }
 
 /// Carry out what the panel asked of a notification kept in the centre: the
@@ -199,4 +202,62 @@ fn invoke(shared: &Shared, resource: &str, action: &str, arguments: &Map<String,
     if let Err(error) = shared.doors.invoke(&address, arguments) {
         tracing::debug!(%error, %action, "the panel's press did not reach the session");
     }
+}
+
+/// Feed the panel's Clipboard section when it changed: every copy the
+/// person can paste again, newest first, as the clipboard service
+/// publishes them.
+pub(crate) fn feed_clipboard(shared: &Shared) {
+    let Some(device) = &shared.device else {
+        return;
+    };
+    let Some(state) = shared.services.borrow().read(CLIPBOARD_RESOURCE) else {
+        return;
+    };
+    let copies =
+        match serde_json::from_value::<Vec<tilo_quick_settings::hosted::ClipboardCopy>>(state) {
+            Ok(copies) => copies,
+            Err(error) => {
+                tracing::warn!(%error, "the clipboard reading did not parse");
+                return;
+            }
+        };
+    let view = tilo_quick_settings::hosted::clipboard_view(&copies, ui::time::unix_now_ms());
+    let mut fed = shared.clipboard_view.borrow_mut();
+    if fed.as_ref() == Some(&view) {
+        return;
+    }
+    *fed = Some(view.clone());
+    device.update(|state| state.clipboard = view);
+}
+
+/// Feed the panel's notification centre when it changed: the retained
+/// notifications, why fresh banners are held and whether a Clear all can
+/// be undone, as the centre's service publishes them.
+fn feed_notifications(shared: &Shared) {
+    let Some(device) = &shared.device else {
+        return;
+    };
+    let Some(reading) = shared.services.borrow().read(notifications::RESOURCE) else {
+        return;
+    };
+    let centre =
+        match serde_json::from_value::<tilo_quick_settings::hosted::NotificationCentre>(reading) {
+            Ok(centre) => centre,
+            Err(error) => {
+                tracing::warn!(%error, "the notification centre's reading did not parse");
+                return;
+            }
+        };
+    let mut fed = shared.notice_fed.borrow_mut();
+    if fed.as_ref() == Some(&centre) {
+        return;
+    }
+    let view = centre.view(ui::time::unix_now_ms());
+    let count = centre.count;
+    *fed = Some(centre);
+    device.update(|state| {
+        state.notifications = view;
+        state.notification_count = count;
+    });
 }

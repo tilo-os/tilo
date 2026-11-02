@@ -10,7 +10,7 @@
 //! an ordinary app hosted on a layer of its own: the notification banners,
 //! quick settings, and setup over everything while a person first uses the
 //! device. What the chrome asks of its host comes back as [`DesktopAsk`]s,
-//! carried out here.
+//! carried out by the ask loop in `asks`.
 //!
 //! Everything a person can do here is a published action: the desk's and
 //! the chrome's, and each surface app's through its door
@@ -32,6 +32,7 @@ pub mod agent_door;
 mod app_icons;
 mod app_sheets;
 pub mod arrangement;
+mod asks;
 mod automation;
 mod bars;
 mod call_devices;
@@ -124,10 +125,7 @@ use std::time::{Duration, Instant};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
 use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE};
-use tilo_desktop::desktop_host::{
-    DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
-};
+use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop::osd::{Osd, OsdKind};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_surface::DesktopHandle;
@@ -447,156 +445,6 @@ impl Shared {
         }
     }
 
-    /// Carry out what the desktop asked since the last frame.
-    fn follow_asks(&self) {
-        // A press on one of the person's devices is one of the session's own
-        // verbs: the queue it lands in is carried out here, with the asks.
-        self.carry_out_presses();
-        let asks = std::mem::take(&mut *self.asks.borrow_mut());
-        for ask in asks {
-            match ask {
-                DesktopAsk::Intent(ChromeIntent::ToggleQuickSettings) => {
-                    // The press that closed it is still being delivered: the
-                    // same press does not open it again.
-                    if self.quick_settings && !self.overlays.dismissed_recently(Slot::QuickSettings)
-                    {
-                        if self.overlays.is_open(Slot::QuickSettings) {
-                            self.overlays.close(Slot::QuickSettings);
-                        } else {
-                            self.overlays.open(Slot::QuickSettings, None);
-                        }
-                    }
-                }
-                DesktopAsk::Intent(ChromeIntent::ShowQuickSettings) => self.show_quick_settings(),
-                // The bar's faces, the launcher's Happening now header and a
-                // press on someone in a banner all open who is here.
-                DesktopAsk::Intent(ChromeIntent::ToggleCollaborators) => {
-                    self.people.borrow().toggle();
-                }
-                DesktopAsk::Intent(ChromeIntent::ShowPerson(person)) => {
-                    self.people.borrow().show_person(&person);
-                }
-                // The floating clock: what the person pressed there is
-                // Clocks' own to carry out, or the bar's to put away.
-                DesktopAsk::Intent(ChromeIntent::ClockCommand {
-                    command,
-                    activity_id,
-                }) => self.clock.press(&command, activity_id.as_deref()),
-                DesktopAsk::Intent(ChromeIntent::HideClock) => self.clock.hide(),
-                // A click on an application's tray icon is the
-                // application's own to answer.
-                DesktopAsk::Intent(ChromeIntent::AppTray { key, request }) => {
-                    self.tray_request(&key, request);
-                }
-                DesktopAsk::Launchpad(action) => self.launchpad(action),
-                DesktopAsk::Shortcut(action) => self.shortcut(action),
-                DesktopAsk::HostAction(action) => self.host_action(&action),
-                DesktopAsk::Music(action) => self.music(action),
-                DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
-                other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
-            }
-        }
-        // What the person chose where only a host performs it: search and a
-        // banner hand their host action back here, as the ask on the
-        // person's own avatar does.
-        for choice in self.handle.take_host_choices() {
-            self.host_action(&choice);
-        }
-        mount::quick_settings::answer(self);
-        self.follow_sheets();
-        let choices = self.handle.take_search_choices();
-        if choices.is_empty() {
-            return;
-        }
-        let workspace = self.handle.read(|tree| {
-            tree.active_workspace()
-                .map(|held| held.room().to_string())
-                .unwrap_or_default()
-        });
-        for choice in choices {
-            self.search.perform(&workspace, choice, &mut |own| {
-                self.doors.invoke(&own.address, &own.arguments).map(drop)
-            });
-        }
-        // What the session's own actions asked of it.
-        self.follow_asks();
-    }
-
-    /// Hand a click on the tray icon at `key` to the application that owns
-    /// it, as the click reached the bar. An item that went away between the
-    /// click and this ask, or a request the application refuses, is said so
-    /// in the log rather than passed over in silence: the person saw their
-    /// click do nothing and this is why.
-    fn tray_request(&self, key: &str, request: tilo_desktop::chrome::AppTrayRequest) {
-        use tilo_desktop::chrome::AppTrayRequest;
-        let Some(tray) = &self.tray else {
-            tracing::warn!(key, "no tray is served: the click reaches no application");
-            return;
-        };
-        let request = match request {
-            AppTrayRequest::Activate { x, y } => tilo_tray_host::TrayRequest::Activate { x, y },
-            AppTrayRequest::SecondaryActivate { x, y } => {
-                tilo_tray_host::TrayRequest::SecondaryActivate { x, y }
-            }
-            AppTrayRequest::ContextMenu { x, y } => {
-                tilo_tray_host::TrayRequest::ContextMenu { x, y }
-            }
-        };
-        let named = key.to_owned();
-        let refused = tray.request_or_else(key, request, move |error| {
-            tracing::warn!(key = %named, %error, "a tray click did not reach its application");
-        });
-        if let Err(error) = refused {
-            tracing::warn!(key, %error, "a tray click did not reach its application");
-        }
-    }
-
-    /// Carry out the host action `id` the person chose: what only the
-    /// session can do about workspaces, and, for the offers that are not
-    /// about workspaces, what answering a question about the person
-    /// themselves does ([`identity::answered`]).
-    fn host_action(&self, id: &str) {
-        match id {
-            NEW_WORKSPACE => self.new_workspace(),
-            WORKSPACE_SETTINGS => self.open_workspace_settings(),
-            JOIN_WORKSPACE => workspaces::open_directory(
-                self.directory.as_ref(),
-                &self.handle,
-                &self.directory_store,
-            ),
-            LEAVE_WORKSPACE => self.leave_workspace(),
-            choice => identity::answered(choice),
-        }
-    }
-
-    /// Feed the panel's Clipboard section when it changed: every copy the
-    /// person can paste again, newest first, as the clipboard service
-    /// publishes them.
-    fn feed_clipboard(&self) {
-        let Some(device) = &self.device else {
-            return;
-        };
-        let Some(state) = self.services.borrow().read(CLIPBOARD_RESOURCE) else {
-            return;
-        };
-        let copies = match serde_json::from_value::<Vec<tilo_quick_settings::hosted::ClipboardCopy>>(
-            state,
-        ) {
-            Ok(copies) => copies,
-            Err(error) => {
-                tracing::warn!(%error, "the clipboard reading did not parse");
-                return;
-            }
-        };
-        let view = tilo_quick_settings::hosted::clipboard_view(&copies, ui::time::unix_now_ms());
-        let mut fed = self.clipboard_view.borrow_mut();
-        if fed.as_ref() == Some(&view) {
-            return;
-        }
-        *fed = Some(view.clone());
-        device.update(|state| state.clipboard = view);
-    }
-
     /// The workspace in front, as its id: where a chosen notification's app
     /// opens.
     fn active_workspace_id(&self) -> String {
@@ -605,98 +453,6 @@ impl Shared {
                 .map(|held| held.room().to_string())
                 .unwrap_or_default()
         })
-    }
-
-    /// Feed the panel's notification centre when it changed: the retained
-    /// notifications, why fresh banners are held and whether a Clear all can
-    /// be undone, as the centre's service publishes them.
-    fn feed_notifications(&self) {
-        let Some(device) = &self.device else {
-            return;
-        };
-        let Some(reading) = self.services.borrow().read(notifications::RESOURCE) else {
-            return;
-        };
-        let centre = match serde_json::from_value::<tilo_quick_settings::hosted::NotificationCentre>(
-            reading,
-        ) {
-            Ok(centre) => centre,
-            Err(error) => {
-                tracing::warn!(%error, "the notification centre's reading did not parse");
-                return;
-            }
-        };
-        let mut fed = self.notice_fed.borrow_mut();
-        if fed.as_ref() == Some(&centre) {
-            return;
-        }
-        let view = centre.view(ui::time::unix_now_ms());
-        let count = centre.count;
-        *fed = Some(centre);
-        device.update(|state| {
-            state.notifications = view;
-            state.notification_count = count;
-        });
-    }
-
-    /// Show workspace settings for the workspace in front.
-    fn open_workspace_settings(&self) {
-        workspace_settings::open(
-            self.workspace_settings.as_ref(),
-            &self.workspace_settings_feed(),
-        );
-    }
-
-    /// What workspace settings feeds its panes from.
-    fn workspace_settings_feed(&self) -> workspace_settings::Feeding<'_> {
-        workspace_settings::Feeding::new(
-            &self.handle,
-            &self.person,
-            self.app_lists(),
-            &self.ws_settings_fed,
-            &self.workspace_emoji,
-            self.file_picker.as_ref(),
-            self.personal.as_ref(),
-            self.engine.as_deref(),
-        )
-    }
-
-    /// This machine's applications, as the session's own lists read them.
-    fn app_lists(&self) -> std::sync::Arc<AppLists> {
-        self.search.app_lists()
-    }
-
-    /// Make a new workspace through the desk's own published action, so the
-    /// rules and the naming are the desk's.
-    fn new_workspace(&self) {
-        self.ask_and_report("new-workspace", &serde_json::Map::new());
-    }
-
-    /// Leave the workspace the person is in through the desk's own published
-    /// action, which takes it off this device and says it went.
-    fn leave_workspace(&self) {
-        self.ask_and_report("leave-workspace", &serde_json::Map::new());
-    }
-
-    /// Carry out the desk's action `action` as the person's ask, with `args`
-    /// naming what the action works on.
-    fn ask_of_desk(
-        &self,
-        action: &str,
-        args: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), String> {
-        let address = ActionAddress::new(CHROME_RESOURCE, action);
-        self.doors
-            .invoke(&address, args)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-
-    /// Ask the desk for `action`, and say so when it refuses.
-    fn ask_and_report(&self, action: &str, args: &serde_json::Map<String, serde_json::Value>) {
-        if let Err(error) = self.ask_of_desk(action, args) {
-            self.handle.acknowledge(error);
-        }
     }
 
     /// Keep the person's arrangement as it stands: its own file, so the next
@@ -845,64 +601,6 @@ impl Shared {
         self.asker.follow();
         self.shortcut_guide.follow();
         self.app_sheets.follow();
-    }
-
-    fn show_quick_settings(&self) {
-        if self.quick_settings {
-            self.overlays.open(Slot::QuickSettings, None);
-        }
-    }
-
-    /// A desktop shortcut the chrome left to its host.
-    fn shortcut(&self, action: ShortcutAction) {
-        let mut invocations = self.invocations.borrow_mut();
-        match action {
-            ShortcutAction::QuickSettings => {
-                if self.quick_settings {
-                    if self.overlays.is_open(Slot::QuickSettings) {
-                        self.overlays.close(Slot::QuickSettings);
-                    } else {
-                        self.overlays.open(Slot::QuickSettings, None);
-                    }
-                }
-            }
-            ShortcutAction::Notifications => {
-                self.show_quick_settings();
-                invocations.push(Invocation::new(QUICK_SETTINGS, "show-notifications"));
-            }
-            ShortcutAction::ClipboardHistory => {
-                self.show_quick_settings();
-                invocations.push(Invocation::new(QUICK_SETTINGS, "paste"));
-            }
-            ShortcutAction::Search => {
-                invocations.push(Invocation::new(DESK_RESOURCE, "search"));
-            }
-            ShortcutAction::TabMenu => {
-                invocations.push(Invocation::new(mount::shell::WINDOW_MENU, "open"));
-            }
-            ShortcutAction::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
-            ShortcutAction::ToggleMagnifier => self
-                .commands
-                .borrow_mut()
-                .push(SessionCommand::Magnifier(Magnify::Toggle)),
-            ShortcutAction::MagnifierZoomIn => self
-                .commands
-                .borrow_mut()
-                .push(SessionCommand::Magnifier(Magnify::ZoomIn)),
-            ShortcutAction::MagnifierZoomOut => self
-                .commands
-                .borrow_mut()
-                .push(SessionCommand::Magnifier(Magnify::ZoomOut)),
-            ShortcutAction::NextInputSource => self
-                .commands
-                .borrow_mut()
-                .push(SessionCommand::NextInputSource),
-            ShortcutAction::DictationToggle
-            | ShortcutAction::DictationFinish
-            | ShortcutAction::DictationCancel => self.dictation.shortcut(action),
-            ShortcutAction::ShortcutHelp => self.shortcut_guide.toggle(),
-            other => tracing::debug!(?other, "shortcut the session has no part in yet"),
-        }
     }
 }
 
@@ -2454,7 +2152,7 @@ impl Session {
             self.displays.awaiting_confirmation().is_some(),
             &self.shared.invocations,
         );
-        self.place_sheets(self.sheet_place());
+        self.place_sheets();
         // Each round can ask for another (a key's shortcut the chrome
         // leaves to the session); a few rounds settle any chain.
         for _ in 0..4 {
@@ -2509,7 +2207,7 @@ impl Session {
         if let Some(fabric) = &self.shared.fabric {
             let media_enabled = fabric.require_media().is_ok();
             if self.shared.clipboard.sync_fabric(fabric.as_ref()) {
-                self.shared.feed_clipboard();
+                mount::quick_settings::feed_clipboard(&self.shared);
             }
             // What the person's devices sent this one, before this pass's
             // pumps: a route they asked for starts on the same pass it was
@@ -2609,73 +2307,6 @@ impl Session {
     #[must_use]
     pub fn take_finished_shortcut_runs(&self) -> Vec<FinishedShortcutRun> {
         self.automation.take_finished()
-    }
-
-    /// Where every sheet goes: the display the person is working on, so a
-    /// question appears in front of what it is about and the power menu
-    /// where they are looking. `None` while the desk knows no such display
-    /// (one display needs no telling apart), which leaves a sheet on the
-    /// first display there is.
-    fn sheet_place(&self) -> Option<sheets::Place> {
-        let display = self.shared.handle.focused_display()?;
-        let monitor = self
-            .shared
-            .handle
-            .read(|tree| tree.outputs.monitor_of(display).map(str::to_owned))?;
-        let (x, y, w, h) = self
-            .compositor
-            .outputs()
-            .into_iter()
-            .filter(|output| output.enabled)
-            .find(|output| output.monitor == monitor)
-            .and_then(|output| output.rect)?;
-        Some((
-            x,
-            y,
-            u32::try_from(w.max(1)).unwrap_or(1),
-            u32::try_from(h.max(1)).unwrap_or(1),
-        ))
-    }
-
-    /// Tell every sheet which display it covers: the one the person is
-    /// working on, whenever the desk names another.
-    fn place_sheets(&self, place: Option<sheets::Place>) {
-        for presentation in self.sheet_presentations() {
-            presentation.place_at(place);
-        }
-    }
-
-    /// Every mounted sheet's presentation, in the order it draws.
-    fn sheet_presentations(&self) -> impl Iterator<Item = &tilo_sheets::Presentation> {
-        let shared = &self.shared;
-        [
-            shared.power.as_ref().map(tilo_sheets::Seat::presentation),
-            shared
-                .workspace_settings
-                .as_ref()
-                .map(tilo_sheets::Seat::presentation),
-            shared
-                .directory
-                .as_ref()
-                .map(tilo_sheets::Seat::presentation),
-            shared.portal.as_ref().map(tilo_sheets::Seat::presentation),
-            shared
-                .file_picker
-                .as_ref()
-                .map(tilo_sheets::Seat::presentation),
-            shared.shortcut_guide.presentation(),
-            shared
-                .display_confirm
-                .as_ref()
-                .map(tilo_sheets::Seat::presentation),
-            self.display_sheet.presentation(),
-            self.capture_studio
-                .as_ref()
-                .map(capture_studio::CaptureStudio::presentation),
-            shared.dictation.presentation(),
-        ]
-        .into_iter()
-        .flatten()
     }
 
     /// Tell the portal what it asks of the session about its apps: which
