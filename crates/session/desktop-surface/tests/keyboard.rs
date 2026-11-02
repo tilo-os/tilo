@@ -438,8 +438,6 @@ impl tilo_desktop_search::Source for Plan {
             facts: Vec::new(),
             score: ui::search::system::MAX_PROVIDER_SCORE,
             icon: None,
-            row: None,
-            preview: None,
             target: tilo_desktop_search::Target::Window { tab: 0, app: None },
         }]
     }
