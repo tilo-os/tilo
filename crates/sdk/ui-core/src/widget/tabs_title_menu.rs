@@ -28,7 +28,7 @@ impl TabBar {
     /// Where what stands in the tabs' row `row` ends: before the window's
     /// controls, and before the menu button of slots that are a menu alone.
     pub(super) fn tab_row_limit(&self, row: Rect) -> f64 {
-        let limit = self.controls.content_limit(row);
+        let limit = self.trailing_limit(row);
         if self.menu_only() {
             limit - CONTROL_PX - CONTROL_GAP
         } else {
@@ -42,7 +42,7 @@ impl TabBar {
         if !self.menu_only() {
             return None;
         }
-        let x1 = self.controls.content_limit(tab_row);
+        let x1 = self.trailing_limit(tab_row);
         let x0 = (x1 - CONTROL_PX).max(tab_row.x0);
         Some(Rect::new(x0, tab_row.y0, x1.max(x0), tab_row.y1))
     }

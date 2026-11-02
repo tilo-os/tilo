@@ -84,21 +84,30 @@ impl TabBar {
         self.draw_dev_build_chip(scene, transform, tr, theme);
         self.draw_shared_chip(scene, transform, tr, theme, presence);
         if self.window_controls {
+            // The window's own controls: one pill, and the app's History
+            // toggle standing on the window's ground before it.
+            let now = crate::motion::frame_now();
+            let motion = self.motion;
+            for (control, _) in self.controls.iter() {
+                let on =
+                    self.hover_control == Some(control) || self.pressed_control == Some(control);
+                self.control_lifts[control.index()].set(on, motion, now);
+            }
             self.controls.paint(
                 scene,
                 transform,
-                tr,
                 theme,
                 crate::widget::window_controls::ControlsState {
                     hovered: self.hover_control,
                     pressed: self.pressed_control,
                     maximized: self.maximized,
-                    history_open: self
-                        .history
-                        .get(&self.active_id)
-                        .is_some_and(|control| control.is_open()),
+                    lifts: [
+                        self.control_lifts[0].level(now),
+                        self.control_lifts[1].level(now),
+                    ],
                 },
             );
+            self.draw_history_action(scene, transform, tr, theme);
         }
         if self.window_controls {
             // A frame of a tab switch or of the 1↔2 tabs motion moves the
@@ -127,6 +136,38 @@ impl TabBar {
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform, theme);
         self.draw_drag_ghost(scene, transform, tr, theme, presence);
+    }
+
+    /// The window's History toggle: the app's action, so it wears the app's
+    /// face on the window's ground — the pill beside it is the window's.
+    fn draw_history_action(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.history_action.area() <= 0.0 {
+            return;
+        }
+        let open = self
+            .history
+            .get(&self.active_id)
+            .is_some_and(|control| control.is_open());
+        crate::widget::window_controls::paint_icon_button(
+            scene,
+            transform,
+            tr,
+            theme,
+            (self.history_action, icons::Icon::History),
+            crate::widget::window_controls::ButtonFace {
+                hovered: self.history_action_hover,
+                pressed: self.history_action_pressed,
+                on: open,
+                enabled: true,
+                destructive: false,
+            },
+        );
     }
 
     /// The bar's own state changed: what it draws may have.

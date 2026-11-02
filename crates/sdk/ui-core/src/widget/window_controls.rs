@@ -1,13 +1,22 @@
-//! The window's own controls at the trailing end of its bar: History (when
-//! the window has it), maximize/restore and close.
+//! The window's own controls at the trailing end of its bar: maximize or
+//! restore, and close.
 //!
 //! They belong to the window, not to a tab: they stand in the same place
 //! whether the window shows one tab or several, and act on the active tab.
-//! Each is an icon button with no label; its accessible name and tooltip say
-//! what it does.
+//! They are the one thing in the bar that is not the app's — the app's
+//! actions (its search, its History, the slots it publishes) stand on the
+//! window's ground and look like the app; these stand in a pill of the
+//! floating material over it, so the bar says which controls belong to the
+//! window and which to what the window shows.
+//!
+//! A Tilo window has no minimized state — it is a tab in a group, and its
+//! group is what a person puts away — so the pill offers no minimize. A
+//! foreign native window that carries a minimize keeps it in its own
+//! header ([`crate::host_chrome`]).
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::Fill;
 
 use crate::icons;
 use crate::text_render::TextRenderer;
@@ -15,96 +24,147 @@ use crate::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowControl {
-    History,
     Maximize,
     Close,
 }
 
 /// Side of each control's square: a bar control.
 pub const CONTROL_PX: f64 = crate::tokens::Metrics::BASE.bar_control_height as f64;
-/// Between two neighbouring controls.
+/// The pill's own padding: between its edge and the control faces, and
+/// between two faces. It is also how far a hover ring stands off the
+/// pill's edge, so the ring stays concentric with the capsule it sits in.
+pub const PILL_PAD: f64 = crate::tokens::Spacing::BASE.s1 as f64;
+/// Between two of the bar's other controls: the app's slots
+/// ([`crate::window_toolbar`]), the new-tab button, and the room the
+/// window keeps for the app's search control.
 pub const CONTROL_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
-/// Between the last control and the window's trailing edge.
+/// Between the pill and the window's trailing edge.
 pub const EDGE_INSET: f64 = crate::tokens::Spacing::BASE.s2 as f64;
-/// Between the controls and whatever stands before them in the row: the
-/// window's controls are a group of their own, apart from the app's by
-/// the gap between groups, never by a drawn line.
-pub const LEAD_GAP: f64 = crate::tokens::Spacing::BASE.rhythm.group as f64;
+/// Between the pill and whatever stands before it in the row: the window's
+/// controls are a section of their own, apart from the app's by the gap
+/// between sections and by the glass the app's ground has no part of, never
+/// by a drawn line. One step below the gap between groups, so the app's
+/// content keeps the room it names its place with in a narrow window.
+pub const LEAD_GAP: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
+/// Between the app's own slots and the History toggle after them: the gap
+/// two of the app's controls keep, so History reads as one more of the
+/// app's actions rather than the first of the window's.
+pub const HISTORY_GAP: f64 = CONTROL_GAP;
+/// The box the maximize/restore glyph is drawn in: a small icon.
+const ACTION_GLYPH_PX: f64 = crate::tokens::Metrics::BASE.icon_sm as f64;
+/// The box the close glyph is drawn in. Lucide's × spans the middle 12 of
+/// its 24 units while restore spans 18, so drawn in the same box the ×
+/// would read lighter than the glyph beside it.
+const CLOSE_GLYPH_PX: f64 = ACTION_GLYPH_PX * 1.5;
+/// How strong the hover ring over the pill's ground is: white over a dark
+/// pill, black over a light one ([`crate::tokens::Colors::hairline_on`]).
+const HOVER_TINT_ALPHA: u8 = 64;
+/// Close is the control that ends the window, so its ring is the danger
+/// fill and its glyph white — the same pair the tabs' own × wears.
+const CLOSE_RING_ALPHA: f32 = 0.8;
 
-/// Where each control sits; `Rect::ZERO` for one the window doesn't offer.
+/// Where each control sits, and the pill behind them; `Rect::ZERO` for one
+/// the window doesn't offer.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WindowControls {
-    pub history: Rect,
+    /// The glass pill around every control: the window's own, not a
+    /// control's, so it never changes with hover, press or focus.
+    pub pill: Rect,
     pub maximize: Rect,
     pub close: Rect,
 }
 
 /// What the controls show this frame.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ControlsState {
     pub hovered: Option<WindowControl>,
     pub pressed: Option<WindowControl>,
     pub maximized: bool,
-    pub history_open: bool,
+    /// How far each control's hover ring has come in, by control
+    /// ([`WindowControl::index`]): on the toolkit's spring, so a ring
+    /// fades in and out rather than appearing and vanishing.
+    pub lifts: [f32; 2],
+}
+
+impl WindowControl {
+    /// Its slot in [`ControlsState::lifts`].
+    #[must_use]
+    pub fn index(self) -> usize {
+        match self {
+            WindowControl::Maximize => 0,
+            WindowControl::Close => 1,
+        }
+    }
 }
 
 impl WindowControls {
-    /// The controls at the trailing end of `row`, centred on its centre line.
+    /// The controls at the trailing end of `row`, centred on its centre
+    /// line, inside one pill.
     #[must_use]
-    pub fn lay_out(row: Rect, history: bool) -> Self {
+    pub fn lay_out(row: Rect) -> Self {
         if row.width() <= 0.0 || row.height() <= 0.0 {
             return Self::default();
         }
-        let y0 = row.center().y - CONTROL_PX / 2.0;
-        let square = |x1: f64| Rect::new(x1 - CONTROL_PX, y0, x1, y0 + CONTROL_PX);
-        let close = square(row.x1 - EDGE_INSET);
-        let maximize = square(close.x0 - CONTROL_GAP);
-        let history = if history {
-            square(maximize.x0 - CONTROL_GAP)
-        } else {
-            Rect::ZERO
-        };
+        let pill_h = (CONTROL_PX + 2.0 * PILL_PAD).min(row.height());
+        let pad = (pill_h - CONTROL_PX) / 2.0;
+        let y0 = row.center().y - pill_h / 2.0;
+        let face_y0 = y0 + (pill_h - CONTROL_PX) / 2.0;
+        let square = |x1: f64| Rect::new(x1 - CONTROL_PX, face_y0, x1, face_y0 + CONTROL_PX);
+        let pill_x1 = row.x1 - EDGE_INSET;
+        let close = square(pill_x1 - pad);
+        let maximize = square(close.x0 - PILL_PAD);
+        let pill = Rect::new(
+            maximize.x0 - pad,
+            y0,
+            pill_x1.max(maximize.x1 + pad),
+            y0 + pill_h,
+        );
         Self {
-            history,
+            pill,
             maximize,
             close,
         }
     }
 
     /// The controls of a window this person may not close (someone else's,
-    /// or one they only watch): no close, the others moved out into its
-    /// place.
+    /// or one they only watch): no close, and the pill closes around the
+    /// one control left.
     #[must_use]
     pub fn without_close(self) -> Self {
         if self.close.area() <= 0.0 {
             return self;
         }
-        let mut kept = Self {
+        if self.maximize.area() <= 0.0 {
+            return Self::default();
+        }
+        let maximize =
+            self.maximize + vello::kurbo::Vec2::new(self.close.x1 - self.maximize.x1, 0.0);
+        let pad = (self.pill.height() - CONTROL_PX) / 2.0;
+        Self {
+            pill: Rect::new(
+                maximize.x0 - pad,
+                self.pill.y0,
+                maximize.x1 + pad,
+                self.pill.y1,
+            ),
+            maximize,
             close: Rect::ZERO,
-            ..self
-        };
-        kept.offset(vello::kurbo::Vec2::new(
-            self.close.x1 - self.maximize.x1,
-            0.0,
-        ));
-        kept
+        }
     }
 
     /// Where the controls begin, less the gap anything before them keeps;
     /// the row's trailing edge for none.
     #[must_use]
     pub fn content_limit(&self, row: Rect) -> f64 {
-        self.iter()
-            .map(|(_, r)| r.x0)
-            .fold(None, |min: Option<f64>, x| {
-                Some(min.map_or(x, |m| m.min(x)))
-            })
-            .map_or(row.x1, |x0| x0 - LEAD_GAP)
+        if self.pill.area() > 0.0 {
+            self.pill.x0 - LEAD_GAP
+        } else {
+            row.x1
+        }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (WindowControl, Rect)> {
         [
-            (WindowControl::History, self.history),
             (WindowControl::Maximize, self.maximize),
             (WindowControl::Close, self.close),
         ]
@@ -117,46 +177,108 @@ impl WindowControls {
         self.iter().find(|(_, r)| r.contains(p)).map(|(c, _)| c)
     }
 
+    /// Whether `p` is on the pill at all: the window's own chrome, covering
+    /// the padding around the controls.
+    #[must_use]
+    pub fn on_pill(&self, p: Point) -> bool {
+        self.pill.area() > 0.0 && self.pill.contains(p)
+    }
+
     pub fn offset(&mut self, shift: vello::kurbo::Vec2) {
-        for r in [&mut self.history, &mut self.maximize, &mut self.close] {
+        for r in [&mut self.pill, &mut self.maximize, &mut self.close] {
             if r.area() > 0.0 {
                 *r = *r + shift;
             }
         }
     }
 
-    /// Paint the controls with the shared icon button.
-    pub fn paint(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        state: ControlsState,
-    ) {
+    /// Paint the pill and its controls.
+    pub fn paint(&self, scene: &mut Scene, transform: Affine, theme: &Theme, state: ControlsState) {
+        if self.pill.area() <= 0.0 {
+            return;
+        }
+        let ground = crate::chrome::panel_ground(theme);
+        let radius = crate::chrome::ChromeRole::Selector.radius(theme, self.pill.height());
+        crate::surface::panel_unsnapped(scene, transform, self.pill, radius, theme);
+        // The pill is the ground its controls stand on: their ink and their
+        // hover ring are resolved against it, never against the window's.
+        let theme = &theme.on_ground(ground);
         for (control, rect) in self.iter() {
-            let icon = match control {
-                WindowControl::History => icons::Icon::History,
+            let hovered = state.hovered == Some(control);
+            let pressed = state.pressed == Some(control);
+            let lift = f64::from(
+                state
+                    .lifts
+                    .get(control.index())
+                    .copied()
+                    .unwrap_or_default()
+                    .clamp(0.0, 1.0),
+            );
+            // Lit at once under a press; otherwise as far in as the spring
+            // has brought it — coming in, or going out from where it was.
+            let ring = if pressed { 1.0 } else { lift };
+            let glyph = match control {
                 WindowControl::Maximize if state.maximized => icons::Icon::Minimize2,
                 WindowControl::Maximize => icons::Icon::Maximize2,
                 WindowControl::Close => icons::Icon::X,
             };
-            paint_icon_button(
+            let glyph_box = match control {
+                WindowControl::Close => square_at(rect.center(), CLOSE_GLYPH_PX),
+                WindowControl::Maximize => square_at(rect.center(), ACTION_GLYPH_PX),
+            };
+            let colour = match control {
+                WindowControl::Close => theme
+                    .tokens
+                    .colors
+                    .semantic
+                    .danger
+                    .with_alpha(CLOSE_RING_ALPHA * crate::num::f32_of_f64(ring)),
+                WindowControl::Maximize => {
+                    crate::tokens::Colors::hairline_on(ground, scale_alpha(HOVER_TINT_ALPHA, ring))
+                }
+            };
+            if ring > 0.0 {
+                // A press presses the face in, as every shared control's
+                // does: the theme's own response scale, never a number here.
+                let scale = f64::from(theme.tokens.response.step(hovered, pressed).scale);
+                let face_rect = Rect::from_center_size(rect.center(), rect.size() * scale);
+                let face = RoundedRect::from_rect(face_rect, face_rect.height() / 2.0);
+                scene.fill(Fill::NonZero, transform, colour, None, &face);
+            }
+            // The glyph reads on whatever it stands on: the pill's ground at
+            // rest, the face lit under the pointer — never a colour picked
+            // here.
+            let ink = theme.tokens.colors.ink_on_any(
+                &[ground, crate::tokens::colors::composite(colour, ground)],
+                theme.tokens.colors.text_primary,
+                crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+            );
+            icons::draw_icon(
                 scene,
                 transform,
-                text,
-                theme,
-                (rect, icon),
-                ButtonFace {
-                    hovered: state.hovered == Some(control),
-                    pressed: state.pressed == Some(control),
-                    on: control == WindowControl::History && state.history_open,
-                    enabled: true,
-                    destructive: false,
-                },
+                glyph_box,
+                glyph,
+                ink,
+                icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
     }
+}
+
+/// `alpha` of an opaque line, `progress` of the way in.
+fn scale_alpha(alpha: u8, progress: f64) -> u8 {
+    let scaled = f64::from(alpha) * progress.clamp(0.0, 1.0);
+    crate::num::u8_of_f64(scaled)
+}
+
+/// A `side`-px square centred on `c`.
+fn square_at(c: Point, side: f64) -> Rect {
+    Rect::new(
+        c.x - side / 2.0,
+        c.y - side / 2.0,
+        c.x + side / 2.0,
+        c.y + side / 2.0,
+    )
 }
 
 /// How one icon button of the window's bar shows this frame.
@@ -171,10 +293,12 @@ pub struct ButtonFace {
     pub destructive: bool,
 }
 
-/// Paint one icon button of the window's bar with the shared button face
-/// ([`crate::widget::Button::paint`]): the window's own controls, the
-/// app's slots ([`crate::window_toolbar`]) and the new-tab button are the
-/// same control, so the bar reads as one row of them.
+/// Paint one icon button of a window's bar with the shared button face
+/// ([`crate::widget::Button::paint`]): the app's slots
+/// ([`crate::window_toolbar`]), the History toggle and the new-tab button
+/// are the same control, so everything the app provides in the bar stands on
+/// the window's ground as one row of them — the window's own controls are
+/// the pill's, not these.
 pub fn paint_icon_button(
     scene: &mut Scene,
     transform: Affine,
@@ -202,40 +326,69 @@ pub fn paint_icon_button(
 mod tests {
     use super::*;
 
-    #[test]
-    fn close_is_outermost_then_one_maximize_toggle_then_history() {
-        let row = Rect::new(0.0, 0.0, 800.0, 44.0);
-        let c = WindowControls::lay_out(row, true);
-        assert!(c.close.x1 <= row.x1 && c.close.x1 > row.x1 - 16.0);
-        assert!(c.maximize.x1 < c.close.x0);
-        assert!(c.history.x1 < c.maximize.x0);
-        assert_eq!(c.iter().count(), 3);
-        let without = WindowControls::lay_out(row, false);
-        assert_eq!(without.iter().count(), 2);
-        assert_eq!(without.close, c.close);
-        assert_eq!(without.maximize, c.maximize);
+    fn row() -> Rect {
+        Rect::new(0.0, 0.0, 800.0, 40.0)
     }
 
     #[test]
-    fn a_window_that_is_not_ones_to_close_offers_no_close() {
-        let row = Rect::new(0.0, 0.0, 800.0, 44.0);
-        let c = WindowControls::lay_out(row, true);
+    fn close_is_outermost_and_both_controls_share_one_pill() {
+        let c = WindowControls::lay_out(row());
+        assert!(c.close.x1 < row().x1 && c.close.x1 > row().x1 - 2.0 * EDGE_INSET);
+        assert!(c.maximize.x1 <= c.close.x0, "maximize stands before close");
+        assert_eq!(c.iter().count(), 2);
+        assert!(
+            c.pill.contains(c.maximize.center()) && c.pill.contains(c.close.center()),
+            "both controls stand inside the one pill",
+        );
+        assert_eq!(c.pill.x1, row().x1 - EDGE_INSET);
+        assert!(
+            (c.pill.height() - (CONTROL_PX + 2.0 * PILL_PAD)).abs() < f64::EPSILON,
+            "the pill is a bar control tall on each side",
+        );
+        assert!(
+            (c.pill.center().y - row().center().y).abs() < f64::EPSILON,
+            "the pill is centred on the tab row",
+        );
+        assert!(
+            (c.pill.width() - (2.0 * CONTROL_PX + 3.0 * PILL_PAD)).abs() < f64::EPSILON,
+            "two faces and the padding around and between them",
+        );
+    }
+
+    #[test]
+    fn a_window_that_is_not_ones_to_close_keeps_one_control_in_a_round_pill() {
+        let c = WindowControls::lay_out(row());
         let held = c.without_close();
-        assert_eq!(held.iter().count(), 2);
-        assert_eq!(held.hit(c.close.center()), Some(WindowControl::Maximize));
+        assert_eq!(held.iter().count(), 1);
+        assert_eq!(held.close, Rect::ZERO);
         assert_eq!(
             held.maximize, c.close,
             "the outermost control stays outermost"
         );
-        assert!(held.content_limit(row) > c.content_limit(row));
+        assert!(
+            (held.pill.width() - held.pill.height()).abs() < f64::EPSILON,
+            "one control's pill is a round pill",
+        );
+        assert!(held.content_limit(row()) > c.content_limit(row()));
+        assert_eq!(held.hit(c.close.center()), Some(WindowControl::Maximize));
     }
 
     #[test]
     fn content_stops_before_the_controls() {
-        let row = Rect::new(0.0, 0.0, 800.0, 44.0);
-        let c = WindowControls::lay_out(row, false);
-        assert!(c.content_limit(row) <= c.maximize.x0 - LEAD_GAP + f64::EPSILON);
+        let c = WindowControls::lay_out(row());
+        assert!(c.content_limit(row()) <= c.pill.x0 - LEAD_GAP + f64::EPSILON);
         assert_eq!(c.hit(c.close.center()), Some(WindowControl::Close));
+        assert_eq!(c.hit(c.maximize.center()), Some(WindowControl::Maximize));
         assert_eq!(c.hit(Point::new(10.0, 22.0)), None);
+        assert!(c.on_pill(Point::new(c.pill.x0 + 1.0, c.pill.center().y)));
+        assert!(!c.on_pill(Point::new(10.0, 22.0)));
+    }
+
+    #[test]
+    fn a_row_with_no_room_has_no_controls() {
+        let c = WindowControls::lay_out(Rect::ZERO);
+        assert_eq!(c, WindowControls::default());
+        assert_eq!(c.iter().count(), 0);
+        assert_eq!(c.content_limit(row()), row().x1);
     }
 }

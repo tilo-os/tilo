@@ -202,7 +202,7 @@ fn the_windows_controls_stand_apart_at_a_fixed_trailing_edge() {
         crate::theme::Theme::dark(),
     );
     harness.present_in_window_bar();
-    let group = f64::from(crate::tokens::Spacing::BASE.rhythm.group);
+    let apart = crate::widget::window_controls::LEAD_GAP;
     for width in [720.0, 1024.0, 1440.0] {
         let mut placed = Vec::new();
         for toolbar in [
@@ -216,10 +216,23 @@ fn the_windows_controls_stand_apart_at_a_fixed_trailing_edge() {
             let bar = bar_at(&mut harness, width);
             let controls = *bar.window_controls();
             let shown = self::controls(&bar);
-            let history = controls.history;
+            let history = bar.history_action_rect();
             assert!(
                 history.area() > 0.0,
                 "{width} px: History stands: {shown:?}"
+            );
+            assert!(
+                history.x1 <= controls.pill.x0,
+                "{width} px: the app's History stands before the window's pill: {history:?} \
+                 and {:?}",
+                controls.pill
+            );
+            assert!(
+                (controls.pill.x0 - history.x1 - apart).abs() < 0.5,
+                "{width} px: {apart} px part the app's action from the window's controls, \
+                 {gap} px from one app control to the next: {history:?} to {:?}",
+                controls.pill,
+                gap = crate::widget::window_controls::HISTORY_GAP
             );
             let app_end = shown
                 .iter()
@@ -227,9 +240,9 @@ fn the_windows_controls_stand_apart_at_a_fixed_trailing_edge() {
                 .map(|(_, rect)| rect.x1)
                 .fold(f64::MIN, f64::max);
             assert!(
-                (history.x0 - app_end - group).abs() < 0.5,
-                "{width} px: a group's gap ({group} px) parts the app's controls from the \
-                 window's: {app_end} to {history:?}"
+                app_end <= history.x0,
+                "{width} px: the app's slots stop before its own History action: {app_end} \
+                 to {history:?}"
             );
             placed.push(controls);
         }

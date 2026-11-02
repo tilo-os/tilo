@@ -511,6 +511,17 @@ pub struct TabBar {
     carriable: bool,
     hover_control: Option<super::window_controls::WindowControl>,
     pressed_control: Option<super::window_controls::WindowControl>,
+    /// The window's History toggle: the app's action, not the window's, so
+    /// it stands on the window's ground before the controls' pill.
+    history_action: Rect,
+    history_action_hover: bool,
+    history_action_pressed: bool,
+    /// Each window control's hover tint, by
+    /// [`super::window_controls::WindowControl::index`]: it comes at once
+    /// and fades out over the fast duration
+    /// ([`crate::motion::Feedback`]), so a pointer sweeping across the pill
+    /// never leaves a trail.
+    control_lifts: [crate::motion::Feedback; 2],
     /// The window is maximized: its maximize control shows restore.
     maximized: bool,
     /// Whether the window showed several tabs at the last layout, and since
@@ -687,6 +698,13 @@ impl TabBar {
             carriable: false,
             hover_control: None,
             pressed_control: None,
+            history_action: Rect::ZERO,
+            history_action_hover: false,
+            history_action_pressed: false,
+            control_lifts: [
+                crate::motion::Feedback::default(),
+                crate::motion::Feedback::default(),
+            ],
             maximized: false,
             tabbed,
             tabbed_changed_at: None,
@@ -990,6 +1008,12 @@ impl TabBar {
         TAB_BAR_HEIGHT.max(f64::from(self.interaction.minimum_target()))
     }
 
+    /// Whether the group this bar belongs to is the one in use. A bar the
+    /// host never told otherwise is.
+    fn group_focused(&self) -> bool {
+        !self.shows_group_focus || self.group_focus == GroupFocus::Focused
+    }
+
     /// The row the tabs (or the title) and the window's controls stand in.
     fn tab_row(&self) -> Rect {
         Rect::new(
@@ -998,6 +1022,17 @@ impl TabBar {
             self.rect.x1,
             self.rect.y0 + self.tab_row_height().min(self.rect.height()),
         )
+    }
+
+    /// Where the row's content stops: before the window's History action
+    /// when the window has one, else before the controls' pill, each less
+    /// the gap it keeps from what comes before it.
+    fn trailing_limit(&self, row: Rect) -> f64 {
+        if self.history_action.area() > 0.0 {
+            self.history_action.x0 - super::window_controls::HISTORY_GAP
+        } else {
+            self.controls.content_limit(row)
+        }
     }
 
     /// Where a pointer takes the pill drawn in `pill`: the pill itself while
@@ -1035,8 +1070,7 @@ impl TabBar {
             } else {
                 self.pill_row().x0
             };
-            let x1 =
-                (self.controls.content_limit(tab_row) - self.search_control.unwrap_or(0.0)).max(x0);
+            let x1 = (self.trailing_limit(tab_row) - self.search_control.unwrap_or(0.0)).max(x0);
             Rect::new(x0, tab_row.y0, x1, tab_row.y1)
         };
         // The back button's glyph sits under the tabs' leading glyph.
@@ -1158,6 +1192,20 @@ impl TabBar {
     #[must_use]
     pub fn window_controls(&self) -> &super::window_controls::WindowControls {
         &self.controls
+    }
+
+    /// Whether `p` is on the window's controls pill, padding included: the
+    /// window's own chrome, which no app underneath it receives.
+    #[must_use]
+    pub fn control_pill_hit(&self, p: Point) -> bool {
+        self.controls.on_pill(p)
+    }
+
+    /// Where the window's History toggle stands this frame: the app's
+    /// action, on the window's ground just before the controls' pill.
+    #[must_use]
+    pub fn history_action_rect(&self) -> Rect {
+        self.history_action
     }
 
     /// Whether tabs close from the strip (default `true`). Without it no
@@ -1548,9 +1596,14 @@ impl TabBar {
         } = pill;
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = self.idle_ink(theme);
+        // A window of one tab names the window rather than a tab in a row, so
+        // its title steps back to the dim tier while its window is not the one
+        // in use — as every unfocused window's title does. A tab in a row of
+        // tabs keeps the active tab's ink: the group's focus is the keyline's.
+        let window_idle = self.solo() && !self.group_focused();
         // The cursor-following copy suppresses hover, but carries the primary
         // label ink so an inactive source stays readable in motion.
-        let text_color = if is_active || is_hover || pill.suppress_hover {
+        let text_color = if (is_active && !window_idle) || is_hover || pill.suppress_hover {
             text_primary
         } else {
             text_dim
@@ -3008,10 +3061,15 @@ impl TabBar {
                     super::window_controls::WindowControl::Maximize => {
                         self.pending_max = Some(active);
                     }
-                    super::window_controls::WindowControl::History => {
-                        let _ = self.press_history(active);
-                    }
                 }
+            }
+            *handled = true;
+            return;
+        }
+        if std::mem::take(&mut self.history_action_pressed) {
+            // An action acts on release over itself, like every button.
+            if self.history_action.area() > 0.0 && self.history_action.contains(self.last_cursor) {
+                let _ = self.press_history(self.active_id);
             }
             *handled = true;
             return;
@@ -3971,7 +4029,7 @@ impl Widget for TabBar {
                 self.tabbed_changed_at = Some(crate::time::now());
             }
             let history = self.history.contains_key(&self.active_id);
-            let controls = super::window_controls::WindowControls::lay_out(self.tab_row(), history);
+            let controls = super::window_controls::WindowControls::lay_out(self.tab_row());
             // Someone else's window, or one its person only watches, is not
             // theirs to close: the bar offers what the policy allows.
             self.controls = if self.held_ids.contains_key(&self.active_id) {
@@ -3979,8 +4037,24 @@ impl Widget for TabBar {
             } else {
                 controls
             };
+            // The History toggle is the app's, so it stands on the window's
+            // ground just before the pill rather than inside it.
+            self.history_action = if history {
+                let row = self.tab_row();
+                let x1 = self.controls.pill.x0 - super::window_controls::LEAD_GAP;
+                let y0 = row.center().y - super::window_controls::CONTROL_PX / 2.0;
+                Rect::new(
+                    x1 - super::window_controls::CONTROL_PX,
+                    y0,
+                    x1,
+                    y0 + super::window_controls::CONTROL_PX,
+                )
+            } else {
+                Rect::ZERO
+            };
         } else {
             self.controls = super::window_controls::WindowControls::default();
+            self.history_action = Rect::ZERO;
         }
         self.advance_changed = false;
         self.face_demand_stale = false;
@@ -4190,6 +4264,8 @@ impl Widget for TabBar {
                 self.hover_idx = None;
                 self.hover_control = None;
                 self.pressed_control = None;
+                self.history_action_hover = false;
+                self.history_action_pressed = false;
                 self.toolbar_row.pointer_left();
                 self.hover_close_idx = None;
                 self.hover_max_idx = None;
@@ -4256,11 +4332,14 @@ impl Widget for TabBar {
         if !self.window_controls {
             return None;
         }
+        if self.history_action.area() > 0.0 && self.history_action.contains(point) {
+            return Some((
+                self.history_action,
+                crate::i18n::I18nManager::lookup_plain("history-mode-title"),
+            ));
+        }
         let control = self.controls.hit(point)?;
         let (rect, key) = match control {
-            super::window_controls::WindowControl::History => {
-                (self.controls.history, "history-mode-title")
-            }
             super::window_controls::WindowControl::Maximize => (
                 self.controls.maximize,
                 if self.maximized {
@@ -4334,7 +4413,7 @@ impl Widget for TabBar {
         }
         // The window's own controls, by what they do.
         out.extend([
-            (WINDOW_HISTORY_TARGET.to_string(), self.controls.history),
+            (WINDOW_HISTORY_TARGET.to_string(), self.history_action),
             (WINDOW_MAXIMIZE_TARGET.to_string(), self.controls.maximize),
             (WINDOW_CLOSE_TARGET.to_string(), self.controls.close),
         ]);
@@ -4506,7 +4585,7 @@ impl Widget for TabBar {
                     Role::ToggleButton,
                     crate::i18n::I18nManager::lookup_plain("history-mode-title"),
                     WINDOW_HISTORY_TARGET,
-                    self.controls.history,
+                    self.history_action,
                 );
                 history.state.checked = Some(control.is_open());
                 tab_children.push(history);
@@ -4718,7 +4797,10 @@ impl Widget for TabBar {
     /// The bar's curves while they run, and busy arcs while they turn
     /// (`TabBar::busy_needs_frame`).
     fn needs_animation_frame(&self) -> bool {
-        self.layout_curves_in_flight() || self.busy_needs_frame(crate::motion::frame_now())
+        let now = crate::motion::frame_now();
+        self.layout_curves_in_flight()
+            || self.busy_needs_frame(now)
+            || self.control_lifts.iter().any(|lift| lift.is_moving(now))
     }
 }
 
@@ -5238,6 +5320,8 @@ impl TabBar {
         self.last_cursor = p;
         self.toolbar_row.pointer_moved(p);
         self.hover_control = self.controls.hit(p);
+        self.history_action_hover =
+            self.history_action.area() > 0.0 && self.history_action.contains(p);
         if self
             .pressed_control
             .is_some_and(|c| Some(c) != self.hover_control)
@@ -5355,6 +5439,19 @@ impl TabBar {
         if let Some(control) = self.controls.hit(cursor_pos) {
             self.toolbar_row.cancel_edit();
             self.pressed_control = Some(control);
+            *handled = true;
+            return;
+        }
+        if self.controls.on_pill(cursor_pos) {
+            // The pill is the window's, padding included: a press on it is
+            // the window's, never the app's underneath.
+            self.toolbar_row.cancel_edit();
+            *handled = true;
+            return;
+        }
+        if self.history_action.area() > 0.0 && self.history_action.contains(cursor_pos) {
+            self.toolbar_row.cancel_edit();
+            self.history_action_pressed = true;
             *handled = true;
             return;
         }
@@ -5603,6 +5700,10 @@ fn draw_app_icon(
 #[cfg(test)]
 #[path = "tabs_intent_frames_tests.rs"]
 mod intent_frames_tests;
+
+#[cfg(test)]
+#[path = "tabs_window_controls_tests.rs"]
+mod window_controls_tests;
 
 #[cfg(test)]
 mod tests {
@@ -8758,7 +8859,7 @@ mod tests {
             .handled;
     }
 
-    fn built_layout(b: &mut TabBar) -> (TaffyTree<()>, NodeId) {
+    pub(super) fn built_layout(b: &mut TabBar) -> (TaffyTree<()>, NodeId) {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
             std::collections::HashMap::new();
@@ -8808,105 +8909,6 @@ mod tests {
             ElementState::Pressed,
         ));
         Dispatch::new().layout(&taffy, node).send(b, &event).handled
-    }
-
-    /// A window someone else holds, or its person only watches, offers no
-    /// close among its controls, to the pointer or to assistive technology,
-    /// and keeps the rest.
-    #[test]
-    fn a_held_window_offers_no_close() {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
-        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
-        b.set_window_controls(true);
-        b.set_holder(
-            1,
-            Some(TabHolder {
-                name: "Lounge".into(),
-                rgb: (1, 2, 3),
-            }),
-        );
-        lay_out_at_width_with(&mut b, 900.0, &theme);
-        let controls = *b.window_controls();
-        assert!(controls.close.area() <= 0.0);
-        assert!(controls.maximize.area() > 0.0);
-        let node = Widget::accessibility(&b).expect("the bar is described");
-        fn targets(node: &crate::a11y::AccessNode, into: &mut Vec<String>) {
-            into.extend(node.action_target.clone());
-            for child in &node.children {
-                targets(child, into);
-            }
-        }
-        let mut all = Vec::new();
-        targets(&node, &mut all);
-        assert!(all.iter().any(|t| t == WINDOW_MAXIMIZE_TARGET), "{all:?}");
-        assert!(!all.iter().any(|t| t == WINDOW_CLOSE_TARGET), "{all:?}");
-        assert!(!all.iter().any(|t| t == "tab-close:1"), "{all:?}");
-        // Someone who opens nothing here is offered no new tab either.
-        assert!(all.iter().any(|t| t == "tab-new"), "{all:?}");
-        assert!(b.set_new_tab(false));
-        let mut all = Vec::new();
-        targets(&Widget::accessibility(&b).expect("described"), &mut all);
-        assert!(!all.iter().any(|t| t == "tab-new"), "{all:?}");
-        b.set_holder(1, None);
-        lay_out_at_width_with(&mut b, 900.0, &theme);
-        assert!(
-            b.window_controls().close.area() > 0.0,
-            "its own window closes"
-        );
-    }
-
-    /// A pointer sent to the centre of a window control's accessibility
-    /// node lands on the control, not somewhere in the bar.
-    #[test]
-    fn each_window_control_reports_the_rect_it_is_drawn_in() {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
-        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
-        b.set_window_controls(true);
-        lay_out_at_width_with(&mut b, 900.0, &theme);
-        let node = Widget::accessibility(&b).expect("the bar is described");
-        fn find<'a>(
-            node: &'a crate::a11y::AccessNode,
-            target: &str,
-        ) -> Option<&'a crate::a11y::AccessNode> {
-            if node.action_target.as_deref() == Some(target) {
-                return Some(node);
-            }
-            node.children.iter().find_map(|child| find(child, target))
-        }
-        let controls = b.window_controls();
-        for (target, drawn) in [
-            ("tab:1", b.tab_rects()[0]),
-            (WINDOW_MAXIMIZE_TARGET, controls.maximize),
-            (WINDOW_CLOSE_TARGET, controls.close),
-        ] {
-            let bounds = find(&node, target)
-                .and_then(|control| control.bounds)
-                .unwrap_or_else(|| panic!("{target} reports where it is"));
-            assert!(drawn.area() > 0.0, "{target} is drawn");
-            assert_eq!(bounds.to_rect(), drawn, "{target}");
-        }
-        // A pill's close chip, drawn or not, reports exactly what is drawn.
-        let mut b = TabBar::new(
-            "g2",
-            vec![
-                TabDescriptor::new(1, "Notes"),
-                TabDescriptor::new(2, "Chat"),
-            ],
-            1,
-        );
-        lay_out_at_width_with(&mut b, 900.0, &theme);
-        let node = Widget::accessibility(&b).expect("the bar is described");
-        for (index, id) in [(0, 1), (1, 2)] {
-            let close = find(&node, &format!("tab-close:{id}")).expect("a pill can be closed");
-            let drawn = b.close_rects[index];
-            assert_eq!(
-                close.bounds.map(crate::a11y::AccessBounds::to_rect),
-                (drawn.area() > 0.0).then_some(drawn),
-                "tab-close:{id}"
-            );
-        }
     }
 
     #[test]

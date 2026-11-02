@@ -2088,9 +2088,11 @@ impl WindowGroup {
     }
 
     /// Whether `p` is on the window's own controls at the end of its bar
-    /// (history, maximize, close).
+    /// (maximize or restore, and close) or on the glass pill they stand in,
+    /// whose padding is the window's too — never the app's underneath.
     pub(crate) fn window_control_hit(&self, p: Point) -> bool {
-        self.navigation_bar_visible() && self.bar.window_controls().hit(p).is_some()
+        self.navigation_bar_visible()
+            && (self.bar.window_controls().hit(p).is_some() || self.bar.control_pill_hit(p))
     }
 
     /// Where a finger can grab the whole group: anywhere on its tab bar,
@@ -4486,6 +4488,57 @@ mod tests {
         assert!(group.detach_tab(2).is_some());
         let now: *const TileHost = group.host_for_tab_mut(1).expect("tab 1");
         assert_eq!(shown, now);
+    }
+
+    /// A window of `tabs` tabs, its first one active.
+    fn group_of(tabs: u64) -> WindowGroup {
+        let tabs: Vec<(TabDescriptor, TileContent)> = (1..=tabs)
+            .map(|id| {
+                (
+                    TabDescriptor::new(id, format!("Tab {id}")),
+                    TileContent::Stub {
+                        kind: AppKind::Settings,
+                        label: format!("s{id}"),
+                    },
+                )
+            })
+            .collect();
+        WindowGroup::new(10, tabs, 1, WindowWidth::Normal)
+    }
+
+    /// `TILO_WINDOW_BAR_SHOTS=<dir>` writes the bar's every state — a
+    /// window of two tabs with its active tab, the same window unfocused,
+    /// a window of one tab, which shows its one tab as the window's title,
+    /// and the same title in a window that is not the one in use — in the
+    /// dark and light themes.
+    #[test]
+    fn window_bar_shots_of_every_state() {
+        let Ok(directory) = std::env::var("TILO_WINDOW_BAR_SHOTS") else {
+            return;
+        };
+        let directory = std::path::Path::new(&directory);
+        for (scheme, theme) in [
+            ("dark", crate::Theme::dark()),
+            ("light", crate::Theme::light()),
+        ] {
+            for (state, tabs, focused) in [
+                ("two-tabs", 2_u64, true),
+                ("two-tabs-unfocused", 2, false),
+                ("one-tab", 1, true),
+                ("one-tab-unfocused", 1, false),
+            ] {
+                let mut group = group_of(tabs);
+                group.set_focused(focused);
+                let mut harness = crate::headless::FrameHarness::for_root(
+                    crate::State::new(),
+                    group,
+                    (900, 260),
+                    theme.clone(),
+                );
+                harness.relayout();
+                harness.render_png(&directory.join(format!("window-bar-{state}-{scheme}.png")));
+            }
+        }
     }
 
     pub(super) fn make_group() -> WindowGroup {
