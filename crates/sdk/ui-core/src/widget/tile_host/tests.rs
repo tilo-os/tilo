@@ -993,6 +993,53 @@ fn an_arrived_app_after_a_visible_placeholder_still_asks_for_a_frame() {
 }
 
 #[test]
+fn a_tile_nothing_has_painted_asks_for_no_frame_of_its_own() {
+    // Every tab of every strip a desk is not showing is such a tile: its
+    // placeholder steps with time, but no one saw the step before it.
+    // Asking for a frame there repainted the whole session, every frame, for
+    // as long as it ran.
+    let t0 = crate::time::now();
+    crate::time::testing::with_monotonic_time(t0, || {
+        let host = TileHost::new(TileContent::Arriving);
+        assert!(
+            !Widget::needs_redraw(&host),
+            "nothing stands on screen to correct"
+        );
+        let later = t0 + crate::arriving::NAME_SOURCE_AFTER;
+        crate::time::testing::with_monotonic_time(later, || {
+            assert!(
+                !Widget::needs_redraw(&host),
+                "a step that came due while the tile was out of sight is \
+                 painted by the frame that first draws it"
+            );
+        });
+    });
+}
+
+#[test]
+fn a_painted_placeholder_asks_for_the_frame_its_next_step_shows_in() {
+    let t0 = crate::time::now();
+    let theme = Theme::default();
+    let (mut host, _) = crate::time::testing::with_monotonic_time(t0, || {
+        let mut host = TileHost::new(TileContent::Arriving);
+        host.rect = Rect::new(50.0, 50.0, 350.0, 250.0);
+        let _ = paint(&mut host, &theme);
+        host.mark_drawn();
+        assert!(
+            !Widget::needs_redraw(&host),
+            "the step standing was the one painted"
+        );
+        (host, ())
+    });
+    crate::time::testing::with_monotonic_time(t0 + crate::arriving::GRACE, || {
+        assert!(
+            Widget::needs_redraw(&host),
+            "the skeleton replaced the ground the person saw"
+        );
+    });
+}
+
+#[test]
 fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
     // Case `visible_notice_replacement_tracks_new_content_readiness_without_hiding_the_tile`.
     // On one instant: the replacement answers inside its frame budget, so
