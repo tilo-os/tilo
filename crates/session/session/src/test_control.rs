@@ -13,7 +13,7 @@
 //!   mints the throwaway identity a development session opens its desk with instead of first-use
 //!   setup, as the shell's does for a dev image;
 //! - `list_targets` and `click_named`: every control the session's hosted surfaces show, by the
-//!   name they go by (a tab's pill, a place's switch, `onboarding.begin.button`), and a press of
+//!   name they go by (a tab's pill, a place's switch, `onboarding.create.button`), and a press of
 //!   one of them through the same action route an assistive technology activates it with — never
 //!   a point aimed at;
 //! - the pointer: `pointer_move`, `pointer_button` (left, right or middle), `click_at` and
