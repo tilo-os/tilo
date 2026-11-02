@@ -115,12 +115,10 @@ pub fn decode_peer(
         },
         PeerPresencePayload::Composing { composing } => PresencePayload::Composing { composing },
         // Talking, greeting and waves beside a pointer are the desktop's to
-        // show, never an app's, and so is which services carry a member's
-        // media into a call.
+        // show, never an app's.
         PeerPresencePayload::Chat { .. }
         | PeerPresencePayload::Reaction { .. }
         | PeerPresencePayload::Wave { .. }
-        | PeerPresencePayload::Bridge { .. }
         | PeerPresencePayload::Shell(_) => return Ok(None),
     };
     Ok(Some((key, payload)))

@@ -2321,20 +2321,13 @@ mod tests {
             .parse()
             .expect("the responder's address");
 
-        // The workspace says the page's device is in the call, carried by the
-        // web, and the two devices know where each other is.
+        // The workspace says the page's device is in the call, and the two
+        // devices know where each other is.
         laptop.connect(bound_addr(&endpoint));
         laptop.follow_desktop(&desk_tree());
         laptop.hear(hello(0x22, "Page"));
         laptop.hear(presence(0x22, collab_types::PeerPresencePayload::Arrived));
         laptop.hear(availability(0x22, Some(call_presence())));
-        laptop.hear(presence(
-            0x22,
-            collab_types::PeerPresencePayload::Bridge {
-                channel: CHANNEL.to_owned(),
-                services: vec!["web".to_owned()],
-            },
-        ));
         bound(&laptop).await;
         let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
         let left = carrier(&laptop, &keys);
