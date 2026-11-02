@@ -31,7 +31,7 @@ use tilo_desktop_model::RoomId;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace, Track};
 use tilo_live::native;
-use tilo_live::plane::{Heard, Join, Plane, PlaneError};
+use tilo_live::plane::{Heard, Join, Plane};
 use tilo_live::relay::{
     Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization, VoiceRoute,
 };
@@ -490,7 +490,9 @@ impl Live {
         body: &[u8],
     ) -> Result<(), String> {
         let plane = self.plane(workspace)?;
-        plane.publish(track, sequence, body).map_err(describe)
+        plane
+            .publish(track, sequence, body)
+            .map_err(|error| error.to_string())
     }
 
     /// The next object heard in `workspace`'s live plane, or `None`.
@@ -530,11 +532,6 @@ impl Drop for Live {
             let _ = thread.join();
         }
     }
-}
-
-/// What a plane refusal is said to the session as.
-fn describe(error: PlaneError) -> String {
-    error.to_string()
 }
 
 /// Wait for the relay this device's handler serves, if it ever is one.
