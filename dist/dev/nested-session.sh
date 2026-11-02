@@ -511,21 +511,8 @@ unset provider_record provider_key
 ((prepare_only)) && { say "prepared $state"; exit 0; }
 
 # --- 8. Run ---------------------------------------------------------------------
-# A session that was killed leaves the files it mounted for apps behind, and the kernel keeps
-# serving a mount until something unmounts it: `rm -rf` would then stop every later start of
-# the same state. Unmount what is left of the runtime directory, then make it again.
-unmount_runtime() {
-    local mount
-    for mount in $(awk -v prefix="$runtime/" 'index($2, prefix) == 1 { print $2 }' /proc/self/mounts); do
-        fusermount3 -u -q -z -- "$mount" || true
-    done
-}
-reset_runtime() {
-    unmount_runtime
-    rm -rf "$runtime"
-    mkdir -m 700 "$runtime"
-}
-reset_runtime
+rm -rf "$runtime"
+mkdir -m 700 "$runtime"
 export XDG_RUNTIME_DIR=$runtime
 # The session's agent door, where an agent in a terminal of this login (and `tilolang repl`)
 # reaches it as an admitted agent, at the path a real session's has.
@@ -557,7 +544,6 @@ cleanup() {
     rm -f "$pidfile"
     # A session ends by unmounting the files it served for apps, and one that
     # was killed outright leaves a process of its own that does it for it.
-    unmount_runtime
     rm -rf "$runtime" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -611,7 +597,8 @@ if [[ ! -f $marker ]]; then
     # while it lives.
     stop_groups "$pid"
     children=()
-    reset_runtime
+    rm -rf "$runtime"
+    mkdir -m 700 "$runtime"
 fi
 
 # --- The session's own desktop ------------------------------------------------
