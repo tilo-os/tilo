@@ -70,6 +70,9 @@ SEEDED_SIGNATURES = ("/signatures" + SEEDED_TREE, SEEDED_TREE)
 SESSION_CRATES = "crates/session"
 OLD_SHELL = "crates/session/shell/"
 SESSION_BINARY = "tilo-session"
+# The component that ships the session binary and, with it, the PAM session
+# wrapper and the interface declaration every layer of a session is judged by.
+SESSION_COMPONENT = "tilo-session"
 # Where `program_path` finds a program: on PATH, and beside the session, whose
 # own directory is read from the manifest.
 SESSION_PROGRAM_DIRS = ("/usr/bin",)
@@ -225,28 +228,29 @@ def snippet(name: str, output: str, destination: str, *, direct: bool = False) -
 def check_manifest_against_workspace(report: Report, manifest, packages: dict[str, Package]) -> None:
     for component in manifest.components:
         where = report.manifest_line(component.name)
-        if component.name == "shell":
+        if component.name == SESSION_COMPONENT:
             companion = next((entry for entry in component.files
                               if entry.to == "/usr/libexec/tilo-session"), None)
             if (companion is None or companion.source != "@manifest/usr/libexec/tilo-session"
                     or companion.optional or str(companion.mode) != "0755"):
-                report.error(where, "shell must ship its matching mandatory PAM session wrapper",
+                report.error(where, "the session must ship its matching mandatory PAM session wrapper",
                              'add { from = "@manifest/usr/libexec/tilo-session", '
-                             'to = "/usr/libexec/tilo-session", mode = "0755" } to shell files; '
-                             'shell-only swaps can otherwise recover locked under an older wrapper.')
+                             'to = "/usr/libexec/tilo-session", mode = "0755" } to the '
+                             f'{SESSION_COMPONENT} files; a session-only swap can otherwise recover '
+                             'locked under an older wrapper.')
             declaration = next((entry for entry in component.files
                                 if entry.to == "/usr/share/tilo/system-interfaces.toml"), None)
             if (declaration is None
                     or declaration.source != "@manifest/usr/share/tilo/system-interfaces.toml"
                     or declaration.optional or str(declaration.mode) != "0644"):
-                report.error(where, "shell must ship the system-interface declaration it reads",
+                report.error(where, "the session must ship the system-interface declaration",
                              'add { from = "@manifest/usr/share/tilo/system-interfaces.toml", '
-                             'to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" } to shell files; '
-                             'a shell swapped onto an older image otherwise reads a declaration '
-                             'in another format and judges no app.')
+                             'to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" } to the '
+                             f'{SESSION_COMPONENT} files; a session swapped onto an older image '
+                             'otherwise reads a declaration in another format and judges no app.')
         elif any(entry.to == "/usr/share/tilo/system-interfaces.toml" for entry in component.files):
             report.error(where, f"component {component.name!r} ships the system-interface declaration, "
-                         "which the shell owns",
+                         f"which the {SESSION_COMPONENT} component owns",
                          "remove the entry: two layers shipping /usr/share/tilo/system-interfaces.toml "
                          "leave which one a slot reads to their stacking order, and tilo-vmd refuses "
                          "such a generation.")

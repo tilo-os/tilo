@@ -110,24 +110,9 @@ kind = "userspace"
 scope = "session"
 packages = ["shell"]
 bins = ["shell"]
-dev_features = ["shell/dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "shell", to = "/usr/bin/shell", mode = "0755" },
-  # The PAM entry point and compositor share the session-recovery contract.
-  # A fresh slot login must run this source's wrapper, not the base image's.
-  { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },
-  # The interface versions this image serves. The shell serves shell-ui and
-  # judges apps against this file, so the file it reads must come from the
-  # same source: a shell swapped onto an older image otherwise reads a
-  # declaration in another format and judges nothing. The shell is its one
-  # owner: the launcher, tilo-install, the app host and the runtime services
-  # read it too, so tilo-vmd refuses a generation in which any of them was
-  # built for another declaration (crates/dev/tilo-vmd/src/interfaces.rs).
-  { from = "@manifest/usr/share/tilo/system-interfaces.toml", to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" },
-  # Source swaps materialize the pinned OS catalog; images already assemble
-  # this direct tree with the runtime payload, sharing its font bytes.
-  { from = "/usr/share/fonts/tilo/", to = "/usr/share/fonts/tilo/", tree = true, layer = "direct" },
 ]
 
 # The native session, which replaces the shell: offered by the greeter beside
@@ -142,6 +127,20 @@ bins = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "osk"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-session", to = "/usr/bin/tilo-session", mode = "0755" },
+  # The PAM entry point and compositor share the session-recovery contract.
+  # A fresh slot login must run this source's wrapper, not the base image's.
+  { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },
+  # The interface versions this image serves. The launcher, tilo-install and
+  # the app host of a session judge apps by this file, so the file a slot
+  # reads must come from the same source as those: a session swapped onto an
+  # older image otherwise reads a declaration in another format and judges
+  # nothing. One component owns it, so tilo-vmd refuses a generation in which
+  # any member of the session set was built for another declaration
+  # (crates/dev/tilo-vmd/src/interfaces.rs).
+  { from = "@manifest/usr/share/tilo/system-interfaces.toml", to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" },
+  # Source swaps materialize the pinned OS catalog; images already assemble
+  # this direct tree with the runtime payload, sharing its font bytes.
+  { from = "/usr/share/fonts/tilo/", to = "/usr/share/fonts/tilo/", tree = true, layer = "direct" },
   # The window menu's view: the session starts it beside itself while the
   # menu is up, so the menu is on screen exactly where its program is.
   { from = "tilo-window-menu", to = "/usr/bin/tilo-window-menu", mode = "0755" },
