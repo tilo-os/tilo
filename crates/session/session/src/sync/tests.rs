@@ -287,6 +287,8 @@ fn a_peer_in_a_call_says_which_channel_to_join() {
     let in_voice = |call: Option<String>| PeerPresencePayload::Availability {
         state: "available".to_owned(),
         call,
+        camera: false,
+        screen: false,
     };
     sync.hear(presence(1, WORKSPACE, in_voice(Some(voice.encode()))));
 
@@ -327,6 +329,8 @@ fn a_peer_away_is_away_on_the_roster() {
     let away = |state: &str| PeerPresencePayload::Availability {
         state: state.to_owned(),
         call: None,
+        camera: false,
+        screen: false,
     };
     sync.hear(presence(1, WORKSPACE, away("away")));
 
@@ -358,7 +362,11 @@ fn a_call_this_device_joins_reaches_a_peer_s_roster() {
         channel: "c_voice".to_owned(),
         name: "Voice".to_owned(),
     };
-    assert!(mine.in_call(Some(voice.clone())));
+    assert!(mine.in_call(Some(InCall {
+        call: voice.clone(),
+        camera: true,
+        screen: false,
+    })));
 
     // A peer's session in the same workspace, handed everything this device
     // said there.
@@ -376,8 +384,12 @@ fn a_call_this_device_joins_reaches_a_peer_s_roster() {
         if let NeighbourMsg::AppPresenceV2 { presence, .. } = &*msg
             && matches!(
                 &presence.payload,
-                PeerPresencePayload::Availability { call: Some(call), .. }
-                    if ui::CallPresence::decode(call).as_ref() == Some(&voice)
+                PeerPresencePayload::Availability {
+                    call: Some(call),
+                    camera: true,
+                    screen: false,
+                    ..
+                } if ui::CallPresence::decode(call).as_ref() == Some(&voice)
             )
         {
             said_the_call = true;
@@ -398,6 +410,18 @@ fn a_call_this_device_joins_reaches_a_peer_s_roster() {
     assert_eq!(
         people[0].call.as_ref().map(|call| call.name.as_str()),
         Some("Voice")
+    );
+    // What this device sends there is heard too: its camera is on.
+    let calls = theirs.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0]
+            .people
+            .iter()
+            .map(|caller| (caller.camera, caller.screen))
+            .collect::<Vec<_>>(),
+        [(true, false)],
+        "the camera this device turned on is what the peer reads"
     );
     let rows = tilo_desktop::collaborators::collaborator_roster_rows(&tree, "me");
     assert_eq!(rows[0].call.as_deref(), Some("Voice"));

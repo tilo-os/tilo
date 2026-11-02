@@ -176,6 +176,10 @@ pub struct OwnCall {
     pub record: String,
     /// The voice channel of that app.
     pub channel: String,
+    /// This device's camera is on in the call.
+    pub camera: bool,
+    /// This device shares its screen in the call.
+    pub screen: bool,
 }
 
 /// The session's calls, as the apps it runs reach them.
@@ -224,6 +228,8 @@ impl NativeMediaService {
                 app: entry.caller.app.clone(),
                 record: entry.caller.record.clone(),
                 channel: entry.channel.clone(),
+                camera: entry.snapshot.camera,
+                screen: entry.snapshot.screen,
             })
     }
 

@@ -90,25 +90,61 @@ impl Calls {
     /// Take in the calls everyone here says they are in, and the channel
     /// this device joined (if any), so a voice channel shows a join or a
     /// leave on this pass.
-    pub(crate) fn follow(&self, sync: &sync::Client, own: Option<&str>) {
+    pub(crate) fn follow(&self, sync: &sync::Client, own: Option<&sync::InCall>) {
         let live = sync.calls();
         let mut people: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut cameras: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut screens: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for call in &live {
             let in_call = people.entry(call.channel.clone()).or_default();
             for caller in &call.people {
-                if let Some(person) = &caller.user {
-                    in_call.insert(person.clone());
+                let Some(person) = &caller.user else {
+                    continue;
+                };
+                in_call.insert(person.clone());
+                if caller.camera {
+                    cameras
+                        .entry(call.channel.clone())
+                        .or_default()
+                        .insert(person.clone());
+                }
+                if caller.screen {
+                    screens
+                        .entry(call.channel.clone())
+                        .or_default()
+                        .insert(person.clone());
                 }
             }
         }
         // This device's own call: nobody here hears it from this session, so
         // it is said from what the session itself published.
-        if let (Some(channel), Some(person)) = (own, sync.own().user) {
-            people.entry(channel.to_owned()).or_default().insert(person);
+        if let (Some(call), Some(person)) = (own, sync.own().user) {
+            let channel = &call.call.channel;
+            people
+                .entry(channel.clone())
+                .or_default()
+                .insert(person.clone());
+            if call.camera {
+                cameras
+                    .entry(channel.clone())
+                    .or_default()
+                    .insert(person.clone());
+            }
+            if call.screen {
+                screens.entry(channel.clone()).or_default().insert(person);
+            }
         }
         let rosters: Vec<Roster> = people
             .into_iter()
             .map(|(channel_id, people)| Roster {
+                cameras: cameras
+                    .remove(&channel_id)
+                    .map(|set| set.into_iter().collect())
+                    .unwrap_or_default(),
+                screens: screens
+                    .remove(&channel_id)
+                    .map(|set| set.into_iter().collect())
+                    .unwrap_or_default(),
                 channel_id,
                 people: people.into_iter().collect(),
                 ..Roster::default()
@@ -1607,6 +1643,22 @@ mod tests {
             collab_types::PeerPresencePayload::Availability {
                 state: Availability::default().id().to_owned(),
                 call,
+                camera: false,
+                screen: false,
+            },
+        )
+    }
+
+    /// `from` is in the call `call` names, with their camera and screen as
+    /// `camera` and `screen` say.
+    fn availability_showing(from: u8, call: String, camera: bool, screen: bool) -> NetEvent {
+        presence(
+            from,
+            collab_types::PeerPresencePayload::Availability {
+                state: Availability::default().id().to_owned(),
+                call: Some(call),
+                camera,
+                screen,
             },
         )
     }
@@ -2080,5 +2132,64 @@ mod tests {
         );
         // The session keeps a runtime of its own, which blocking drop ends.
         tokio::task::block_in_place(|| drop(session));
+    }
+
+    /// A channel's roster says who in it has a camera or a screen on, as the
+    /// presence of their devices says: theirs and this device's own alike.
+    #[test]
+    fn a_channels_roster_says_who_has_a_camera_or_screen_on() {
+        let mine = Client::untethered(
+            public(0xf0),
+            OwnPresence {
+                user: Some(person(0xf0)),
+                ..OwnPresence::default()
+            },
+        );
+        mine.follow_desktop(&desk_tree());
+        // Two people in the channel, sending nothing: in it, with neither
+        // on.
+        for (seed, label) in [(0xaa, "Framework 16"), (0xbb, "ThinkPad")] {
+            mine.hear(hello(seed, label));
+            mine.hear(presence(seed, collab_types::PeerPresencePayload::Arrived));
+            mine.hear(availability(seed, Some(call_presence())));
+        }
+
+        let calls = Calls::new();
+        calls.follow(&mine, None);
+        let roster = |calls: &Calls| {
+            calls
+                .rosters()
+                .into_iter()
+                .find(|roster| roster.channel_id == CHANNEL)
+                .expect("the channel the peers are in")
+        };
+        // A roster lists people by the id everyone here knows them by.
+        let heard = roster(&calls);
+        assert_eq!(heard.people, [person(0xbb), person(0xaa)]);
+        assert!(heard.cameras.is_empty(), "{heard:?}");
+        assert!(heard.screens.is_empty(), "{heard:?}");
+
+        // Their camera on, their screen shared: the roster says so.
+        mine.hear(availability_showing(0xaa, call_presence(), true, true));
+        calls.follow(&mine, None);
+        let heard = roster(&calls);
+        assert_eq!(heard.cameras, [person(0xaa)]);
+        assert_eq!(heard.screens, [person(0xaa)]);
+
+        // This device's own camera is in the roster its apps read too,
+        // though nobody here hears it from this session.
+        let in_call = sync::InCall {
+            call: ui::CallPresence {
+                channel: CHANNEL.to_owned(),
+                name: "Standup".to_owned(),
+            },
+            camera: true,
+            screen: false,
+        };
+        calls.follow(&mine, Some(&in_call));
+        let heard = roster(&calls);
+        assert_eq!(heard.people, [person(0xf0), person(0xbb), person(0xaa)]);
+        assert_eq!(heard.cameras, [person(0xf0), person(0xaa)]);
+        assert_eq!(heard.screens, [person(0xaa)]);
     }
 }

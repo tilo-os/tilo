@@ -72,11 +72,18 @@ pub enum PeerPresencePayload {
         automatic: bool,
     },
     /// How available the sender is (`available`, `focusing`, `away`,
-    /// `idle`) and the voice channel they are in. Desktop presence: shells
-    /// show it, apps never receive it.
+    /// `idle`), the voice channel they are in, and whether their camera and
+    /// screen are on there. Desktop presence: shells show it, apps never
+    /// receive it.
+    ///
+    /// `camera` and `screen` end the message: adding them changed what a
+    /// device reads after `call`, so the interface's version was raised with
+    /// them.
     Availability {
         state: String,
         call: Option<String>,
+        camera: bool,
+        screen: bool,
     },
     /// What the sender says beside their pointer (cursor chat) in a room
     /// with no live plane: `text` while the bubble is open (empty with
@@ -139,6 +146,8 @@ mod tests {
             PeerPresencePayload::Availability {
                 state: "idle".into(),
                 call: Some("voice".into()),
+                camera: true,
+                screen: false,
             },
             PeerPresencePayload::Chat {
                 text: Some("look at the second paragraph".into()),

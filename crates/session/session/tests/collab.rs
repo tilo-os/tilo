@@ -19,7 +19,7 @@ use collab_types::presence::{PointerSpace, PresenceKey};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desk_verbs::CHROME_RESOURCE;
+use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_model::{
     DesktopTree, GroupId, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
     WindowWidth, Workspace, WorkspaceId,
@@ -88,12 +88,25 @@ fn said(from: u8, msg: NeighbourMsg) -> NetEvent {
     }
 }
 
+/// The person `seed` is, in the hex everyone here knows them by.
+fn person(seed: u8) -> String {
+    hex::encode(
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .to_bytes(),
+    )
+}
+
 /// A device's identity: the person it is a device of, and its name here.
 fn hello(from: u8, label: &str) -> NetEvent {
-    let device_key = device(from);
-    let root = ed25519_dalek::SigningKey::from_bytes(&[from; 32]);
+    hello_of(from, from, label)
+}
+
+/// The device `device` of the person `person`: their certificate here.
+fn hello_of(person: u8, at: u8, label: &str) -> NetEvent {
+    let device_key = device(at);
+    let root = ed25519_dalek::SigningKey::from_bytes(&[person; 32]);
     let mut cert = tilo_user_identity::DeviceCert {
-        // Each device a person's own: two devices are two people here.
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: *device_key.as_bytes(),
         device_label: label.to_owned(),
@@ -111,7 +124,7 @@ fn hello(from: u8, label: &str) -> NetEvent {
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).expect("a certified device");
     said(
-        from,
+        at,
         NeighbourMsg::IdentityHello {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert),
@@ -193,6 +206,116 @@ fn press_faces(session: &mut Session) {
 /// The app id the desk says a bare window carries.
 const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
 
+/// The person this test's session is a device of, at another of their
+/// devices too.
+const QUINTEN: u8 = 0xf5;
+/// The channel a call in the workspace is in.
+const CHANNEL: &str = "c_standup";
+
+/// The channel's call, as a device in it publishes it.
+fn channel_call() -> String {
+    ui::CallPresence {
+        channel: CHANNEL.to_owned(),
+        name: "Standup".to_owned(),
+    }
+    .encode()
+}
+
+/// What the palette calls the channel's call row: what choosing it joins.
+fn call_row_label() -> String {
+    tilo_desktop_search::i18n::t_args("search-launcher-call-in", &[("channel", "Standup".into())])
+}
+
+/// The resource `id`, however deep the desk nests it.
+fn find(resources: &[tilo_actions::ResourceSpec], id: &str) -> Option<tilo_actions::ResourceSpec> {
+    resources.iter().find_map(|resource| {
+        if resource.id.as_str() == id {
+            Some(resource.clone())
+        } else {
+            find(&resource.children, id)
+        }
+    })
+}
+
+/// What the empty palette offers now, row by row: the calls in progress are
+/// among them, and what choosing one joins.
+fn palette_rows(session: &mut Session) -> Vec<String> {
+    // The palette lists what this device saw of who is here as of the last
+    // pass, so a pass runs before it opens.
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    session
+        .invoke(DESK_RESOURCE, "search", &Arguments::new())
+        .expect("the palette opens");
+    for _ in 0..8 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let search = find(&session.resources(), SEARCH_RESOURCE);
+    search
+        .map(|search| {
+            search
+                .children
+                .iter()
+                .filter(|row| row.kind == SEARCH_ROW_KIND)
+                .map(|row| row.label.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The channel's call is offered to join in the empty palette, and not once
+/// this person is in it: another device of theirs says so, as the presence a
+/// device publishes when it joins a call does.
+#[test]
+fn a_call_is_offered_until_this_person_is_in_it_on_another_device() {
+    let _settled = ui::motion::testing::settled();
+    let mine = OwnPresence {
+        label: "Quinten".to_owned(),
+        user: Some(person(QUINTEN)),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf1), mine));
+    let mut session = session(&sync);
+
+    // Someone else, here and in the channel's call with their camera on.
+    sync.hear(hello(0xaa, "Framework 16"));
+    sync.hear(presence(0xaa, collab_types::PeerPresencePayload::Arrived));
+    sync.hear(presence(
+        0xaa,
+        collab_types::PeerPresencePayload::Availability {
+            state: "available".to_owned(),
+            call: Some(channel_call()),
+            camera: true,
+            screen: false,
+        },
+    ));
+    let rows = palette_rows(&mut session);
+    assert!(
+        rows.contains(&call_row_label()),
+        "the call in progress is offered to join: {rows:?}"
+    );
+
+    // This person's laptop joins the same call: its presence says so, and
+    // this device offers no second join.
+    sync.hear(hello_of(QUINTEN, 0xf0, "ThinkPad"));
+    sync.hear(presence(0xf0, collab_types::PeerPresencePayload::Arrived));
+    sync.hear(presence(
+        0xf0,
+        collab_types::PeerPresencePayload::Availability {
+            state: "available".to_owned(),
+            call: Some(channel_call()),
+            camera: false,
+            screen: false,
+        },
+    ));
+    let rows = palette_rows(&mut session);
+    assert!(
+        !rows.contains(&call_row_label()),
+        "no join for a call this person is in: {rows:?}"
+    );
+}
+
 #[test]
 fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     let _settled = ui::motion::testing::settled();
@@ -212,6 +335,8 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
         collab_types::PeerPresencePayload::Availability {
             state: "away".to_owned(),
             call: None,
+            camera: false,
+            screen: false,
         },
     ));
     sync.hear(pointer(0xaa, 12.0, 34.0));
@@ -268,6 +393,8 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
             collab_types::PeerPresencePayload::Availability {
                 state: state.to_owned(),
                 call: None,
+                camera: false,
+                screen: false,
             },
         ));
     }
@@ -300,6 +427,8 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
         collab_types::PeerPresencePayload::Availability {
             state: "focusing".to_owned(),
             call: None,
+            camera: false,
+            screen: false,
         },
     ));
     for _ in 0..4 {
@@ -324,6 +453,8 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
                 }
                 .encode(),
             ),
+            camera: false,
+            screen: false,
         },
     ));
     for _ in 0..4 {

@@ -771,13 +771,16 @@ impl Plane {
                 })
                 .unwrap_or_else(|| self.calls.name(&call.channel))
         });
-        let presence = own.as_ref().map(|call| ui::CallPresence {
-            channel: call.channel.clone(),
-            name,
+        let presence = own.as_ref().map(|call| crate::sync::InCall {
+            call: ui::CallPresence {
+                channel: call.channel.clone(),
+                name,
+            },
+            camera: call.camera,
+            screen: call.screen,
         });
-        sync.in_call(presence);
-        self.calls
-            .follow(sync, own.as_ref().map(|call| call.channel.as_str()));
+        sync.in_call(presence.clone());
+        self.calls.follow(sync, presence.as_ref());
     }
 
     /// The broker the apps' runs are started on, while it serves one.

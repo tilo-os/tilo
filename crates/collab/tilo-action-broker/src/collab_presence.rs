@@ -43,9 +43,14 @@ pub fn payload_to_peer(payload: &PresencePayload) -> Option<PeerPresencePayload>
             text: text.clone(),
             automatic: *automatic,
         },
+        // The shell's local presence names the channel it is in and nothing of
+        // what it sends there: a device that has its camera on says so itself,
+        // on the wire.
         PresencePayload::Availability { state, call } => PeerPresencePayload::Availability {
             state: state.id().to_owned(),
             call: call.clone(),
+            camera: false,
+            screen: false,
         },
         // A draft under way in the resource the key names: carried to peers as its own
         // ephemeral frame. Nothing of the draft is ever in it.
@@ -101,7 +106,9 @@ pub fn decode_peer(
         PeerPresencePayload::Status { text, automatic } => {
             PresencePayload::Status { text, automatic }
         }
-        PeerPresencePayload::Availability { state, call } => PresencePayload::Availability {
+        // What a device sends in the call is for the roster, not for the local
+        // presence: a shell's roster says who is in a call, never a camera.
+        PeerPresencePayload::Availability { state, call, .. } => PresencePayload::Availability {
             state: ui::Availability::from_id(&state)
                 .ok_or_else(|| format!("availability {state:?} is unknown"))?,
             call,

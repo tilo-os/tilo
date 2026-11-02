@@ -82,9 +82,21 @@ pub struct OwnPresence {
     pub availability: Availability,
     /// The voice channel they are in here, if any: what everyone else's
     /// roster says beside their face.
-    pub call: Option<ui::CallPresence>,
+    pub call: Option<InCall>,
     /// Whose view they follow, by that member's publisher.
     pub following: Option<String>,
+}
+
+/// A device's call, as its presence carries it to everyone in the workspace:
+/// the channel it is in, and what it sends of the person there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InCall {
+    /// The channel's id and, once someone named it, its name.
+    pub call: ui::CallPresence,
+    /// This device's camera is on in the call.
+    pub camera: bool,
+    /// This device shares its screen in the call.
+    pub screen: bool,
 }
 
 /// A call in progress in a workspace, as the people in it say.
@@ -111,20 +123,37 @@ pub struct LiveCaller {
     /// The person behind the device (user root, hex), once its certificate
     /// was heard.
     pub user: Option<String>,
+    /// The device's camera is on in the call.
+    pub camera: bool,
+    /// The device shares its screen in the call.
+    pub screen: bool,
 }
 
 impl LiveCall {
     /// `peer` is in this call, as their presence says: one more in it, and
     /// the name they give it when nobody named it first.
-    fn join(&mut self, peer: &Peer, presence: &ui::CallPresence) {
+    fn join(&mut self, peer: &Peer, presence: &InCall) {
         if self.name.trim().is_empty() {
-            self.name.clone_from(&presence.name);
+            self.name.clone_from(&presence.call.name);
         }
         self.people.push(LiveCaller {
             id: peer.publisher.to_string(),
             label: peer.label.clone(),
             user: peer.user.clone(),
+            camera: presence.camera,
+            screen: presence.screen,
         });
+    }
+
+    /// Whether `person` is in this call, on any of their devices: what a
+    /// Join is not offered for.
+    fn joined_by(&self, person: Option<&str>) -> bool {
+        let Some(person) = person else {
+            return false;
+        };
+        self.people
+            .iter()
+            .any(|caller| caller.user.as_deref() == Some(person))
     }
 }
 
@@ -147,9 +176,9 @@ struct Peer {
     following: Option<String>,
     /// The last wave they sent at someone here.
     wave: Option<Wave>,
-    /// The call they are in, as their presence says: the channel's id and
-    /// what it is called.
-    call: Option<ui::CallPresence>,
+    /// The call they are in, as their presence says: the channel's id,
+    /// what it is called, and what their device sends there.
+    call: Option<InCall>,
     /// Where their pointer is: the tab of this workspace its tile shows, and the
     /// position on that tile in logical pixels from its corner.
     pointer: Option<(u64, f64, f64)>,
@@ -187,7 +216,7 @@ impl Peer {
             layout: None,
             following: self.following.clone(),
             availability: Some(self.availability.id().to_owned()),
-            call: self.call.as_ref().map(ui::CallPresence::encode),
+            call: self.call.as_ref().map(|call| call.call.encode()),
         }
     }
 }
@@ -237,10 +266,22 @@ impl Workspace {
                     PeerPresencePayload::Status { text, .. } => {
                         peer.status = Some(text.trim().to_owned()).filter(|text| !text.is_empty());
                     }
-                    PeerPresencePayload::Availability { state, call } => {
+                    PeerPresencePayload::Availability {
+                        state,
+                        call,
+                        camera,
+                        screen,
+                    } => {
                         peer.availability =
                             Availability::from_id(state).unwrap_or(Availability::Available);
-                        peer.call = call.as_deref().and_then(ui::CallPresence::decode);
+                        peer.call =
+                            call.as_deref()
+                                .and_then(ui::CallPresence::decode)
+                                .map(|call| InCall {
+                                    call,
+                                    camera: *camera,
+                                    screen: *screen,
+                                });
                     }
                     PeerPresencePayload::Following { target } => {
                         peer.following.clone_from(target);
@@ -333,7 +374,7 @@ impl Workspace {
             };
             let at = calls
                 .iter()
-                .position(|known| known.channel == presence.channel);
+                .position(|known| known.channel == presence.call.channel);
             if let Some(at) = at {
                 if let Some(call) = calls.get_mut(at) {
                     call.join(peer, presence);
@@ -341,8 +382,8 @@ impl Workspace {
             } else {
                 let mut call = LiveCall {
                     workspace: self.id.clone(),
-                    channel: presence.channel.clone(),
-                    name: presence.name.clone(),
+                    channel: presence.call.channel.clone(),
+                    name: presence.call.name.clone(),
                     people: Vec::new(),
                 };
                 call.join(peer, presence);
@@ -868,13 +909,32 @@ impl Client {
     /// This device joined `call`, or left it (`None`): said again in the
     /// workspace in front, so everyone here reads which channel this person is
     /// in beside their face. Whether that changed anything.
-    pub fn in_call(&self, call: Option<ui::CallPresence>) -> bool {
+    pub fn in_call(&self, call: Option<InCall>) -> bool {
         let mut own = self.own.borrow().clone();
         if own.call == call {
             return false;
         }
         own.call = call;
         self.set_own(own)
+    }
+
+    /// Whether this person is in the call in `channel`, on any of their
+    /// devices: what a Join is not offered for.
+    #[must_use]
+    pub fn is_in_call(&self, channel: &str) -> bool {
+        let own = self.own.borrow();
+        if own
+            .call
+            .as_ref()
+            .is_some_and(|call| call.call.channel == channel)
+        {
+            return true;
+        }
+        let user = own.user.clone();
+        drop(own);
+        self.calls()
+            .iter()
+            .any(|call| call.channel == channel && call.joined_by(user.as_deref()))
     }
 
     /// Follow `tree`'s workspaces: take part in each, leave the
@@ -1448,7 +1508,9 @@ impl Client {
             PeerPresencePayload::Arrived,
             PeerPresencePayload::Availability {
                 state: own.availability.id().to_owned(),
-                call: own.call.as_ref().map(ui::CallPresence::encode),
+                call: own.call.as_ref().map(|call| call.call.encode()),
+                camera: own.call.as_ref().is_some_and(|call| call.camera),
+                screen: own.call.as_ref().is_some_and(|call| call.screen),
             },
         ];
         if let Some(status) = own.status {
@@ -1625,7 +1687,7 @@ impl Client {
             layout: None,
             following: own.following,
             availability: Some(own.availability.id().to_owned()),
-            call: own.call.as_ref().map(ui::CallPresence::encode),
+            call: own.call.as_ref().map(|call| call.call.encode()),
         }
     }
 
