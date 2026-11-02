@@ -26,7 +26,6 @@
     reason = "native host runner: the GPU render worker is a dedicated thread"
 )]
 
-pub(crate) mod cpu_raster;
 #[cfg(test)]
 mod deferred_pipelines_tests;
 mod native_gpu_trace;
@@ -50,7 +49,6 @@ use std::thread::JoinHandle;
 #[path = "render_timing.rs"]
 pub(crate) mod timing;
 
-use crate::damage::{coalesce_regions, pixel_rect};
 use crate::gpu::RenderContext;
 #[cfg(test)]
 use crate::retained_raster::{DamageCache, rasterize_damage};
@@ -123,13 +121,6 @@ static SURFACE_LOSS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(No
 static FIRST_FRAME_BACKDROP_RECORDED: AtomicBool = AtomicBool::new(false);
 
 /// Record why the drawing surface was lost; the first reason is the cause.
-/// Whether a window on this adapter rasterizes its frames on the CPU
-/// (`cpu_raster`) and uploads the pixels, instead of running vello's compute
-/// pipelines on an emulated GPU. Vello then draws only backdrop blurs.
-pub fn rasterizes_on_cpu(adapter: &vello::wgpu::AdapterInfo) -> bool {
-    adapter.device_type == vello::wgpu::DeviceType::Cpu
-}
-
 fn note_surface_loss(reason: String) {
     let mut slot = SURFACE_LOSS.lock_recover();
     slot.get_or_insert(reason);
@@ -449,7 +440,7 @@ pub(crate) fn spawn_render_thread_deferred(
             }
             let mut first_present_recorded = false;
             let mut present_hooks: Vec<PresentHook> = Vec::new();
-            let mut raster = RetainedRaster::new(rasterizes_on_cpu(
+            let mut raster = RetainedRaster::new(crate::gpu::rasterizes_on_cpu(
                 &render_cx.devices[surface.dev_id].adapter.get_info(),
             ));
             if raster.on_cpu() {
@@ -1188,7 +1179,7 @@ fn render_one_frame(
     } else if damage_only {
         raster.rasterize_damage_only(gpu, renderer, target, frame)
     } else {
-        raster.rasterize(gpu, renderer, target, frame)
+        raster.rasterize(gpu, Some(renderer), target, frame)
     };
     if present_dbg && let Some(stats) = backdrop_stats {
         eprintln!(
@@ -1311,7 +1302,7 @@ fn render_one_frame(
                 .collect(),
         )
     };
-    let damage = bounded_present_damage(width, height, &presented)
+    let damage = crate::damage::bounded_present_damage(width, height, &presented)
         .filter(|_| !frame.full_redraw && frame.backdrop.is_empty());
     tilo_presentation::set_next_present_damage(
         &surface.surface,
@@ -1384,49 +1375,19 @@ fn render_one_frame(
     FrameOutcome::Presented
 }
 
-fn bounded_present_damage(
-    width: u32,
-    height: u32,
-    damage: &[Rect],
-) -> Option<Vec<tilo_presentation::DamageRect>> {
-    if width == 0 || height == 0 || damage.is_empty() || damage.len() > 128 {
-        return None;
-    }
-    let mut regions = Vec::with_capacity(damage.len());
-    for rect in damage {
-        if !rect.is_finite() || rect.x1 < rect.x0 || rect.y1 < rect.y0 {
-            return None;
-        }
-        regions.extend(pixel_rect(*rect, width, height));
-    }
-    if regions.is_empty() {
-        return None;
-    }
-    Some(
-        coalesce_regions(regions)
-            .into_iter()
-            .map(|rect| tilo_presentation::DamageRect {
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-            })
-            .collect(),
-    )
-}
-
 /// Whether the render worker repaints a frame of `width` × `height` with
 /// `damage` (physical pixels) from its scene region by region, never
 /// whole: what a frame drawn for its damage only needs
 /// (`crate::draw_cull`).
 pub(crate) fn renders_damage_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
-    bounded_present_damage(width, height, damage).is_some()
+    crate::damage::bounded_present_damage(width, height, damage).is_some()
         && crate::retained_raster::repaints_alone(width, height, damage)
 }
 
 #[cfg(test)]
 mod present_damage_tests {
-    use super::{Rect, bounded_present_damage};
+    use super::Rect;
+    use crate::damage::bounded_present_damage;
 
     #[test]
     fn presentation_hints_cover_every_changed_framebuffer_pixel() {
@@ -1949,7 +1910,7 @@ mod retained_damage_tests {
         let gpu = crate::offscreen::shared_gpu().expect("GPU context for CPU upload oracle");
         let (retained, _) = target(&gpu.device);
         let (oracle, _) = target(&gpu.device);
-        let mut canvas = cpu_raster::CpuCanvas::new();
+        let mut canvas = crate::cpu_raster::CpuCanvas::new();
         let first = [Item {
             rect: Rect::new(30.0, 25.0, 75.0, 60.0),
             color: [220, 60, 30],
@@ -1970,7 +1931,7 @@ mod retained_damage_tests {
             ))
             .expect("damaged CPU frame");
         canvas.upload(&gpu.queue, &retained);
-        let mut full = cpu_raster::CpuCanvas::new();
+        let mut full = crate::cpu_raster::CpuCanvas::new();
         full.rasterize(&content(&scene_of(&next), Color::TRANSPARENT, &[], true))
             .expect("full CPU oracle");
         full.upload(&gpu.queue, &oracle);
@@ -2101,7 +2062,7 @@ mod retained_damage_tests {
             "GPU: the copied frame differs from a full render"
         );
 
-        let mut canvas = cpu_raster::CpuCanvas::new();
+        let mut canvas = crate::cpu_raster::CpuCanvas::new();
         let (cpu_texture, _) = target(device);
         canvas
             .rasterize(&frame(&before, &[], &[], true))
@@ -2111,7 +2072,7 @@ mod retained_damage_tests {
             .rasterize(&frame(&after, &exposed, &copies, false))
             .expect("scrolled CPU frame");
         canvas.upload(queue, &cpu_texture);
-        let mut full = cpu_raster::CpuCanvas::new();
+        let mut full = crate::cpu_raster::CpuCanvas::new();
         let (cpu_oracle, _) = target(device);
         full.rasterize(&frame(&after, &[], &[], true))
             .expect("full CPU oracle");

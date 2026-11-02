@@ -45,8 +45,8 @@ thread_local! {
     static GPU_SETUPS: RefCell<std::collections::VecDeque<GpuSetup>> =
         const { RefCell::new(std::collections::VecDeque::new()) };
     static GPU_SETUP_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// The device and renderer `prepare_gpu` opens before any mount asks for
-    /// one; the first `shared_gpu` takes it.
+    /// The device `prepare_gpu` opens before any mount asks for one; the
+    /// first `shared_gpu` takes it.
     static PREPARED_GPU: RefCell<Option<PreparedGpu>> = const { RefCell::new(None) };
     /// What the device's set-up waits on now, for a mount whose first frame
     /// is late (`watch_first_frame`).
@@ -302,7 +302,10 @@ struct Request {
 /// tabs share.
 struct SharedGpu {
     cx: ui::gpu::RenderContext,
-    renderer: vello::Renderer,
+    /// Vello's renderer, once its pipelines are compiled. The page's frames
+    /// rasterize on the CPU until then (`Retained::switch_raster`), so the
+    /// desk is on screen while the browser compiles instead of after.
+    renderer: Option<vello::Renderer>,
     failure: Arc<Mutex<Option<String>>>,
     /// Mounts rendering with this device; a loss or error wakes each.
     mounts: Arc<Mutex<Vec<u64>>>,
@@ -364,7 +367,8 @@ fn poll_bump_counters() -> Option<ui::time::Duration> {
     let mut guard = shared.try_borrow_mut().ok()?;
     let shared = &mut *guard;
     let handle = shared.cx.devices.get(shared.device)?;
-    shared.overflows.poll(&mut shared.renderer, &handle.device)
+    let renderer = shared.renderer.as_mut()?;
+    shared.overflows.poll(renderer, &handle.device)
 }
 
 /// Stop rendering `id` with the shared device, and release the device once
@@ -1581,20 +1585,19 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>, caps: SurfaceCa
     });
 }
 
-/// A device opened, and vello's pipelines compiled on it, ahead of the first
-/// surface.
+/// A device opened ahead of the first surface.
 enum PreparedGpu {
     /// Opening; the promise resolves once `Ready` replaced this.
     Opening(js_sys::Promise),
-    Ready(Box<Result<(ui::gpu::RenderContext, vello::Renderer), String>>),
+    Ready(Box<Result<ui::gpu::RenderContext, String>>),
 }
 
-/// Open the WebGPU device and compile the renderer's pipelines now, while the
-/// page opens the workspace, rather than once the first mount's canvas
-/// exists: the first surface then only configures its canvas on a device
-/// that is ready. Without a mount nothing else happens; the first mount
-/// takes what this opened, and one that comes before it is done waits for
-/// it. Does nothing once a device exists or is being opened.
+/// Open the WebGPU device now, while the page opens the workspace, rather
+/// than once the first mount's canvas exists: the first surface then only
+/// configures its canvas on a device that is ready. Without a mount nothing
+/// else happens; the first mount takes what this opened, and one that comes
+/// before it is done waits for it. Does nothing once a device exists or is
+/// being opened.
 ///
 /// The entry page calls this once a host let it in, never before: the
 /// browser does not cancel the compiles of a page torn down meanwhile, and
@@ -1612,7 +1615,7 @@ pub fn prepare_gpu() {
     let opened = js_sys::Promise::new(&mut |done, _| resolve = Some(done));
     PREPARED_GPU.set(Some(PreparedGpu::Opening(opened)));
     wasm_bindgen_futures::spawn_local(async move {
-        let ready = open_gpu().await;
+        let ready = open_device().await;
         PREPARED_GPU.set(Some(PreparedGpu::Ready(Box::new(ready))));
         if let Some(done) = resolve {
             let _ = done.call0(&JsValue::NULL);
@@ -1620,19 +1623,16 @@ pub fn prepare_gpu() {
     });
 }
 
-async fn open_gpu() -> Result<(ui::gpu::RenderContext, vello::Renderer), String> {
+async fn open_device() -> Result<ui::gpu::RenderContext, String> {
     let mut cx = ui::gpu::RenderContext::new();
     GPU_STEP.set(GpuStep::Device);
-    let index = cx.device(None).await.ok_or("no WebGPU device")?;
-    let handle = cx.devices.get(index).ok_or("WebGPU device missing")?;
-    GPU_STEP.set(GpuStep::Pipelines);
-    let renderer = new_renderer(&handle.device).await?;
-    Ok((cx, renderer))
+    cx.device(None).await.ok_or("no WebGPU device")?;
+    Ok(cx)
 }
 
 /// What `prepare_gpu` opened, once it is done; `None` when it was never
 /// called or its device was already taken.
-async fn take_prepared_gpu() -> Option<Result<(ui::gpu::RenderContext, vello::Renderer), String>> {
+async fn take_prepared_gpu() -> Option<Result<ui::gpu::RenderContext, String>> {
     let opening = PREPARED_GPU.with_borrow(|prepared| match prepared {
         Some(PreparedGpu::Opening(opened)) => Some(opened.clone()),
         _ => None,
@@ -1673,10 +1673,11 @@ fn compile_deferred_pipelines_later() {
             };
             if let Ok(mut shared) = shared.try_borrow_mut() {
                 let shared = &mut *shared;
+                let Some(renderer) = shared.renderer.as_mut() else {
+                    return;
+                };
                 if let Some(handle) = shared.cx.devices.get(shared.device) {
-                    shared
-                        .renderer
-                        .start_deferred_pipelines_async(&handle.device);
+                    renderer.start_deferred_pipelines_async(&handle.device);
                 }
                 return;
             }
@@ -1747,11 +1748,11 @@ async fn shared_gpu(
     // A preparation that failed is tried again here, so its error is this
     // surface's.
     let (mut cx, prepared) = match take_prepared_gpu().await {
-        Some(Ok((cx, renderer))) => (cx, Some(renderer)),
-        Some(Err(_)) | None => (ui::gpu::RenderContext::new(), None),
+        Some(Ok(cx)) => (cx, true),
+        Some(Err(_)) | None => (ui::gpu::RenderContext::new(), false),
     };
     // Without a prepared device, the surface's creation opens one.
-    GPU_STEP.set(if prepared.is_some() {
+    GPU_STEP.set(if prepared {
         GpuStep::Surface
     } else {
         GpuStep::Device
@@ -1769,22 +1770,9 @@ async fn shared_gpu(
         .devices
         .get(surface.dev_id)
         .ok_or("WebGPU device missing")?;
-    let mut renderer = match prepared {
-        // Prepared on the context's first device, which presents to any
-        // canvas on WebGPU.
-        Some(renderer) if surface.dev_id == 0 => renderer,
-        _ => {
-            GPU_STEP.set(GpuStep::Pipelines);
-            new_renderer(&handle.device).await?
-        }
-    };
-    if caps == SurfaceCaps::CONSERVATIVE {
-        renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);
-        renderer.set_bump_budget_grow_once(true);
-        renderer.set_image_atlas_max(CONSERVATIVE_IMAGE_ATLAS_MAX);
-    } else {
-        renderer.set_bump_budget_limit(MAX_BUMP_BUDGET_BYTES);
-    }
+    // The device presents to any canvas on WebGPU; its renderer compiles on
+    // it below, behind the frames the page draws on the CPU meanwhile.
+    let device = handle.device.clone();
     let p = proxy().map_err(|e| format!("{e:?}"))?;
     let failure = Arc::new(Mutex::new(None));
     let mounts: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1813,7 +1801,7 @@ async fn shared_gpu(
     };
     let shared = Rc::new(RefCell::new(SharedGpu {
         cx,
-        renderer,
+        renderer: None,
         failure,
         mounts,
         video_pictures: crate::video_pictures::VideoPictures::default(),
@@ -1826,7 +1814,46 @@ async fn shared_gpu(
     ui::offscreen::provide_page_gpu(Some(page_gpu));
     // A renderer made anew (after a lost device) compiles its own.
     DEFERRED_PIPELINES_ASKED.set(false);
+    compile_renderer(Rc::clone(&shared), device, caps);
     Ok((shared, surface))
+}
+
+/// Compile the shared renderer's pipelines behind the page's frames: the
+/// first frames rasterize on the CPU ([`SharedGpu::renderer`] is `None`), and
+/// the frame after this installs the renderer repaints the target whole on
+/// the GPU, so the desk is on screen at once instead of after the compiles.
+fn compile_renderer(shared: Rc<RefCell<SharedGpu>>, device: wgpu::Device, caps: SurfaceCaps) {
+    GPU_STEP.set(GpuStep::Pipelines);
+    wasm_bindgen_futures::spawn_local(async move {
+        let made = new_renderer(&device).await;
+        let failed = made.is_err();
+        if let Ok(mut shared) = shared.try_borrow_mut() {
+            let shared = &mut *shared;
+            match made {
+                Ok(mut renderer) => {
+                    if caps == SurfaceCaps::CONSERVATIVE {
+                        renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);
+                        renderer.set_bump_budget_grow_once(true);
+                        renderer.set_image_atlas_max(CONSERVATIVE_IMAGE_ATLAS_MAX);
+                    } else {
+                        renderer.set_bump_budget_limit(MAX_BUMP_BUDGET_BYTES);
+                    }
+                    shared.renderer = Some(renderer);
+                }
+                Err(why) => *shared.failure.lock_recover() = Some(why),
+            }
+            // Every mount draws the next frame: on the GPU, or on the CPU
+            // still when the device could not.
+            if let Ok(p) = proxy() {
+                for &id in shared.mounts.lock_recover().iter() {
+                    let _ = p.send_event(id);
+                }
+            }
+        }
+        if failed {
+            wake_desktops();
+        }
+    });
 }
 
 /// Leases are synchronous and never cross await. A nested future retains its
@@ -1884,7 +1911,9 @@ async fn set_up_gpu(setup: GpuSetup) {
                 m.gpu = Some(Gpu {
                     shared,
                     surface,
-                    retained: Retained::new(),
+                    // The renderer's pipelines are still compiling: the first
+                    // frame rasterizes on the CPU (`Retained::switch_raster`).
+                    retained: Retained::new(true),
                     pacing: crate::frame_pacing::FramePacing::default(),
                 });
                 m.viewport.surface_installed();
@@ -2305,6 +2334,12 @@ impl Mount {
             .devices
             .get(gpu.surface.dev_id)
             .ok_or("WebGPU device missing")?;
+        // Until the renderer's pipelines are compiled, frames rasterize on the
+        // CPU: the desk is on screen while the browser compiles instead of
+        // after it. The first frame the renderer draws repaints this target
+        // whole (`Retained::switch_raster` forgets what it held): pixels the
+        // CPU drew are not pixels the GPU's renderer drew.
+        gpu.retained.switch_raster(shared.renderer.is_none());
         let key = ui::retained_raster::TargetKey {
             width: viewport.width,
             height: viewport.height,
@@ -2328,12 +2363,15 @@ impl Mount {
             texture: &gpu.surface.target_texture,
             view: &gpu.surface.target_view,
         };
-        shared
-            .video_pictures
-            .copy(&handle.device, &handle.queue, &mut shared.renderer);
-        let rasterized = gpu.retained.raster.repaint(
+        // The video pictures are the renderer's: they wait with it.
+        if let Some(renderer) = shared.renderer.as_mut() {
+            shared
+                .video_pictures
+                .copy(&handle.device, &handle.queue, renderer);
+        }
+        let (rasterized, _) = gpu.retained.raster.rasterize(
             (&handle.device, &handle.queue),
-            &mut shared.renderer,
+            shared.renderer.as_mut(),
             target,
             ui::retained_raster::FrameContent {
                 scene: &physical,
@@ -2398,7 +2436,7 @@ impl Mount {
         check_retained(
             &mut gpu.retained,
             &gpu.surface,
-            &mut shared.renderer,
+            shared.renderer.as_mut(),
             handle,
             whole.as_ref().unwrap_or(&physical),
             key,

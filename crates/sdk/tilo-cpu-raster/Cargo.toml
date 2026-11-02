@@ -10,10 +10,18 @@ description = "Rasterizes a recorded vello scene on the CPU through vello_cpu, f
 
 [dependencies]
 vello_encoding.workspace = true
-vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "u8_pipeline", "multithreading"] }
+vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "u8_pipeline"] }
 skrifa = { version = "0.44.0", default-features = false, features = ["std", "autohint_shaping"] }
 smallvec = "1.15.1"
+# The frame statistics' clock: `std::time::Instant` has none in a page, where
+# this reads `performance.now()`.
+web-time = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+# A page renders on its one thread, so `Options::threads` is a no-op there.
+vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "u8_pipeline", "multithreading"] }
 
 [dev-dependencies]
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }

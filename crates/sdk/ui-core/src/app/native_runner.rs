@@ -1036,7 +1036,7 @@ impl NativeRendererPlan {
         // render worker starts the rest once that frame is presented. On a
         // software adapter the worker rasterizes frames on the CPU and vello draws
         // only backdrop blurs, so none of its pipelines are on the way there.
-        let software = crate::render_thread::rasterizes_on_cpu(&device_handle.adapter.get_info());
+        let software = crate::gpu::rasterizes_on_cpu(&device_handle.adapter.get_info());
         let deferral = if software {
             vello::PipelineDeferral::All
         } else {
