@@ -1020,7 +1020,7 @@ fn a_tile_nothing_has_painted_asks_for_no_frame_of_its_own() {
 fn a_painted_placeholder_asks_for_the_frame_its_next_step_shows_in() {
     let t0 = crate::time::now();
     let theme = Theme::default();
-    let (mut host, _) = crate::time::testing::with_monotonic_time(t0, || {
+    let (host, _) = crate::time::testing::with_monotonic_time(t0, || {
         let mut host = TileHost::new(TileContent::Arriving);
         host.rect = Rect::new(50.0, 50.0, 350.0, 250.0);
         let _ = paint(&mut host, &theme);
@@ -1035,6 +1035,37 @@ fn a_painted_placeholder_asks_for_the_frame_its_next_step_shows_in() {
         assert!(
             Widget::needs_redraw(&host),
             "the skeleton replaced the ground the person saw"
+        );
+    });
+}
+
+#[test]
+fn a_tile_holding_only_a_placeholder_reports_no_damage_once_its_steps_are_past() {
+    // Its tab shows the client's own buffer: the tile has no child to ask,
+    // and the toolkit's default reads that as "ask again". A desk keeps such
+    // a tile for every window, and painted itself again on every frame for
+    // as long as the session ran.
+    let t0 = crate::time::now();
+    let theme = Theme::default();
+    let mut host = crate::time::testing::with_monotonic_time(t0, || {
+        let mut host = TileHost::new(TileContent::Arriving);
+        host.rect = Rect::new(50.0, 50.0, 350.0, 250.0);
+        host
+    });
+    let late = t0 + crate::arriving::NAME_SOURCE_AFTER;
+    crate::time::testing::with_monotonic_time(late, || {
+        let _ = paint(&mut host, &theme);
+        host.mark_drawn();
+        assert!(
+            !Widget::needs_redraw(&host) || host.is_arriving(),
+            "a step due is the arrival's to ask for, and none is left"
+        );
+    });
+    let after = late + crate::time::Duration::from_millis(16);
+    crate::time::testing::with_monotonic_time(after, || {
+        assert!(
+            !Widget::needs_redraw(&host),
+            "the placeholder has stepped as far as it goes"
         );
     });
 }

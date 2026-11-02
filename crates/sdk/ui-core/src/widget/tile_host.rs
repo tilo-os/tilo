@@ -2150,7 +2150,14 @@ impl Widget for TileHost {
         if self.arrival_step(now).is_some() {
             return false;
         }
-        super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
+        // A tile with nothing under it has nothing to ask: everything it
+        // shows is its arrival, answered above. The default reads "no child
+        // changed" as "ask again", and a tile whose tab holds the client's
+        // own buffer has no child at all, so it asked on every frame for as
+        // long as the session ran.
+        let mut children = 0usize;
+        self.for_each_child(&mut |_| children += 1);
+        children > 0 && super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
     fn mark_drawn(&mut self) {
         self.drop_ended_hold();
