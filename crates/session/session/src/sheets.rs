@@ -57,7 +57,7 @@ impl<S: Seat> Sheet<S> {
             scale,
         };
         Ok(Self {
-            host: AppHost::new(app, placement),
+            host: AppHost::new(app, placement).named(definition.title()),
             seat,
             outputs: Vec::new(),
             always_serving: false,
@@ -205,6 +205,27 @@ impl<S: Seat> Published for Sheet<S> {
 
     fn offered(&self) -> bool {
         self.always_serving || self.open()
+    }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        // A sheet that is down shows nothing to read, even one whose
+        // actions stay offered while it is.
+        if !self.drawn() {
+            return None;
+        }
+        Published::a11y_tree(&mut self.host)
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        Published::a11y_name(&self.host)
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        self.drawn() && Published::a11y_action(&mut self.host, target, action)
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        SurfaceHost::wants_keyboard(self)
     }
 }
 

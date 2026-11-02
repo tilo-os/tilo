@@ -53,7 +53,7 @@ impl Banners {
         scale: f64,
     ) -> Self {
         Self {
-            host: AppHost::new(app, placement(0, 0, 1, 1, scale)),
+            host: AppHost::new(app, placement(0, 0, 1, 1, scale)).named("Notifications"),
             link,
             desk,
             outputs: Vec::new(),
@@ -125,6 +125,22 @@ impl Published for Banners {
     fn accessible_labels(&mut self) -> Vec<String> {
         self.host.accessible_labels()
     }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        self.host.a11y_tree()
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        Published::a11y_name(&self.host)
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        Published::a11y_action(&mut self.host, target, action)
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        SurfaceHost::wants_keyboard(self)
+    }
 }
 
 impl SurfaceHost for Banners {
@@ -153,7 +169,7 @@ impl SurfaceHost for Banners {
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.host.wants_keyboard()
+        SurfaceHost::wants_keyboard(&self.host)
     }
 
     fn key(&mut self, key: &HostKey) {
@@ -258,7 +274,8 @@ impl Readout {
                     scale,
                 },
                 false,
-            ),
+            )
+            .named("Readout"),
             places,
             display: None,
         }
@@ -323,6 +340,22 @@ impl Published for Readout {
 
     fn locked_resources(&mut self) -> Vec<ResourceSpec> {
         self.resources()
+    }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        Published::a11y_tree(&mut self.host)
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        Published::a11y_name(&self.host)
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        Published::a11y_action(&mut self.host, target, action)
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        SurfaceHost::wants_keyboard(self)
     }
 }
 
@@ -424,7 +457,7 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.0.borrow().wants_keyboard()
+        SurfaceHost::wants_keyboard(&*self.0.borrow())
     }
 
     fn key(&mut self, key: &HostKey) {

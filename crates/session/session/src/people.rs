@@ -185,6 +185,32 @@ impl Published for People {
         Err(DoorError::Unknown(address.clone()))
     }
 
+    fn revision(&self) -> Option<u64> {
+        // The roster is up or down, and its rows are the frame the host drew:
+        // read it again only when one of those moved.
+        Some(self.host.borrow().revision() | (u64::from(self.open.get()) << 63))
+    }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        if self.open.get() {
+            self.host.borrow_mut().a11y_tree()
+        } else {
+            None
+        }
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        Some("People".to_owned())
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        self.open.get() && self.host.borrow_mut().a11y_action(target, action)
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        self.open.get()
+    }
+
     /// Who is here, as the open roster lists them: each person's name, what
     /// they are doing, and where they are.
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -242,7 +268,7 @@ pub(crate) fn mount(
         size: (1, 1),
         scale: options.scale,
     };
-    let mut host = WidgetHost::new(Box::new(panel), placement, false);
+    let mut host = WidgetHost::new(Box::new(panel), placement, false).named("People");
     host.set_theme((options.presentation)().theme);
     let wants = Rc::clone(&open);
     let host = host
@@ -296,7 +322,7 @@ impl SurfaceHost for Host {
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.0.borrow().wants_keyboard()
+        SurfaceHost::wants_keyboard(&*self.0.borrow())
     }
 
     fn key(&mut self, key: &HostKey) {
@@ -338,6 +364,26 @@ impl Published for Door {
 
     fn accessible_labels(&mut self) -> Vec<String> {
         self.0.borrow_mut().accessible_labels()
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.0.borrow().revision()
+    }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        self.0.borrow_mut().a11y_tree()
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        Published::a11y_name(&*self.0.borrow())
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        self.0.borrow_mut().a11y_action(target, action)
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        Published::wants_keyboard(&*self.0.borrow())
     }
 }
 
@@ -470,6 +516,14 @@ impl Widget for Panel {
 
     fn get_rect(&self) -> Rect {
         self.shown.borrow().area
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        if self.open.get() {
+            Some(self.shown.borrow().overlay.accessibility_snapshot())
+        } else {
+            None
+        }
     }
 
     fn is_layout_dirty(&self) -> bool {

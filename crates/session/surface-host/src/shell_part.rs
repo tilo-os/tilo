@@ -2065,7 +2065,11 @@ impl ShellPart {
             Box::new(window),
             placement,
             matches!(layer, ShellLayer::Screen),
-        );
+        )
+        .named(match layer {
+            ShellLayer::Bar => "Shell bar",
+            ShellLayer::Screen => "Desktop shell",
+        });
         widgets.install_wells(wells);
         let mut part = Self {
             widgets,
@@ -2659,6 +2663,23 @@ impl crate::Published for ShellPart {
     fn press(&mut self, name: &str) -> Result<(), String> {
         crate::Published::press(&mut self.widgets, name)
     }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        crate::Published::a11y_tree(&mut self.widgets)
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        crate::Published::a11y_name(&self.widgets)
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        self.input = true;
+        crate::Published::a11y_action(&mut self.widgets, target, action)
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        SurfaceHost::wants_keyboard(self)
+    }
 }
 
 /// The keysym of Tab, as the layout reports it: Alt+Tab and Alt+Shift+Tab walk the switcher.
@@ -2838,7 +2859,7 @@ impl SurfaceHost for ShellPart {
         // While a surface of the desk's is up it answers the keyboard: the switcher walks,
         // every surface closes on Esc, and a field in one takes what is typed. A modifier's
         // release reaches it this way too, since its press came before the surface was up.
-        self.cover || self.widgets.wants_keyboard()
+        self.cover || SurfaceHost::wants_keyboard(&self.widgets)
     }
 
     fn key(&mut self, key: &HostKey) {

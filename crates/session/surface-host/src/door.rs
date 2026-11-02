@@ -63,6 +63,32 @@ pub trait Published {
         Err(format!("no control named {name}"))
     }
 
+    /// What an assistive technology reads of it now: its semantic tree, the
+    /// same one the toolkit exports for an app's window. `None` while it
+    /// shows nothing (down, gone, or a surface with no tree of its own).
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        None
+    }
+
+    /// The name an assistive technology knows its window by.
+    fn a11y_name(&self) -> Option<String> {
+        None
+    }
+
+    /// Perform the accessibility action `action` on `target`, as a client
+    /// asked for it: exactly the path of a key or a press on the node.
+    /// Whether the node was there to act on.
+    fn a11y_action(&mut self, _target: ui::accesskit::NodeId, _action: &ui::a11y::Action) -> bool {
+        false
+    }
+
+    /// Whether it takes the keyboard now, as the compositor asks it before
+    /// handing a key to a client: an assistive technology needs the same
+    /// answer to know which of the session's windows is the focused one.
+    fn wants_keyboard(&self) -> bool {
+        false
+    }
+
     /// Where what it publishes stands: equal revisions publish the same.
     /// `None` when it cannot tell, and is read again every time.
     fn revision(&self) -> Option<u64> {
@@ -273,5 +299,21 @@ impl Doors {
             }
         }
         Err(format!("no control named {name}"))
+    }
+
+    /// The surfaces offering now, each with its place in the door: what the
+    /// accessibility exporter publishes, the last one topmost.
+    #[must_use]
+    pub fn offering(&self) -> Vec<(usize, Shared)> {
+        self.offered()
+            .into_iter()
+            .map(|(place, surface)| (place, Rc::clone(surface)))
+            .collect()
+    }
+
+    /// The surface at `place`, as [`Self::offering`] numbers it.
+    #[must_use]
+    pub fn surface(&self, place: usize) -> Option<Shared> {
+        self.surfaces.get(place).cloned()
     }
 }

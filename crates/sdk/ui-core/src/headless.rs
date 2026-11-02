@@ -4890,13 +4890,21 @@ impl FrameHarness {
     /// History presentation and no palette.
     #[doc(hidden)]
     pub fn a11y_tree_update(&self) -> accesskit::TreeUpdate {
+        self.a11y_tree_update_at(1.0)
+    }
+
+    /// [`Self::a11y_tree_update`] at the output's `scale`: the host's frames
+    /// are drawn in physical pixels, and so are the bounds an assistive
+    /// technology is told.
+    #[doc(hidden)]
+    pub fn a11y_tree_update_at(&self, scale: f64) -> accesskit::TreeUpdate {
         self.drain_component_wakes();
         let exported = self.bindings.exported_nodes(&self.node_map);
         build_tree_update_bound(
             self.root.as_ref(),
             &exported.nodes,
             exported.focus(self.focused),
-            1.0,
+            scale,
         )
     }
 

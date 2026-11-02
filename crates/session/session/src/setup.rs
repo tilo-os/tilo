@@ -220,6 +220,7 @@ fn ceremony(view: OnboardingView, placement: Placement) -> Surface {
 /// of the desk withholds it.
 fn covering(root: Box<dyn ui::Widget>, placement: Placement) -> WidgetHost {
     WidgetHost::new(root, placement, false)
+        .named("Setup")
         .covering_outputs()
         .with_keyboard(Rc::new(|| true))
 }
@@ -265,6 +266,26 @@ impl Published for Setup {
     fn press(&mut self, name: &str) -> Result<(), String> {
         self.serve();
         Published::press(self.widgets_mut(), name)
+    }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        if !self.up() {
+            return None;
+        }
+        self.serve();
+        Published::a11y_tree(self.widgets_mut())
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        Published::a11y_name(self.widgets())
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        self.up() && Published::a11y_action(self.widgets_mut(), target, action)
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        self.up()
     }
 
     fn offered(&self) -> bool {

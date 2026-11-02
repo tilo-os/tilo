@@ -671,6 +671,16 @@ pub fn build_tree_update<S: BuildHasher>(
     build_tree_update_with_resources(root, node_map, focused, scale, &[])
 }
 
+/// Name the window `update` belongs to: what an assistive technology reads
+/// as the window's title. A tree straight from a surface carries the generic
+/// window label; a session publishing several surfaces names each.
+pub fn name_window(update: &mut TreeUpdate, title: &str) {
+    let root = update.tree.as_ref().map_or(ROOT_ID, |tree| tree.root);
+    if let Some((_, node)) = update.nodes.iter_mut().find(|(id, _)| *id == root) {
+        node.set_label(title);
+    }
+}
+
 /// Build the widget accessibility tree and append the exact same live
 /// resource/action surface used by the palette, shell and collaboration API.
 /// Immediate operations expose `Click`; prompted operations expose `SetValue`

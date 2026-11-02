@@ -65,6 +65,8 @@ pub struct WidgetHost {
     /// with the closures that name the windows it pictures
     /// ([`SurfaceHost::window_pictures`]).
     previews: Option<ui::widget::Previews>,
+    /// What an assistive technology knows the tree's window by.
+    name: Option<String>,
 }
 
 impl WidgetHost {
@@ -108,6 +110,7 @@ impl WidgetHost {
             revision: 0,
             wells: None,
             previews: None,
+            name: None,
         }
     }
 
@@ -152,6 +155,14 @@ impl WidgetHost {
     #[must_use]
     pub fn with_window_pictures(mut self, pictures: Rc<dyn Fn() -> Vec<WindowPicture>>) -> Self {
         self.pictures = Some(pictures);
+        self
+    }
+
+    /// Name the tree's window for assistive technology: what a screen reader
+    /// says the person reached.
+    #[must_use]
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
         self
     }
 
@@ -286,6 +297,24 @@ impl crate::Published for WidgetHost {
             .invoke_published(&address.resource, &address.action, arguments);
         self.owed = true;
         started
+    }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        Some(self.host.a11y_tree_update_at(self.placement.scale))
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        self.name.clone()
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        let acted = self.host.perform_a11y_action(target, action).is_ok();
+        self.owed = true;
+        acted
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        SurfaceHost::wants_keyboard(self)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {

@@ -248,6 +248,11 @@ tilo-speaker-service = { path = "../speaker-service" }
 # device's traffic, decided here and carried out by the root helper.
 tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["session"] }
 tilo-bluetooth-agent = { path = "../bluetooth-agent" }
+# The session's own surfaces (the desk, the bar, the switcher, the panels and
+# the sheets) published over AT-SPI2: one AccessKit Unix adapter per surface,
+# carrying the semantic tree the toolkit already builds. The tokio feature
+# keeps its D-Bus executor on the workspace's single async runtime.
+accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 tilo-tray-host = { path = "../tray-host" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 # The desktop's event sounds (a notification's ring, a screenshot's click).

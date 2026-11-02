@@ -25,6 +25,7 @@
 
 #![cfg(target_os = "linux")]
 
+mod a11y;
 mod a11y_settings;
 mod activity;
 mod activity_models;
@@ -730,6 +731,10 @@ pub struct Session {
     machine: mount::power::PowerRun,
     /// The shell's bar, when its package started.
     shell: Option<shell::Shell>,
+    /// What assistive technology reads of the session's own surfaces: the
+    /// desk, the bar, the switcher, the panels and the sheets, each a window
+    /// of the session's AT-SPI application.
+    a11y: a11y::Accessibility,
     /// The shell-ui socket the apps ask about their own tabs on, while it
     /// serves.
     tabs: Option<mount::app_tabs::AppTabs>,
@@ -1011,8 +1016,8 @@ impl Session {
         compositor.set_window_frame(tilo_compositor::WindowFrame::corners(f64::from(
             presentation.theme.tokens.radii.tile,
         )));
-        doors.add(Rc::new(RefCell::new(desktop.clone())));
-
+        let desk_door: tilo_surface_host::Shared = Rc::new(RefCell::new(desktop.clone()));
+        doors.add(Rc::clone(&desk_door));
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
         let engine = open_engine(&options, &handle);
@@ -1138,7 +1143,8 @@ impl Session {
         compositor.add_host(shell::bar_under(options.shell, Held(Rc::clone(&chrome))));
         // The desk as the session publishes it, which the shell reads through the door.
         let desk_overlays = Rc::new(overlays::Overlays::new());
-        doors.add(shell::chrome_door(options.shell, &chrome, &desk_overlays));
+        let chrome_door = shell::chrome_door(options.shell, &chrome, &desk_overlays);
+        doors.add(Rc::clone(&chrome_door));
         // The runs people ask of this session's agents: the session keeps
         // its own, or plays the run channel a test handed it. Its broker
         // delivers them, it is one of the session's services, and the desk
@@ -1173,6 +1179,18 @@ impl Session {
             .map_err(|why| tracing::error!(why, ?layer, "the shell did not start"))
             .ok()
         });
+        // A surface the shell's own screen stands in for reads as nothing,
+        // as it draws nothing: the shell's parts are the windows a client
+        // finds, while the desktop's own desk and chrome keep their actions.
+        let aside: Vec<tilo_surface_host::Shared> = if shell.is_some() {
+            if options.shell == Some(tilo_surface_host::shell_part::ShellLayer::Screen) {
+                vec![Rc::clone(&desk_door), Rc::clone(&chrome_door)]
+            } else {
+                vec![Rc::clone(&chrome_door)]
+            }
+        } else {
+            Vec::new()
+        };
         // Who is here, over the windows: the roster the bar's faces open and
         // where everyone else's pointer is.
         let people = people::mount(&mut compositor, &mut doors, &options, &handle, sync.clone());
@@ -1571,6 +1589,11 @@ impl Session {
         });
         let surface_apps = std::mem::take(&mut options.surfaces);
         let slot_views = slot_views::SlotViews::new(shared.overlays.clone(), options.scale);
+        // Assistive technology reads the desktop through the same endpoint an
+        // app's window has: what a client asks wakes this loop, which is
+        // where every tree and every action lives.
+        let wake = loop_wake.clone();
+        let a11y = a11y::Accessibility::new(Arc::new(move || wake.wake_by_ref()), aside);
         Ok(Self {
             compositor,
             shared,
@@ -1625,6 +1648,7 @@ impl Session {
             rotation: rotation::Rotation::mount(options.accelerometer),
             sources,
             shell,
+            a11y,
             ended: false,
             magnifier: (
                 settings_store::magnifier::OFF,
@@ -2014,6 +2038,34 @@ impl Session {
     #[must_use]
     pub fn accessible_labels(&self) -> Vec<String> {
         self.shared.doors.accessible_labels()
+    }
+
+    /// What an assistive client reads of the session's own surfaces now: the
+    /// place each surface publishes at, its window name and the tree behind
+    /// it, as the AT-SPI exporter hands them over. What a test drives is the
+    /// export a screen reader gets, not a parallel description of it.
+    #[must_use]
+    pub fn a11y_windows(&self) -> Vec<(usize, String, ui::accesskit::TreeUpdate)> {
+        self.shared
+            .doors
+            .offering()
+            .into_iter()
+            .filter_map(|(place, _)| {
+                let (name, tree) = a11y::Accessibility::window_at(&self.shared.doors, place)?;
+                Some((place, name, tree))
+            })
+            .collect()
+    }
+
+    /// Perform `action` on `target` of the surface whose window is the
+    /// `place`-th the exporter publishes: what a client does over AT-SPI.
+    pub fn a11y_perform(
+        &mut self,
+        place: usize,
+        target: ui::accesskit::NodeId,
+        action: &ui::a11y::Action,
+    ) {
+        a11y::Accessibility::perform(&self.shared.doors, place, target, action);
     }
 
     /// Whether the person logged out, which ends the session's loop.
@@ -2724,6 +2776,9 @@ impl Session {
                 locked,
             },
         );
+        // What assistive technology reads of the frame just drawn, and what
+        // it asked of it.
+        self.a11y.step(&self.shared.doors);
         // A live projection is sent the desktop as the pass just drew it.
         let video = self.display_sheet.video_stream();
         self.projection_video

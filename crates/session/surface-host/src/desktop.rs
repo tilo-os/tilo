@@ -241,7 +241,9 @@ pub fn desktop_with(
     let keyboard = Rc::new(move || handle.wants_keyboard());
     let desk = Rc::new(RefCell::new(Desk {
         policy,
-        host: WidgetHost::new(root, placement, true).with_keyboard(keyboard),
+        host: WidgetHost::new(root, placement, true)
+            .named("Desktop")
+            .with_keyboard(keyboard),
         gestures: Vec::new(),
         gesture_config: Some(GestureConfig::default()),
         monitors: Vec::new(),
@@ -364,6 +366,22 @@ impl crate::Published for DesktopHost {
     fn press(&mut self, name: &str) -> Result<(), String> {
         crate::Published::press(&mut self.desk.borrow_mut().host, name)
     }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        crate::Published::a11y_tree(&mut self.desk.borrow_mut().host)
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        crate::Published::a11y_name(&self.desk.borrow().host)
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        crate::Published::a11y_action(&mut self.desk.borrow_mut().host, target, action)
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        SurfaceHost::wants_keyboard(self)
+    }
 }
 
 impl SurfaceHost for DesktopHost {
@@ -403,7 +421,7 @@ impl SurfaceHost for DesktopHost {
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.desk.borrow().host.wants_keyboard()
+        SurfaceHost::wants_keyboard(&self.desk.borrow().host)
     }
 
     fn key(&mut self, key: &HostKey) {

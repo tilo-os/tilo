@@ -145,6 +145,8 @@ pub struct AppHost {
     /// Where what the app publishes stands: moves with every frame it
     /// draws and every action it runs.
     revision: u64,
+    /// What an assistive technology knows the app's window by.
+    name: Option<String>,
 }
 
 impl AppHost {
@@ -174,7 +176,16 @@ impl AppHost {
             provided: Vec::new(),
             full: false,
             revision: 0,
+            name: None,
         }
+    }
+
+    /// Name the app's window for assistive technology: what a screen reader
+    /// says the person reached.
+    #[must_use]
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 
     /// The app's door, shared with the catalogue the person, a script or
@@ -281,6 +292,30 @@ impl Published for AppHost {
 
     fn revision(&self) -> Option<u64> {
         Some(self.revision)
+    }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        Some(self.app.build_a11y_tree_update(self.placement.scale))
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        self.name.clone()
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        // A node the app does not handle itself is pressed where it is
+        // drawn, as the app's own window does for its assistive technology.
+        if let Some((x, y)) = self.app.dispatch_a11y_action(target, action) {
+            self.input(ui::synthetic_input::cursor_moved(x, y));
+            self.input(ui::synthetic_input::mouse_press());
+            self.input(ui::synthetic_input::mouse_release());
+        }
+        self.wants = true;
+        true
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        SurfaceHost::wants_keyboard(self)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {

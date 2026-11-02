@@ -594,7 +594,7 @@ pub(crate) fn host(
         size: (1, 1),
         scale: options.scale,
     };
-    let mut host = WidgetHost::new(Box::new(chrome), placement, false);
+    let mut host = WidgetHost::new(Box::new(chrome), placement, false).named("Top bar");
     host.set_theme((options.presentation)().theme);
     let pictures = overview.clone();
     host.with_window_pictures(Rc::new(move || pictures.pictures()))
