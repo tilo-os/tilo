@@ -32,7 +32,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::chrome::{ChromeRole, SelectionState, selection_tier};
+use crate::chrome::{ChromeRole, SelectionState, selection_floor, selection_floor_ramp};
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
@@ -40,11 +40,6 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::primitives::QuickTileFace;
 use crate::widget::{TaffyTreeExt, Widget};
-
-/// The quiet floor a tile that is off stands on: a step up the theme's lift
-/// ramp, under the hover tier, so a tile reads as a control rather than as
-/// bare text on the panel.
-const OFF_FLOOR_LIFT: f32 = 0.35;
 
 /// The two targets of a tile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -405,16 +400,20 @@ impl QuickTile {
             hovered,
             radius,
         };
+        // A tile that is off stands on a quiet floor and answers the pointer
+        // on the one ordered ramp, so its floor can never lift past its own
+        // hover.
+        let base = theme.tokens.colors.surfaces.base;
         if !self.on {
             crate::surface::card(
                 scene,
                 transform,
                 self.rect,
                 radius,
-                theme.tokens.colors.lift(OFF_FLOOR_LIFT),
+                selection_floor(theme, base),
             );
         }
-        let off_hover = selection_tier(theme, SelectionState::new(false, true, false)).fill;
+        let off_hover = selection_floor_ramp(theme, SelectionState::new(false, true, false), base);
         face.paint_ground(scene, transform, theme, off_hover);
         let (ink, ink_dim) = face.ink(theme);
         let glyph = Rect::from_center_size(

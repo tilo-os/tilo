@@ -1305,6 +1305,12 @@ impl Colors {
     /// paints everything black) falls back to a wash polarity chosen the
     /// same way [`Colors::hairline_on`] picks one. Rows inside a window lift
     /// with [`Intents::selection`] / [`Self::lift_on`] instead.
+    ///
+    /// This is a straight sRGB blend toward the next surface, not the OKLCH
+    /// surface ramp: its steps do not keep their size across the palette, so
+    /// a state that must stay ordered against another state's lift (a
+    /// control's rest face under its hover) is measured from
+    /// [`Self::lift_on`], never from this and that tier mixed.
     pub fn lift(&self, t: f32) -> Color {
         mix8(self.surfaces.base, self.lift_target(), t)
     }
