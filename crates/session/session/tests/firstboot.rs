@@ -240,6 +240,73 @@ fn a_record_that_does_not_even_parse_starts_setup_without_replacing_it() {
     );
 }
 
+#[test]
+fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
+    use ed25519_dalek::SigningKey;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+    let machine = machine();
+    // A node's session, certified when the node was installed: a member
+    // certificate its person signed, this device's key, no root beside it and
+    // no record of the person yet.
+    let person = SigningKey::from_bytes(&[7; 32]);
+    let device = persist::load_or_create_device_key(&machine.paths).expect("this device's key");
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = DeviceCert {
+        user_public_key: person.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "node".to_owned(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: now,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, &person).expect("the person's signature");
+    persist::install_device_cert(&machine.paths, &cert, now).expect("the node's enrollment");
+    if machine.paths.user_privkey.exists() {
+        std::fs::remove_file(&machine.paths.user_privkey).expect("no root beside an enrollment");
+    }
+    let personal = machine.config.join("tilo").join("identity");
+    std::fs::remove_dir_all(&personal).expect("the node holds no record of its person yet");
+
+    assert_eq!(
+        startup::identity(),
+        Identity::Desk,
+        "a login that holds its person's enrollment opens that person's desk"
+    );
+
+    // The record the login took up is the person's, selected as the one this
+    // session acts as, and nothing minted a root or a second identity beside
+    // it.
+    let active = std::fs::read_to_string(personal.join("active"))
+        .expect("the login selected the record it took up");
+    let taken_up = personal.join(format!("{}.json", active.trim()));
+    assert!(
+        taken_up.is_file(),
+        "the selected record {} is not here",
+        taken_up.display()
+    );
+    assert!(
+        !personal.join("primary.json").exists(),
+        "taking up an enrollment minted a primary identity"
+    );
+    assert!(
+        !machine.paths.user_privkey.exists(),
+        "taking up an enrollment minted the person's root on this device"
+    );
+    assert_eq!(
+        record(),
+        taken_up,
+        "the session resolves the record it took up on the next login"
+    );
+    assert_eq!(startup::identity(), Identity::Desk, "and it still verifies");
+    assert_eq!(
+        persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate"),
+        cert,
+        "taking up the enrollment reissued the certificate instead of keeping it"
+    );
+}
+
 /// The session binary's answer to `flags` on `machine`, as the login runs it.
 fn run_session(machine: &Machine, flags: &[&str]) -> std::process::Output {
     // Started under the environment lock, which closes this test's scope while
