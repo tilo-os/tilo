@@ -164,10 +164,19 @@ mod tests {
             "tilo-package",
             "tilo-agent",
         ];
+        // The session a login starts, and the surface programs it starts
+        // from beside itself.
+        let session = [
+            "tilo-session",
+            "tilo-lock-screen",
+            "tilo-osk",
+            "tilo-quick-settings",
+            "tilo-window-menu",
+        ];
         let old: BTreeSet<&str> = on_path
             .iter()
             .copied()
-            .filter(|name| !nouns.contains(name))
+            .filter(|name| !nouns.contains(name) && !session.contains(name))
             .collect();
         let moved_names: BTreeSet<&str> = MOVED.iter().copied().collect();
         let direct: BTreeSet<&str> = DIRECT.iter().copied().collect();
@@ -179,6 +188,7 @@ mod tests {
         for (to, from) in &files {
             if let Some(name) = to.strip_prefix("/usr/bin/")
                 && name.starts_with("tilo-")
+                && !session.contains(&name)
             {
                 if direct.contains(name) {
                     assert_eq!(

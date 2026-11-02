@@ -2,7 +2,7 @@
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
 d-weesm3yb = Account
-    .doc = What the server of one of the workspace's mail accounts holds. The account itself, its
+    .doc = What the server of one of the workspace's mail accounts holds.
     .noun = { $count ->
         [one] account
        *[other] accounts
@@ -19,7 +19,7 @@ d-b5k7mvka = Trouble
 d-33f3rqw2 = Online
 
 d-jxc5rufs = Signature
-    .doc = What the account's messages end with: the person's own, per account, as every mail
+    .doc = What the account's messages end with: the person's own, per account, as every mail client signs a message.
 
 d-ehmoyzk2 = Mailboxes
 
@@ -75,13 +75,13 @@ d-gy7z7du3 = Labels
     .doc = The labels people gave it (Gmail's and Fastmail's): the person's own, never the server's.
 
 d-bdoh33hs = Snoozed until
-    .doc = Snoozed until this moment: out of the inbox until then, and back once it has come, with
+    .doc = Snoozed until this moment: out of the inbox until then, and back once it has come, with no window open.
 
 d-z7qxz544 = Muted
-    .doc = Muted: the conversation stays out of the inbox while new messages keep coming, as a
+    .doc = Muted: the conversation stays out of the inbox while new messages keep coming, as a busy conversation is silenced, and it is still found under Muted and All mail.
 
 d-5ynnrlxh = Label
-    .doc = A label the person gave their conversations: their own, never the server's, as Gmail's and
+    .doc = A label the person gave their conversations: their own, never the server's, as Gmail's and Fastmail's are.
     .noun = { $count ->
         [one] label
        *[other] labels
@@ -129,7 +129,7 @@ d-vxxb4sqr = Flagged
 d-xlejsz5j = Mailbox
 
 d-lidkonvr = Draft
-    .doc = A message being written: who it goes to, what it says, what it answers, and how it stands on
+    .doc = A message being written: who it goes to, what it says, what it answers, and how it stands on its way out.
     .noun = { $count ->
         [one] draft
        *[other] drafts
@@ -158,7 +158,7 @@ d-h2nvr2op = Recalled
     .doc = It was taken back before it went: it never leaves, and it is a draft again.
 
 d-su4h67i5 = Mail
-    .doc = The person's mail: the accounts the workspace's settings hold, what they are writing, and
+    .doc = The person's mail: the accounts the workspace's settings hold, what they are writing, and the labels they gave their conversations.
     .noun = { $count ->
         [one] mail
        *[other] mails
@@ -171,7 +171,7 @@ d-gkuo27e6 = Drafts
 d-z3zcztpz = Labels
 
 d-4ow5ydy5 = Hold
-    .doc = How many seconds a sent message waits before it goes, so it can be taken back: the
+    .doc = How many seconds a sent message waits before it goes, so it can be taken back: the person's setting, ten by default, and what rules out holding it not at all.
 
 d-ejo2352x = Signature
     .doc = Sets what the account signs its messages with, or clears it: the person's own, per account.
@@ -183,7 +183,7 @@ d-ygbvdl5l = New message
     .doc = Starts a message from the first account.
 
 d-hirareiw = Reply
-    .doc = Answers the conversation's newest message, to whoever wrote it, quoting it under what is
+    .doc = Answers the conversation's newest message, to whoever wrote it, quoting it under what is written.
 
 d-72f72tm7 = Reply all
     .doc = Answers the conversation's newest message, to everyone it went to, quoting it.
@@ -204,7 +204,7 @@ d-eqvgypxr = Archive
     .doc = Archives the conversation: its messages leave the inbox.
 
 d-eef4pxgf = Move to inbox
-    .doc = Moves the conversation back to the inbox, and unmutes it: what a person brings back is what
+    .doc = Moves the conversation back to the inbox, and unmutes it: what a person brings back is what they want to see again.
 
 d-taywgw3n = Move to…
     .doc = Moves the conversation to another mailbox of its account.
@@ -216,7 +216,7 @@ d-le4lvs2c = Flag
     .doc = Flags or unflags the conversation.
 
 d-6bwt463c = Snooze
-    .doc = Puts the conversation away until a moment: it leaves the inbox, and comes back once that
+    .doc = Puts the conversation away until a moment: it leaves the inbox, and comes back once that moment has come, with no window open.
 
 d-kl4ikisg = Snooze an hour
     .doc = Puts the conversation away for an hour, the snooze people reach for most.
@@ -228,7 +228,7 @@ d-wl2c3dxh = Bring back
     .doc = Brings a snoozed conversation back now, whatever its moment was: it is in the inbox again.
 
 d-ck5k6uop = Label
-    .doc = Gives the conversation a label, or takes one away: `on` says which. The label joins the
+    .doc = Gives the conversation a label, or takes one away: `on` says which.
 
 d-vydc2hnq = Rename label
     .doc = Renames one of the person's labels, all the conversations that carry it with it.
@@ -237,19 +237,19 @@ d-phsy7vhs = Delete label
     .doc = Deletes one of the person's labels, and takes it off every conversation that carries it.
 
 d-xp4s2kl7 = Cancel scheduled send
-    .doc = Brings a message back to the outbox: it was sent to go at a moment still to come, and it is
+    .doc = Brings a message back to the outbox: it was sent to go at a moment still to come, and it is a draft again, whatever the moment.
 
 d-xxxfkczs = Send later
-    .doc = Sends the message at a moment instead of now: it waits in the outbox until then, as the
+    .doc = Sends the message at a moment instead of now: it waits in the outbox until then, as the person's hold makes a message wait, and goes with no window open.
 
 d-jysss72s = Send tomorrow morning
-    .doc = Sends the message at nine tomorrow, the moment people reach for most when they write in the
+    .doc = Sends the message at nine tomorrow, the moment people reach for most when they write in the evening and do not want it to arrive then.
 
 d-sqtuwk6b = Mark all read
     .doc = Marks every conversation of the account read.
 
 d-gkqpzio6 = Mute
-    .doc = Mutes the conversation, or unmutes it: a muted one stays out of the inbox until it is
+    .doc = Mutes the conversation, or unmutes it: a muted one stays out of the inbox until it is brought back, whatever its new messages do.
 
 d-trjwm3gb = Mark as unread
     .doc = Marks the conversation read, or unread again.
@@ -261,13 +261,13 @@ d-qrcwx7a6 = Discard
     .doc = Throws a message being written away.
 
 d-qcfc2rhb = Send
-    .doc = Sends the message from its account. It leaves the system, so it goes once, and waits in the
+    .doc = Sends the message from its account.
 
 d-twebu5cb = Undo send
-    .doc = Takes back a message that was sent and has not gone yet: it never leaves, and the message is
+    .doc = Takes back a message that was sent and has not gone yet: it never leaves, and the message is a draft again, as it was.
 
 d-a4rv5wm6 = Answer
-    .doc = Answers the conversation with what was typed: the message goes to whoever wrote its newest,
+    .doc = Answers the conversation with what was typed: the message goes to whoever wrote its newest, as a reply to it, quoted.
 
 d-gcixhwyt = New draft~present
 
@@ -307,31 +307,31 @@ d-5wix2354 = Compose
     .doc = The message as it will leave, shown when someone is asked to send it.
 
 d-7rcrynvm = Mail
-    .doc = The mail window: every account's mail. The unified inbox is every account's inbox in one
+    .doc = The mail window: every account's mail.
 
 d-4fjgzcq6 = Unified
-    .doc = Every account's mail in one window: the unified inbox first, then each account's mail, and
+    .doc = Every account's mail in one window: the unified inbox first, then each account's mail, and each account's own places under it.
 
 d-gka45our = Mailboxes
-    .doc = An account's window: its mailboxes in the sidebar with how many unread each holds, the
+    .doc = An account's window: its mailboxes in the sidebar with how many unread each holds, the conversations of the one chosen, newest first, and the one open beside them.
 
 d-zp2cy2sc = Inbox
-    .doc = A mailbox on its own, as a place shows it: the conversations in it, newest first, as its
+    .doc = A mailbox on its own, as a place shows it: the conversations in it, newest first, as its account's window lists them under it.
 
 d-jgdzx3la = Thread list
-    .doc = Conversations as a list: each a row that opens the conversation beside it, read as it
+    .doc = Conversations as a list: each a row that opens the conversation beside it, read as it opens, its actions on its menu and the destructive one on its swipe; "Nothing here" when there are none.
 
 d-u43u7z6w = Thread row
-    .doc = One conversation in a list: who wrote, the subject, the start of the newest message and
+    .doc = One conversation in a list: who wrote, the subject, the start of the newest message and when it came.
 
 d-77noqogh = Draft row
     .doc = One message being written in a list: its subject and who it goes to.
 
 d-bbuecgsi = Conversation
-    .doc = A conversation's window: its subject, then every message in order with who wrote it, to
+    .doc = A conversation's window: its subject, then every message in order with who wrote it, to whom and when, what it says and what came with it, and a reply at the foot.
 
 d-n2xgxnbw = Message
-    .doc = One message of a conversation: who wrote it, to whom, what it says and, folded under it,
+    .doc = One message of a conversation: who wrote it, to whom, what it says and, folded under it, the message it quotes, as Gmail and Apple Mail fold a quotation; and what came with it.
 
 d-oqpazwvc = Editor
     .doc = A message being written: its window.

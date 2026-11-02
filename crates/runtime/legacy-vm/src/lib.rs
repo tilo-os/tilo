@@ -30,8 +30,6 @@ pub mod grants;
 pub mod image;
 pub mod lifecycle;
 pub mod memory;
-#[cfg(feature = "relay-stream")]
-pub mod stream;
 pub mod supervisor;
 pub mod transport;
 pub mod virtiofs;

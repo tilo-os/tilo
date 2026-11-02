@@ -31,8 +31,8 @@ view framed_canvas(a: Arrangement) {
     }
 }
 
-/// The frameless canvas: every place at its point, drawn as its own view standing as content,
-/// with no frame around it — nearness groups it into the strip's space.
+/// The frameless canvas: every place at its point, drawn as its own view with no frame around it,
+/// grouped into the strip's space by nearness.
 view spaces_canvas(a: Arrangement) {
     stack(gap: .related, fill) {
         canvas_entry(a)

@@ -214,7 +214,7 @@ type Person {
 /// an app means its root, drawn as its app's default view.
 #[test]
 fn a_type_is_called_by_its_name() {
-    let src = r#"/// A mailbox.
+    let src = r"/// A mailbox.
 type Mailbox {
     name: Text (title)
 }
@@ -227,7 +227,7 @@ type TodoList {
 /// A box of entries.
 type Entry {
     text: Text (title)
-}"#;
+}";
     let meta = compile_body(src).meta;
     let nouns = |name: &str| {
         let ty = type_meta(&meta, name);

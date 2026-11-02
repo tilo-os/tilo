@@ -118,10 +118,10 @@ view shown_preset(a: Arrangement, lists: Bool) {
     }
 }
 
-/// The top bar on the edge it rides: the whole width with its parts spread along it at the
-/// `full` fit, an inset run centred on the edge at the floating one — where it covers less of
-/// what is under it. Its ground is the theme's bar material either way; how much of the output
-/// it spans is what its fit says.
+/// The top bar on the edge it rides: the whole width with its parts spread along it at the `full`
+/// fit, or an inset run centred on the edge at the floating one, where it covers less of what is
+/// under it. Its ground is the theme's bar material either way; how much of the output it spans is
+/// what its fit says.
 view bar_on_edge(s: Shell, d: Desk) {
     let on_top = s.bar_edge == .top
     if s.bar_fit == .full and on_top {

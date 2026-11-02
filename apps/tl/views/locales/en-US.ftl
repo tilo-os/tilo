@@ -2,7 +2,7 @@
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
 d-bqgmjsyo = Written view
-    .doc = A view of the person's own: a tilolang `view` definition, written as an app declares one
+    .doc = A view of the person's own: a tilolang `view` definition, written as an app declares one (`view open_threads(m: mail.Mail) {"{"{"}"} ...
     .noun = { $count ->
         [one] written view
        *[other] written views
@@ -17,13 +17,13 @@ d-3pj7zyxo = Definition
     .doc = The view, as its author wrote it.
 
 d-3eioszed = Author
-    .doc = Who wrote it, as the host recorded them: the agent task that answered with it, the
+    .doc = Who wrote it, as the host recorded them: the agent task that answered with it, the person, or who sent it to them.
 
 d-loizxjpf = Kept
-    .doc = Whether the person kept it. An answer they have not kept is still the agent's answer.
+    .doc = Whether the person kept it.
 
 d-bckibjl6 = Shows
-    .doc = The type of the one resource it takes (`so.tilo.lang.mail.Thread`), as the check found it:
+    .doc = The type of the one resource it takes (`so.tilo.lang.mail.Thread`), as the check found it: what it can be the default view of.
 
 d-uibilwji = Default
     .doc = How the person shows a type on one kind of device: through one of their own views.
@@ -60,7 +60,7 @@ d-xdu35ffc = Tablet
 d-s4nfjmw3 = Phone
 
 d-rgftdohw = Answer
-    .doc = Keeps the view an agent answered with, written by the invoker, which the host records. It
+    .doc = Keeps the view an agent answered with, written by the invoker, which the host records.
 
 d-dif5k2ju = New view
     .doc = A view the person writes, kept among their own.
@@ -75,7 +75,7 @@ d-w2bt45l7 = Show this type with it
     .doc = Makes a view how the person shows its type on a kind of device.
 
 d-fwot2jcg = Add to my views
-    .doc = Adds the view a message sent to the person's own. Its author is who sent the message, as
+    .doc = Adds the view a message sent to the person's own.
 
 d-e2bdc4ge = Keep~present
 

@@ -98,8 +98,8 @@ enum Preset {
     /// Places at points, each drawn as its own view: resources standing as content on one
     /// surface, grouped by where they are rather than by a frame around them.
     spaces
-    /// The traditional desktop: frames on a floating desk, the focused window's commands in a
-    /// top bar, and the dock at the foot (`traditional.tl`).
+    /// The traditional desktop: frames on a floating desk, the focused window's own commands in the
+    /// top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
     desktop
 }
 

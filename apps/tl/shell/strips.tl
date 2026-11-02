@@ -117,10 +117,10 @@ view strip_column(a: Arrangement, v: Viewing, s: ArrangementStrip) {
     }
 }
 
-/// A strip's controls under its name: its width, one of the three, and the controls of the place
-/// in front (its pin, closing it, moving it to another row of the desk) — what a drag commits, as
-/// a press does here. A width is one `resize-strip`, a place moved out one `move-place`, both
-/// attributed and undoable like a drag.
+/// A strip's controls under its name: its width, one of the three, and the controls of the place in
+/// front (its pin, closing it, moving it to another row of the desk), each committing what a drag
+/// would. A width is one `resize-strip`, a place moved out one `move-place`, both attributed and
+/// undoable like a drag.
 view strip_controls(a: Arrangement, s: ArrangementStrip, shown: Option<ArrangementPlace>) {
     row(gap: .tight, align: .center, wrap: true) {
         ui.MenuButton("Width", icon: .columns_2, icon_only: true, role: .plain) {

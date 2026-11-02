@@ -68,8 +68,8 @@ fn describe(preset: Layout) -> Text {
     }
 }
 
-/// A preset's shell in miniature: where its bar and dock stand, how they sit, and what they
-/// hold — drawn with the same views the shell itself uses, at the size a card gives them.
+/// A preset's shell in miniature: where its bar and dock stand, how they sit, and what they hold,
+/// drawn with the same views the shell itself uses at the size a card gives them.
 view preview(preset: Layout) {
     layers {
         row(fill, align: .center, padding: .tight) {

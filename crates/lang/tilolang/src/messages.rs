@@ -125,10 +125,35 @@ fn noun(ty: &TypeMeta) -> String {
 /// One message: its words, and its description as an attribute when it has one.
 fn message(out: &mut String, id: &str, words: &str, doc: &str) {
     let _ = writeln!(out, "\n{} = {}", key_of(id), pattern(words));
-    let description = doc.lines().next().unwrap_or_default().trim();
+    let description = summary(doc);
     if !description.is_empty() && description != words.trim() {
-        attribute(out, "doc", &pattern(description));
+        attribute(out, "doc", &pattern(&description));
     }
+}
+
+/// A doc comment's first sentence as one line: its lines are wrapped source, not sentences.
+fn summary(doc: &str) -> String {
+    let paragraph = doc
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| line.is_empty())
+        .take_while(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut pieces = paragraph.split(". ").peekable();
+    let mut sentence = String::new();
+    while let Some(piece) = pieces.next() {
+        sentence.push_str(piece);
+        match pieces.peek() {
+            Some(next) if next.starts_with(char::is_lowercase) => sentence.push_str(". "),
+            Some(_) => {
+                sentence.push('.');
+                break;
+            }
+            None => break,
+        }
+    }
+    sentence
 }
 
 fn attribute(out: &mut String, name: &str, value: &str) {
@@ -140,16 +165,15 @@ fn attribute(out: &mut String, name: &str, value: &str) {
 fn pattern(words: &str) -> String {
     let mut out = String::new();
     let mut rest = words;
-    while let Some(open) = rest.find('{') {
-        out.push_str(&escape(&rest[..open]));
-        let after = &rest[open + 1..];
-        match after.find('}') {
-            Some(close) => {
-                let _ = write!(out, "{{ ${} }}", variable(&after[..close]));
-                rest = &after[close + 1..];
+    while let Some((before, after)) = rest.split_once('{') {
+        out.push_str(&escape(before));
+        match after.split_once('}') {
+            Some((expr, next)) => {
+                let _ = write!(out, "{{ ${} }}", variable(expr));
+                rest = next;
             }
             None => {
-                out.push_str(&escape(&rest[open..]));
+                out.push_str(&escape(&format!("{{{after}")));
                 rest = "";
             }
         }
@@ -180,7 +204,20 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{pattern, refined_blocks, variable};
+    use super::{pattern, refined_blocks, summary, variable};
+
+    #[test]
+    fn a_description_is_the_first_sentence_unwrapped() {
+        assert_eq!(
+            summary("The top bar: the parts\nin their order.\n\nMore."),
+            "The top bar: the parts in their order."
+        );
+        assert_eq!(
+            summary("One dock item, e.g. a tile. Its badge sits on it."),
+            "One dock item, e.g. a tile."
+        );
+        assert_eq!(summary(""), "");
+    }
 
     #[test]
     fn a_refined_message_is_the_authors() {

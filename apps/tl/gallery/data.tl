@@ -1,5 +1,5 @@
-/// The data views: a table of columns and rows, a tree of nodes, a conversation, a grid of
-/// cards and the history of a document — each reading a collection of the app's own.
+/// The data views: a table of columns and rows, a tree of nodes, a conversation, a grid of cards
+/// and the history of a document, each reading a collection of the app's own.
 type Data {
     title: Text (title)
     /// The rows of the table: each an item with what its columns read.

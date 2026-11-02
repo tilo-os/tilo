@@ -2051,21 +2051,18 @@ mod tests {
             (&terminal)
                 .read_to_string(&mut read)
                 .expect("the lease closes after the report");
-            match line {
-                Some(line) => {
-                    assert!(
-                        termination.starts_with("exit") || termination.starts_with("not set up"),
-                        "{termination}"
-                    );
-                    assert_eq!(read.trim_end(), line);
-                }
-                None => {
-                    assert!(termination.starts_with("exit"), "{termination}");
-                    assert!(
-                        read.is_empty(),
-                        "a terminal that did not ask is told nothing"
-                    );
-                }
+            if let Some(line) = line {
+                assert!(
+                    termination.starts_with("exit") || termination.starts_with("not set up"),
+                    "{termination}"
+                );
+                assert_eq!(read.trim_end(), line);
+            } else {
+                assert!(termination.starts_with("exit"), "{termination}");
+                assert!(
+                    read.is_empty(),
+                    "a terminal that did not ask is told nothing"
+                );
             }
         }
     }

@@ -9,8 +9,9 @@ root channels: Channels
 /// A named group of channels in the sidebar.
 type Category {
     name: Text (title)
-    /// TODO: `Collection<Channel>` with `type Channel = TextChannel | VoiceChannel |
-    /// ForumChannel` once voice and forum channels land.
+    /// The server's channels.
+    // TODO: `Collection<Channel>` with `type Channel = TextChannel | VoiceChannel |
+    // ForumChannel` once voice and forum channels land.
     channels: Collection<TextChannel>
 }
 

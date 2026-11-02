@@ -202,12 +202,10 @@ default view desk_view for arrangement
 
 default view shell_settings for Shell
 
-/// The person's desk as a window shows it, as a display shows it (`screen`): the top bar on its
-/// edge, the switch between the presets under it and the preset they picked under that, so the
-/// switch, the bar and the places each keep their own room at every width — or, for the
-/// traditional desktop, its frames on the desk under the desk's own bar and dock. The bar reads
-/// `desk`, this package's other root, as any view reads a root of the package it uses. A change
-/// of the arrangement runs the preset body; a change of the desk reading runs the bar.
+/// The person's desk as a window or a display shows it: the top bar on its edge, the switch between
+/// the presets under it and the preset they picked under that. The bar reads `desk`, this package's
+/// other root, as any view reads a root of the package it uses. A change of the arrangement runs
+/// the preset body; a change of the desk reading runs the bar.
 view desk_view(a: Arrangement) {
     let v = viewing
     if v.showing == .desktop and not space.compact {
@@ -234,11 +232,11 @@ view clock(d: Desk) {
     }
 }
 
-/// The top bar: the parts the person put on it, in their order, each a view of its own — so a
-/// change runs only the part that reads it: the minute, the clock alone. The bar is a run the
-/// person reorders by dragging a part, and a part dragged onto it from the settings lands where
-/// it is dropped; letting go runs one action, `place_part`. Who is here takes no room on a phone
-/// with no question waiting, where it shows nobody.
+/// The top bar: the parts the person put on it, in their order, each a view of its own, so a change
+/// runs only the part that reads it. The bar is a run the person reorders by dragging a part, and a
+/// part dragged onto it from the settings lands where it is dropped; letting go runs one action,
+/// `place_part`. Who is here takes no room on a phone with no question waiting, where it shows
+/// nobody.
 view bar(d: Desk) {
     let s = shell
     let roomy = space.width_class == .expanded or space.width_class == .wide
@@ -415,10 +413,9 @@ view battery_status() {
     }
 }
 
-/// The notifications: an icon button named with what it shows — "Notifications", how many
-/// are unread, or that they are silenced — with the count on the bell's corner, so the name
-/// assistive technology reads is the whole fact and the number is for the eye. Pressing it
-/// opens or closes the device's status: the quick settings, or the notifications.
+/// The notifications: an icon button named with what it shows ("Notifications", how many are
+/// unread, or that they are silenced), with the count on the bell's corner. Pressing it opens or
+/// closes the device's status: the quick settings, or the notifications.
 ///
 /// The count is the button's own (`count:`): it stands centred on the bell's top trailing
 /// corner, and the button keeps room for it, so it covers neither the bell nor the control

@@ -115,13 +115,13 @@ view frame_buttons(a: Arrangement, p: ArrangementPlace) {
     }
 }
 
-/// The focused window's commands, as a macOS menu bar draws an app's: the window's name, then
-/// the place's resource's own published actions — exactly what the app's window header offers
-/// — the frequent ones as controls and the rest in the run each action's declaration names. A
-/// place that shows no record (a foreign surface) offers the shell's commands on the window,
-/// so the strip is never empty. `room` is how much the bar has: on a narrow bar the frequent
-/// ones stand only in their runs' menus, and on the narrowest every run is one menu named by
-/// the window, so the bar sheds into menus and never wraps.
+/// The focused window's commands, as a macOS menu bar draws an app's: the window's name, then the
+/// actions its resource publishes (exactly what the app's window header offers), the frequent ones
+/// as controls and the rest in the run each action's declaration names. A place that shows no
+/// record (a foreign surface) offers the shell's commands on the window, so the strip is never
+/// empty. `room` is how much the bar has: on a narrow bar the frequent ones stand only in their
+/// runs' menus, and on the narrowest every run is one menu named by the window, so the bar sheds
+/// into menus and never wraps.
 view action_bar(a: Arrangement, room: BarRoom) {
     if let s = focused_strip(a) {
         if let p = active_place(a, s) {
@@ -268,12 +268,11 @@ view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
     }
 }
 
-/// The desktop's top bar, one row edge to edge: the system menu and the focused window's
-/// commands leading; the tasks running, the time, the person and the notifications flush at the
-/// trailing edge — the shape a macOS or GNOME bar has, over the theme's bar material. As the
-/// output narrows the window's commands shed into their menus, the tasks give way, and on a
-/// phone the person's avatar does too (the time and the notifications stay), so the row never
-/// wraps and its parts never press into each other.
+/// The desktop's top bar, one row edge to edge: the system menu and the focused window's commands
+/// leading, and the tasks running, the time, the person and the notifications flush at the trailing
+/// edge, as a macOS or GNOME bar has them. As the output narrows the window's commands shed into
+/// their menus, the tasks give way, and on a phone the person's avatar does too (the time and the
+/// notifications stay), so the row never wraps and its parts never press into each other.
 view traditional_bar(d: Desk) {
     let room = if space.width_class == .wide { BarRoom.roomy } else if space.compact { BarRoom.one } else { BarRoom.menus }
     row(gap: if room == .one { .tight } else { .related }, align: .center, fill) {

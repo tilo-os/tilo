@@ -2,14 +2,14 @@
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
 d-2lehvjd6 = Today
-    .doc = The day at a glance, over other apps' roots: it draws their resources with their views, so
+    .doc = The day at a glance, over other apps' roots: it draws their resources with their views, so each part keeps its own app's authority.
     .noun = { $count ->
         [one] today
        *[other] todays
     }
 
 d-a5wukhyd = Today
-    .doc = Today's window: a card per app, holding that app's resources as rows that open them: the
+    .doc = Today's window: a card per app, holding that app's resources as rows that open them: the open todos, the pinned notes, the chat's channels.
 
 d-a5wukhyd~row0 = Today for item
 

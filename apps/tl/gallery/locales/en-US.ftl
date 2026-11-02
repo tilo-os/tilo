@@ -2,7 +2,7 @@
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
 d-bxbqgdkv = Item
-    .doc = The toolkit's components as an app written in tilolang places them: each `ui.*` component,
+    .doc = The toolkit's components as an app written in tilolang places them: each `ui.*` component, in the groups people meet them in, with the values an app would give it.
     .noun = { $count ->
         [one] item
        *[other] items
@@ -17,7 +17,7 @@ d-xttl6aec = Stage
 d-44yujnht = Reactions
 
 d-5cf5i2l7 = Basics
-    .doc = The everyday parts of a window: navigation, text and buttons, chips, a card of facts and an
+    .doc = The everyday parts of a window: navigation, text and buttons, chips, a card of facts and an empty state.
     .noun = { $count ->
         [one] basics
        *[other] basicses
@@ -61,7 +61,7 @@ d-7jakulc4 = Lead
     .doc = Who leads the release: at each of its tabs.
 
 d-x3epwv5u = Gallery
-    .doc = The gallery: a window of each group. A group's file adds its type here and a row to the
+    .doc = The gallery: a window of each group.
     .noun = { $count ->
         [one] gallery
        *[other] galleries
@@ -86,7 +86,7 @@ d-aia654wv = Places
 d-t7ydaknu = Chrome
 
 d-lhci3noh = Controls
-    .doc = The controls a form is made of: boxes and switches, a number, a choice from a short list, a
+    .doc = The controls a form is made of: boxes and switches, a number, a choice from a short list, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a picture choice, a row of controls, and a link.
     .noun = { $count ->
         [one] controls
        *[other] controlses
@@ -140,7 +140,7 @@ d-bmzzwoln = Text size
     .doc = The size of the text in the report.
 
 d-pprp6hfn = Data
-    .doc = The data views: a table of columns and rows, a tree of nodes, a conversation, a grid of
+    .doc = The data views: a table of columns and rows, a tree of nodes, a conversation, a grid of cards and the history of a document, each reading a collection of the app's own.
     .noun = { $count ->
         [one] data
        *[other] datas
@@ -235,7 +235,7 @@ d-kbnmru3y = Summary
 d-e4daczuq = At
 
 d-oepvsx65 = Feedback
-    .doc = How things are going: badges and banners, progress and gauges, stats, the facts of a thing,
+    .doc = How things are going: badges and banners, progress and gauges, stats, the facts of a thing, a path, a toolbar, rows that open in place, and what is still loading.
     .noun = { $count ->
         [one] feedback
        *[other] feedbacks
@@ -256,7 +256,7 @@ d-rnok2vxj = Places
 d-4wbrhgfm = Title
 
 d-exu5jg4p = Media
-    .doc = What the gallery holds of media and surfaces: pictures, a playing band, a video, a library
+    .doc = What the gallery holds of media and surfaces: pictures, a playing band, a video, a library of cards, a code a scanner reads, a drop zone, a page preview and rail, a code editor, a line of text, the window's own surfaces (a modal, a popover, a floating panel) and a page shown live.
     .noun = { $count ->
         [one] media
        *[other] medias
@@ -277,7 +277,7 @@ d-o2brvdoa = Source
     .doc = The source being written.
 
 d-wb23plj7 = Shell parts
-    .doc = The parts the shell is made of, as a view places them: a bar or a dock's body, a run of
+    .doc = The parts the shell is made of, as a view places them: a bar or a dock's body, a run of items a person reorders by dragging one, and the divider a conversation marks its first unread line with.
     .noun = { $count ->
         [one] shell parts
        *[other] shell partses
@@ -322,13 +322,13 @@ d-7chkyi44 = Basics
     .doc = The basics' window: places in the sidebar, the parts in the content.
 
 d-vvxmf5ve = Backlog list
-    .doc = The backlog's window: its items as rows, each with a menu, a swipe and a hover toolbar,
+    .doc = The backlog's window: its items as rows, each with a menu, a swipe and a hover toolbar, over a composer.
 
 d-7ptc3r7a = Item row
-    .doc = One item in the list: its row, what it says, its reactions and the message it answers, with
+    .doc = One item in the list: its row, what it says, its reactions and the message it answers, with a menu, a swipe and a hover toolbar of its own.
 
 d-qczmqkvq = Release board
-    .doc = The release's window: its items as tabs, as a frame holds them, over a lane per stage, each
+    .doc = The release's window: its items as tabs, as a frame holds them, over a lane per stage, each card an item.
 
 d-z5ai6zk5 = Controls
     .doc = The controls window: each kind in a section of its own page.
@@ -340,7 +340,7 @@ d-5cczuoub = Feedback
     .doc = The feedback window: each kind in a section of its own page.
 
 d-irl4ws35 = Places
-    .doc = The canvas's window: a map filling it, as a canvas stands, with a place at each point and a
+    .doc = The canvas's window: a map filling it, as a canvas stands, with a place at each point and a window standing on it as a traditional desktop's does.
 
 d-tsxcwdoy = Media
     .doc = The media window: each kind in a section of its own page.

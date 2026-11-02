@@ -576,7 +576,6 @@ doc = false
 "leb128fmt-0_1_0" = { package = "leb128fmt", version = "^0.1.0", default-features = false, features = [] }
 "legacy-agent" = { path = "../../../crates/runtime/legacy-agent", default-features = false, features = [] }
 "legacy-agent-protocol" = { path = "../../../crates/runtime/legacy-agent-protocol", default-features = false, features = [] }
-"legacy-vm" = { path = "../../../crates/runtime/legacy-vm", default-features = false, features = ["default", "relay-stream"] }
 "lettre-0_11_22" = { package = "lettre", version = "^0.11.22", default-features = false, features = ["ring", "rustls", "rustls-native-certs", "smtp-transport", "tokio1", "tokio1-rustls"] }
 "leveldb-sys-2_0_9" = { package = "leveldb-sys", path = "../../../vendor/leveldb-sys", default-features = false, features = ["snappy"] }
 "levenshtein_automata-0_2_1" = { package = "levenshtein_automata", version = "^0.2.1", default-features = false, features = [] }
@@ -3025,7 +3024,6 @@ doc = false
 "leb128fmt-0_1_0" = { package = "leb128fmt", version = "^0.1.0", default-features = false, features = [] }
 "legacy-agent" = { path = "../../../crates/runtime/legacy-agent", default-features = false, features = [] }
 "legacy-agent-protocol" = { path = "../../../crates/runtime/legacy-agent-protocol", default-features = false, features = [] }
-"legacy-vm" = { path = "../../../crates/runtime/legacy-vm", default-features = false, features = ["default", "relay-stream"] }
 "lettre-0_11_22" = { package = "lettre", version = "^0.11.22", default-features = false, features = ["ring", "rustls", "rustls-native-certs", "smtp-transport", "tokio1", "tokio1-rustls"] }
 "leveldb-sys-2_0_9" = { package = "leveldb-sys", path = "../../../vendor/leveldb-sys", default-features = false, features = ["snappy"] }
 "levenshtein_automata-0_2_1" = { package = "levenshtein_automata", version = "^0.2.1", default-features = false, features = [] }

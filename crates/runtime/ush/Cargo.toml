@@ -64,7 +64,7 @@ tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # record's NetHost grants, and nftables that admit only what it answered.
 tilo-egress = { path = "../egress" }
 # Installed legacy apps become commands in every guest (`LegacyLaunch`).
-legacy-vm = { path = "../legacy-vm", default-features = false }
+legacy-vm = { path = "../legacy-vm" }
 
 anyhow.workspace = true
 tilo-paths.workspace = true

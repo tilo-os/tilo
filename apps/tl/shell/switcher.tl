@@ -99,9 +99,9 @@ view window_names(w: Win) {
     }
 }
 
-/// What a window's card shows of the window itself: its live picture, drawn by the compositor
-/// where this names it, over the app's glyph. A window that may not be pictured (its app holds
-/// secrets) shows the glyph alone, marked as withheld.
+/// What a window's card shows of the window itself: its live picture where this names it, over the
+/// app's glyph. A window that may not be pictured (its app holds secrets) shows the glyph alone,
+/// marked as withheld.
 view window_face(w: Win) {
     layers(min: if space.compact { 4rem } else { 11rem }, aspect: 1.6) {
         ui.WindowPreview(w.key)

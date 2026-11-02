@@ -509,7 +509,7 @@ impl BrokerState {
                 self.log("restart", None, true, None);
                 Response::Ok
             }
-            Request::LegacyLaunch { app, args, cwd } => self.legacy_launch(&app, args, &cwd),
+            Request::LegacyLaunch { app, args, cwd } => self.legacy_launch(&app, &args, &cwd),
             Request::FileAction { action, run } => {
                 crate::file_actions::brokered(self, &action, run.as_ref())
             }
@@ -517,8 +517,8 @@ impl BrokerState {
     }
 
     /// A legacy app's shim: the user's own legacy VM runs it.
-    fn legacy_launch(&self, app: &str, args: Vec<String>, cwd: &Path) -> Response {
-        if legacy_launch_args(&self.environment.policy(), app, &args, cwd).is_some() {
+    fn legacy_launch(&self, app: &str, args: &[String], cwd: &Path) -> Response {
+        if legacy_launch_args(&self.environment.policy(), app, args, cwd).is_some() {
             Response::Denied {
                 reason: HOST_COMMAND_NEEDS_SOCKET.into(),
             }

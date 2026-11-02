@@ -16,7 +16,7 @@ d-4oqrwuyr = Column
     .doc = The column it was in, before cards were kept in their columns.
 
 d-7jmgbfub = Column
-    .doc = A column of the board: a stage the cards go through, such as "Doing", with its cards in
+    .doc = A column of the board: a stage the cards go through, such as "Doing", with its cards in order.
     .noun = { $count ->
         [one] column
        *[other] columns
@@ -39,7 +39,7 @@ d-tuoyjxa6 = Cards
     .doc = Every card, before cards were kept in their columns.
 
 d-pf6eoju5 = Place cards
-    .doc = Puts each card of a board from before cards were kept in their columns into its column, in
+    .doc = Puts each card of a board from before cards were kept in their columns into its column, in the order the board showed them.
 
 d-2lxgfocl = New column
     .doc = Adds a column at the right of the board.
@@ -60,10 +60,10 @@ d-yjwm6mjf = Rename column
     .doc = Renames a column.
 
 d-t5kjcxjq = Board
-    .doc = The board's window: a lane per column with its cards, each card its title and the start of
+    .doc = The board's window: a lane per column with its cards, each card its title and the start of its notes.
 
 d-ufycrk6s = Card tile
-    .doc = A card on the board: its title and the start of its notes. It opens in a page, takes a card
+    .doc = A card on the board: its title and the start of its notes.
 
 d-zzww2gmr = Card page
     .doc = A card's page: its title and its notes.

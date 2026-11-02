@@ -1,9 +1,9 @@
-/// The conversation (shell.md §8.1): the agent chat and the REPL in one view, over a run of the
-/// session's agent. The transcript is the run's own, as the session publishes it: what the
-/// person asked and told the agent, the agent's words between its steps, and each program
-/// either of them ran as a step. A step shows the program in the code type; what it changed,
-/// a row each; and what it printed, as references. Nothing is drawn from the agent's words that a
-/// step does not back: the agent's words are words, and what it did is its steps.
+/// The conversation: the agent chat and the command line in one view, over a run of the session's
+/// agent. The transcript is the run's own, as the session publishes it: what the person asked and
+/// told the agent, the agent's words between its steps, and each program either of them ran as a
+/// step. A step shows the program in the code type; what it changed, a row each; and what it
+/// printed, as references. Nothing is drawn from the agent's words that a step does not back: the
+/// agent's words are words, and what it did is its steps.
 ///
 /// It stands on the floating material, as the composer does, and draws with the shared
 /// components and theme roles only, so every theme reaches it.

@@ -1,7 +1,7 @@
-/// The dock: a run of items on the edge the person set — the launcher, the apps and
-/// resources they pinned, and the apps running now — each with its badge, and the ones that
-/// want the person marked. It is a view of the person's `Shell` record and of the desk;
-/// every change it offers is one of `chrome.tl`'s actions.
+/// The dock: a run of items on the edge the person set (the launcher, the apps and resources they
+/// pinned, and the apps running now), each with its badge, and the ones that want the person
+/// marked. It is a view of the person's `Shell` record and of the desk; every change it offers is
+/// one of `chrome.tl`'s actions.
 ///
 /// The gesture is Rust (`ui.DragRun`, the toolkit's run): the person picks an item up, the
 /// run shows where it will land, and letting go runs one action — `place_item` — which is
@@ -87,10 +87,10 @@ view dock_run(s: Shell, d: Desk) {
     }
 }
 
-/// One dock item: its glyph, with its badge on the glyph's top trailing corner — the count of
-/// what is new, or the mark that it wants the person — as a dock has always badged an app. The
-/// count is the button's own (`count:`), so it stands on the glyph and never on the tile beside
-/// it, and the name read out says it.
+/// One dock item: its glyph, with its badge on the glyph's top trailing corner (the count of what
+/// is new, or the mark that it wants the person), as a dock has always badged an app. The count is
+/// the button's own (`count:`), so it stands on the glyph and never on the tile beside it, and the
+/// name read out says it.
 view dock_tile(s: Shell, d: Desk, item: DockItem) {
     let name = if item.badge == 0 { item.title } else { "{item.title}, {item.badge} new" }
     ui.Button(name, icon: item.icon, icon_only: true, role: .plain, count: item.badge, dot: item.attention, alert: item.attention) {

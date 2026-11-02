@@ -34,7 +34,7 @@ d-spdco6z2 = Date created
 d-vs3pg7vu = Title
 
 d-qymo5lg2 = New note
-    .doc = Starts a note. Its title starts empty: what is typed first names it.
+    .doc = Starts a note.
 
 d-qhmjwgei = Pin
     .doc = Pins or unpins a note.
@@ -54,13 +54,13 @@ d-3u3bevec = Untag
 d-m6rqg3kf = Pin~present
 
 d-akcqjax3 = Notebook
-    .doc = The notebook's window: its notes, each opening in a window of its own. The order is the
+    .doc = The notebook's window: its notes, each opening in a window of its own.
 
 d-xqxkoqbj = Note row
     .doc = One note in a list: its title, the start of its body, and a pin when it is pinned.
 
 d-6wqou47w = Note editor
-    .doc = A note's window: its title, its tags as chips that come off with their remove button, its
+    .doc = A note's window: its title, its tags as chips that come off with their remove button, its body, and what happened to it.
 
 d-akcqjax3~row0 = Notebook for p
 

@@ -28,7 +28,7 @@ d-fbioszhs = Project
     .doc = The project it belongs to; none while it waits in the inbox.
 
 d-v56iknh2 = Section
-    .doc = The section of its project it is in, a lane of the project's board; none for the
+    .doc = The section of its project it is in, a lane of the project's board; none for the project's first lane.
 
 d-4sriymst = Priority
 
@@ -86,10 +86,10 @@ d-lg5gedbh = Items
 d-mdhllpbo = Projects
 
 d-exy7sakn = Steps
-    .doc = The steps of every task, each naming its task: a task's checklist is the run of its
+    .doc = The steps of every task, each naming its task: a task's checklist is the run of its steps, which the index answers without reading the others.
 
 d-nk5542m7 = Sections
-    .doc = The sections of every project, each naming its project, in the order its board shows
+    .doc = The sections of every project, each naming its project, in the order its board shows them.
 
 d-q6rs4dka = Priority
     .doc = How much a task matters, most urgent last.
@@ -108,7 +108,7 @@ d-dypqwvdm = Add
     .doc = Adds a task with this title to the inbox.
 
 d-u7a3fue4 = Quick add
-    .doc = Adds what was typed in a quick add entry as a task, to the inbox or to `p`. When it says
+    .doc = Adds what was typed in a quick add entry as a task, to the inbox or to `p`.
 
 d-rs3ubifz = New task
     .doc = Starts a task in the inbox.
@@ -177,7 +177,7 @@ d-pcn3xgni = New task
     .doc = Adds a task at the end of a lane of a project's board.
 
 d-scjlkb6d = Place
-    .doc = Puts a task into a lane of its project's board, `s` (none for the first lane), at the place
+    .doc = Puts a task into a lane of its project's board, `s` (none for the first lane), at the place `at` among the tasks already there.
 
 d-ekvchj3n = Move
     .doc = Moves a task to just after another.
@@ -202,25 +202,25 @@ d-wrth4lq3 = Clear done~present
 d-swaiyhcf = Show board~present
 
 d-i2mhsb3h = Home
-    .doc = The tasks window: Inbox, Today, Upcoming and Done, each the tasks the filter of that name
+    .doc = The tasks window: Inbox, Today, Upcoming and Done, each the tasks the filter of that name holds of, and the projects, each opening in a window of its own.
 
 d-asnonvwl = Project page
-    .doc = A project's window: its tasks, in order, with the entry that adds to it at their foot; or,
+    .doc = A project's window: its tasks, in order, with the entry that adds to it at their foot; or, shown as a board (its Board toggle), the same tasks as a lane per section.
 
 d-gu3twlv2 = Project board
-    .doc = A project's board: a lane per section, the first for the tasks in none, each open task a
+    .doc = A project's board: a lane per section, the first for the tasks in none, each open task a card.
 
 d-hc5ndp4x = Task card
-    .doc = A task on a board: its row. It opens in a window of its own, and its menu moves it to
+    .doc = A task on a board: its row.
 
 d-w63ba6ad = Task row
-    .doc = One task in a list: a checkbox for whether it is done, its title, its project, when it is
+    .doc = One task in a list: a checkbox for whether it is done, its title, its project, when it is due, a flag while it matters, and who is doing it.
 
 d-dne3p7nf = Step row
     .doc = One step of a task's checklist: a checkbox for whether it is done, and what it is.
 
 d-mtmufg3w = Task page
-    .doc = A task's window: whether it is done and its title, when it is due, its project, how much it
+    .doc = A task's window: whether it is done and its title, when it is due, its project, how much it matters, who is doing it, its steps, its notes, and what happened to it.
 
 d-i2mhsb3h~row0 = Home for p
 

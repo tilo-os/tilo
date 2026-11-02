@@ -74,8 +74,8 @@ enum Slot {
 }
 
 /// A named set of the settings, which the person applies in one action: a chrome preset.
-/// `Viewing.preset` (arrangement.tl) is the *desk* preset — how the same places are shown — and
-/// is a different setting; this one names the bar and the dock.
+/// `Viewing.preset` (arrangement.tl) is the *desk* preset — how the same places are shown — and is
+/// a different setting; this one names the bar and the dock.
 enum Layout {
     /// The dock on the bottom with the bar on the top: Tilo's own.
     tilo (icon: .layout_grid)
@@ -88,8 +88,8 @@ enum Layout {
     gnome (icon: .menu)
     /// No chrome at rest; the edges reveal what the person needs.
     minimal (icon: .minus)
-    /// The traditional desktop: frames on a floating desk, the focused window's own commands
-    /// in the top bar, and a floating dock at the foot — the shape macOS and GNOME people know.
+    /// The traditional desktop: frames on a floating desk, the focused window's own commands in the
+    /// top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
     windows_desktop (icon: .app_window)
 }
 
