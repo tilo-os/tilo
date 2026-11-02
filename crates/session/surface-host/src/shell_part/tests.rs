@@ -270,7 +270,12 @@ fn the_bars_status_reads_the_devices_published_resources() {
         part.prepare_frame();
     }
     assert!(part.says("71%"), "the charge stays as it charges");
-    for name in ["Volume, 42%", "Wi-Fi, Station", "71%"] {
+    assert!(
+        part.says("71%, charging"),
+        "and says it takes charge: {:?}",
+        part.accessible_labels()
+    );
+    for name in ["Volume, 42%", "Wi-Fi, Station", "71%, charging"] {
         click(&mut part, name);
         assert_eq!(
             link.asked.borrow_mut().pop_front().map(|ask| ask.action),
