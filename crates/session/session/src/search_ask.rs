@@ -104,7 +104,7 @@ impl Ask {
         };
         drop(state);
         let needle = needle.to_owned();
-        std::thread::spawn(move || answer(needle, sender));
+        std::thread::spawn(move || answer(needle, &sender));
     }
 
     fn row(&self, needle: &str) -> Hit {
@@ -186,7 +186,7 @@ fn chosen() -> Option<(String, String)> {
 
 /// Ask `question` through the session's model gateway, on this thread (the
 /// ask is started on one of its own), sending what comes as it is written.
-fn answer(question: String, deltas: Sender<Chunk>) {
+fn answer(question: String, deltas: &Sender<Chunk>) {
     let Some(models) = crate::activity_models::models() else {
         let _ = deltas.send(Chunk::Failed(tilo_desktop_search::i18n::t(
             "search-ask-no-gateway",
@@ -197,7 +197,7 @@ fn answer(question: String, deltas: Sender<Chunk>) {
 }
 
 /// [`answer`] against a model capability, wherever it comes from.
-fn answer_with(models: &ui::models::Models, question: String, deltas: Sender<Chunk>) {
+fn answer_with(models: &ui::models::Models, question: String, deltas: &Sender<Chunk>) {
     let Ok(runtime) = tilo_rt::try_app() else {
         let _ = deltas.send(Chunk::Failed(tilo_desktop_search::i18n::t(
             "search-ask-no-gateway",
@@ -434,7 +434,7 @@ mod tests {
             "A conflict-free ",
             "replicated data type.",
         ])));
-        answer_with(&models, "what is a CRDT?".into(), sender);
+        answer_with(&models, "what is a CRDT?".into(), &sender);
         let changed = ask.poll();
         assert!(changed, "what arrived is worth drawing");
         let row = ask.row("what is a CRDT?");

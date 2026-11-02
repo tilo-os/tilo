@@ -557,7 +557,7 @@ fn windows(
                     let app_title = match &tab.tile {
                         TileContent::LocalApp { label, .. } => label.clone(),
                         _ => app.as_ref().map_or_else(String::new, |app| {
-                            tilo_desktop_search::names::app_name(&app)
+                            tilo_desktop_search::names::app_name(app)
                         }),
                     };
                     let place = holders
