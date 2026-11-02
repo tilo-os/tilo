@@ -880,6 +880,13 @@ impl Session {
         // band, the chrome and the input that reaches for the bar read the one
         // model.
         let reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>> = Rc::default();
+        // The desk a login shows is built before its first frame: this pair
+        // is the phase between the compositor coming up and the frame that
+        // draws it (tools/perf/startup_marks.py).
+        // The single-threaded start is over: the marks below are written by
+        // their own thread, never by the one that builds the desk.
+        tilo_startup_metrics::start_writer();
+        tilo_startup_metrics::mark("desk-build-start");
         let (desktop, strips, asks) = desk::desk(
             &options,
             &activity,
@@ -898,6 +905,7 @@ impl Session {
         // settings as they are now; the desk wears the same theme.
         let warmth = window_warmth::Windows::new(presentation.theme.clone(), &options.person);
         desktop.set_theme(presentation.theme.clone());
+        tilo_startup_metrics::mark("desk-build-done");
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         // The desk as this device left it: its workspaces, the windows they
         // held, and the apps those windows open again.

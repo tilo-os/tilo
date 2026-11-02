@@ -89,6 +89,9 @@ automerge.workspace = true
 # Where this device keeps its state: the root the record indexes are under.
 tilo-cli-kit = { path = "../../runtime/cli" }
 tilo-paths.workspace = true
+# Where a login's time went, when `TILO_STARTUP_METRICS_PATH` asks
+# (`tools/perf/startup_marks.py` reads it).
+tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # The person's accessibility settings: the assists, the colour filter and
 # the magnifier the compositor applies.
 tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
