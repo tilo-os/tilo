@@ -226,9 +226,17 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
 
 fn create(
     mut context: HostContext,
-    _target: LaunchTarget,
+    target: LaunchTarget,
     _restore: RestoreInput,
 ) -> Result<AppComponent, ui::launch::LaunchError> {
+    // A room the shell's app was never mounted in has no record of it yet:
+    // the mount reserved one, and the app makes it, empty (it keeps nothing
+    // of its own in it).
+    if matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew) {
+        context
+            .initialize_new_record(|_| Ok(()))
+            .map_err(ui::launch::LaunchError::Record)?;
+    }
     let link = context
         .take_lent()
         .into_iter()
