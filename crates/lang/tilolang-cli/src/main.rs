@@ -68,9 +68,10 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
         }
-        // A package may `use` a native app: its published types are found among --path too.
+        // A package may `use` a native app or the platform's (the device, Settings): their
+        // published types are found as `build` and `layout-check` find them.
         Some(_) => {
-            return tilolang::cli::main_with(&args, tilolang_tilo::catalogue::native_apps);
+            return tilolang::cli::main_with(&args, tilolang_tilo::catalogue::published_packages);
         }
     };
     match result {

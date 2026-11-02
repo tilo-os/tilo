@@ -837,7 +837,7 @@ impl Shared {
         // of the person's: their answer admits it, and the client is served
         // from the next pass on.
         if let Some(door) = self.agent_door.borrow_mut().as_mut() {
-            door.follow(&self.handle, &self.person);
+            door.follow(&self.handle, &self.person, &self.doors);
         }
         self.asker.follow();
         self.shortcut_guide.follow();
@@ -1579,23 +1579,18 @@ impl Session {
                 .map(|desktop| desktop.questions().clone())
         });
         let door = options.agent_door.as_deref().and_then(|path| {
-            match agent_door::mount(
+            agent_door::mount(
                 path,
                 questions.clone(),
                 std::sync::Arc::clone(&options.launches),
                 options.wake.handle(),
                 options.state.as_deref(),
-            ) {
-                Ok(mounted) => Some(mounted),
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        path = %path.display(),
-                        "the agent door does not open"
-                    );
-                    None
-                }
-            }
+                &options.admit_repl,
+            )
+            .map_err(|error| {
+                tracing::warn!(%error, path = %path.display(), "the agent door does not open");
+            })
+            .ok()
         });
         let agent_door = door.map(|door| {
             door.serve(

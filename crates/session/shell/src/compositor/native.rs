@@ -1837,13 +1837,10 @@ fn pump_floating_surface_service(
                 connection,
                 app_id,
                 network_status_allowed,
-                pid,
+                launch,
             } => {
                 appearance.connected(connection, &app_id, network_status_allowed);
-                state.input_order.connected(
-                    connection,
-                    pid.map(crate::compositor::input_order::launch_of),
-                );
+                state.input_order.connected(connection, launch);
                 frame_builder
                     .host_mut()
                     .connect_window_share(connection, &app_id);
@@ -9604,6 +9601,9 @@ pub fn run() {
     }
     // Window labels and tiles are served the installed apps from memory.
     crate::shell::launcher::load_installed_apps();
+    // From here on this thread is the loop: it is served the installed apps
+    // the registry's watch keeps, and its launches start on launch workers.
+    crate::shell::launcher::mark_loop_thread();
     let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;

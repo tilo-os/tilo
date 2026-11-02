@@ -1122,14 +1122,105 @@ fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
 
 const NOTES: &str = "so.tilo.lang.notes";
 
+/// Where the shipped tilolang packages are.
+fn shipped_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
+}
+
+/// The shipped package in `dir`, built with the packages it uses, and its app id.
+fn shipped(dir: &std::path::Path) -> (String, Bundle) {
+    // The platform's apps (the device, Settings) and the native apps beside the packages (the
+    // session's `so.tilo.session`) are described from their surfaces, not built.
+    let published =
+        tilolang_tilo::catalogue::published_packages(&tilolang::source::search_of(dir, &[]))
+            .expect("the published surfaces read");
+    let built = tilolang::source::compile_package(
+        dir,
+        &[],
+        &published,
+        &mut tilolang::OsEntropy::default(),
+    )
+    .unwrap_or_else(|error| panic!("{}: the packages compile: {error}", dir.display()));
+    let (package, used) = built.split_last().expect("the package is built last");
+    (
+        package.compiled.meta.app.clone(),
+        Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled)),
+    )
+}
+
 /// The shipped Notes package, built with the packages it uses.
 fn notes() -> Bundle {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/notes");
-    let dirs = tilolang::source::dependency_order(&dir, &[]).expect("the packages resolve");
-    let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-        .expect("the packages compile");
-    let (package, used) = built.split_last().expect("the package is built last");
-    Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
+    shipped(&shipped_dir().join("notes")).1
+}
+
+/// Every package shipped in `apps/tl` publishes what it offers as a valid resource/action surface:
+/// hosted as a window opens it, the host refuses none of it and the broker holds it. A resource's
+/// views each open through an action of their own, so none shares one.
+#[test]
+fn every_shipped_package_publishes_a_surface_the_host_does_not_refuse() {
+    let mut dirs: Vec<_> = std::fs::read_dir(shipped_dir())
+        .expect("the shipped packages")
+        .map(|entry| entry.expect("a directory entry").path())
+        .filter(|dir| dir.join("app.tl").is_file())
+        .collect();
+    dirs.sort();
+    assert!(dirs.len() >= 2, "{dirs:?}");
+    for dir in dirs {
+        let (app, bundle) = shipped(&dir);
+        let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
+        settle(&mut host, &mut window);
+        let hosted = host.instances().next().expect("the instance runs");
+        assert!(
+            hosted.refused().is_empty(),
+            "{app}: the host refused its surface: {:#?}",
+            hosted.refused()
+        );
+        assert!(
+            !hosted.published().is_empty(),
+            "{app}: the broker holds nothing it offers"
+        );
+    }
+}
+
+/// A view other than its type's default is opened by the action published with it: the
+/// counter's `controls`, invoked as the broker delivers it, shows the counter through that
+/// view, its two buttons without the count.
+#[test]
+fn a_published_view_opens_through_its_own_action() {
+    let (mut host, mut window, sent, inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let hosted = host.instances().next().unwrap();
+    let opens = |label: &str| {
+        hosted
+            .published()
+            .iter()
+            .find(|action| action.view.as_ref().is_some_and(|view| view.label == label))
+            .unwrap_or_else(|| panic!("the view `{label}` is published with its open action"))
+            .clone()
+    };
+    let (counter, controls) = (opens("counter"), opens("controls"));
+    assert!(counter.view.as_ref().unwrap().primary);
+    assert_eq!(counter.address.action, "open");
+    assert_ne!(
+        controls.address.action, counter.address.action,
+        "each view opens through an action of its own"
+    );
+    assert!(window.detail.is_none(), "the window shows its root alone");
+    deliver(&inbox, 41, &controls.address, "ada");
+    settle(&mut host, &mut window);
+    assert!(
+        matches!(
+            answered(&sent, 41),
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ),
+        "{:?}",
+        answered(&sent, 41)
+    );
+    let shown = format!("{:?}", window.detail.as_ref().expect("the view opened"));
+    assert!(
+        shown.contains("plus") && shown.contains("minus") && !shown.contains("Count"),
+        "the counter, through its controls: {shown}"
+    );
 }
 
 /// The node of `tree` whose prop `name` reads `value`.
@@ -1494,8 +1585,23 @@ fn applier(
     std::os::unix::net::UnixStream,
     Sent,
 ) {
+    applier_of(person, APP, &counter(), doc)
+}
+
+/// The origin of `app`'s records, built as `bundle`, for `person`, holding `doc`: as
+/// [`applier`] is the counter's.
+fn applier_of(
+    person: &str,
+    app: &str,
+    bundle: &Bundle,
+    doc: automerge::AutoCommit,
+) -> (
+    tilolang_host::hosted::Applier,
+    std::os::unix::net::UnixStream,
+    Sent,
+) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let route = RouteSpec::app(app, uuid::Uuid::new_v4());
     let sent: Sent = Rc::default();
     let mut manager = CollaborationManager::with_peer_transport(Broker {
         route: route.clone(),
@@ -1516,13 +1622,13 @@ fn applier(
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
     let applier = tilolang_host::hosted::Applier::open(
         Spec {
-            app: APP.to_owned(),
+            app: app.to_owned(),
             workspace: route.cluster_id.to_string(),
             instance: 1 << 62,
             person: person.to_owned(),
         },
         record,
-        &counter(),
+        bundle,
         &Phrases::new("en-US"),
         wake(),
         theirs.into(),
@@ -1684,6 +1790,52 @@ fn a_change_of_the_root_no_window_made_yet_makes_it_first() {
         read.get_missing_deps(&[]).is_empty(),
         "what it says it wrote holds the root it made, for a task that read no record"
     );
+    assert!(
+        documents_sent(&sent) > 0,
+        "the root and the change went to the workspace"
+    );
+}
+
+/// A package may declare several roots: a change of any of them that no window made yet makes
+/// that root first. The shell's top bar is its `shell` root, not the root it opens with.
+#[test]
+fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
+    let (app, bundle) = shipped(&shipped_dir().join("shell"));
+    let shell = bundle
+        .meta
+        .named_roots
+        .iter()
+        .find(|root| root.name == "shell")
+        .expect("the shell's top bar is a root of its own")
+        .ty
+        .clone();
+    assert_ne!(
+        bundle.meta.roots.first(),
+        Some(&shell),
+        "not the root the shell opens with"
+    );
+    let hide = &bundle
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "hide_app_menus")
+        .expect("the shell's top bar has its actions")
+        .id;
+    let (mut applier, connection, sent) =
+        applier_of("ada", &app, &bundle, automerge::AutoCommit::new());
+    let answer = apply(
+        &mut applier,
+        &connection,
+        &runtime_portal::tilolang_host::Change {
+            resource: tilolang_tilo::publish::resource_id(&app, &format!("root-{shell}")),
+            action: hide.clone(),
+            arguments: serde_json::Map::new(),
+            invoker: task_invoker(),
+            context: None,
+            preview: None,
+        },
+    );
+    assert!(answer.get("ok").is_some(), "{answer}");
     assert!(
         documents_sent(&sent) > 0,
         "the root and the change went to the workspace"

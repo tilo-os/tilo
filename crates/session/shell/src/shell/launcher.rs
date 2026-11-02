@@ -1633,6 +1633,7 @@ impl LaunchSession {
             super::doc_open::forget_unpresented_documents(self, &event.package_id);
         }
         lock(&self.0.events).push(event);
+        wake_loop();
     }
 
     fn take(&self) -> Vec<LaunchEvent> {
@@ -2055,13 +2056,38 @@ pub fn runtime_dir() -> PathBuf {
     tilo_paths::xdg::runtime_dir_or_default()
 }
 
+thread_local! {
+    /// Whether this thread is the compositor's loop ([`mark_loop_thread`]).
+    static ON_LOOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This thread is the compositor's loop from now on: what it asks of the
+/// installed apps is the list it is served, and what it launches starts on a
+/// launch worker. Marked once the startup read of the registries is done.
+pub(crate) fn mark_loop_thread() {
+    ON_LOOP.with(|on| on.set(true));
+}
+
+/// Whether this thread is the compositor's loop, which never reads the app
+/// registries or starts a launch itself.
+pub(crate) fn on_loop() -> bool {
+    ON_LOOP.with(std::cell::Cell::get)
+}
+
 /// Every installed package, GUI or not, freshly read from the registry.
+///
+/// Never on the compositor's loop: it is served the list the registry's
+/// watch keeps ([`installed_apps_without_waiting`]).
 ///
 /// # Errors
 ///
 /// Returns [`LaunchError::RegistryUnreadable`] if the app registry file
 /// cannot be read or parsed.
 pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
+    debug_assert!(
+        !on_loop(),
+        "the compositor's loop read the app registries; it is served the watched list"
+    );
     tracing::info!(
         target: "tilo::app_registry",
         system_store = ?package_store::layout::system_data_dir(),
@@ -2073,7 +2099,7 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
         detail: e.to_string(),
     });
     // What the catalogue says of renamed apps reaches every decision in this process.
-    let _ = installed_earlier_ids();
+    let _ = crate::shell::installed_registry::read_earlier_ids();
     apps
 }
 
@@ -2363,15 +2389,17 @@ pub fn resource_candidates() -> Vec<desktop_policy::AppCandidate> {
     candidates
 }
 
-/// Re-read the installed registry and manifest immediately before launch.
-/// Picker state and the two-second application cache are never authority for
-/// executing a resource handler: an uninstalled app or a claim removed by an
-/// upgrade fails closed here.
+/// Check the claim against the installed registry as it is now, immediately
+/// before launch: [`installed_apps`] answers only while the registry files
+/// are the ones it was read from (on the compositor's loop, the list the
+/// registry's watch keeps). Picker state is never authority for executing a
+/// resource handler: an uninstalled app or a claim removed by an upgrade
+/// fails closed here.
 pub fn revalidate_resource_claim(
     package_id: &str,
     resource: &desktop_policy::ResourceKind,
 ) -> bool {
-    let Ok(apps) = read_installed_apps() else {
+    let Ok(apps) = installed_apps() else {
         return false;
     };
     let candidates = default_app_candidates_from(&apps);
@@ -2381,10 +2409,11 @@ pub fn revalidate_resource_claim(
 }
 
 /// Whether the installed package `package_id` declares `capability` in its
-/// signed manifest, re-read now: an upgrade that drops it stops what it
-/// allowed at once, and a package that is gone declares nothing.
+/// signed manifest, as the registry is now ([`installed_apps`]): an upgrade
+/// that drops it stops what it allowed at once, and a package that is gone
+/// declares nothing.
 pub fn package_declares_capability(package_id: &str, capability: &str) -> bool {
-    read_installed_apps().is_ok_and(|apps| {
+    installed_apps().is_ok_and(|apps| {
         apps.iter()
             .any(|app| app.package_id == package_id && app.declares_capability(capability))
     })
@@ -2965,6 +2994,38 @@ pub fn launch_workspace_agent(
         .ok_or_else(|| LaunchError::NotInstalled {
             package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
         })?;
+    // Reading the agent's manifest and identity and starting it waits on the
+    // disk: the compositor's loop hands that to a launch worker.
+    if on_loop() {
+        let (agent, workspace) = (agent_id.to_owned(), workspace.clone());
+        spawn_reporting(
+            std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
+            move || {
+                if let Err(error) = start_workspace_agent(&agent, &workspace) {
+                    tracing::info!(%agent, error = %error.user_message(), "the workspace agent could not be started");
+                }
+            },
+        )
+        .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
+            detail: error.to_string(),
+        })?;
+        return Ok(app);
+    }
+    start_workspace_agent(agent_id, workspace)
+}
+
+/// [`launch_workspace_agent`] once the agent is admitted: the agent service
+/// as the registries have it now, checked to be one, and started.
+fn start_workspace_agent(
+    agent_id: &str,
+    workspace: &Workspace,
+) -> Result<InstalledApp, LaunchError> {
+    let app = installed_apps()?
+        .into_iter()
+        .find(|app| app.package_id == WORKSPACE_AGENT_PACKAGE_ID)
+        .ok_or_else(|| LaunchError::NotInstalled {
+            package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
+        })?;
     if !is_headless_collab_service(&app)? {
         return Err(LaunchError::NotAManagedService {
             package_id: app.package_id,
@@ -3451,6 +3512,51 @@ impl Replay {
     }
 }
 
+/// Start `replay` of `app` on the launch preflight worker, for the
+/// compositor's loop ([`execute_installed_inner`]). The worker resolves the
+/// package from the registries as they are now, so a launch right after an
+/// install starts the installed package; a launch that cannot start arrives
+/// as a launch event, which wakes the loop.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::AgentLaunchWorkerUnavailable`] when the worker
+/// cannot be started.
+fn start_off_the_loop(app: InstalledApp, replay: Replay) -> Result<(), LaunchError> {
+    spawn_reporting(
+        std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
+        super::launch_readiness::inherit(move || {
+            let package_id = app.package_id.clone();
+            let outcome = installed_apps()
+                .and_then(|apps| {
+                    apps.into_iter()
+                        .find(|fresh| fresh.package_id == package_id)
+                        .ok_or_else(|| LaunchError::NotInstalled {
+                            package_id: package_id.clone(),
+                        })
+                })
+                .and_then(|fresh| replay.start(fresh));
+            if let Err(error) = outcome {
+                super::launch_readiness::fail_current(error.user_message());
+                push_event(LaunchEvent {
+                    display_name: app.display_name.clone(),
+                    package_id,
+                    managed_agent_id: None,
+                    managed_workspace_id: None,
+                    kind: LaunchEventKind::SpawnFailed {
+                        reason: error.failure(),
+                        detail: error.user_message(),
+                    },
+                });
+            }
+        }),
+    )
+    .map(|_| ())
+    .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
+        detail: error.to_string(),
+    })
+}
+
 /// Update `app`, which is behind this system, then start `replay` with the
 /// build that fits. When the store has none yet, the app waits for its
 /// developer and does not start; when the update cannot be fetched, the
@@ -3606,6 +3712,26 @@ fn execute_installed_inner(
     capability_snapshot: Option<LaunchGrants>,
     native_owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
 ) -> Result<InstalledApp, LaunchError> {
+    // The compositor's loop starts nothing itself: a launch reads the app's
+    // manifest, records its use and resolves its package from the registries,
+    // and the loop never waits on the disk. It hands the launch, as asked, to
+    // a launch worker, which resolves the package again from the registries
+    // as they are then. The capabilities are those published now.
+    if on_loop() {
+        let replay = Replay {
+            room,
+            document: document.map(Path::to_path_buf),
+            uri: uri.map(str::to_owned),
+            context: ReplayContext::of(&context),
+            media_handoff,
+            capability_snapshot: Some(
+                capability_snapshot.unwrap_or_else(|| lock(&WORKSPACE_CAPABILITIES).clone()),
+            ),
+            native_owner,
+        };
+        start_off_the_loop(app.clone(), replay)?;
+        return Ok(app);
+    }
     // Opening it is a use, whichever window it opens in, and whether or not
     // it must update first.
     let recorded = recorded_use::record(&app);
@@ -5623,6 +5749,76 @@ fn start_launch(
 /// Report `event` to the calling thread's [`LaunchSession`].
 pub(crate) fn push_event(event: LaunchEvent) {
     LaunchSession::current().push(event);
+}
+
+/// Wakes the compositor's loop when a launch worker has something for it.
+static LOOP_WAKE: std::sync::OnceLock<crate::session_runtime::Wake> = std::sync::OnceLock::new();
+
+/// Wake the loop with `wake` whenever a launch worker reports to it: a
+/// launch event, or a launch it queued that was refused
+/// ([`queue_launch_in_workspace_or`]).
+pub(crate) fn wake_with(wake: crate::session_runtime::Wake) {
+    let _ = LOOP_WAKE.set(wake);
+}
+
+/// Wake the loop for what a launch worker just reported, if a loop is
+/// listening ([`wake_with`]).
+fn wake_loop() {
+    if let Some(wake) = LOOP_WAKE.get() {
+        wake();
+    }
+}
+
+/// Launch the installed package `package_id` into `workspace` as
+/// [`launch_in_workspace`] does, but on the launch preflight worker: the
+/// compositor's loop never reads the registries, and the worker resolves the
+/// package from them as they are now, so a launch right after an install
+/// starts the installed package ([`installed_apps`]). The workspace's
+/// capabilities are published now, as [`launch_in_workspace`] publishes them,
+/// and the launch takes the same snapshot. A launch that cannot start is
+/// handed to `refused` on the worker, and the loop is woken for it.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::AgentLaunchWorkerUnavailable`] when the preflight
+/// worker cannot be started.
+pub(crate) fn queue_launch_in_workspace_or(
+    package_id: String,
+    workspace: &Workspace,
+    refused: impl FnOnce(LaunchError) + Send + 'static,
+) -> Result<(), LaunchError> {
+    let grants = workspace.launch_grants(tilo_clock::unix_now());
+    set_workspace_capabilities(grants.clone());
+    let room = workspace.room();
+    spawn_reporting(
+        std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
+        super::launch_readiness::inherit(move || {
+            let outcome = installed_apps()
+                .and_then(|apps| {
+                    find_installed(&apps, &package_id).ok_or_else(|| LaunchError::NotInstalled {
+                        package_id: package_id.clone(),
+                    })
+                })
+                .and_then(|app| {
+                    if app.has_gui {
+                        Ok(app)
+                    } else {
+                        Err(LaunchError::NotAGuiApp {
+                            package_id: package_id.clone(),
+                        })
+                    }
+                })
+                .and_then(|app| execute_installed(app, room, None, None, None, None, Some(grants)));
+            if let Err(error) = outcome {
+                refused(error);
+                wake_loop();
+            }
+        }),
+    )
+    .map(|_| ())
+    .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
+        detail: error.to_string(),
+    })
 }
 
 fn launch_exit_status(status: &std::io::Result<std::process::ExitStatus>) -> launch_history::Exit {

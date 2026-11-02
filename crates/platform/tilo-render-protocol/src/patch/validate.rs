@@ -401,7 +401,7 @@ impl<'a> Validator<'a> {
                 .or_else(|| {
                     description
                         .event("change")
-                        .and(description.binding(name))
+                        .and_then(|_| description.binding(name))
                         .map(|binding| &binding.ty)
                 });
             match declared {

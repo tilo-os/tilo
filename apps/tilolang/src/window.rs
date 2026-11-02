@@ -41,7 +41,7 @@ fn door_endpoints(
     host: &Rc<RefCell<Option<Host>>>,
     door_work: &Rc<Cell<bool>>,
     outgoing: &Outgoing,
-    open_requests: &Rc<RefCell<Vec<String>>>,
+    open_requests: &Rc<RefCell<Vec<OpenEffect>>>,
 ) -> (Element, Element) {
     let answering = (Rc::clone(host), Rc::clone(door_work), Rc::clone(outgoing));
     let endpoint = ui::framework::EffectEndpoint::new(
@@ -62,8 +62,7 @@ fn door_endpoints(
     let opening = Rc::clone(open_requests);
     let open_endpoint = ui::framework::EffectEndpoint::new(
         move |effect: OpenEffect, _: &ui::framework::EffectCaller| {
-            let OpenEffect::Open { anchor } = effect;
-            opening.borrow_mut().push(anchor);
+            opening.borrow_mut().push(effect);
             Ok(ui::tilo_actions::ActionOutput::default())
         },
     );
@@ -245,9 +244,9 @@ impl Window {
         }
     }
 
-    /// The anchors search hits and agents asked the window to show, until it shows them.
+    /// What search hits and agents asked the window to show, until it shows them.
     #[must_use]
-    pub fn open_requests(&self) -> Rc<RefCell<Vec<String>>> {
+    pub fn open_requests(&self) -> Rc<RefCell<Vec<OpenEffect>>> {
         self.instance.open_requests()
     }
 

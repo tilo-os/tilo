@@ -2,7 +2,7 @@
 //! [--size WxH] [--shell bar|screen] [--host-desktop]
 //! [--firstboot|--firstboot-only] [--no-x11]
 //! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
-//! [-- command args...]`. Listens on a fresh `wayland-N` socket, starts
+//! [--admit-repl PATH]... [-- command args...]`. Listens on a fresh `wayland-N` socket, starts
 //! Xwayland for X11 clients (unless `--no-x11`), prints both displays and the
 //! agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl --door`
 //! takes) and starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set to
@@ -112,6 +112,10 @@ struct CommandLine {
     reach: Reach,
     /// What the tilolang shell shows, when the command line asked for it.
     shell: Option<tilo_surface_host::shell_part::ShellLayer>,
+    /// The programs the person admits to act as them at the agent door
+    /// (`--admit-repl PATH`, as often as they name one): their decision,
+    /// made as they start the session.
+    admit_repl: Vec<std::path::PathBuf>,
 }
 
 /// The command line `ours` parsed, or `None` when it names a backend there
@@ -155,11 +159,18 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
             system: bus("--system-bus"),
         },
     );
+    let admit_repl = ours
+        .iter()
+        .zip(ours.iter().skip(1))
+        .filter(|(flag, _)| *flag == "--admit-repl")
+        .map(|(_, program)| std::path::PathBuf::from(program))
+        .collect();
     Some(CommandLine {
         backend,
         size,
         reach,
         shell,
+        admit_repl,
     })
 }
 
@@ -180,6 +191,7 @@ fn start(
         size,
         reach,
         shell,
+        admit_repl,
     } = line;
     let buses = reach.buses.clone();
     record_panics(backend);
@@ -247,6 +259,7 @@ fn start(
         power,
         machine,
         shell,
+        admit_repl,
         ..device_options(machine)
     };
     let agent_door = options.agent_door.clone();

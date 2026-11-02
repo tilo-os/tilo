@@ -285,7 +285,7 @@ pub struct Instance {
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
     door_work: Rc<Cell<bool>>,
-    open_requests: Rc<RefCell<Vec<String>>>,
+    open_requests: Rc<RefCell<Vec<crate::effects::OpenEffect>>>,
     /// What a person's press of a primary action made, to open as they asked for it.
     pressed_opens: Vec<String>,
     ask: Option<Suggestion>,
@@ -495,9 +495,9 @@ impl Instance {
         self.out.push(ToUi::Activate);
     }
 
-    /// The anchors search hits and agents asked the window to show, until it shows them.
+    /// What search hits and agents asked the window to show, until it shows them.
     #[must_use]
-    pub fn open_requests(&self) -> Rc<RefCell<Vec<String>>> {
+    pub fn open_requests(&self) -> Rc<RefCell<Vec<crate::effects::OpenEffect>>> {
         Rc::clone(&self.open_requests)
     }
 
@@ -1426,34 +1426,41 @@ impl Instance {
     fn take_open_requests(&mut self) -> bool {
         // What a press made comes to the front as the person's input does, and takes the
         // keyboard; a search hit or an agent's `open` moved no hand, and lands at once.
-        let anchors: Vec<(String, ui::Front)> = std::mem::take(&mut self.pressed_opens)
-            .into_iter()
-            .map(|anchor| (anchor, ui::Front::Input))
-            .chain(
-                std::mem::take(&mut *self.open_requests.borrow_mut())
-                    .into_iter()
-                    .map(|anchor| (anchor, ui::Front::Action)),
-            )
-            .collect();
+        let anchors: Vec<(crate::effects::OpenEffect, ui::Front)> =
+            std::mem::take(&mut self.pressed_opens)
+                .into_iter()
+                .map(|anchor| {
+                    (
+                        crate::effects::OpenEffect::Open { anchor },
+                        ui::Front::Input,
+                    )
+                })
+                .chain(
+                    std::mem::take(&mut *self.open_requests.borrow_mut())
+                        .into_iter()
+                        .map(|open| (open, ui::Front::Action)),
+                )
+                .collect();
         if anchors.is_empty() {
             return false;
         }
         let Some(host) = self.host() else {
             return false;
         };
-        for (anchor, front) in anchors {
+        for (open, front) in anchors {
             // A hit names the published resource (`tl:<app>:<id>`) or the resource's id.
+            let anchor = open.anchor();
             let anchor = anchor
                 .strip_prefix("tl:")
                 .and_then(|rest| rest.split_once(':'))
-                .map_or(anchor.as_str(), |(_, id)| id)
-                .to_owned();
-            match host.open_plan(&anchor) {
+                .map_or(anchor, |(_, id)| id);
+            match host.open_plan(anchor, open.view()) {
                 Ok(plan) => {
+                    // The app's own root in its default view is what the window shows already.
                     if let Some(target) = plan.target
-                        && (target.item.is_some() || plan.app != self.app)
+                        && (target.item.is_some() || plan.app != self.app || plan.view.is_some())
                     {
-                        self.open_detail(&target, None, Some(front));
+                        self.open_detail(&target, plan.view.as_deref(), Some(front));
                     }
                     self.commit_planned();
                 }

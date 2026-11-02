@@ -43,6 +43,21 @@ command = ["bash", "tools/test-env-setup.sh", "audio"]
 [scripts.setup.ntfs-fixtures]
 command = ["bash", "tools/test-env-setup.sh", "ntfs"]
 
+# The shell's tests start the click-test client, the launcher and first-party
+# apps, which tilo_test_env::sibling_binary would otherwise build inside the
+# first test that asks, against its hang bound (tools/build-sibling-binaries.sh).
+[scripts.setup.shell-siblings]
+command = [
+    "bash", "tools/build-sibling-binaries.sh",
+    "click-test-client:click_test_client", "launcher:tilo-launcher",
+    "notes:notes", "file-explorer:file-explorer", "tasks:tasks",
+]
+
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(shell)"
+setup = "shell-siblings"
+
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "all()"

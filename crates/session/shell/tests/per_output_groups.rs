@@ -960,9 +960,10 @@ fn renumbered_outputs_return_every_group_to_its_monitor() {
 }
 
 /// Each strip is a full-height screen, one shown at a time, on every
-/// display: the focused strip's windows take each display's height, and the
+/// display: the strip a display shows takes that display's height, and the
 /// other strip keeps its windows on their displays, a screen away and off
-/// screen, until it is focused.
+/// screen, until it is focused there. Each display goes to a strip of its
+/// own, so the second strip is brought to each display in turn.
 #[test]
 fn every_display_shows_the_focused_strip_as_a_full_screen() {
     for fixture in ["docked-laptop", "vertical-stack"] {
@@ -970,14 +971,29 @@ fn every_display_shows_the_focused_strip_as_a_full_screen() {
         let mut desk = Desk::with_tree(two_strip_tree(), outputs);
         for (shown, hidden) in [(STRIP, STRIP_B), (STRIP_B, STRIP)] {
             if shown == STRIP_B {
-                let mut moved = false;
-                desk.fb
-                    .with_chrome(|chrome| moved = chrome.focus_strip(shown));
-                assert!(moved, "{fixture}: the second strip takes focus");
-                desk.settle_until("the second strip slides in", |desk| {
-                    desk.fb.host().strip_row_rect(hidden).is_none()
-                        && desk.fb.host().strip_row_rect(shown).is_some()
-                });
+                for display in [0, 1] {
+                    // The pointer brings focus to the display; the strip
+                    // chord's action then moves that display alone.
+                    let centre = desk.display(display).center();
+                    desk.point_at(centre);
+                    assert_eq!(
+                        desk.focused_display(),
+                        Some(display),
+                        "{fixture}: the pointer brings focus to display {display}"
+                    );
+                    let mut moved = false;
+                    desk.fb
+                        .with_chrome(|chrome| moved = chrome.focus_strip(shown));
+                    assert!(
+                        moved,
+                        "{fixture}: the second strip takes focus on display {display}"
+                    );
+                    desk.settle_until("the second strip slides in", |desk| {
+                        !desk.fb.host().strip_deck_moving()
+                            && desk.fb.chrome().tree().desktop.strip_shown_on(display)
+                                == Some(shown)
+                    });
+                }
             }
             assert!(
                 desk.fb.host().strip_row_rect(shown).is_some()

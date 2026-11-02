@@ -148,6 +148,15 @@ pub struct VerifiedInstance {
     pub module: runtime_portal::tilolang_host::Module,
 }
 
+impl VerifiedInstance {
+    /// Whether both runtimes it names are installed here, so a host on them can start: an
+    /// app installed for runtimes since replaced runs nowhere until it is built again.
+    #[must_use]
+    pub fn runs_here(&self) -> bool {
+        super::runtime_installed(&self.runtime) && super::runtime_installed(&self.app_runtime)
+    }
+}
+
 /// The tilolang app `installed`, installed at `manifest_path` with its payload at
 /// `payload_root`, whose signed root hashes to `expected`: verified (its files, its signature,
 /// its publisher not revoked) and read for a tilolang host.
@@ -297,6 +306,35 @@ mod tests {
             .filter(|window| window[0] == flag)
             .map(|window| (window[1].clone(), window[2].clone()))
             .collect()
+    }
+
+    /// An instance runs here only while both runtimes it names are installed: once a newer
+    /// build replaced one, the app is no candidate for a host.
+    #[test]
+    fn an_instance_runs_here_only_on_runtimes_that_are_installed() {
+        let root = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_bundle::RUNTIME_DIR_ENV, root.path());
+        let baked = "2026.07+native.b16b0fa4317d8b7d24aa5b3569d44fa9";
+        for version in [baked, "0.1.0+tilolang"] {
+            let dir = root.path().join(version);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME), "").unwrap();
+        }
+        let instance = |app_runtime: &str| VerifiedInstance {
+            runtime: "tilolang/0.1.0+tilolang".to_owned(),
+            app_runtime: app_runtime.to_owned(),
+            publisher: [0; 32],
+            module: runtime_portal::tilolang_host::Module::default(),
+        };
+        assert!(instance(&format!("tilo-runtime/{baked}")).runs_here());
+        assert!(
+            !instance("tilo-runtime/2026.07+native.4c4a00000000000000000000000000ff").runs_here(),
+            "the runtime an earlier build named, since replaced"
+        );
+        let mut on_gone_tilolang = instance(&format!("tilo-runtime/{baked}"));
+        on_gone_tilolang.runtime = "tilolang/0.0.9+tilolang".to_owned();
+        assert!(!on_gone_tilolang.runs_here());
     }
 
     /// The host holds the runtime read-only, its storage, its door, and nothing an app would:

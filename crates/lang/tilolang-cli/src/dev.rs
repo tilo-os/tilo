@@ -336,11 +336,9 @@ impl Dev {
 
     /// The package directories a build reads: the ones to watch.
     fn watched_dirs(&self) -> Result<BTreeSet<PathBuf>, String> {
-        Ok(
-            tilolang::source::dependency_order(&self.build.dir, &self.build.search)?
-                .into_iter()
-                .collect(),
-        )
+        Ok(crate::package_dirs(&self.build.dir, &self.build.search)?
+            .into_iter()
+            .collect())
     }
 
     fn watch(

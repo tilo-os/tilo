@@ -16,7 +16,7 @@ use crate::meta::PackageMeta;
 use crate::package::parse_package_files;
 use crate::print::print_file;
 use crate::source::{
-    BuildError, BuiltPackage, PackageSource, Stamp, compile_dirs, dependency_order,
+    BuildError, BuiltPackage, PackageSource, Stamp, apps_of, compile_package,
     dependency_order_with, read_ids, search_of, write_ids,
 };
 
@@ -117,23 +117,26 @@ fn report(diags: &[Diagnostic], json: bool) {
     }
 }
 
-/// Compiles the package in `dir` and its imports. `extra` are metadata of already built modules
-/// (`--import`), visible to every package.
+/// The metadata `dir`'s imports may name besides package directories: already built modules
+/// (`--import`) and what the tool's `published` finds.
+fn published(dir: &Path, o: &Options) -> Result<Vec<PackageMeta>, String> {
+    let mut extra = read_imports(&o.imports)?;
+    if let Some(published) = o.published {
+        extra.extend(published(&search_of(dir, &o.search))?);
+    }
+    Ok(extra)
+}
+
+/// Compiles the package in `dir` and its imports ([`compile_package`]).
 fn build_all(
     dir: &Path,
     o: &Options,
     entropy: &mut dyn crate::ids::Entropy,
 ) -> Result<Vec<BuiltPackage>, BuildError> {
-    let mut extra = read_imports(&o.imports).map_err(BuildError::Read)?;
-    if let Some(published) = o.published {
-        extra.extend(published(&search_of(dir, &o.search)).map_err(BuildError::Read)?);
-    }
-    let provided: Vec<String> = extra.iter().map(|meta| meta.app.clone()).collect();
-    let dirs = dependency_order_with(dir, &o.search, &provided).map_err(BuildError::Read)?;
-    compile_dirs(&dirs, &extra, entropy)
+    let extra = published(dir, o).map_err(BuildError::Read)?;
+    compile_package(dir, &o.search, &extra, entropy)
 }
 
-/// Reports a build failure; `Ok(false)` for errors in the sources.
 fn failed(error: BuildError, json: bool) -> Result<bool, String> {
     match error {
         BuildError::Read(message) => Err(message),
@@ -223,7 +226,9 @@ fn check(dir: &Path, o: &Options) -> Result<bool, String> {
     if !o.watch {
         return check_once(dir, o);
     }
-    let watched = dependency_order(dir, &o.search).unwrap_or_else(|_| vec![dir.to_path_buf()]);
+    let watched = published(dir, o)
+        .and_then(|extra| dependency_order_with(dir, &o.search, &apps_of(&extra)))
+        .unwrap_or_else(|_| vec![dir.to_path_buf()]);
     let mut last = Stamp::default();
     loop {
         let now = Stamp::of(&watched);

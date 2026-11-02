@@ -1373,7 +1373,12 @@ impl Published for ArrangementDoor {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
-        if address.resource == RECORD_RESOURCE {
+        // The arrangement publishes its record's undo and redo beside its
+        // arranging actions: both step the record, never decode as an
+        // arranging action.
+        if address.resource == RECORD_RESOURCE
+            || (address.resource == RESOURCE && matches!(address.action.as_str(), "undo" | "redo"))
+        {
             return self.step(address);
         }
         let built = resources()
@@ -1386,25 +1391,16 @@ impl Published for ArrangementDoor {
             })
             .find(|action| action.id.as_str() == address.action)
             .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
-        // A place that names no workspace, row, strip or id of its own stands
-        // on the surface in front, in a strip of its own, under ids minted
-        // here: what a reference activated in a view asks for (shell.md §3),
-        // which knows the point it wants and none of the desk's ids. The
-        // record holds the ids it was given, as for any other place.
-        let completed;
-        let arguments = if address.action == "place" {
-            completed = self.surface_ids(arguments)?;
-            &completed
-        } else {
-            arguments
-        };
         let encoded = built
             .build_json(arguments)
             .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
-        let action =
+        let mut action =
             ArrangementAction::decode(&encoded.type_id, &encoded.payload).ok_or_else(|| {
                 tilo_actions::DoorError::UnregisteredType("tilo.shell.arranging".to_owned())
             })?;
+        if address.action == "place" {
+            self.place_at_surface(arguments, &mut action)?;
+        }
         let mut asked = self.actor.borrow().clone();
         // An action that names no one is the person's own input: theirs to
         // take back, and never made to wait for themselves.
@@ -1461,18 +1457,36 @@ impl Published for ArrangementDoor {
 }
 
 impl ArrangementDoor {
-    /// `arguments` of a `place`, with the surface in front's workspace and row
-    /// and fresh strip and place ids for whichever of them it leaves out.
-    fn surface_ids(
+    /// A `place` that names no workspace, row, strip or id of its own stands
+    /// on the surface in front, in a strip of its own, under ids minted here:
+    /// what a reference activated in a view asks for (shell.md §3), which
+    /// knows the point it wants and none of the desk's ids. `action`, decoded
+    /// from `arguments`, takes the surface in front's workspace and row and
+    /// fresh strip and place ids for whichever of them `arguments` leaves
+    /// out. They go into the action itself, never back through the
+    /// arguments: a desk's ids span all of `u64`, which an integer argument
+    /// does not. The record holds the ids it was given, as for any other
+    /// place.
+    fn place_at_surface(
         &self,
         arguments: &serde_json::Map<String, Json>,
-    ) -> Result<serde_json::Map<String, Json>, tilo_actions::DoorError> {
-        let mut completed = arguments.clone();
+        action: &mut ArrangementAction,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let ArrangementAction::Place {
+            workspace,
+            row,
+            strip,
+            place,
+            ..
+        } = action
+        else {
+            return Ok(());
+        };
         let named = ["workspace", "row", "strip", "place"]
             .iter()
             .all(|id| arguments.contains_key(*id));
         if named {
-            return Ok(completed);
+            return Ok(());
         }
         // A row is a row of one workspace: the two come named together, or
         // both from the surface in front.
@@ -1487,19 +1501,17 @@ impl ArrangementDoor {
                 reason: why,
             }
         })?;
-        completed
-            .entry("workspace")
-            .or_insert_with(|| Json::String(surface.workspace.to_string()));
-        completed
-            .entry("row")
-            .or_insert_with(|| Json::from(surface.row));
-        completed
-            .entry("strip")
-            .or_insert_with(|| Json::from(surface.strip));
-        completed
-            .entry("place")
-            .or_insert_with(|| Json::from(surface.place));
-        Ok(completed)
+        if !arguments.contains_key("workspace") {
+            *workspace = surface.workspace;
+            *row = surface.row;
+        }
+        if !arguments.contains_key("strip") {
+            *strip = surface.strip;
+        }
+        if !arguments.contains_key("place") {
+            *place = surface.place;
+        }
+        Ok(())
     }
 
     /// Undo or redo the session's last change of the record.

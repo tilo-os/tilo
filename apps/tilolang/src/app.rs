@@ -208,7 +208,9 @@ impl ResourceApp for TlApp {
         // A search hit, or an agent's `open`, shows the resource it names.
         let opens = window.open_requests();
         cx.on_open(move |anchor: &str| {
-            opens.borrow_mut().push(anchor.to_owned());
+            opens.borrow_mut().push(tilolang_tilo::OpenEffect::Open {
+                anchor: anchor.to_owned(),
+            });
         });
         cx.surface(window)
     }

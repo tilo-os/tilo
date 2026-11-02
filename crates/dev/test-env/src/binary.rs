@@ -60,11 +60,18 @@ pub fn sibling_binary(package: &str, bin: &str) -> PathBuf {
 }
 
 /// Where the run built this binary already: `NEXTEST_BIN_EXE_<bin>` when the
-/// run moved its binaries, else `CARGO_BIN_EXE_<bin>` when `package` is the
-/// package under test.
+/// run moved its binaries, `TILO_SIBLING_BIN_<bin>` (`-` as `_`) when the run's setup
+/// built it before any test started (`tools/build-sibling-binaries.sh`),
+/// else `CARGO_BIN_EXE_<bin>` when `package` is the package under test.
 fn built_by_the_run(package: &str, bin: &str) -> Option<PathBuf> {
-    if let Some(relocated) = env::var_os(format!("NEXTEST_BIN_EXE_{bin}")) {
-        return Some(PathBuf::from(relocated));
+    for name in [
+        format!("NEXTEST_BIN_EXE_{bin}"),
+        // An environment file's keys are letters, digits and underscores.
+        format!("TILO_SIBLING_BIN_{}", bin.replace('-', "_")),
+    ] {
+        if let Some(built) = env::var_os(name) {
+            return Some(PathBuf::from(built));
+        }
     }
     if env::var("CARGO_PKG_NAME").as_deref() != Ok(package) {
         return None;
@@ -160,15 +167,9 @@ fn build_once(package: &str, bin: &str) {
 /// already: the first holds `record`'s lock while it builds, then writes the
 /// run's id into it.
 fn once_per_run(record: &Path, run: &str, build: impl FnOnce()) {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&record)
-        .unwrap_or_else(|error| panic!("open {}: {error}", record.display()));
-    // Released when `file` closes, also when the build below panics.
-    file.lock()
+    // Held until this returns, also when the build below panics; close-on-exec,
+    // so the Cargo it starts never keeps it held.
+    let _lock = advisory_lock::FileLock::open(record, advisory_lock::LockMode::Exclusive)
         .unwrap_or_else(|error| panic!("lock {}: {error}", record.display()));
     let recorded = std::fs::read_to_string(record).unwrap_or_default();
     if recorded.trim() == run {
@@ -279,13 +280,17 @@ mod tests {
         {
             let directory = tempfile::tempdir().unwrap();
             let record = directory.path().join("record");
-            let builds = std::cell::Cell::new(0);
-            let count = || builds.set(builds.get() + 1);
-            once_per_run(&record, "run-a", count);
-            once_per_run(&record, "run-a", count);
-            assert_eq!(builds.get(), 1, "a second process of the run builds nothing");
-            once_per_run(&record, "run-b", count);
-            assert_eq!(builds.get(), 2, "the next run builds again");
+            let builds = &std::cell::RefCell::new(Vec::new());
+            let build = |run| move || builds.borrow_mut().push(run);
+            once_per_run(&record, "run-a", build("run-a"));
+            once_per_run(&record, "run-a", build("run-a"));
+            assert_eq!(
+                *builds.borrow(),
+                ["run-a"],
+                "a second process of the run builds nothing"
+            );
+            once_per_run(&record, "run-b", build("run-b"));
+            assert_eq!(*builds.borrow(), ["run-a", "run-b"], "the next run builds again");
         }
 
         phase a_test_binaries_own_package_is_the_one_the_run_built;

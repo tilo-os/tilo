@@ -25,6 +25,11 @@ struct Task {
     door: Rc<Apps>,
 }
 
+/// The agent's task, as the author of the programs these tests run.
+fn agent() -> tilolang_tilo::runtime::Principal {
+    tilolang_tilo::runtime::Principal::new("agent:task-1")
+}
+
 /// Notes and Todo, each in a host of its own, and a task of them; the policy refuses the
 /// actions `refused`.
 fn task(refused: Vec<&'static str>) -> Task {
@@ -39,7 +44,7 @@ fn task(refused: Vec<&'static str>) -> Task {
 
 impl Task {
     fn run(&self, source: &str, confirm: bool) -> Json {
-        self.session.run(source, confirm)
+        self.session.run(source, confirm, &agent())
     }
 
     /// The one line `source` printed.
@@ -209,7 +214,7 @@ fn what_cannot_be_read_is_an_error_never_nothing() {
         "tasks.tasks.items.filter(t -> t.done)",
         "tasks.tasks.items.filter(t -> t.done).len()",
     ] {
-        let answer = session.run(source, false);
+        let answer = session.run(source, false, &agent());
         assert_eq!(answer["state"], "failed", "{source}: {answer:#}");
         assert!(
             answer["detail"]

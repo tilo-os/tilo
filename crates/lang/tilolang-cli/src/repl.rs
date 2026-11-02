@@ -1,11 +1,12 @@
 //! `tilolang repl`: tilolang typed against a running Tilo session, through its agent door.
 //!
-//! The REPL is an agent of the session like any other (`docs/runtime-mcp.md`): the person
-//! admits it, it reaches what they grant it, and what it changes is its run's in history and
-//! undo. Each entry is a program for the door's `tilo` tool (`docs/designs/app-language/agents.md`),
-//! with the same session semantics an agent has: `let`s kept between entries, references (`n3`)
-//! naming what answers showed, one step per entry with a preview before a bulk or destructive
-//! change, and `undo`. The REPL adds line editing, history, completion and colour.
+//! The REPL is the person at the session's agent door (`docs/runtime-mcp.md`): they admit it to
+//! act as them, and what it changes is theirs, attributed to them, in history and undo. Each entry
+//! is a program for the door's `tilo` tool (`docs/designs/app-language/agents.md`), the same call
+//! the session's agent makes, with the same session semantics: `let`s kept between entries,
+//! references (`n3`) naming what answers showed, one step per entry with a preview before a bulk
+//! or destructive change, and `undo`. `ls` and `find` are the agent's one-call tools (`tilo_ls`,
+//! `tilo_find`). The REPL adds line editing, history, completion and colour.
 
 mod door;
 mod editor;
@@ -105,6 +106,9 @@ enum Entry {
     Command(String, String),
     /// Apply the program the last preview was of.
     Confirm,
+    /// One of the door's one-call tools, with its arguments: `ls [path]` (`tilo_ls`) and
+    /// `find text` (`tilo_find`).
+    Tool(&'static str, Json),
     Program(String),
 }
 
@@ -121,6 +125,18 @@ fn parse_entry(text: &str) -> Entry {
     }
     if text == "confirm" {
         return Entry::Confirm;
+    }
+    // `ls` and `find text` are no tilolang (`find(…)` is, and stays a program).
+    if text == "ls" {
+        return Entry::Tool("tilo_ls", json!({}));
+    }
+    if let Some(path) = text.strip_prefix("ls ") {
+        return Entry::Tool("tilo_ls", json!({"path": path.trim()}));
+    }
+    if let Some(query) = text.strip_prefix("find ")
+        && !query.trim_start().starts_with('(')
+    {
+        return Entry::Tool("tilo_find", json!({"query": query.trim()}));
     }
     Entry::Program(text.to_owned())
 }
@@ -189,6 +205,18 @@ impl Session {
         }
     }
 
+    /// Call the door's one-call tool `tool` with `arguments` and print its answer.
+    fn tool(&mut self, tool: &str, arguments: &Json) {
+        match self.door.call(tool, arguments) {
+            Ok(answer) => {
+                for line in answer.text.lines() {
+                    Self::say(&render::door_line(line, answer.failed));
+                }
+            }
+            Err(error) => Self::say(&format!("{} {error}", paint(Role::Error, "error:"))),
+        }
+    }
+
     fn command(&self, name: &str) -> bool {
         match name {
             "q" | "quit" | "exit" => return false,
@@ -204,7 +232,7 @@ impl Session {
 }
 
 const HELP: &str = "\
-tilolang, run by the session as this REPL's task:
+tilolang, run by the session as you:
   notes.notes                  a value: printed, each resource by a reference (n3)
   notes.pin(n3)                an action of the app, applied as the REPL's agent
   let pinned = notes.notes.filter(.pinned)
@@ -215,6 +243,8 @@ tilolang, run by the session as this REPL's task:
   confirm                      apply what the last preview listed
   undo                         take back the last step
   undo task / history task     take back / list every step of this session
+  ls [path]                    list the apps, or what a path holds (the agent's tilo_ls)
+  find words                   find what the workspace holds (the agent's tilo_find)
   :apps  :help  :quit";
 
 impl Complete for Session {
@@ -412,6 +442,7 @@ pub fn repl(options: &ReplOptions) -> Result<(), String> {
                 Some(program) => session.run(&program, true),
                 None => Session::say(&paint(Role::Note, "no preview waits for confirm")),
             },
+            Entry::Tool(tool, arguments) => session.tool(tool, &arguments),
             Entry::Program(program) => session.run(&program, false),
         }
     }
@@ -454,6 +485,19 @@ mod tests {
             Entry::Command("apps".into(), "now".into())
         );
         assert_eq!(parse_entry("confirm"), Entry::Confirm);
+        assert_eq!(parse_entry("ls"), Entry::Tool("tilo_ls", json!({})));
+        assert_eq!(
+            parse_entry("ls notes/"),
+            Entry::Tool("tilo_ls", json!({"path": "notes/"}))
+        );
+        assert_eq!(
+            parse_entry("find groceries"),
+            Entry::Tool("tilo_find", json!({"query": "groceries"}))
+        );
+        assert_eq!(
+            parse_entry("find (\"x\")"),
+            Entry::Program("find (\"x\")".into())
+        );
         assert_eq!(
             parse_entry(" undo task "),
             Entry::Program("undo task".into())

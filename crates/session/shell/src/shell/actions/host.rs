@@ -28,6 +28,7 @@ use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::t;
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{ActionReceipt, InvocationDisposition, PendingInvocation};
+use crate::shell::state::RoomId;
 
 /// The shell's app id: the app its actions are published by, and the node
 /// they sit under in a workspace's policy.
@@ -225,9 +226,17 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
 
 fn create(
     mut context: HostContext,
-    _target: LaunchTarget,
+    target: LaunchTarget,
     _restore: RestoreInput,
 ) -> Result<AppComponent, ui::launch::LaunchError> {
+    // A room the shell's app was never mounted in has no record of it yet:
+    // the mount reserved one, and the app makes it, empty (it keeps nothing
+    // of its own in it).
+    if matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew) {
+        context
+            .initialize_new_record(|_| Ok(()))
+            .map_err(ui::launch::LaunchError::Record)?;
+    }
     let link = context
         .take_lent()
         .into_iter()
@@ -247,8 +256,13 @@ fn create(
     ))
 }
 
-thread_local! {
-    static REFUSED_ROOM: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+/// Why the shell's app is not mounted in a room.
+enum Unmounted {
+    /// The room's record is still opening; the store wakes the compositor
+    /// when it is open, and the next round mounts it.
+    Opening,
+    /// The room refused the app; it is not tried again.
+    Refused,
 }
 
 /// An invocation that finishes later, with the ticket that tells when.
@@ -258,8 +272,7 @@ struct Waiting {
 }
 
 /// The shell's app, mounted in one room.
-pub(crate) struct ShellActionsHost {
-    room: String,
+struct ShellActionsHost {
     link: HostedActionsLink,
     app: Box<dyn ui::widget::AppWidget>,
     woken: Arc<AtomicBool>,
@@ -270,11 +283,11 @@ pub(crate) struct ShellActionsHost {
 
 impl ShellActionsHost {
     /// Mount the shell's app in `room` through the session's in-process apps.
-    pub(crate) fn mount(
+    fn mount(
         apps: &crate::shell::in_process::SharedInProcessApps,
         room: &str,
         state: &ChromeState,
-    ) -> Option<Self> {
+    ) -> Result<Self, Unmounted> {
         let link = HostedActionsLink::new(OPERATION);
         let published = Published::read(state);
         link.publish(vec![resource(state)]);
@@ -296,8 +309,15 @@ impl ShellActionsHost {
                 ui::record::RecordId::workspace_default(),
                 |context| context.lend(lent),
             )
-            .inspect_err(|error| tracing::warn!(%error, "the shell's actions could not be mounted"))
-            .ok()?;
+            .map_err(|error| match error {
+                ui::launch::LaunchError::Record(ui::record::RecordOpenError::Opening) => {
+                    Unmounted::Opening
+                }
+                error => {
+                    tracing::warn!(%error, "the shell's actions could not be mounted");
+                    Unmounted::Refused
+                }
+            })?;
         let collaboration = apps.collaboration(&component, room);
         drop(apps);
         let wake = {
@@ -307,13 +327,12 @@ impl ShellActionsHost {
                 crate::shell::wake_compositor();
             }
         };
-        let app = tilo_desktop::resolver::app_tile(component, collaboration, wake)
-            .inspect_err(
-                |error| tracing::warn!(%error, "the shell's actions could not be published"),
-            )
-            .ok()?;
-        Some(Self {
-            room: room.to_owned(),
+        let app =
+            tilo_desktop::resolver::app_tile(component, collaboration, wake).map_err(|error| {
+                tracing::warn!(%error, "the shell's actions could not be published");
+                Unmounted::Refused
+            })?;
+        Ok(Self {
             link,
             app,
             woken,
@@ -322,42 +341,74 @@ impl ShellActionsHost {
         })
     }
 
-    /// The shell's app in the room of the workspace in front, mounted there
-    /// once the session lends the apps it mounts in its own process, and
-    /// mounted anew when another workspace comes to the front. `None` without
-    /// a workspace or in-process apps (a bare test host).
-    pub(crate) fn keep<'a>(held: &'a mut Option<Self>, chrome: &Chrome) -> Option<&'a mut Self> {
-        let (apps, room) = {
+    /// Whether a host of a room not in front has something to do: an
+    /// invocation asked, a wake, or an invocation still running.
+    fn owed(&self) -> bool {
+        self.woken.load(Ordering::Acquire) || !self.waiting.is_empty()
+    }
+}
+
+/// The shell's app in each room it was mounted in, as a workspace keeps its
+/// content: mounted when its workspace first comes to the front, kept while
+/// the workspace exists, so coming back to a workspace mounts nothing.
+#[derive(Default)]
+pub(crate) struct ShellActionsHosts {
+    rooms: std::collections::BTreeMap<RoomId, ShellActionsHost>,
+    /// Rooms that refused the app; not tried again.
+    refused: std::collections::BTreeSet<RoomId>,
+}
+
+impl ShellActionsHosts {
+    /// Mount the app in the room in front if it is not yet, once the session
+    /// lends the apps it mounts in its own process (a bare test host lends
+    /// none), and run every room's app that has something to do: the one in
+    /// front each round, another when asked or woken. Whether the chrome may
+    /// have changed.
+    pub(crate) fn pump(
+        &mut self,
+        chrome: &Chrome,
+        doc: &ui::widget::AppModel,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        let (apps, front) = {
             let state = chrome.borrow();
-            let apps = state.hosted_inputs.in_process().cloned();
-            let room = state
-                .tree()
-                .desktop
-                .active_workspace()
-                .map(|workspace| workspace.room().to_string());
-            (apps, room)
+            let tree = state.tree();
+            // A workspace that is gone takes its room's app with it.
+            let workspaces = &tree.desktop.workspaces;
+            let exists = |room: &RoomId| workspaces.iter().any(|w| w.room() == *room);
+            self.rooms.retain(|room, _| exists(room));
+            self.refused.retain(|room| exists(room));
+            let front = tree.desktop.active_workspace().map(|w| w.room());
+            (state.hosted_inputs.in_process().cloned(), front)
         };
-        let (Some(apps), Some(room)) = (apps, room) else {
-            return held.as_mut();
-        };
-        if held.as_ref().is_none_or(|host| host.room != room) {
-            // A room the app could not be mounted in is not tried again on
-            // every frame.
-            let tried = REFUSED_ROOM.with(|refused| refused.borrow().as_deref() == Some(&room));
-            if held.is_none() && tried {
-                return None;
-            }
-            *held = Self::mount(&apps, &room, &chrome.borrow());
-            if held.is_none() {
-                REFUSED_ROOM.with(|refused| *refused.borrow_mut() = Some(room));
+        if let (Some(apps), Some(room)) = (apps, front)
+            && !self.rooms.contains_key(&room)
+            && !self.refused.contains(&room)
+        {
+            match ShellActionsHost::mount(&apps, &room.to_string(), &chrome.borrow()) {
+                Ok(host) => {
+                    self.rooms.insert(room, host);
+                }
+                Err(Unmounted::Opening) => {}
+                Err(Unmounted::Refused) => {
+                    self.refused.insert(room);
+                }
             }
         }
-        held.as_mut()
+        let mut changed = false;
+        for (room, host) in &mut self.rooms {
+            if front == Some(*room) || host.owed() {
+                changed |= host.pump(chrome, doc, path);
+            }
+        }
+        changed
     }
+}
 
+impl ShellActionsHost {
     /// Run the app one step: publish, admit, run what was admitted and
     /// answer what finished. Whether the chrome may have changed.
-    pub(crate) fn pump(
+    fn pump(
         &mut self,
         chrome: &Chrome,
         doc: &ui::widget::AppModel,

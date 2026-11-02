@@ -93,7 +93,11 @@ fn world() -> World {
 impl World {
     /// Run `source` as the task's program, confirmed; its answer.
     fn run(&self, source: &str) -> Json {
-        self.task.run(source, true)
+        self.task.run(
+            source,
+            true,
+            &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+        )
     }
 }
 
@@ -429,8 +433,16 @@ fn a_task_reads_each_record_anew_for_every_program_and_after_changing_it() {
             .filter(|app| *app == notes)
             .count()
     };
-    printed(&task.run(r#"find("standup")"#, true));
-    printed(&task.run(r#"find("standup")"#, true));
+    printed(&task.run(
+        r#"find("standup")"#,
+        true,
+        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+    ));
+    printed(&task.run(
+        r#"find("standup")"#,
+        true,
+        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+    ));
     assert_eq!(
         fetches(),
         2,
@@ -441,6 +453,7 @@ fn a_task_reads_each_record_anew_for_every_program_and_after_changing_it() {
     let out = printed(&task.run(
         "let n = notes.new_note(notes.notes)\nn.title = \"Coffee order\"\nfind(\"coffee\")",
         true,
+        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
     ));
     assert!(out.contains("Coffee order"), "{out}");
 }
@@ -456,10 +469,19 @@ fn a_tasks_next_program_reads_what_its_earlier_ones_changed() {
     let out = printed(&task.run(
         "let t = tasks.add(tasks.tasks, \"Check the launch video\")",
         true,
+        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
     ));
     assert!(!out.contains("error"), "{out}");
-    let found = printed(&task.run("grep(/launch/, in: tasks)", true));
+    let found = printed(&task.run(
+        "grep(/launch/, in: tasks)",
+        true,
+        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+    ));
     assert!(found.contains("Check the launch video"), "{found}");
-    let found = printed(&task.run("find(Task)", true));
+    let found = printed(&task.run(
+        "find(Task)",
+        true,
+        &tilolang_tilo::runtime::Principal::new("agent:task-1"),
+    ));
     assert!(found.contains("Check the launch video"), "{found}");
 }

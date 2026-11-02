@@ -39,11 +39,18 @@ impl Session {
 }
 
 fn spawn() -> Session {
-    let desktop =
-        crate::idle_wakeups::Desktop::start_with_door(crate::idle_wakeups::notes_desktop(), true);
-    desktop.wait_for("the restored Notes notebook", |targets| {
-        targets.iter().any(|name| name == "notes.first_note")
-    });
+    let desktop = crate::idle_wakeups::Desktop::start_with_door(
+        crate::idle_wakeups::notes_desktop(),
+        true,
+        // Tasks too: an admitted agent works in a task of its own there,
+        // which the door starts in the Tasks app's process.
+        &[
+            crate::idle_wakeups::first_party_apps::NOTES,
+            crate::idle_wakeups::first_party_apps::TASKS,
+        ],
+    );
+    // The saved Notes tab reopens as the Notes app's own window.
+    desktop.wait_for_app_window("so.tilo.notes");
     let session = Session { desktop };
     let deadline = tilo_test_env::hang_deadline();
     while !session.door().exists() {
@@ -54,7 +61,8 @@ fn spawn() -> Session {
 }
 
 /// Install a Viewer app in the session's own app store, as an install does:
-/// its manifest, then the registry naming it, written whole.
+/// its manifest, then the registry naming it beside the apps it already
+/// names, written whole.
 fn install_viewer(session: &Session) {
     let store = session.runtime_dir().join("data/tilo-apps");
     let package = store.join("e2e/org.example.viewer");
@@ -70,10 +78,11 @@ fn install_viewer(session: &Session) {
     .unwrap();
     let registry = package_store::Layout::new(&store).registry();
     let staged = registry.with_extension("toml.tmp");
+    let installed = std::fs::read_to_string(&registry).unwrap_or_default();
     std::fs::write(
         &staged,
         format!(
-            "[[entry]]\nid = \"org.example.viewer\"\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            "{installed}[[entry]]\nid = \"org.example.viewer\"\npayload_root = {:?}\nmanifest_path = {:?}\n",
             package.display().to_string(),
             manifest.display().to_string(),
         ),
@@ -130,24 +139,45 @@ fn decide(socket: &Path, decision: &str, prompt: &str) {
 struct Client {
     stream: UnixStream,
     replies: BufReader<UnixStream>,
+    /// The compositor's log, for saying what the door was doing when it
+    /// did not answer.
+    log: crate::idle_wakeups::Log,
+    /// The last request sent.
+    asked: String,
 }
 
 impl Client {
-    fn connect(door: &Path) -> Self {
-        let stream = UnixStream::connect(door).unwrap();
+    fn connect(session: &Session) -> Self {
+        let stream = UnixStream::connect(session.door()).unwrap();
         stream
             .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let replies = BufReader::new(stream.try_clone().unwrap());
-        Self { stream, replies }
+        Self {
+            stream,
+            replies,
+            log: session.log(),
+            asked: String::new(),
+        }
     }
     fn send(&mut self, request: &serde_json::Value) {
+        self.asked = request.to_string();
         writeln!(self.stream, "{request}").unwrap();
     }
     fn reply(&mut self) -> Option<serde_json::Value> {
         let mut line = String::new();
-        (self.replies.read_line(&mut line).unwrap() > 0)
-            .then(|| serde_json::from_str(&line).unwrap())
+        let read = self.replies.read_line(&mut line).unwrap_or_else(|error| {
+            panic!(
+                "the door did not answer {} within the hang bound ({error}); what it was doing:\n{}",
+                self.asked,
+                crate::idle_wakeups::matching(
+                    &self.log,
+                    &["agent", "door", "so.tilo.tasks", "admission", "launch"],
+                    60
+                )
+            )
+        });
+        (read > 0).then(|| serde_json::from_str(&line).unwrap())
     }
     /// One tool call as request `id`: the text the agent reads, and whether
     /// it is an error.
@@ -179,7 +209,7 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
     let session = spawn();
 
     // Refused: a JSON-RPC error on its initialize, then the door closes.
-    let mut refused = Client::connect(&session.door());
+    let mut refused = Client::connect(&session);
     refused.send(&initialize());
     let prompt = waiting_prompt(&session.control());
     decide(&session.control(), "deny", &prompt);
@@ -189,7 +219,7 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
     assert!(refused.reply().is_none(), "the door closed");
 
     // Admitted once: served as the agent, with the session's live apps.
-    let mut agent = Client::connect(&session.door());
+    let mut agent = Client::connect(&session);
     agent.send(&initialize());
     let prompt = waiting_prompt(&session.control());
     decide(&session.control(), "allow-once", &prompt);
@@ -249,7 +279,10 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
 /// it inside tmux: in the person's login, but without `XDG_CURRENT_DESKTOP`.
 struct McpClient {
     child: Child,
-    replies: BufReader<std::process::ChildStdout>,
+    /// The client's stdout, a line at a time; `None` once it closed.
+    replies: std::sync::mpsc::Receiver<Option<String>>,
+    /// The last request sent.
+    asked: String,
     next_id: u64,
     /// The compositor's log, for what a failed wait says about it.
     log: crate::idle_wakeups::Log,
@@ -278,28 +311,51 @@ impl McpClient {
             .stderr(Stdio::inherit())
             .spawn_locked()
             .expect("spawn tilo-runtime-mcp");
-        let replies = BufReader::new(child.stdout.take().unwrap());
+        // Read on a thread of its own, so a reply that never comes fails the
+        // wait at the hang bound instead of blocking the test.
+        let stdout = child.stdout.take().unwrap();
+        let (lines, replies) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut stdout = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                let read = stdout.read_line(&mut line).unwrap_or(0);
+                if lines.send((read > 0).then_some(line)).is_err() || read == 0 {
+                    break;
+                }
+            }
+        });
         Self {
             child,
             replies,
             next_id: 1,
             log: session.log(),
             control: session.control(),
+            asked: String::new(),
         }
     }
 
     fn send(&mut self, request: &serde_json::Value) {
+        self.asked = request.to_string();
         let stdin = self.child.stdin.as_mut().unwrap();
         writeln!(stdin, "{request}").unwrap();
         stdin.flush().unwrap();
     }
 
     fn reply(&mut self) -> serde_json::Value {
-        let mut line = String::new();
-        assert!(
-            self.replies.read_line(&mut line).unwrap() > 0,
-            "the client closed"
-        );
+        let line = match self.replies.recv_timeout(tilo_test_env::hang_bound()) {
+            Ok(Some(line)) => line,
+            Ok(None) => panic!("the client closed"),
+            Err(_) => panic!(
+                "the client did not answer {} within the hang bound; what the door was doing:\n{}",
+                self.asked,
+                crate::idle_wakeups::matching(
+                    &self.log,
+                    &["agent", "door", "so.tilo.tasks", "admission", "launch"],
+                    60
+                )
+            ),
+        };
         serde_json::from_str(&line).unwrap()
     }
 

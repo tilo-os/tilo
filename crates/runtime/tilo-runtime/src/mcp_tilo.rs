@@ -113,6 +113,9 @@ struct Step {
 struct History {
     app: String,
     resource: String,
+    /// The resource is one the session itself publishes (the arrangement), taken back at the
+    /// session's own provider.
+    published: bool,
 }
 
 /// What a program's answer says each app it changed takes a step back on.
@@ -126,6 +129,7 @@ fn history_of(answer: &Value) -> Vec<History> {
             Some(History {
                 app: entry.get("app")?.as_str()?.to_owned(),
                 resource: entry.get("resource")?.as_str()?.to_owned(),
+                published: entry.get("published").and_then(Value::as_bool) == Some(true),
             })
         })
         .collect()
@@ -621,8 +625,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         source: &str,
         confirm: bool,
     ) -> Result<Value, String> {
-        task.send(&json!({"run": {"source": source, "confirm": confirm}}))
-            .await?;
+        // Who wrote this program: the caller of this call. The host's session runs each program
+        // as its own author, so the agent's programs and the person's lines share one session's
+        // `let`s and each is attributed to whoever wrote it.
+        task.send(&json!({"run": {
+            "source": source,
+            "confirm": confirm,
+            "author": self.program_author(),
+        }}))
+        .await?;
         // Which instance answers for each app, found once per program.
         let mut providers: Providers = BTreeMap::new();
         loop {
@@ -638,6 +649,31 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 json!({"err": "the door answers record reads and invocations"})
             };
             task.send(&reply).await?;
+        }
+    }
+
+    /// Who a program sent now is written by, as the task's host names it: `{actor, agent,
+    /// on_behalf_of}`, the caller this session acts as. The host decides nothing by it; every
+    /// read and change still comes back here and passes the gate as that caller.
+    fn program_author(&self) -> Value {
+        use tilo_actions::remote::CallerPrincipal;
+        let caller = self.execution_caller();
+        match caller.principal() {
+            CallerPrincipal::Agent(agent) => json!({
+                "actor": format!("agent:{agent}"),
+                "agent": true,
+                "on_behalf_of": caller.acting_for_person(),
+            }),
+            CallerPrincipal::Person(person) => json!({
+                "actor": person,
+                "agent": false,
+                "on_behalf_of": Value::Null,
+            }),
+            other => json!({
+                "actor": format!("{other:?}"),
+                "agent": true,
+                "on_behalf_of": caller.acting_for_person(),
+            }),
         }
     }
 
@@ -742,9 +778,18 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             };
             return self.task_change(change).await;
         }
-        let provider = match self.provider_of(app, providers).await {
-            Ok(provider) => provider,
-            Err(why) => return json!({"failed": why}),
+        // An action of a resource the session itself publishes (its desk, its arrangement) goes
+        // to the session's own provider, as every other caller of the desktop reaches it.
+        let provider = if call.get("published").and_then(Value::as_bool) == Some(true) {
+            Addressed {
+                provider: crate::session_door::SESSION_PROVIDER.to_owned(),
+                app_id: Some(crate::session_door::SESSION_PROVIDER.to_owned()),
+            }
+        } else {
+            match self.provider_of(app, providers).await {
+                Ok(provider) => provider,
+                Err(why) => return json!({"failed": why}),
+            }
         };
         let arguments = call["arguments"].as_object().cloned().unwrap_or_default();
         let value = Box::pin(self.invoke_one(OneCall {
@@ -985,9 +1030,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 }
                 continue;
             }
-            let provider = self.provider_of(&at.app, &mut providers).await?;
+            let provider = if at.published {
+                Addressed {
+                    provider: crate::session_door::SESSION_PROVIDER.to_owned(),
+                    app_id: Some(crate::session_door::SESSION_PROVIDER.to_owned()),
+                }
+            } else {
+                self.provider_of(&at.app, &mut providers).await?
+            };
+            // An app's history takes a count of steps; the session's own `undo` takes one.
             let mut arguments = Map::new();
-            arguments.insert("steps".to_owned(), json!(1));
+            if !at.published {
+                arguments.insert("steps".to_owned(), json!(1));
+            }
             let value = Box::pin(self.invoke_one(OneCall {
                 provider,
                 workspace: false,
@@ -1136,10 +1191,12 @@ mod tests {
                 History {
                     app: "so.tilo.lang.notes".into(),
                     resource: "tl:so.tilo.lang.notes".into(),
+                    published: false,
                 },
                 History {
                     app: "so.tilo.lang.todo".into(),
                     resource: "tl:so.tilo.lang.todo".into(),
+                    published: false,
                 },
             ])
         );

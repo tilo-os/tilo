@@ -6,14 +6,35 @@ use tilolang_runtime::{Principal, UiNode, Value};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 
-/// Today compiled with the packages it uses, as `tilolang build` bundles it.
+/// The package in `dir` compiled with the packages it uses, as `tilolang build` bundles it: its
+/// imports resolve as `check` and `build` resolve them, against what the platform and the native
+/// apps beside it publish ([`tilolang_tilo::catalogue::published_packages`]) and then the
+/// packages it uses, which the bundle carries.
+fn bundle_of(dir: &std::path::Path) -> Bundle {
+    let published =
+        tilolang_tilo::catalogue::published_packages(&tilolang::source::search_of(dir, &[]))
+            .unwrap();
+    let built = tilolang::source::compile_package(
+        dir,
+        &[],
+        &published,
+        &mut tilolang::OsEntropy::default(),
+    )
+    .unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
+    let (last, earlier) = built.split_last().unwrap();
+    let used = &last.compiled.meta.uses;
+    Bundle::new(
+        &last.compiled,
+        earlier
+            .iter()
+            .map(|earlier| &earlier.compiled)
+            .filter(|earlier| used.contains(&earlier.meta.app)),
+    )
+}
+
+/// Today compiled with the packages it uses.
 fn today() -> Bundle {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/today");
-    let dirs = tilolang::source::dependency_order(&dir, &[]).unwrap();
-    let built =
-        tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default()).unwrap();
-    let (today, used) = built.split_last().unwrap();
-    Bundle::new(&today.compiled, used.iter().map(|used| &used.compiled))
+    bundle_of(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/today"))
 }
 
 /// Every text `node` and the nodes inside it show.
@@ -75,15 +96,6 @@ fn a_bundle_draws_the_rows_of_the_packages_it_uses() {
             "Today draws `{text}` with the view of the package it belongs to: {shown:?}"
         );
     }
-}
-
-/// `dir` compiled with the packages it uses, as `tilolang build` bundles it.
-fn bundle_of(dir: &std::path::Path) -> Bundle {
-    let dirs = tilolang::source::dependency_order(dir, &[]).unwrap();
-    let built =
-        tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default()).unwrap();
-    let (last, used) = built.split_last().unwrap();
-    Bundle::new(&last.compiled, used.iter().map(|used| &used.compiled))
 }
 
 #[test]

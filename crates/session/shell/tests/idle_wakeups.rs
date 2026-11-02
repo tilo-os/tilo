@@ -7,6 +7,12 @@ use std::time::{Duration, Instant, SystemTime};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
+
+/// Tilo's own apps, installed for a desktop that shows them. Beside this
+/// file so the idle-wakeups example, which includes it, has them too.
+#[path = "support/first_party_apps.rs"]
+pub(crate) mod first_party_apps;
+use first_party_apps::FirstPartyApp;
 use threshold_identity::ThresholdIdentity;
 use tilo_identity_ceremony::IdentityRecord;
 
@@ -43,13 +49,21 @@ impl Desktop {
     /// Notes tab saved in its session; returns once its control socket
     /// answers with a laid-out frame.
     pub(crate) fn start() -> Self {
-        Self::start_with(notes_desktop())
+        Self::start_with_apps(notes_desktop(), &[first_party_apps::NOTES])
     }
 
     /// The same with `tree` as the saved session (`idle_memory` starts an
     /// empty desktop).
     pub(crate) fn start_with(tree: shell::shell::state::WorkspaceTree) -> Self {
-        Self::start_configured(tree, false, &[])
+        Self::start_configured(tree, false, &[], &[])
+    }
+
+    /// [`Self::start_with`], with `apps` installed for the session to run.
+    pub(crate) fn start_with_apps(
+        tree: shell::shell::state::WorkspaceTree,
+        apps: &[FirstPartyApp],
+    ) -> Self {
+        Self::start_configured(tree, false, &[], apps)
     }
 
     /// [`Self::start_with`], with `env` added to the compositor's environment.
@@ -57,20 +71,25 @@ impl Desktop {
         tree: shell::shell::state::WorkspaceTree,
         env: &[(&str, &str)],
     ) -> Self {
-        Self::start_configured(tree, false, env)
+        Self::start_configured(tree, false, env, &[])
     }
 
-    /// [`Self::start_with`], serving the agent door at
+    /// [`Self::start_with_apps`], serving the agent door at
     /// `tilo-session/agent.sock` in its runtime directory (where a client
     /// inside the login looks) when `door`.
-    pub(crate) fn start_with_door(tree: shell::shell::state::WorkspaceTree, door: bool) -> Self {
-        Self::start_configured(tree, door, &[])
+    pub(crate) fn start_with_door(
+        tree: shell::shell::state::WorkspaceTree,
+        door: bool,
+        apps: &[FirstPartyApp],
+    ) -> Self {
+        Self::start_configured(tree, door, &[], apps)
     }
 
     fn start_configured(
         tree: shell::shell::state::WorkspaceTree,
         door: bool,
         env: &[(&str, &str)],
+        apps: &[FirstPartyApp],
     ) -> Self {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path, so the runtime dir stays short.
@@ -144,6 +163,11 @@ impl Desktop {
                 launcher::hardening::NO_HUGE_PAGES_TUNABLES,
             );
         command.envs(env.iter().copied());
+        if !apps.is_empty() {
+            // The session's own app store, where an install puts a package.
+            first_party_apps::install(&runtime_dir.join("data/tilo-apps"), apps);
+            command.env("TILO_LAUNCHER_BIN", first_party_apps::launcher());
+        }
         if door {
             command.env(
                 "TILO_AGENT_DOOR",
@@ -289,6 +313,41 @@ impl Desktop {
             .collect()
     }
 
+    /// The compositor's state dump (`workspace_tree`, `chrome`, …).
+    pub(crate) fn state(&self) -> serde_json::Value {
+        let reply = self.control(&serde_json::json!({"op": "state_dump"}));
+        assert!(reply.get("err").is_none(), "state dump refused: {reply}");
+        reply.get("state").cloned().unwrap_or(reply)
+    }
+
+    /// Wait until the window of the app `app_id` is bound into a tab of the
+    /// session: the app started as its own process, through the launcher,
+    /// and its window took the place its tab held. The tab's id.
+    pub(crate) fn wait_for_app_window(&self, app_id: &str) -> u64 {
+        let deadline = tilo_test_env::hang_deadline();
+        let mut seen = String::new();
+        loop {
+            let state = self.state();
+            if let Some(tab) = app_window_tab(&state["workspace_tree"], app_id) {
+                return tab;
+            }
+            // Each change of what the tabs show, so a timeout says where the
+            // launch stopped.
+            let tiles = tab_tiles(&state["workspace_tree"]);
+            if tiles != seen {
+                eprintln!("waiting for {app_id}'s window; tabs: {tiles}");
+                seen = tiles;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "waited for {app_id}'s window in its tab; tabs {}. Log:\n{}",
+                tab_tiles(&state["workspace_tree"]),
+                self.log_tail()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Wait until the laid-out targets satisfy `done`, failing with the log
     /// if the compositor exits or the hang bound runs out.
     pub(crate) fn wait_for(&self, what: &str, done: impl Fn(&[String]) -> bool) {
@@ -306,6 +365,40 @@ impl Desktop {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
+}
+
+/// Every tab of the state dump's `tree`.
+fn tabs(tree: &serde_json::Value) -> impl Iterator<Item = &serde_json::Value> {
+    tree["workspaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|workspace| workspace["strips"].as_array().into_iter().flatten())
+        .flat_map(|strip| strip["window_groups"].as_array().into_iter().flatten())
+        .flat_map(|group| group["tabs"].as_array().into_iter().flatten())
+}
+
+/// The tab of `tree` that shows a window of `app_id`, bound into it.
+pub(crate) fn app_window_tab(tree: &serde_json::Value, app_id: &str) -> Option<u64> {
+    tabs(tree)
+        .find(|tab| tab["tile"]["Foreign"]["app_id"] == app_id)
+        .and_then(|tab| tab["id"].as_u64())
+}
+
+/// What tab `tab` of `tree` shows.
+pub(crate) fn tile_of(tree: &serde_json::Value, tab: u64) -> serde_json::Value {
+    tabs(tree)
+        .find(|candidate| candidate["id"] == tab)
+        .map(|candidate| candidate["tile"].clone())
+        .unwrap_or_else(|| panic!("tab {tab} is not in the tree"))
+}
+
+/// What every tab of `tree` shows, for a failure message.
+pub(crate) fn tab_tiles(tree: &serde_json::Value) -> String {
+    tabs(tree)
+        .map(|tab| format!("{}: {}", tab["title"], tab["tile"]))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// The last `count` lines of `log` holding any of `needles`.
@@ -339,15 +432,28 @@ impl Drop for Desktop {
 /// A signed-in person's desktop with one Notes notebook open, as a saved
 /// session restores it.
 pub(crate) fn notes_desktop() -> shell::shell::state::WorkspaceTree {
+    desktop_with_tabs(&["Notes"])
+}
+
+/// A signed-in person's desktop with the demo's tabs titled `titles` open
+/// in one window group, the first in front, as a saved session restores it.
+pub(crate) fn desktop_with_tabs(titles: &[&str]) -> shell::shell::state::WorkspaceTree {
     let mut tree = shell::shell::state::WorkspaceTree::bootstrap_demo();
-    // Keep the demo's first workspace with only its Notes tab; an untouched
+    // Keep the demo's first workspace with only these tabs; an untouched
     // demo tree would be migrated away as legacy sample data on load.
     tree.desktop.workspaces.truncate(1);
     let home = &mut tree.desktop.workspaces[0];
     home.name = "Idle desktop".into();
     home.collaborators.clear();
     let group = &mut home.strips[0].window_groups[0];
-    group.tabs.retain(|tab| tab.title == "Notes");
+    group
+        .tabs
+        .retain(|tab| titles.contains(&tab.title.as_str()));
+    assert_eq!(
+        group.tabs.len(),
+        titles.len(),
+        "the demo has tabs {titles:?}"
+    );
     group.active_tab = group.tabs[0].id;
     // A workspace is a room this device's host holds: the session places
     // Home's room on its own host before its apps start, as it does a
@@ -409,17 +515,14 @@ pub(crate) fn wait_until_gone(desktop: &Desktop, name: &str) {
 }
 
 /// The Notes notebook the session restores publishes its actions where the
-/// palette, search and agents find them. The session mounts its restored
-/// hosted tabs while it builds the desktop, before it binds the
-/// collaboration broker and identity service they connect to; the tab found
-/// no socket, stayed offline and published nothing until it was reopened
-/// (fixed by the session-services handshake).
+/// palette, search and agents find them. The session reopens its saved
+/// Notes tab as the Notes app's own process, whose window takes the tab's
+/// place; the app reaches the session's collaboration broker and publishes
+/// its notebook's actions there.
 #[test]
 fn the_restored_notes_notebook_publishes_its_actions() {
     let desktop = Desktop::start();
-    desktop.wait_for("the restored Notes notebook", |targets| {
-        targets.iter().any(|name| name == "notes.first_note")
-    });
+    desktop.wait_for_app_window("so.tilo.notes");
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let reply = desktop.control(&serde_json::json!({
