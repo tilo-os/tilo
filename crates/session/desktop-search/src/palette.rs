@@ -14,7 +14,7 @@ use crate::providers::{
 };
 use crate::window::WindowSearch;
 use ui::search::Scope;
-use ui::search::system::ResourceKind;
+use ui::search::system::{KindGroup, ResourceKind};
 
 /// Row id prefix of the row that lists the rest of a group the palette's
 /// height cut short; `more:{i}` expands `more_rows[i]`.
@@ -435,11 +435,8 @@ impl DesktopSearch {
         asked
     }
 
-    fn render(&mut self, query: &str, generation: u64) {
-        let Some(stream) = &self.stream else {
-            return;
-        };
-        let mut groups = stream.groups();
+    /// The groups in the order this search shows them.
+    fn arranged(&self, query: &str, mut groups: Vec<KindGroup<Hit>>) -> Vec<KindGroup<Hit>> {
         // A window's search is about what the window holds: its resources
         // lead, and what can be done follows them, those acting on the
         // selection first.
@@ -455,8 +452,9 @@ impl DesktopSearch {
                 crate::window::selection_first(&mut group.results);
             }
             held.extend(actions);
-            groups = held;
-        } else if query.trim().is_empty() {
+            return held;
+        }
+        if query.trim().is_empty() {
             // Nothing typed: the groups stand in the order their sources ask
             // for a browse ([`Source::browse_rank`]), so what is happening
             // now leads, what the person reached for last follows, and the
@@ -472,6 +470,14 @@ impl DesktopSearch {
                     )
             });
         }
+        groups
+    }
+
+    fn render(&mut self, query: &str, generation: u64) {
+        let Some(stream) = &self.stream else {
+            return;
+        };
+        let groups = self.arranged(query, stream.groups());
         // Each group shares what the palette shows without scrolling; a
         // group cut short offers the rest in place.
         let capacity = self.palette.entry_row_capacity();

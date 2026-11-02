@@ -289,8 +289,8 @@ impl Hit {
             Target::Copy { .. }
             | Target::Open { .. }
             | Target::Cancel { .. }
-            | Target::Prefer { .. } => Thing::Row(self.provider.clone(), self.id.clone()),
-            Target::Launch { .. } => Thing::Row(self.provider.clone(), self.id.clone()),
+            | Target::Prefer { .. }
+            | Target::Launch { .. } => Thing::Row(self.provider.clone(), self.id.clone()),
         }
     }
 }
