@@ -1,7 +1,8 @@
-//! The sections that open in place on the controls page: Wi-Fi's networks
-//! (with the password prompt under the network asking for one), Bluetooth's
+//! The sections the controls page opens: Wi-Fi's networks (with the
+//! password prompt under the network asking for one), Bluetooth's
 //! accessories, the VPN profiles, the power modes, the battery, where sound
-//! plays, the person's devices and the clipboard history.
+//! plays, the person's devices and the clipboard history. Each replaces the
+//! controls page with a page of its own, and Back returns.
 
 use ui::LocalState;
 use ui::TextRole;
@@ -9,8 +10,8 @@ use ui::framework::{ActionControl as _, Actions, ViewCx};
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, Column, Container, DisclosureBand, Element, ListRow, ProgressBar, Row,
-    Scrollable, Section, Segment, SignalLevel, Slider, Text, TextInput, Toggle, ToggleGroup,
+    Button, ButtonRole, Column, Container, Element, ListRow, ProgressBar, Row, Scrollable, Section,
+    Segment, SignalLevel, Slider, Text, TextInput, Toggle, ToggleGroup,
 };
 
 use super::Parts;
@@ -21,18 +22,39 @@ use crate::hosted::{HostedActions, HostedRow};
 use crate::i18n::{t, t_args};
 use crate::resource::QuickSettings;
 
-/// `section` open in place under the control that opens it: it opens and
-/// closes on the disclosure motion, known by its section, so switching
-/// from one section to another closes the one as the other opens.
-pub(super) fn in_place(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Parts) -> Element {
-    Box::new(DisclosureBand::new(
-        format!("qs-section-{}", section_id(section)),
-        self::section(cx, section, parts),
-    ))
+/// `section`'s page: Back and its name, then what it lists.
+pub(super) fn page(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Parts) -> Element {
+    let title = t(section_title(section));
+    Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_rhythm(Rhythm::Sibling)
+        .push(crate::view::pages::header(
+            cx,
+            &title,
+            &t("qs-back-to-controls"),
+            None,
+        ))
+        .push(self::section(cx, section, parts))
+        .into_widget()
+}
+
+/// The heading a section's page is titled with.
+fn section_title(section: QsSection) -> &'static str {
+    match section {
+        QsSection::Wifi => "qs-network-details",
+        QsSection::Bluetooth => "qs-bluetooth-details",
+        QsSection::Vpn => "qs-vpn-details",
+        QsSection::PowerMode => "qs-power-mode",
+        QsSection::Battery => "qs-battery",
+        QsSection::Sound => "qs-sound-output",
+        QsSection::Devices => "qs-devices",
+        QsSection::Clipboard => "qs-clipboard",
+    }
 }
 
 /// `section`, built again whenever what it lists changes.
-fn section(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Parts) -> Element {
+pub(super) fn section(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Parts) -> Element {
     if section == QsSection::Clipboard {
         return clipboard(cx, parts, false);
     }

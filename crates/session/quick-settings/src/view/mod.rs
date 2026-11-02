@@ -1,7 +1,7 @@
-//! The panel's views: the controls page with its sections opening in place,
-//! the notifications, one accessory's page, the clipboard opened to paste
-//! and the arrangement editor. Built from the toolkit's widgets; every
-//! control is bound to one of the panel's actions or effects.
+//! The panel's views: the controls page and the page each section opens in
+//! its place, the notifications, one accessory's page, the clipboard opened
+//! to paste and the arrangement editor. Built from the toolkit's widgets;
+//! every control is bound to one of the panel's actions or effects.
 
 mod edit;
 mod now_playing;
@@ -14,7 +14,8 @@ use std::rc::Rc;
 
 use ui::LocalState;
 use ui::framework::{Effected, Upkeep, ViewCx};
-use ui::widget::{Element, FloatingPanel, Scrollable};
+use ui::tokens::Rhythm;
+use ui::widget::{Container, Element, FloatingPanel, PageSlide, Scrollable};
 
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
@@ -141,12 +142,24 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
     let told = Rc::clone(&host);
     let page = cx.switch(&showing, move |cx, showing| {
         told.showing(showing);
-        page(cx, showing, &parts)
+        // The page stands one deep when it is not the controls, and the
+        // page it replaces leaves as it arrives: Back runs it the other
+        // way.
+        Box::new(PageSlide::new(
+            usize::from(showing.is_deeper()),
+            page(cx, showing, &parts),
+        ))
     });
+    // One inset for the whole page, so the tiles, the sliders and the rows
+    // share one left and right edge inside the card.
+    let body = Container::new()
+        .with_no_padding()
+        .with_inset(Rhythm::Related)
+        .with_child(page);
     // The panel is the floating card every surface of its kind stands on,
     // sized to what it shows: the window around it is the desktop, not the
     // panel, so the card never trails an empty band under the last row.
-    let card = FloatingPanel::new(page)
+    let card = FloatingPanel::new(Box::new(body))
         .footer(root::footer(cx))
         .fill_width();
     let panel = Box::new(
@@ -176,7 +189,12 @@ fn page(cx: &ViewCx<QuickSettings>, showing: &Showing, parts: &Parts) -> Element
         return edit::page(cx, parts);
     }
     match showing.page {
-        Page::Root => root::page(cx, showing.section, parts),
+        // A section opened from the controls replaces them, so a narrow
+        // panel shows one page at a time and Back returns.
+        Page::Root => match showing.section {
+            Some(section) => sections::page(cx, section, parts),
+            None => root::page(cx, parts),
+        },
         Page::Notifications => pages::notifications(cx, parts),
         Page::Notification => pages::reader(cx, showing.notification, parts),
         Page::Accessory => pages::accessory(cx, &showing.accessory, parts),

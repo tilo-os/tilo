@@ -439,11 +439,9 @@ pub(crate) fn wifi_off_message(state: &QuickSettingsState) -> String {
 /// A row under the tiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RootRow {
-    /// The battery (or, without one, the power mode): opens its section.
+    /// The battery (or, without one, what the machine is doing with it):
+    /// opens its section.
     Battery,
-    /// The mode the machine runs in, standing with the battery's row: opens
-    /// the power modes in place.
-    PowerMode,
     Devices,
     Clipboard,
     Notifications,
@@ -461,12 +459,11 @@ pub(crate) struct RowFace {
 }
 
 impl RowFace {
-    /// The section the row opens in place; `None` for Notifications,
-    /// which opens its page.
+    /// The section whose page the row opens; `None` for Notifications,
+    /// which opens theirs.
     pub(crate) fn section(&self) -> Option<QsSection> {
         match self.row {
             RootRow::Battery => Some(QsSection::Battery),
-            RootRow::PowerMode => Some(QsSection::PowerMode),
             RootRow::Devices => Some(QsSection::Devices),
             RootRow::Clipboard => Some(QsSection::Clipboard),
             RootRow::Notifications => None,
@@ -476,7 +473,6 @@ impl RowFace {
     pub(crate) fn id(&self) -> &'static str {
         match self.row {
             RootRow::Battery => "qs-row-battery",
-            RootRow::PowerMode => "qs-row-power-mode",
             RootRow::Devices => "qs-row-devices",
             RootRow::Clipboard => "qs-row-clipboard",
             RootRow::Notifications => "qs-row-notifications",
@@ -489,8 +485,9 @@ pub(crate) fn rows(state: &QuickSettingsState) -> Vec<RowFace> {
     let mut rows = Vec::new();
     let battery = state.battery();
     let present = battery.present;
-    // The charge and the mode it runs in stand together: what is left, and
-    // what the machine is doing to make it last.
+    // The charge, and what the machine is doing to make it last. The mode
+    // it runs in is the power tile above, which is where it is chosen and
+    // where all of them are listed.
     if present || !state.awake_holders.is_empty() {
         rows.push(RowFace {
             row: RootRow::Battery,
@@ -506,15 +503,6 @@ pub(crate) fn rows(state: &QuickSettingsState) -> Vec<RowFace> {
                 awake_sentence(state).unwrap_or_else(|| battery_state_text(state))
             }),
             value: present.then(|| format!("{}%", battery.percent)),
-        });
-    }
-    if !state.power_profiles.is_empty() {
-        rows.push(RowFace {
-            row: RootRow::PowerMode,
-            icon: Icon::Gauge,
-            title: t("qs-power-mode"),
-            detail: None,
-            value: Some(state.power_profile.label()),
         });
     }
     rows.push(RowFace {
@@ -1169,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn the_charge_and_the_mode_it_runs_in_stand_together_above_the_rest() {
+    fn the_charge_stands_above_the_rest_and_the_mode_has_no_row_of_its_own() {
         use tilo_power_mgmt::{BatterySnapshot, BatteryState, BatteryTime};
         let mut state = QuickSettingsState::fixture();
         state.status.battery = Some(BatterySnapshot {
@@ -1183,9 +1171,19 @@ mod tests {
         assert_eq!(faces[0].row, RootRow::Battery);
         assert_eq!(faces[0].value.as_deref(), Some("76%"));
         assert_eq!(faces[0].detail.as_deref(), Some("3 h 34 min left"));
-        assert_eq!(faces[1].row, RootRow::PowerMode);
-        assert_eq!(faces[1].value.as_deref(), Some("Balanced"));
-        assert_eq!(faces[1].detail, None);
+        assert!(
+            faces
+                .iter()
+                .all(|face| face.section() != Some(QsSection::PowerMode)),
+            "the mode is switched on its tile, which opens the modes' page: no row says it twice"
+        );
+        assert!(
+            tiles(&state)
+                .iter()
+                .any(|tile| tile.control == QuickSettingsControl::PowerMode
+                    && tile.section == Some(QsSection::PowerMode)),
+            "the tile is where the mode is chosen and where its page opens"
+        );
     }
 
     #[test]

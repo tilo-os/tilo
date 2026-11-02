@@ -91,7 +91,7 @@ pub struct QuickSettingsState {
     /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
     /// drill-in list.
     pub nav_stack: Vec<QsLevel>,
-    /// The section open in place on the root page (Wi-Fi's networks,
+    /// The section whose page replaces the controls (Wi-Fi's networks,
     /// Bluetooth's devices, a VPN's profiles, the battery); at most one.
     pub section: Option<crate::QsSection>,
     /// Set while clipboard history is open to paste (Super+V): where it was
@@ -314,8 +314,8 @@ impl QuickSettingsState {
             && self.current_level() == &crate::QsLevel::Root
     }
 
-    /// Open `section` in place on the root page, closing any other: one
-    /// section is open at a time.
+    /// Open `section`'s page, closing any other: one section is open at a
+    /// time.
     pub fn open_section(&mut self, section: crate::QsSection) {
         self.section = Some(section);
     }

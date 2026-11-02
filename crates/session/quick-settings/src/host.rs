@@ -23,7 +23,7 @@ pub struct Showing {
     pub accessory: String,
     /// The notification read in full, on its page.
     pub notification: u64,
-    /// The section open in place on the root page.
+    /// The section whose page stands in the controls' place.
     pub section: Option<crate::QsSection>,
     /// Opened to paste a copy into the focused field.
     pub pasting: bool,
@@ -36,7 +36,16 @@ impl Showing {
     /// panel.
     #[must_use]
     pub fn goes_back(&self) -> bool {
-        !self.pasting && (self.page != crate::Page::Root || self.section.is_some() || self.editing)
+        !self.pasting && self.is_deeper()
+    }
+
+    /// Whether the page stands deeper than the controls: a section, the
+    /// notifications, one of them, an accessory, the clipboard opened to
+    /// paste or the arrangement. Such a page arrives over the controls and
+    /// Back returns to them.
+    #[must_use]
+    pub fn is_deeper(&self) -> bool {
+        self.pasting || self.editing || self.page != crate::Page::Root || self.section.is_some()
     }
 }
 

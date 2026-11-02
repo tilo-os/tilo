@@ -3062,6 +3062,8 @@ mod flap;
 pub use flap::{FlapState, SplitLayout};
 mod bottom_sheet;
 pub use bottom_sheet::{BottomSheet, SheetDetent, SheetFrame, SheetGeometry, SheetInput};
+mod page_slide;
+pub use page_slide::PageSlide;
 mod sidebar;
 pub use sidebar::{
     DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_DOCKED_WIDTH, DEFAULT_DRAWER_WIDTH, SidebarDrawer,

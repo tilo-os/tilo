@@ -631,6 +631,7 @@ concrete_decorator_widget!(super::nav_list::NavList);
 concrete_decorator_widget!(super::media_transport::MediaTransport);
 concrete_decorator_widget!(super::window_search::QueryView);
 concrete_decorator_widget!(super::TabStrip);
+concrete_decorator_widget!(super::page_slide::PageSlide);
 
 #[cfg(test)]
 #[path = "decorator_tests.rs"]
