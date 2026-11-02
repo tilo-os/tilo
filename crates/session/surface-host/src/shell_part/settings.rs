@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value as Json;
 use tilolang_tilo::runtime::Value;
+use ui::tilo_actions::Action as _;
 
 use super::{SHELL_RECORD, ShellPart};
 
@@ -46,6 +47,7 @@ impl ShellPart {
         for (param, argument) in declared.params.iter().skip(1).zip(arguments) {
             values.push(Self::case_value(meta, &param.ty, &argument)?);
         }
+        let first = host.next_ticket();
         let outcome = host
             .runtime()
             .invoke_action(host.viewer(), (declared.id.as_str(), values))
@@ -59,13 +61,53 @@ impl ShellPart {
                 return Err(format!("`{setting}` is not allowed"));
             }
         }
-        // The runtime committed the record's change under a ticket: the part applies it to
-        // the record its views read, as it does a change a press in the shell made, so the
-        // next turn draws the shell as the setting left it.
-        self.instance.commit_planned();
-        self.commit();
+        // The runtime committed the record's change under a ticket: the part applies it to the
+        // record its views read, as it does a change a press in the shell made, so the next
+        // turn draws the shell as the setting left it. The tickets are taken here rather than
+        // handed to the part's door, since the door's queue is what a press of the shell's own
+        // views answers, and the part answers nothing on the person's behalf outside it.
+        self.apply_committed(&host, first);
         self.again = true;
         Ok(())
+    }
+
+    /// Apply what the runtime committed from `first` on to the record this part's views read,
+    /// and bring the instance up to date with it.
+    fn apply_committed(&mut self, host: &tilolang_tilo::host::Host, first: u64) {
+        let at = std::time::Instant::now();
+        let mut applied = false;
+        for committed in host.take_committed_from(first) {
+            let result = match host.store().take_ticket(committed.ticket) {
+                Some(action) => action
+                    .apply(&mut self.record.borrow_mut())
+                    .map_err(|error| error.to_string()),
+                None => Err(format!("no committed action {}", committed.ticket)),
+            };
+            match result {
+                Ok(()) => applied = true,
+                Err(why) => tracing::error!(why, "a shell setting could not be applied"),
+            }
+        }
+        if !applied {
+            return;
+        }
+        {
+            let mut record = self.record.borrow_mut();
+            record.commit();
+            self.seen_heads = record
+                .committed_heads()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+        }
+        {
+            let record = self.record.borrow();
+            self.instance.sync(Some(&record));
+        }
+        // The record moved: the part's next turn settles what that started, as the seed's
+        // commit does, so the views draw the shell as the setting left it.
+        self.instance.moved();
+        self.work.syncing = self.work.syncing.saturating_add(at.elapsed());
     }
 
     /// `argument` as an argument of a parameter of type `ty`: a choice takes the name of its

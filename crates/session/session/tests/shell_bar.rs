@@ -2403,27 +2403,33 @@ fn a_compact_bar_keeps_a_glance_and_nothing_overflows_it() {
 fn the_bar_draws_inside_every_width_style_and_appearance() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
+    let roomy = |width: i32| width >= 600;
     for (width, height) in [(1280, 800), (390, 844), (320, 568)] {
-        let mut session = device_session(width, height);
-        until_settled(&mut session, |session| says(session, &desk(session).clock));
-        for (appearance, dark) in [("light", false), ("dark", true)] {
-            set_appearance(&mut session, dark);
+        for count in [0, 1, 4] {
+            // Who is here first, on a bar of the plain theme: a person is told who is here
+            // before they change how the bar looks, and the frames kept are that bar.
+            let mut session = device_session(width, height);
+            until_settled(&mut session, |session| says(session, &desk(session).clock));
+            set_here(&session, count);
+            let who = if count == 1 { "is here" } else { "are here" };
             until_settled(&mut session, |session| {
-                appearance_mode(session) == serde_json::json!(appearance)
+                desk(session).people.len() == count
+                    && (count == 0 || !roomy(width) || says(session, who))
             });
-            for style in ["calm", "glass"] {
-                let finish = if style == "glass" {
-                    "translucent"
-                } else {
-                    "solid"
-                };
-                session
-                    .run_shell_setting("set_bar_finish", vec![serde_json::json!(finish)])
-                    .expect("the bar takes the style");
-                settle(&mut session);
-                for count in [0, 1, 4] {
-                    set_here(&session, count);
-                    until_settled(&mut session, |session| desk(session).people.len() == count);
+            for (appearance, dark) in [("light", false), ("dark", true)] {
+                set_appearance(&mut session, dark);
+                until_settled(&mut session, |session| {
+                    appearance_mode(session) == serde_json::json!(appearance)
+                });
+                for style in ["calm", "glass"] {
+                    let finish = if style == "glass" {
+                        "translucent"
+                    } else {
+                        "solid"
+                    };
+                    session
+                        .run_shell_setting("set_bar_finish", vec![serde_json::json!(finish)])
+                        .expect("the bar takes the style");
                     settle(&mut session);
                     let shot = keep(
                         &mut session,
