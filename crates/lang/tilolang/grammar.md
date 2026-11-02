@@ -49,7 +49,7 @@ view       = "view" ident [ "<" Ident { "," Ident } ">" ] params ui_block ;
 scenario   = "scenario" string [ "->" type ] block ;
 params     = "(" [ param { "," param } ] ")" ;
 param      = ident ":" type [ "=" expr ] ;                         (* defaults: action parameters only *)
-opts       = "(" ident ":" expr { "," ident ":" expr } ")" ;       (* icon:, label:, on: *)
+opts       = "(" ident ":" expr { "," ident ":" expr } ")" ;       (* icon:, label:, on:, key: *)
 
 block      = "{" { stmt NL } "}" ;
 stmt       = "let" ident [ ":" type ] "=" expr

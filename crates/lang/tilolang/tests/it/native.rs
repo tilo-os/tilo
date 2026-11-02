@@ -803,31 +803,101 @@ fn an_action_whose_on_is_its_subjects_field_says_which_state_it_toggles() {
     assert_eq!(action(&m, "star").toggles, None, "no `on:`, no state");
 }
 
-// An action declares the plain key that runs it while its window has the keyboard; the key is
-// the character itself (read through the person's keymap), never a key code.
+// An action declares the shortcut that runs it while its window has the keyboard, published as
+// one spelling: the modifiers in one order and the key's token, which the toolkit matches a
+// press against with the platform's own command modifier.
 #[test]
-fn an_action_carries_the_plain_key_it_declares() {
+fn an_action_carries_the_shortcut_it_declares() {
     let m = compile_body(
         r#"type Thread {
     subject: Text (title)
 }
 action archive(t: Thread) (icon: .archive, key: "e") {}
-action reply(t: Thread) (key: "r") {}
+action reply(t: Thread) (key: "Ctrl+Enter") {}
+action share(t: Thread) (key: "control+shift+Return") {}
 action nothing(t: Thread) {}"#,
     )
     .meta;
     assert_eq!(action(&m, "archive").key.as_deref(), Some("e"));
-    assert_eq!(action(&m, "reply").key.as_deref(), Some("r"));
+    assert_eq!(action(&m, "reply").key.as_deref(), Some("Ctrl+enter"));
+    assert_eq!(
+        action(&m, "share").key.as_deref(),
+        Some("Ctrl+Shift+enter"),
+        "one spelling, whatever order and case it was written in"
+    );
     assert_eq!(action(&m, "nothing").key, None, "no `key:`, no shortcut");
-    // A key is one character, so `key: "ee"` and `key: " "` are refused.
-    assert!(
-        codes(
-            r#"type Thread {
+    // A shortcut is modifiers and one key: no second key, no key that does not exist, and no
+    // chord that stops before its key.
+    for wrong in [r#"key: "ee""#, r#"key: "Entr""#, r#"key: "Ctrl+""#] {
+        let said = format!(
+            r"type Thread {{
+    subject: Text (title)
+}}
+action a(t: Thread) ({wrong}) {{}}"
+        );
+        expect("E090", &said);
+    }
+}
+
+// Two actions of one subject cannot answer the same keys: one would silently take the other's.
+// The same key on another subject is another place, and an action on the app's root answers
+// window-wide against the other root actions, not against an item's.
+#[test]
+fn two_actions_of_one_subject_share_no_shortcut() {
+    let thread = r"type Thread {
     subject: Text (title)
 }
-action a(t: Thread) (key: "ee") {}"#
-        )
-        .iter()
-        .any(|code| code == "E090")
+type Draft {
+    subject: Text (title)
+}";
+    expect(
+        "E090",
+        &format!(
+            r#"{thread}
+action archive(t: Thread) (key: "Ctrl+E") {{}}
+action reply(t: Thread) (key: "control+e") {{}}"#
+        ),
     );
+    ok(&format!(
+        r#"{thread}
+action archive(t: Thread) (key: "Ctrl+E") {{}}
+action pin(d: Draft) (key: "Ctrl+E") {{}}"#
+    ));
+    expect(
+        "E090",
+        &format!(
+            r#"{thread}
+type Threads {{
+    threads: Collection<Thread>
+}}
+root threads: Threads
+default view thread_list for Threads
+row view thread_row for Thread
+view thread_row(t: Thread) {{
+    row(t.subject)
+}}
+view thread_list(threads: Threads) {{
+    std.list(threads, threads.threads, empty: "No thread yet")
+}}
+primary action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(subject: "")) }}
+action tidy(threads: Threads) (key: "Ctrl+N") {{ threads.threads.remove_where(s -> s.subject == "") }}"#
+        ),
+    );
+    ok(&format!(
+        r#"{thread}
+type Threads {{
+    threads: Collection<Thread>
+}}
+root threads: Threads
+default view thread_list for Threads
+row view thread_row for Thread
+view thread_row(t: Thread) {{
+    row(t.subject)
+}}
+view thread_list(threads: Threads) {{
+    std.list(threads, threads.threads, empty: "No thread yet")
+}}
+action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(subject: "")) }}
+action archive(t: Thread) (key: "Ctrl+N") {{}}"#
+    ));
 }

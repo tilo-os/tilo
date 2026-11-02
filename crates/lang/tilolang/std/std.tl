@@ -116,7 +116,7 @@ view rows<T>(
                 ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who, group: heading, tail: tail) {
                     menu: {
                         for a in offered {
-                            ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+                            ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key) {
                                 on choose: a.run
                             }
                         }
@@ -175,7 +175,7 @@ view header<S>(
     }
     for a in offered {
         if a.primary {
-            ui.Button(a.label, icon: a.icon, role: .primary) {
+            ui.Button(a.label, icon: a.icon, role: .primary, key: a.key) {
                 on press: a.run
             }
         }
@@ -272,7 +272,7 @@ view transcript<R, T>(of: R, items: List<T>, unread: Option<T> = .none, composer
                         ui.ListItem(item: m, author: made?.who, time: made?.at) {
                             menu: {
                                 for a in offered {
-                                    ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+                                    ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive, key: a.key) {
                                         on choose: a.run
                                     }
                                 }

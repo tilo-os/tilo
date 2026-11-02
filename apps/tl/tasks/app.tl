@@ -118,7 +118,7 @@ action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none, today: B
 }
 
 /// Starts a task in the inbox.
-primary action new_task(tasks: Tasks) -> Task (icon: .plus, label: "New task") {
+primary action new_task(tasks: Tasks) -> Task (icon: .plus, label: "New task", key: "Ctrl+N") {
     tasks.items.insert(Task(title: ""))
 }
 
@@ -128,7 +128,7 @@ action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New pro
 }
 
 /// Checks a task off, or opens it again.
-action check(t: Task, done: Bool = not t.done) (label: if done { "Complete" } else { "Reopen" }, icon: .check, on: t.done) {
+action check(t: Task, done: Bool = not t.done) (label: if done { "Complete" } else { "Reopen" }, icon: .check, on: t.done, key: "Ctrl+Enter") {
     t.done = done
 }
 
@@ -156,7 +156,7 @@ action release(t: Task) (label: "Unassign", icon: .user) {
 }
 
 /// Files a task under a project.
-action file(t: Task, p: Project) (label: "Move to {p.name}", icon: .folder) {
+action file(t: Task, p: Project) (label: "Move to {p.name}", icon: .folder, key: "Ctrl+Shift+M") {
     t.project = p
 }
 
@@ -167,7 +167,7 @@ action unfile(t: Task) (label: "Move to inbox", icon: .inbox) {
 }
 
 /// Sets the day a task is due by, or clears it.
-action schedule(t: Task, due: Option<Date>) (label: "Set due date", icon: .calendar) {
+action schedule(t: Task, due: Option<Date>) (label: "Set due date", icon: .calendar, key: "Ctrl+D") {
     t.due = due
 }
 
@@ -194,7 +194,7 @@ destructive action remove_step(tasks: Tasks, s: Step) (icon: .trash) {
 }
 
 /// Deletes a task.
-destructive action remove(tasks: Tasks, t: Task) (icon: .trash) {
+destructive action remove(tasks: Tasks, t: Task) (icon: .trash, key: "Delete") {
     tasks.items.remove(t)
 }
 
