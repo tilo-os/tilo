@@ -1724,7 +1724,7 @@ impl Session {
             .borrow_mut()
             .observe(&self.compositor.outputs(), caret);
         if let Some(on) = self.shared.notifications.borrow().take_quiet_change() {
-            self.shared.show_readout(Osd::from(Hint {
+            self.shared.show_readout(&Osd::from(Hint {
                 kind: OsdKind::DoNotDisturb,
                 on,
                 chord: None,
@@ -2442,7 +2442,7 @@ impl Session {
     /// Show a mode change in the readout, said in words: a switch flipped by
     /// a key or a switch has nothing to read as a level.
     fn hint(&self, kind: OsdKind, on: bool) {
-        self.shared.show_readout(Osd::from(Hint {
+        self.shared.show_readout(&Osd::from(Hint {
             kind,
             on,
             chord: None,

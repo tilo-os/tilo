@@ -803,7 +803,7 @@ impl Shared {
                 Ok(started) => {
                     if let Some(kind) = invocation.readout {
                         let now = self.reading(kind);
-                        self.show_readout(now.clone());
+                        self.show_readout(&now);
                         if started == ResourceOperationStart::Accepted {
                             // The device has not answered yet: the readout
                             // shows where it started, and again where the
@@ -820,7 +820,7 @@ impl Shared {
                     if invocation.readout == Some(OsdKind::Brightness)
                         && Self::says_nothing_to_dim(&error)
                     {
-                        self.show_readout(Osd::Hint(Hint {
+                        self.show_readout(&Osd::Hint(Hint {
                             kind: OsdKind::NoBacklight,
                             on: true,
                             chord: None,
@@ -896,9 +896,8 @@ impl Shared {
                 })
                 .map_or((0.0, true, None), |light| {
                     let level = light
-                        .level
-                        .filter(|_| light.max > 0)
-                        .map_or(0.0, |level| level as f32 / light.max as f32);
+                        .light()
+                        .map_or(0.0, os_actions::KeyboardBacklight::fraction);
                     let device = Device::new(t("osd-keyboard-name"), DeviceGlyph::Keyboard);
                     (level, level > 0.0, Some(device))
                 }),
@@ -942,7 +941,7 @@ impl Shared {
         for pending in waiting {
             let answered = self.reading(pending.kind);
             if answered != pending.before {
-                self.show_readout(answered);
+                self.show_readout(&answered);
             } else if now.saturating_duration_since(pending.at) < READOUT_SETTLE {
                 unanswered.push(pending);
             }
@@ -959,7 +958,7 @@ impl Shared {
     /// Show `osd` through the readout's published action, on the display the
     /// person works on: the readout answers there, over whatever that display
     /// shows, including the lock.
-    pub(crate) fn show_readout(&self, osd: Osd) {
+    pub(crate) fn show_readout(&self, osd: &Osd) {
         let display = self
             .services
             .borrow()

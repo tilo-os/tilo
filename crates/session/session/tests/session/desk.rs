@@ -288,24 +288,36 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
 
 /// One readout scene in both styles: the state the old shell's `media_key_osd`
 /// frames show, drawn by the readout that answers it now.
-fn capture_readout(name: &str, readout: serde_json::Value) {
-    for (style, mut session) in [("", session()), ("-light", light_session())] {
+fn capture_readout(name: &str, readout: &serde_json::Value) {
+    for style in ["", "-light"] {
+        let mut session = desk_in(style);
         settle(&mut session, 2);
         invoke_with(
             &mut session,
             tilo_desktop::osd::OSD_RESOURCE,
             "show",
-            &readout,
+            readout,
         );
         settle(&mut session, 2);
         capture(&mut session, &format!("{name}{style}"));
     }
 }
 
+/// The desk a capture draws on, by its style suffix: the default, or the
+/// calm light one.
+fn desk_in(style: &str) -> Session {
+    if style == "-light" {
+        light_session()
+    } else {
+        session()
+    }
+}
+
 /// The desk alone in both styles: what a readout capture is drawn over, so the
 /// pill it adds can be measured against it.
 fn capture_readout_desk() {
-    for (style, mut session) in [("", session()), ("-light", light_session())] {
+    for style in ["", "-light"] {
+        let mut session = desk_in(style);
         settle(&mut session, 2);
         capture(&mut session, &format!("osd-desk{style}"));
     }
@@ -395,7 +407,7 @@ fn pixel_parity_readout_frames_match_the_old_shells_scenes() {
             serde_json::json!({"kind": "no-backlight", "on": true}),
         ),
     ] {
-        capture_readout(name, readout);
+        capture_readout(name, &readout);
     }
 }
 
