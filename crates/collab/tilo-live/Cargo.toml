@@ -13,7 +13,7 @@ tls = ["dep:rustls"]
 # The plane's names: the namespace of one device in one scope, the tracks
 # within it and their delivery. Builds for the page, which publishes and reads
 # them itself.
-plane = ["dep:moq-net", "dep:hex"]
+plane = ["dep:moq-net", "dep:hex", "dep:n0-future"]
 relay = ["tls", "plane", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
 # The same carrier over a direct iroh connection, beside WebTransport.
 native = ["relay", "dep:iroh"]
@@ -33,6 +33,8 @@ url = { workspace = true, optional = true }
 serde = { workspace = true, optional = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 moq-net = { workspace = true, optional = true }
+# Plain future polling: the client carrier runs in a page as it does natively.
+n0-future = { version = "0.3", optional = true }
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"], optional = true }
 quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 rustls = { workspace = true, optional = true }

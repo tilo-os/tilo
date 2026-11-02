@@ -1128,16 +1128,18 @@ fn scopes_well_formed(authorization: &dyn SessionAuthorization) -> bool {
     let publication = authorization.publication();
     let subscriptions = authorization.subscriptions();
     if let Some(prefix) = authorization.subscription_prefix() {
-        // One opaque call component; any publication lies directly beneath it.
+        // A whole path whose every segment is checked, so the scope is exact
+        // rather than a partial segment; the publication lies beneath it,
+        // where the scheme's own naming puts it (a call's `call/device`, the
+        // live plane's `scope/participant/device`).
         return subscriptions.is_empty()
             && valid_namespace(prefix)
-            && !prefix.contains('/')
             && publication.is_none_or(|name| {
                 valid_namespace(name)
                     && name
                         .strip_prefix(prefix)
                         .and_then(|rest| rest.strip_prefix('/'))
-                        .is_some_and(|rest| !rest.contains('/'))
+                        .is_some_and(|rest| !rest.is_empty())
             });
     }
     // An exact subscription set is bounded by the grant's size

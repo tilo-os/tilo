@@ -23,6 +23,11 @@ pub mod grant;
 #[cfg(feature = "native")]
 pub mod native;
 
+/// The client half of the carrier (present a grant, run `moq-lite`), which
+/// a page runs too: it needs no runtime of its own.
+#[cfg(feature = "plane")]
+pub mod admit;
+
 #[cfg(feature = "plane")]
 pub mod live;
 

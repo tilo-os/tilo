@@ -1,12 +1,14 @@
 //! WebTransport on the desktop: web-transport-quinn with the ring provider.
 
 use bytes::Bytes;
+
 use url::Url;
 
 use super::chain;
 use crate::NetError;
 use crate::webtransport::Options;
 
+#[derive(Clone)]
 pub(crate) struct Session(web_transport_quinn::Session);
 pub(crate) struct SendStream(web_transport_quinn::SendStream);
 pub(crate) struct RecvStream(web_transport_quinn::RecvStream);
@@ -25,8 +27,10 @@ pub(crate) async fn connect(url: Url, options: Options) -> Result<Session, NetEr
             )
             .map_err(|error| NetError::connect(chain(&error)))?
     };
+    let request = web_transport_quinn::proto::ConnectRequest::new(url)
+        .with_protocols(options.protocols.iter().cloned());
     let session = client
-        .connect(url)
+        .connect(request)
         .await
         .map_err(|error| NetError::connect(chain(&error)))?;
     Ok(Session(session))
@@ -53,28 +57,47 @@ fn system_trust_client() -> Result<web_transport_quinn::Client, NetError> {
     ))
 }
 
-fn session_error(_: web_transport_quinn::SessionError) -> NetError {
-    NetError::Closed
+fn session_error(error: &web_transport_quinn::SessionError) -> NetError {
+    match web_transport_trait::Error::session_error(error) {
+        Some((code, reason)) => NetError::ClosedWith { code, reason },
+        None => NetError::Closed,
+    }
 }
 
 impl Session {
     pub(crate) async fn open_bi(&self) -> Result<(SendStream, RecvStream), NetError> {
-        let (send, recv) = self.0.open_bi().await.map_err(session_error)?;
+        let (send, recv) = self
+            .0
+            .open_bi()
+            .await
+            .map_err(|error| session_error(&error))?;
         Ok((SendStream(send), RecvStream(recv)))
     }
 
     pub(crate) async fn accept_bi(&self) -> Result<(SendStream, RecvStream), NetError> {
-        let (send, recv) = self.0.accept_bi().await.map_err(session_error)?;
+        let (send, recv) = self
+            .0
+            .accept_bi()
+            .await
+            .map_err(|error| session_error(&error))?;
         Ok((SendStream(send), RecvStream(recv)))
     }
 
     pub(crate) async fn open_uni(&self) -> Result<SendStream, NetError> {
-        Ok(SendStream(self.0.open_uni().await.map_err(session_error)?))
+        Ok(SendStream(
+            self.0
+                .open_uni()
+                .await
+                .map_err(|error| session_error(&error))?,
+        ))
     }
 
     pub(crate) async fn accept_uni(&self) -> Result<RecvStream, NetError> {
         Ok(RecvStream(
-            self.0.accept_uni().await.map_err(session_error)?,
+            self.0
+                .accept_uni()
+                .await
+                .map_err(|error| session_error(&error))?,
         ))
     }
 
@@ -86,15 +109,147 @@ impl Session {
                 self.0.max_datagram_size()
             )));
         }
-        self.0.send_datagram_wait(data).await.map_err(session_error)
+        self.0
+            .send_datagram_wait(data)
+            .await
+            .map_err(|error| session_error(&error))
     }
 
     pub(crate) async fn recv_datagram(&self) -> Result<Bytes, NetError> {
-        self.0.read_datagram().await.map_err(session_error)
+        self.0
+            .read_datagram()
+            .await
+            .map_err(|error| session_error(&error))
     }
 
     pub(crate) fn close(&self, code: u32, reason: &str) {
         self.0.close(code, reason.as_bytes());
+    }
+
+    pub(crate) fn protocol(&self) -> Option<&str> {
+        self.0.protocol()
+    }
+
+    pub(crate) fn max_datagram_size(&self) -> usize {
+        self.0.max_datagram_size()
+    }
+}
+
+impl web_transport_trait::poll::Session for Session {
+    type SendStream = SendStream;
+    type RecvStream = RecvStream;
+    type Error = NetError;
+
+    fn poll_accept_uni(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<RecvStream, NetError>> {
+        self.0.poll_accept_uni(cx).map(|stream| {
+            stream
+                .map(RecvStream)
+                .map_err(|error| session_error(&error))
+        })
+    }
+
+    fn poll_accept_bi(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(SendStream, RecvStream), NetError>> {
+        self.0.poll_accept_bi(cx).map(|pair| {
+            pair.map(|(send, recv)| (SendStream(send), RecvStream(recv)))
+                .map_err(|error| session_error(&error))
+        })
+    }
+
+    fn poll_open_uni(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<SendStream, NetError>> {
+        self.0.poll_open_uni(cx).map(|stream| {
+            stream
+                .map(SendStream)
+                .map_err(|error| session_error(&error))
+        })
+    }
+
+    fn poll_open_bi(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(SendStream, RecvStream), NetError>> {
+        self.0.poll_open_bi(cx).map(|pair| {
+            pair.map(|(send, recv)| (SendStream(send), RecvStream(recv)))
+                .map_err(|error| session_error(&error))
+        })
+    }
+
+    fn poll_send_datagram(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        payload: &[u8],
+    ) -> std::task::Poll<Result<(), NetError>> {
+        self.0
+            .poll_send_datagram(cx, payload)
+            .map_err(|error| session_error(&error))
+    }
+
+    fn poll_recv_datagram(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<Bytes, NetError>> {
+        self.0
+            .poll_recv_datagram(cx)
+            .map_err(|error| session_error(&error))
+    }
+
+    fn max_datagram_size(&self) -> usize {
+        self.0.max_datagram_size()
+    }
+
+    fn protocol(&self) -> Option<&str> {
+        self.0.protocol()
+    }
+
+    fn close(&mut self, code: u32, reason: &str) {
+        self.0.close(code, reason.as_bytes());
+    }
+
+    fn poll_closed(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<NetError> {
+        self.0.poll_closed(cx).map(|error| session_error(&error))
+    }
+
+    fn stats(&self) -> impl web_transport_trait::Stats {
+        web_transport_trait::Session::stats(&self.0)
+    }
+}
+
+impl web_transport_trait::poll::SendStream for SendStream {
+    type Error = NetError;
+
+    fn poll_write(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, NetError>> {
+        self.0.poll_write(cx, buf).map_err(|_| NetError::Closed)
+    }
+
+    fn set_priority(&mut self, order: u8) {
+        let _ = self.0.set_priority(i32::from(order));
+    }
+
+    fn finish(&mut self) -> Result<(), NetError> {
+        self.0.finish().map_err(|_| NetError::Closed)
+    }
+
+    fn reset(&mut self, code: u32) {
+        let _ = self.0.reset(code);
+    }
+
+    fn poll_closed(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), NetError>> {
+        self.0.poll_closed(cx).map_err(|_| NetError::Closed)
     }
 }
 
@@ -107,8 +262,31 @@ impl SendStream {
         clippy::unused_async,
         reason = "the same signature as the page backend"
     )]
-    pub(crate) async fn finish(&mut self) -> Result<(), NetError> {
+    pub(crate) async fn finish_stream(&mut self) -> Result<(), NetError> {
         self.0.finish().map_err(|_| NetError::Closed)
+    }
+}
+
+impl web_transport_trait::poll::RecvStream for RecvStream {
+    type Error = NetError;
+
+    fn poll_read(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        dst: &mut [u8],
+    ) -> std::task::Poll<Result<Option<usize>, NetError>> {
+        self.0.poll_read(cx, dst).map_err(|_| NetError::Closed)
+    }
+
+    fn stop(&mut self, code: u32) {
+        let _ = self.0.stop(code);
+    }
+
+    fn poll_closed(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), NetError>> {
+        self.0.poll_closed(cx).map_err(|_| NetError::Closed)
     }
 }
 
