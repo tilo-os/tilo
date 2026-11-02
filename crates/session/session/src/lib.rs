@@ -155,6 +155,7 @@ pub use controls::{
     CLIPBOARD_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
     SESSION_RESOURCE, SessionCommand,
 };
+pub use desk_migration::shell::shell_state_path;
 pub use devices::RESOURCE as DEVICES_RESOURCE;
 pub use engine::Person;
 pub use env::SessionEnvironment;
@@ -877,6 +878,7 @@ impl Session {
         // reads it, and the apps this session runs reach the same model.
         let activity = activity::Activity::new(
             options.state.as_deref(),
+            options.old_desk.as_deref(),
             options.person.clone(),
             options.search.records.as_ref().map(records::Records::root),
             options.search.lists.clone(),

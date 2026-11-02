@@ -1091,6 +1091,16 @@ pub fn set_owner(doc: &mut AutoCommit, workspace_id: WorkspaceId, owner: &str) -
     workspace_entry(doc, workspace_id).is_some_and(|entry| doc.put(&entry, "owner", owner).is_ok())
 }
 
+/// How many workspaces `doc` holds: none on a device that has not used its
+/// desk yet, or on a document of another shape.
+#[must_use]
+pub fn workspaces(doc: &impl ReadDoc) -> usize {
+    match doc.get(&ROOT, WORKSPACES_KEY) {
+        Ok(Some((Value::Object(ObjType::List), list))) => doc.length(&list),
+        _ => 0,
+    }
+}
+
 /// Whether `doc` holds the desk this module writes: a root holding the
 /// workspace list. A document of another shape — a workspace document, or a
 /// shared desktop record written entry by entry before the desk was one

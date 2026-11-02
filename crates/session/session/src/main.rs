@@ -723,6 +723,9 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
         user: tilo_session::unlock::login_user(),
         verifier: tilo_session::unlock::installed(),
         state: tilo_paths::state_dir(),
+        // The desk the shell this session replaces kept here, brought over on
+        // the first start that has no desk of its own.
+        old_desk: tilo_session::shell_state_path(),
         // A session in a window of another desktop leaves the machine's
         // traffic to the session that owns it.
         vpn: owned.then(Vpn::machine),

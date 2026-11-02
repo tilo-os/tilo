@@ -121,10 +121,12 @@ const LOOK_FOR_MODEL: Duration = Duration::from_secs(30);
 
 impl Activity {
     /// This session's activity: the desk's document under `state` (kept in
-    /// memory alone without one), the records under `store`, and the person
-    /// here.
+    /// memory alone without one), the desk an older Tilo kept at `old_desk`
+    /// brought over when this device has none, the records under `store`, and
+    /// the person here.
     pub(crate) fn new(
         state: Option<&Path>,
+        old_desk: Option<&Path>,
         person: String,
         store: Option<PathBuf>,
         lists: Lists,
@@ -132,7 +134,7 @@ impl Activity {
         let woken = Arc::new(AtomicBool::new(false));
         let requests = activity_requests(Arc::clone(&woken));
         Self(Rc::new(Inner {
-            desk: DeskDoc::load(state, &person),
+            desk: DeskDoc::load(state, old_desk, &person),
             host: Rc::new(NativeActivityHost {
                 person: person.clone(),
                 maps: HistoryMaps::load(state),
@@ -695,7 +697,7 @@ mod tests {
             let tree = seed_tree(&mut minter, "Studio", vec![notes]);
             let workspace = tree.active;
             let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Tiles));
-            let activity = Activity::new(None, "ada".to_string(), None, Lists::default());
+            let activity = Activity::new(None, None, "ada".to_string(), None, Lists::default());
             surface.set_history_source(Box::new(activity.clone()));
             surface.serve_activity(activity.requests());
             Self {

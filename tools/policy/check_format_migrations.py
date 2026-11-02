@@ -33,16 +33,6 @@ DECLARATION = re.compile(
     re.S,
 )
 
-# Formats whose only reader went with a program the repository no longer
-# ships: the file stays on the machine, unread, and nothing here brings it up.
-# A retired format is written down here so that the gate below still fails a
-# chain that shrinks while its reader lives, and so that a new reader of the
-# same file is a change someone reads this list to make.
-RETIRED = {
-    "desktop state": "the shell that read it was removed; the session keeps the"
-    " desktop in the workspace's documents and never opens ~/.config/tilo/state.json",
-}
-
 
 def declarations(texts: dict[str, str]) -> dict[str, tuple[str, str]]:
     """Format name -> (file, oldest as written)."""
@@ -126,8 +116,6 @@ def against(base: str, root: Path = ROOT) -> list[str]:
     before = declarations(then)
     now = declarations(sources_since(root, base, then))
     for name, (path, oldest) in before.items():
-        if name in RETIRED:
-            continue
         if name not in now:
             problems.append(
                 f"{path}: format {name!r} is no longer declared; files a machine holds in it "
