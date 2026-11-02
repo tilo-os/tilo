@@ -849,6 +849,37 @@ impl Theme {
         }
     }
 
+    /// The finish the shell's chrome — its bar and its dock — is made of, as the person chose
+    /// it ([`crate::tokens::ChromeMaterial`]): the bar's own body, the theme's glass (its bar
+    /// material, else its floating material, so a theme without a bar material still gives
+    /// the glass style something to be), or that glass with nothing showing through and every
+    /// light off it.
+    ///
+    /// The same rules as [`Self::finish`] apply to each: forced colours draw the toolkit's
+    /// own solid, and reduced transparency makes the glass calm.
+    #[must_use]
+    pub fn chrome_material(
+        &self,
+        material: crate::tokens::ChromeMaterial,
+    ) -> crate::tokens::Finish {
+        use crate::tokens::{ChromeMaterial, SurfaceRole};
+        let finishes = &self.tokens.finishes;
+        let glass = finishes.bar.as_ref().unwrap_or(&finishes.floating).clone();
+        // The theme's own rules for a material, as `finish` states them.
+        let glass = if self.forced_colors {
+            glass.forced().clone()
+        } else if self.reduce_transparency {
+            glass.opaque().clone()
+        } else {
+            glass
+        };
+        match material {
+            ChromeMaterial::Bar => self.finish(SurfaceRole::Bar).clone(),
+            ChromeMaterial::Glass => glass,
+            ChromeMaterial::Calm => glass.with_translucency(0.0),
+        }
+    }
+
     /// The painter set drawing `role`'s parts: its finish's.
     #[must_use]
     pub fn painter(&self, role: crate::tokens::SurfaceRole) -> &crate::part_paint::PainterSet {
@@ -1452,6 +1483,50 @@ mod tests {
         assert_ne!(
             reason, "material.window: surface shader is not a shader a theme may draw",
             "the reason is the compiler's, not a generic refusal"
+        );
+    }
+
+    /// The person's choice of chrome material is resolved by the theme alone: glass is the
+    /// theme's own bar (else floating) material, calm is that same material with nothing
+    /// showing through and every light off, and a theme without a bar body paints its flat
+    /// bar for either. A view picks between them and never states a finish.
+    #[test]
+    fn chrome_material_resolves_to_the_themes_own_finishes() {
+        use crate::tokens::ChromeMaterial;
+        let glass = Theme::preset(Preset::Glass);
+        let glossy = glass.chrome_material(ChromeMaterial::Glass);
+        assert_eq!(glossy, *glass.tokens.finishes.bar.as_ref().unwrap());
+        assert!(glossy.translucent() && glossy.blur() > 0.0);
+        let calm = glass.chrome_material(ChromeMaterial::Calm);
+        assert_eq!(calm.painter(), glossy.painter());
+        assert_eq!(
+            (calm.blur(), calm.tint()),
+            (0.0, 1.0),
+            "calm shows nothing through it"
+        );
+        assert_eq!(calm.param("specular"), Some(0.0), "calm lights nothing");
+        assert_eq!(
+            glass.chrome_material(ChromeMaterial::Bar),
+            glass.finish(crate::tokens::SurfaceRole::Bar).clone(),
+            "the bar keeps the theme's own bar body"
+        );
+
+        let dark = Theme::dark();
+        assert_eq!(
+            dark.chrome_material(ChromeMaterial::Glass),
+            dark.tokens.finishes.floating,
+            "without a bar material, glass is the floating material"
+        );
+        assert_eq!(
+            dark.chrome_material(ChromeMaterial::Bar),
+            dark.finish(crate::tokens::SurfaceRole::Bar).clone()
+        );
+
+        let mut reduced = Theme::preset(Preset::Glass);
+        reduced.reduce_transparency = true;
+        assert!(
+            !reduced.chrome_material(ChromeMaterial::Glass).translucent(),
+            "reduced transparency makes glass solid"
         );
     }
 

@@ -445,6 +445,32 @@ pub enum SurfaceRole {
     Bar,
 }
 
+/// What the shell's chrome — its bar and its dock — is made of, as the person chose it.
+///
+/// A person's style is one choice, and both of its cases are the theme's: the glass is the
+/// theme's bar material (else its floating one, the blurred material every theme has), and
+/// the calm surface is that same material with nothing showing through it. A theme therefore
+/// looks glass where it says glass, and solid where the person asked for calm, with no view
+/// knowing what either is made of.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChromeMaterial {
+    /// What the theme gives a bar's body: flat on the stock themes, the theme's own material
+    /// where it declares one.
+    #[default]
+    Bar,
+    /// The theme's glass: its bar material, else its floating material.
+    Glass,
+    /// That glass made calm: the same material with nothing below it showing through and
+    /// every light off it.
+    Calm,
+}
+
+crate::component::choice!(ChromeMaterial, "ChromeMaterial", {
+    Bar => "bar",
+    Glass => "glass",
+    Calm => "calm",
+});
+
 /// One finish per surface role: the theme document's `material` role
 /// (`crate::theme::ThemeMaterial`) as the toolkit paints it.
 #[derive(Clone, Debug, PartialEq)]

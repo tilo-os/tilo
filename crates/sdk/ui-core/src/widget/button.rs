@@ -56,6 +56,9 @@ pub struct Button {
     /// optional badge pill on its corner: what an extension's toolbar action
     /// shows. The glyph in `icon` remains the fallback and the layout key.
     image: Option<vello::peniko::ImageData>,
+    /// Who is here, as their faces ([`Self::with_faces`]): the button's whole face, and the
+    /// label names them to assistive technology.
+    faces: Vec<String>,
     /// A media transport's control (previous, play/pause, next), drawn as
     /// its [`crate::widget::TransportFace`] at that face's side.
     transport: Option<(crate::widget::TransportControl, f64)>,
@@ -64,11 +67,6 @@ pub struct Button {
     /// measured, in `adjust_layout_style`.
     count: Option<CountBadge>,
     count_size: vello::kurbo::Size,
-    /// While the button keeps room for its count: the margins its parent gave the node, and
-    /// the margins the button put there (those plus the count's room). A node's margins are
-    /// its parent's; the button only adds to them, and a button without a count leaves them
-    /// alone.
-    count_margin: Option<(Margin, Margin)>,
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
     /// What the button does, which decides its whole look (see
@@ -158,9 +156,6 @@ fn theme_key(theme: &Theme) -> ThemeKey {
     )
 }
 
-/// A node's margins.
-type Margin = taffy::Rect<taffy::LengthPercentageAuto>;
-
 impl Button {
     /// Box this widget in the SDK so thin apps reuse its shared implementation.
     /// This keeps the widget's vtable instantiation out of the app.
@@ -192,11 +187,11 @@ impl Button {
             pressed_into_focus: false,
             icon: None,
             image: None,
+            faces: Vec::new(),
             transport: None,
             badge: None,
             count: None,
             count_size: vello::kurbo::Size::ZERO,
-            count_margin: None,
             fill_width: false,
             role: ButtonRole::Secondary,
             toggled: None,
@@ -371,11 +366,23 @@ impl Button {
         self
     }
 
+    /// Show only who is here, as their faces: up to three faces, then a face counting the
+    /// rest. The button is as wide as the group and as tall as its face, its label the name a
+    /// screen reader hears (`with_accessible_name`), and no text on it at any width. One
+    /// press does what the button does — open the roster of everyone here.
+    #[must_use]
+    pub fn with_faces(mut self, faces: impl IntoIterator<Item = String>) -> Self {
+        self.faces = faces.into_iter().collect();
+        self.layout_dirty = true;
+        self.dirty = true;
+        self
+    }
+
     /// Stand `content` on the icon's top-trailing corner, centred on it, in `style`: how many
     /// new things wait behind the control (unread notifications, new mail), as an app icon's
-    /// count stands on it. Only an icon-only face shows it. The button keeps room for the part
-    /// past its trailing edge, so the count never covers the control beside it or leaves the
-    /// row; a zero count is none. The button's name says the count, not the badge.
+    /// count stands on it. Only an icon-only face shows it. The count stays inside the face,
+    /// so the bar's own edge never cuts it and it covers no control beside the face; a zero
+    /// count is none. The button's name says the count, not the badge.
     #[must_use]
     pub fn with_count(
         mut self,
@@ -413,7 +420,9 @@ impl Button {
         }
     }
 
-    /// Where the count stands: centred on the icon's top-trailing corner. `None` without one.
+    /// Where the count stands: centred on the icon's top-trailing corner, and inside the face
+    /// on both axes, so the bar's edge never cuts it and it covers no control beside the face.
+    /// `None` without one.
     fn count_rect(&self) -> Option<Rect> {
         self.count.as_ref()?;
         if !self.label.is_empty() || self.icon.is_none() || self.count_size.width <= 0.0 {
@@ -424,7 +433,16 @@ impl Button {
             self.rect.center().x + icon / 2.0,
             self.rect.center().y - icon / 2.0,
         );
-        Some(Rect::from_center_size(corner, self.count_size))
+        let count = Rect::from_center_size(corner, self.count_size);
+        let left = count.x0.clamp(
+            self.rect.x0,
+            (self.rect.x1 - count.width()).max(self.rect.x0),
+        );
+        let top = count.y0.clamp(
+            self.rect.y0,
+            (self.rect.y1 - count.height()).max(self.rect.y0),
+        );
+        Some(count.with_origin((left, top)))
     }
 
     /// The text isn't painted — it's what a screen reader announces in
@@ -1069,6 +1087,7 @@ impl FaceSizer {
         FaceContent {
             icon,
             image: None,
+            faces: &[],
             badge: None,
             label,
             hint: None,
@@ -1095,6 +1114,8 @@ struct FaceContent<'a> {
     icon: Option<crate::icons::Icon>,
     /// Painted instead of `icon` on an icon-only face.
     image: Option<&'a vello::peniko::ImageData>,
+    /// Who is here, as their faces; empty for every face that is not a group of people.
+    faces: &'a [String],
     badge: Option<&'a str>,
     label: &'a str,
     hint: Option<String>,
@@ -1108,10 +1129,16 @@ struct FaceContent<'a> {
 
 impl FaceContent<'_> {
     /// The narrowest face of `height` that shows everything without eliding:
-    /// an icon-only face is a square, and a labelled one is at least twice
-    /// its height, so a one-word label still reads as a button.
+    /// an icon-only face is a square, a group of faces is as wide as the faces it shows, and a
+    /// labelled one is at least twice its height, so a one-word label still reads as a button.
     fn intrinsic_width(&self, metrics: &FaceMetrics, text: &mut TextRenderer, height: f64) -> f64 {
         if self.label.is_empty() && self.hint.is_none() {
+            if !self.faces.is_empty() {
+                let pad = if self.flush { 0.0 } else { metrics.pad_x };
+                let group =
+                    crate::presence::FaceStack::in_face(height).group_width(self.faces.len());
+                return (group + 2.0 * pad).ceil();
+            }
             return height;
         }
         let pad = if self.flush { 0.0 } else { metrics.pad_x };
@@ -1134,6 +1161,30 @@ impl FaceContent<'_> {
         } else {
             width.ceil().max(2.0 * height)
         }
+    }
+
+    /// The group of who is here centred in `rect`: the faces shown and a face counting the
+    /// rest, standing on the bar's own ground so each face's ring separates it from the next.
+    fn draw_faces(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
+        let stack = crate::presence::FaceStack::in_face(rect.height());
+        let (shown, more) = stack.group(self.faces.len());
+        let palette = &ctx.theme.tokens.colors.presence;
+        let faces: Vec<crate::presence::Face<'_>> = self
+            .faces
+            .iter()
+            .take(shown)
+            .map(|name| {
+                let hue = crate::tokens::colors::PresenceHue::of_identity(name);
+                crate::presence::Face::new(name, name, palette.hue(hue))
+            })
+            .collect();
+        let width = stack.width_of(faces.len(), more);
+        stack.paint(
+            ctx,
+            (rect.center().x + width / 2.0, rect.center().y),
+            (&faces, more),
+            crate::chrome::panel_ground(ctx.theme),
+        );
     }
 
     /// `image` stretched over `rect`.
@@ -1187,6 +1238,10 @@ impl FaceContent<'_> {
     ) {
         let icon_px = metrics.icon.min(rect.height());
         if self.label.is_empty() {
+            if !self.faces.is_empty() {
+                self.draw_faces(ctx, rect);
+                return;
+            }
             if let Some(image) = self.image {
                 let ix = rect.center().x - icon_px / 2.0;
                 let iy = rect.center().y - icon_px / 2.0;
@@ -1625,6 +1680,7 @@ impl<'a> ButtonFace<'a> {
         FaceContent {
             icon: self.icon,
             image: None,
+            faces: &[],
             badge: None,
             label: &label,
             hint: self.shortcut.as_ref().map(shortcut_text),
@@ -1687,6 +1743,7 @@ impl<'a> ButtonFace<'a> {
             content: FaceContent {
                 icon: self.icon,
                 image: None,
+                faces: &[],
                 badge: None,
                 label,
                 hint: self.shortcut.as_ref().map(shortcut_text),
@@ -1781,6 +1838,7 @@ impl Button {
                 flush: self.role.flush() && !label.is_empty(),
                 icon: self.icon,
                 image: None,
+                faces: &self.faces,
                 badge: None,
                 label: &label,
                 hint,
@@ -1830,74 +1888,14 @@ impl Button {
         taffy.set_style(node, style).is_ok()
     }
 
-    /// The room the count takes past the face's edges, kept on the node as its margins, so the
-    /// count stands over no control beside it and never leaves the row it is in: past the
-    /// trailing edge on that side, and past the top edge on the top and the bottom alike, so
-    /// the face stays centred where its row centres it.
-    fn keep_room_for_count(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        text: &mut TextRenderer,
-    ) -> bool {
+    /// Measure the count so [`Self::count_rect`] can place it. The count stands inside the
+    /// face, so the face's own size is the room it needs: the node's margins are its parent's
+    /// and stay as the parent gave them.
+    fn measure_count(&mut self, text: &mut TextRenderer) {
         self.count_size = self
             .count
             .as_ref()
             .map_or(vello::kurbo::Size::ZERO, |count| count.size(text));
-        let (past_x, past_y) =
-            if self.count.is_some() && self.label.is_empty() && self.icon.is_some() {
-                let face = self.face_height();
-                let icon = self.metrics.icon.min(face);
-                // The icon is centred in a square face: its corner stands `icon / 2` from the
-                // centre, the count's half again past that.
-                (
-                    (icon / 2.0 + self.count_size.width / 2.0 - face / 2.0).max(0.0),
-                    (icon / 2.0 + self.count_size.height / 2.0 - face / 2.0).max(0.0),
-                )
-            } else {
-                (0.0, 0.0)
-            };
-        let wants = past_x > 0.0 || past_y > 0.0;
-        if !wants && self.count_margin.is_none() {
-            // No count, and none kept room before: the node's margins are not the button's.
-            return false;
-        }
-        let Ok(style) = taffy.style(node) else {
-            return false;
-        };
-        // What the parent gave the node: what is there, unless it is what this button put
-        // there last.
-        let base = match self.count_margin {
-            Some((base, applied)) if style.margin == applied => base,
-            _ => style.margin,
-        };
-        let margin = if wants {
-            let more = |m: taffy::LengthPercentageAuto, v: f64| {
-                let v = f32_of_f64(v.ceil());
-                // A length grows by the room; `auto` or a percentage is the parent's to keep.
-                let raw = m.into_raw();
-                if raw.tag() == taffy::CompactLength::LENGTH_TAG {
-                    taffy::LengthPercentageAuto::length(raw.value() + v)
-                } else {
-                    m
-                }
-            };
-            taffy::Rect {
-                left: base.left,
-                right: more(base.right, past_x),
-                top: more(base.top, past_y),
-                bottom: more(base.bottom, past_y),
-            }
-        } else {
-            base
-        };
-        self.count_margin = wants.then_some((base, margin));
-        if style.margin == margin {
-            return false;
-        }
-        let mut style = style.clone();
-        style.margin = margin;
-        taffy.set_style(node, style).is_ok()
     }
 
     /// The face's height on the node, as the input asks for it now: a button made before the
@@ -1982,8 +1980,6 @@ impl Widget for Button {
     ) -> NodeId {
         self.observe_i18n_revision();
         self.measured_width = None;
-        // A fresh node holds no margins of the count's.
-        self.count_margin = None;
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
         if let Some((control, side)) = &mut self.transport {
             *side = crate::widget::TransportFace::side(*control, theme);
@@ -2056,7 +2052,8 @@ impl Widget for Button {
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        let tall = self.pin_face_height(taffy, node) | self.keep_room_for_count(taffy, node, text);
+        self.measure_count(text);
+        let tall = self.pin_face_height(taffy, node);
         if self.fill_width {
             return tall;
         }
@@ -2172,6 +2169,7 @@ impl Widget for Button {
                 flush: self.role.flush() && !label.is_empty(),
                 icon: self.icon,
                 image: self.image.as_ref(),
+                faces: &self.faces,
                 badge: self.badge.as_deref(),
                 label: &label,
                 hint,
