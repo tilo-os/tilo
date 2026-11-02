@@ -1044,3 +1044,129 @@ fn a_menu_shortcut_runs_where_the_row_has_the_keyboard() {
         "a modifier the shortcut does not name is another press"
     );
 }
+
+/// Flip the leading checkbox the way the view does when the person presses it.
+fn press_leading_checkbox(row: &mut ListRow) {
+    if let Some(Leading::Checkbox { checked, .. }) = &mut row.leading {
+        *checked = !*checked;
+        row.dirty = true;
+    } else {
+        panic!("the row has no leading checkbox");
+    }
+}
+
+#[test]
+fn a_rows_checkbox_fills_over_frames_where_a_plain_face_would_pop() {
+    use crate::motion::note_source;
+    use crate::time::testing::with_monotonic_time;
+    use crate::time::{Duration, Instant};
+    use crate::tokens::MotionSource;
+
+    let start = Instant::now();
+    let row = ListRow::new("milk", "Buy oat milk")
+        .secondary("Groceries")
+        .checkbox(false, |_| {});
+    let mut harness = with_monotonic_time(start, || {
+        FrameHarness::for_root(crate::State::new(), row, (400, 60), Theme::dark())
+    });
+    with_monotonic_time(start, || harness.poll_frame()).expect("the first frame draws");
+    assert_eq!(
+        harness.root::<ListRow>().check_pose.expect("drawn").level,
+        0.0,
+        "it starts unchecked, at rest"
+    );
+
+    // The person presses the box: the view answers with the new value.
+    let pressed = start + Duration::from_millis(100);
+    with_monotonic_time(pressed, || {
+        note_source(MotionSource::Pointer);
+        press_leading_checkbox(&mut harness.root_mut::<ListRow>());
+    });
+
+    let mut levels = Vec::new();
+    for frame in 1..=24_u64 {
+        let at = pressed + Duration::from_millis(frame * 16);
+        with_monotonic_time(at, || harness.poll_frame()).expect("a frame of the fill");
+        levels.push(harness.root::<ListRow>().check_pose.expect("drawn").level);
+    }
+    // The press's own frame starts the motion; the ones after it show it on its way.
+    let moving = levels.get(1).copied().expect("a second frame");
+    assert!(
+        moving > 0.0 && moving < 1.0,
+        "the fill is on its way, not popped: {levels:?}"
+    );
+    assert!(
+        levels
+            .iter()
+            .filter(|level| **level > 0.0 && **level < 1.0)
+            .count()
+            >= 3,
+        "it takes several frames to settle: {levels:?}"
+    );
+    assert!(
+        levels.windows(2).all(|pair| pair[1] >= pair[0] - 1e-6),
+        "it approaches the marked state: {levels:?}"
+    );
+    let settled = harness.root::<ListRow>().check_pose.expect("drawn").level;
+    assert!((settled - 1.0).abs() < 1e-3, "it settles marked: {settled}");
+    // Once the mark has landed it asks for no more frames.
+    let landed = pressed + Duration::from_millis(900);
+    with_monotonic_time(landed, || {
+        assert!(
+            !harness
+                .root::<ListRow>()
+                .check
+                .is_moving(crate::time::now()),
+            "a settled box asks for no more frames"
+        );
+    });
+}
+
+#[test]
+fn a_press_on_the_leading_box_marks_the_row() {
+    let toggled = Rc::new(Cell::new(None));
+    let seen = Rc::clone(&toggled);
+    let row = ListRow::new("milk", "Buy oat milk").checkbox(false, move |on| seen.set(Some(on)));
+    let mut harness = FrameHarness::new(crate::State::new(), Box::new(row), (400, 60));
+    let [x, y, _, h] = find(&harness.inspection().root, "ListRow")
+        .expect("the row is laid out")
+        .rect;
+    harness.click_at(x + 12.0, y + h / 2.0);
+    assert_eq!(
+        toggled.get(),
+        Some(true),
+        "a press on the box a person sees toggles it"
+    );
+}
+
+#[test]
+fn a_row_that_says_still_marks_at_once_where_brisk_still_moves() {
+    use crate::motion::note_source;
+    use crate::time::testing::with_monotonic_time;
+    use crate::time::{Duration, Instant};
+    use crate::tokens::MotionSource;
+
+    let start = Instant::now();
+    let row = ListRow::new("milk", "Buy oat milk")
+        .checkbox(false, |_| {})
+        .with_feel(crate::motion::Feel::Still);
+    let mut harness = with_monotonic_time(start, || {
+        FrameHarness::for_root(crate::State::new(), row, (400, 60), Theme::dark())
+    });
+    with_monotonic_time(start, || harness.poll_frame()).expect("the first frame draws");
+    let pressed = start + Duration::from_millis(100);
+    with_monotonic_time(pressed, || {
+        note_source(MotionSource::Pointer);
+        press_leading_checkbox(&mut harness.root_mut::<ListRow>());
+    });
+    // The press's frame starts the mark; with nothing to move, the one after it shows it landed.
+    for ms in [16_u64, 32] {
+        with_monotonic_time(pressed + Duration::from_millis(ms), || harness.poll_frame())
+            .expect("a frame");
+    }
+    assert_eq!(
+        harness.root::<ListRow>().check_pose.expect("drawn").level,
+        1.0,
+        "a still row's mark lands at once"
+    );
+}

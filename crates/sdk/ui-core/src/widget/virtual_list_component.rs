@@ -179,6 +179,9 @@ pub struct VirtualListProps {
     /// How far the list is scrolled, in logical pixels.
     #[component(state)]
     pub scroll: Option<f64>,
+    /// The pace its rows arrive, leave and change places at, and the rows it builds move at
+    /// when they say nothing themselves: the theme's unless it says otherwise.
+    pub motion: Option<crate::motion::Feel>,
     /// A row was selected: carries the item it shows.
     #[component(event(value = ResourceId))]
     pub select: Event,
@@ -644,8 +647,8 @@ fn declared_shortcuts(
 
 /// The row of an item: its list row with the item's presence, or its view; under the swipe
 /// and beside the hover toolbar the item has.
-fn row_of(rows: &DescribedRows, key: &str) -> Element {
-    match bare_row(rows, key) {
+fn row_of(rows: &DescribedRows, key: &str, feel: crate::motion::Feel) -> Element {
+    match bare_row(rows, key, feel) {
         Some((row, swipe, attached)) => attach(row, swipe, attached),
         None => Box::new(ListRow::new(key.to_owned(), "")),
     }
@@ -656,6 +659,7 @@ fn row_of(rows: &DescribedRows, key: &str) -> Element {
 fn bare_row(
     rows: &DescribedRows,
     key: &str,
+    feel: crate::motion::Feel,
 ) -> Option<(Element, Option<SwipeActionProps>, Attachments)> {
     rows.with_item(key, |item| {
         let ListItemProps {
@@ -675,6 +679,9 @@ fn bare_row(
         let row = match row {
             ItemRow::Row(mut props) => {
                 rows.row_props(&mut props, key);
+                // The list paces the rows it builds unless a row says its own, so one option on
+                // the list covers its content.
+                props.motion = props.motion.or(Some(feel));
                 // The list activates its rows itself, by key: a row of it is not a target of
                 // its own.
                 props.activate = Event::None;
@@ -749,7 +756,12 @@ fn attach(row: Element, swipe: Option<SwipeActionProps>, attached: Attachments) 
 ///
 /// Each message is one row of the page's column: a run's next line stands a tight gap under
 /// the one before, a new run a section's gap under the last.
-fn message_of(rows: &DescribedRows, key: &str, unread: Option<&str>) -> Element {
+fn message_of(
+    rows: &DescribedRows,
+    key: &str,
+    unread: Option<&str>,
+    feel: crate::motion::Feel,
+) -> Element {
     // The row that shows the item the reader has not seen, of the rows the host rendered. An
     // item is named by its id (`root-x/iy`), the one the app said and the one the row shows.
     let first_unread = unread.is_some_and(|item| {
@@ -763,7 +775,7 @@ fn message_of(rows: &DescribedRows, key: &str, unread: Option<&str>) -> Element 
     });
     let said = rows.with_item(key, |item| (item.author, item.time));
     let Some((Some(author), at)) = said else {
-        let row = page_row(row_of(rows, key), RUN_GAP);
+        let row = page_row(row_of(rows, key, feel), RUN_GAP);
         return if first_unread { with_unread(row) } else { row };
     };
     let before = rows
@@ -789,8 +801,8 @@ fn message_of(rows: &DescribedRows, key: &str, unread: Option<&str>) -> Element 
                     _ => true,
                 }
         });
-    let Some((said, swipe, attached)) = bare_row(rows, key) else {
-        return page_row(row_of(rows, key), RUN_GAP);
+    let Some((said, swipe, attached)) = bare_row(rows, key, feel) else {
+        return page_row(row_of(rows, key, feel), RUN_GAP);
     };
     let avatar = Avatar::person(author.name.clone(), author.identity.clone());
     let message = Row::row().fill_width().align(Align::Start);
@@ -916,6 +928,7 @@ impl Described for DescribedList {
             removed,
             selection,
             scroll,
+            motion,
             select,
             activate,
         } = props;
@@ -928,19 +941,21 @@ impl Described for DescribedList {
             removed: removed.keys(),
         };
         rows.removed = removed.0;
+        let feel = motion.unwrap_or(crate::motion::Feel::Standard);
         if transcript {
             // The divider stands over the row that shows the item: a row says which item it
             // shows, so the list finds it as the rows arrive.
             let marked = unread.as_ref().map(|item| item.0.clone());
             let divider = marked.clone();
             let list = VirtualList::new(rows, MESSAGE_ESTIMATE, move |rows, _, key| {
-                message_of(rows, key, divider.as_deref())
+                message_of(rows, key, divider.as_deref(), feel)
             })
             .flush()
             .with_edges(TranscriptEdges::new(RUN_GAP))
             .filling()
             .following_end()
-            .with_id(key);
+            .with_id(key)
+            .with_feel(feel);
             let list = list.unread_from(marked);
             // A message offers its menu as every row does.
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
@@ -953,8 +968,8 @@ impl Described for DescribedList {
         }
         let reader = rows.reader();
         let mut list =
-            VirtualList::with_selection_delegate(rows, ROW_ESTIMATE, |rows, _, key, _| {
-                row_of(rows, key)
+            VirtualList::with_selection_delegate(rows, ROW_ESTIMATE, move |rows, _, key, _| {
+                row_of(rows, key, feel)
             });
         if let Some(title) = tail_title {
             list = list.with_tail_title(title);
@@ -1032,6 +1047,7 @@ impl Described for DescribedList {
             if let Some(list) = self.list_mut() {
                 list.set_unread(props.unread.as_ref().map(|item| item.0.clone()));
                 list.set_tail_title(props.tail_title.clone());
+                list.set_feel(props.motion.unwrap_or(crate::motion::Feel::Standard));
             }
             return true;
         }

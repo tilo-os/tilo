@@ -941,6 +941,8 @@ pub struct TreeImpl<T, M = TreeNode<T>> {
     left_rows: Vec<ShownTreeRow>,
     /// The motion its row changes play (`motion::ListChange`).
     transition_motion: crate::tokens::EffectiveMotion,
+    /// The pace its own motion plays at, when it says something other than the theme's.
+    feel: crate::motion::Feel,
     reduce_motion: bool,
     /// Disclosure column, resolved from the theme's label line at layout
     /// time so the glyph never overlaps the label at larger text scales
@@ -1223,6 +1225,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             transitions: RowMotions::default().fading_out_leavers(),
             left_rows: Vec::new(),
             transition_motion: crate::tokens::EffectiveMotion::default(),
+            feel: crate::motion::Feel::Standard,
             reduce_motion: false,
             disclosure_w: DISCLOSURE_WIDTH,
             authored_row_height: None,
@@ -1295,6 +1298,22 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.test_id = Some(id.into());
         self
+    }
+
+    /// Play the tree's own motion — branches unfolding, rows arriving and leaving — at `feel`
+    /// rather than the theme's pace.
+    #[must_use]
+    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+        self.feel = feel;
+        self
+    }
+
+    /// [`Self::with_feel`] on a tree already built.
+    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+        if self.feel != feel {
+            self.feel = feel;
+            self.paint_dirty = true;
+        }
     }
 
     #[must_use]
@@ -3083,13 +3102,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
             self.layout_theme = Some(theme.clone());
             self.paint_dirty = true;
         }
-        self.arrival_motion = Some(theme.motion());
-        self.transition_motion = theme.motion();
+        self.arrival_motion = Some(self.feel.over(theme.motion()));
+        self.transition_motion = self.feel.over(theme.motion());
         self.reduce_motion = theme.reduce_motion;
         self.scroll.momentum.set_view(
             self.viewport.viewport(),
             self.viewport.max_offset() > 0.0,
-            theme.motion(),
+            self.feel.over(theme.motion()),
         );
         if self.reduce_motion {
             self.transitions.clear();

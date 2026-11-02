@@ -22,6 +22,8 @@ pub struct BadgeProps {
     pub modified: bool,
     /// A status the pill means, washed into it. A text badge is neutral unless said.
     pub tone: Option<Tone>,
+    /// The pace a changed count plays at: the theme's unless it says otherwise.
+    pub motion: crate::motion::Feel,
 }
 
 impl BadgeProps {
@@ -50,12 +52,13 @@ impl Described for Badge {
 
     fn from_props(_key: &str, props: BadgeProps) -> Self {
         let (content, style) = props.content_and_style();
-        Self::with_content(content, style)
+        Self::with_content(content, style).with_feel(props.motion)
     }
 
     /// A changed count cross-fades in place, as [`Badge::set_count`] does.
     fn set_props(&mut self, props: BadgeProps) -> bool {
         let (content, style) = props.content_and_style();
+        self.set_feel(props.motion);
         if style != self.style {
             self.style = style;
             self.dirty = true;

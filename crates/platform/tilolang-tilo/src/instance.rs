@@ -1250,9 +1250,9 @@ impl Instance {
         holds.then_some(&detail.target)
     }
 
-    /// The window shows what was typed into its bound control `key` of `lane` (the edit it
-    /// sent just applied): take it as what the window holds, so a later change from elsewhere
-    /// (the draft cleared once it was sent) differs from it and is sent.
+    /// Tell the window what the bound control `key` of `lane` holds now that the edit it sent
+    /// is applied: the value the app holds is what its next frame draws, and the control shows
+    /// it until then only as the person's own touch, which a frame from the app replaces.
     fn shown_by_window(&mut self, lane: Lane, key: &str) {
         let Some(value) = self
             .view(lane)
@@ -1261,9 +1261,20 @@ impl Instance {
             return;
         };
         let shown = plain(&NoNames).value(&value);
-        if let Some(view) = self.lane_mut(lane) {
-            view.bound.insert(key.to_owned(), shown);
+        let Some(view) = self.lane_mut(lane) else {
+            return;
+        };
+        if view.bound.get(key) == Some(&shown) {
+            return;
         }
+        view.bound.insert(key.to_owned(), shown.clone());
+        let acked = view.acked.get(key).copied().unwrap_or(0);
+        self.out.push(ToUi::Bound {
+            lane,
+            key: key.to_owned(),
+            value: shown,
+            acked,
+        });
     }
 
     /// Bring the lenses the views read up to date with presence: who else is at each resource

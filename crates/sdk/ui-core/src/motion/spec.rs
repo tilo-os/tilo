@@ -105,6 +105,11 @@ impl MotionSpec {
         if pace == Pace::Instant {
             return Timing::Instant;
         }
+        // A theme that holds still neither moves nor fades: every change shows on the frame it
+        // happens, whatever the motion would otherwise have done.
+        if motion.still() {
+            return Timing::Instant;
+        }
         if source.lands_at_once() {
             return match self.shortcut {
                 Shortcut::Lands => Timing::Instant,

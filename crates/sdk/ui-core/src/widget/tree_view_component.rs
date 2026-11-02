@@ -144,6 +144,9 @@ pub struct TreeViewProps {
     /// The nodes selected, by the resource each stands for.
     #[component(state)]
     pub selection: Option<Vec<ResourceId>>,
+    /// The pace its own motion plays at: branches unfolding, rows arriving and leaving. Unset, the
+    /// theme's.
+    pub motion: Option<crate::motion::Feel>,
     /// A node was selected: carries the resource it shows.
     #[component(event(value = ResourceId))]
     pub select: Event,
@@ -573,13 +576,16 @@ impl DescribedTreeView {
             nodes,
             expanded,
             selection,
+            motion,
             select,
             activate,
             drop,
         } = props;
         let layout = Rc::new(Layout::of(nodes, drop));
         let root = layout.root(name.as_ref(), hide_root);
-        let mut tree = TreeView::new(root).with_id(key);
+        let mut tree = TreeView::new(root)
+            .with_id(key)
+            .with_feel(motion.unwrap_or(crate::motion::Feel::Standard));
         if let Some(name) = &name {
             tree = tree.with_accessible_name(name.clone());
         }
@@ -722,6 +728,7 @@ impl Described for DescribedTreeView {
     /// it stays. A change of a node's label or place, or of what its row shows, is a row the
     /// tree draws, so nothing narrower saves the rebuild.
     fn set_props(&mut self, props: TreeViewProps) -> bool {
+        let motion = props.motion;
         let opened = self.opened();
         let selected = self.selected();
         let focused = self.tree.focused();
@@ -755,6 +762,8 @@ impl Described for DescribedTreeView {
         if scroll > 0.0 {
             self.tree.set_scroll_offset(scroll);
         }
+        self.tree
+            .set_feel(motion.unwrap_or(crate::motion::Feel::Standard));
         true
     }
 }

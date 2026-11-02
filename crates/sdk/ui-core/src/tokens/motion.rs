@@ -407,6 +407,16 @@ impl EffectiveMotion {
     pub const fn tokens(self) -> Motion {
         self.tokens
     }
+
+    /// These tokens instead, with the person's reduced-motion setting kept: how a component
+    /// paces its own motion ([`crate::motion::Feel`]).
+    #[must_use]
+    pub const fn with_tokens(self, tokens: Motion) -> Self {
+        Self {
+            tokens,
+            reduced: self.reduced,
+        }
+    }
 }
 
 /// iOS-style overscroll resistance.

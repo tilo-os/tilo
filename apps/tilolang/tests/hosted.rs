@@ -10,6 +10,14 @@
     clippy::indexing_slicing,
     reason = "a test: a failure is a panic"
 )]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::arithmetic_side_effects,
+    reason = "pixels of a small frame: coordinates and counts are tiny, and the arithmetic is the \
+              comparison itself"
+)]
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -592,6 +600,60 @@ fn named(widget: &dyn Widget, label: &str, out: &mut Vec<ui::kurbo::Rect>) {
     for child in widget.children() {
         named(child, label, out);
     }
+}
+
+/// Every checkbox the window lays out on screen, with whether it is marked.
+fn boxes(widget: &dyn Widget, out: &mut Vec<(ui::kurbo::Rect, bool)>) {
+    if let Some(access) = widget.accessibility()
+        && access.role == ui::a11y::Role::Checkbox
+    {
+        let rect = widget.get_rect();
+        if rect.width() > 0.0 && rect.height() > 0.0 {
+            out.push((rect, access.state.checked == Some(true)));
+        }
+    }
+    for child in widget.children() {
+        boxes(child, out);
+    }
+}
+
+/// The pixels of `rect` in a frame the harness drew, at its scale of one.
+fn pixels_of(pixels: &[u8], rect: ui::kurbo::Rect) -> Vec<[u8; 4]> {
+    let width = VIEWPORT.0 as usize;
+    let x0 = rect.x0.round().max(0.0) as usize;
+    let y0 = rect.y0.round().max(0.0) as usize;
+    let x1 = (rect.x1.round() as usize).min(width);
+    let y1 = rect.y1.round().max(0.0) as usize;
+    let rows = pixels.len() / 4 / width.max(1);
+    let mut out = Vec::new();
+    for row in y0..y1.min(rows) {
+        for col in x0..x1 {
+            let at = (row * width + col) * 4;
+            out.push([pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]);
+        }
+    }
+    out
+}
+
+/// How far apart two pictures of the same space are, from 0 to 1.
+fn apart(one: &[[u8; 4]], other: &[[u8; 4]]) -> f64 {
+    let common = one.len().min(other.len());
+    if common == 0 {
+        return 0.0;
+    }
+    let total: f64 = one
+        .iter()
+        .zip(other)
+        .take(common)
+        .map(|(a, b)| {
+            (f64::from(a[0].abs_diff(b[0]))
+                + f64::from(a[1].abs_diff(b[1]))
+                + f64::from(a[2].abs_diff(b[2])))
+                / 3.0
+                / 255.0
+        })
+        .sum();
+    total / common as f64
 }
 
 /// After a first note made and titled as a person does, "+" and at once the next title, every
@@ -1424,4 +1486,92 @@ fn shots() {
             .harness()
             .render_png(&dir.join(format!("rich-body-{shade}.png")));
     }
+}
+
+const TASKS: &str = "so.tilo.lang.tasks";
+
+/// A task checked off through the host: the mark the window draws fills over frames on its way
+/// to marked, and the task ends checked. The frames are the window's own, the click is a
+/// person's, and the change comes back through the host's patch connection.
+#[test]
+fn a_task_checked_off_through_the_host_fills_its_box_over_frames() {
+    use ui::time::testing::with_monotonic_time;
+    use ui::winit::keyboard::NamedKey;
+
+    let mut session = Session::new(TASKS, "../tl/tasks", "ada", |_| {});
+    // A task, added through the entry the window shows.
+    let mut entries = Vec::new();
+    named(session.window.root(), "Draft", &mut entries);
+    let entry = *entries.first().expect("the inbox shows its entry");
+    session.window.click_at(entry.center().x, entry.center().y);
+    session.window.type_text("Water the plants");
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+
+    // Opened: the task's own window has the box that stays checked, where a list row's closes
+    // the row out of the list.
+    let mut rows = Vec::new();
+    named(session.window.root(), "Water the plants", &mut rows);
+    let row = *rows.last().expect("the inbox shows the task");
+    session.window.click_at(row.center().x, row.center().y);
+    session.settle();
+
+    let mut found = Vec::new();
+    boxes(session.window.root(), &mut found);
+    let (boxed, marked) = *found.first().expect("the task's window shows its box");
+    assert!(!marked, "the task starts open");
+
+    let start = ui::time::Instant::now();
+    let rest = session.window.harness().render_rgba();
+    let was = pixels_of(&rest, boxed);
+
+    let pressed = start + ui::time::Duration::from_millis(100);
+    with_monotonic_time(pressed, || {
+        session.window.click_at(boxed.center().x, boxed.center().y);
+    });
+    let mut series = Vec::new();
+    for step in 1..=40 {
+        let at = pressed + ui::time::Duration::from_millis(16 * step);
+        let pixels = with_monotonic_time(at, || {
+            session.host.turn();
+            session.window.frame();
+            session.window.harness().render_rgba()
+        });
+        series.push(apart(&pixels_of(&pixels, boxed), &was));
+        let moving = session
+            .window
+            .harness()
+            .frame_schedule()
+            .needs_animation_frame;
+        if series.len() > 2 && !moving {
+            break;
+        }
+    }
+
+    let mut after = Vec::new();
+    boxes(session.window.root(), &mut after);
+    assert_eq!(
+        after.first().map(|(_, marked)| *marked),
+        Some(true),
+        "the task is checked"
+    );
+
+    let settled = series.last().copied().unwrap_or_default();
+    assert!(settled > 0.02, "the box changed: the frames say {series:?}");
+    let between = series
+        .iter()
+        .filter(|at| **at > settled * 0.05 && **at < settled * 0.95)
+        .count();
+    assert!(
+        between >= 2,
+        "the mark fills over frames rather than landing at once: the frames say {series:?}"
+    );
+    assert!(
+        series
+            .iter()
+            .rev()
+            .take(3)
+            .all(|at| (*at - settled).abs() < settled * 0.05),
+        "it settles: the frames say {series:?}"
+    );
 }

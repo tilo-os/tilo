@@ -21,6 +21,9 @@ pub struct SectionProps {
     /// Whether a collapsible section shows what it holds.
     #[component(state)]
     pub expanded: Option<bool>,
+    /// The pace its content arrives and leaves at, and its title's reveal: the theme's unless it
+    /// says otherwise.
+    pub motion: Option<crate::motion::Feel>,
     /// A collapsible section opened or closed; carries whether it is open now.
     #[component(event(value = bool))]
     pub toggle: Event,
@@ -40,12 +43,14 @@ impl Described for Section {
             collapsible,
             content,
             expanded,
+            motion,
             toggle,
         } = props;
-        let section = match title {
+        let mut section = match title {
             Some(title) if !title.is_empty() => Self::titled(title, content),
             _ => Self::new(content),
         };
+        section.set_feel(motion.unwrap_or(crate::motion::Feel::Standard));
         if !collapsible {
             return section;
         }

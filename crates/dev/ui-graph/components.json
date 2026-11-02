@@ -203,6 +203,21 @@
               }
             }
           }
+        },
+        {
+          "name": "motion",
+          "doc": "The pace a changed count plays at: the theme's unless it says otherwise.",
+          "type": {
+            "choice": {
+              "name": "Motion",
+              "cases": [
+                "standard",
+                "brisk",
+                "calm",
+                "still"
+              ]
+            }
+          }
         }
       ],
       "semantics": {
@@ -845,6 +860,21 @@
           "name": "enabled",
           "doc": "Whether it can be chosen now.",
           "type": "bool"
+        },
+        {
+          "name": "motion",
+          "doc": "The pace its mark plays at: the theme's unless it says otherwise.",
+          "type": {
+            "choice": {
+              "name": "Motion",
+              "cases": [
+                "standard",
+                "brisk",
+                "calm",
+                "still"
+              ]
+            }
+          }
         }
       ],
       "bindings": [
@@ -2222,6 +2252,23 @@
           "name": "avatar_space",
           "doc": "Keep the room an avatar takes without showing one, so the row's text lines up with the rows of its list that show one.",
           "type": "bool"
+        },
+        {
+          "name": "motion",
+          "doc": "The pace the row's own motion plays at: its mark coming and going, and the row arriving, leaving and changing places in its list. Unset, the theme's.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Motion",
+                "cases": [
+                  "standard",
+                  "brisk",
+                  "calm",
+                  "still"
+                ]
+              }
+            }
+          }
         }
       ],
       "slots": [
@@ -3021,6 +3068,23 @@
           "type": {
             "option": "bool"
           }
+        },
+        {
+          "name": "motion",
+          "doc": "The pace its body unfolds at, and the pace a view's open or close takes: the theme's unless it says otherwise.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Motion",
+                "cases": [
+                  "standard",
+                  "brisk",
+                  "calm",
+                  "still"
+                ]
+              }
+            }
+          }
         }
       ],
       "slots": [
@@ -3706,6 +3770,23 @@
           "name": "collapsible",
           "doc": "Whether its title opens and closes it.",
           "type": "bool"
+        },
+        {
+          "name": "motion",
+          "doc": "The pace its content arrives and leaves at, and its title's reveal: the theme's unless it says otherwise.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Motion",
+                "cases": [
+                  "standard",
+                  "brisk",
+                  "calm",
+                  "still"
+                ]
+              }
+            }
+          }
         }
       ],
       "slots": [
@@ -4648,6 +4729,23 @@
           "name": "tab_indents",
           "doc": "`Tab` and `Shift-Tab` indent and outdent the focused row. On by itself with [`Self::reorder`]; off, `Tab` moves the focus on as it otherwise would.",
           "type": "bool"
+        },
+        {
+          "name": "motion",
+          "doc": "The pace its own motion plays at: branches unfolding, rows arriving and leaving. Unset, the theme's.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Motion",
+                "cases": [
+                  "standard",
+                  "brisk",
+                  "calm",
+                  "still"
+                ]
+              }
+            }
+          }
         }
       ],
       "slots": [
@@ -4825,6 +4923,23 @@
           "doc": "The item a conversation's reader had not seen when they opened it (`first_unseen(c)`): the \"New messages\" divider stands over the row that shows it, and while that is above the view a pill at the foot offers to take the reader back to it. `None` draws neither. The list works out the row as it builds, so the same list keeps its rows and only the two the divider moved between build again.",
           "type": {
             "option": "resource"
+          }
+        },
+        {
+          "name": "motion",
+          "doc": "The pace its rows arrive, leave and change places at, and the rows it builds move at when they say nothing themselves: the theme's unless it says otherwise.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Motion",
+                "cases": [
+                  "standard",
+                  "brisk",
+                  "calm",
+                  "still"
+                ]
+              }
+            }
           }
         }
       ],

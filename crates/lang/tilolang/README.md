@@ -304,6 +304,15 @@ names them (`button(n.title, on: open(n))`).
 `space.width_class` (`.compact .medium .expanded .wide`) and `space.orientation` (`.portrait
 .landscape .ultrawide`) compare with the same literals.
 
+**Motion** is on by default: a `ui.VirtualList`'s rows arrive, leave and change places, a
+checkbox's mark fills, a section or a tree branch unfolds, without a line of code saying so, and
+reduced motion lands all of it at once. A view that wants a different pace says `motion:` on the
+component that owns the change — `ui.ListRow(title: t.title, checkbox: t.done, motion: .brisk)` —
+with `.standard` (the theme's, the default), `.brisk`, `.calm` or `.still`. It changes how long
+the design system's named motions take, never their curves, colours or durations. The whole
+ladder of how far a view may go — options, composing `ui.*`, drawing, native widgets — is
+[components.md](../../../docs/designs/app-language/components.md#4-customizing-a-component-a-ladder).
+
 **View state** (workspace-model.md, "In the language") is declared at the top of a view:
 `window name: T = default` is the window's and shared, `lens name: T = default` is each
 person's own in that window. The view reads them like variables; they change only through a
