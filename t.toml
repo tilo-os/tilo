@@ -1742,14 +1742,39 @@ outputs = ["/target/publish/web-desktop/bundle/**"]
 git = true
 default = false
 
+# The dates the images below are built at, oci-build.sh's SOURCE_DATE_EPOCH: the commit time of
+# the newest commit that changed a file the image is built from (`source-date.sh`). Only these
+# read Git, so only they are kept per commit, and each takes a second; an image build needs the
+# date, not the commit, and a commit that changes none of its files gives it the same date and
+# the same image.
+[[check]]
+name = "source-date-ci-fast"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-fast os/Containerfile.ci-fast"
+git = true
+outputs = ["/target/source-date/ci-fast"]
+default = false
+
+[[check]]
+name = "source-date-release-tools"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/release-tools os/Containerfile.release-tools"
+git = true
+outputs = ["/target/source-date/release-tools"]
+default = false
+
+[[check]]
+name = "source-date-ci-builder"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-builder $(bash tools/ci/publish/ci-builder.sh inputs)"
+git = true
+outputs = ["/target/source-date/ci-builder"]
+default = false
+
 [[check]]
 name = "image-ci-fast"
-run = "mkdir -p $TMPDIR/empty\nbash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.ci-fast /target/publish/ci-fast\n"
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-fast)\nexport SOURCE_DATE_EPOCH\nmkdir -p $TMPDIR/empty\nbash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.ci-fast /target/publish/ci-fast\n"
+needs = ["source-date-ci-fast"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
-# The image is dated by its commit's time, which `oci-build.sh` reads from the log.
-git = true
 outputs = ["/target/publish/ci-fast/image.oci.tar", "/target/publish/ci-fast/digest"]
 default = false
 
@@ -1764,11 +1789,11 @@ id_token = ["registry.tilo.so"]
 
 [[check]]
 name = "image-release-tools-{arch}"
-run = "mkdir -p $TMPDIR/empty\nbash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.release-tools /target/publish/release-tools/{arch}\nbash os/tests/release_tools_image.sh /target/publish/release-tools/{arch}/image.oci.tar\n"
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/release-tools)\nexport SOURCE_DATE_EPOCH\nmkdir -p $TMPDIR/empty\nbash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.release-tools /target/publish/release-tools/{arch}\nbash os/tests/release_tools_image.sh /target/publish/release-tools/{arch}/image.oci.tar\n"
+needs = ["source-date-release-tools"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}"]
 isolation = "vm"
-git = true
 outputs = ["/target/publish/release-tools/{arch}/image.oci.tar", "/target/publish/release-tools/{arch}/digest"]
 default = false
 [check.matrix]
@@ -1792,13 +1817,11 @@ id_token = ["registry.tilo.so"]
 
 [[check]]
 name = "image-ci-builder-{arch}"
-run = "bash tools/ci/publish/ci-builder.sh build {arch} /target/publish/ci-builder/{arch}"
-needs = ["os-assets"]
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-builder)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/ci-builder.sh build {arch} /target/publish/ci-builder/{arch}\n"
+needs = ["os-assets", "source-date-ci-builder"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}"]
 isolation = "vm"
-# The image is dated by its commit's time, which `oci-build.sh` reads from the log.
-git = true
 outputs = ["/target/publish/ci-builder/{arch}/image.oci.tar", "/target/publish/ci-builder/{arch}/digest"]
 timeout_secs = 14400
 default = false

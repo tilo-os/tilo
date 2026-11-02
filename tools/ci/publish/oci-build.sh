@@ -25,9 +25,12 @@ export CONTAINERS_STORAGE_CONF=$store/storage.conf
 b() { buildah --root "$store/root" --runroot "$store/run" "$@"; }
 mkdir -p "$out"
 # The commit's time keeps the image the same when its inputs are: what a signing check
-# compares is then the build, not the time it ran. It dates every file in the image too, and
-# not 0: a web server names no ETag or Last-Modified for a file dated 0 or 1 (Caddy does not),
-# and one dated alike across releases would be told apart by its size alone.
+# compares is then the build, not the time it ran. Where the check gives SOURCE_DATE_EPOCH, it is
+# the time of the newest commit that changed a file the image is built from (source-date.sh), so
+# a commit that changes none of them builds the same image again; else it is HEAD's. It dates
+# every file in the image too, and not 0: a web server names no ETag or Last-Modified for a file
+# dated 0 or 1 (Caddy does not), and one dated alike across releases would be told apart by its
+# size alone.
 timestamp=${SOURCE_DATE_EPOCH:-$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" log -1 --format=%ct HEAD)}
 [[ $timestamp =~ ^[0-9]+$ && $timestamp -gt 1 ]] || die "no commit time to date the image by: $timestamp"
 # buildah refuses --timestamp beside a SOURCE_DATE_EPOCH in its environment.
