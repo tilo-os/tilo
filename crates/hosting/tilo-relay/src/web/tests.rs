@@ -1770,3 +1770,143 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     serving.abort();
     crate::daemon::Relay::shutdown(relay).await;
 }
+
+/// A page's call turn reaches the bridge its host carries, and only a device
+/// the workspace admits is answered: the route the deployed page posts to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_page_turns_its_call_at_the_host_and_only_an_admitted_device_is_answered() {
+    let signer = SigningKey::from_bytes(&[91; 32]);
+    let outsider_root = SigningKey::from_bytes(&[92; 32]);
+    let (host_key, host) = device(&signer, 93, DeviceCapabilities::host());
+    let (member_key, member) = device(&signer, 94, DeviceCapabilities::member());
+    let (outsider_key, outsider) = device(&outsider_root, 95, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    const CALLER: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    let workspace = tilo_relay_protocol::room_workspace_id(CALLER).unwrap();
+    let relay = Relay::start_with_relay_mode(
+        RelayConfig {
+            state_root: state.path().into(),
+            // A guest of the host who is not a member of the call's workspace
+            // still opens a session: the route, not the handshake, is what
+            // keeps them out.
+            trust_policy: crate::policy::TrustPolicy::AllowList {
+                users: vec![
+                    hex::encode(signer.verifying_key().to_bytes()),
+                    hex::encode(outsider_root.verifying_key().to_bytes()),
+                ],
+            },
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: host.user_public_key,
+            device_signing_key: host_key,
+            device_cert: host.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    relay
+        .replace_governed_workspace_access(
+            workspace,
+            true,
+            tilo_peer_state::GovernedAccess {
+                member_user_roots: vec![signer.verifying_key().to_bytes()],
+                member_devices: vec![member.device_public_key],
+            },
+            state.path().into(),
+        )
+        .await
+        .unwrap();
+    let sessions = Sessions::new(relay.web_context().clone());
+    let grants = live::LiveGrants::new();
+    let live =
+        tilo_moq::live::LoopbackLive::start(Arc::new(live::Authority(grants.clone()))).unwrap();
+    let legacy = legacy::LegacyWindows::new(live.relay.clone(), host.device_public_key);
+    // The lanes' endpoint keeps the route offline: a call with no other
+    // device's lane open answers the page's turn with nothing carried.
+    let lane = endpoint(&SigningKey::from_bytes(&[96; 32])).await;
+    let web = Arc::new(Web {
+        sessions,
+        grants,
+        legacy,
+        live: live.relay.clone(),
+        host_info: HostInfo {
+            host_cert: host.clone(),
+            webtransport_port: None,
+            certificate_sha256: None,
+            webtransport_origin: None,
+        },
+        allowed_origins: vec![],
+        features: 0,
+        rooms: relay.rooms().cloned(),
+        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
+        profiles: envelopes::Envelopes::of(
+            envelopes::Kind::Profile,
+            relay.state_root().join("profiles"),
+        ),
+        here: Arc::new(here::Here::new(None)),
+        country: None,
+        fetch: None,
+        calls: Arc::new(call_lane::CallLane::at(lane)),
+    });
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let serving = tokio::spawn(plain_accept_loop(listener, web.clone()));
+    drop(web);
+
+    let turn = |workspace: &str| {
+        postcard::to_allocvec(&tilo_call_lane::page::Up {
+            workspace: workspace.into(),
+            call: "the call".into(),
+            channel: collab_types::ChannelId::default(),
+            audio: vec![],
+            pictures: vec![],
+            shows: vec![],
+            keyframes: vec![],
+        })
+        .unwrap()
+    };
+    let token = browser(addr, &member_key, &member).await;
+    let (code, body) = post(addr, tilo_call_lane::page::PATH, Some(token), turn(CALLER)).await;
+    assert_eq!(code, 200);
+    let down: tilo_call_lane::page::Down = postcard::from_bytes(&body).unwrap();
+    assert!(down.audio.is_empty());
+    assert!(down.pictures.is_empty());
+
+    assert_eq!(
+        post(addr, tilo_call_lane::page::PATH, None, turn(CALLER))
+            .await
+            .0,
+        401
+    );
+    let outsider_token = browser(addr, &outsider_key, &outsider).await;
+    assert_eq!(
+        post(
+            addr,
+            tilo_call_lane::page::PATH,
+            Some(outsider_token),
+            turn(CALLER)
+        )
+        .await
+        .0,
+        403
+    );
+    assert_eq!(
+        post(
+            addr,
+            tilo_call_lane::page::PATH,
+            Some(token),
+            turn("Somewhere else")
+        )
+        .await
+        .0,
+        400
+    );
+
+    serving.abort();
+    crate::daemon::Relay::shutdown(relay).await;
+}
