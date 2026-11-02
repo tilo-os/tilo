@@ -396,6 +396,12 @@ impl Backend for DrmBackend {
         "drm-kms"
     }
 
+    fn presents_async(&self) -> bool {
+        // A frame is on the panel when its page flip retires, which the
+        // vertical blank reports.
+        true
+    }
+
     fn output_capabilities(&self) -> Vec<crate::settings_bridge::Capability> {
         let inner = self.inner.borrow();
         let profiles = color::color_profiles();
@@ -950,7 +956,7 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
             }
             let presentation = state.frame_drawn(&lit.output, Some(states));
             if frame.is_empty {
-                presentation.shown(Shown::Host);
+                presentation.shown(state, Shown::Host);
             } else {
                 match lit.surface.queue_frame(Some(presentation)) {
                     Ok(()) => {
@@ -973,7 +979,9 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
         }
         Err(error) => {
             tracing::warn!(?error, output = lit.output.name(), "frame not rendered");
-            state.frame_drawn(&lit.output, None).shown(Shown::Host);
+            state
+                .frame_drawn(&lit.output, None)
+                .shown(state, Shown::Host);
         }
     }
 }
@@ -994,7 +1002,7 @@ fn vblank(
         return;
     };
     match lit.surface.frame_submitted() {
-        Ok(Some(Some(presentation))) => presentation.shown(vblank_shown(metadata)),
+        Ok(Some(Some(presentation))) => presentation.shown(state, vblank_shown(metadata)),
         Ok(_) => {}
         Err(error) => tracing::warn!(?error, output = lit.output.name(), "page flip not retired"),
     }

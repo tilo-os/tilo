@@ -70,6 +70,12 @@ static DEV_IMAGE_SESSION_BUILD_MARKER: [u8; 27] = *b"tilo-dev-image-session-v1--
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
+    // The earliest point the process can measure itself from: what the
+    // session's own startup marks are read against.
+    tilo_startup_metrics::init();
+    let _startup_metrics = tilo_startup_metrics::ScopedDumper;
+    tilo_startup_metrics::mark("main-start");
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it
     // opens no display and starts no session (`tilo-render-service`).

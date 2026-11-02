@@ -110,6 +110,10 @@ pub use input::{
     TabletPadEvent, TabletPhase,
 };
 pub use keys::{KeyClaim, KeyRepeat};
+
+/// How close to the whole timeout a park must be to have ended on the
+/// deadline rather than on arriving work.
+const WAKE_MARGIN: Duration = Duration::from_millis(1);
 pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
 
 /// What the person is in the middle of, as the compositor sees it: an
@@ -309,6 +313,12 @@ pub struct Compositor {
     /// [`Compositor::input`]; a backend's own devices filter theirs before
     /// they get there.
     keys: AccessKeys,
+    /// The timings of the loop's turns, when `TILO_FRAME_TRACE` or a profile
+    /// asked for them.
+    recorder: tilo_frame_metrics::FrameRecorder,
+    /// A turn is open: [`Compositor::begin_tick`] ran and
+    /// [`Compositor::end_tick`] has not.
+    ticking: bool,
 }
 
 impl Compositor {
@@ -349,6 +359,8 @@ impl Compositor {
             turns: None,
             a11y: A11y::default(),
             keys: AccessKeys::default(),
+            recorder: tilo_frame_metrics::FrameRecorder::from_env(),
+            ticking: false,
         };
         compositor.publish_displays();
         Ok(compositor)
@@ -411,6 +423,55 @@ impl Compositor {
     /// Whether the backend is done (its window closed, its seat gone).
     pub fn closed(&self) -> bool {
         self.data.backend.closed()
+    }
+
+    /// Start a recorded turn of the loop. The session calls it before
+    /// [`Compositor::dispatch`] and ends it after the work the frame it drew
+    /// answered.
+    pub fn begin_tick(&mut self) {
+        self.ticking = true;
+        // A frame the display retired since the last turn closes the input
+        // measurement of the frame that carried it.
+        if let Some((serial, at)) = self.data.state.take_retired() {
+            self.recorder.note_retirement(serial, at);
+        }
+        self.recorder.begin_tick(Instant::now());
+    }
+
+    /// The session's own share of the turn before the frame: the desk, the
+    /// apps and the overlays it laid out.
+    pub fn mark_pump(&mut self, took: Duration) {
+        self.recorder.mark_pump(took);
+    }
+
+    /// Answering the session's control socket after the frame was drawn.
+    pub fn mark_testctl(&mut self, took: Duration) {
+        self.recorder.mark_testctl(took);
+    }
+
+    /// The workspace in front changed: its frames are timed until the desk
+    /// rests.
+    pub fn workspace_switched(&mut self) {
+        self.data.state.workspace_switched();
+    }
+
+    /// Whether the workspace switch in flight still owes the desk's motion.
+    pub fn set_switch_holding(&mut self, holding: bool) {
+        self.data.state.set_switch_holding(holding);
+    }
+
+    /// How many frames the displays presented since this session began.
+    pub fn frames_presented(&self) -> u64 {
+        self.data.state.frames_presented()
+    }
+
+    /// The turn is over: its timings go to the frame trace.
+    pub fn end_tick(&mut self) {
+        if !self.ticking {
+            return;
+        }
+        self.ticking = false;
+        self.recorder.end_tick();
     }
 
     /// How long a loop may wait for clients, devices and its own work before
@@ -674,6 +735,7 @@ impl Compositor {
     /// long that takes.
     pub fn dispatch(&mut self, timeout: impl Into<Option<Duration>>) -> Result<(), Error> {
         let timeout: Option<Duration> = timeout.into();
+        let started = Instant::now();
         // A held key's next repeat for a hosted surface wakes the loop.
         let timeout = self.data.state.host_keys.next_due().map_or(timeout, |due| {
             let held = due.saturating_duration_since(std::time::Instant::now());
@@ -682,14 +744,24 @@ impl Compositor {
         if let Some(turns) = &self.turns {
             turns.parking();
         }
+        let waiting = Instant::now();
         let dispatched = self
             .event_loop
             .dispatch(timeout, &mut self.data)
             .map_err(io);
+        let parked = waiting.elapsed();
         if let Some(turns) = &self.turns {
             turns.unparked();
         }
+        // A wait that ran its time out ended on the deadline; one cut short
+        // was ended by work arriving.
+        self.recorder.mark_sleep(parked);
+        let expired = timeout.is_some_and(|timeout| parked.saturating_add(WAKE_MARGIN) >= timeout);
+        self.recorder
+            .mark_wake(if expired { "idle" } else { tilo_frame_metrics::WAKE_IO });
         dispatched?;
+        self.recorder
+            .mark_input(started.elapsed().saturating_sub(parked));
         self.data.state.repeat_keys();
         let ticked = Instant::now();
         let due = self.keys.tick(ticked);
@@ -1594,6 +1666,7 @@ impl Compositor {
     /// assists and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
         let now = Instant::now();
+        self.recorder.note_input(now);
         let events = self.keys.filter(event, now);
         for event in events {
             self.data.state.note_typing(&event, now);
@@ -1648,7 +1721,21 @@ impl Compositor {
         // A frame can move windows (a strip panning, a group resizing): the
         // policy places them where the surfaces just laid them out.
         self.data.state.rearrange();
+        let drawn_before = self.data.state.frames_drawn();
+        let submitting = Instant::now();
         self.data.backend.render(&mut self.data.state)?;
+        let drawn = self.data.state.frames_drawn();
+        if drawn > drawn_before {
+            self.recorder.mark_submit(
+                submitting.elapsed(),
+                self.data.backend.presents_async(),
+                Instant::now(),
+                Some(drawn),
+            );
+        } else {
+            // Nothing was drawn: no frame will answer this turn's input.
+            self.recorder.settle_unpainted_input();
+        }
         self.data.backend.serve_captures(&mut self.data.state);
         self.data.backend.serve_backdrops(&mut self.data.state);
         self.data.state.confirm_lock();

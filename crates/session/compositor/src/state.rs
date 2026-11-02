@@ -246,6 +246,21 @@ pub struct State {
     /// The compositor's event loop, for work the window manager schedules.
     pub(crate) loop_handle:
         Option<smithay::reexports::calloop::LoopHandle<'static, crate::LoopData>>,
+    /// Each typed key's way from its client to the frame that shows it, and
+    /// the `KEY-LATENCY` lines the session log keeps.
+    pub(crate) key_latency: tilo_frame_metrics::key_latency::KeyLatency,
+    /// The workspace switch in flight, and its `WORKSPACE-SWITCH` line.
+    pub(crate) switch_latency: tilo_frame_metrics::switch_latency::SwitchLatency,
+    /// Whether the switch in flight still owes frames: the person is watching
+    /// the desk move. The session says, frame by frame.
+    pub(crate) switch_holding: AtomicBool,
+    /// The serial of the next frame drawn. Frames are retired in order, so a
+    /// presenter says how far the display got by its serial.
+    frame_serial: std::sync::atomic::AtomicU64,
+    /// The frames the displays presented since this session began.
+    frames_presented: std::sync::atomic::AtomicU64,
+    /// The last frame a display presented: its serial and when it was shown.
+    retired: std::sync::Mutex<Option<(u64, Instant)>>,
 }
 
 impl State {
@@ -354,6 +369,12 @@ impl State {
             input_observer: None,
             redraw: Vec::new(),
             loop_handle: None,
+            key_latency: tilo_frame_metrics::key_latency::KeyLatency::default(),
+            switch_latency: tilo_frame_metrics::switch_latency::SwitchLatency::default(),
+            switch_holding: AtomicBool::new(false),
+            frame_serial: std::sync::atomic::AtomicU64::new(1),
+            frames_presented: std::sync::atomic::AtomicU64::new(0),
+            retired: std::sync::Mutex::new(None),
         }
     }
 
@@ -834,10 +855,24 @@ impl State {
                 FilterResult::Intercept((index, key))
             },
         );
-        if let Some((index, key)) = routed
-            && let Some(host) = self.hosts.get_mut(index)
-        {
-            host.key(&key);
+        match routed {
+            Some((index, key)) => {
+                if let Some(host) = self.hosts.get_mut(index) {
+                    host.key(&key);
+                }
+            }
+            // A press no hosted surface took reached the client that has the
+            // keyboard: its next commit answers it.
+            None => {
+                if pressed
+                    && let Some(focus) = self
+                        .seat
+                        .get_keyboard()
+                        .and_then(|seat| seat.current_focus())
+                {
+                    self.key_delivered(&focus, keycode);
+                }
+            }
         }
     }
 
@@ -1439,6 +1474,16 @@ impl State {
     }
 }
 
+/// The surface a client draws a window with: the one itself, or the highest
+/// ancestor of its subsurface chain.
+fn root_surface(surface: &WlSurface) -> WlSurface {
+    let mut root = surface.clone();
+    while let Some(parent) = get_parent(&root) {
+        root = parent;
+    }
+    root
+}
+
 /// The process of a client, as `pid`.
 fn pid_of(client: Option<&Client>, display: &DisplayHandle) -> Option<u32> {
     let client = client?;
@@ -1527,10 +1572,9 @@ impl CompositorHandler for State {
         // once the client unsets it.
         self.tell_share_color(surface);
         if !is_sync_subsurface(surface) {
-            let mut root = surface.clone();
-            while let Some(parent) = get_parent(&root) {
-                root = parent;
-            }
+            let root = root_surface(surface);
+            // A key this client was given is answered by its next commit.
+            self.commit_answered(&root);
             // The icon a client set takes effect on this commit, like any
             // other double-buffered state.
             if let Some((window, icon)) = crate::toplevel_icon::committed(&root) {
@@ -1837,5 +1881,105 @@ impl State {
             .filter_map(Window::toplevel)
             .find(|toplevel| toplevel.wl_surface() == &focus)
             .map(|toplevel| window_info(&self.display, &self.icons, toplevel))
+    }
+
+    /// The app of the window `surface` belongs to: its toplevel's app id.
+    /// A surface of no window (a layer, the lock screen, a popup of neither)
+    /// has none, and is timed by nothing.
+    fn app_of_surface(&self, surface: &WlSurface) -> Option<String> {
+        let root = root_surface(surface);
+        let toplevel = self
+            .space
+            .elements()
+            .filter_map(Window::toplevel)
+            .find(|toplevel| toplevel.wl_surface() == &root)?;
+        window_info(&self.display, &self.icons, toplevel).app_id
+    }
+
+    /// The key `keycode` reached the focused client: its next commit answers
+    /// it, and the frame that follows carries the answer to the display.
+    pub(crate) fn key_delivered(&self, surface: &WlSurface, keycode: u32) {
+        let root = root_surface(surface);
+        let Some(app) = self.app_of_surface(&root) else {
+            return;
+        };
+        self.key_latency.key_delivered(
+            u64::from(root.id().protocol_id()),
+            &app,
+            keycode,
+            Instant::now(),
+        );
+    }
+
+    /// `surface` committed a new buffer. A key waiting on the client is
+    /// answered; a key the client never answered is named and dropped.
+    pub(crate) fn commit_answered(&self, surface: &WlSurface) {
+        let root = root_surface(surface);
+        for app in self
+            .key_latency
+            .surface_committed(u64::from(root.id().protocol_id()), Instant::now())
+        {
+            eprintln!("KEY-LATENCY app={app} unanswered=1");
+        }
+    }
+
+    /// The workspace in front changed at `at` ([`State::workspace_switched`]).
+    pub(crate) fn workspace_switched(&self) {
+        self.switch_latency.chord(Instant::now());
+    }
+
+    /// Whether the switch in flight still owes the desk's motion: its frames
+    /// belong to the switch until the desk rests.
+    pub(crate) fn set_switch_holding(&self, holding: bool) {
+        self.switch_holding.store(holding, Ordering::Relaxed);
+    }
+
+    /// The serial the next drawn frame takes.
+    pub(crate) fn next_frame_serial(&self) -> u64 {
+        self.frame_serial
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many frames the displays presented: what a first paint waits for.
+    pub(crate) fn frames_presented(&self) -> u64 {
+        self.frames_presented
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many frames were drawn, presented or not: a tick that drew none
+    /// answers no input.
+    pub(crate) fn frames_drawn(&self) -> u64 {
+        self.frame_serial
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .saturating_sub(1)
+    }
+
+    /// The last frame a display presented, and when: the presenter says so
+    /// from wherever the display's completion arrives.
+    pub(crate) fn take_retired(&self) -> Option<(u64, Instant)> {
+        self.retired
+            .lock()
+            .ok()
+            .and_then(|mut retired| retired.take())
+    }
+
+    /// The frame `serial` reached the display: answer the keys it carried,
+    /// and close a workspace switch when it was the resting frame.
+    pub(crate) fn frame_presented(&self, serial: u64) {
+        let at = Instant::now();
+        self.frames_presented
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut retired) = self.retired.lock() {
+            *retired = Some((serial, at));
+        }
+        for sample in self.key_latency.frames_retired(serial, at) {
+            eprintln!("{sample}");
+        }
+        if let Some(line) = self.key_latency.summary(at) {
+            eprintln!("{line}");
+        }
+        if let Some(sample) = self.switch_latency.frames_retired(serial, at) {
+            eprintln!("{sample}");
+        }
     }
 }

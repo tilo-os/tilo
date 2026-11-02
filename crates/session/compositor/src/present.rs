@@ -8,7 +8,7 @@
 //! and counter the display reported. A frame that never reaches the screen
 //! is dropped, which tells its clients it was discarded.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::backend::renderer::element::RenderElementStates;
 use smithay::desktop::utils::{
@@ -23,6 +23,10 @@ use smithay::wayland::presentation::Refresh;
 
 use crate::output::refresh_interval;
 use crate::state::State;
+
+/// The interval a frame is paced to where the output does not say one: 60 Hz,
+/// the rate the switch samples are read against.
+const REFRESH_INTERVAL: Duration = Duration::from_micros(16_667);
 
 /// How a display reports that a frame was shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,14 +65,18 @@ impl Shown {
 pub struct Presentation {
     feedback: OutputPresentationFeedback,
     refresh: Refresh,
+    /// The frame's serial, which the display's retirement of later frames
+    /// includes.
+    serial: u64,
 }
 
 impl Presentation {
     /// The frame reached the screen as `shown` says: answer every client
-    /// that asked.
-    pub(crate) fn shown(mut self, shown: Shown) {
+    /// that asked, and every key it carried.
+    pub(crate) fn shown(mut self, state: &State, shown: Shown) {
         let (time, sequence, flags) = shown.report(Clock::<Monotonic>::new().now());
         self.feedback.presented(time, self.refresh, sequence, flags);
+        state.frame_presented(self.serial);
     }
 }
 
@@ -115,7 +123,30 @@ impl State {
             .map_or(Refresh::Unknown, |mode| {
                 Refresh::Fixed(refresh_interval(mode.refresh))
             });
-        Presentation { feedback, refresh }
+        let interval = output
+            .current_mode()
+            .filter(|mode| mode.refresh > 0)
+            .map_or(REFRESH_INTERVAL, |mode| refresh_interval(mode.refresh));
+        // This frame is on its way to the display: what the keys typed since
+        // the last one rides with it, and a workspace switch's frame run
+        // counts it.
+        let serial = self.next_frame_serial();
+        let at = Instant::now();
+        self.key_latency.frame_submitted(serial, at);
+        if let Some(sample) = self.switch_latency.frame_queued(
+            Some(serial),
+            at,
+            interval,
+            self.switch_holding
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ) {
+            eprintln!("{sample}");
+        }
+        Presentation {
+            feedback,
+            refresh,
+            serial,
+        }
     }
 
     /// Tell the clients on `output` what to allocate: `scanout` for a
@@ -143,7 +174,8 @@ impl State {
     /// A frame of `output` was drawn and is on screen at once (no display
     /// to wait for).
     pub(crate) fn frame_shown(&self, output: &Output) {
-        self.frame_drawn(output, None).shown(Shown::Immediately);
+        self.frame_drawn(output, None)
+            .shown(self, Shown::Immediately);
     }
 }
 

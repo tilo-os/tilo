@@ -721,6 +721,12 @@ pub struct Session {
     input: tilo_compositor::InputConfig,
     /// The person logged out: the loop ends.
     ended: bool,
+    /// The first frame reached the display: the startup is measured and
+    /// closed.
+    first_frame: bool,
+    /// The workspace in front, as this pass last read it: a change is a
+    /// switch to time.
+    active_workspace: Option<u64>,
     /// The magnifier's zoom level and the one its toggle turns on at.
     magnifier: (u8, u8),
     /// Setup, while it runs: it withholds the desktop's actions.
@@ -1129,6 +1135,9 @@ impl Session {
         // application directory is offered the first time it shows itself.
         downloaded::install(&mut options, &mut policy);
         let mut compositor = start(policy.boxed())?;
+        // The render context is up: every mark from here is the frame the
+        // person waits for (tools/perf/startup_marks.py).
+        tilo_startup_metrics::mark("window-render-context-done");
         // A session in a window of another desktop runs no idle timers: that
         // desktop owns idle, blanking, locking and suspend.
         compositor.set_hosted(!options.machine.is_owned());
@@ -1841,6 +1850,8 @@ impl Session {
             shell,
             a11y,
             ended: false,
+            first_frame: false,
+            active_workspace: None,
             magnifier: (
                 settings_store::magnifier::OFF,
                 settings_store::magnifier::DEFAULT_ZOOM,
@@ -2980,6 +2991,7 @@ impl Session {
     /// # Errors
     /// The compositor failed.
     pub fn step(&mut self, timeout: impl Into<Option<Duration>>) -> Result<(), Error> {
+        self.compositor.begin_tick();
         // A held direction repeats on its own clock, and a controller with
         // more waiting than one pass read is read again at once.
         let now = Instant::now();
@@ -2993,6 +3005,9 @@ impl Session {
             (timeout, due) => timeout.or_else(|| due.map(|due| due.saturating_duration_since(now))),
         };
         self.compositor.dispatch(timeout)?;
+        // What the session itself does before the frame: the desk, the apps
+        // and the overlays this pass lays out.
+        let pass = Instant::now();
         // Add folders: answered whether the identity ceremony is over, and the
         // review the person left opens once it is.
         self.follow_folder_import();
@@ -3061,7 +3076,18 @@ impl Session {
         // panel names them, the desk says where each stands, and the
         // compositor draws their own pixels.
         self.shared.overview.step(&self.shared, now);
+        self.compositor.mark_pump(pass.elapsed());
+        // The desk's windows are drawn as far as they have come; an animated
+        // switch owns its frames until they rest.
+        self.compositor.set_switch_holding(self.windows.animating());
         self.compositor.render()?;
+        if !self.first_frame && self.compositor.frames_presented() > 0 {
+            // The person's login is over: the first frame is on the display.
+            tilo_startup_metrics::mark("first-frame-presented");
+            tilo_startup_metrics::close_startup();
+            self.first_frame = true;
+        }
+        let answering = Instant::now();
         // What `tilo-control` asks of the frame just drawn.
         let locked = self.compositor.locked();
         let lock_screen_drawn = self.compositor.lock_drawn();
@@ -3077,6 +3103,7 @@ impl Session {
                 lock_screen_drawn,
             },
         );
+        self.compositor.mark_testctl(answering.elapsed());
         // What assistive technology reads of the frame just drawn, and what
         // it asked of it.
         self.a11y.step(&self.shared.doors);
@@ -3094,12 +3121,23 @@ impl Session {
         self.shared.keep_desk();
         self.shared.keep_arrangement();
         // The picture is the workspace in front's, which a change covering one workspace lands on.
+        let active = self
+            .shared
+            .handle
+            .read(|tree| tree.active_workspace().map(|workspace| workspace.id.0));
         self.shared
             .wallpapers
-            .set_active(self.shared.handle.read(|tree| {
-                tree.active_workspace()
-                    .map(|workspace| workspace.id.0.to_string())
-            }));
+            .set_active(active.map(|workspace| workspace.to_string()));
+        // A workspace in front that changed is a switch the person made; its
+        // frames are timed until the desk rests.
+        if self
+            .active_workspace
+            .is_some_and(|before| Some(before) != active)
+        {
+            self.compositor.workspace_switched();
+        }
+        self.active_workspace = active;
+        self.compositor.end_tick();
         Ok(())
     }
 
@@ -3149,6 +3187,9 @@ impl Session {
     /// # Errors
     /// The compositor failed.
     pub fn run(&mut self, mut stop: impl FnMut(&Compositor) -> bool) -> Result<(), Error> {
+        // Everything from here to the first frame is what the person waits
+        // for after the desk is built.
+        tilo_startup_metrics::mark("render-worker-start");
         while !self.ended && !self.compositor.closed() && !stop(&self.compositor) {
             // Whatever comes first: a client, a device, a due frame of the
             // compositor's own, or an instant something of the session's needs

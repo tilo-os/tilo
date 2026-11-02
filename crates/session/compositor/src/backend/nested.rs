@@ -315,7 +315,7 @@ impl Backend for NestedBackend {
             .window
             .submit(damaged)
             .map_err(|error| failed("present window", error))?;
-        presentation.shown(Shown::Host);
+        presentation.shown(state, Shown::Host);
         inner.next_frame = now
             .checked_add(refresh_interval(
                 inner
