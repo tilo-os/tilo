@@ -87,14 +87,13 @@ require_file /usr/lib/systemd/user/tilo-fs-recipient.socket
 require_file /usr/lib/systemd/user/tilo-fs-cloud.service
 require_file /usr/lib/systemd/user/tilo-graphical-session.target
 require_file /usr/share/tilo/selinux/tilo-base.cil
-require_file /usr/share/wayland-sessions/shell.desktop
 require_file /usr/share/wayland-sessions/tilo-session.desktop
-# The greeter offers the native session a login starts and the shell it
-# replaces. Any other entry, from a package the base pulls in, would be
-# offered at every login too.
+# The greeter offers the native session a login starts, and nothing else. Any
+# other entry, from a package the base pulls in or from a shell this image no
+# longer ships, would be offered at every login too.
 sessions="$(cd "$(at /usr/share)" && find wayland-sessions xsessions -name '*.desktop' 2>/dev/null | sort | tr '\n' ' ')"
-[ "$sessions" = "wayland-sessions/shell.desktop wayland-sessions/tilo-session.desktop " ] \
-  || die "login sessions are not exactly the shell and native sessions: ${sessions:-none}"
+[ "$sessions" = "wayland-sessions/tilo-session.desktop " ] \
+  || die "login sessions are not exactly the native session: ${sessions:-none}"
 require_file /usr/lib/tmpfiles.d/tilo.conf
 require_file /usr/share/tilo/fs-capabilities.json
 
