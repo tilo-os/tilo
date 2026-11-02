@@ -783,7 +783,22 @@ pub fn card_on(
 /// [`crate::chrome::selection_tier_on`] against the panel ground. The
 /// shadow is [`floating_shadow`], painted first by the caller.
 pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
-    let rect = snap(rect);
+    panel_unsnapped(scene, transform, snap(rect), radius, theme);
+}
+
+/// [`panel`] exactly where it is laid out, without snapping to the pixel
+/// grid: for chrome whose own place is fractional or moving — a window's
+/// controls in a bar a strip carries, a surface arriving on a spring. A
+/// snap rounds the surface to the grid where it is drawn now; translated a
+/// frame later, it would stand up to half a pixel from the drawing it
+/// replays and from the glyphs it holds.
+pub fn panel_unsnapped(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    theme: &Theme,
+) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
@@ -794,7 +809,7 @@ pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, them
         crate::floating_surface::Material::Floating,
         theme,
     );
-    floating_edge(scene, transform, rect, radius, theme);
+    floating_edge_unsnapped(scene, transform, rect, radius, theme);
 }
 
 /// The two-layer shadow of a floating surface: the tight contact layer
@@ -863,10 +878,22 @@ pub fn floating_shadow_bounds(rect: Rect, theme: &Theme) -> Rect {
 /// material, black at 8 % on a light one, full strength on high contrast.
 /// Paint it after the surface's body, at the surface's own radius.
 pub fn floating_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
+    floating_edge_unsnapped(scene, transform, snap(rect), radius, theme);
+}
+
+/// [`floating_edge`] exactly where the surface stands, without snapping it
+/// to the pixel grid (see [`panel_unsnapped`]).
+fn floating_edge_unsnapped(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    theme: &Theme,
+) {
     if paint_border(
         scene,
         transform,
-        &RoundedRect::from_rect(snap(rect), radius),
+        &RoundedRect::from_rect(rect, radius),
         theme,
     ) {
         return;
@@ -882,7 +909,6 @@ pub fn floating_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f
     if edge.a() == 0 {
         return;
     }
-    let rect = snap(rect);
     if rect.width() <= 1.0 || rect.height() <= 1.0 {
         return;
     }
