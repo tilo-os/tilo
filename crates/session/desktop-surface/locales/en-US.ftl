@@ -1376,6 +1376,7 @@ osd-do-not-disturb-off = Do not disturb off
 osd-magnifier-on = Magnifier on
 osd-magnifier-off = Magnifier off
 osd-keys-captured = Keys captured
+osd-input-source = Input source
 osd-pointer-released = Pointer released
 desktop-action-param-osd-device = The device it changed, as a person knows it
 desktop-action-param-osd-device-glyph = The device's glyph: speaker, headphones, display or keyboard

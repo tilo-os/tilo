@@ -228,6 +228,20 @@ jobs:
           python3 tools/ci/nextest_report.py \
             --label "nightly visual goldens (${{ matrix.arch }})" target/ci/junit/visual-goldens.xml
 
+      # The tests prove the session's parts; this proves the desktop a person
+      # would be looking at. A model drives it over MCP and its lock holds the
+      # person out and lets them back in, each proof reading its claims back
+      # off the session rather than off the call that asked. Every proof
+      # starts its own headless session on a scratch home, so none of this
+      # touches a live desktop. They assert how the desktop behaves, not how
+      # an architecture compiles, so one slot runs them.
+      - name: Prove the session end to end
+        if: ${{ !cancelled() && matrix.arch == 'x86_64' && steps.workspace-tests.outcome != 'skipped' }}
+        run: >-
+          bash tools/ci/measure.sh "nightly session proofs" --
+          bash scripts/ci-run.sh "session end-to-end proofs" --
+          bash tools/ci/session-proofs.sh
+
       # The fast and complete workspace suites stay deterministic. This one
       # intentionally queries third-party music services; retain its coverage
       # nightly without making ordinary pushes depend on external uptime.

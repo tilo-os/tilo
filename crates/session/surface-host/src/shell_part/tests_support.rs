@@ -113,6 +113,7 @@ pub(super) fn key(keysym: u32, pressed: bool) -> HostKey {
         repeat: false,
         keysym,
         unmodified_keysym: keysym,
+        latin_keysym: keysym,
         text: None,
         modifiers: KeyModifiers::default(),
     }

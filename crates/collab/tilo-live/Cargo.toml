@@ -13,6 +13,9 @@ tls = ["dep:rustls"]
 relay = ["tls", "dep:moq-net", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:hex", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
 # The same carrier over a direct iroh connection, beside WebTransport.
 native = ["relay", "dep:iroh"]
+# The sealed plane: one participant's session in one scope, sealed under the
+# scope's channel content keys.
+plane = ["relay", "dep:tilo-call-lane", "dep:channel-crypto"]
 
 [dependencies]
 # The scope of a track is a channel of an app's record.
@@ -33,6 +36,11 @@ rcgen = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
+# A track is sealed and opened under the scope's channel keys, as a call's
+# frames are.
+tilo-call-lane = { version = "0.1.0", path = "../tilo-call-lane", optional = true }
+# The scope's channel content keys a plane's tracks are sealed under.
+channel-crypto = { version = "0.1.0", path = "../channel-crypto", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -82,6 +90,10 @@ required-features = ["relay"]
 [[test]]
 name = "live_native"
 required-features = ["relay", "native"]
+
+[[test]]
+name = "live_plane"
+required-features = ["relay", "native", "plane"]
 
 [lints]
 workspace = true

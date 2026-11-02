@@ -10,7 +10,7 @@ Usage:
   ./full-loop.py [SOCKET]   (default $XDG_RUNTIME_DIR/tilo-session/full-loop.sock)
 
 What it does:
-  1. Spawns ./target/debug/shell --backend headless with
+  1. Spawns ./target/debug/tilo-session --backend headless with
      HOME and the XDG dirs in a scratch profile, TILO_TEST_CONTROL
      set to the socket path, and DISPLAY + WAYLAND_DISPLAY unset.
   2. Waits up to 15s for the socket to appear.

@@ -50,8 +50,11 @@ fn the_description_reads_as_the_session_package() {
         focus.params[0].ty, "Window",
         "a window's action takes the window"
     );
-    let close = action("close_place");
-    assert_eq!(close.params[0].ty, "Int");
+    let close = action("close");
+    assert_eq!(
+        close.params[0].ty, "Place",
+        "a place's action takes the place"
+    );
     // What a place shows is a resource, passed as the value a program has; what `place` may go
     // without is optional, as a tilolang action's is: left out, or given as the plain value.
     let place = action("place");
@@ -71,11 +74,15 @@ fn the_description_reads_as_the_session_package() {
     );
     let text = std::fs::read_to_string(dir.join("surface.toml")).expect("the description");
     let addresses = tilolang_tilo::catalogue::addresses(&text).expect("each action one address");
-    assert_eq!(addresses["close-place"], "shell:arrangement");
+    assert_eq!(addresses["place"], "shell:arrangement");
     assert_eq!(addresses["tilo-menu"], "desktop:chrome");
     assert!(
         !addresses.contains_key("focus"),
         "a window's focus goes to the window"
+    );
+    assert!(
+        !addresses.contains_key("close"),
+        "a place's close goes to the place"
     );
 }
 

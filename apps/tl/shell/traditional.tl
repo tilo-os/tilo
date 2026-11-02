@@ -104,16 +104,16 @@ view frame_buttons(a: Arrangement, p: ArrangementPlace) {
         if a.rows.len() > 1 {
             ui.MenuButton("Move to row", icon: .navigation, icon_only: true, role: .bar) {
                 for r in a.rows {
-                    if r.key != p.strip {
+                    if r.key != strip_row(a, p.strip) {
                         ui.MenuItem(r.name) {
-                            on choose: session.move_place(place: arranged(p.key), row: arranged(r.key))
+                            on choose: session.move(place: the_place(p.key), row: the_row(r.key))
                         }
                     }
                 }
             }
         }
         ui.Button("Close", icon: .x, icon_only: true, role: .bar) {
-            on press: session.close_place(place: arranged(p.key))
+            on press: session.close(place: the_place(p.key))
         }
     }
 }
@@ -259,14 +259,14 @@ fn placed_resource(record: Text) -> Option<host.Resource> {
 view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
     ui.MenuButton(place_title(p), icon: .app_window, icon_only: room == .one and space.width < 18.0, role: .bar) {
         for r in a.rows {
-            if r.key != p.strip {
+            if r.key != strip_row(a, p.strip) {
                 ui.MenuItem(r.name, icon: .navigation) {
-                    on choose: session.move_place(place: arranged(p.key), row: arranged(r.key))
+                    on choose: session.move(place: the_place(p.key), row: the_row(r.key))
                 }
             }
         }
         ui.MenuItem("Close", icon: .x) {
-            on choose: session.close_place(place: arranged(p.key))
+            on choose: session.close(place: the_place(p.key))
         }
     }
 }

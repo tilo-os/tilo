@@ -43,6 +43,14 @@ desk-not-opened-newer-detail = { $path } wurde von einer neueren Tilo-Version ge
 desk-not-opened-unreadable-title = Dein Schreibtisch konnte nicht gelesen werden
 desk-not-opened-unreadable-detail = { $path } ist vorhanden, konnte aber nicht gelesen werden ({ $error }). Die Datei wurde nicht verändert: diese Sitzung startet mit einem leeren Schreibtisch und speichert nichts, kann sie also nicht überschreiben.
 
+## Der Schreibtisch, den Tilo vor dieser Version führte, der nicht übernommen
+## wurde: er liegt unverändert auf der Platte, und diese Sitzung behält ihren
+## eigenen.
+desk-not-opened-old-newer-title = Dein alter Schreibtisch wurde nicht übernommen
+desk-not-opened-old-newer-detail = { $path } ist der Schreibtisch, den Tilo vor dieser Version führte, gespeichert von einer neueren (Layout { $found }; diese Version versteht { $understood }). Er wurde nicht verändert und liegt weiterhin auf diesem Rechner: diese Sitzung startet mit einem leeren Schreibtisch.
+desk-not-opened-old-unreadable-title = Dein alter Schreibtisch konnte nicht gelesen werden
+desk-not-opened-old-unreadable-detail = { $path } ist der Schreibtisch, den Tilo vor dieser Version führte, und er konnte nicht gelesen werden ({ $error }). Er wurde nicht verändert und liegt weiterhin auf diesem Rechner: diese Sitzung startet mit einem leeren Schreibtisch.
+
 ## Ein Fenster, das dieses Gerät offen ließ und dessen App nicht zurückkam.
 desk-window-not-installed = { $app } ist auf diesem Rechner nicht installiert
 desk-window-would-not-start = { $app } konnte nicht gestartet werden: { $why }

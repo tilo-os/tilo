@@ -1391,6 +1391,7 @@ osd-do-not-disturb-off = Nicht stören aus
 osd-magnifier-on = Lupe an
 osd-magnifier-off = Lupe aus
 osd-keys-captured = Tasten übernommen
+osd-input-source = Eingabequelle
 osd-pointer-released = Zeiger freigegeben
 desktop-action-param-osd-device = Das geänderte Gerät, wie eine Person es kennt
 desktop-action-param-osd-device-glyph = Das Symbol des Geräts: speaker, headphones, display oder keyboard

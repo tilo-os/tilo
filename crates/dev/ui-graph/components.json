@@ -2889,6 +2889,28 @@
       }
     },
     {
+      "name": "PageSlide",
+      "doc": "One page of a stack, in the place a view shows it, with the page it replaced leaving while the view swaps the two: a panel that opens a deeper page of its own, and Back that slides it away again.\nA page that goes deeper arrives from the side its level names, and the page it replaced leaves toward the other; a page that goes shallower runs the motion the other way. A view that puts a different page at the same level (a list's item opened in the page the list showed) changes it where it stands, and nothing moves.",
+      "props": [
+        {
+          "name": "level",
+          "doc": "How deep the page stands: 0 the first page, 1 the page it opens.",
+          "type": "int"
+        }
+      ],
+      "slots": [
+        {
+          "name": "page",
+          "doc": "The page it shows.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group"
+      }
+    },
+    {
       "name": "PictureChoice",
       "doc": "A choice among pictures whose meaning is visual: a text size, a pointer size, a colour filter. Each tile shows its picture over its name, and the chosen tile carries the selection edge.",
       "props": [

@@ -27,7 +27,7 @@ use std::time::Duration;
 use support::{Dialer, Origin};
 use tilo_clock::{Clock as _, ManualClock};
 use tilo_live::relay::{
-    Denied, Direction, LoopbackRelay, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH,
+    Denied, Direction, LoopbackRelay, Peer, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH,
 };
 use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -139,7 +139,7 @@ struct Authority {
 }
 
 impl RelayAuthority for Authority {
-    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit(&self, _peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         // Explicit isolated test identities. No workspace claim is made.
         let (publish, subscribe, ttl) = match proof {
             b"isolated-a" => ("opaque-call/a", "opaque-call/b", 30_000),

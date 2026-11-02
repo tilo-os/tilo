@@ -15,27 +15,30 @@ Current results come from the scheduled performance lane, not from this page.
 Each benchmark writes records with `tools/perf/record.py`, and the records are
 stored in the `tilo-perf-results` package. See
 [Performance results](measurements/performance.md) for how a benchmark
-such as `ui-perf` or `redraw_bench` joins that lane.
+such as `ui-perf` joins that lane.
 
 ## Where this runs
 
-`scripts/perf/render_bench.py` runs both harnesses the same way in each lane.
-Every lane starts with the pixel-equivalence preflight below, and a lane whose
+`scripts/perf/render_bench.py` runs `ui-perf` the same way in each lane. Every
+lane starts with the pixel-equivalence preflight below, and a lane whose
 preflight fails records nothing.
 
 | Lane | When | What it checks |
 |---|---|---|
 | Counters | By hand, on changes to `crates/sdk/ui-core`, the vendored renderer stack (`vello*`, `wgpu*`, `cosmic-text`) or this harness. It is not a required check. | `render_bench.py counters`: the 4K redraw gate's allocator calls and bytes per redraw and its raster pixels per redraw (200 events), and the no-redraw gate's allocations per 1,000 events (100,000 events). It uses the budgets below and never compares a clock. |
-| The performance run's `render` group (`tools/ci/perf-scheduled.sh render`) | When the performance run is run | `render_bench.py timing`: `render.ui.frame_us.4k` (redrawing frames of 1,000 dashboard events) and `render.shell.redraw_us.4k` (the 1,000 `redraw_bench` clicks), then the same counters. |
+| The performance run's `render` group (`tools/ci/perf-scheduled.sh render`) | When the performance run is run | `render_bench.py timing`: `render.ui.frame_us.4k` (redrawing frames of 1,000 dashboard events), then the same counters. |
 
 Both lanes run on the shared `runner` class, which has no GPU. Lavapipe
 rasterises on the CPU, so the nightly records carry `renderer=lavapipe` and are
 compared only with each other. They follow regressions and never support a
-4K/144 Hz claim. `redraw_bench`'s own mean and p99 gate is a hardware
-threshold: the nightly lane records its outcome in each record's `meta.gate`
-and does not fail on it. The shell's runner-independent render counters (pixels
-repainted per keyed scene part, GPU copies and readback bytes per client frame)
-are `shell` package tests, which run on every change to `shell`.
+4K/144 Hz claim.
+
+The same group measures the session's own desktop, which is what a person sees:
+`session_perf` (`crates/session/desktop`) times the shared desktop surface on
+the frame path both the native session and the browser host draw with, for the
+`arriving` and `apps` profiles, against `[devices.x86.session.*]` in
+`tools/perf/kpi-budgets.toml`. The group also runs the framework's scaling with
+item counts and a document's keystroke-to-frame latency.
 
 ## Acceptance commands
 
@@ -117,37 +120,8 @@ TILO_UI_DASH_FRAME_BUDGET_US=30000 \
 target/release/examples/ui-perf dashboard_perf_bench
 ```
 
-The current executable shell redraw gate is mean at most 25,000 microseconds
-and p99 at most 50,000 microseconds. Its
-production render/readback harness is:
-
-```sh
-cargo build -p shell --release --example redraw_bench --locked
-target/release/examples/redraw_bench
-```
-
-It drives 1,000 clicks through `FrameBuilder` at native 3840x2160, including
-input, layout, scene paint, DRM-bridge GPU completion, damage-aware texture
-readback (with full-frame fallback), and XRGB conversion. The destination is a
-reused CPU allocation, not a real KMS dumb-buffer mapping; physical page flip
-and display scanout are not timed.
-These current gates do not establish constant 60 fps; older 8,000 us mean and
-30,000 us p99 targets are not the executable's present thresholds. The older
-`crates/session/compositor/src//draw_bench.rs` measures CPU scene painting only and cannot
-establish this target. The UI harness also accepts
-`TILO_UI_DASH_MEAN_FRAME_BUDGET_US` as an optional exact-mean gate; that is a
-different workload, not a replacement for the shell measurement.
-
-For a separate shell diagnostic, run the same release binary with
-`TILO_REDRAW_BENCH_PROFILE=1`. It still performs all 1,000 native-4K action
-redraws, but reports input, registry, layout, scene encoding, submission,
-render-completion/readback mapping, settlement, and CPU copy/swizzle times.
-The completion/map phase is **not** a copy-only measurement. Copy counters
-report pixel payload bytes per submitted attempt (including recovery) and
-bytes actually written to the CPU destination, excluding row-padding holes.
-The bridge also prints the adapter it actually opened. Diagnostic runs
-deliberately return a nonzero exit status and cannot pass acceptance gates;
-unset the profiling variable for acceptance measurements.
+The UI harness also accepts `TILO_UI_DASH_MEAN_FRAME_BUDGET_US` as an
+optional exact-mean gate. These gates do not establish constant 60 fps.
 
 The earlier, stricter 4K/60 frame gate remains available:
 

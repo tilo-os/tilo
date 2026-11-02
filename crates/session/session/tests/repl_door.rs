@@ -648,9 +648,9 @@ fn an_app_no_place_shows_is_unloaded() {
     for place in places {
         session
             .invoke(
-                "shell:arrangement",
-                "close-place",
-                json!({"place": place}).as_object().unwrap(),
+                &tilo_session::arrangement::Item::Place.resource(&place.to_string()),
+                "close",
+                &serde_json::Map::new(),
             )
             .expect("the place closes");
     }

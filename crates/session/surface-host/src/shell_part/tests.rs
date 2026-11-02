@@ -821,6 +821,7 @@ fn type_into(part: &mut ShellPart, text: &str) {
                 repeat: false,
                 keysym: u32::from(letter),
                 unmodified_keysym: u32::from(letter),
+                latin_keysym: u32::from(letter),
                 text: pressed.then(|| letter.to_string()),
                 modifiers: tilo_compositor::KeyModifiers::default(),
             };
@@ -890,6 +891,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
                 repeat: false,
                 keysym: u32::from(letter),
                 unmodified_keysym: u32::from(letter),
+                latin_keysym: u32::from(letter),
                 text: pressed.then(|| letter.to_string()),
                 modifiers: tilo_compositor::KeyModifiers::default(),
             };

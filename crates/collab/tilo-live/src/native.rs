@@ -148,6 +148,13 @@ impl Session {
     pub fn connection(&self) -> &Connection {
         &self.connection
     }
+
+    /// Who is on the other end, as the handshake proved it: the endpoint id
+    /// the connection was admitted from.
+    #[must_use]
+    pub fn remote(&self) -> [u8; 32] {
+        *self.connection.remote_id().as_bytes()
+    }
 }
 
 impl poll::Session for Session {
@@ -492,6 +499,19 @@ where
     Ok(Router::builder(endpoint)
         .accept(ALPN, Handler { serve })
         .spawn())
+}
+
+/// The [`ALPN`] handler alone, for a device that already runs a router: an
+/// endpoint accepts one [`ProtocolHandler`] per protocol, so a live plane
+/// registers beside the device's other protocols instead of spawning a second
+/// router.
+#[must_use]
+pub fn handler<S, F>(serve: S) -> impl ProtocolHandler
+where
+    S: Fn(Session) -> F + Send + Sync + Clone + 'static,
+    F: Future<Output = ()> + Send + 'static,
+{
+    Handler { serve }
 }
 
 /// One accepted connection's `serve`.

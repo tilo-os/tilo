@@ -56,10 +56,10 @@ struct Shared {
     device: [u8; 32],
     data_home: PathBuf,
     state_root: PathBuf,
-    /// Jobs running here, and how many run at once.
-    active: AtomicU32,
-    capacity: u32,
-    /// The jobs running here, so the device that asked stops them.
+    /// How many jobs run here at once.
+    capacity: AtomicU32,
+    /// The jobs running here, so the device that asked stops them: its
+    /// length is what is in hand, held with the admission that adds to it.
     running: std::sync::Mutex<std::collections::HashMap<InvocationId, CaptureCancellation>>,
     runtime: tokio::runtime::Handle,
 }
@@ -90,15 +90,39 @@ impl ComputeJobs {
                 device,
                 data_home,
                 state_root,
-                active: AtomicU32::default(),
-                capacity: u32::try_from(
-                    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
-                )
-                .unwrap_or(1),
+                capacity: AtomicU32::new(
+                    u32::try_from(
+                        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
+                    )
+                    .unwrap_or(1),
+                ),
                 running: std::sync::Mutex::default(),
                 runtime: tokio::runtime::Handle::current(),
             }),
         }
+    }
+
+    /// Take on at most `capacity` jobs at once, rather than one per processor:
+    /// for a host that keeps part of the machine for its own work.
+    #[must_use]
+    pub fn with_capacity(self, capacity: u32) -> Self {
+        self.shared.capacity.store(capacity, Ordering::Relaxed);
+        self
+    }
+
+    /// How many more jobs this host can start now: what an offer is answered
+    /// with, so a host at its limit declines rather than wins a round it
+    /// would refuse at run.
+    fn free_slots(&self) -> u32 {
+        self.shared
+            .capacity
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.in_flight())
+    }
+
+    /// How many jobs run here now.
+    fn in_flight(&self) -> u32 {
+        u32::try_from(self.shared.running.lock_recover().len()).unwrap_or(u32::MAX)
     }
 
     /// Whether `offload` names work this host could run: a declaration that
@@ -128,8 +152,8 @@ impl ComputeJobs {
             latency_ms: 0,
             power: PowerAvailability::External,
             energy_saver: false,
-            active_assignments: self.shared.active.load(Ordering::Relaxed),
-            assignment_capacity: self.shared.capacity,
+            active_assignments: self.in_flight(),
+            assignment_capacity: self.shared.capacity.load(Ordering::Relaxed),
             online: true,
         }
     }
@@ -170,6 +194,10 @@ struct Job {
 impl HostJobs for ComputeJobs {
     fn runs(&self, workspace: &str, work: &Work) -> bool {
         self.taken(workspace, work).is_some()
+    }
+
+    fn free_slots(&self) -> Option<u32> {
+        Some(self.free_slots())
     }
 
     fn holds(&self, _workspace: &str, work: &Work) -> Vec<[u8; 32]> {
@@ -222,16 +250,23 @@ impl HostJobs for ComputeJobs {
             Ok(spec) => spec,
             Err(reason) => return Pending::ready(Err(ActionHostError::Refused { reason })),
         };
-        let jobs = self.clone();
         let (workspace_id, app) = (job.workspace_id, job.offload.app);
         let invocation = request.invocation;
         let cancellation = CaptureCancellation::default();
-        let mut running = self.shared.running.lock_recover();
-        if running.len() >= MAX_RUNNING {
-            running.clear();
+        // Admission is one decision with the count it reads: a job is taken
+        // only while this host has a slot for it, never a round after it
+        // said so.
+        {
+            let mut running = self.shared.running.lock_recover();
+            let in_flight = u32::try_from(running.len()).unwrap_or(u32::MAX);
+            if in_flight >= self.shared.capacity.load(Ordering::Relaxed) {
+                return Pending::ready(Err(ActionHostError::Unavailable {
+                    reason: "this host is running as many jobs as it takes on".into(),
+                }));
+            }
+            running.insert(invocation, cancellation.clone());
         }
-        running.insert(invocation, cancellation.clone());
-        drop(running);
+        let jobs = self.clone();
         let (complete, answer) = pending();
         self.shared.runtime.spawn(async move {
             let ran = jobs
@@ -250,10 +285,6 @@ impl HostJobs for ComputeJobs {
     }
 }
 
-/// Jobs awaited here at once before the oldest are forgotten: an invocation
-/// that stops being followed never reports its run.
-const MAX_RUNNING: usize = 64;
-
 impl ComputeJobs {
     /// Run `spec` here and keep what it produced, as the action output that
     /// names each output.
@@ -267,7 +298,6 @@ impl ComputeJobs {
     ) -> Result<ActionOutput, ActionHostError> {
         let failed = |reason: String| ActionHostError::Refused { reason };
         let shared = Arc::clone(&self.shared);
-        shared.active.fetch_add(1, Ordering::Relaxed);
         let advertisement = self.advertisement(workspace_id, app);
         let executed = tokio::task::spawn_blocking(move || {
             let worker = ComputeWorker::new(
@@ -278,10 +308,7 @@ impl ComputeJobs {
                 Arc::clone(&shared.catalogue),
                 Arc::clone(&shared.sandbox),
             );
-            let result =
-                worker.execute(requester, workspace_id, &spec, unix_now_ms(), cancellation);
-            shared.active.fetch_sub(1, Ordering::Relaxed);
-            result
+            worker.execute(requester, workspace_id, &spec, unix_now_ms(), cancellation)
         })
         .await;
         let result = match executed {

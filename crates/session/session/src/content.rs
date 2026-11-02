@@ -691,6 +691,17 @@ impl Topology {
         peer || host
     }
 
+    /// The devices of the workspace this session reaches now: those heard on
+    /// its topic and the hosts that serve it, never `own`, this device.
+    pub(crate) fn devices(&self, own: EndpointId) -> BTreeSet<EndpointId> {
+        self.peers
+            .iter()
+            .chain(self.hosts.iter())
+            .filter(|device| **device != own)
+            .copied()
+            .collect()
+    }
+
     /// The devices that could hand the workspace's content over, as the
     /// content service names them: never `own`, this device.
     pub(crate) fn sources(&self, own: EndpointId) -> ContentSources {

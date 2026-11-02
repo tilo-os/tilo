@@ -106,6 +106,11 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
         Some(<tilo_agent_runs::RunAction as Effect>::declaration),
     ));
     out.push((application(), None));
+    // What is already arranged: a place, a strip and a row are resources of their own, each with
+    // the actions it offers.
+    out.push((crate::arrangement::row_kind_resource(), None));
+    out.push((crate::arrangement::strip_kind_resource(), None));
+    out.push((crate::arrangement::place_kind_resource(), None));
     out
 }
 

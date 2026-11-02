@@ -34,6 +34,7 @@ use collab_types::presence::{Availability, PointerSpace, PresenceKey};
 use collab_types::{PeerPresence, PeerPresencePayload};
 use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
+use tilo_action_broker::record_content::ContentSources;
 use tilo_desktop::chrome::WaveNotice;
 use tilo_desktop::here::{Here, LiveMember, Wave};
 use tilo_desktop_model::{DesktopTree, RoomId as DeskRoom, TabId, WorkspaceId as DeskWorkspace};
@@ -1135,14 +1136,29 @@ impl Client {
         if !changed {
             return;
         }
-        let sources = self
-            .plane
-            .borrow()
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.ws == ws)
-            .map(|workspace| workspace.content.sources(self.publisher()))
-            .unwrap_or_default();
+        let (sources, connected) = {
+            let plane = self.plane.borrow();
+            match plane.workspaces.iter().find(|workspace| workspace.ws == ws) {
+                Some(workspace) => (
+                    workspace.content.sources(self.publisher()),
+                    Some((
+                        workspace.id.clone(),
+                        workspace.content.devices(self.publisher()),
+                    )),
+                ),
+                None => (ContentSources::default(), None),
+            }
+        };
+        // The devices of the workspace this session reaches are the ones an
+        // offer round asks: one that is away is not asked, and not waited for.
+        if let Some(actions) = self.device_actions.get()
+            && let Some((workspace, devices)) = connected
+        {
+            actions.here(
+                &workspace,
+                devices.iter().map(|device| *device.as_bytes()).collect(),
+            );
+        }
         content.sources_changed(ws, sources);
     }
 

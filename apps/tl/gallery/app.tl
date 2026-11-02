@@ -12,8 +12,8 @@ type Item {
     reactions: Map<Set<Principal>>
 }
 
-/// The everyday parts of a window: navigation, text and buttons, chips, a card of facts and an
-/// empty state.
+/// The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an
+/// empty state and a page of a stack.
 type Basics {
     title: Text (title)
     note: Text
@@ -140,7 +140,7 @@ view basics(b: Basics) {
     }
 }
 
-/// Text, buttons, chips, a card of facts and an empty state.
+/// Text, buttons, chips, a card of facts, an empty state and a page of a stack.
 view parts(b: Basics, last: State<Text>) {
     ui.Section("Text and buttons") {
         ui.Text("Release planning", role: .large_title)
@@ -172,6 +172,11 @@ view parts(b: Basics, last: State<Text>) {
         }
     }
     ui.EmptyState("No archived items", message: "Archived items show here.", icon: .archive, inline: true)
+    ui.Section("A page of a stack") {
+        ui.PageSlide(level: 1) {
+            ui.Text("A section opened in its own page of the panel, one level deep.", role: .caption)
+        }
+    }
 }
 
 /// The backlog's window: its items as rows, each with a menu, a swipe and a hover toolbar,

@@ -31,12 +31,16 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. The groups are `fs`,
-`footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`,
-`search`, `hosting`, `browser` and `stream`; `tools/ci/perf-scheduled.sh <group>` measures
-one from your tree, except `browser` and `stream`, which measure a clean checkout of a
-commit. A group's numbers are compared with the store without writing to it by
-`python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups
-<group>` on the records it wrote to `/target/perf/<group>/`.
+`footprint` (app and OS image sizes), `agent`, `render`, `search`, `hosting` and
+`browser`; `tools/ci/perf-scheduled.sh <group>` measures one from your tree, except
+`browser`, which measures a clean checkout of a commit. `render` also holds the session's
+own desktop surface to its budgets (`session_perf`, `[devices.<class>.session.*]`), and
+`search` runs the palette search's own measurement test, which fails over its budget and
+writes no record. `agent` times what an agent's calls cost through the session's agent
+door, and `agent-native` the agent's own task loop; a whole app task is not this lane's,
+because a builder starts no app. A group's numbers are compared with the store without
+writing to it by `python3 tools/perf/compare.py --results <records.jsonl> --store
+https://code.tilo.so --groups <group>` on the records it wrote to `/target/perf/<group>/`.
 `compare.py`'s `--accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `--synthetic` with `--synthetic-factor` multiplies a run's values to prove
@@ -87,9 +91,11 @@ on a fast machine; such a run is never this group's series.
 The `hosting` group measures the relay's cost per collaborator-hour
 (`relay_load`, workspaces of four): fan-out latency and the priced capacity of a relay VM.
 
-The `latency` group is the compositor's side only (headless, no panel).
-Input-to-presentation latency on the reference machines is a weekly,
-report-only run through `tilo-vm`, outside this workflow:
+Input-to-presentation latency and idle wakeups of an installed desktop are
+the **VM acceptance** run's (`window`, `idle` and `resources` checks), not this
+workflow's: its `idle.wakeups_per_s.*` records are what hold an idle desktop to
+its budget. Input latency on the reference machines is a weekly, report-only
+run through `tilo-vm`, outside this workflow:
 [docs/benchmarks/reference-hardware.md](../benchmarks/reference-hardware.md).
 
 To add a benchmark (a KPI group):
@@ -134,8 +140,9 @@ or to show there is no regression, run an A/B from a clean checkout on Linux:
 python3 tools/perf/ab.py run --groups hosting --base origin/main --candidate <commit> --rounds 8 --out target/perf-ab
 ```
 
-For each group in `--groups` (`hosting`, `latency`, `render`, `agent`,
-`wakeups`, `fs`, `search`, `browser`; `footprint` is bytes of published artifacts and has no A/B, nor has `stream` yet)
+For each group in `--groups` (`hosting`, `render`, `agent`, `fs`, `browser`;
+`footprint` is bytes of published artifacts and `search` is a test's own budget,
+so neither has an A/B)
 builds the base and the candidate in one checkout, one after the other, and
 runs that group's existing benchmark on both, alternating, for `--rounds`
 rounds on one node (`tools/perf/ab.py`). Odd rounds run the base first and

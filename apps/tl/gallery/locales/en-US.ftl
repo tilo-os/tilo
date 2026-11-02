@@ -17,7 +17,7 @@ d-xttl6aec = Stage
 d-44yujnht = Reactions
 
 d-5cf5i2l7 = Basics
-    .doc = The everyday parts of a window: navigation, text and buttons, chips, a card of facts and an empty state.
+    .doc = The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an empty state and a page of a stack.
     .noun = { $count ->
         [one] basics
        *[other] basicses

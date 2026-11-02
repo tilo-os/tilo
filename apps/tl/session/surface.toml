@@ -488,96 +488,6 @@ version = 0
 fields = []
 
 [[resources.verbs]]
-id = "open-into"
-kind = "undoable"
-
-[[resources.verbs.params]]
-name = "strip"
-required = true
-type = "int"
-
-[[resources.verbs.params]]
-name = "place"
-required = true
-type = "int"
-
-[[resources.verbs.params]]
-name = "shows"
-required = true
-type = "text"
-
-[[resources.verbs.params]]
-name = "after"
-required = false
-type = "int"
-
-[[resources.verbs.params]]
-name = "view"
-required = false
-type = "text"
-
-[[resources.verbs.params]]
-name = "record"
-required = false
-type = "text"
-
-[[resources.verbs]]
-id = "move-place"
-kind = "undoable"
-
-[[resources.verbs.params]]
-name = "place"
-required = true
-type = "int"
-
-[[resources.verbs.params]]
-name = "row"
-required = true
-type = "int"
-
-[[resources.verbs.params]]
-name = "before"
-required = false
-type = "int"
-
-[[resources.verbs]]
-id = "resize-strip"
-kind = "undoable"
-
-[[resources.verbs.params]]
-name = "strip"
-required = true
-type = "int"
-
-[[resources.verbs.params]]
-name = "permille"
-required = true
-type = "int"
-
-[[resources.verbs]]
-id = "close-place"
-kind = "undoable"
-
-[[resources.verbs.params]]
-name = "place"
-required = true
-type = "int"
-
-[[resources.verbs]]
-id = "pin-place"
-kind = "undoable"
-
-[[resources.verbs.params]]
-name = "place"
-required = true
-type = "int"
-
-[[resources.verbs.params]]
-name = "pinned"
-required = false
-type = "bool"
-
-[[resources.verbs]]
 id = "place"
 kind = "undoable"
 
@@ -776,3 +686,59 @@ fields = []
 id = "open"
 kind = "outside"
 params = []
+
+[[resources]]
+instances = true
+kind = "arrangement.row"
+label = ""
+version = 0
+verbs = []
+fields = []
+
+[[resources]]
+instances = true
+kind = "arrangement.strip"
+label = ""
+version = 0
+fields = []
+
+[[resources.verbs]]
+id = "resize"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "permille"
+required = true
+type = "int"
+
+[[resources]]
+instances = true
+kind = "arrangement.place"
+label = ""
+version = 0
+fields = []
+
+[[resources.verbs]]
+id = "pin"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "pinned"
+required = false
+type = "bool"
+
+[[resources.verbs]]
+id = "close"
+kind = "undoable"
+params = []
+
+[[resources.verbs]]
+id = "move"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "row"
+required = true
+
+[resources.verbs.params.type]
+resource = "arrangement.row"

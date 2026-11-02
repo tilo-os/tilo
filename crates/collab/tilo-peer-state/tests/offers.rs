@@ -14,9 +14,10 @@ tilo_automerge_isolate::test_worker!();
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
-use neighbour_wire::offer::{Answer, Decline, Power, Route, State, Work};
+use neighbour_wire::offer::{Answer, Decline, Power, Query, Route, State, Work};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_actions::InvocationId;
 use tilo_actions::remote::TestHost;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionPlane, OFFER_DEADLINE, Offering};
@@ -55,7 +56,15 @@ async fn asked_about(
 ) -> tilo_peer_state::placement::Choice {
     tokio::time::timeout(
         PATIENCE,
-        plane.offers(asker, targets, WORKSPACE, &route(), work, within),
+        plane.offers(
+            asker,
+            targets,
+            WORKSPACE,
+            &route(),
+            work,
+            InvocationId::new(),
+            within,
+        ),
     )
     .await
     .expect("the round finishes")
@@ -126,7 +135,7 @@ fn workspace(a: &(SigningKey, DeviceCert), roster: &[DeviceCert]) -> StatePeer {
 struct Reported(Answer);
 
 impl Offering for Reported {
-    fn report(&self, _workspace: &str, _route: &Route, _work: &Work) -> Answer {
+    fn report(&self, _from: [u8; 32], _offer: &Query) -> Answer {
         self.0.clone()
     }
 }
@@ -185,6 +194,7 @@ fn willing(load_permille: u32) -> State {
         priority: 0,
         power: Power::External,
         load_permille,
+        free_slots: Some(1),
         latency_ms: 0,
     }
 }

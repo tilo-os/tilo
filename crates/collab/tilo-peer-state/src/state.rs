@@ -195,6 +195,24 @@ impl MemberAuthority {
             .answer
             == Answer::Allow
     }
+
+    /// Whether the member may run `action` of `resource` in `app` now: the
+    /// workspace's own grants for that app action decide it, whether the
+    /// member acts as a person's device, an agent or a bot.
+    #[must_use]
+    pub fn allows_app_action(
+        &self,
+        app: &str,
+        resource: &str,
+        action: &str,
+        now: SystemTime,
+    ) -> bool {
+        let Ok(named) = crate::workspace_membership::AppAction::new(app, app, resource, action)
+        else {
+            return false;
+        };
+        self.allows(&named.node(&self.policy.node()), ActionKind::Undoable, now)
+    }
 }
 /// Whether `agent` is admitted to the workspace: it holds a live grant on the workspace
 /// itself.
@@ -1049,6 +1067,27 @@ impl StatePeer {
     ) -> Result<MemberAuthority, String> {
         self.permissions(device, now)
             .map_err(|error| error.to_string())
+    }
+    /// Whether the device `source` may run `action` of `resource` in `app`
+    /// here now: the workspace's per-action permission for whatever its
+    /// principal is decides it
+    /// ([`MemberAuthority::allows_app_action`]), never the kind of
+    /// collaborator a device belongs to.
+    ///
+    /// # Errors
+    ///
+    /// Why the device is no member of this workspace at all, as
+    /// [`Self::permissions`].
+    pub fn permits_app_action(
+        &self,
+        source: [u8; 32],
+        app: &str,
+        resource: &str,
+        action: &str,
+        now: SystemTime,
+    ) -> Result<bool, MembershipError> {
+        let member = self.permissions(source, now)?;
+        Ok(member.allows_app_action(app, resource, action, now))
     }
     /// The app surface this peer names in the changes it signs for `app`'s
     /// records, if it names one.

@@ -1,4 +1,4 @@
-//! The desk older sessions kept, read once into the desk's one document.
+//! The desks older Tilos kept, read once into the desk's one document.
 //!
 //! A session used to keep the desk twice: as a tree file
 //! (`tilo/desk.json`), and beside it as a log of whole-desk snapshots, one per
@@ -11,10 +11,16 @@
 //! wide each window is, which one is in front, which display it is on. The old
 //! files are then removed.
 //!
+//! The shell before these sessions kept its desk in a file of its own
+//! (`~/.config/tilo/state.json`), which [`shell`] brings over the same way for
+//! a device that upgraded from it.
+//!
 //! Nothing is lost: the desk a person left is the desk they come back to, and
 //! who changed what before is still in its history. A tree file a newer build
 //! wrote is not read at all: it stays where it is, nothing is written beside
 //! it, and the session says where it is ([`StateNotice`]).
+
+pub(crate) mod shell;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -282,7 +288,7 @@ mod tests {
         let state = tempfile::tempdir().expect("a state directory");
         let left = older_sessions(state.path());
 
-        let desk = crate::desk_doc::DeskDoc::load(Some(state.path()), "ada");
+        let desk = crate::desk_doc::DeskDoc::load(Some(state.path()), None, "ada");
         let opened = desk.tree().expect("the desk opens");
         assert_eq!(opened.workspaces[0].name, LAST_NAME);
         assert_eq!(opened.workspaces[0].room(), left.workspaces[0].room());
@@ -320,7 +326,7 @@ mod tests {
         let state = tempfile::tempdir().expect("a state directory");
         older_sessions(state.path());
 
-        let here = crate::desk_doc::DeskDoc::load(Some(state.path()), "ada");
+        let here = crate::desk_doc::DeskDoc::load(Some(state.path()), None, "ada");
         let left = here.tree().expect("the desk opens");
         let mut renamed = left.clone();
         renamed.workspaces[0].name = FIRST_NAME.into();
@@ -331,7 +337,7 @@ mod tests {
         );
         tilo_durable_writer::global().flush();
 
-        let next = crate::desk_doc::DeskDoc::load(Some(state.path()), "ada");
+        let next = crate::desk_doc::DeskDoc::load(Some(state.path()), None, "ada");
         let opened = next.tree().expect("the desk opens");
         assert_eq!(opened.workspaces[0].name, FIRST_NAME);
         assert_eq!(opened.active, left.active, "the view it was left in");
@@ -365,7 +371,7 @@ mod tests {
             );
         std::fs::write(&path, &newer).expect("the tree file is written");
 
-        let desk = crate::desk_doc::DeskDoc::load(Some(state.path()), "ada");
+        let desk = crate::desk_doc::DeskDoc::load(Some(state.path()), None, "ada");
         match desk.opened() {
             crate::desk_doc::Kept::Refused(StateNotice::NewerSchema { found, .. }) => {
                 assert_eq!(found, 9999, "the build that wrote it is named");

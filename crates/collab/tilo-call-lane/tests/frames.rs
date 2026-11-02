@@ -122,6 +122,20 @@ fn a_frame_seals_and_opens() {
     let sealing = sealer(&alice, ALICE, Stream::Microphone);
     assert_eq!(sealing.epoch(), alice.epoch());
     assert_eq!(Stream::Microphone.lane(), Lane::Audio);
+    // Every stream's tag is its own: a key is never one another stream's.
+    let mut tags = std::collections::BTreeSet::new();
+    for stream in [
+        Stream::Microphone,
+        Stream::Camera,
+        Stream::Screen,
+        Stream::Window,
+        Stream::Presence,
+        Stream::Input,
+        Stream::Activity,
+    ] {
+        assert!(tags.insert(stream.tag()), "{stream:?} reuses a tag");
+        assert_eq!(stream.track(), stream.track());
+    }
     assert_eq!(
         sealing.track().as_str(),
         format!("{WORKSPACE}/workspace/audio"),

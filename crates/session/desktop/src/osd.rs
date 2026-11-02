@@ -184,11 +184,14 @@ pub enum OsdKind {
     CapturedKeys,
     /// The pointer was let go where it was held.
     PointerReleased,
+    /// The keyboard's input source changed: a layout, or a composing input
+    /// method.
+    InputSource,
 }
 
 impl OsdKind {
     /// Every kind, as its published name spells it.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Volume,
         Self::Brightness,
         Self::KeyboardBacklight,
@@ -206,6 +209,7 @@ impl OsdKind {
         Self::Magnifier,
         Self::CapturedKeys,
         Self::PointerReleased,
+        Self::InputSource,
     ];
 
     /// Whether the readout is a level with a bar, rather than a state said in
@@ -309,6 +313,10 @@ pub struct Hint {
     pub on: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chord: Option<String>,
+    /// What the person calls what changed, where the kind alone does not say
+    /// it: the name of the input source that now types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 const fn on() -> bool {
@@ -437,6 +445,7 @@ impl Hint {
             OsdKind::Magnifier if self.on => t("osd-magnifier-on"),
             OsdKind::Magnifier => t("osd-magnifier-off"),
             OsdKind::CapturedKeys => t("osd-keys-captured"),
+            OsdKind::InputSource => self.name.clone().unwrap_or_else(|| t("osd-input-source")),
             OsdKind::PointerReleased => t("osd-pointer-released"),
             OsdKind::Microphone if self.on => t("osd-microphone-on"),
             OsdKind::Microphone => t("osd-microphone-muted"),
@@ -482,7 +491,9 @@ impl Hint {
             OsdKind::NoBacklight => (Icon::Monitor, GlyphTone::Off),
             OsdKind::Volume => (Icon::Volume2, GlyphTone::On),
             OsdKind::Brightness => (Icon::Sun, GlyphTone::On),
-            OsdKind::KeyboardBacklight | OsdKind::CapturedKeys => (Icon::Keyboard, GlyphTone::On),
+            OsdKind::KeyboardBacklight | OsdKind::CapturedKeys | OsdKind::InputSource => {
+                (Icon::Keyboard, GlyphTone::On)
+            }
         }
     }
 }
@@ -1009,6 +1020,7 @@ pub fn osd_resource() -> ResourceSpec {
                     kind,
                     on,
                     chord: args.text("chord").map(Into::into),
+                    name: args.text("name").map(Into::into),
                 })
             };
             EncodedAction::encode_operation(OPERATION, &osd).expect("a readout always serializes")
@@ -1339,6 +1351,7 @@ mod tests {
             kind: OsdKind::NightLight,
             on,
             chord: Some("⌃⌥N".into()),
+            name: None,
         })
     }
 
@@ -1525,7 +1538,8 @@ mod tests {
                 Osd::from(Hint {
                     kind,
                     on,
-                    chord: None
+                    chord: None,
+                    name: None,
                 })
                 .caption(),
                 words
@@ -1541,6 +1555,7 @@ mod tests {
                 kind,
                 on: true,
                 chord: None,
+                name: None,
             });
             let (_, tone) = hint.glyph();
             assert!(matches!(

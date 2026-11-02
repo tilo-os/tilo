@@ -614,6 +614,16 @@ impl Shell {
             .find_map(|(_, part)| part.borrow_mut().control_bounds(name))
     }
 
+    /// Where every shown part lays out the control `name`: a strip's row is a chip on the bar
+    /// and an item of a place's move menu, and both are pressed.
+    pub(crate) fn controls(&self, name: &str) -> Vec<(f64, f64, f64, f64)> {
+        self.parts
+            .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
+            .flat_map(|(_, part)| part.borrow_mut().control_bounds_all(name))
+            .collect()
+    }
+
     /// Whether a shown part lays out `text` for assistive technology.
     pub(crate) fn says(&self, text: &str) -> bool {
         self.parts
@@ -698,8 +708,9 @@ fn pictured(handle: &tilo_desktop_surface::DesktopHandle, key: &str) -> Option<u
 
 /// `value` (the text the shell's effect wrote) as the door's arguments take it, in the type
 /// the action declares for that argument. Text stays text however it reads: a workspace's
-/// key is `"281474976710657"`, not a number. An undeclared argument keeps the text it came as,
-/// and the door refuses it by name.
+/// key is `"281474976710657"`, not a number. A flag is written as the integer a tilolang flag
+/// travels as (`1`, `0`), and reads as true and false. An undeclared argument keeps the text
+/// it came as, and the door refuses it by name.
 fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
     use tilo_actions::params::ParamType;
     match ty {
@@ -714,8 +725,8 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
             .and_then(serde_json::Number::from_f64)
             .map_or_else(|| Value::String(value.to_owned()), Value::Number),
         Some(ParamType::Boolean) => match value.trim() {
-            "true" | "yes" | "on" => Value::Bool(true),
-            "false" | "no" | "off" => Value::Bool(false),
+            "true" | "yes" | "on" | "1" => Value::Bool(true),
+            "false" | "no" | "off" | "0" => Value::Bool(false),
             _ => Value::String(value.to_owned()),
         },
         Some(ParamType::Object) => serde_json::from_str::<Map<String, Value>>(value)
@@ -1043,6 +1054,16 @@ impl crate::Session {
     #[must_use]
     pub fn shell_control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.control(name)
+    }
+
+    /// Where every control the shell shows by `name` stands, logical `(x, y, w, h)`: a menu
+    /// item and a chip elsewhere may both be named for the row they name.
+    #[must_use]
+    pub fn shell_controls(&self, name: &str) -> Vec<(f64, f64, f64, f64)> {
+        self.shell
+            .as_ref()
+            .map(|shell| shell.controls(name))
+            .unwrap_or_default()
     }
 
     /// Whether the shell lays out `text` for assistive technology anywhere on screen: a

@@ -10,7 +10,7 @@
 )]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use smithay::backend::input::KeyState;
@@ -25,13 +25,16 @@ use smithay::reexports::wayland_server::backend::{ClientData, ClientId, Disconne
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
+use smithay::reexports::wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, Resource as _,
+};
 use smithay::utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::wayland::seat::SeatUserData;
 use smithay::wayland::selection::data_device::{DataDeviceHandler, DataDeviceState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -58,6 +61,9 @@ pub struct ClientState {
     /// stand there, whichever output they name themselves. The on-screen
     /// keyboard belongs on the display the person types on.
     output: Option<String>,
+    /// The client bound `wl_touch`: one that did not is typed on by the
+    /// pointer where a finger goes down, so a tap still works.
+    touch_bound: AtomicBool,
 }
 
 impl ClientState {
@@ -69,6 +75,12 @@ impl ClientState {
     /// The output the session connected the client for, when it named one.
     pub(crate) fn output(&self) -> Option<&str> {
         self.output.as_deref()
+    }
+
+    /// Whether the client bound `wl_touch`: without it, a finger reaches it
+    /// as a pointer press.
+    pub(crate) fn binds_touch(&self) -> bool {
+        self.touch_bound.load(Ordering::Relaxed)
     }
 }
 
@@ -765,6 +777,11 @@ impl State {
                     caps_lock: modifiers.caps_lock,
                 };
                 let keysym = handle.modified_sym();
+                // The same key on a layout that has a Latin character there,
+                // which is what a chord names it by.
+                let latin = handle
+                    .raw_latin_sym_or_raw_current_sym()
+                    .unwrap_or(unmodified);
                 let text = if pressed {
                     state.typed(keysym, modifiers)
                 } else {
@@ -776,6 +793,7 @@ impl State {
                     repeat: false,
                     keysym: keysym.raw(),
                     unmodified_keysym: unmodified.raw(),
+                    latin_keysym: latin.raw(),
                     text,
                     modifiers,
                 };
@@ -1697,7 +1715,38 @@ impl OutputHandler for State {}
 smithay::delegate_compositor!(State);
 smithay::delegate_shm!(State);
 smithay::delegate_xdg_shell!(State);
-smithay::delegate_seat!(State);
+// The seat's requests are smithay's, but one of them says something about
+// the client that made it: binding `wl_touch` decides how a finger reaches
+// it, so the seat is dispatched here to record it. The global and the seat's
+// objects keep smithay's dispatch, which `delegate_seat!` would add whole.
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [smithay::reexports::wayland_server::protocol::wl_seat::WlSeat: smithay::wayland::seat::SeatGlobalData<State>] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [smithay::reexports::wayland_server::protocol::wl_pointer::WlPointer: smithay::wayland::seat::PointerUserData<State>] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [smithay::reexports::wayland_server::protocol::wl_keyboard::WlKeyboard: smithay::wayland::seat::KeyboardUserData<State>] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [smithay::reexports::wayland_server::protocol::wl_touch::WlTouch: smithay::wayland::seat::TouchUserData<State>] => SeatState<State>);
+
+impl Dispatch<WlSeat, SeatUserData<State>> for State {
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        seat: &WlSeat,
+        request: smithay::reexports::wayland_server::protocol::wl_seat::Request,
+        data: &SeatUserData<State>,
+        display: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        if matches!(
+            request,
+            smithay::reexports::wayland_server::protocol::wl_seat::Request::GetTouch { .. }
+        ) && let Some(client) = client.get_data::<ClientState>()
+        {
+            client.touch_bound.store(true, Ordering::Relaxed);
+        }
+        <SeatState<State> as Dispatch<WlSeat, SeatUserData<State>, State>>::request(
+            state, client, seat, request, data, display, init,
+        );
+    }
+}
+
 smithay::delegate_data_device!(State);
 smithay::delegate_output!(State);
 smithay::delegate_xdg_toplevel_icon!(State);

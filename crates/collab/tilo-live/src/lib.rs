@@ -13,6 +13,10 @@ pub mod tls;
 #[cfg(feature = "relay")]
 pub mod carrier;
 
+/// What a native device presents to be admitted to a scope.
+#[cfg(feature = "relay")]
+pub mod grant;
+
 /// The carrier over a direct iroh connection, beside the browser's
 /// WebTransport one.
 #[cfg(feature = "native")]
@@ -32,6 +36,11 @@ mod authority;
 
 #[cfg(feature = "relay")]
 pub mod client;
+
+/// One participant's sealed session in one scope, sealed under the scope's
+/// channel keys.
+#[cfg(feature = "plane")]
+pub mod plane;
 
 /// `at + age`, or `at` when the clock cannot represent the sum: an
 /// immediately expired deadline fails closed instead of panicking.

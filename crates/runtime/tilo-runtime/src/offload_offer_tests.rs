@@ -141,7 +141,14 @@ impl Peers {
 }
 
 impl OffloadPeers for Peers {
-    fn ask(&self, workspace: &str, route: &Route, work: &Work) -> Pending<Choice> {
+    fn ask(
+        &self,
+        workspace: &str,
+        route: &Route,
+        work: &Work,
+        _invocation: InvocationId,
+        _within: Duration,
+    ) -> Pending<Choice> {
         self.asked
             .lock_recover()
             .push((workspace.to_owned(), route.clone(), work.clone()));
@@ -159,6 +166,7 @@ impl OffloadPeers for Peers {
                 priority: 0,
                 power: Power::External,
                 load_permille: 0,
+                free_slots: Some(1),
                 latency_ms: 20,
             },
             holds: work.inputs.iter().map(|(digest, _)| *digest).collect(),
@@ -385,9 +393,12 @@ fn a_job_never_run_here_is_not_sent_away() {
     let Offloaded::RunHere { reason } = ran else {
         panic!("nothing has run here yet: {ran:?}");
     };
-    assert!(reason.contains("no device offered to run it"), "{reason}");
+    assert!(reason.contains("nothing is quicker"), "{reason}");
     assert!(peers.invoked().is_empty(), "no device was given the job");
-    assert_eq!(peers.asked()[0].2.local_wall_ms, None);
+    assert!(
+        peers.asked().is_empty(),
+        "a run with nothing to beat asks nobody: the round would only add waiting"
+    );
 }
 
 /// A device that cannot run it leaves the job here, and says why.

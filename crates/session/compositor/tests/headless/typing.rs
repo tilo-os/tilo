@@ -3,12 +3,14 @@
 //! carry themselves.
 
 use super::*;
+use smithay::input::keyboard::keysyms;
 
 const KEY_EQUAL: u32 = 13;
 const KEY_E: u32 = 18;
 const KEY_O: u32 = 24;
 const KEY_C: u32 = 46;
 const KEY_COMPOSE: u32 = 127;
+const KEY_LEFTCTRL: u32 = 29;
 
 #[test]
 fn the_keyboard_types_in_the_persons_layout() {
@@ -139,4 +141,59 @@ fn a_key_outside_a_sequence_types_its_own_character() {
         Some("e"),
         "the abandoned sequence leaves nothing open"
     );
+}
+
+#[test]
+fn a_chord_on_a_cyrillic_layout_names_the_latin_key() {
+    // Russian types, with US behind it in the same keymap: what a shortcut
+    // is named by.
+    let mut compositor = headless(Box::new(StackPolicy));
+    let log = typing_field(
+        &mut compositor,
+        &KeyboardLayout {
+            layout: "ru,us".into(),
+            ..KeyboardLayout::default()
+        },
+    );
+
+    // The key a US keyboard labels C types the Cyrillic letter on its own.
+    tap(&mut compositor, KEY_C);
+    let keys = log.borrow().keys.clone();
+    assert_eq!(
+        keys[0].text.as_deref(),
+        Some("с"),
+        "the person types Russian"
+    );
+    assert_eq!(
+        keys[0].keysym,
+        keysyms::KEY_Cyrillic_es,
+        "the Russian letter's own keysym"
+    );
+
+    // Under Ctrl it is still Ctrl+C: the letter the US arrangement puts on
+    // that key names the chord.
+    compositor
+        .input(InputEvent::Key {
+            keycode: KEY_LEFTCTRL,
+            pressed: true,
+        })
+        .unwrap();
+    tap(&mut compositor, KEY_C);
+    compositor
+        .input(InputEvent::Key {
+            keycode: KEY_LEFTCTRL,
+            pressed: false,
+        })
+        .unwrap();
+    let keys = log.borrow().keys.clone();
+    let copy = keys
+        .iter()
+        .find(|key| key.keycode == KEY_C && key.pressed && key.modifiers.ctrl)
+        .expect("the field heard Ctrl with C");
+    assert_eq!(
+        copy.keysym,
+        keysyms::KEY_Cyrillic_es,
+        "the key still types the Cyrillic letter"
+    );
+    assert_eq!(copy.latin_keysym, u32::from('c'), "XK_c, the chord's name");
 }

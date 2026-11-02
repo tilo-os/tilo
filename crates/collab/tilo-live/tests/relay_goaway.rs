@@ -31,7 +31,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use support::{Dialer, Origin};
 use tilo_live::relay::{
-    Denied, Direction, GOAWAY_GRACE, LoopbackRelay, RelayAuthority, SessionAuthorization,
+    Denied, Direction, GOAWAY_GRACE, LoopbackRelay, Peer, RelayAuthority, SessionAuthorization,
 };
 use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 
@@ -71,7 +71,7 @@ struct Authority {
 }
 
 impl RelayAuthority for Authority {
-    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+    fn admit(&self, _peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let (publish, subscribe, active) = match proof {
             b"drain-a" => ("drain-call/a", "drain-call/b", self.a.clone()),
             b"drain-b" => (

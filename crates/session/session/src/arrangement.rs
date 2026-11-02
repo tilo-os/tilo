@@ -46,6 +46,45 @@ pub const OPERATION: &str = "tilo.shell.arranging";
 pub const RESOURCE: &str = "shell:arrangement";
 /// The resource its history is published as: its undo and redo.
 pub const RECORD_RESOURCE: &str = "shell:arrangement-record";
+/// The kind of a place's own resource.
+pub const PLACE_KIND: &str = "arrangement.place";
+/// The kind of a strip's own resource.
+pub const STRIP_KIND: &str = "arrangement.strip";
+/// The kind of a row's own resource.
+pub const ROW_KIND: &str = "arrangement.row";
+
+/// What a place, a strip or a row of the arrangement is published as a resource of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Item {
+    Place,
+    Strip,
+    Row,
+}
+
+impl Item {
+    /// The id each of its resources begins with: its id is the prefix and the record's key, so a
+    /// resource is named by what it is and a key never has to be read as a number.
+    const fn prefix(self) -> &'static str {
+        match self {
+            Self::Place => "shell:place:",
+            Self::Strip => "shell:strip:",
+            Self::Row => "shell:row:",
+        }
+    }
+
+    /// The resource the arrangement publishes the thing `key` names as.
+    #[must_use]
+    pub fn resource(self, key: &str) -> String {
+        format!("{}{key}", self.prefix())
+    }
+
+    /// The record's key of the thing a resource id names, `None` for another resource's id.
+    #[must_use]
+    pub fn key(self, id: &str) -> Option<&str> {
+        id.strip_prefix(self.prefix()).filter(|key| !key.is_empty())
+    }
+}
+
 /// The person's arrangement as a shell's views read it, by key: what the session publishes for
 /// the shell to draw (`tilo_surface_host::shell_part`).
 pub type Reading = tilo_surface_host::shell_part::ArrangementReading;
@@ -534,6 +573,54 @@ impl Arrangement {
         }
     }
 
+    /// The arrangement as the session publishes it now: what [`resources`] publishes, with a
+    /// resource of its own for every row, strip and place, named by its record key. A press
+    /// names the thing it presses (`shell:place:<key>`), so a key is never read as a number,
+    /// and a place's own actions act on that place.
+    #[must_use]
+    pub fn resources(&self) -> Vec<ResourceSpec> {
+        let reading = self.reading();
+        let rows = reading
+            .rows
+            .iter()
+            .map(|row| ResourceSpec::new(Item::Row.resource(&row.key), ROW_KIND, row_label(row)));
+        let strips = reading.strips.iter().map(|strip| {
+            strip_actions(&strip.key).into_iter().fold(
+                ResourceSpec::new(
+                    Item::Strip.resource(&strip.key),
+                    STRIP_KIND,
+                    strip_label(strip),
+                ),
+                ResourceSpec::with_action,
+            )
+        });
+        let places = reading.places.iter().map(|place| {
+            place_actions(&place.key).into_iter().fold(
+                ResourceSpec::new(
+                    Item::Place.resource(&place.key),
+                    PLACE_KIND,
+                    place_label(place),
+                ),
+                ResourceSpec::with_action,
+            )
+        });
+        vec![
+            arrangement_resource().with_children(rows.chain(strips).chain(places)),
+            record_resource(),
+        ]
+    }
+
+    /// Where what it publishes stands ([`Published::revision`]): what it publishes and the
+    /// desk's own revision, so a place, strip or row that came, went or was renamed changes it.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::hash::DefaultHasher::new();
+        hash_resources(&self.resources(), &mut hasher);
+        self.handle.revision().hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// The record itself, for this person's devices and its history.
     #[must_use]
     pub const fn doc(&self) -> &AutoCommit {
@@ -914,6 +1001,9 @@ fn change(
             if !by_the_person && strips.place(*place).is_some_and(|held| held.pinned) {
                 return Err("the person pinned that place: it stays where it is".into());
             }
+            if strips.rows.iter().all(|held| held.id.0 != *row) {
+                return Err("that row is not in the arrangement".into());
+            }
             // A strip the row has none of yet is minted from the place, so
             // two devices making one at once agree.
             let minted: GroupId = row.wrapping_mul(31).wrapping_add(1) & PEER_MASK;
@@ -1106,112 +1196,169 @@ fn user(person: &str) -> UserId {
 
 /// The person's arranging actions, published as every other action is: a
 /// person's own drag, the palette, a script and an agent all arrange through
-/// them, and the catalogue lists them.
+/// them, and the catalogue lists them. What is already arranged is published
+/// per place, strip and row by [`Arrangement::resources`].
 #[must_use]
 pub fn resources() -> Vec<ResourceSpec> {
-    let arrangement = arranging_actions()
+    vec![arrangement_resource(), record_resource()]
+}
+
+/// What puts a resource on the canvas and steps the arrangement's history.
+fn arrangement_resource() -> ResourceSpec {
+    placing_actions()
         .into_iter()
         .fold(
             ResourceSpec::new(RESOURCE, "shell", "The person's arrangement"),
             ResourceSpec::with_action,
         )
         .with_action(step_action("undo", "Undo the last arranging step"))
-        .with_action(step_action("redo", "Redo the last undone arranging step"));
-    vec![
-        arrangement,
-        ResourceSpec::new(RECORD_RESOURCE, "shell", "The person's arrangement record")
-            .with_action(step_action("undo", "Undo the last arranging step"))
-            .with_action(step_action("redo", "Redo the last undone arranging step")),
-    ]
+        .with_action(step_action("redo", "Redo the last undone arranging step"))
 }
 
-/// The actions that change an arrangement, one per change: what a drag's
-/// end, the palette, a script and an agent invoke.
-fn arranging_actions() -> Vec<ActionSpec> {
-    let mut all = structural_actions();
-    all.extend(placing_actions());
-    all
+/// The record itself, whose actions step its history.
+fn record_resource() -> ResourceSpec {
+    ResourceSpec::new(RECORD_RESOURCE, "shell", "The person's arrangement record")
+        .with_action(step_action("undo", "Undo the last arranging step"))
+        .with_action(step_action("redo", "Redo the last undone arranging step"))
 }
 
-/// The actions that move, size and close what is already arranged.
-fn structural_actions() -> Vec<ActionSpec> {
+/// The resource a place's own actions are published on, for the package the session describes:
+/// no key, so it stands for every place. A place's resource is named by the place's key
+/// ([`Arrangement::resources`]).
+#[must_use]
+pub fn place_kind_resource() -> ResourceSpec {
+    place_actions("").into_iter().fold(
+        ResourceSpec::new(String::new(), PLACE_KIND, String::new()),
+        ResourceSpec::with_action,
+    )
+}
+
+/// The resource a strip's own actions are published on: [`place_kind_resource`] for a strip.
+#[must_use]
+pub fn strip_kind_resource() -> ResourceSpec {
+    strip_actions("").into_iter().fold(
+        ResourceSpec::new(String::new(), STRIP_KIND, String::new()),
+        ResourceSpec::with_action,
+    )
+}
+
+/// The resource a row is published as: [`place_kind_resource`] for a row. A row offers no action
+/// of its own: it is what a place moves into, named by the place's `move`.
+#[must_use]
+pub fn row_kind_resource() -> ResourceSpec {
+    ResourceSpec::new(String::new(), ROW_KIND, String::new())
+}
+
+/// The actions a place's own resource offers, its key bound into each: the place is the resource
+/// they are pressed on, so none of them names it and its key is never read as a number. What a
+/// press names instead is a row, by that row's resource.
+fn place_actions(key: &str) -> Vec<ActionSpec> {
+    let pinned = key.to_owned();
+    let closed = key.to_owned();
+    let moved = key.to_owned();
     vec![
         action(
-            "open-into",
-            "Open a place into a strip",
-            vec![
-                required("strip", ParamType::Integer, "The strip to open into"),
-                required("place", ParamType::Integer, "The id the new place takes"),
-                required("shows", ParamType::Text, "The app it shows"),
-                optional("after", ParamType::Integer, "The place it follows"),
-                optional("view", ParamType::Text, "The view it shows through"),
-                optional("record", ParamType::Text, "The record it shows"),
-            ],
-            |args| ArrangementAction::OpenInto {
-                strip: count(args, "strip"),
-                place: count(args, "place"),
-                shows: text(args, "shows"),
-                after: args
-                    .integer("after")
-                    .map(|after| after.max(0).cast_unsigned()),
-                view: args.text("view").unwrap_or_default().to_owned(),
-                record: args.text("record").unwrap_or_default().to_owned(),
-                state: Json::Null,
-            },
-        ),
-        action(
-            "move-place",
-            "Move a place into a row",
-            vec![
-                required("place", ParamType::Integer, "The place to move"),
-                required("row", ParamType::Integer, "The row it goes into"),
-                optional("before", ParamType::Integer, "The place it goes before"),
-            ],
-            |args| ArrangementAction::Move {
-                place: count(args, "place"),
-                row: count(args, "row"),
-                before: args
-                    .integer("before")
-                    .map(|before| before.max(0).cast_unsigned()),
-            },
-        ),
-        action(
-            "resize-strip",
-            "Resize a strip",
-            vec![
-                required("strip", ParamType::Integer, "The strip to resize"),
-                required(
-                    "permille",
-                    ParamType::Integer,
-                    "Its width in per-mille of the row",
-                ),
-            ],
-            |args| ArrangementAction::Resize {
-                strip: count(args, "strip"),
-                permille: u32::try_from(args.integer("permille").unwrap_or(1)).unwrap_or(1),
-            },
-        ),
-        action(
-            "close-place",
-            "Close a place",
-            vec![required("place", ParamType::Integer, "The place to close")],
-            |args| ArrangementAction::Close {
-                place: count(args, "place"),
-            },
-        ),
-        action(
-            "pin-place",
+            "pin",
             "Pin a place, so an agent's arrangement leaves it alone",
-            vec![
-                required("place", ParamType::Integer, "The place to pin"),
-                optional("pinned", ParamType::Boolean, "Whether it is pinned"),
-            ],
-            |args| ArrangementAction::Pin {
-                place: count(args, "place"),
+            vec![optional(
+                "pinned",
+                ParamType::Boolean,
+                "Whether it is pinned",
+            )],
+            move |args| ArrangementAction::Pin {
+                place: count_of(&pinned),
                 pinned: args.boolean("pinned").unwrap_or(true),
             },
         ),
+        action("close", "Close a place", Vec::new(), move |_| {
+            ArrangementAction::Close {
+                place: count_of(&closed),
+            }
+        }),
+        action(
+            "move",
+            "Move a place into a row",
+            vec![
+                required("row", ParamType::Resource, "The row it goes into")
+                    .of_resource_kind(ROW_KIND),
+            ],
+            move |args| ArrangementAction::Move {
+                place: count_of(&moved),
+                row: named(args, "row", Item::Row).unwrap_or_default(),
+                before: None,
+            },
+        ),
     ]
+}
+
+/// The actions a strip's own resource offers, its key bound into each: the strip is the resource
+/// they are pressed on.
+fn strip_actions(key: &str) -> Vec<ActionSpec> {
+    let resized = key.to_owned();
+    vec![action(
+        "resize",
+        "Resize a strip",
+        vec![required(
+            "permille",
+            ParamType::Integer,
+            "Its width in per-mille of the row",
+        )],
+        move |args| ArrangementAction::Resize {
+            strip: count_of(&resized),
+            permille: u32::try_from(args.integer("permille").unwrap_or(1)).unwrap_or(1),
+        },
+    )]
+}
+
+/// The row `arguments` names as `name`, by the id of the row's resource. `None` for an id of
+/// another resource, which the action then refuses as naming no row.
+fn named(args: &ActionArgs, name: &str, item: Item) -> Option<u64> {
+    args.text(name)
+        .and_then(|id| item.key(id.trim()))
+        .and_then(|key| key.parse().ok())
+}
+
+/// The record key of a place, a strip or a row, as its actions take it. `0` for the keyless
+/// resource a package describes the kind with, which no door publishes.
+fn count_of(key: &str) -> u64 {
+    key.parse().unwrap_or_default()
+}
+
+/// What a row is called where its own actions are listed: its name, or what it is when it has
+/// none.
+fn row_label(row: &RowReading) -> String {
+    if row.name.is_empty() {
+        "Row".to_owned()
+    } else {
+        row.name.clone()
+    }
+}
+
+/// What a strip is called where its own actions are listed: how wide it is.
+fn strip_label(strip: &StripReading) -> String {
+    format!("Strip, {}% wide", strip.width / 10)
+}
+
+/// What a place is called where its own actions are listed: the window it holds.
+fn place_label(place: &PlaceReading) -> String {
+    if place.name.is_empty() {
+        "Place".to_owned()
+    } else {
+        place.name.clone()
+    }
+}
+
+/// Feed what `specs` publish into `hasher`: each resource's id, kind and label, and its
+/// children's, so two revisions are equal exactly when the door publishes the same.
+fn hash_resources(specs: &[ResourceSpec], hasher: &mut std::hash::DefaultHasher) {
+    use std::hash::{Hash as _, Hasher as _};
+    for spec in specs {
+        spec.id.0.hash(hasher);
+        spec.kind.hash(hasher);
+        spec.label.hash(hasher);
+        hash_resources(&spec.children, hasher);
+    }
+    hasher.write_u8(0);
 }
 
 /// The actions that put a resource on the canvas: by naming it and one of
@@ -1411,12 +1558,11 @@ impl ArrangementDoor {
 
 impl Published for ArrangementDoor {
     fn resources(&mut self) -> Vec<ResourceSpec> {
-        resources()
+        self.arrangement.borrow().resources()
     }
 
     fn revision(&self) -> Option<u64> {
-        // The actions never change, so what is published does not either.
-        Some(0)
+        Some(self.arrangement.borrow().revision())
     }
 
     fn invoke(
@@ -1432,15 +1578,8 @@ impl Published for ArrangementDoor {
         {
             return self.step(address);
         }
-        let built = resources()
-            .into_iter()
-            .flat_map(|resource| {
-                if resource.id.as_str() != address.resource {
-                    return Vec::new();
-                }
-                resource.actions
-            })
-            .find(|action| action.id.as_str() == address.action)
+        let published = self.arrangement.borrow().resources();
+        let built = tilo_actions::door::spec_of(&published, &address.resource, &address.action)
             .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
         let encoded = built
             .build_json(arguments)

@@ -119,19 +119,19 @@ view strip_column(a: Arrangement, v: Viewing, s: ArrangementStrip) {
 
 /// A strip's controls under its name: its width, one of the three, and the controls of the place in
 /// front (its pin, closing it, moving it to another row of the desk), each committing what a drag
-/// would. A width is one `resize-strip`, a place moved out one `move-place`, both attributed and
-/// undoable like a drag.
+/// would. The strip and the place are resources of their own, so a width is the strip's own resize
+/// and a place moved out the place's own move, both attributed and undoable like a drag.
 view strip_controls(a: Arrangement, s: ArrangementStrip, shown: Option<ArrangementPlace>) {
     row(gap: .tight, align: .center, wrap: true) {
         ui.MenuButton("Width", icon: .columns_2, icon_only: true, role: .plain) {
             ui.MenuItem("Narrow", checked: .some(width_of(s.width) == .narrow)) {
-                on choose: session.resize_strip(strip: arranged(s.key), permille: permille_of(.narrow))
+                on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.narrow))
             }
             ui.MenuItem("Normal", checked: .some(width_of(s.width) == .normal)) {
-                on choose: session.resize_strip(strip: arranged(s.key), permille: permille_of(.normal))
+                on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.normal))
             }
             ui.MenuItem("Wide", checked: .some(width_of(s.width) == .wide)) {
-                on choose: session.resize_strip(strip: arranged(s.key), permille: permille_of(.wide))
+                on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.wide))
             }
         }
         if let p = shown {
@@ -183,17 +183,17 @@ view place_controls(a: Arrangement, p: ArrangementPlace) {
             ui.Badge("Pinned", dot: true)
         }
         ui.Button("Pin", icon: .pin, icon_only: true, role: .plain) {
-            on press: session.pin_place(place: arranged(p.key), pinned: .some(not p.pinned))
+            on press: session.pin(place: the_place(p.key), pinned: true)
         }
         ui.Button("Close place", icon: .x, icon_only: true, role: .plain) {
-            on press: session.close_place(place: arranged(p.key))
+            on press: session.close(place: the_place(p.key))
         }
         if a.rows.len() > 1 {
             ui.MenuButton("Move to row", icon: .navigation, icon_only: true, role: .plain) {
                 for r in a.rows {
                     if r.key != strip_row(a, p.strip) {
                         ui.MenuItem(r.name) {
-                            on choose: session.move_place(place: arranged(p.key), row: arranged(r.key))
+                            on choose: session.move(place: the_place(p.key), row: the_row(r.key))
                         }
                     }
                 }
