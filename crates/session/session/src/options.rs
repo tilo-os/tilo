@@ -9,11 +9,10 @@ use tilo_quick_settings::device::{DeviceHost, Wake};
 use tilo_quick_settings::host::PanelHost;
 use ui::application::ComponentRunnerInputs;
 
+use crate::BeforeDesk;
 use crate::displays::Backlights;
 use crate::rotation::Accelerometer;
-use crate::{
-    AppActions, Launches, OnboardingView, SearchOptions, Service, SessionAction, SessionConfig, Vpn,
-};
+use crate::{AppActions, Launches, SearchOptions, Service, SessionAction, SessionConfig, Vpn};
 use crate::{
     capture, controllers, desktop_services, engine, fabric, mount, portal_link, surfaces, sync,
     unlock,
@@ -78,9 +77,11 @@ pub struct Options {
     /// The drives the person plugs in, which this session announces and acts
     /// on when they open or eject one.
     pub drives: Option<Rc<mount::drives::Drives>>,
-    /// Setup to run over everything before the desktop is used: the first
-    /// use of this device, or the recovery of its identity.
-    pub setup: Option<OnboardingView>,
+    /// What stands over everything before the desktop is used: the setup the
+    /// person goes through once (the first use of this device, or the
+    /// recovery of its identity), or the wait for the clock to admit this
+    /// device's certificate.
+    pub setup: Option<BeforeDesk>,
     /// Carries out what the person chose in the power menu (log out,
     /// suspend, restart, shut down, switch user); the session locks the
     /// screen itself. Without one, the choice is only logged.
@@ -237,10 +238,15 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// Who is here: this session's membership of each workspace, over the
 /// collaboration plane. `None` when the session takes no part in it, or the
 /// device's endpoint did not bind: a desktop with no one else on it.
+///
+/// `beside` is what else this device answers on its endpoint — its exit for
+/// the person's other devices. A caller that hands its own client
+/// ([`Options::sync`]) has already said what that endpoint serves.
 pub(crate) fn start_collaboration(
     options: &Options,
     media: fabric::MediaContinuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
+    beside: tilo_network_actor::local_host::Protocols,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -263,6 +269,7 @@ pub(crate) fn start_collaboration(
         sync::configured_hosts(),
         media,
         options.wake.handle(),
+        beside,
     ) {
         Ok(sync) => Some(Rc::new(sync)),
         Err(error) => {

@@ -10,10 +10,8 @@ license = "MIT OR Apache-2.0"
 
 # cargo-machete cannot see serde_bytes: it is only named in
 # `#[serde(with = "serde_bytes")]` attributes (compute_transport.rs).
-# getrandom is a feature-only edge that selects JS entropy for transitive
-# WASM cryptography.
 [package.metadata.cargo-machete]
-ignored = ["serde_bytes", "getrandom"]
+ignored = ["serde_bytes"]
 
 [lib]
 name = "tilo_relay"
@@ -100,7 +98,6 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
-web-time = { version = "1", features = ["serde"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
 # Remote-action vocabulary: the relay routes these frames between devices and,
@@ -284,8 +281,6 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # barriers inside selection that the store, peer and persistence tests use.
 tilo-relay-shell = { path = "../tilo-relay-shell", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
-word-processor = { path = "../../../apps/word-processor" }
-tilo-doc = { path = "../../doc/tilo-doc" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 iroh-relay = { version = "1.0.3", features = ["server"] }
@@ -299,6 +294,7 @@ photos = { path = "../../../apps/photos" }
 tilo-content = { path = "../../system/content" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
+tilo-runtime = { path = "../../runtime/tilo-runtime" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # The persistent room test's page fetches over the room's plain listener.

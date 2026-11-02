@@ -86,7 +86,7 @@ Default socket: `$TILO_TEST_CONTROL` else `$XDG_RUNTIME_DIR/tilo-session/test-co
 The socket accepts newline-delimited JSON. Every command produces exactly one JSON response line.
 
 ```json
-// Commands (excerpt — see crates/session/shell/src/shell/test_control.rs::Command):
+// Commands (excerpt — see crates/session/session/src/test_control.rs::Command):
 {"op": "list_targets"}
 {"op": "click_at",     "x": 400, "y": 300}
 {"op": "click_named",  "name": "command_palette_input"}
@@ -110,12 +110,12 @@ Error codes that show up in normal use:
 
 ## Offscreen rendering and recordings
 
-- **For golden-image / regression tests**: use `cargo run -p shell --features hosted-test-control,test-support --bin shots -- --mode offscreen --out target/<dir>` for deterministic scenario output.
-- **For video walkthroughs**: use `cargo run -p shell --features hosted-test-control,test-support --bin shots -- --mode recording --scenario <name> --out file.h264`.
-- **For a windowed preview**: use `cargo run -p shell --features hosted-test-control,test-support --bin shots -- --mode window`.
+- **For golden-image / regression tests**: use `cargo run -p tilo-session --features hosted-test-control,test-support --bin shots -- --mode offscreen --out target/<dir>` for deterministic scenario output.
+- **For video walkthroughs**: use `cargo run -p tilo-session --features hosted-test-control,test-support --bin shots -- --mode recording --scenario <name> --out file.h264`.
+- **For a windowed preview**: use `cargo run -p tilo-session --features hosted-test-control,test-support --bin shots -- --mode window`.
 
 ## Further reading
 
 - `docs/headless-testing.md` — the maintained overview and protocol guide for the three e2e layers (shots / socket / headless backend)
-- `crates/session/shell/src/shell/test_control.rs` — `Command` and `Response` protocol definitions
-- `crates/session/shell/src/bin/shots/scenario.rs` — pre-written scenarios that exercise the same code paths in-process
+- `crates/session/session/src/test_control.rs` — `Command` and `Response` protocol definitions
+- `crates/session/session/src/test_control.rs` — pre-written scenarios that exercise the same code paths in-process

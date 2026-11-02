@@ -24,7 +24,7 @@ stage=$work/stage
 main=$work/tilo-session
 dev=$work/tilo-session-devel
 mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec/tilo,usr/lib/systemd/user,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/doc/tilo-session}
-install -pm 0755 "$stage/bin/tilo-session" "$stage/bin/tilo-shell" "$stage/bin/tilo" \
+install -pm 0755 "$stage/bin/tilo-session" "$stage/bin/tilo" \
     "$stage/bin/tilo-import-folders" "$main/usr/bin/"
 # Tilo's own programs live in /usr/libexec/tilo; the old name stays on PATH.
 install -pm 0755 "$stage/bin/tilo-launcher" "$main/usr/libexec/tilo/"
@@ -34,8 +34,7 @@ install -pm 0755 "$stage/libexec/tilo-unlock-helper" "$stage/libexec/tilo-sessio
     "$stage/libexec/tilo-session-report" \
     "$main/usr/libexec/"
 install -pm 0644 "$stage/pam/tilo-unlock" "$main/etc/pam.d/"
-install -pm 0644 "$stage/wayland-sessions/tilo.desktop" \
-    "$stage/wayland-sessions/tilo-shell.desktop" "$main/usr/share/wayland-sessions/"
+install -pm 0644 "$stage/wayland-sessions/tilo.desktop" "$main/usr/share/wayland-sessions/"
 install -pm 0644 "$stage/portal/tilo.portal" "$main/usr/share/xdg-desktop-portal/portals/"
 install -pm 0644 "$stage/portal/tilo-portals.conf" "$main/usr/share/xdg-desktop-portal/"
 install -pm 0644 "$stage/pipewire/tilo-echo-cancel.conf" "$main/usr/share/pipewire/"
@@ -63,7 +62,6 @@ shlib_line=$(
     cd "$work"
     dpkg-shlibdeps -O \
         -e"$main/usr/bin/tilo-session" \
-        -e"$main/usr/bin/tilo-shell" \
         -e"$main/usr/bin/tilo" \
         -e"$main/usr/libexec/tilo/tilo-launcher" \
         -e"$main/usr/bin/tilo-import-folders" \

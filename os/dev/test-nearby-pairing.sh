@@ -270,7 +270,7 @@ fi
 # reads from /etc/environment, so both machines get it before their first
 # login. Only the log filter changes.
 if [ "$wake" = 1 ] || [ "$unlock" = 1 ]; then
-  log_filter='error,tilo::remote_actions=info,tilo::device_wake=info,tilo::power=info,tilo_shell::device_unlock=info'
+  log_filter='error,tilo::remote_actions=info,tilo::device_wake=info,tilo::power=info'
   for each_sudo in sudo_a sudo_b; do
     "$each_sudo" "set -eu
       sed -i '/^RUST_LOG=/d' /etc/environment

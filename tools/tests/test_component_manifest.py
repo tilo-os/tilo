@@ -50,11 +50,12 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         self.assertIn(old, text)
         path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
-    def test_shell_only_recipe_is_refused_before_deployment(self):
+    def test_session_only_recipe_is_refused_before_deployment(self):
         root = self.fixture()
         entry = '  { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },'
         self.edit(root / "os/components.toml", entry + "\n", "")
-        self.assertIn("shell must ship its matching mandatory PAM session wrapper", "\n".join(check.audit(root)))
+        self.assertIn("the session must ship its matching mandatory PAM session wrapper",
+                      "\n".join(check.audit(root)))
 
     def test_session_surface_programs_are_shipped_beside_the_session(self):
         with self.subTest(phase='the repository ships every program the session starts'):
@@ -181,12 +182,12 @@ class ComponentManifestPolicyTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
-    def test_source_shell_layer_carries_verified_fonts_and_refuses_incomplete_catalogs(self):
+    def test_source_session_layer_carries_verified_fonts_and_refuses_incomplete_catalogs(self):
         catalog = load("shell_font_catalog_under_test", REPO / "tools/font-catalog.py")
         source = REPO / "crates/sdk/ui-core/assets/fonts"
         reviewed = catalog.prepared_root(source, "os", offline=True)
         manifest = installer.load_manifest(REPO / "os/components.toml")
-        fonts = next(e for e in manifest.files() if e.component == "shell" and e.tree)
+        fonts = next(e for e in manifest.files() if e.component == "tilo-session" and e.tree)
         self.assertEqual(fonts.to, "/usr/share/fonts/tilo/")
         self.assertFalse(fonts.optional)
         for defect in (None, "missing", "tampered", "manifest", "provenance", "offline"):
@@ -211,7 +212,7 @@ class InstallerTests(unittest.TestCase):
                     "TILO_FONT_ASSET_CACHE": str(root / "empty-cache"),
                     "TILO_FONT_ASSETS_OFFLINE": "1",
                 }), contextlib.redirect_stderr(io.StringIO()) as stderr:
-                    status = self.run_installer("--from", str(out), "--dest", str(layer), "shell")
+                    status = self.run_installer("--from", str(out), "--dest", str(layer), "tilo-session")
                 installed = layer / "usr/share/fonts/tilo"
                 if defect is None:
                     self.assertEqual(status, 0, stderr.getvalue())
@@ -220,12 +221,13 @@ class InstallerTests(unittest.TestCase):
                         if path.is_file():
                             self.assertEqual((installed / path.relative_to(supplied)).read_bytes(),
                                              path.read_bytes())
-                    self.assertEqual((layer / "usr/bin/shell").read_bytes(), (out / "shell").read_bytes())
+                    self.assertEqual((layer / "usr/bin/tilo-session").read_bytes(),
+                                     (out / "tilo-session").read_bytes())
                     self.assertEqual((layer / "usr/libexec/tilo-session").read_bytes(),
                                      (REPO / "os/usr/libexec/tilo-session").read_bytes())
                 else:
                     self.assertEqual(status, 1)
-                    self.assertIn("mandatory shell font catalog", stderr.getvalue())
+                    self.assertIn("mandatory session font catalog", stderr.getvalue())
                     self.assertFalse(installed.exists())
 
     def test_image_component_stage_carries_the_speech_workers_license(self):
@@ -263,7 +265,7 @@ class InstallerTests(unittest.TestCase):
                     self.assertEqual(notice.stat().st_mode & 0o777, 0o644)
                     self.assertTrue((layer / "desktop-binaries/usr/libexec/tilo/tilo-speech-worker").is_file())
 
-    def test_shell_layer_requires_and_installs_its_exact_startup_wrapper(self):
+    def test_session_layer_requires_and_installs_its_exact_startup_wrapper(self):
         copies = [pair
                   for instruction in check.instructions(REPO / "os/Containerfile")
                   if instruction.stage == check.INSTALL_STAGE
@@ -286,13 +288,13 @@ class InstallerTests(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()):
                     status = self.run_installer(
                         "--manifest", str(root / "tilo-components/components.toml"),
-                        "--from", str(out), "--dest", str(layer), "shell")
+                        "--from", str(out), "--dest", str(layer), "tilo-session")
                 self.assertEqual(status, 0 if include_wrapper else 1)
                 if include_wrapper:
                     wrapper = layer / "usr/libexec/tilo-session"
                     self.assertEqual(wrapper.read_bytes(), (REPO / "os/usr/libexec/tilo-session").read_bytes())
                     self.assertEqual(wrapper.stat().st_mode & 0o777, 0o755)
-                    self.assertTrue((layer / "usr/bin/shell").is_file())
+                    self.assertTrue((layer / "usr/bin/tilo-session").is_file())
 
     def test_user_identity_bootstrap_installs_verified_native_asset_and_helpers(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -411,8 +413,8 @@ class InstallerTests(unittest.TestCase):
                 installed = {p.relative_to(image).as_posix()
                              for p in image.rglob("*") if p.is_file() or p.is_symlink()}
                 self.assertEqual(installed, expected)
-                shell = image / "desktop-binaries/usr/bin/shell"
-                self.assertEqual(shell.stat().st_mode & 0o777, 0o755)
+                session = image / "desktop-binaries/usr/bin/tilo-session"
+                self.assertEqual(session.stat().st_mode & 0o777, 0o755)
                 self.assertEqual(os.readlink(image / "desktop-binaries/usr/bin/store"), "app")
                 self.assertEqual(os.readlink(image / "desktop-binaries/usr/bin/ush"), "../libexec/tilo-ush")
                 self.assertFalse((image / "desktop-binaries/usr/bin/browser").exists())
@@ -421,14 +423,13 @@ class InstallerTests(unittest.TestCase):
             production = {c.name for c in installer.select_components(manifest, [], True)}
             dev = {c.name for c in installer.select_components(manifest, [], False, True)}
             self.assertIn("vmd", dev)
-            self.assertIn("shell", dev)
             self.assertIn("native-runtime-host", dev)
             # The control CLI is a plain client every image ships.
             self.assertIn("control", production)
             self.assertNotIn("control", dev)
             self.assertNotIn("vmd", production)
             self.assertNotIn("test-registry", production)
-            self.assertIn("shell", production)
+            self.assertIn("tilo-session", production)
             self.assertIn("native-runtime-host", production)
         with self.subTest(phase='developer CLI installs globally through its VM component'):
             manifest = installer.load_manifest(REPO / "os/components.toml")
@@ -453,15 +454,15 @@ class InstallerTests(unittest.TestCase):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             dev = installer.select_components(manifest, [], False, True)
             packages, bins, features = installer.cargo_plan(dev, True)
-            self.assertTrue({"shell/dev-overrides", "tilo-runtime/dev-overrides"} <= set(features))
-            self.assertEqual(set(bins), {"shell", "tilo-runtime-mcp", "tilo-vmd", "tilo-device-admin", "tilo-vm",
+            self.assertIn("tilo-runtime/dev-overrides", features)
+            self.assertEqual(set(bins), {"tilo-runtime-mcp", "tilo-vmd", "tilo-device-admin", "tilo-vm",
                                          "tilo-test-registry"})
             _, _, production_features = installer.cargo_plan(dev, False)
             self.assertFalse([feature for feature in production_features
                               if feature.endswith("dev-overrides")], production_features)
         with self.subTest(phase='mixed dev and production layers are rejected'):
             document = {"component": [{
-                "name": "mixed", "kind": "userspace", "scope": "session", "packages": ["shell"],
+                "name": "mixed", "kind": "userspace", "scope": "session", "packages": ["tilo-session"],
                 "files": [
                     {"from": "a", "to": "/usr/bin/a", "mode": "0755", "layer": "dev-tools"},
                     {"from": "b", "to": "/usr/bin/b", "mode": "0755", "layer": "desktop-binaries"},
@@ -472,9 +473,10 @@ class InstallerTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 with contextlib.redirect_stderr(io.StringIO()) as stderr:
-                    status = self.run_installer("--from", str(root), "--dest", str(root / "layer"), "shell")
+                    status = self.run_installer("--from", str(root), "--dest", str(root / "layer"),
+                                                "tilo-session")
                 self.assertEqual(status, 1)
-                self.assertIn("build output 'shell' not found", stderr.getvalue())
+                self.assertIn("build output 'tilo-session' not found", stderr.getvalue())
 
 
 if __name__ == "__main__":

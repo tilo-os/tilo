@@ -11,7 +11,7 @@ import tomllib
 from pathlib import Path
 
 SCHEMA = "tilo.vm.layer-artifacts/v1"
-COHORT = ("launcher", "install", "shell", "apps+runtime")
+COHORT = ("launcher", "install", "tilo-session", "apps+runtime")
 
 
 def sha(path: Path) -> str:

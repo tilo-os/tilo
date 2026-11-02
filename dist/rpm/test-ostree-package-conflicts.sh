@@ -82,7 +82,7 @@ grep -Fq 'No path in the tilo-session payload is owned by another package' "$wor
 # The compositor is the path an older release replaced with a different file,
 # and the session target is the path a host package can ship itself. Both live
 # under the fixture root, so the fixture works on any machine.
-installed=/usr/bin/tilo-shell
+installed=/usr/bin/tilo-session
 mkdir -p "$work/root/usr/bin"
 : >"$work/root$installed"
 printf '%s\n' "gnome-shell $work/root$installed" >"$work/rpm-owners"
@@ -116,7 +116,7 @@ grep -Fq "$installed belongs to host-package" "$work/out" \
 
 # 7. A file at a payload path that no package owns is still a conflict: rpm-ostree
 # cannot layer over an unowned file either, and silence would be the wrong answer.
-rm -rf "$work/root/usr/bin/tilo-shell"
+rm -rf "$work/root/usr/bin/tilo-session"
 mkdir -p "$work/root/usr/lib/systemd/user"
 : >"$work/root/usr/lib/systemd/user/tilo-graphical-session.target"
 : >"$work/rpm-owners"

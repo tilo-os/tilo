@@ -32,13 +32,13 @@ done
 
 # Keep the image contract tied to the production probe rather than merely
 # proving that an unrelated scanner package happens to be installed.
-# The probe (host.rs) resolves every helper program through trusted_command;
-# the source offers scanning only when it found scanimage.
-source_adapter="$repo/crates/session/shell/src/shell/remote_capture/source.rs"
-capture_probe="$repo/crates/session/shell/src/shell/remote_capture/host.rs"
-if grep -Fq 'probe.tool("scanimage")' "$source_adapter" \
-    && grep -Fqx '    "scanimage",' "$capture_probe" \
-    && grep -Fq 'trusted_command(name)' "$capture_probe"; then
+# The scanner runs scanimage through the bounded-command helper, so the source
+# offers scanning only when the packaged binary answers.
+scanner_source="$repo/crates/platform/tilo-capture/src/scanner.rs"
+capture_probe="$repo/crates/platform/tilo-media/src/realtime/capture.rs"
+if grep -Fq 'bounded_command::run("scanimage", &["-L"]' "$scanner_source" \
+    && grep -Fq '!name.trim().starts_with("Tilo Remote Camera")' "$capture_probe" \
+    && grep -q '^    sane-backends \\$' "$containerfile"; then
   ok 'remote scanner discovery requires the packaged scanimage binary'
 else
   bad 'remote scanner discovery no longer matches the image contract'
@@ -55,8 +55,7 @@ else
   bad 'v4l-utils is absent while camera detection requires v4l2-ctl'
 fi
 
-if grep -Fq 'REMOTE_CAMERA_LABEL: &str = "Tilo Remote Camera";' "$capture_probe" \
-    && grep -Fq 'label.starts_with(REMOTE_CAMERA_LABEL)' "$capture_probe" \
+if grep -Fq 'starts_with("Tilo Remote Camera")' "$capture_probe" \
     && grep -Fq 'card_label="Tilo Remote Camera"' "$camera_options"; then
   ok 'runtime detection and the module card label agree exactly'
 else

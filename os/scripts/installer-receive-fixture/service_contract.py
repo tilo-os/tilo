@@ -56,7 +56,7 @@ def decode(raw):
     require(type(value) is dict and set(value) == KEYS and type(value['schema']) is int
             and value['schema'] == 2 and type(value['required_protocol']) is int
             and value['required_protocol'] == 2 and value['root'] == '/'
-            and value['shell_path'] in ('/usr/bin/shell', '/usr/bin/tilo-shell'),
+            and value['shell_path'] == '/usr/bin/tilo-session',
             'service request is not the fixed actual receiving protocol')
     require(all(type(value[name]) is str and re.fullmatch('[0-9a-f]{64}', value[name])
                 for name in SHA_FIELDS), 'service request artifact identity differs')
@@ -103,7 +103,7 @@ def selected(deadline, log):
 
 def route_artifacts(root, shell_path, digest, regular):
     """Independently remeasure the receiving Shell and Python closure."""
-    require(shell_path in ('/usr/bin/shell', '/usr/bin/tilo-shell'),
+    require(shell_path == '/usr/bin/tilo-session',
             'receiving Shell is not a canonical packaged receiver')
     shell = root / shell_path.removeprefix('/')
     require(regular(shell, 256 * 1024 * 1024).st_mode & 0o111, 'receiving Shell is not executable')

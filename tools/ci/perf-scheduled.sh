@@ -71,18 +71,18 @@ case $group in
     exit "$status"
     ;;
   agent)
-    cargo build --locked --release -p shell --bin shell -p tilo-runtime --bin tilo-runtime-mcp \
+    cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp \
       --example agent_task_desktop --features dev-overrides
     test -r "$VK_DRIVER_FILES"
     env_json release lavapipe kvm > "$out/env.json"
     bash tools/with-test-environment.sh python3 scripts/perf/agent_rtt.py \
-      --spawn "$target/release/shell" --samples 1000 --warmup 100 \
+      --spawn "$target/release/tilo-session" --samples 1000 --warmup 100 \
       --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
       --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/compositor.log"
     # A whole task as an agent in the login runs it: a scripted, streamed
     # model at 0 ms think time, through tilo-runtime-mcp and the agent door.
     bash tools/with-test-environment.sh python3 scripts/perf/agent_task.py \
-      --spawn "$target/release/shell" --repetitions 30 --warmup 3 \
+      --spawn "$target/release/tilo-session" --repetitions 30 --warmup 3 \
       --transport "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO" \
       --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/task-compositor.log" \
       --client-log "$out/task-client.log"
@@ -137,14 +137,14 @@ case $group in
     exit "$status"
     ;;
   latency)
-    cargo build --locked -p shell --bin shell
+    cargo build --locked -p tilo-session --bin tilo-session
     env_json dev lavapipe kvm > "$out/env.json"
-    python3 scripts/perf/latency_bench.py --shell-bin "$target/debug/shell" \
+    python3 scripts/perf/latency_bench.py --shell-bin "$target/debug/tilo-session" \
       --out "$out/run" --env-json "$out/env.json" --records "$out/latency.jsonl"
     ;;
   render)
     cargo build --locked --release -p ui-examples --example ui-perf
-    cargo build --locked --release -p shell --example redraw_bench --example strip_pan_bench
+    cargo build --locked --release -p tilo-session --example redraw_bench --example strip_pan_bench
     cargo build --locked --release -p tilo-app --features test-support --example framework-scaling
     cargo build --locked --release -p notes --example notes-latency
     test -r "$VK_DRIVER_FILES"
@@ -167,11 +167,11 @@ case $group in
     exit "$status"
     ;;
   wakeups)
-    cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark
-    cargo build --locked -p shell --bin shell
+    cargo build --locked -p tilo-session --example idle-wakeups --features scheduled-idle-benchmark
+    cargo build --locked -p tilo-session --bin tilo-session
     status=0
     for run in 1 2 3; do
-      TILO_IDLE_SHELL_BIN="$target/debug/shell" TILO_IDLE_WAKEUP_WINDOW_SECS=60 \
+      TILO_IDLE_SESSION_BIN="$target/debug/tilo-session" TILO_IDLE_WAKEUP_WINDOW_SECS=60 \
         bash tools/test-env.sh "$target/debug/examples/idle-wakeups" > "$out/idle-$run.log" 2>&1 || status=$?
       # The report: every thread's row, the frame loop and what was logged.
       if grep -q '^IDLE-WAKEUPS ' "$out/idle-$run.log"; then
@@ -185,15 +185,15 @@ case $group in
     exit "$status"
     ;;
   search)
-    cargo test --locked -p shell --lib --no-run
+    cargo test --locked -p tilo-session --lib --no-run
     status=0
     for run in 1 2 3 4 5; do
-      TILO_SEARCH_PERF_GATE=1 TILO_FILES_NAME_INDEX_NAMES=50000 bash tools/test-env.sh cargo test --locked -p shell --lib \
+      TILO_SEARCH_PERF_GATE=1 TILO_FILES_NAME_INDEX_NAMES=50000 bash tools/test-env.sh cargo test --locked -p tilo-session --lib \
         shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild \
         -- --exact --nocapture --test-threads=1 > "$out/files-name-index-$run.log" 2>&1 || status=$?
       grep 'FILES-NAME-INDEX' "$out/files-name-index-$run.log" || true
     done
-    TILO_SEARCH_PERF_GATE=1 bash tools/test-env.sh cargo test --locked -p shell --lib \
+    TILO_SEARCH_PERF_GATE=1 bash tools/test-env.sh cargo test --locked -p tilo-session --lib \
       against_the_full_index_only_searches_it -- --nocapture --test-threads=1 > "$out/palette-keystroke.log" 2>&1 \
       || status=$?
     grep 'keystrokes: median' "$out/palette-keystroke.log" || tail -n 40 "$out/palette-keystroke.log"

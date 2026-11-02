@@ -18,15 +18,14 @@ for name in $(grep -o 'package([A-Za-z0-9_-]*)' <<<"$filter" | sed 's/^package(\
     packages+=(-p "$name")
 done
 # Their test features (tools/ci/package_features.py): a golden whose test target
-# lists `required-features` (the shell's e2e flows) is otherwise no target of
-# `--tests`, and the render would report no change for it.
+# lists `required-features` is otherwise no target of `--tests`, and the render
+# would report no change for it.
 feature_flags=$(python3 tools/ci/package_features.py "${packages[@]}") || exit 2
 read -r -a features <<<"$feature_flags"
 
 # Diff against the tree as given, uncommitted changes included, so the patch
 # holds only what the render changed.
 paths=(crates/sdk/ui-core/tests/fixtures/typography apps/ebook/tests/fixtures/typography
-       crates/session/shell/tests/snapshots/e2e
        .config/visual-goldens-image)
 export GIT_INDEX_FILE=$TMPDIR/visual-baselines.index
 git read-tree HEAD
@@ -41,10 +40,6 @@ UPDATE_TYPOGRAPHY_BASELINES=1 TILO_REQUIRE_GPU=1 \
     "${features[@]}" --no-tests=pass -E "$filter" || status=$?
 
 bash tools/ci/golden-image.sh record "$image"
-for directory in e2e; do
-    python3 tools/test-assets.py crates/session/shell/tests/snapshots/artifacts.json \
-        --prune-identical-candidates "crates/session/shell/tests/snapshots/$directory"
-done
 python3 tools/test-assets.py crates/sdk/ui-core/tests/fixtures/typography/artifacts.json \
     --prune-identical-candidates crates/sdk/ui-core/tests/fixtures/typography
 python3 tools/test-assets.py apps/ebook/tests/fixtures/typography/artifacts.json \

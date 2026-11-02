@@ -173,9 +173,8 @@ require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStop
 require_text /usr/share/tilo/selinux/tilo-base.cil "(allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))"
 require_line /usr/share/wayland-sessions/tilo-session.desktop "Exec=/usr/libexec/tilo-session --backend drm"
 require_line /usr/share/wayland-sessions/tilo-session.desktop "X-Tilo-Session-Default=true"
-require_line /usr/share/wayland-sessions/shell.desktop "Exec=/usr/libexec/tilo-session --shell --backend drm"
 require_text /usr/libexec/tilo-session '"$SYSTEMCTL" --user start "$SESSION_TARGET"'
-require_text /usr/libexec/tilo-session 'readonly NATIVE_SESSION_BIN=/usr/bin/tilo-session'
+require_text /usr/libexec/tilo-session 'readonly COMPOSITOR_BIN=/usr/bin/tilo-session'
 require_text /usr/libexec/tilo-session 'run_managed "$compositor_bin" "$@"'
 require_text /usr/libexec/tilo-session '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE'
 require_text /usr/libexec/tilo-session '"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE'
@@ -227,7 +226,7 @@ require_exec "$payload/bin/file-explorer"
 # The packer serializes a normalized manifest rather than preserving authoring
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"
-require_toml_string "$manifest" sandbox.services.tilo-fs "optional@13"
+require_toml_string "$manifest" sandbox.services.tilo-fs "optional@14"
 # The package names the exact runtime build it links, and the image ships it.
 runtime_version="$(python3 - "$(at "$manifest")" <<'PY'
 import pathlib, re, sys, tomllib

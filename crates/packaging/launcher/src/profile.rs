@@ -104,7 +104,7 @@ pub const NETWORK_READ_PATHS: &[&str] = &["/etc/resolv.conf", "/etc/hosts"];
 /// `gpu` capability ([`crate::gpu::granted`]) and for no other.
 ///
 /// A toolkit app does not open the GPU: its workspace's render service draws its
-/// frames (`tilo-render-service`). The GPU kernel driver is among the most
+/// frames (the session's render service). The GPU kernel driver is among the most
 /// exploited kernel surfaces, so an app reaches it only when it declares it
 /// needs to (a web engine, video, games, 3D, ML). `--dev /dev` mounts a
 /// fresh, near-empty devtmpfs, so these nodes exist in a sandbox only when

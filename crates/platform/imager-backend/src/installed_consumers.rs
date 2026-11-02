@@ -11,6 +11,10 @@ pub(crate) mod data;
 mod invoke;
 mod json;
 mod service;
+
+/// The installed session's canonical path: the receiving Shell every image
+/// carries, and the one route and account admission accept.
+pub(crate) use service::SHELL;
 #[cfg(test)]
 pub(crate) mod tests;
 

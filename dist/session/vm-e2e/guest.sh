@@ -420,7 +420,7 @@ step_settings() {
 }
 
 compositor_pid() {
-    pgrep -u "$user" -x tilo-shell | head -n 1 || true
+    pgrep -u "$user" -x tilo-session | head -n 1 || true
 }
 
 step_status() {
@@ -433,7 +433,7 @@ step_status() {
     echo "topology=$topology"
     echo "driven_cards=$(sed -n 's/.* driven_cards=\([0-9]*\) .*/\1/p' <<<"$topology")"
     echo "crash_logs=$(find "$home/.cache/tilo/crashes" -type f 2>/dev/null | wc -l)"
-    echo "coredumps=$(coredumpctl --no-pager --no-legend list /usr/bin/tilo-shell 2>/dev/null | wc -l)"
+    echo "coredumps=$(coredumpctl --no-pager --no-legend list /usr/bin/tilo-session 2>/dev/null | wc -l)"
     echo "unexpected_exit=$(journalctl -b --no-pager -o cat -t tilo-session 2>/dev/null \
         | grep -c 'compositor exited without a logout request' || true)"
     echo "panics=$( { journalctl -b --no-pager -o cat 2>/dev/null; cat "$log" 2>/dev/null; } \
@@ -459,7 +459,7 @@ step_collect() {
     journalctl -b --no-pager >"$out/journal.txt" 2>&1 || true
     journalctl -b --no-pager -o cat -t tilo-session >"$out/tilo-session.journal.txt" 2>&1 || true
     coredumpctl --no-pager list >"$out/coredumps.txt" 2>&1 || true
-    coredumpctl --no-pager info /usr/bin/tilo-shell >"$out/coredump-tilo-shell.txt" 2>&1 || true
+    coredumpctl --no-pager info /usr/bin/tilo-session >"$out/coredump-tilo-session.txt" 2>&1 || true
     cp -r "$home/.local/state/tilo/session-logs" "$out/" 2>/dev/null || true
     cp -r "$home/.cache/tilo/crashes" "$out/" 2>/dev/null || true
     as_user tilo settings dump >"$out/settings.json" 2>/dev/null || true

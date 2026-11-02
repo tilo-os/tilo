@@ -702,8 +702,9 @@ pub enum AccessoryAction {
     },
     /// Commit the field, as Enter does in a field that submits: the go
     /// button of an address or location field. Shown only while the field
-    /// is being edited; a press fires the field's submit
-    /// ([`TextInput::take_submit`], [`TextInput::on_submit`]).
+    /// is being edited, and dimmed and inert while it holds nothing to hand
+    /// over; a press fires the field's submit ([`TextInput::take_submit`],
+    /// [`TextInput::on_submit`]).
     Submit,
 }
 
@@ -789,6 +790,22 @@ impl TextInput {
                 .as_ref()
                 .is_some_and(|action| !action.is_available())
     }
+
+    /// Whether the trailing accessory can be used now. A field that cannot
+    /// be changed cannot be committed either, and a go button with nothing
+    /// typed has nothing to hand over: it stands there dimmed, so where it
+    /// is stays visible, and a press is a press on the field rather than a
+    /// refusal of an empty one.
+    fn accessory_ready(&self) -> bool {
+        if self.effectively_disabled() {
+            return false;
+        }
+        match self.accessory.as_ref().map(|accessory| &accessory.action) {
+            Some(AccessoryAction::Submit) => !self.text.is_empty(),
+            _ => true,
+        }
+    }
+
     /// Empty `path` opts the widget out of presence rendering.
     pub fn new(path: Vec<PathSegment>) -> Self {
         Self::with_language(path, spellcheck::default_language())
@@ -3580,7 +3597,7 @@ impl TextInput {
     fn refresh_reveal_control(&mut self) {
         self.reveal.set_enabled(!self.effectively_disabled());
         if self.has_reveal_control() {
-            self.reveal.place(self.rect);
+            self.reveal.place(self.rect, self.accessory_room());
         } else {
             self.reveal.set_focus(false);
         }
@@ -4158,7 +4175,9 @@ impl TextInput {
     }
 
     /// Where the trailing accessory sits: a square at the field's trailing
-    /// edge, one band tall, while it is shown.
+    /// edge, one band tall, while it is shown. The show/hide control of a
+    /// secret field steps one square inboard of it, so the two never share
+    /// pixels.
     fn accessory_rect(&self) -> Option<Rect> {
         let accessory = self.accessory.as_ref()?;
         if self.multiline
@@ -4168,7 +4187,12 @@ impl TextInput {
             return None;
         }
         let edge = self.rect.height();
-        (self.rect.width() > edge * 2.0).then(|| {
+        let outboard = if self.has_reveal_control() {
+            RevealToggle::width_for(edge)
+        } else {
+            0.0
+        };
+        (self.rect.width() > edge * 2.0 + outboard).then(|| {
             Rect::new(
                 self.rect.x1 - edge,
                 self.rect.y0,
@@ -4183,14 +4207,16 @@ impl TextInput {
     }
 
     /// Paint the trailing accessory: a plain icon button, lifted under the
-    /// pointer.
+    /// pointer. One with nothing to do yet (a go button over an empty field)
+    /// is drawn under the toolkit's disabled group alpha, as every other
+    /// control without an effect on the world is.
     fn draw_accessory(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let (Some(rect), Some(accessory)) = (self.accessory_rect(), self.accessory.as_ref()) else {
             return;
         };
         let inset = f64::from(theme.tokens.spacing.s1);
         let face = rect.inset(-inset);
-        let enabled = !self.effectively_disabled();
+        let enabled = self.accessory_ready();
         let on = enabled
             && matches!(
                 accessory.action,
@@ -4212,6 +4238,15 @@ impl TextInput {
                 &RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
             );
         }
+        if !enabled {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
+            );
+        }
         let ink = if on {
             theme.tokens.colors.text_primary
         } else {
@@ -4226,14 +4261,19 @@ impl TextInput {
             ink,
             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
+        if !enabled {
+            scene.pop_layer();
+        }
     }
 
     /// A press on the accessory: run it. Returns whether it took the press.
+    /// One with nothing to do yet takes no press at all: the press is the
+    /// field's, as a press anywhere else in it is.
     fn press_accessory(&mut self) -> bool {
         let Some(rect) = self.accessory_rect() else {
             return false;
         };
-        if !rect.contains(self.last_mouse_pos) {
+        if !rect.contains(self.last_mouse_pos) || !self.accessory_ready() {
             return false;
         }
         self.run_accessory()
@@ -6701,7 +6741,7 @@ impl Widget for TextInput {
                     .with_name(crate::i18n!(&accessory.name))
                     .with_bounds(rect)
                     .with_state(AccessState {
-                        disabled: self.effectively_disabled(),
+                        disabled: !self.accessory_ready(),
                         checked,
                         ..Default::default()
                     })
@@ -6734,7 +6774,7 @@ impl Widget for TextInput {
     ) -> bool {
         if target != ACCESSORY_TARGET
             || !matches!(action, crate::a11y::Action::Activate)
-            || self.effectively_disabled()
+            || !self.accessory_ready()
             || self.accessory_rect().is_none()
         {
             return false;

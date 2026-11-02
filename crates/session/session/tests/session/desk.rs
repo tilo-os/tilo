@@ -226,6 +226,36 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
         capture(&mut session, "notification");
     }
 
+    // The readouts the hardware keys raise, at the levels and states the old
+    // shell's `media_key_osd` scenes show: a pill at the bottom centre with
+    // the key's own glyph, its level track where it has one, and the value
+    // alone beside it.
+    for (name, kind, level, on) in [
+        ("osd-volume", "volume", 0.65, true),
+        ("osd-volume-low", "volume", 0.10, true),
+        ("osd-muted", "volume", 0.65, false),
+        ("osd-brightness", "brightness", 0.40, true),
+        ("osd-mic-muted", "microphone", 0.0, false),
+        ("osd-next-track", "next-track", 0.0, true),
+        ("osd-keyboard-backlight", "keyboard-backlight", 0.5, true),
+        ("osd-no-backlight", "no-backlight", 0.0, true),
+    ] {
+        let mut session = session();
+        settle(&mut session, 2);
+        let mut readout = serde_json::json!({"kind": kind, "level": level});
+        if !on {
+            readout["on"] = serde_json::json!(false);
+        }
+        invoke_with(
+            &mut session,
+            tilo_desktop::osd::OSD_RESOURCE,
+            "show",
+            &readout,
+        );
+        settle(&mut session, 2);
+        capture(&mut session, name);
+    }
+
     // A dialog over a window: the portal asking to share a screen.
     {
         use tilo_sheets::Seat as _;
@@ -284,6 +314,112 @@ fn pixel_parity_frames_match_the_old_shells_scenes() {
         capture(&mut session, "lock");
         drop(client);
     }
+}
+
+/// The readout a hardware key raises rests where the old shell's did: a
+/// content-fit pill at the bottom centre of the output, its value alone
+/// beside the glyph, and nothing where it used to be a wide slab.
+#[test]
+fn the_readout_rests_bottom_centred_and_reads_its_value() {
+    let _settled = ui::motion::testing::settled();
+    let _clock = held_clock();
+    let mut session = session();
+    settle(&mut session, 4);
+    let before = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot");
+
+    invoke_with(
+        &mut session,
+        tilo_desktop::osd::OSD_RESOURCE,
+        "show",
+        &serde_json::json!({"kind": "volume", "level": 0.65}),
+    );
+    settle(&mut session, 2);
+    let after = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot");
+    assert!(
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label.contains("Volume 65%")),
+        "the readout says its value to a screen reader: {:?}",
+        session.accessible_labels()
+    );
+
+    // The old shell's pill on a 1280 by 800 output: centred, its bottom edge
+    // two spacing steps of sixteen above the screen's, as high as its glyph
+    // plus a step of twelve above and below, and exactly as wide as its
+    // glyph, its level track and its widest reading need. Nothing else on
+    // the desk lights up: the readout takes no more room than that.
+    let (left, top, right, bottom) =
+        lit_bounds(&before.rgba, &after.rgba, (after.width, after.height))
+            .expect("the readout paints something");
+    let (width, centre) = (right - left, usize::midpoint(left, right));
+    assert!((685..=691).contains(&top), "the pill's top is at {top}");
+    assert!(
+        (733..=739).contains(&bottom),
+        "the pill's bottom is at {bottom}"
+    );
+    assert!(
+        (3..=51).contains(&(bottom - top)),
+        "the pill is {} high",
+        bottom - top
+    );
+    assert!(
+        (636..=644).contains(&centre),
+        "the pill is centred at {centre}"
+    );
+    assert!(
+        (200..=300).contains(&width),
+        "the pill is {width} wide: as wide as it needs, not the old slab's 320"
+    );
+}
+
+/// The bounds `(left, top, right, bottom)` in logical pixels of everything
+/// `frame` (`size` physical) paints brighter than `before`: the lit body of a
+/// floating surface, without the shadow it also darkens around itself.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "a drawn frame's pixels, read back at its size"
+)]
+fn lit_bounds(
+    before: &[u8],
+    frame: &[u8],
+    size: (u32, u32),
+) -> Option<(usize, usize, usize, usize)> {
+    let (width, height) = (size.0 as usize, size.1 as usize);
+    let scale = f64::from(size.0) / f64::from(u32::try_from(WIDTH).expect("width"));
+    let mut bounds: Option<(usize, usize, usize, usize)> = None;
+    for y in 0..height {
+        for x in 0..width {
+            let at = (y * width + x) * 4;
+            if luma(&frame[at..at + 4]) <= luma(&before[at..at + 4]) + 2 {
+                continue;
+            }
+            let (lx, ly) = ((x as f64 / scale) as usize, (y as f64 / scale) as usize);
+            bounds = Some(match bounds {
+                None => (lx, ly, lx + 1, ly + 1),
+                Some((left, top, right, bottom)) => (
+                    left.min(lx),
+                    top.min(ly),
+                    right.max(lx + 1),
+                    bottom.max(ly + 1),
+                ),
+            });
+        }
+    }
+    bounds
+}
+
+/// How bright a pixel is, summed over its channels.
+fn luma(pixel: &[u8]) -> u16 {
+    u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])
 }
 
 /// Where the desk scenes are written, beside the old shell's captures of the

@@ -42,6 +42,7 @@ mod capture_send;
 mod capture_studio;
 mod channels;
 mod chrome;
+mod clock_wait;
 mod config;
 mod content;
 pub mod controller_nav;
@@ -70,6 +71,7 @@ mod held;
 mod here;
 mod i18n;
 pub mod identity;
+mod import_readiness;
 pub mod keyboard;
 mod keys;
 mod launches;
@@ -141,6 +143,7 @@ use ui::shortcut_table::ShortcutAction;
 pub use automation::FinishedShortcutRun;
 pub use bars::BarShown;
 pub use channels::ChannelLink;
+pub use clock_wait::ClockWait;
 pub use config::SessionConfig;
 pub use controls::{
     CLIPBOARD_RESOURCE, INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, NIGHT_LIGHT_RESOURCE,
@@ -161,6 +164,7 @@ pub use records::Records;
 pub use rotation::Accelerometer;
 pub use run::{Backend, Reach};
 pub use search::{AppActions, SearchOptions};
+pub use setup::BeforeDesk;
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
 pub use tilo_service::{Service, Services};
@@ -419,6 +423,10 @@ struct Shared {
     /// The agent door, when this session serves one: what a program of this
     /// login asks on, and the person's answers about it.
     agent_door: RefCell<Option<agent_door::Loop>>,
+    /// The installed folder importer's side of this login, once the session
+    /// serves it: what it asks on whether first use is over, and the review
+    /// it saved to be opened when it is.
+    folder_import: RefCell<Option<import_readiness::Continuation>>,
 }
 
 /// The app a window shows, by its id.
@@ -778,9 +786,16 @@ impl Session {
         let sources = config::Sources::from_config(&options.config);
         let mut doors = Doors::default();
         // The device VPN runs for the session's lifetime: the profiles' kill
-        // switches from the start, and the route through another of the
+        // switches from the start, the route through another of the
         // person's devices as the session's passes find this device's
-        // endpoint. What both do is published for Settings.
+        // endpoint, and this device as an exit for their other devices. What
+        // all of it does is published for Settings, and the exit is served
+        // on the endpoint the session binds next.
+        let beside = options
+            .vpn
+            .as_ref()
+            .map(mount::vpn::Vpn::served)
+            .unwrap_or_default();
         let vpn = options.vpn.take().map(mount::vpn::Vpn::start);
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
@@ -1011,7 +1026,7 @@ impl Session {
             .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
             .ok()
         });
-        let sync = start_collaboration(&options, media, engine.clone());
+        let sync = start_collaboration(&options, media, engine.clone(), beside);
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
         // other devices on the topic the records travel.
@@ -1458,6 +1473,7 @@ impl Session {
             ))),
             asker,
             agent_door: RefCell::new(agent_door),
+            folder_import: RefCell::new(None),
             notice_fed: RefCell::new(None),
             sync,
             engine,
@@ -2036,10 +2052,33 @@ impl Session {
         self.display_sheet.seat()
     }
 
+    /// What stands before the desk runs its own pass: the wait for the clock
+    /// finishes itself and gives the layer to what a verified identity opens.
+    fn follow_setup(&self) {
+        if let Some(setup) = &self.setup {
+            setup.borrow_mut().step();
+        }
+    }
+
     /// Whether setup is up: it withholds the desktop until it is done.
     #[must_use]
     pub fn setup_up(&self) -> bool {
         self.setup.as_ref().is_some_and(|setup| setup.borrow().up())
+    }
+
+    /// Serve the installed folder importer for this session's `display`, the
+    /// Wayland socket it bound: whether first use is over, and the review the
+    /// person left to be opened once it is.
+    ///
+    /// Add folders reads the answer before it continues a saved import, so
+    /// nothing it carries lands under an identity ceremony still under way.
+    ///
+    /// # Errors
+    /// There is no runtime directory, or the socket cannot be bound.
+    pub fn serve_folder_import(&mut self, display: &std::ffi::OsStr) -> std::io::Result<()> {
+        let continuation = import_readiness::Continuation::serve(display)?;
+        *self.shared.folder_import.borrow_mut() = Some(continuation);
+        Ok(())
     }
 
     /// The verified browser projection a carried-over setup brought: the
@@ -2198,7 +2237,7 @@ impl Session {
             self.shared.settings.sync(fabric.as_ref());
             // The person's sleeping devices, and the probes that follow them.
             self.shared.waking.follow(&self.shared);
-            self.follow_device_vpn(fabric);
+            self.shared.follow_device_vpn(fabric);
             // What this pass offered the clipboard, and what the pumps just
             // changed, is this device's next word to its other devices.
             if let Some(sync) = &self.shared.sync {
@@ -2206,18 +2245,6 @@ impl Session {
             }
         }
         Ok(())
-    }
-
-    /// Follow where this device routes through another of the person's
-    /// devices, and which of them could carry it: the route follows what they
-    /// chose on the pass they chose it on.
-    fn follow_device_vpn(&self, fabric: &tilo_device_fabric::link::SharedLink) {
-        if let Some(vpn) = &self.shared.vpn {
-            vpn.follow(
-                Some(fabric),
-                self.shared.sync.as_ref().and_then(|sync| sync.endpoint()),
-            );
-        }
     }
 
     /// Keep the workspaces this session takes part in current with the
@@ -2465,6 +2492,35 @@ impl Session {
         }
     }
 
+    /// Answer the installed folder importer this pass, and open the review it
+    /// saved once the person's first use is over: the Add folders click they
+    /// left for after setup rather than one they must remember.
+    fn follow_folder_import(&self) {
+        let first_use_over = !self.setup_up();
+        let opens_now = self
+            .shared
+            .folder_import
+            .borrow_mut()
+            .as_mut()
+            .is_some_and(|import| import.follow(first_use_over));
+        if !opens_now {
+            return;
+        }
+        let Some(apps) = &self.shared.launch else {
+            return;
+        };
+        let launch = tilo_app_launch::Launch::Host {
+            desktop_id: import_readiness::IMPORT_DESKTOP_ID.to_owned(),
+            open: None,
+        };
+        if let Err(error) = apps.open(&launch) {
+            tracing::warn!(
+                %error,
+                "the saved folder import did not open; Add folders opens it"
+            );
+        }
+    }
+
     /// One turn of the loop: wait up to `timeout` for clients and devices,
     /// carry out what the desktop asked, and draw.
     ///
@@ -2482,6 +2538,9 @@ impl Session {
             None => timeout,
         };
         self.compositor.dispatch(timeout)?;
+        // Add folders: answered whether the identity ceremony is over, and the
+        // review the person left opens once it is.
+        self.follow_folder_import();
         // What the person is in the middle of, as the desk may not move
         // under it (shell.md §1).
         let underway = self.compositor.underway();
@@ -2491,6 +2550,7 @@ impl Session {
         self.follow_displays()?;
         self.follow_fullscreen();
         self.follow_overlays();
+        self.follow_setup();
         {
             self.shared.feed_agent_runs();
             let mut services = self.shared.services.borrow_mut();

@@ -53,7 +53,7 @@
 //! # Non-goals
 //!
 //! - No I/O. The crate is pure types + pure functions. Persistence
-//!   (loading `/var/lib/tilo/user-identity/*`) belongs in `crates/session/shell/` or
+//!   (loading `/var/lib/tilo/user-identity/*`) belongs in `crates/session/session/` or
 //!   `os/`, not here.
 //! - No key recovery / paper share. `threshold-identity` already
 //!   solves that; this crate is single-key so the wire shape stays simple.

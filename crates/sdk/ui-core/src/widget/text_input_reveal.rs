@@ -89,10 +89,13 @@ impl RevealToggle {
         field_height.clamp(24.0, 48.0)
     }
 
-    /// Place the control flush with the field's trailing edge.
-    pub(super) fn place(&mut self, field: Rect) {
+    /// Place the control at the field's trailing edge, clear of `inset` — the
+    /// square the field's own trailing accessory (a go button) keeps
+    /// outermost, so two controls never sit on the same pixels.
+    pub(super) fn place(&mut self, field: Rect, inset: f64) {
         let width = Self::width_for(field.height());
-        self.rect = Rect::new(field.x1 - width, field.y0, field.x1, field.y1);
+        let edge = (field.x1 - inset).max(field.x0 + width);
+        self.rect = Rect::new(edge - width, field.y0, edge, field.y1);
     }
 
     pub(super) fn contains(&self, point: Point) -> bool {

@@ -255,6 +255,27 @@ class PushWindowTests(unittest.TestCase):
         self.assertEqual(executing, [])
         self.assertEqual(cancelling, [])
 
+    def test_a_run_whose_builder_failed_is_not_a_base(self):
+        # Every job that checks a window runs in the builder's image, so a run
+        # whose builder job failed checked nothing: its commits are planned
+        # again instead of being passed over.
+        runs = [self.record(20, "running"), self.record(19, "failure"),
+                self.record(18, "success")]
+
+        def jobs_of(run):
+            index = run["index_in_repo"]
+            if index == 19:
+                return [{"name": "builder", "status": "failure"},
+                        {"name": "select", "status": "success"},
+                        {"name": "clippy", "status": "skipped"}]
+            return [{"name": "builder", "status": "success"},
+                    {"name": "select", "status": "success"}]
+
+        _, base, executing, cancelling = push_window.decide(runs, jobs_of, self.ME)
+        self.assertEqual(base, self.record(18, "success")["commit_sha"])
+        self.assertEqual(executing, [])
+        self.assertEqual(cancelling, [])
+
     def test_a_run_blocked_behind_a_failed_decision_is_not_waited_for(self):
         # Its planning job failed, so every other job waits behind it and the
         # run never finishes: waiting for it would stall main's windows.

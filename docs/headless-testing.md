@@ -51,7 +51,7 @@ cargo run -p shell --features hosted-test-control,test-support --bin shots --qui
 cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode window --scenario palette_typing
 ```
 
-Scenarios are defined in `crates/session/shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
+Scenarios are defined in `crates/session/session/src/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
 
 **No display server required.** `shots --mode offscreen` and `--mode recording` use `quick_ui::offscreen::OffscreenRenderer` — wgpu only, no window.
 
@@ -275,7 +275,7 @@ echo '{"op":"pointer_button","pressed":false}' | nc -U $TILO_TEST_CONTROL
 echo '{"op":"place_next_window","app_id":"org.example.App"}' | nc -U $TILO_TEST_CONTROL
 ```
 
-Full command reference: `crates/session/shell/src/shell/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
+Full command reference: `crates/session/session/src/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
 
 ### Response shapes
 
@@ -313,7 +313,7 @@ in, never for the desktop at large: a widget elsewhere asking for frames for its
 own reasons does not hold an unrelated target back. The desktop as a whole must
 still be settled — setup closed, no workspace, strip or window-group switch
 underway — because a rectangle read then is one the caller never saw.
-(`crates/session/shell/src/shell/pointer_readiness.rs`)
+(`crates/session/compositor/src/`)
 
 ### Widget registry — how `click_named` finds things
 
@@ -722,17 +722,17 @@ authentication deadlines.
 
 | What | Where |
 |---|---|
-| `shots` binary | `crates/session/shell/src/bin/shots/` |
-| Frame-loop metrics | `crates/session/shell/src/compositor/metrics.rs` |
-| Presentation clock | `crates/session/shell/src/compositor/pacing.rs` |
-| Render thread | `crates/session/shell/src/shell/present.rs` |
-| Load-generator client | `crates/session/shell/src/bin/tilo-loadclient.rs` |
-| Scenario catalogue | `crates/session/shell/src/bin/shots/scenario.rs::catalogue()` |
+| `shots` binary | `crates/session/session/src/` |
+| Frame-loop metrics | `crates/session/frame-metrics/src/lib.rs` |
+| Presentation clock | `crates/session/compositor/src/pacing.rs` |
+| Render thread | `crates/session/compositor/src/` |
+| Load-generator client | `crates/session/session/src/` |
+| Scenario catalogue | `crates/session/session/src/scenario.rs::catalogue()` |
 | Offscreen renderer | `crates/sdk/ui-core/src/offscreen.rs` |
-| `TILO_TEST_CONTROL` protocol | `crates/session/shell/src/shell/test_control.rs` |
-| Widget registry walk | `crates/session/shell/src/shell/frame.rs::walk_widget` |
-| Backend trait | `crates/session/shell/src/compositor/backend/mod.rs` |
-| Headless backend impl | `crates/session/shell/src/compositor/backend/headless.rs` |
+| `TILO_TEST_CONTROL` protocol | `crates/session/session/src/test_control.rs` |
+| Widget registry walk | `crates/session/session/src/frame.rs::walk_widget` |
+| Backend trait | `crates/session/compositor/src/backend/mod.rs` |
+| Headless backend impl | `crates/session/compositor/src/backend/headless.rs` |
 
 ## Per-app screenshots
 
@@ -983,7 +983,7 @@ live-binary tests.
 
 ## Desktop smoke gate
 
-`desktop_smoke::` in the shell `it` target (`crates/session/shell/tests/desktop_smoke.rs`)
+`desktop_smoke::` in the shell `it` target (`crates/session/session/tests/session.rs`)
 is the required end-to-end gate: a real headless compositor restored over a
 session of several windows (in-process Tilo apps and Wayland clients), driven
 through the control socket the way a person drives it: the pointer over every
@@ -1001,7 +1001,7 @@ whenever a change reaches the shell.
 
 **Liveness is an assertion.** With `TILO_TEST_CONTROL` set, a dev-build
 compositor also binds `<control socket>.live`
-(`crates/session/shell/src/compositor/liveness.rs`), answered on its own
+(`crates/session/compositor/src/`), answered on its own
 threads, so it still answers when the main loop is deadlocked, which the
 control socket itself cannot:
 
@@ -1036,7 +1036,7 @@ prints its idle reading by thread, with what woke the loop and what it painted
 (`TILO_PAINT_STATS`) in the window.
 
 Every build, release included, also runs the main-loop watchdog
-(`crates/session/shell/src/compositor/watchdog.rs`). It needs no client: a
+(`crates/session/compositor/src/`). It needs no client: a
 thread of its own notices a compositor thread that has slept without running
 once, outside the loop's wait, for longer than any wait it makes is bounded
 at (`LONGEST_BOUNDED_WAIT`, plus one sample), writes the same thread dump to

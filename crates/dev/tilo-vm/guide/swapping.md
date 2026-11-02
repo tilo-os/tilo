@@ -1,14 +1,14 @@
 # Swapping components
 
 ```sh
-tilo-vm swap shell                        # your slot, built from this worktree
-tilo-vm --target review swap shell --profile dev          # faster compile, slower binary
+tilo-vm swap tilo-session                        # your slot, built from this worktree
+tilo-vm --target review swap tilo-session --profile dev          # faster compile, slower binary
 tilo-vm swap --slot my-slot launcher      # an explicit slot
 tilo-vm swap --slot vm fs                 # a VM-wide component into the vm slot
 tilo-vm swap app:notes                    # one app, installed into your slot's app store
-tilo-vm swap shell --from ci:main-1a2b3c4 # the CI build of a published image
-tilo-vm swap shell --from sha:1a2b3c4     # the CI build of a main commit
-tilo-vm swap shell --from layer:<hash>    # a layer already in the VM
+tilo-vm swap tilo-session --from ci:main-1a2b3c4 # the CI build of a published image
+tilo-vm swap tilo-session --from sha:1a2b3c4     # the CI build of a main commit
+tilo-vm swap tilo-session --from layer:<hash>    # a layer already in the VM
 tilo-vm swap kernel                       # the kernel: build, install VM-wide, reboot (guide kernel)
 tilo-vm rollback                          # the generation before the current one
 tilo-vm rollback --forward                # the next newer one again
@@ -130,7 +130,7 @@ without restarting the session only after rechecking every layer's bytes and
 provenance, the signed cohort, current app selections, selected runtime trust
 and session readiness. Missing or different selections take the normal install
 and refresh path. This avoids resetting live tasks on an exact repeat; it does
-not eliminate remote assembly time. For a small edit, swap just `shell` or the
+not eliminate remote assembly time. For a small edit, swap just `tilo-session` or the
 app rather than rebuilding the whole userspace cohort.
 
 Older daemons without `layer.verify` also use that path. Cache loss during the
@@ -198,7 +198,7 @@ and, being a generation, can be rolled back.
 
 | Component scope | Goes into | What happens |
 |---|---|---|
-| `session` (shell, launcher, user services, runtime) | your slot | a normal session restart: log out, restart your user manager, log in. A laptop's `device` slot (the owner's login) instead merges VM-wide and restarts the desktop and the component's user services in place; the owner stays logged in (`tilo-vm guide devices`) |
+| `session` (tilo-session, launcher, user services, runtime) | your slot | a normal session restart: log out, restart your user manager, log in. A laptop's `device` slot (the owner's login) instead merges VM-wide and restarts the desktop and the component's user services in place; the owner stays logged in (`tilo-vm guide devices`) |
 | app (`app:<dir>`) | your slot's app store | nothing restarts; live at next app launch |
 | `vm` (fs, greeter, system services) | the `vm` slot | `systemd-sysext refresh`, its active units and the live owner's active user services restart, and **every slot's session restarts** |
 | `boot`, swappable (the kernel: `dev_swap = "reboot"`) | the `vm` slot, plus a boot entry | modules merge with `systemd-sysext refresh`, the kernel becomes the next boot entry, **the VM reboots**; confirmed, it becomes the default (`tilo-vm guide kernel`) |
@@ -225,9 +225,9 @@ else does, so check from inside the slot, never with `vm ssh`:
 
 ```sh
 tilo-vm slot show                              # generations, and each component's files with sha256 and layer
-tilo-vm slot show --json | jq '.files[] | select(.path == "/usr/bin/shell")'
-tilo-vm slot exec -- sha256sum /usr/bin/shell  # the file the session runs
-tilo-vm slot exec -- shell --version
+tilo-vm slot show --json | jq '.files[] | select(.path == "/usr/bin/tilo-session")'
+tilo-vm slot exec -- sha256sum /usr/bin/tilo-session  # the file the session runs
+tilo-vm slot exec -- ls -l /usr/bin/tilo-session
 tilo-vm slot exec --slot review-a -- sh -c 'ls -l /usr/lib/tilo | head'
 ```
 
@@ -237,7 +237,7 @@ does. Output streams back; the command stops after `--timeout` seconds
 (default 60, exit 124) or 1 MiB of output (exit 125), and its own exit
 status is passed on. The slot's session must be running
 (`tilo-vm slot restart` if not). Compare the sha256 with your build
-(`sha256sum target/release/shell` for a host build); `tilo-vm logs` shows
+(`sha256sum target/release/tilo-session` for a host build); `tilo-vm logs` shows
 what the restarted session printed.
 
 ## Checks
@@ -351,15 +351,15 @@ use the paired component above for an unpublished worktree toolkit rather than
 relabeling it as the VM's existing ABI.
 
 Without a remote builder (CI, or a host whose architecture has none) the same
-cohort comes from CI: the vm-acceptance cohort run builds the branch's launcher, install, shell and apps+runtime as signed layers, and `tilo-vm swap-artifact`
+cohort comes from CI: the vm-acceptance cohort run builds the branch's launcher, install, tilo-session and apps+runtime as signed layers, and `tilo-vm swap-artifact`
 installs them in that order through the daemon's normal signed-cohort checks,
 from a checkout at exactly the producing commit
 (`scripts/vm-acceptance/README.md`). `--builder host`
 stays refused for apps+runtime: it cannot assemble the paired, signed cohort.
 
-### Shell startup companions
+### Session startup companions
 
-A source shell swap installs both `/usr/bin/shell` and the matching
+A source session swap installs both `/usr/bin/tilo-session` and the matching
 `/usr/libexec/tilo-session` from that source tree. The session wrapper is a
 mandatory input: an incomplete build fails before a layer can be imported.
 Published image swaps extract both paths from the same selected image.
@@ -371,11 +371,11 @@ restart keeps the existing login's lock state. Never repair a locked session by
 writing a recovery record. An already-running owner login must use its normal
 logout/login flow when its wrapper needs updating.
 
-To repair a shell-only swap on an older development image, rebuild the paired
+To repair a session-only swap on an older development image, rebuild the paired
 component from the matching source in the existing worktree:
 
 ```sh
-TILO_VM_CARGO="$CARGO" tilo-vm swap shell --slot my-slot --builder host --profile dev
+TILO_VM_CARGO="$CARGO" tilo-vm swap tilo-session --slot my-slot --builder host --profile dev
 ```
 
 Select the registered VM with `TILO_VM` (or `--target` on a current client).

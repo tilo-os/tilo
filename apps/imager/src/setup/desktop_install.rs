@@ -645,21 +645,14 @@ mod native {
                 .any(|line| line.trim() == "TILO_SESSION=/usr/bin/tilo-session")
             || !wrapper
                 .lines()
-                .any(|line| line.trim() == "TILO_SHELL=/usr/bin/tilo-shell")
-            || !wrapper
-                .lines()
                 .any(|line| line.trim() == "SESSION_RUNNER=/usr/libexec/tilo-session-runner")
-            // A login starts the native session; the shell stays reachable
-            // behind its own flag.
+            // A login starts the session the package installs.
             || !wrapper
                 .lines()
                 .any(|line| line.trim() == "session_bin=$TILO_SESSION")
             || !wrapper
                 .lines()
                 .any(|line| line.trim() == "session_mode=--host-desktop")
-            || !wrapper
-                .lines()
-                .any(|line| line.trim() == "session_mode=--host-desktop-session")
             || !wrapper.lines().any(|line| {
                 line.trim()
                     == r#"exec "$SESSION_RUNNER" "$session_bin" "$session_mode" --firstboot --backend drm "$@""#
@@ -1404,7 +1397,7 @@ mod tests {
                 native::validate_session(
                     include_str!("../../../../dist/session/tilo.desktop"),
                     include_str!("../../../../dist/session/tilo-session"),
-                    "#!/bin/sh\nexec tilo-shell --host-desktop-session"
+                    "#!/bin/sh\nexec tilo-session --host-desktop"
                 )
                 .is_err()
             );
@@ -1425,22 +1418,22 @@ mod tests {
                 )
                 .is_err()
             );
-            assert!(native::validate_session("[Desktop Entry]\nExec=/usr/libexec/tilo-session\nExec=/tmp/evil\nType=Application\n", "--host-desktop-session --firstboot", "--host-desktop-session --firstboot").is_err());
+            assert!(native::validate_session("[Desktop Entry]\nExec=/usr/libexec/tilo-session\nExec=/tmp/evil\nType=Application\n", "--host-desktop --firstboot", "--host-desktop --firstboot").is_err());
             assert!(
                 native::validate_session(
                     "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
-                    "#!/bin/sh\nexec tilo-shell --host-desktop-session",
+                    "#!/bin/sh\nexec tilo-session --host-desktop",
                     include_str!("../../../../dist/session/tilo-session-runner")
                 )
                 .is_err()
             );
-            // A wrapper whose default is still the old shell, or a runner
-            // instead of the wrapper, is not this contract.
+            // A wrapper that starts something else, or a runner instead of
+            // the wrapper, is not this contract.
             assert!(
                 native::validate_session(
                     "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
                     &include_str!("../../../../dist/session/tilo-session")
-                        .replace("session_bin=$TILO_SESSION", "session_bin=$TILO_SHELL"),
+                        .replace("session_bin=$TILO_SESSION", "session_bin=/usr/bin/other"),
                     include_str!("../../../../dist/session/tilo-session-runner")
                 )
                 .is_err()

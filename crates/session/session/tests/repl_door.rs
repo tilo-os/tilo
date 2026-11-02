@@ -404,7 +404,10 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         .lines()
         .find(|line| line.contains(NOTE_TITLE))
         .and_then(|line| line.split_whitespace().next())
-        .filter(|word| word.starts_with('n') && word[1..].chars().all(|c| c.is_ascii_digit()))
+        .filter(|word| {
+            word.strip_prefix('n')
+                .is_some_and(|number| number.chars().all(|digit| digit.is_ascii_digit()))
+        })
         .unwrap_or_else(|| panic!("the note goes by a reference: {notebook}"))
         .to_owned();
     // An action read as a value says how it is called.
@@ -530,7 +533,7 @@ fn placing_what_text_finds_twice_keeps_the_session_answering() {
         );
         assert!(!failed, "the program ran: {answer}");
         until(&mut session, "the note placed once more", |session| {
-            placed(session, &note) == placed_before as usize + 1
+            placed(session, &note) == usize::try_from(placed_before).expect("a count") + 1
         });
     }
 
@@ -560,7 +563,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
             shell: Some(ShellLayer::Screen),
             collab: false,
             services: vec![Box::new(apps)],
-            questions: Some(questions.clone()),
+            questions: Some(questions),
             action_plane: ActionPlane::At(root.path().join("plane.sock")),
             agent_door: Some(root.path().join("agent.sock")),
             admit_repl: vec![program],
@@ -709,7 +712,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
             shell: Some(ShellLayer::Screen),
             collab: false,
             services: vec![Box::new(apps)],
-            questions: Some(questions.clone()),
+            questions: Some(questions),
             action_plane: ActionPlane::At(root.path().join("plane.sock")),
             agent_door: Some(root.path().join("agent.sock")),
             admit_repl: vec![program],

@@ -512,8 +512,11 @@ pub fn register_package(
     meta: &tilolang_runtime::meta::Meta,
     module: &tilolang_runtime::ids::ModuleHash,
 ) -> Arc<PackageSchemas> {
+    // The types it declares it holds by its own version; a type it does not (the host's
+    // `Invocation`, a record of another app) it resolves by whatever registered it, as a store
+    // does. An action that writes one of those would otherwise refuse under its package's table.
     let schemas = Arc::new(PackageSchemas {
-        schemas: Arc::new(Schemas::new()),
+        schemas: Arc::new(Schemas::over(fallback())),
     });
     {
         let _current = schemas.enter();

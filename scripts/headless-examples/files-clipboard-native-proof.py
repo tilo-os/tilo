@@ -169,7 +169,7 @@ def proof(binaries, output, trash_restore=False, theme=None):
             env["XDG_DATA_HOME"] = str(data)
         inputs = install(binaries, profile, env)
         inputs.update({name: shared.digest_file(path) for name, path in {
-            "shell": binaries / "shell", "launcher": binaries / "tilo-launcher",
+            "shell": binaries / "tilo-session", "launcher": binaries / "tilo-launcher",
             "proof": pathlib.Path(__file__).resolve(),
             "process_binding": REPO / "crates/runtime/runtime-portal/src/process_binding/linux.rs",
         }.items()})
@@ -186,7 +186,7 @@ def proof(binaries, output, trash_restore=False, theme=None):
         invitation_path = profile / "native-invitation.json"
         for name, command in [
             ("governor", [str(binaries / "examples/packaged_native_governor"), str(profile), str(invitation_path)]),
-            ("shell", [str(binaries / "shell"), "--backend", "headless", "--enable-peer-sync"]),
+            ("shell", [str(binaries / "tilo-session"), "--backend", "headless", "--enable-peer-sync"]),
         ]:
             log = open(output / f"{name}.log", "w")
             logs.append(log)

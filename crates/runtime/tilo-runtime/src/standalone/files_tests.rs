@@ -149,6 +149,21 @@ mod mounted {
         std::fs::metadata(path).unwrap().dev() != std::fs::metadata(parent).unwrap().dev()
     }
 
+    /// The workspace files mounted at `folder`, or `None` where this host
+    /// cannot mount one: asked for the way the host asks, because a device
+    /// and `fusermount3` are not a mount this process may make.
+    fn mounted_workspace(host: &Host, profile: &Path, folder: &Path) -> Option<WorkspaceFiles> {
+        let files = host.start(profile, folder, Projection::Mount);
+        if mounted(folder) {
+            return Some(files);
+        }
+        tilo_test_env::capability_unavailable(
+            tilo_test_env::Capability::Fuse,
+            format_args!("the workspace was not mounted at {}", folder.display()),
+        );
+        None
+    }
+
     #[test]
     fn fuse_is_used_only_where_this_user_can_mount_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -173,11 +188,6 @@ mod mounted {
 
     #[test]
     fn the_mounted_workspace_is_the_folder_after_it_is_unmounted() {
-        tilo_test_env::require_capability!(
-            Fuse,
-            Projection::for_host() == Projection::Mount,
-            "requires /dev/fuse and fusermount3"
-        );
         let dir = tempfile::tempdir().unwrap();
         let profile = dir.path().join("profile");
         let folder = folder_in(&dir.path().join("home"), "Home");
@@ -186,8 +196,9 @@ mod mounted {
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("before.txt"), b"saved before the mount").unwrap();
 
-        let files = host.start(&profile, &folder, Projection::Mount);
-        assert!(mounted(&folder), "the workspace is mounted at its folder");
+        let Some(files) = mounted_workspace(&host, &profile, &folder) else {
+            return;
+        };
         assert_eq!(
             std::fs::read(folder.join("before.txt")).unwrap(),
             b"saved before the mount",

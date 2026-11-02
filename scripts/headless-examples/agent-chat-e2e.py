@@ -175,7 +175,7 @@ class Session:
         return answer
 
     def log(self) -> str:
-        return (self.state / "logs/shell.log").read_text(errors="replace")
+        return (self.state / "logs/session.log").read_text(errors="replace")
 
 
 def _issue_rows(session: "Session", action: str) -> list:

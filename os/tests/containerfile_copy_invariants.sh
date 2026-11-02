@@ -145,14 +145,14 @@ for row in rows:
 
 echo "rootfs COPY rules hold; $instructions-instruction layer budget satisfied"
 
-# The shell's startup companion is now installed by the canonical component
+# The session's startup companion is now installed by the canonical component
 # installer rather than a direct COPY --chmod. Observe that actual image path
 # and its mandatory executable-mode plan instead of accepting a staging COPY.
 containerfile_installs_output "$containerfile" '@manifest/usr/libexec/tilo-session' /usr/libexec/tilo-session
-python3 "$repo/os/scripts/install-components.py" shell --dry-run --format json |
+python3 "$repo/os/scripts/install-components.py" tilo-session --dry-run --format json |
   python3 -c 'import json,sys
 rows = [row for row in json.load(sys.stdin) if row["to"] == "/usr/libexec/tilo-session"]
-assert len(rows) == 1, "shell must install exactly one startup wrapper"
+assert len(rows) == 1, "the session must install exactly one startup wrapper"
 row = rows[0]
 assert row["from"] == "@manifest/usr/libexec/tilo-session", row
 assert row["mode"] == "0755" and not row["optional"], row'

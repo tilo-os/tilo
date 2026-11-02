@@ -90,9 +90,9 @@ plan. Sparse shader experiments below require the supported GPU/Area path.
 | `TILO_CLIENT_SCANOUT`             | Unset: on; exact `0` off | `0` composites every frame instead of page-flipping a qualifying fullscreen client's own buffer. The composited baseline for an A/B measurement, or an escape hatch for a driver that misbehaves with client framebuffers. Latched at first use.                                                                                                                                                       |
 
 Sources: [shader selection](../vendor/vello/src/render.rs),
-[DRM scanout](../crates/session/shell/src/compositor/backend/drm/scanout.rs),
-[KMS flips](../crates/session/shell/src/compositor/backend/drm/kms_flip.rs),
-[XRGB history](../crates/session/shell/src/compositor/backend/drm/xrgb_history.rs).
+[DRM scanout](../crates/session/compositor/src/backend/drm/),
+[KMS flips](../crates/session/compositor/src/backend/drm/),
+[XRGB history](../crates/session/compositor/src/backend/drm/).
 For the recorded `bounds-xrgb-ppt8` experiment, the additional controls were
 `VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 TILO_DRM_XRGB_DAMAGE=1 VELLO_AREA_PPT8=1`;
 these are not production defaults.
@@ -154,9 +154,9 @@ selection. Keep their values identical across steady-state comparisons.
 | `TILO_DMABUF_DEVICE`        | Unset: automatic probe; path                                         | Selects the render node advertised to compositor clients. Empty explicitly disables DMA-BUF advertisement; an unusable override is rejected. Automatic selection requires an openable, known CPU-mappable driver; an override bypasses that driver allow-list. The compositor's foreign-surface route CPU-maps the buffer, so DMA-BUF advertisement does **not** imply a GPU-only zero-copy import. |
 
 Sources: [warmup.rs](../crates/sdk/ui-core/src/warmup.rs),
-[shell startup](../crates/session/shell/src/main.rs),
+[shell startup](../crates/session/session/src/main.rs),
 [startup metrics](../crates/system/tilo-startup-metrics/src/lib.rs),
-[compositor render node](../crates/session/shell/src/compositor/render_node.rs).
+[compositor render node](../crates/session/compositor/src/).
 
 ## UI dashboard benchmark
 
@@ -253,8 +253,8 @@ explicit mode and result.
 `retained_scene_probe` accepts exactly one positional mode: `legacy-dense`,
 `legacy-versioned`, `segmented-dense`, or `segmented-versioned`. It renders one
 **cold** native-4K frame with phase timing; it is not an acceptance benchmark.
-Sources: [redraw_bench.rs](../crates/session/shell/examples/redraw_bench.rs),
-[retained_scene_probe.rs](../crates/session/shell/examples/retained_scene_probe.rs).
+Sources: [redraw_bench.rs](../crates/session/compositor/src/),
+[retained_scene_probe.rs](../crates/session/compositor/src/).
 
 ## Presentation-loop controls
 
@@ -356,9 +356,9 @@ results are not native-4K redraw evidence.
 defaulting to `video.sock` in the projector runtime directory
 (`TILO_PROJECTOR_RUNTIME_DIR`, else `XDG_RUNTIME_DIR/tilo-projector`). It routes
 output, not rendering speed. Sources:
-[capture](../crates/session/shell/src/compositor/projection_capture.rs),
+[capture](../crates/session/session/src/capture.rs),
 [profile schema and defaults](../crates/system/projector/src/lib.rs),
-[native-loop diagnostics](../crates/session/shell/src/compositor/native.rs).
+[native-loop diagnostics](../crates/session/session/src/run.rs).
 
 ## Build and dependency controls
 
@@ -439,7 +439,7 @@ application can enable them through dependency feature unification):
 | `shell/hosted-test-control` | Off                        | Deterministic test seams for `shots` and integration tests, and the sampling heap profiler. Test builds only; never in a shipped shell. Not a frame-rate optimization.                                          |
 
 See [UI features](../crates/sdk/ui-core/Cargo.toml) and
-[shell features](../crates/session/shell/Cargo.toml). `--no-default-features`
+[shell features](../crates/session/session/Cargo.toml). `--no-default-features`
 changes the workload/capability set; document it in any benchmark recipe rather
 than silently comparing different feature sets.
 

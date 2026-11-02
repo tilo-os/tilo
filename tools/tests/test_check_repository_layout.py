@@ -156,7 +156,7 @@ class RepositoryLayoutTests(unittest.TestCase):
                     "tracked file uses retired source root `os/usr/lib/systemd/system/tilo-power.service`; move it under `crates/system/power/`: os/usr/lib/systemd/system/tilo-power.service",
                     "tracked file uses retired source root `plan/`; move it under `docs/architecture/`: plan/security.md",
                     "tracked file uses retired source root `release/`; move it under `dist/`: release/local-models/recipe.sh",
-                    "tracked file uses retired source root `shell/`; move it under `crates/session/shell/`: shell/src/main.rs",
+                    "tracked file uses retired source root `shell/`; move it under `crates/session/session/`: shell/src/main.rs",
                     "tracked file uses retired source root `tools/check-windows-`; move it under `tools/windows/check-`: tools/check-windows-start-apps.ps1",
                     "tracked file uses retired source root `tools/gstreamer-licenses/`; move it under `tools/windows/gstreamer-licenses/`: tools/gstreamer-licenses/sources.json",
                     "tracked file uses retired source root `tools/install-windows-`; move it under `tools/windows/install-`: tools/install-windows-apps.ps1",

@@ -20,7 +20,7 @@ selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
 identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
 recipient_unit="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service"
 recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
-shell_main="$repo/crates/session/shell/src/linux_main.rs"
+session_main="$repo/crates/session/session/src/main.rs"
 
 grep -Fqx 'readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "$wrapper"
 grep -Fqx '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE GLIBC_TUNABLES' "$wrapper"
@@ -55,15 +55,16 @@ if [ -e "$identity_unit" ] || grep -q 'tilo-identity\.service' "$recipient_unit"
   echo 'a pre-session identity unit is back' >&2
   exit 1
 fi
-# Helper entry points must return before long-lived compositor services bind.
-# GPU selection intentionally happens earlier now so every process shape uses
-# the same explicit device policy; line-order checks against an older startup
+# The identity helper must return before the long-lived session services bind:
+# the process verifies or repairs this device's identity, then starts the desk.
+# GPU selection intentionally happens elsewhere so every process shape uses the
+# same explicit device policy; line-order checks against an older startup
 # layout made this lifecycle test fail without proving a runtime defect.
-identity_prepare_line=$(grep -n 'if let Some(exit_code) = prepare_identity(provision_identity_requested)' "$shell_main" | cut -d: -f1)
-invite_broker_line=$(grep -n 'let _invite_broker = match identity_provisioning::start_configured_invite_broker()' "$shell_main" | cut -d: -f1)
-if [ -z "$identity_prepare_line" ] || [ -z "$invite_broker_line" ] \
-   || [ "$identity_prepare_line" -ge "$invite_broker_line" ]; then
-  echo 'identity helper no longer returns before compositor services start' >&2
+identity_line=$(grep -n 'tilo_session::startup::identity()' "$session_main" | cut -d: -f1)
+desk_start_line=$(grep -n '^    start(ours, command, line,' "$session_main" | cut -d: -f1)
+if [ -z "$identity_line" ] || [ -z "$desk_start_line" ] \
+   || [ "$identity_line" -ge "$desk_start_line" ]; then
+  echo 'identity helper no longer returns before the session services start' >&2
   exit 1
 fi
 grep -Fqx 'PartOf=graphical-session.target' "$recipient_unit"
@@ -122,26 +123,22 @@ grep -Fqx 'Name=Tilo' \
   "$repo/os/usr/share/wayland-sessions/tilo-session.desktop"
 grep -Fqx 'X-Tilo-Session-Default=true' \
   "$repo/os/usr/share/wayland-sessions/tilo-session.desktop"
-# A login with no flag runs the native session; the old shell is still
-# offered, sorting after it, behind its own flag.
+# A login with no flag runs the native session, and the image offers no second
+# one.
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/tilo-session.desktop"
-grep -Fqx 'Name=Tilo (old shell)' \
-  "$repo/os/usr/share/wayland-sessions/shell.desktop"
-grep -Fqx 'Exec=/usr/libexec/tilo-session --shell --backend drm' \
-  "$repo/os/usr/share/wayland-sessions/shell.desktop"
-[ "$(ls "$repo/os/usr/share/wayland-sessions" | tr '\n' ' ')" = 'shell.desktop tilo-session.desktop ' ] || {
-  echo 'the image must ship exactly the shell and native login sessions' >&2
+[ "$(ls "$repo/os/usr/share/wayland-sessions" | tr '\n' ' ')" = 'tilo-session.desktop ' ] || {
+  echo 'the image must ship exactly one login session' >&2
   exit 1
 }
-# The image build refuses a shell or X11 bridge with an unresolved library.
-grep -Fq 'missing="$(ldd /usr/bin/shell /usr/bin/xwayland-satellite | awk '\''/not found/ { print $1 }'\'')"' \
+# The image build refuses a session or X11 bridge with an unresolved library.
+grep -Fq 'missing="$(ldd /usr/bin/tilo-session /usr/bin/xwayland-satellite | awk '\''/not found/ { print $1 }'\'')"' \
   "$repo/os/Containerfile"
 grep -Fq 'if [ -n "$missing" ]; then' "$repo/os/Containerfile"
-grep -Fq 'shell or xwayland-satellite has unresolved runtime libraries:' "$repo/os/Containerfile"
+grep -Fq 'the session or xwayland-satellite has unresolved runtime libraries:' "$repo/os/Containerfile"
 engine_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
-shell_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/shell /usr/bin/xwayland-satellite' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
-test "$engine_deps_line" -lt "$shell_link_check_line"
+session_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/tilo-session /usr/bin/xwayland-satellite' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
+test "$engine_deps_line" -lt "$session_link_check_line"
 grep -Fq 'the browser engine has unresolved runtime libraries:' "$repo/os/Containerfile"
 
 tmp_root="${TMPDIR:-/tmp}"
@@ -154,7 +151,7 @@ trap cleanup EXIT INT TERM
 log="$tmp/log"
 fake_systemctl="$tmp/systemctl"
 fake_dbus_update="$tmp/dbus-update-activation-environment"
-fake_shell="$tmp/shell"
+fake_compositor="$tmp/tilo-session-bin"
 fake_native="$tmp/native-session"
 test_wrapper="$tmp/tilo-session"
 runtime_dir="$tmp/runtime"
@@ -170,7 +167,7 @@ cat >"$fake_dbus_update" <<'SH'
 printf 'dbus-update %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
 exit 0
 SH
-cat >"$fake_shell" <<'SH'
+cat >"$fake_compositor" <<'SH'
 #!/bin/bash
 # Both compositor binaries run this one body; its name is what tells them
 # apart in the log.
@@ -243,19 +240,17 @@ if [ "${TILO_SESSION_HOLD_PIPE:-0}" = 1 ]; then
 fi
 exit "${TILO_SESSION_DESKTOP_STATUS:-0}"
 SH
-cp "$fake_shell" "$fake_native"
-chmod 0755 "$fake_systemctl" "$fake_dbus_update" "$fake_shell" "$fake_native"
+cp "$fake_compositor" "$fake_native"
+chmod 0755 "$fake_systemctl" "$fake_dbus_update" "$fake_native"
 tilo_stage_script "$wrapper" "$test_wrapper" \
   SYSTEMCTL="$fake_systemctl" \
   DBUS_UPDATE="$fake_dbus_update" \
-  SHELL_BIN="$fake_shell" \
-  NATIVE_SESSION_BIN="$fake_native" \
+  COMPOSITOR_BIN="$fake_native" \
   IMAGE_FLAVOUR="$tmp/image-flavour" \
   FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER"
 printf 'dev\n' >"$tmp/image-flavour"
 grep -Fqx "readonly SYSTEMCTL=$fake_systemctl" "$test_wrapper"
-grep -Fqx "readonly SHELL_BIN=$fake_shell" "$test_wrapper"
-grep -Fqx "readonly NATIVE_SESSION_BIN=$fake_native" "$test_wrapper"
+grep -Fqx "readonly COMPOSITOR_BIN=$fake_native" "$test_wrapper"
 
 # A login with no flag runs the native session, under the lifecycle target and
 # environment, with the remaining arguments and a flight record.
@@ -290,8 +285,7 @@ missing_wrapper="$tmp/tilo-session-missing-native"
 tilo_stage_script "$wrapper" "$missing_wrapper" \
   SYSTEMCTL="$fake_systemctl" \
   DBUS_UPDATE="$fake_dbus_update" \
-  SHELL_BIN="$fake_shell" \
-  NATIVE_SESSION_BIN="$tmp/no-native-session" \
+  COMPOSITOR_BIN="$tmp/no-native-session" \
   IMAGE_FLAVOUR="$tmp/no-image-flavour" \
   FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER"
 set +e
@@ -318,20 +312,18 @@ set -e
 [ "$status" = 3 ]
 cmp "$tmp/native-expected" "$native_log"
 
-# The old shell stays reachable: asking for it runs that compositor under the
-# same target, and the flight record names it as the session's shell.
-shell_log="$tmp/shell-log"
+# No argument names another session: the flag the old shell took is refused
+# before any target starts.
 set +e
-XDG_STATE_HOME="$tmp/shell-state" XDG_RUNTIME_DIR="$runtime_dir" \
-  TILO_SESSION_TEST_LOG="$shell_log" TILO_SESSION_DESKTOP_STATUS=4 \
-  "$test_wrapper" --shell --backend drm >"$tmp/shell-stdout"
+XDG_STATE_HOME="$tmp/refused-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$tmp/refused-log" \
+  "$test_wrapper" --shell --backend drm >/dev/null 2>"$tmp/refused-err"
 status=$?
 set -e
-[ "$status" = 4 ]
-grep -Fqx 'shell --backend drm' "$shell_log"
-shell_trace="$tmp/shell-state/tilo/session-logs/frame-trace.csv"
-grep -Fqx "shell-output --backend drm trace=$shell_trace" "$tmp/shell-stdout"
-head -n 1 "$tmp/shell-state/tilo/session-logs/latest.log" | grep -Fq " shell=$fake_shell"
+[ "$status" = 2 ]
+grep -Fqx 'tilo-session: unknown argument: --shell' "$tmp/refused-err"
+[ ! -e "$tmp/refused-log" ]
+[ ! -e "$tmp/refused-state" ]
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 
 # Successful verification starts the desktop, preserves its exit status, and
@@ -378,8 +370,7 @@ slow_wrapper="$tmp/tilo-session-slow-recorder"
 tilo_stage_script "$wrapper" "$slow_wrapper" \
   SYSTEMCTL="$fake_systemctl" \
   DBUS_UPDATE="$fake_dbus_update" \
-  SHELL_BIN="$fake_shell" \
-  NATIVE_SESSION_BIN="$fake_native" \
+  COMPOSITOR_BIN="$fake_native" \
   IMAGE_FLAVOUR="$tmp/no-image-flavour" \
   FLIGHT_RECORDER="$slow_recorder"
 slow_dir="$tmp/slow-state/tilo/session-logs"
@@ -436,8 +427,7 @@ late_ready_wrapper="$tmp/tilo-session-late-ready"
 tilo_stage_script "$wrapper" "$late_ready_wrapper" \
   SYSTEMCTL="$fake_systemctl" \
   DBUS_UPDATE="$fake_dbus_update" \
-  SHELL_BIN="$fake_shell" \
-  NATIVE_SESSION_BIN="$fake_native" \
+  COMPOSITOR_BIN="$fake_native" \
   IMAGE_FLAVOUR="$tmp/no-image-flavour" \
   FLIGHT_RECORDER="$late_ready_recorder"
 set +e

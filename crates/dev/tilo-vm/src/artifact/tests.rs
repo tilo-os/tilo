@@ -146,7 +146,7 @@ fn wrong_source_builder_run_architecture_or_incomplete_cohort_fails_closed() {
             "missing" => {
                 j["layers"].as_array_mut().unwrap().remove(0);
             }
-            "duplicate" => j["layers"][0]["component"] = "shell".into(),
+            "duplicate" => j["layers"][0]["component"] = "tilo-session".into(),
             "inventory" => j["layers"][0]["source_digest"] = "e".repeat(64).into(),
             "header" => j["layers"][0]["toolchain"] = "different rustc".into(),
             "cached" => j["layers"][0]["layer_hash"] = "e".repeat(64).into(),

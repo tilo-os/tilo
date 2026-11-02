@@ -42,7 +42,7 @@ import time
 from reaper import die_with_parent
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-SHELL = REPO / "target" / "debug" / "shell"
+SHELL = REPO / "target" / "debug" / "tilo-session"
 ACTIONS = "actions"
 
 failures: list[str] = []
@@ -106,7 +106,7 @@ class Session:
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
-        self.log_path = os.path.join(self.dir, "shell.log")
+        self.log_path = os.path.join(self.dir, "session.log")
         self.log = open(self.log_path, "w")
         self.proc = subprocess.Popen(
             # `--mode native` named rather than defaulted: it is the
@@ -316,7 +316,7 @@ def main() -> int:
 
     if not SHELL.exists():
         print(f"FAIL: compositor not built at {SHELL}", file=sys.stderr)
-        print("      run: cargo build -p shell --bin shell", file=sys.stderr)
+        print("      run: cargo build -p tilo-session --bin tilo-session", file=sys.stderr)
         return 1
     # A stale binary produces a verdict about code that is not under
     # test, and produces it silently, so say how old it is.

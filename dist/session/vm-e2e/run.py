@@ -370,7 +370,7 @@ def compositor_health(st: dict, pid: str) -> list[str]:
     if st.get("crash_message"):
         problems.append(f"crash: {st['crash_message']}")
     for key, what in (("crash_logs", "crash log(s) in ~/.cache/tilo/crashes"),
-                      ("coredumps", "tilo-shell core dump(s)"),
+                      ("coredumps", "tilo-session core dump(s)"),
                       ("unexpected_exit", "'compositor exited without a logout request' in the journal"),
                       ("panics", "panic line(s) in the journal or session log")):
         if int(st.get(key) or 0):

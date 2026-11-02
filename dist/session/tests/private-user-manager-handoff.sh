@@ -117,13 +117,13 @@ private_manager() {
         'printf "tilo-portal-start:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
         'trap '\''printf "tilo-portal-stop\\n" >>"$TILO_SESSION_TEST_LOG"; exit 0'\'' HUP INT TERM' \
         'while :; do sleep 1; done' \
-        >"$root/tilo-shell"
+        >"$root/tilo-session"
     printf '%s\n' '#!/bin/sh' 'exec env -u DBUS_SESSION_BUS_ADDRESS /usr/bin/systemctl "$@"' >"$root/systemctl"
     printf '%s\n' \
         '#!/bin/sh' \
         'printf "dbus-activation:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
         >"$root/dbus-probe"
-    chmod 0755 "$root/record-event" "$root/tilo-shell" "$root/systemctl" "$root/dbus-probe"
+    chmod 0755 "$root/record-event" "$root/tilo-session" "$root/systemctl" "$root/dbus-probe"
     for probe_name in Tilo Empty Gnome; do
         printf '[D-BUS Service]\nName=org.tilo.SessionProbe%s\nExec=%s\n' \
             "$probe_name" "$root/dbus-probe" \
@@ -137,7 +137,7 @@ private_manager() {
         LOGINCTL="$root/loginctl" \
         FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER" || return 1
     tilo_stage_script "$repo/dist/session/tilo-session" "$root/tilo-session" \
-        TILO_SHELL="$root/tilo-shell" \
+        TILO_SESSION="$root/tilo-session" \
         SESSION_RUNNER="$root/tilo-session-runner" || return 1
 
     "$systemd_bin" --user --unit=basic.target >"$root/systemd.stdout" 2>"$root/systemd.stderr" &

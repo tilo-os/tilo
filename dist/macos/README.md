@@ -7,9 +7,7 @@ sign, package, verify and explicitly authorized notarization stages.
 `Tilo.app` is how the standalone per-user runtime reaches a stock Mac. Its
 visible app is the Store (`so.tilo.store`: registry search and install),
 branded Tilo; beside it is `tilo-runtime`, which every SDK app attaches to.
-This is the distributed bundle (`so.tilo.runtime`). The developer shell
-bundle from `crates/session/shell/build-macos.sh` (`so.tilo.shell`,
-`target/macos/Tilo.app`) is unrelated.
+This is the distributed bundle (`so.tilo.runtime`).
 
 ```
 Tilo.app/Contents/

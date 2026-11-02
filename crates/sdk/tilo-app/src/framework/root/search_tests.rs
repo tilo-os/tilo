@@ -432,3 +432,181 @@ fn edits_while_an_index_builds_cost_one_build_after_it() {
     assert!(search(&mut app).contains(&"Storm Tales 4".to_owned()));
     assert_eq!(index_builds(&mut app), 2);
 }
+
+thread_local! {
+    static ITEMS_OPENED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A note: a `#[model(label)]` item, so search finds it without the app
+/// writing a search function.
+#[derive(Model, Default, Clone, PartialEq)]
+pub struct Note {
+    #[model(label)]
+    pub title: String,
+}
+
+#[derive(Model, Default)]
+pub struct Notebook {
+    pub notes: Collection<Note>,
+}
+
+fn notebook_scopes(_: &Notebook) -> Vec<ScopeDecl> {
+    vec![ScopeDecl::new("test.notebook/notes/7", "One note")]
+}
+
+#[resource(kind = "test.notebook", label = "Notebook", scopes = notebook_scopes)]
+impl Notebook {
+    /// Add a note.
+    #[action]
+    pub fn add(&mut self, cx: &mut ActionCx, title: String) {
+        self.notes.push(cx.id(), Note { title });
+    }
+}
+
+/// What a service the app shows finds: no item of its resource, a published
+/// action of its own and a shape of its own (a video).
+fn videos() -> Vec<SearchEntry> {
+    let mut video = SearchEntry::new("Nyan cat", "Tube").invoking(
+        tilo_actions::ActionAddress::new("test.tube:service", "play"),
+    );
+    video.row = Some(
+        tilo_resource::SearchRow::shaped(tilo_resource::SearchRowShape::Media {
+            byline: Some("Tube".into()),
+            duration: Some("4:12".into()),
+        })
+        .icon("play"),
+    );
+    vec![video]
+}
+
+struct NotebookApp;
+
+impl ResourceApp for NotebookApp {
+    type Resource = Notebook;
+    const ID: &'static str = "so.tilo.test-notebook";
+    const TITLE: &'static str = "Notebook";
+
+    fn view(cx: &mut ViewCx<Notebook>) -> Element {
+        cx.on_open(|anchor| ITEMS_OPENED.with_borrow_mut(|opened| opened.push(anchor.to_owned())));
+        cx.publishing(
+            crate::framework::Publishes::new().search_entries(videos),
+            Box::new(Column::new()),
+        )
+    }
+}
+
+/// What the app's one search source finds for `needle`.
+fn found(app: &mut TestApp<NotebookApp>, needle: &str) -> Vec<ui_core::search::SearchResult> {
+    app.harness()
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            RootSearch::search_providers(root)[0].search(needle)
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_labelled_item_is_found_as_the_reference_that_opens_it() {
+    ITEMS_OPENED.with_borrow_mut(Vec::clear);
+    let mut app = TestApp::<NotebookApp>::new().unwrap();
+    app.invoke(Notebook::ADD.with("Groceries")).unwrap();
+    let hit = found(&mut app, "groceries")
+        .into_iter()
+        .find(|hit| hit.title == "Groceries")
+        .expect("a labelled item is found without the app writing a search");
+    let Some(ui_core::search::SearchRow::Item {
+        app: keeper,
+        kind,
+        id,
+    }) = hit.row.clone()
+    else {
+        panic!(
+            "an item hit is the reference its app draws, not {:?}",
+            hit.row
+        );
+    };
+    assert_eq!(keeper, "so.tilo.test-notebook");
+    assert_eq!(kind, "test.notebook.notes");
+    assert_eq!(hit.action_id, format!("test.notebook/notes/{id}"));
+
+    app.harness()
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            let mut doc = ui_core::automerge::AutoCommit::new();
+            RootSearch::activate_search_result(
+                root,
+                &hit.action_id,
+                &mut ui_core::widget::Edits::lend(&mut doc),
+                &ui_core::automerge::ROOT,
+            );
+        })
+        .unwrap();
+    ITEMS_OPENED.with_borrow(|opened| {
+        assert_eq!(opened.as_slice(), [hit.action_id.as_str()]);
+    });
+}
+
+#[test]
+fn a_services_hits_are_listed_with_the_items_of_the_app() {
+    let mut app = TestApp::<NotebookApp>::new().unwrap();
+    app.invoke(Notebook::ADD.with("Nyan notes")).unwrap();
+    app.settle();
+    let hits = found(&mut app, "nyan");
+    let service = hits
+        .iter()
+        .find(|hit| hit.title == "Nyan cat")
+        .expect("the service's hit is in the same list as the app's items");
+    assert!(
+        matches!(service.row, Some(ui_core::search::SearchRow::Media { .. })),
+        "the service says how its hit reads: {:?}",
+        service.row
+    );
+    assert_eq!(
+        service.action_address(),
+        Some(tilo_actions::ActionAddress::new(
+            "test.tube:service",
+            "play"
+        )),
+        "choosing it runs the action the service publishes"
+    );
+    let item = hits
+        .iter()
+        .find(|hit| hit.title == "Nyan notes")
+        .expect("the app's own item is listed beside it");
+    assert!(matches!(
+        item.row,
+        Some(ui_core::search::SearchRow::Item { .. })
+    ));
+}
+
+#[test]
+fn a_record_the_person_may_not_read_is_found_nothing() {
+    let mut app = TestApp::<NotebookApp>::new().unwrap();
+    app.invoke(Notebook::ADD.with("Groceries")).unwrap();
+    app.settle();
+    assert_eq!(found(&mut app, "groceries").len(), 1);
+    let scopes = app
+        .harness()
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            RootSearch::search_providers(root)[0].search_scopes()
+        })
+        .unwrap();
+    assert_eq!(
+        scopes.len(),
+        1,
+        "the app's own scopes are there to narrow it"
+    );
+    app.leave_workspace();
+    assert!(
+        found(&mut app, "groceries").is_empty(),
+        "nothing of a record they may not read is found"
+    );
+    let (scopes, facets) = app
+        .harness()
+        .with_widget_mut(|root: &mut ResourceRoot| {
+            let providers = RootSearch::search_providers(root);
+            let search = &providers[0];
+            (search.search_scopes(), search.facets())
+        })
+        .unwrap();
+    assert!(scopes.is_empty(), "nor the parts of it a search narrows to");
+    assert!(facets.is_empty(), "nor what its entries are filed under");
+}

@@ -162,10 +162,7 @@ impl ServiceConsumerCapability {
                         })
                 })
             || self.receiving_route_qualification_sha256 != self.measured_closure_hash()?
-            || !matches!(
-                self.receiving_shell_path.as_str(),
-                "/usr/bin/shell" | "/usr/bin/tilo-shell"
-            )
+            || self.receiving_shell_path != crate::installed_consumers::SHELL
             || (self.protocol == 2 && self.origin_storage_qualification_sha256.is_none())
             || self
                 .origin_storage_qualification_sha256

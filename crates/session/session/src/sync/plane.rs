@@ -41,11 +41,24 @@ fn plane_runtime(
 /// runs, and this device's action plane, which answers the person's other
 /// devices on it.
 pub(crate) struct Serving {
-    pub(crate) link: Option<Arc<ChannelLink>>,
-    pub(crate) actions: Arc<std::sync::OnceLock<DeviceActions>>,
     /// This device's endpoint, once it has bound, and what answers a call's
     /// lanes on it.
     pub(crate) bound: Bound,
+    /// What answers on that endpoint beside the workspaces' own traffic.
+    pub(crate) beside: Beside,
+}
+
+/// What the session serves on this device's endpoint beside the workspaces'
+/// traffic: the channels they use, this device's action plane, and whatever
+/// else the session was handed — this device as an exit for the person's
+/// other devices.
+pub(crate) struct Beside {
+    pub(crate) link: Option<Arc<ChannelLink>>,
+    pub(crate) actions: Arc<std::sync::OnceLock<DeviceActions>>,
+    /// The protocols the session answers besides its own, handed over before
+    /// the endpoint binds: an endpoint's protocols are fixed once it is
+    /// bound, so whatever answers on it is here from the first pass.
+    pub(crate) protocols: tilo_network_actor::local_host::Protocols,
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
@@ -78,16 +91,14 @@ pub(super) fn run(
     enrollments: std::sync::mpsc::Sender<Enrolled>,
     ready: std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     wake: Arc<dyn Fn() + Send + Sync>,
-    Serving {
-        link,
-        actions,
-        bound,
-        ..
-    }: Serving,
+    Serving { bound, beside }: Serving,
 ) {
     let Some(runtime) = plane_runtime(&ready) else {
         return;
     };
+    // The channels' side of the plane, which the loop below carries what the
+    // session says to.
+    let link = beside.link.clone();
     runtime.block_on(async move {
         let Some(Listening {
             endpoint,
@@ -101,9 +112,8 @@ pub(super) fn run(
             engine.as_ref(),
             arrivals,
             wake,
-            link.clone(),
             &ready,
-            &actions,
+            beside,
             &bound,
         )
         .await
@@ -177,9 +187,12 @@ async fn listening(
     engine: Option<&Arc<Engine>>,
     arrivals: std::sync::mpsc::Sender<NetEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
-    link: Option<Arc<ChannelLink>>,
     ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
-    actions: &Arc<std::sync::OnceLock<DeviceActions>>,
+    Beside {
+        link,
+        actions,
+        protocols,
+    }: Beside,
     bound: &Bound,
 ) -> Option<Listening> {
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
@@ -224,6 +237,9 @@ async fn listening(
         tilo_call_lane::ALPN.to_vec(),
         Box::<dyn iroh::protocol::DynProtocolHandler>::from(bound.lane.handler()),
     ));
+    // What the session serves beside its own planes: this device's exit for
+    // the person's other devices, when it offers one.
+    served.extend(protocols);
     let _ = bound.endpoint.set(endpoint.clone());
     if let Some(identity) = identity {
         let device = DeviceActions::start(identity, endpoint.clone(), engine.cloned());

@@ -38,19 +38,19 @@ devices`). Every command below then works on it.
 ```sh
 tilo-vm                      # where am I: VM, slot, generation, session, next steps
 tilo-vm slot create --headless
-tilo-vm swap shell           # sync this worktree, build in the VM, restart your session
+tilo-vm swap tilo-session    # sync this worktree, build in the VM, restart your session
 tilo-vm shot -o target/shot.png
 tilo-vm control actions list
-tilo-vm slot exec -- sha256sum /usr/bin/shell   # what your slot sees (guide swapping)
+tilo-vm slot exec -- sha256sum /usr/bin/tilo-session   # what your slot sees (guide swapping)
 tilo-vm rollback             # back to the previous generation
 tilo-vm rollback --forward   # and forward again
 ```
 
-## Headful: your shell on a real display path
+## Headful: your desktop on a real display path
 
 ```sh
 tilo-vm slot create --headful       # own vkms display and seat: real DRM and libinput
-tilo-vm swap shell                  # your build, session restarted
+tilo-vm swap tilo-session           # your build, session restarted
 tilo-vm shot -o target/headful.png  # the slot compositor's own frame
 tilo-vm input key super             # real keyboard events on the slot's seat
 

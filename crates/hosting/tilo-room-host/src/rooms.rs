@@ -36,6 +36,7 @@ pub use content::{ContentKeeper, RoomContent};
 mod desktop_writes;
 mod device_keys;
 mod device_plane;
+pub use device_plane::HostJobs;
 #[cfg(test)]
 mod device_rejoin_tests;
 #[cfg(test)]
@@ -925,6 +926,9 @@ struct RoomsInner {
     /// The plane the workspaces answer their members' devices on, as this
     /// host's own device ([`device_plane`]).
     plane: tilo_peer_state::actions::ActionPlane,
+    /// The work this host runs for its workspaces' devices: none until an
+    /// embedder hands it a job runner ([`Rooms::run_jobs`]).
+    jobs: Arc<device_plane::HostWork>,
     /// Held while a room is created: two devices placing the same room at
     /// once create it once.
     creating: AsyncMutex<()>,
@@ -1127,10 +1131,12 @@ impl Rooms {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         let listings = listing::Listings::open(&dir);
         let rooms = Arc::new(device_plane::RoomsMap::default());
+        let (plane, jobs) = device_plane::plane(Arc::clone(&rooms), host.key.clone());
         let this = Self {
             inner: Arc::new(RoomsInner {
                 dir: dir.clone(),
-                plane: device_plane::plane(Arc::clone(&rooms), host.key.clone()),
+                plane,
+                jobs,
                 rooms,
                 calls: Arc::default(),
                 creating: AsyncMutex::new(()),
@@ -1416,6 +1422,14 @@ impl Rooms {
     #[must_use]
     pub fn plane(&self) -> tilo_peer_state::actions::ActionPlane {
         self.inner.plane.clone()
+    }
+
+    /// Run the transform an offloadable action declares for the workspaces
+    /// governed here as a compute job on `jobs`: the host then answers the
+    /// offers of its workspaces' devices with what `jobs` knows of itself, and
+    /// runs the invocations it won through it ([`HostJobs`]).
+    pub fn run_jobs(&self, jobs: Arc<dyn HostJobs>) {
+        self.inner.jobs.serve(jobs);
     }
 
     /// The current role of `device` only when room Write permission is allowed,

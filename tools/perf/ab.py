@@ -448,7 +448,7 @@ def run_wakeups(ctx: RunContext) -> list[record.Record]:
         cwd = ctx.cwd["it"]
     call(["bash", ctx.repo / "tools/test-env.sh", *command],
          log, cwd, {"TILO_IDLE_WAKEUP_WINDOW_SECS": str(ctx.options.wakeups_window),
-                    "TILO_IDLE_SHELL_BIN": str(ctx.bins["shell"])}, check=False)
+                    "TILO_IDLE_SESSION_BIN": str(ctx.bins["shell"])}, check=False)
     return adapters.idle_wakeups([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
@@ -473,12 +473,12 @@ def run_search(ctx: RunContext) -> list[record.Record]:
     return adapters.files_name_index([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
-RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "shell", "--bin", "shell",
+RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "tilo-session", "--bin", "tilo-session",
                  "--features", "dev-overrides")
 # The agent task's client and seeded desktop, as perf-scheduled.sh builds them.
 AGENT_TASK_BUILD = (*RELEASE_SHELL, "-p", "tilo-runtime", "--bin", "tilo-runtime-mcp",
                     "--example", "agent_task_desktop")
-AGENT_TASK_SEEDER = "crates/session/shell/examples/agent_task_desktop.rs"
+AGENT_TASK_SEEDER = "crates/session/compositor/src/agent_task_desktop.rs"
 
 
 def run_browser(ctx: RunContext) -> list[record.Record]:
@@ -516,23 +516,23 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
                                  "keystroke_writes"),
                                 "target/debug/examples/keystroke_writes")}),
     Group("latency", "dev", "lavapipe",
-          (("cargo", "build", "--locked", "-p", "shell", "--bin", "shell"),),
-          {"shell": "target/debug/shell"}, {}, {}, run_latency),
+          (("cargo", "build", "--locked", "-p", "tilo-session", "--bin", "tilo-session"),),
+          {"shell": "target/debug/tilo-session"}, {}, {}, run_latency),
     Group("agent", "release", "lavapipe", (RELEASE_SHELL,),
-          {"shell": "target/release/shell"}, {}, {}, run_agent,
+          {"shell": "target/release/tilo-session"}, {}, {}, run_agent,
           {"agent_task_desktop": (AGENT_TASK_SEEDER, AGENT_TASK_BUILD,
                                   "target/release/examples/agent_task_desktop"),
            "tilo-runtime-mcp": (AGENT_TASK_SEEDER, AGENT_TASK_BUILD, "target/release/tilo-runtime-mcp")}),
     Group("render", "release", "lavapipe",
           (("cargo", "build", "--locked", "--release", "-p", "ui-examples", "--example", "ui-perf"),
-           ("cargo", "build", "--locked", "--release", "-p", "shell", "--example", "redraw_bench"),
+           ("cargo", "build", "--locked", "--release", "-p", "tilo-session", "--example", "redraw_bench"),
            ("cargo", "build", "--locked", "--release", "-p", "tilo-app", "--features", "test-support",
             "--example", "framework-scaling")),
           {"ui-perf": "target/release/examples/ui-perf", "redraw_bench": "target/release/examples/redraw_bench",
            "framework-scaling": "target/release/examples/framework-scaling"},
           {}, {}, run_render,
-          {"strip_pan_bench": ("crates/session/shell/examples/strip_pan_bench.rs",
-                               ("cargo", "build", "--locked", "--release", "-p", "shell", "--example",
+          {"strip_pan_bench": ("crates/session/compositor/src/strip_pan_bench.rs",
+                               ("cargo", "build", "--locked", "--release", "-p", "tilo-session", "--example",
                                 "strip_pan_bench"),
                                "target/release/examples/strip_pan_bench"),
            "notes-latency": ("apps/notes/examples/notes-latency.rs",
@@ -540,17 +540,17 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
                               "notes-latency"),
                              "target/release/examples/notes-latency")}),
     Group("wakeups", "dev", "lavapipe",
-          (("cargo", "build", "--locked", "-p", "shell", "--example", "idle-wakeups",
+          (("cargo", "build", "--locked", "-p", "tilo-session", "--example", "idle-wakeups",
             "--features", "scheduled-idle-benchmark"),
-           ("cargo", "build", "--locked", "-p", "shell", "--bin", "shell")),
-          {"shell": "target/debug/shell", "idle-wakeups": "target/debug/examples/idle-wakeups"},
-          {}, {"shell": "target/debug/shell"}, run_wakeups),
+           ("cargo", "build", "--locked", "-p", "tilo-session", "--bin", "tilo-session")),
+          {"shell": "target/debug/tilo-session", "idle-wakeups": "target/debug/examples/idle-wakeups"},
+          {}, {"shell": "target/debug/tilo-session"}, run_wakeups),
     Group("fs", "dev", "none", (),
           {}, {"performance_timing": (("cargo", "test", "--locked", "-p", "tilo-fs", "--test",
                                        "performance_timing", "--no-run"), "performance_timing")},
           {}, run_fs),
     Group("search", "dev", "none", (),
-          {}, {"shell-lib": (("cargo", "test", "--locked", "-p", "shell", "--lib", "--no-run"), "shell")},
+          {}, {"shell-lib": (("cargo", "test", "--locked", "-p", "tilo-session", "--lib", "--no-run"), "shell")},
           {}, run_search),
     Group("browser", "release", "swiftshader", (BROWSER_BUILD,),
           {"browser-bundle": BROWSER_BUNDLE}, {}, {}, run_browser),
@@ -591,12 +591,12 @@ def side_group(group: Group, repo: Path) -> Group:
         return dataclasses.replace(group, tests={"performance_timing": (
             ("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_gate", "--no-run"),
             "performance_gate")})
-    if group.name != "wakeups" or (repo / "crates/session/shell/examples/idle-wakeups.rs").is_file():
+    if group.name != "wakeups" or (repo / "crates/session/compositor/src/idle-wakeups.rs").is_file():
         return group
     return dataclasses.replace(
-        group, builds=(("cargo", "build", "--locked", "-p", "shell", "--bin", "shell"),),
-        binaries={"shell": "target/debug/shell"},
-        tests={"it": (("cargo", "test", "--locked", "-p", "shell", "--test", "it", "--no-run"), "it")})
+        group, builds=(("cargo", "build", "--locked", "-p", "tilo-session", "--bin", "tilo-session"),),
+        binaries={"shell": "target/debug/tilo-session"},
+        tests={"it": (("cargo", "test", "--locked", "-p", "tilo-session", "--test", "it", "--no-run"), "it")})
 
 
 def artifact(repo: Path, path: str) -> Path:

@@ -168,24 +168,24 @@ class ActionConfirmationTests(unittest.TestCase):
             chrome("tab.close", "label", "subtitle", "keywords", |_, _| Ok(())),
         ];
         """
-        errors = check.check_source("crates/session/shell/src/shell/actions/all.rs", source)
+        errors = check.check_source("crates/session/session/src/actions/all.rs", source)
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("`app.uninstall`, a deletion", errors[0])
 
     def test_an_action_id_named_by_a_constant_reads_the_constant(self):
         # An `Action` names its id with the constant the module that owns the
         # action declares, which is not the file that lists it.
-        self.assertEqual(check.string_constant("APP_UNINSTALL_ID"), "app.uninstall")
+        self.assertEqual(check.string_constant("UNINSTALL_ACTION"), "app.uninstall")
         source = """
         pub(crate) const ALL: &'static [Action] = &[
             Action {
-                id: APP_UNINSTALL_ID,
+                id: UNINSTALL_ACTION,
                 ..Action::NEW
             }
             .destructive(),
         ];
         """
-        errors = check.check_source("crates/session/shell/src/shell/actions/all.rs", source)
+        errors = check.check_source("crates/session/session/src/actions/all.rs", source)
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("`app.uninstall`, a deletion", errors[0])
 

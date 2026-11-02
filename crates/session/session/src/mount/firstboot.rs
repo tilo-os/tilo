@@ -1,4 +1,4 @@
-//! The machine's first boot, which `shell-firstboot.service` runs as
+//! The machine's first boot, which `tilo-firstboot.service` runs as
 //! `tilo-session --firstboot-only`: the person's config directories are
 //! made, the host desktop's input settings are imported where the device is
 //! a host package, and the process exits without opening a display. It is

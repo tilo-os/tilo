@@ -114,13 +114,13 @@ class RootCheck(Tree):
         self.assertIn("no budget for flavour", err)
 
     def test_symbol_table_limit_catches_an_unstripped_binary(self):
-        elf_with_symtab(self.put("usr/bin/shell", 0), 5000)
+        elf_with_symtab(self.put("usr/bin/tilo-session", 0), 5000)
         elf_with_symtab(self.put("usr/bin/clean", 0), 100)
-        self.assertEqual(budget.symtab_bytes(self.root / "usr/bin/shell"), 5000)
+        self.assertEqual(budget.symtab_bytes(self.root / "usr/bin/tilo-session"), 5000)
         code, _, err = self.run_cli("check", "--flavour", "t", "--root", str(self.root),
                                     "--budgets", str(self.budgets(1_000_000, "max_elf_symtab_bytes = 1000\n")))
         self.assertEqual(code, 1)
-        self.assertIn("/usr/bin/shell", err)
+        self.assertIn("/usr/bin/tilo-session", err)
         self.assertNotIn("/usr/bin/clean", err)
 
     def test_non_elf_files_have_no_symtab(self):

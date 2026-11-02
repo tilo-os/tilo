@@ -13,7 +13,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 
 use ui::TextRole;
-use ui::chrome::{ChromeRole, SelectionState, selection_tier};
+use ui::chrome::{ChromeRole, SelectionState, selection_floor_ramp};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::{Metrics, Spacing};
@@ -57,21 +57,17 @@ pub const TOGGLE_H: f64 = GLYPH;
 pub const TOGGLE_W: f64 = 2.0 * TOGGLE_H - Spacing::BASE.s1 as f64;
 /// The "connected" dot on a row's trailing inset: half a glyph.
 pub const STATUS_DOT: f64 = GLYPH / 2.0;
-/// Idle floor of a Control on the panel, on the `lift` ramp under the hover
-/// tier (the `power_menu` / drill-in reference floor). Reach it through
-/// [`control_fill`], the one definition every shell Control paints with.
-const CONTROL_FLOOR_LIFT_T: f32 = 0.35;
-
 /// A Control's fill: the shared hover tier when hovered, otherwise a quiet
 /// floor on the same ramp so tiles and rows read as surfaces rather than as
-/// bare text on the panel. Both states sit on one ordered ramp, so hover is
-/// always the more prominent (asserted per theme in the tests).
+/// bare text on the panel. Both states sit on the one ordered
+/// [`selection_floor_ramp`], so hover is always the more prominent (asserted
+/// per theme in the tests).
 pub fn control_fill(theme: &Theme, hovered: bool) -> Color {
-    if hovered {
-        selection_tier(theme, SelectionState::new(false, true, false)).fill
-    } else {
-        theme.tokens.colors.lift(CONTROL_FLOOR_LIFT_T)
-    }
+    selection_floor_ramp(
+        theme,
+        SelectionState::new(false, hovered, false),
+        theme.tokens.colors.surfaces.base,
+    )
 }
 
 /// The Control radius for `rect` (`radii.control`, HIG §9.1).

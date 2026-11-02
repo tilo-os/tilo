@@ -46,7 +46,7 @@ from ci import suites as path_suites
 # tilo-app-package/tests/{app_manifests,verify_attest} and tilo-doc-codecs/tests/{convergence,office_roundtrip}.
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-codecs"}
-# The desktop smoke (crates/session/shell/tests/desktop_smoke.rs) drives a real
+# The desktop smoke (crates/session/session/tests/desktop_smoke.rs) drives a real
 # headless compositor through a whole session and fails when its main loop stops
 # turning. Whatever the change, if it can alter the desktop (the package is in
 # the checked closure), the smoke runs: with the package's whole test run when
@@ -119,7 +119,6 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_settings_writes.py": "tools/tests/test_settings_writes.py",
     "tools/policy/check_app_content_store.py": "tools/tests/test_app_content_store.py",
     "tools/policy/check_document_engine_boundary.py": "tools/tests/test_document_engine_boundary.py",
-    "tools/policy/check_shell_layers.py": "tools/tests/test_check_shell_layers.py",
     "tools/policy/check_crate_layers.py": "tools/tests/test_check_crate_layers.py",
     "tools/policy/check_media_stack.py": "tools/tests/test_media_stack_policy.py",
 }
@@ -127,11 +126,6 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
-    # Read only by the shell-layers policy check, which run.sh executes.
-    "tools/policy/shell_layers_baseline.toml": (
-        "tools/policy/check_shell_layers.py",
-        "tools/tests/test_check_shell_layers.py",
-    ),
     # Read only by the crate-layers policy check, which run.sh executes.
     "tools/policy/crate_layers.toml": (
         "tools/policy/check_crate_layers.py",
@@ -216,7 +210,7 @@ HEAVY_PACKAGES = {
     "ebook",
     "tilo-media",
     "tilo-doc-pdf",
-    "shell",
+    "tilo-session",
     "slides",
     "tube",
     "typst-editor",

@@ -88,7 +88,7 @@ def verify_roles(candidate):
         subjects = json.loads(value, object_pairs_hook=closed_pairs)
     finally:
         os.close(descriptor)
-    bindings = {'shell': '/usr/bin/shell', 'fs': '/usr/bin/fs',
+    bindings = {'shell': '/usr/bin/tilo-session', 'fs': '/usr/bin/fs',
                 'control': '/usr/libexec/tilo/tilo-control',
                 'credential_helper': '/usr/libexec/tilo-account-credential',
                 'prepared_helper': '/usr/libexec/tilo-prepared-setup',
@@ -133,7 +133,7 @@ def session(candidate, evidence):
             finally:
                 os.close(secret_fd)
             package_evidence = packages.install(candidate, Path(account.pw_dir), log, deadline)
-            shell = services.spawn(['/usr/bin/shell', '--backend', 'headless',
+            shell = services.spawn(['/usr/bin/tilo-session', '--backend', 'headless',
                                     '--headless-owner-control'])
             control_path = Path(os.environ['XDG_RUNTIME_DIR']) / 'tilo-session/headless-owner-control.sock'
             while not control_path.exists():

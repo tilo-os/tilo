@@ -649,7 +649,7 @@ fn captured_pointer_send_retry_does_not_duplicate_the_canonical_message() {
 }
 
 #[test]
-fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
+fn two_real_components_open_the_existing_recordless_chat_migrating_it_once() {
     use std::rc::Rc;
     use ui::{
         application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput},
@@ -662,7 +662,8 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
     let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
     let mut doc = AutoCommit::new();
     let identity = LocalIdentity::demo();
-    // Existing app-state document envelope; opening it must not migrate or restamp.
+    // The app-state document an older build wrote; opening it migrates it once to this
+    // build's version, in a change both windows share.
     ui::tilo_resource::Slot::Key(&ROOT, "tilo:schema_version")
         .put_scalar(&mut doc, automerge::ScalarValue::Uint(1))
         .unwrap();
@@ -715,11 +716,33 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
         );
     }
     assert_eq!(records.route(&checkout).unwrap().record, None);
-    assert_eq!(
-        records
-            .read(&checkout.id, |d| (d.base_heads(), d.get_actor().clone()))
-            .unwrap(),
-        (heads, actor)
+    // The state Chat kept before its record was a model opens as it is, and the launch
+    // brings it to the version this build reads in one migration both windows share: opening
+    // it twice does not migrate it twice.
+    let (opened, opened_actor, changes) = records
+        .read(&checkout.id, |d| {
+            (
+                d.base_heads(),
+                d.get_actor().clone(),
+                d.clone().get_changes(&heads),
+            )
+        })
+        .unwrap();
+    assert_eq!(opened_actor, actor);
+    assert_eq!(changes.len(), 1, "one migration: {opened:?}");
+    let migrated = changes[0]
+        .message()
+        .and_then(tilo_actions::ActionContext::from_change_message)
+        .and_then(|context| context.what);
+    assert!(
+        matches!(
+            migrated,
+            Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
+                op: tilo_actions::HistoryOp::Migrate { to },
+                ..
+            })) if to == <crate::record::Chat as ui::tilo_resource::Resource>::VERSION
+        ),
+        "the one change brings it to Chat's version: {migrated:?}"
     );
     records
         .with(&checkout.id, |doc| {

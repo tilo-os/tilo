@@ -149,7 +149,7 @@ fi
 # ---------------------------------------------------------------------------
 # 4. One transaction.
 # ---------------------------------------------------------------------------
-if (( apply_live )) && pgrep -x tilo-shell >/dev/null 2>&1; then
+if (( apply_live )) && pgrep -x tilo-session >/dev/null 2>&1; then
     die "a Tilo session is running; not replacing its binary live (reboot instead)"
 fi
 say "layering tilo-session $version-$release"

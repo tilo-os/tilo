@@ -293,6 +293,8 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                         PeerPresencePayload::Availability {
                             state: "away".into(),
                             call: None,
+                            camera: false,
+                            screen: false,
                         },
                     )
                     .await

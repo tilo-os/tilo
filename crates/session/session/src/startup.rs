@@ -6,12 +6,12 @@
 //! Nothing here replaces an identity. A record whose chain does not verify
 //! opens trusted recovery, where only the person can unlock the store holding
 //! the key or bring the identity back from another of their devices; a
-//! certificate the clock reads as not yet valid keeps the desk off until the
-//! clock passes, because the identity itself is intact and waiting is all that
-//! is asked of it. Anything else that fails (a store that cannot be read, a
-//! permission this account does not have) stops the session instead of
-//! guessing, so a machine whose person cannot be established never reaches a
-//! desktop under an identity that is not theirs.
+//! certificate the clock reads as not yet valid opens the wait for the clock
+//! ([`BeforeDesk::WaitForClock`]), because the identity itself is intact and
+//! waiting is all that is asked of it. Anything else that fails (a store that
+//! cannot be read, a permission this account does not have) stops the session
+//! instead of guessing, so a machine whose person cannot be established never
+//! reaches a desktop under an identity that is not theirs.
 //!
 //! A verified identity is also kept alive: this device's expiring certificates
 //! are renewed in the background for as long as the session runs.
@@ -20,16 +20,18 @@
 //! in a login that starts no display, which is how an installer and a test
 //! provision and verify one.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tilo_onboarding_host::firstboot;
 use tilo_onboarding_host::identity::IdentityProblem;
 use tilo_onboarding_host::identity_provisioning::{
     DiskIdentityStore, IDENTITY_RECOVERY_ENV, is_secret_service_unavailable, needs_first_run_flow,
 };
-use tilo_user_identity::{
-    CertificateClockError, IdentityPaths, WallClockWait, wait_for_wall_clock,
-};
+use tilo_onboarding_host::view::OnboardingView;
+use tilo_user_identity::{CertificateClockError, IdentityPaths};
+
+use crate::clock_wait::ClockWait;
+use crate::setup::BeforeDesk;
 
 /// How many times startup asks for the identity's key before giving up on the
 /// Secret Service: a login starts the keyring daemon and this session at the
@@ -45,6 +47,17 @@ pub enum Identity {
     /// The desk opens: the identity the device holds verifies, or it holds
     /// none yet and setup asks its person for one before the desk is used.
     Desk,
+    /// The record is intact but the certificate it carries is outside its
+    /// validity at the clock's reading. The desk waits for the clock: what
+    /// opens is the wait [`BeforeDesk::WaitForClock`], and the desk takes
+    /// its place once the clock admits the certificate.
+    WaitForClock {
+        /// The directory the identity this device holds lives in, which the
+        /// wait verifies again.
+        identity_dir: PathBuf,
+        /// What the clock read and what the certificate needs instead.
+        refusal: CertificateClockError,
+    },
     /// The record is here but its chain does not verify. Its owner unlocks
     /// what holds its key or restores the identity; trusted recovery opens in
     /// place of the desk.
@@ -179,13 +192,12 @@ fn provision(
     }
 }
 
-/// What this device's identity admits now, waiting for the clock while its
-/// certificate is not valid yet and settling the setup a verified identity
-/// leaves behind.
+/// What this device's identity admits now, settling the setup a verified
+/// identity leaves behind.
 ///
-/// Trusted recovery and a certificate that waits for the clock both leave the
-/// process running: what opens in place of the desk is the session's own, once
-/// this returns.
+/// Trusted recovery and a certificate the clock refuses both leave the
+/// process running: what opens in place of the desk is the session's own,
+/// once this returns.
 #[must_use]
 pub fn identity() -> Identity {
     // A device enrolled without the person's root (a node's session, certified
@@ -208,45 +220,84 @@ pub fn identity() -> Identity {
     let Some(identity_dir) = store.path().parent() else {
         return Identity::Refused("primary identity has no parent directory".to_owned());
     };
-    let paths = firstboot::collaboration_identity_paths();
-    loop {
-        match verify(identity_dir, &paths) {
-            Ok(()) => {
-                if let Err(said) = reconcile(identity_dir) {
-                    return Identity::Refused(said);
-                }
-                // Certificates that expire would take this device's identity
-                // with them: renewed on a thread of its own for as long as the
-                // session runs, so nobody has to remember to do it.
-                firstboot::keep_device_certificates_renewed(identity_dir);
-                return Identity::Desk;
+    match verify_now(identity_dir) {
+        Ok(()) => match settle(identity_dir) {
+            Ok(()) => Identity::Desk,
+            Err(said) => Identity::Refused(said),
+        },
+        Err(error) => match failure(&error) {
+            Failure::Recovery(problem) => {
+                tracing::warn!(
+                    %error,
+                    problem = problem.as_str(),
+                    "existing Tilo identity needs recovery; opening trusted recovery"
+                );
+                open_recovery(Some(problem));
+                Identity::Recovery(problem)
             }
-            Err(error) => match failure(&error) {
-                Failure::Recovery(problem) => {
-                    tracing::warn!(
-                        %error,
-                        problem = problem.as_str(),
-                        "existing Tilo identity needs recovery; opening trusted recovery"
-                    );
-                    open_recovery(Some(problem));
-                    return Identity::Recovery(problem);
+            Failure::WaitForClock(refusal) => {
+                tracing::warn!(
+                    %error,
+                    valid_from_ns = refusal.valid_from_ns,
+                    clock_ns = refusal.clock_ns,
+                    "this device's certificate is outside its validity at the clock's \
+                     reading; the desk waits for the clock"
+                );
+                Identity::WaitForClock {
+                    identity_dir: identity_dir.to_path_buf(),
+                    refusal,
                 }
-                Failure::WaitForClock(refusal) => {
-                    tracing::warn!(
-                        %error,
-                        valid_from_ns = refusal.valid_from_ns,
-                        clock_ns = refusal.clock_ns,
-                        "this device's certificate is outside its validity at the clock's \
-                         reading; the desk waits for the clock"
-                    );
-                    if let Some(said) = wait_for_clock(&refusal) {
-                        return Identity::Refused(said);
-                    }
-                }
-                Failure::Refused => return Identity::Refused(error.to_string()),
-            },
+            }
+            Failure::Refused => Identity::Refused(error.to_string()),
+        },
+    }
+}
+
+/// What this session shows before its desk is used, given what `identity`
+/// settled: the wait for the clock, the setup this device still needs, or
+/// nothing and the desk opens.
+#[must_use]
+pub fn before_desk(identity: &Identity, host_desktop: bool) -> Option<BeforeDesk> {
+    match identity {
+        Identity::WaitForClock {
+            identity_dir,
+            refusal,
+        } => Some(BeforeDesk::WaitForClock(ClockWait::new(
+            identity_dir.clone(),
+            host_desktop,
+            refusal.clone(),
+        ))),
+        Identity::Desk | Identity::Recovery(_) | Identity::Refused(_) => {
+            setup_due_now(host_desktop).map(|view| BeforeDesk::Ceremony(Box::new(view)))
         }
     }
+}
+
+/// The setup this device still needs once its identity verifies: the first
+/// use when it has no identity yet, setup it started and did not finish, the
+/// recovery of its identity when startup found it unusable; `None` when there
+/// is nothing left to set up.
+#[must_use]
+pub(crate) fn setup_due_now(host_desktop: bool) -> Option<OnboardingView> {
+    use crate::mount::firstboot::setup_due;
+    let store = match DiskIdentityStore::from_env() {
+        Ok(store) => store,
+        Err(error) => {
+            tracing::warn!(%error, "no identity store to set up");
+            return None;
+        }
+    };
+    let recovery = std::env::var_os(IDENTITY_RECOVERY_ENV).is_some();
+    let identity_dir = store.path().parent()?.to_path_buf();
+    if !setup_due(needs_first_run_flow(&store), recovery, &identity_dir) {
+        return None;
+    }
+    Some(match (host_desktop, recovery) {
+        (false, false) => OnboardingView::new(identity_dir),
+        (false, true) => OnboardingView::new_for_recovery(identity_dir),
+        (true, false) => OnboardingView::new_for_host_desktop(identity_dir),
+        (true, true) => OnboardingView::new_for_host_desktop_recovery(identity_dir),
+    })
 }
 
 /// How startup handles a verification that did not pass.
@@ -294,20 +345,27 @@ fn verify(identity_dir: &Path, paths: &IdentityPaths) -> std::io::Result<()> {
     }
 }
 
-/// Wait until the clock can admit this device's certificate: the instant it
-/// becomes valid, or any step of the clock, which is what an expired
-/// certificate needs for a clock moved back to admit it again. `Some` says the
-/// wait itself failed, which no retry can tell apart from a clock that never
-/// comes.
-fn wait_for_clock(refusal: &CertificateClockError) -> Option<String> {
-    // An expired certificate has no instant a forward-running clock reaches:
-    // the timer is armed as far out as it goes, so only a step of the clock
-    // ends that wait.
-    let instant = refusal.valid_at_ns().unwrap_or(u64::MAX);
-    match wait_for_wall_clock(instant) {
-        Ok(WallClockWait::Reached | WallClockWait::Changed) => None,
-        Err(error) => Some(format!("could not wait for the clock: {error}")),
-    }
+/// Verify the identity `identity_dir` holds at the clock's reading now.
+///
+/// # Errors
+/// What verification answered: a clock refusal, a chain that does not
+/// verify, or a store this account cannot read.
+pub(crate) fn verify_now(identity_dir: &Path) -> std::io::Result<()> {
+    verify(identity_dir, &firstboot::collaboration_identity_paths())
+}
+
+/// What a verified identity leaves behind: the residue of an interrupted
+/// setup cleared, and this device's expiring certificates renewed on a thread
+/// of its own for as long as the session runs, so nobody has to remember to
+/// do it.
+///
+/// # Errors
+/// The person's own setup cannot be told apart from an interrupted one, which
+/// is theirs to keep.
+pub(crate) fn settle(identity_dir: &Path) -> Result<(), String> {
+    reconcile(identity_dir)?;
+    firstboot::keep_device_certificates_renewed(identity_dir);
+    Ok(())
 }
 
 /// A setup journal left behind when the identity was written is residue once

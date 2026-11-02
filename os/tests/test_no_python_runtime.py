@@ -69,7 +69,7 @@ class PythonGate(unittest.TestCase):
             ('/usr/libexec/tilo-umu-run', '#!/usr/bin/env python3\n', 0o755),
             ('/usr/libexec/umu_run.py', 'import os\n', 0o644),
             ('/usr/libexec/tilo-install', '#!/bin/bash\n# no python3 here, only a mention\necho ok\n', 0o755),
-            ('/usr/libexec/tilo-session', '#!/bin/sh\nexec /usr/bin/tilo-shell\n', 0o755),
+            ('/usr/libexec/tilo-session', '#!/bin/sh\nexec /usr/bin/tilo-session\n', 0o755),
             ('/usr/share/doc/tilo/notes.txt', 'run python3 tools/x.py\n', 0o644),
             ('/usr/lib64/python3.14/__pycache__/os.cpython-314.pyc', '', 0o644),
         ]

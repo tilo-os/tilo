@@ -9,7 +9,7 @@ the merge-base with origin/main and the worktree must be clean. test-changed.sh 
 same run for a change still being edited: base defaults to the merge-base with
 `integration` (origin/main without it), uncommitted and untracked files count, the
 stages are check (the portable tilo-ui and headless tilo-app builds, when the change
-reaches them), clippy, test and session-e2e, and clippy covers the changed packages and
+reaches them), clippy and test, and clippy covers the changed packages and
 their direct dependants (the planner's `near`; `--closure` for the whole
 reverse-dependency closure the batch check lints).
 
@@ -62,24 +62,14 @@ from ci import capability_filter, nextest_filters  # noqa: E402
 from ci.affected_packages import package_cost, recorded_test_seconds  # noqa: E402
 
 DEFAULT_STAGES = "check,clippy,test,policy,goldens,certify,scenarios,scoped"
-# session-e2e: the headless nested session, for a change to what the session's real paths cross.
-CHANGED_STAGES = "check,clippy,test,session-e2e"
-GOLDEN_PACKAGES = {"shell", "tilo-ui", "ebook"}
+CHANGED_STAGES = "check,clippy,test"
+GOLDEN_PACKAGES = {"tilo-ui", "ebook"}
 # Above this much recorded test time (seconds, tools/ci/recorded_test_time.json) a
 # test set is split between the builders; below it one builder finishes before a
 # second one's compile would.
 SPLIT_SECONDS = 900
 # The second (arm) builder's share of a split test set: its 64 cores beside the x86 one's 192.
 SECOND_SHARE = 0.25
-# The packages kept on x86_64 when a test set is split: their code or tests differ by
-# architecture and CI tests them on x86_64.
-X86_ONLY = {"shell"}
-# A change to what the session's real paths cross (the shell, collaboration, the tilolang host
-# and tilolang-tilo) also runs scripts/headless-examples/session-e2e.py: one headless nested
-# session of this tree, built on the arm builder and run here, since the builders' containers
-# cannot start Tilo's sandboxes.
-SESSION_E2E_PATHS = ("crates/session/shell/", "crates/collab/", "crates/platform/tilolang-host/",
-                     "crates/platform/tilolang-tilo/", "scripts/headless-examples/session-e2e.py")
 # nextest's status line for a test that did not pass, and the test it names.
 FAILED_LINE = re.compile(
     r"^\s*(?:TRY \d+ )?(FAIL|TIMEOUT|LEAK-FAIL|ABORT|SIG[A-Z]+)\s+\[[^\]]*\]\s+"
@@ -318,15 +308,15 @@ def split_packages(packages: list[str], seconds: dict[str, int], costs: dict[str
                    share: float = SECOND_SHARE) -> tuple[list[str], list[str]]:
     """The test packages for the first builder and for the second, which takes about `share`
     of the work: half of a package's weight is its compile (the planner's structural cost),
-    half its recorded test time. X86_ONLY stay with the first."""
+    half its recorded test time."""
     total_cost = sum(costs.get(n, 0) for n in packages) or 1
     total_seconds = sum(seconds.get(n, 0) for n in packages) or 1
     weight = {n: costs.get(n, 0) / total_cost + seconds.get(n, 0) / total_seconds for n in packages}
-    first = [n for n in packages if n in X86_ONLY]
+    first: list[str] = []
     second: list[str] = []
     budget = share * sum(weight.values())
     taken = 0.0
-    for name in sorted((n for n in packages if n not in X86_ONLY), key=lambda n: -weight[n]):
+    for name in sorted(packages, key=lambda n: -weight[n]):
         if taken + weight[name] <= budget:
             second.append(name)
             taken += weight[name]
@@ -564,14 +554,6 @@ def main() -> int:
             if mine:
                 spawn(f"{label}-failed", failed_first(builder, packages, mine))
             spawn(label, test_share(builder, packages, mine))
-
-    # The session's real paths, end to end: built once on the arm builder, run on this machine.
-    changed_files = plan.get("changed_files", [])
-    if args.changed and want("session-e2e") and any(path.startswith(SESSION_E2E_PATHS) for path in changed_files):
-        spawn("session-e2e", lambda job: job.run(
-            "session e2e (scripts/headless-examples/session-e2e.py)", Builder("local", None),
-            [sys.executable, "scripts/headless-examples/session-e2e.py", "--build",
-             "--out", "target/session-e2e"]))
 
     for thread in threads:
         thread.join()

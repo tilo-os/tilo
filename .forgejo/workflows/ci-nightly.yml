@@ -246,12 +246,15 @@ jobs:
           cargo nextest run -p music --locked --profile ci --run-ignored all
           -E 'test(live_search_and_stream_resolve_through_the_app)'
 
-      - name: Check every workspace target
+      # Push runs lint only the packages their commits touch, so a crate no
+      # later change touches would keep a red lint forever. Clippy over the
+      # whole tree (a check plus the lints) catches it within a day.
+      - name: Lint every workspace target
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: >-
-          bash tools/ci/measure.sh "nightly all-target check" --
-          bash scripts/ci-run.sh "cargo check --workspace --all-targets" --
-          cargo check --workspace --locked --all-targets
+          bash tools/ci/measure.sh "nightly all-target clippy" --
+          bash scripts/ci-run.sh "cargo clippy --workspace --all-targets" --
+          cargo clippy --workspace --locked --all-targets --keep-going -- -D warnings
 
       # Source-level protocol checks prevent an app from opting out, but only
       # the laid-out production root can prove that visible effect controls
@@ -276,55 +279,6 @@ jobs:
           bash scripts/ci-run.sh "cargo test --workspace --examples" --
           bash tools/with-test-environment.sh
           cargo test --workspace --examples --locked
-
-      # Ignored tests whose requirement this runner meets: the shell ones
-      # spawn a real headless compositor (llvmpipe). FUSE-only ignored
-      # tests run in ci-filesystem.yml. Newly enabled: a failure is listed in the
-      # job summary but does not fail the run until the lane has passed here.
-      - name: Run ignored tests this runner supports
-        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
-        continue-on-error: true
-        env:
-          IGNORED_FILTER: >-
-            package(shell) and (test(headless_examples_smoke::full_loop_writes_two_pngs) or test(headless_examples_smoke::mcp_live_proof_drives_a_compositor_over_mcp) or test(session_lock_e2e::))
-        run: |
-          bash tools/ci/measure.sh "nightly ignored tests" -- \
-            bash scripts/ci-run.sh "cargo nextest --run-ignored only" -- \
-            bash tools/with-test-environment.sh \
-            cargo nextest run --workspace --locked --profile ci --run-ignored only \
-            --test-threads 1 -E "$IGNORED_FILTER"
-
-      # agent-seats-proof.py drives two concurrent MCP sessions through the compositor's
-      # `agent-control` feature, which the workspace build leaves off: rebuild the shell with it
-      # and the terminal the proof opens in each agent's strip, then run just that proof.
-      - name: Run the agent seats proof
-        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
-        continue-on-error: true
-        run: |
-          # Keep the ignored-tests report: this run writes the same junit.xml.
-          mkdir -p target/ci/junit
-          if [ -f target/nextest/ci/junit.xml ]; then
-            mv target/nextest/ci/junit.xml target/ci/junit/ignored.xml
-          fi
-          cargo build --locked -p terminal --bin terminal
-          TILO_TERMINAL_BINARY="$PWD/target/debug/terminal" \
-          bash tools/ci/measure.sh "nightly agent seats proof" -- \
-            bash scripts/ci-run.sh "cargo nextest agent seats" -- \
-            bash tools/with-test-environment.sh \
-            cargo nextest run -p shell --features agent-control --locked --profile ci \
-            --run-ignored only --test-threads 1 \
-            -E 'test(headless_examples_smoke::agent_seats_proof_keeps_two_agents_apart)'
-          mv target/nextest/ci/junit.xml target/ci/junit/agent-seats.xml
-
-      - name: Report ignored tests
-        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
-        run: |
-          mkdir -p target/ci/junit
-          if [ -f target/nextest/ci/junit.xml ]; then
-            mv target/nextest/ci/junit.xml target/ci/junit/ignored.xml
-          fi
-          python3 tools/ci/nextest_report.py \
-            --label "nightly ignored tests (${{ matrix.arch }})" target/ci/junit/ignored.xml
 
       - name: Save test results
         if: always()

@@ -148,7 +148,7 @@ class Session:
         return self.control_json("windows", "--json")
 
     def log(self) -> str:
-        return (self.state / "logs/shell.log").read_text(errors="replace")
+        return (self.state / "logs/session.log").read_text(errors="replace")
 
 # --- /proc --------------------------------------------------------------------
 
@@ -286,7 +286,7 @@ def launch_all(session: Session) -> dict:
 
 def check_processes(session: Session, session_pid: int) -> dict:
     tree = descendants(session_pid)
-    shell = next(p for p in tree if exe(p).endswith("/bin/shell") and "__render-service" not in cmdline(p))
+    shell = next(p for p in tree if exe(p).endswith("/bin/tilo-session") and "__render-service" not in cmdline(p))
     render = [p for p in tree if "__render-service" in cmdline(p)]
     shell_ns = namespaces(shell)
     out = {"shell": {"pid": shell, "vulkan": vulkan_drivers(shell)}, "apps": {}}
@@ -645,7 +645,7 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
     stop_session(proc)
     running["proc"] = None
     # The second start writes its own shell log over this one.
-    shutil.copy(state / "logs/shell.log", out / "shell-apps.log")
+    shutil.copy(state / "logs/session.log", out / "shell-apps.log")
     if not ok:
         return False
     # Route access, with the probe installed as Today and as Todo. The probes first: until
@@ -656,7 +656,7 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
     run_checks(summary, [("routes", lambda: check_routes(session))])
     stop_session(proc)
     running["proc"] = None
-    shutil.copy(state / "logs/shell.log", out / "shell-routes.log")
+    shutil.copy(state / "logs/session.log", out / "shell-routes.log")
     return True
 
 

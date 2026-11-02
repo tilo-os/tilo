@@ -896,16 +896,15 @@ fn bar_press_between_the_keys(session: &mut Session) {
     );
 }
 
-/// The texts of the open note's title and body, as the window shows them.
+/// The texts of the open note's title and body, as the window shows them. The title is a plain
+/// field; the body is rich text, read a line per paragraph.
 fn open_note(session: &mut Session) -> (String, String) {
-    let text = |value: Option<tilo_ui_host::Value>| match value {
+    let title = match session.field_value("Untitled") {
         Some(tilo_ui_host::Value::Text(text)) => text,
         None => String::new(),
-        Some(other) => panic!("a text field: {other:?}"),
+        Some(other) => panic!("a title: {other:?}"),
     };
-    let title = text(session.field_value("Untitled"));
-    let body = text(session.field_value("Write something"));
-    (title, body)
+    (title, body_text(session))
 }
 
 /// With the keyboard in a note's body, "+" in the window's bar, run by the window before the

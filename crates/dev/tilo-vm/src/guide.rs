@@ -128,7 +128,7 @@ mod tests {
             let text = topic("quickstart").unwrap();
             for needle in [
                 "tilo-vm slot create --headful",
-                "tilo-vm swap shell",
+                "tilo-vm swap tilo-session",
                 "tilo-vm shot",
                 "tilo-vm seat claim",
                 "tilo-vm vm shot",
@@ -234,9 +234,9 @@ mod tests {
             let devices = topic("devices").unwrap();
             for needle in [
                 "tilo-vm vm add opi --ssh root@",
-                "tilo-vm swap --slot device shell --from sha:",
+                "tilo-vm swap --slot device tilo-session --from sha:",
                 "tilo-vm rollback --slot device --to 0",
-                "tilo-vm slot exec --slot device -- sha256sum /usr/bin/shell",
+                "tilo-vm slot exec --slot device -- sha256sum /usr/bin/tilo-session",
                 "TILO_VM_CARGO",
                 "registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci",
                 "vm upgrade opi",

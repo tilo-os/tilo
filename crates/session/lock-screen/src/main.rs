@@ -16,7 +16,7 @@ use tilo_sheets::lock::{self, LockSeat, Shown, Status};
 use ui::application::{
     ApplicationDefinition, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
 };
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
+use ui::launch::{LaunchArgs, LaunchError};
 
 thread_local! {
     /// What the app is lent: the seat the lock screen shows in and takes
@@ -29,15 +29,10 @@ fn main() {
     seat.show(shown());
     lock_session::serve(&seat);
     SEAT.with(|slot| *slot.borrow_mut() = Some(seat));
-    let spec = LaunchSpec::from_definition(lock::definition())
-        .component_host(prepared)
-        .native_services()
-        // The lock screen belongs to no workspace and opens before anyone is
-        // signed in: it shows what the session told it, and nothing it
-        // writes outlives the lock.
-        .runs_without_identity()
-        .runtime_attachment(|_| false)
-        .allowed_options(&["--data-dir"]);
+    // The standard launch of any app — its record, its capture scenarios and
+    // its launch modes — with this process's host in place of the usual one,
+    // because the seat is lent per process.
+    let spec = ui::framework::launch_spec::<lock::LockApp>().component_host(prepared);
     ui::launch::run_or_exit(&spec);
 }
 

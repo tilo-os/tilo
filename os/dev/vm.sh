@@ -517,7 +517,6 @@ cmd_greeter_acceptance() {
 GUEST_TESTS=(
   "tools/atspi_external_client.py atspi-external-client.py"
   "os/tests/installed_atspi_apps.sh installed-atspi-apps.sh"
-  "crates/session/shell/tests/native_atspi_smoke.sh native-atspi-smoke.sh"
   "apps/file-explorer/tests/atspi_smoke.sh files-atspi-smoke.sh"
   "os/tests/collaborative-files-image-contract.sh collaborative-files-image-contract.sh"
   "os/tests/boot_performance_gate.sh boot-performance-gate.sh"

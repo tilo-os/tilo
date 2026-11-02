@@ -896,3 +896,66 @@ fn a_wide_bar_shows_the_strip_and_the_person_with_nothing_touched() {
         "the bar shows the person: {labels:?}"
     );
 }
+
+/// The switcher pictures each window it walks: the compositor is told to draw the window's own
+/// pixels above the title that names it, and nothing at all for a window that may not be
+/// pictured — whose card shows its app's mark instead.
+#[test]
+fn the_switcher_pictures_each_window_above_its_own_title() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, link) = part_with(super::tests_support::reading_with_windows());
+    let previews = ui::widget::Previews::new();
+    // What the compositor holds for each window the reading names: every one but "12", whose
+    // app the session left out of the pictures.
+    part.show_pictures(
+        previews.clone(),
+        Rc::new(
+            |key: &str| {
+                if key == "12" { None } else { key.parse().ok() }
+            },
+        ),
+    );
+    // Holding Alt+Tab opens the switcher: every window the desk holds, in the walk's order.
+    let mut reading = super::tests_support::reading_with_windows();
+    reading.here = "switcher".to_owned();
+    for (at, window) in reading.windows.iter_mut().enumerate() {
+        window.recency = i64::try_from(at).unwrap_or(0) + 1;
+        window.preview = "live".to_owned();
+    }
+    link.publish(reading);
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    let pictures = tilo_compositor::SurfaceHost::window_pictures(&part);
+    let picture = pictures
+        .first()
+        .unwrap_or_else(|| panic!("the switcher pictures the window it may: {pictures:?}"));
+    assert_eq!(
+        picture.window, 11,
+        "the picture is the compositor's window for the reading's key"
+    );
+    let (x, y, w, _) = part
+        .control_bounds("Release planning")
+        .unwrap_or_else(|| panic!("the card names its window: {:?}", part.refusals()));
+    let (left, top, wide, high) = picture.rect;
+    assert!(
+        top + high <= y + 1.0,
+        "the picture stands above the title naming its window: picture {:?}, title at {x},{y}",
+        picture.rect
+    );
+    assert!(
+        wide > 1.0 && (left - x).abs() <= 2.0 && (left + wide - (x + w)).abs() <= 2.0,
+        "the picture spans the card's width: picture {:?}, title at {x} wide {w}",
+        picture.rect
+    );
+    assert!(
+        previews.picture("12").is_some(),
+        "the card of a window that may not be pictured still stands"
+    );
+    assert_eq!(
+        pictures.len(),
+        1,
+        "a window that may not be pictured is not drawn over: {pictures:?}"
+    );
+}

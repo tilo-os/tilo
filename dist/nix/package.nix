@@ -71,7 +71,6 @@ rustPlatform.buildRustPackage rec {
     "-p" "launcher"
     "-p" "tilo-unlock-helper"
     "-p" "tilo-session-record"
-    "-p" "shell"
     "-p" "tilo-session"
     "-p" "imager"
     "-p" "tilo-cli"
@@ -80,7 +79,6 @@ rustPlatform.buildRustPackage rec {
     "--bin" "tilo-unlock-helper"
     "--bin" "tilo-flight-recorder"
     "--bin" "tilo-session-report"
-    "--bin" "shell"
     "--bin" "tilo-session"
     "--bin" "imager"
     "--no-default-features"
@@ -88,7 +86,7 @@ rustPlatform.buildRustPackage rec {
   cargoTestFlags = cargoBuildFlags;
   doCheck = false;
 
-  # The shell is a large monolithic binary. Nix builds run in a sanitized
+  # The session is a large monolithic binary. Nix builds run in a sanitized
   # derivation environment, so the package-container profile overrides do not
   # cross this boundary. Keep release optimisation while avoiding the
   # multi-gigabyte fat-LTO rustc peak that exhausts the shared package runner.
@@ -106,9 +104,11 @@ rustPlatform.buildRustPackage rec {
   # platform is ARM, so it must load the build-platform libclang.
   LIBCLANG_PATH = "${lib.getLib buildPackages.libclang}/lib";
   # The FHS packages use /usr/libexec. Nix must seal the immutable store path
-  # into the compositor or locking the session could never invoke PAM.
+  # into the compositor or locking the session could never invoke PAM, and the
+  # session's own path into the folder importer, which trusts only the session
+  # binary installed beside it.
   preBuild = ''
-    export TILO_DESKTOP_TRUSTED_SHELL_PATH="$out/bin/.tilo-shell-wrapped"
+    export TILO_DESKTOP_TRUSTED_SESSION_PATH="$out/bin/tilo-session"
     export TILO_UNLOCK_HELPER_PATH="$out/libexec/tilo-unlock-helper"
     export TILO_FONT_ASSET_CACHE="$TMPDIR/font-artifacts"
     cp -r --no-preserve=mode ${fontAssetCache} "$TILO_FONT_ASSET_CACHE"
@@ -116,12 +116,11 @@ rustPlatform.buildRustPackage rec {
 
   installPhase = ''
     runHook preInstall
-    shell_bin=$(find target -type f -path '*/release/shell' -perm -0100 -print -quit)
-    test -n "$shell_bin"
-    bash "$src/dist/stage-payload.sh" "$(dirname "$shell_bin")" "$TMPDIR/tilo-payload"
+    session_bin=$(find target -type f -path '*/release/tilo-session' -perm -0100 -print -quit)
+    test -n "$session_bin"
+    bash "$src/dist/stage-payload.sh" "$(dirname "$session_bin")" "$TMPDIR/tilo-payload"
     p="$TMPDIR/tilo-payload"
     install -Dm755 "$p/bin/tilo-session" "$out/bin/tilo-session"
-    install -Dm755 "$p/bin/tilo-shell" "$out/bin/tilo-shell"
     install -Dm755 "$p/bin/tilo" "$out/bin/tilo"
     install -Dm755 "$p/bin/tilo-launcher" "$out/bin/tilo-launcher"
     install -Dm755 "$p/libexec/tilo-unlock-helper" "$out/libexec/tilo-unlock-helper"
@@ -131,7 +130,6 @@ rustPlatform.buildRustPackage rec {
     install -Dm755 "$p/libexec/tilo-session-report" "$out/libexec/tilo-session-report"
     install -Dm644 "$p/pam/tilo-unlock" "$out/etc/pam.d/tilo-unlock"
     install -Dm644 "$p/wayland-sessions/tilo.desktop" "$out/share/wayland-sessions/tilo.desktop"
-    install -Dm644 "$p/wayland-sessions/tilo-shell.desktop" "$out/share/wayland-sessions/tilo-shell.desktop"
     install -Dm644 "$p/portal/tilo.portal" "$out/share/xdg-desktop-portal/portals/tilo.portal"
     install -Dm644 "$p/portal/tilo-portals.conf" "$out/share/xdg-desktop-portal/tilo-portals.conf"
     install -Dm644 "$p/pipewire/tilo-echo-cancel.conf" "$out/share/pipewire/tilo-echo-cancel.conf"
@@ -144,7 +142,6 @@ rustPlatform.buildRustPackage rec {
     # Store paths replace FHS paths in the wrapper and session entry.
     substituteInPlace "$out/libexec/tilo-session" \
       --replace-fail 'TILO_SESSION=/usr/bin/tilo-session' "TILO_SESSION=$out/bin/tilo-session" \
-      --replace-fail 'TILO_SHELL=/usr/bin/tilo-shell' "TILO_SHELL=$out/bin/tilo-shell" \
       --replace-fail 'SESSION_RUNNER=/usr/libexec/tilo-session-runner' "SESSION_RUNNER=$out/libexec/tilo-session-runner"
     substituteInPlace "$out/libexec/tilo-session-runner" \
       --replace-fail 'SYSTEMCTL=/usr/bin/systemctl' "SYSTEMCTL=${systemd}/bin/systemctl" \
@@ -154,10 +151,7 @@ rustPlatform.buildRustPackage rec {
     substituteInPlace "$out/share/wayland-sessions/tilo.desktop" \
       --replace-fail 'Exec=/usr/libexec/tilo-session' "Exec=$out/libexec/tilo-session" \
       --replace-fail 'TryExec=/usr/bin/tilo-session' "TryExec=$out/bin/tilo-session"
-    substituteInPlace "$out/share/wayland-sessions/tilo-shell.desktop" \
-      --replace-fail 'Exec=/usr/libexec/tilo-session' "Exec=$out/libexec/tilo-session" \
-      --replace-fail 'TryExec=/usr/bin/tilo-shell' "TryExec=$out/bin/tilo-shell"
-    grep -a -F "$out/libexec/tilo-unlock-helper" "$out/bin/tilo-shell"
+    grep -a -F "$out/libexec/tilo-unlock-helper" "$out/bin/tilo-session"
     runHook postInstall
   '';
 
@@ -165,14 +159,13 @@ rustPlatform.buildRustPackage rec {
     # A NixOS session has no FHS-wide PATH or ldconfig cache. Seal the runtime
     # tools and PAM library into wrappers so both direct package installs and
     # the NixOS module produce a usable session.
-    wrapProgram "$out/bin/tilo-shell" \
-      --prefix PATH : ${lib.makeBinPath [ bubblewrap xdg-dbus-proxy xwayland-satellite ]}
+    wrapProgram "$out/bin/tilo-session" \
+      --prefix PATH : ${lib.makeBinPath [ xwayland-satellite ]}
     wrapProgram "$out/bin/tilo-launcher" \
       --prefix PATH : ${lib.makeBinPath [ bubblewrap xdg-dbus-proxy ]}
     wrapProgram "$out/libexec/tilo-unlock-helper" \
       --set TILO_PAM_LIB ${lib.getLib pam}/lib/libpam.so.0
-    grep -F '${bubblewrap}/bin' "$out/bin/tilo-shell"
-    grep -F '${xwayland-satellite}/bin' "$out/bin/tilo-shell"
+    grep -F '${xwayland-satellite}/bin' "$out/bin/.tilo-session-wrapped"
     grep -F '${xdg-dbus-proxy}/bin' "$out/bin/tilo-launcher"
     grep -F '${lib.getLib pam}/lib/libpam.so.0' "$out/libexec/tilo-unlock-helper"
   '';

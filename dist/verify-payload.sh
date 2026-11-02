@@ -13,7 +13,7 @@ libexec_dir=${TILO_LIBEXEC_DIR:-/usr/libexec}
 }
 
 # /usr/bin/tilo: a terminal reaches the desktop's apps and actions with it.
-for file in /usr/bin/tilo-session /usr/bin/tilo-shell /usr/bin/tilo /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders \
+for file in /usr/bin/tilo-session /usr/bin/tilo /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders \
             "$libexec_dir/tilo-unlock-helper" "$libexec_dir/tilo-session" \
             "$libexec_dir/tilo-session-runner" \
             "$libexec_dir/tilo-flight-recorder" \
@@ -22,7 +22,6 @@ for file in /usr/bin/tilo-session /usr/bin/tilo-shell /usr/bin/tilo /usr/libexec
 done
 for file in /usr/share/applications/tilo-import-folders.desktop /etc/pam.d/tilo-unlock \
             /usr/share/wayland-sessions/tilo.desktop \
-            /usr/share/wayland-sessions/tilo-shell.desktop \
             /usr/share/xdg-desktop-portal/portals/tilo.portal \
             /usr/share/xdg-desktop-portal/tilo-portals.conf \
             /usr/share/pipewire/tilo-echo-cancel.conf \
@@ -35,28 +34,25 @@ if [[ ! -f $(path /usr/share/licenses/tilo-session/LICENSE) \
     exit 1
 fi
 
-# The entry a person picks by default starts the native session: the wrapper
-# with no flag, which the wrapper itself resolves to /usr/bin/tilo-session.
+# The one entry starts the native session: the wrapper with no flag, which the
+# wrapper itself resolves to /usr/bin/tilo-session.
 grep -Fqx "Exec=$libexec_dir/tilo-session" "$(path /usr/share/wayland-sessions/tilo.desktop)"
 grep -q '^TryExec=/usr/bin/tilo-session$' "$(path /usr/share/wayland-sessions/tilo.desktop)"
 grep -q '^X-Tilo-Session-Default=true$' "$(path /usr/share/wayland-sessions/tilo.desktop)"
 grep -q '^DesktopNames=tilo$' "$(path /usr/share/wayland-sessions/tilo.desktop)"
-# The old shell stays installed and loggable-into until it is deleted.
-grep -Fqx "Exec=$libexec_dir/tilo-session --shell" "$(path /usr/share/wayland-sessions/tilo-shell.desktop)"
-grep -q '^TryExec=/usr/bin/tilo-shell$' "$(path /usr/share/wayland-sessions/tilo-shell.desktop)"
-grep -q '^DesktopNames=tilo$' "$(path /usr/share/wayland-sessions/tilo-shell.desktop)"
+# No second entry, and no second binary behind one.
+[[ ! -e $(path /usr/share/wayland-sessions/tilo-shell.desktop) ]]
+[[ ! -e $(path /usr/bin/tilo-shell) ]]
 grep -q '^UseIn=tilo$' "$(path /usr/share/xdg-desktop-portal/portals/tilo.portal)"
 grep -q '^default=tilo$' "$(path /usr/share/xdg-desktop-portal/tilo-portals.conf)"
 grep -q 'libpipewire-module-echo-cancel' "$(path /usr/share/pipewire/tilo-echo-cancel.conf)"
 grep -q '^TILO_SESSION=/usr/bin/tilo-session$' "$(path "$libexec_dir/tilo-session")"
-grep -q '^TILO_SHELL=/usr/bin/tilo-shell$' "$(path "$libexec_dir/tilo-session")"
 grep -Fqx "SESSION_RUNNER=$libexec_dir/tilo-session-runner" "$(path "$libexec_dir/tilo-session")"
-# A login with no argument starts the native session, and the wrapper hands the
-# host declaration each compositor names to the runner: no other binary and no
-# other mode can reach a login.
+# A login with no argument starts the native session, and the wrapper hands its
+# host declaration to the runner: no other binary and no other mode can reach a
+# login.
 grep -Fqx '        session_bin=$TILO_SESSION' "$(path "$libexec_dir/tilo-session")"
 grep -Fqx '        session_mode=--host-desktop' "$(path "$libexec_dir/tilo-session")"
-grep -Fqx '        session_mode=--host-desktop-session' "$(path "$libexec_dir/tilo-session")"
 grep -Fqx 'exec "$SESSION_RUNNER" "$session_bin" "$session_mode" --firstboot --backend drm "$@"' \
     "$(path "$libexec_dir/tilo-session")"
 grep -q '^SYSTEMD_CAT=/usr/bin/systemd-cat$' "$(path "$libexec_dir/tilo-session-runner")"
@@ -87,7 +83,7 @@ grep -Fxq "TryExec=/usr/bin/tilo-import-folders" "$(path /usr/share/applications
 apps_bin=$(path /usr/lib/tilo-apps/bin)
 [[ ! -d $apps_bin ]] || "$(dirname "${BASH_SOURCE[0]}")/verify-cli-shims.sh" "$apps_bin"
 
-for elf in /usr/bin/tilo-session /usr/bin/tilo-shell /usr/bin/tilo /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders "$libexec_dir/tilo-unlock-helper" \
+for elf in /usr/bin/tilo-session /usr/bin/tilo /usr/libexec/tilo/tilo-launcher /usr/bin/tilo-import-folders "$libexec_dir/tilo-unlock-helper" \
            "$libexec_dir/tilo-flight-recorder" "$libexec_dir/tilo-session-report"; do
     elf_description=$(LC_ALL=C file "$(path "$elf")")
     case ${TILO_EXPECT_ARCH:-} in

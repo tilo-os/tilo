@@ -34,7 +34,7 @@ RETIRED_SOURCE_ROOTS = {
     "os/usr/lib/systemd/system/tilo-power.service": "crates/system/power/",
     "plan/": "docs/architecture/",
     "release/": "dist/",
-    "shell/": "crates/session/shell/",
+    "shell/": "crates/session/session/",
     "tools/check-windows-": "tools/windows/check-",
     "tools/cargo-shim": "tools/ci/cargo-shim",
     "tools/check-build-env.sh": "tools/ci/check-build-env.sh",

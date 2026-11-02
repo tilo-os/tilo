@@ -34,7 +34,6 @@ os/tests/unit_sandbox_paths.py
 os/tests/media_subprocess_invariants.sh
 os/tests/os_actions_subprocess_invariants.sh
 os/tests/packaging_subprocess_invariants.sh
-os/tests/shell_subprocess_invariants.sh
 os/tests/fs_subprocess_invariants.sh
 os/tests/disks_subprocess_invariants.sh
 os/tests/secret_service_subprocess_invariants.sh

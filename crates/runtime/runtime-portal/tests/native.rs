@@ -263,7 +263,10 @@ fn bootstrap_attaches_standalone_inherited_or_through_the_host() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
 
+#[test]
+fn bootstrap_exec_keeps_arguments_and_hides_ancestor_descriptors() {
     // Bootstrap exec preserves the original arguments and working directory.
     {
         let root = std::env::temp_dir().join(format!("tilo-bootstrap-test-{}", std::process::id()));

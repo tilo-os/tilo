@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 26
+version = 27
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -37,6 +37,7 @@ sources = [
     "crates/collab/collab-types/src/crypto.rs",
     "crates/collab/actions/src/key.rs",
     "crates/collab/actions/src/framework.rs",
+    "crates/collab/actions/src/contract.rs",
     "crates/collab/actions/src/entry.rs",
     "crates/collab/collab-types/src/role.rs",
     "crates/collab/collab-types/src/peer.rs",
@@ -547,6 +548,13 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "NeighbourMsg::SyncResp" = "#1 struct"
 "NeighbourMsg::SyncResp.changes" = "#0 Vec<Vec<u8>>"
 "NeighbourMsg::SyncResp.room" = "#1 String"
+"Offload" = "struct"
+"Offload.app" = "#0 String"
+"Offload.cpu_time_ms" = "#3 u64"
+"Offload.entrypoint" = "#1 String"
+"Offload.gpu" = "#2 bool"
+"Offload.memory_bytes" = "#4 u64"
+"Offload.output_bytes" = "#5 u64"
 "OpKind" = "enum external deny_unknown_fields"
 "OpKind::Change" = "#0 unit"
 "OpKind::Compaction" = "#1 unit"
@@ -564,6 +572,8 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "PeerPresencePayload::Arrived" = "#4 unit"
 "PeerPresencePayload::Availability" = "#9 struct"
 "PeerPresencePayload::Availability.call" = "#1 Option<String>"
+"PeerPresencePayload::Availability.camera" = "#2 bool"
+"PeerPresencePayload::Availability.screen" = "#3 bool"
 "PeerPresencePayload::Availability.state" = "#0 String"
 "PeerPresencePayload::Caret" = "#1 struct"
 "PeerPresencePayload::Caret.pos" = "#0 u64"
@@ -596,7 +606,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "PeerPresencePayload::Wave.target" = "#1 String"
 "PlaneFrame" = "enum external"
 "PlaneFrame::Action" = "#0 tuple(Box<SignedDeviceAction>)"
-"PlaneFrame::Offer" = "#1 tuple(Query)"
+"PlaneFrame::Offer" = "#1 tuple(Box<Query>)"
 "Power" = "enum external"
 "Power::battery" = "#3 unit"
 "Power::charging" = "#1 unit"
@@ -707,3 +717,4 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Work.input_bytes" = "#1 u64"
 "Work.inputs" = "#0 Vec<([u8; 32], u64)>"
 "Work.local_wall_ms" = "#2 Option<u64>"
+"Work.offload" = "#3 Option<Offload>"

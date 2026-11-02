@@ -14,8 +14,9 @@
 //!   admitting the governance it relays, as a native device's does (`replica`);
 //! - the **live plane** ([`live`]): ephemeral presence and previews relayed
 //!   by the host to live members;
-//! - **calls** ([`voice`]): the device's participation in the calls the host
-//!   governs, and the grants for its voice carrier.
+//! - **calls** ([`call_media`], and [`voice`] for the relay's own media path):
+//!   the page's turns with the device that bridges it into a call, and the
+//!   grants for its voice carrier.
 //!
 //! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it. With the
 //! `toolkit` feature, [`transport::RelayCollabTransport`] plugs the session
@@ -23,6 +24,7 @@
 
 #![deny(rust_2018_idioms)]
 
+pub mod call_media;
 mod channels;
 mod clock;
 pub mod content;
@@ -40,6 +42,7 @@ pub mod transport;
 pub mod voice;
 mod watching;
 
+pub use call_media::{LaneCall, Opened, OpenedPicture};
 pub use channel_crypto::ChannelContentKeys;
 pub use channels::document_admission;
 pub use custody::{

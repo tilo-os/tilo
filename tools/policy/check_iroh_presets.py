@@ -63,7 +63,6 @@ EXEMPT = {
     "crates/platform/tilo-net-p2p/src/lib.rs": "net-p2p dialer",
     # The relay daemon's own endpoint, which is what devices dial.
     "crates/hosting/tilo-relay/src/daemon.rs": "relay daemon",
-    "crates/hosting/tilo-relay/src/offload_device.rs": "relay offload client",
 }
 
 PRESET = re.compile(r"\bpresets::N0\b")

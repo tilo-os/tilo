@@ -10,7 +10,7 @@ OCR="$ROOT/crates/media/ocr/src/lib.rs"
 SETTINGS_AUDIO="$ROOT/apps/settings/src/panes/audio.rs"
 DEFAULT_NODE="$ROOT/crates/platform/tilo-media/src/audio/default_node.rs"
 EVENT_SOUND="$ROOT/crates/platform/tilo-media/src/event_sound.rs"
-SHELL_CAPTURE="$ROOT/crates/session/shell/src/compositor/audio_capture.rs"
+SHELL_CAPTURE="$ROOT/crates/platform/tilo-media/src/audio_runtime.rs"
 
 fails=0
 checks=0

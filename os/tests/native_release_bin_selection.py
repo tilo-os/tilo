@@ -38,7 +38,7 @@ for library in libraries:
     assert len(owners) == 1, (library, owners)
     assert f"-p {owners[0]} --lib" in recipe, f"{library}.so is staged but never built"
 vm_bins = {"tilo-windows-vm-control", "tilo-windows-rail"}
-desktop_bins = {"shell", "tilo-session", "tilo-launcher", "tilo-runtime-mcp", "tilo-unlock-helper"}
+desktop_bins = {"tilo-session", "tilo-launcher", "tilo-runtime-mcp", "tilo-unlock-helper"}
 excluded = set()
 for browser in ("0", "1"):
     for desktop in ("0", "1"):
@@ -64,5 +64,5 @@ cargo() { printf '%s\\n' "$@"; }
         assert not any("browser" in value for value in argv), argv
         excluded |= available - set(selected)
         print(f"PASS browser={browser} prebuilt_desktop={desktop}: {len(selected)} shipped binaries")
-assert {"shots", "tilo-loadclient", "tilo-model-catalog"} <= excluded, excluded
+assert "tilo-model-catalog" in excluded, excluded
 print("Unshipped binaries excluded:", ", ".join(sorted(excluded)))

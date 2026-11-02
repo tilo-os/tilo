@@ -1,4 +1,4 @@
-//! First-boot setup, run by `shell-firstboot.service` as
+//! First-boot setup, run by `tilo-firstboot.service` as
 //! `tilo-session --firstboot-only`.
 //!
 //! The systemd unit guards re-runs with a `ConditionPathExists` on

@@ -139,16 +139,6 @@ class TestAssets(unittest.TestCase):
             for theme in ("dark", "light")
             for display, text in (("1", "1"), ("1_25", "1"), ("1_5", "1_25"))})
 
-    def test_shell_decision_states_remain_pinned(self):
-        rows = assets.manifest(ROOT / "crates/session/shell/tests/snapshots/artifacts.json")
-        self.assertEqual(len(rows), 4)
-        self.assertEqual(sum(row["bytes"] for row in rows), 135196)
-        self.assertEqual({row["file"] for row in rows}, {
-            "e2e-open-close-overview-settled.png",
-            "e2e-tab-drag-reorder-settled.png",
-            "e2e-maximized-tile-controls.png",
-            "e2e-narrow-window-bar-deep-folder.png"})
-
     def test_reader_linux_and_windows_baselines_remain_pinned(self):
         rows = assets.manifest(ROOT / "apps/ebook/tests/fixtures/typography/artifacts.json")
         self.assertEqual(len(rows), 4)

@@ -42,6 +42,9 @@ blake3.workspace = true
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, optional = true }
 # The browser is a channel member device, as native peers are.
 channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
+# A call's frames: the page seals and opens them itself, and the lanes' own
+# connections stay with the device that bridges it.
+tilo-call-lane = { version = "0.1.0", path = "../../collab/tilo-call-lane", default-features = false }
 # Each joined workspace's replica: the workspace's governance as native devices
 # admit it, held in the engine's owner native devices hold theirs in
 # (`replica`), its record kept as JSON in the page's store.

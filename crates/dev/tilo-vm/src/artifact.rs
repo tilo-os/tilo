@@ -15,7 +15,7 @@ use crate::builderlayer::{Packed, Stream};
 use crate::cli::ArtifactSwap;
 use crate::error::CliError;
 
-const COHORT: [&str; 4] = ["launcher", "install", "shell", "apps+runtime"];
+const COHORT: [&str; 4] = ["launcher", "install", "tilo-session", "apps+runtime"];
 const MAX_LAYER: u64 = 8 << 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

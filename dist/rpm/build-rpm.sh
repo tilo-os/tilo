@@ -71,11 +71,11 @@ if (( run_cargo )); then
         --bin tilo-model-catalog --bin tilo-model-manager --bin tilo-speech-worker \
         --bin tilo-model-gateway --bin tilo-model-http --bin imager \
         --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-relay-admin --bin tilo-enroll --bin fs --bin tilo-legacy )
-    say "cargo build --release (compositor, no default features)"
-    # `shell` also owns developer tools such as `shots` and `tilo-control`.
+    say "cargo build --release (runtime host, no default features)"
+    # The runtime package also owns developer tools such as `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
     # those large binaries even though stage-payload never ships them.
-    ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell \
+    ( cd "$repo_root" && cargo build --release --locked \
         -p tilo-runtime --bin tilo-runtime-mcp --no-default-features )
     say "cargo build --release (native session)"
     ( cd "$repo_root" && cargo build --release --locked -p tilo-session --bin tilo-session )

@@ -179,9 +179,14 @@ pub(crate) fn field_weight(weight: tilo_resource::SearchWeight) -> FieldWeight {
 /// A search provider over one snapshot of the resource's entries.
 pub(crate) struct ResourceSearch {
     pub(crate) name: &'static str,
+    /// The app that keeps the resource, as its item hits name it.
+    pub(crate) app: &'static str,
     pub(crate) indexed: Arc<IndexedEntries>,
     pub(crate) scopes: Vec<ScopeDecl>,
     pub(crate) queries: Vec<SearchQueries>,
+    /// Whether the person this window is open for may read the record: one
+    /// who may not is found nothing, as they are shown nothing.
+    pub(crate) readable: bool,
     /// Where a search that waits on the surfaces' answers finds them: none
     /// for a fixed set of entries.
     pub(crate) live: Option<LiveSearch>,
@@ -259,14 +264,17 @@ fn with_row(mut result: SearchResult, title: &str, row: &tilo_resource::SearchRo
 }
 
 impl ResourceSearch {
-    /// The search source over `indexed`, listed under `name` unless an
-    /// entry names its own group.
-    pub(crate) fn new(name: &'static str, indexed: Arc<IndexedEntries>) -> Self {
+    /// The search source over `indexed`, of the app `app`, listed under
+    /// `name` unless an entry names its own group. Everyone who opens the
+    /// app may read its record; a window that says otherwise says so.
+    pub(crate) fn new(name: &'static str, app: &'static str, indexed: Arc<IndexedEntries>) -> Self {
         Self {
             name,
+            app,
             indexed,
             scopes: Vec::new(),
             queries: Vec::new(),
+            readable: true,
             live: None,
             opens: None,
         }
@@ -406,14 +414,23 @@ impl SearchProvider for ResourceSearch {
     }
 
     fn facets(&self) -> Vec<ui_core::search::Facet> {
+        if !self.readable {
+            return Vec::new();
+        }
         self.indexed().facets.clone()
     }
 
     fn search_scopes(&self) -> Vec<ScopeDecl> {
+        if !self.readable {
+            return Vec::new();
+        }
         self.scopes.clone()
     }
 
     fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+        if !self.readable {
+            return None;
+        }
         self.opens.clone()
     }
 }
@@ -421,6 +438,9 @@ impl SearchProvider for ResourceSearch {
 impl ResourceSearch {
     /// One page of hits for `query`, and whether more follow it.
     fn results(&self, query: &SearchQuery, page: Page) -> (Vec<SearchResult>, bool, usize) {
+        if !self.readable {
+            return (Vec::new(), false, 0);
+        }
         let indexed = self.indexed();
         let found = indexed.index.search(query.text(), page);
         let inspected = found.hits.len();
@@ -483,12 +503,33 @@ impl ResourceSearch {
                 if let Some(within) = &entry.within {
                     result = result.within(within.clone());
                 }
-                if let Some(row) = &entry.row {
-                    result = with_row(result, &entry.title, row);
+                match &entry.row {
+                    Some(row) => result = with_row(result, &entry.title, row),
+                    // An item that says nothing more about how it reads is
+                    // the reference its app draws: the app, the item's kind
+                    // and its id, opening the item.
+                    None => {
+                        if let Some(row) = self.item_row(entry) {
+                            result = result.with_row(row);
+                        }
+                    }
                 }
                 Some(result.with_score(hit.rank.unwrap_or(0).saturating_add(entry.boost)))
             })
             .collect();
         (results, found.more, inspected)
+    }
+
+    /// `entry` as the reference the app draws, for an entry that is an item
+    /// of this resource and invokes no action of its own: `None` for a hit
+    /// that is not one (a video from a service, a row of the window's own).
+    fn item_row(&self, entry: &SearchEntry) -> Option<ui_core::search::SearchRow> {
+        if entry.action.is_some() {
+            return None;
+        }
+        let anchor = entry.anchor.as_deref()?;
+        let kind = tilo_resource::items::item_kind(anchor)?;
+        let id = anchor.rsplit('/').next()?;
+        Some(ui_core::search::SearchRow::item(self.app, kind, id))
     }
 }

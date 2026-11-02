@@ -216,6 +216,7 @@ fn work() -> Work {
         inputs: vec![([7; 32], 1_000)],
         input_bytes: 1_000,
         local_wall_ms: Some(10_000),
+        offload: None,
     }
 }
 

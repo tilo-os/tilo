@@ -3,8 +3,8 @@
 #
 # The caller must be one of the package-owned wrappers, and it names the whole
 # compositor command line: the path it trusts, then the compositor's own
-# arguments. The production wrapper supplies its fixed /usr/bin/tilo-session or
-# /usr/bin/tilo-shell path; the developer wrapper supplies a canonical path
+# arguments. The production wrapper supplies its fixed /usr/bin/tilo-session
+# path; the developer wrapper supplies a canonical path
 # only after validating ownership, permissions, and the build marker. This
 # helper never discovers a compositor through the environment, and adds no
 # compositor argument of its own.

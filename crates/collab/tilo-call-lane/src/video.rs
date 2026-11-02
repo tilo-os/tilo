@@ -33,12 +33,14 @@ use iroh::endpoint::{ReadExactError, RecvStream, SendStream};
 use media::realtime::{EncoderConfig, InputFormat, InputFrame, RealtimeEncoder, StreamCodec};
 use tilo_lock::MutexRecover as _;
 use tilo_moq::video::{self, Codec, VideoObject};
-pub use tilo_moq::video::{Layer, Source};
 use tokio::sync::mpsc;
 
 use crate::carrier::Peer;
 use crate::frame::{OVERHEAD, Opener, Sealer, Stream};
 use crate::roster::Roster;
+
+pub use crate::wire::{layer_of_wire, layer_wire, source_of_wire, source_wire, stream_of};
+pub use tilo_moq::video::{Layer, Source};
 
 /// Camera frames a second.
 pub const CAMERA_FPS: u32 = 30;
@@ -208,55 +210,6 @@ pub fn fitted((width, height): (u32, u32), (box_width, box_height): (u16, u16)) 
         (u32::try_from(scaled).unwrap_or(box_width), box_height)
     };
     ((w & !1).max(2), (h & !1).max(2))
-}
-
-/// The byte a control message names a source with.
-#[must_use]
-pub const fn source_wire(source: Source) -> u8 {
-    match source {
-        Source::Camera => 0,
-        Source::Screen => 1,
-    }
-}
-
-/// The source a control message names, or `None` for any other byte.
-#[must_use]
-pub const fn source_of_wire(byte: u8) -> Option<Source> {
-    match byte {
-        0 => Some(Source::Camera),
-        1 => Some(Source::Screen),
-        _ => None,
-    }
-}
-
-/// The byte a control message names a layer with.
-#[must_use]
-pub const fn layer_wire(layer: Layer) -> u8 {
-    match layer {
-        Layer::Low => 0,
-        Layer::Mid => 1,
-        Layer::High => 2,
-    }
-}
-
-/// The layer a control message names, or `None` for any other byte.
-#[must_use]
-pub const fn layer_of_wire(byte: u8) -> Option<Layer> {
-    match byte {
-        0 => Some(Layer::Low),
-        1 => Some(Layer::Mid),
-        2 => Some(Layer::High),
-        _ => None,
-    }
-}
-
-/// The stream of a call's frames a picture source travels on.
-#[must_use]
-pub const fn stream_of(source: Source) -> Stream {
-    match source {
-        Source::Camera => Stream::Camera,
-        Source::Screen => Stream::Screen,
-    }
 }
 
 /// A picture stream's share of the connection: the larger layer first, so a
@@ -698,13 +651,13 @@ impl PicturePeer {
     /// The control messages this device has to write, in the order it said
     /// them, for [`Self::write_controls`]. `None` when they are already
     /// being written.
-    fn take_controls(&self) -> Option<mpsc::UnboundedReceiver<Control>> {
+    pub(crate) fn take_controls(&self) -> Option<mpsc::UnboundedReceiver<Control>> {
         self.link.unsent.lock_recover().take()
     }
 
     /// Write what this device says on the lane, one message after the
     /// other, until the lane ends or nothing more is said of it.
-    async fn write_controls(self, mut controls: mpsc::UnboundedReceiver<Control>) {
+    pub(crate) async fn write_controls(self, mut controls: mpsc::UnboundedReceiver<Control>) {
         while let Some(message) = controls.recv().await {
             let Ok(bytes) = message.encode() else {
                 continue;
@@ -725,6 +678,11 @@ impl PicturePeer {
         self.peer.remote()
     }
 
+    /// End the lane these pictures travel on.
+    pub(crate) fn close(&self) {
+        self.peer.close();
+    }
+
     /// The layers of `source` the remote device shows.
     #[must_use]
     pub fn layers(&self, source: Source) -> BTreeSet<Layer> {
@@ -743,7 +701,7 @@ impl PicturePeer {
     }
 
     /// Replace what the remote device says it shows.
-    fn set_showing(&self, camera: &[Layer], screen: &[Layer]) {
+    pub(crate) fn set_showing(&self, camera: &[Layer], screen: &[Layer]) {
         let mut showing = self.link.showing.lock_recover();
         showing.clear();
         if !camera.is_empty() {
@@ -810,8 +768,12 @@ impl PicturePeer {
         }
     }
 
-    /// Follow what the remote device says it shows, until the lane ends.
-    async fn follow_control(self, video: Arc<Inner>) {
+    /// Follow what the remote device says on its control streams until the
+    /// lane ends, handing every message to `heard`.
+    pub(crate) async fn follow_control_with<H>(self, mut heard: H)
+    where
+        H: FnMut(Control) + Send + 'static,
+    {
         let connection = self.peer.connection();
         loop {
             let Ok((_, mut recv)) = connection.clone().accept_bi().await else {
@@ -823,29 +785,36 @@ impl PicturePeer {
             let Ok(message) = Control::decode(&bytes) else {
                 continue;
             };
-            match message {
-                Control::Shows { camera, screen } => {
-                    let layers = |codes: &[u8]| -> Vec<Layer> {
-                        codes
-                            .iter()
-                            .filter_map(|byte| layer_of_wire(*byte))
-                            .collect()
-                    };
-                    self.set_showing(&layers(&camera), &layers(&screen));
-                    video.showed();
-                }
-                Control::Keyframe { source } => {
-                    if let Some(source) = source_of_wire(source) {
-                        video.asked(source);
-                    }
-                }
-            }
+            heard(message);
         }
     }
 
+    /// Follow what the remote device says it shows, until the lane ends.
+    async fn follow_control(self, video: Arc<Inner>) {
+        let peer = self.clone();
+        self.follow_control_with(move |message| match message {
+            Control::Shows { camera, screen } => {
+                peer.set_showing(&layers_of(&camera), &layers_of(&screen));
+                video.showed();
+            }
+            Control::Keyframe { source } => {
+                if let Some(source) = source_of_wire(source) {
+                    video.asked(source);
+                }
+            }
+        })
+        .await;
+    }
+
     /// Read the remote device's picture streams until the lane ends: each is
-    /// one source at one layer, from a keyframe to the next.
-    async fn read_pictures(self, video: Arc<Inner>) {
+    /// one source at one layer, from a keyframe to the next. `arrive` takes
+    /// every sealed picture as it comes off the stream, and `lost` a source
+    /// whose stream was cut off between two of them.
+    pub(crate) async fn read_pictures_with<A, L>(self, arrive: A, lost: L)
+    where
+        A: Fn(Source, Vec<u8>) + Clone + Send + 'static,
+        L: Fn(Source) + Clone + Send + 'static,
+    {
         let connection = self.peer.connection();
         loop {
             let Ok(mut stream) = connection.clone().accept_uni().await else {
@@ -858,19 +827,18 @@ impl PicturePeer {
             let Some(source) = source_of_wire(source[0]) else {
                 continue;
             };
-            let peer = self.clone();
-            let video = Arc::clone(&video);
+            let arrive = arrive.clone();
+            let lost = lost.clone();
             tokio::spawn(async move {
                 loop {
                     match next_frame(&mut stream).await {
-                        Ok(Some(sealed)) => video.arrived(&peer, source, &sealed),
+                        Ok(Some(sealed)) => arrive(source, sealed),
                         // The stream ended between two pictures.
                         Ok(None) => return,
                         // A picture was cut off: nothing of this stream until
                         // the device starts it over.
                         Err(()) => {
-                            video.behind(peer.remote(), source);
-                            peer.ask_keyframe(source);
+                            lost(source);
                             return;
                         }
                     }
@@ -878,11 +846,36 @@ impl PicturePeer {
             });
         }
     }
+
+    /// Read the remote device's pictures into `video`: opened with the call's
+    /// keys, and queued for the app.
+    async fn read_pictures(self, video: Arc<Inner>) {
+        let from = self.remote();
+        let arriving = self.clone();
+        let arrivals = Arc::clone(&video);
+        let asking = self.clone();
+        self.read_pictures_with(
+            move |source, sealed| arrivals.arrived(&arriving, source, &sealed),
+            move |source| {
+                video.behind(from, source);
+                asking.ask_keyframe(source);
+            },
+        )
+        .await;
+    }
+}
+
+/// The layers a control message lists, or the ones it names that exist.
+fn layers_of(codes: &[u8]) -> Vec<Layer> {
+    codes
+        .iter()
+        .filter_map(|byte| layer_of_wire(*byte))
+        .collect()
 }
 
 /// The next picture of a stream: `Ok(None)` when it ended between two, and
 /// [`Err`] when a picture was cut off.
-async fn next_frame(stream: &mut RecvStream) -> Result<Option<Vec<u8>>, ()> {
+pub(crate) async fn next_frame(stream: &mut RecvStream) -> Result<Option<Vec<u8>>, ()> {
     let mut length = [0_u8; 4];
     match stream.read_exact(&mut length).await {
         Ok(()) => {}
@@ -900,7 +893,7 @@ async fn next_frame(stream: &mut RecvStream) -> Result<Option<Vec<u8>>, ()> {
 
 /// What a device says on its lane's control stream.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum Control {
+pub(crate) enum Control {
     /// What this device shows of the other: the layers of its camera, and of
     /// its screen.
     Shows { camera: Vec<u8>, screen: Vec<u8> },

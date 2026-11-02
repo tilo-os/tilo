@@ -43,11 +43,11 @@ command = ["bash", "tools/test-env-setup.sh", "audio"]
 [scripts.setup.ntfs-fixtures]
 command = ["bash", "tools/test-env-setup.sh", "ntfs"]
 
-# The shell's tests start the click-test client, the launcher, first-party
+# The session's tests start the click-test client, the launcher, first-party
 # apps and the runtime host an agent's MCP client starts, which
 # tilo_test_env::sibling_binary would otherwise build inside the first test
 # that asks, against its hang bound (tools/build-sibling-binaries.sh).
-[scripts.setup.shell-siblings]
+[scripts.setup.session-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
     "click-test-client:click_test_client", "launcher:tilo-launcher",
@@ -57,8 +57,8 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(shell)"
-setup = "shell-siblings"
+filter = "package(tilo-session)"
+setup = "session-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
@@ -87,7 +87,7 @@ agent-participant-sessions = { max-threads = 2 }
 
 # Golden rendering shares Vulkan resources across test processes.
 [[profile.default.overrides]]
-filter = '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and test(e2e_shell_flows::))'
+filter = '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))'
 test-group = "gpu-golden"
 
 [[profile.default.overrides]]
@@ -117,50 +117,6 @@ success-output = "final"
 filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
 
-# The native-4K, XRGB-history and GPU-target oracles render and read back
-# whole 3840x2160 frames through the software renderer. They assert pixels,
-# not time, so they need a share of the cores rather than the whole pool:
-# taking the whole pool made a shell run spend its first minute on them one
-# at a time with every other test waiting.
-[[profile.default.overrides]]
-filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions) or test(native_4k_modal_layers_match_between_dense_and_retained_frames))'
-threads-required = 16
-priority = 100
-
-[[profile.default.overrides]]
-filter = 'package(shell) and test(shell::render::paint::tests::gpu_target_)'
-threads-required = 16
-priority = 100
-
-# The loopback peer-sync latency measurements (a 50 ms p95, an edit from one
-# device through the room's host to another) are wall-clock and run only when
-# asked for with --ignored; sharing the runner with the parallel suite would
-# measure scheduler contention instead of the push path, so they run with the
-# pool to themselves.
-[[profile.default.overrides]]
-filter = 'package(shell) and test(=shell::network::one_host_tests::edit_latency::a_note_edit_reaches_the_other_device_within_the_interactive_budget)'
-threads-required = "num-cpus"
-priority = 100
-
-# The idle-work counts build a whole fixture desktop for each of their 64
-# repetitions (several seconds each in a debug build on a busy node) and run
-# its real pump and park selector on virtual instants; they finish in seven to
-# nine minutes, past the CI profile's eight-minute hang bound.
-[[profile.default.overrides]]
-filter = 'package(shell) and test(/^compositor::native::idle_work_tests::/)'
-slow-timeout = { period = "60s", terminate-after = 16 }
-
-# The native voice round trip paces 50 Opus frames a second for real and
-# holds each received frame 200 ms (the voice receive budget) before it counts
-# as late. Beside the parallel suite the drain loop stalls past that budget
-# under scheduler contention (208 of 250 delivered, 33-42 late, none lost),
-# which measures the runner, not the transport; its delivery, tone and latency
-# assertions stay as they are and it runs with the pool to itself.
-[[profile.default.overrides]]
-filter = 'package(shell) and test(=network::native_media::audio_tests::native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency)'
-threads-required = "num-cpus"
-priority = 100
-
 # A call's lane paces 50 Opus frames a second for real and holds each received
 # frame 200 ms (the voice receive budget) before it counts as late. Beside the
 # parallel suite a host stall longer than that budget costs the playout every
@@ -173,7 +129,7 @@ threads-required = "num-cpus"
 priority = 100
 
 [[profile.default.overrides]]
-filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
+filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::)))'
 threads-required = 16
 priority = 100
 
@@ -207,5 +163,5 @@ filter = 'package(tilo-browser-peer) and (binary(compaction) or binary(backpress
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or binary(collab_release_matrix))) or (package(shell) and (test(=shell::collab_history::tests::history_outlives_the_memory_window_and_a_restart) or binary(shots))) or (package(tilo-media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(patch_log_memory)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
+filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or binary(collab_release_matrix))) or (package(tilo-action-broker) and test(=history_outlives_the_memory_window_and_a_restart)) or (package(tilo-media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(patch_log_memory)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
 priority = 50

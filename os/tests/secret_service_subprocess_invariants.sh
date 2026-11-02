@@ -8,7 +8,7 @@ set -euo pipefail
 
 readonly secret_tool_consumers=(
   crates/system/accounts/src/vault.rs
-  crates/session/shell/src/shell/mls_vault.rs
+  crates/session/session/src/channels/vault.rs
 )
 
 readonly store_consumers=(

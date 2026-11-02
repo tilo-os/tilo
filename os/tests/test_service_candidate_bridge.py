@@ -24,7 +24,7 @@ finally:
 
 def request():
     value = {key: 'ab' * 32 for key in contract.SHA_FIELDS}
-    value.update(schema=2, root='/', shell_path='/usr/bin/shell', required_protocol=2,
+    value.update(schema=2, root='/', shell_path='/usr/bin/tilo-session', required_protocol=2,
                  sdk_runtime_version='1+fixture', cef_runtime_version='1+fixture-chromium',
                  receiving_dependencies={'/usr/libexec/fixture.py': 'ab' * 32},
                  receiving_python_path='/usr/bin/python3')

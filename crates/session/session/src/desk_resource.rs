@@ -161,7 +161,11 @@ fn untitled() -> String {
 
 /// The windows the desk shows, by recency: the tabs of every strip of the workspace in front,
 /// the focused one first, then those it was in front of, then the rest along their strips.
-fn windows(tree: &DesktopTree) -> Vec<shell_part::WindowReading> {
+///
+/// `handle` says what may be pictured: a window whose app holds secrets shows its app's glyph
+/// instead of its picture (`withheld`), and one that is not this device's window shows neither
+/// (`none`).
+fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::WindowReading> {
     use tilo_desktop_model::TileContent;
     let Some(workspace) = tree.active_workspace() else {
         return Vec::new();
@@ -203,6 +207,14 @@ fn windows(tree: &DesktopTree) -> Vec<shell_part::WindowReading> {
                     }
                 };
                 let title = tab.title.trim();
+                // What the window's well shows instead of a picture: its app's own glyph, so
+                // two apps' windows never look alike.
+                let icon = ui::icons::app_glyph(&app, None).name().to_owned();
+                let preview = match &tab.tile {
+                    TileContent::Foreign { .. } if handle.withholds(&app) => "withheld",
+                    TileContent::Foreign { .. } => "live",
+                    _ => "none",
+                };
                 readings.push(shell_part::WindowReading {
                     key: tab.id.to_string(),
                     title: if title.is_empty() {
@@ -211,13 +223,13 @@ fn windows(tree: &DesktopTree) -> Vec<shell_part::WindowReading> {
                         title.to_owned()
                     },
                     origin_app: tab.app_title.clone().unwrap_or(app),
-                    icon: String::new(),
+                    icon,
                     strip: strip.name.trim().to_owned(),
                     strip_key: strip.id.0.to_string(),
                     workspace: workspace.name.clone(),
                     recency: 0,
                     focused,
-                    preview: "none".to_owned(),
+                    preview: preview.to_owned(),
                 });
             }
         }
@@ -240,6 +252,11 @@ fn windows(tree: &DesktopTree) -> Vec<shell_part::WindowReading> {
             .saturating_add(i64::try_from(at).unwrap_or(0));
     }
     readings.sort_by_key(|reading| reading.recency);
+    // What is left of the rank is the order the walk takes: where each window stands in it, so
+    // a view shows the page the walk has reached without knowing how the order was made.
+    for (at, reading) in readings.iter_mut().enumerate() {
+        reading.recency = i64::try_from(at).unwrap_or(i64::MAX).saturating_add(1);
+    }
     readings
 }
 
@@ -268,7 +285,7 @@ impl Desk {
     /// The desk's windows, with the one the switcher's walk has reached marked focused while
     /// it is up: the tile its walk chose is the one lifted.
     fn windows_reaching(&self, tree: &DesktopTree) -> Vec<shell_part::WindowReading> {
-        let mut windows = windows(tree);
+        let mut windows = windows(tree, &self.handle);
         if self.overlays.here() == "switcher"
             && let Some(at) = self.overlays.reached(
                 windows.len(),
@@ -640,7 +657,7 @@ impl Desk {
     /// Bring the window the switcher's walk reached to the front, and close the switcher. The
     /// walk counts from the window in front as the desk's windows are listed, wrapping.
     fn commit_switcher(&self) {
-        let windows = self.handle.read(windows);
+        let windows = self.handle.read(|tree| windows(tree, &self.handle));
         // The window in front leads the list, so the walk counts from its place.
         let front = windows.iter().position(|window| window.focused);
         let at = if windows.is_empty() {

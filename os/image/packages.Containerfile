@@ -120,7 +120,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # Graphics stack. `at-spi2-core` supplies the D-Bus-activated org.a11y.Bus
     # service discovered by AccessKit providers at runtime. `harfbuzz-icu` and
     # `libatomic` own libharfbuzz-icu.so.0 and libatomic.so.1, which the copied
-    # shell binary links directly; keep them explicit so compositor startup never
+    # session binary links directly; keep them explicit so compositor startup never
     # depends on build-stage or transitive browser dependencies.
     && dnf install -y --setopt=reposdir=/repo \
     mesa-dri-drivers \

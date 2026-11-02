@@ -35,7 +35,7 @@ import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The nightly ignored-test lane points these at the binaries Cargo built for the run.
-SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "shell"))
+SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "tilo-session"))
 CONTROL = pathlib.Path(os.environ.get("TILO_CONTROL_BINARY", REPO / "target" / "debug" / "tilo-control"))
 SHIM = REPO / "scripts" / "tilo-mcp-server.py"
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))

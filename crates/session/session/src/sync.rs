@@ -54,7 +54,7 @@ use crate::engine::Engine;
 mod gate;
 mod plane;
 
-use plane::{Bound, Serving, run};
+use plane::{Beside, Bound, Serving, run};
 
 /// The app id the desktop of a workspace says its own presence under, as the
 /// browser, the agents and every app reading a workspace expect it.
@@ -82,9 +82,26 @@ pub struct OwnPresence {
     pub availability: Availability,
     /// The voice channel they are in here, if any: what everyone else's
     /// roster says beside their face.
-    pub call: Option<ui::CallPresence>,
+    pub call: Option<InCall>,
+    /// The services carrying this device's media into that channel, as this
+    /// session says them: a page has no call lane of its own, so the device
+    /// the page's frames name carries them, and the call says which software
+    /// its frames pass through. Empty when nothing bridges it.
+    pub bridge: Vec<String>,
     /// Whose view they follow, by that member's publisher.
     pub following: Option<String>,
+}
+
+/// A device's call, as its presence carries it to everyone in the workspace:
+/// the channel it is in, and what it sends of the person there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InCall {
+    /// The channel's id and, once someone named it, its name.
+    pub call: ui::CallPresence,
+    /// This device's camera is on in the call.
+    pub camera: bool,
+    /// This device shares its screen in the call.
+    pub screen: bool,
 }
 
 /// A call in progress in a workspace, as the people in it say.
@@ -111,20 +128,47 @@ pub struct LiveCaller {
     /// The person behind the device (user root, hex), once its certificate
     /// was heard.
     pub user: Option<String>,
+    /// The device's camera is on in the call.
+    pub camera: bool,
+    /// The device shares its screen in the call.
+    pub screen: bool,
+    /// The services carrying this device's media into this call: the software
+    /// everyone's frames of them pass through.
+    pub services: Vec<String>,
 }
 
 impl LiveCall {
     /// `peer` is in this call, as their presence says: one more in it, and
     /// the name they give it when nobody named it first.
-    fn join(&mut self, peer: &Peer, presence: &ui::CallPresence) {
+    fn join(&mut self, peer: &Peer, presence: &InCall) {
         if self.name.trim().is_empty() {
-            self.name.clone_from(&presence.name);
+            self.name.clone_from(&presence.call.name);
         }
+        let services = peer
+            .bridge
+            .as_ref()
+            .filter(|(channel, _)| *channel == presence.call.channel)
+            .map(|(_, services)| services.clone())
+            .unwrap_or_default();
         self.people.push(LiveCaller {
             id: peer.publisher.to_string(),
             label: peer.label.clone(),
             user: peer.user.clone(),
+            camera: presence.camera,
+            screen: presence.screen,
+            services,
         });
+    }
+
+    /// Whether `person` is in this call, on any of their devices: what a
+    /// Join is not offered for.
+    fn joined_by(&self, person: Option<&str>) -> bool {
+        let Some(person) = person else {
+            return false;
+        };
+        self.people
+            .iter()
+            .any(|caller| caller.user.as_deref() == Some(person))
     }
 }
 
@@ -147,9 +191,12 @@ struct Peer {
     following: Option<String>,
     /// The last wave they sent at someone here.
     wave: Option<Wave>,
-    /// The call they are in, as their presence says: the channel's id and
-    /// what it is called.
-    call: Option<ui::CallPresence>,
+    /// The call they are in, as their presence says: the channel's id,
+    /// what it is called, and what their device sends there.
+    call: Option<InCall>,
+    /// Which services carry their media into which channel, as their presence
+    /// says.
+    bridge: Option<(String, Vec<String>)>,
     /// Where their pointer is: the tab of this workspace its tile shows, and the
     /// position on that tile in logical pixels from its corner.
     pointer: Option<(u64, f64, f64)>,
@@ -168,6 +215,7 @@ impl Peer {
             following: None,
             wave: None,
             call: None,
+            bridge: None,
             pointer: None,
             here: false,
         }
@@ -187,7 +235,7 @@ impl Peer {
             layout: None,
             following: self.following.clone(),
             availability: Some(self.availability.id().to_owned()),
-            call: self.call.as_ref().map(ui::CallPresence::encode),
+            call: self.call.as_ref().map(|call| call.call.encode()),
         }
     }
 }
@@ -237,10 +285,22 @@ impl Workspace {
                     PeerPresencePayload::Status { text, .. } => {
                         peer.status = Some(text.trim().to_owned()).filter(|text| !text.is_empty());
                     }
-                    PeerPresencePayload::Availability { state, call } => {
+                    PeerPresencePayload::Availability {
+                        state,
+                        call,
+                        camera,
+                        screen,
+                    } => {
                         peer.availability =
                             Availability::from_id(state).unwrap_or(Availability::Available);
-                        peer.call = call.as_deref().and_then(ui::CallPresence::decode);
+                        peer.call =
+                            call.as_deref()
+                                .and_then(ui::CallPresence::decode)
+                                .map(|call| InCall {
+                                    call,
+                                    camera: *camera,
+                                    screen: *screen,
+                                });
                     }
                     PeerPresencePayload::Following { target } => {
                         peer.following.clone_from(target);
@@ -250,6 +310,9 @@ impl Workspace {
                             seq: *seq,
                             target: target.clone(),
                         });
+                    }
+                    PeerPresencePayload::Bridge { channel, services } => {
+                        peer.bridge = Some((channel.clone(), services.clone()));
                     }
                     _ => {}
                 });
@@ -333,7 +396,7 @@ impl Workspace {
             };
             let at = calls
                 .iter()
-                .position(|known| known.channel == presence.channel);
+                .position(|known| known.channel == presence.call.channel);
             if let Some(at) = at {
                 if let Some(call) = calls.get_mut(at) {
                     call.join(peer, presence);
@@ -341,8 +404,8 @@ impl Workspace {
             } else {
                 let mut call = LiveCall {
                     workspace: self.id.clone(),
-                    channel: presence.channel.clone(),
-                    name: presence.name.clone(),
+                    channel: presence.call.channel.clone(),
+                    name: presence.call.name.clone(),
                     people: Vec::new(),
                 };
                 call.join(peer, presence);
@@ -640,6 +703,10 @@ pub struct Client {
     /// This device's relays, held back until a workspace this session takes part
     /// in has someone else in it.
     reachability: Reachability,
+    /// The protocols this session was handed to serve beside its own, by
+    /// ALPN: what it answers on this device's endpoint, so the session can
+    /// say whether it serves one ([`Self::serves`]).
+    beside: Vec<Vec<u8>>,
     /// The thread running the peer actor, stopped when this drops.
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -688,6 +755,11 @@ impl Client {
     /// governance on this plane and tell it which devices each workspace admits:
     /// what they say travels as the plane's own messages.
     ///
+    /// `beside` is what else this session serves on its endpoint — this
+    /// device's exit, when it offers one. An endpoint's protocols are fixed
+    /// once it binds, so they come in here; [`Self::serves`] says what was
+    /// taken.
+    ///
     /// # Errors
     /// The endpoint could not be bound.
     pub fn start(
@@ -697,6 +769,7 @@ impl Client {
         hosts: Vec<EndpointAddr>,
         media: MediaContinuity,
         wake: Arc<dyn Fn() + Send + Sync>,
+        beside: tilo_network_actor::local_host::Protocols,
     ) -> std::io::Result<Self> {
         let (outgoing, commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
@@ -705,27 +778,7 @@ impl Client {
         let user = identity
             .as_ref()
             .map(|identity| identity.device_cert.user_public_key);
-        // This device's fabric before the endpoint runs, so a device that
-        // proves itself at the actor's first tick is recorded with it: the
-        // record it keeps is this device's, named by its certificate.
-        let fabric = identity.as_ref().and_then(|identity| {
-            FabricRuntime::restored(
-                Some((
-                    DeviceId::new(hex::encode(identity.device_cert.device_public_key)).ok()?,
-                    identity.device_cert.device_label.clone(),
-                )),
-                None,
-            )
-            .ok()
-            .map(|runtime| {
-                SessionFabric::new(
-                    runtime,
-                    outgoing.clone(),
-                    identity.device_cert.user_public_key,
-                    media,
-                )
-            })
-        });
+        let fabric = restored_fabric(identity.as_ref(), outgoing.clone(), media);
         // The channels this session runs, if it runs any: their side of the
         // plane is the engine's, opened before the plane starts. The thread
         // takes its own handle, and this one tells them where the plane is.
@@ -738,6 +791,7 @@ impl Client {
         let bound_endpoint = Arc::clone(&endpoint_handle);
         let lane = crate::calls::LaneSlot::default();
         let served_lane = lane.clone();
+        let served: Vec<Vec<u8>> = beside.iter().map(|(alpn, _)| alpn.clone()).collect();
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || {
@@ -750,11 +804,14 @@ impl Client {
                     ready,
                     wake,
                     Serving {
-                        link: plane_link,
-                        actions: serving,
                         bound: Bound {
                             endpoint: bound_endpoint,
                             lane: served_lane,
+                        },
+                        beside: Beside {
+                            link: plane_link,
+                            actions: serving,
+                            protocols: beside,
                         },
                     },
                 );
@@ -795,6 +852,7 @@ impl Client {
             fabric,
             device_actions,
             reachability,
+            beside: served,
             thread: Some(thread),
         };
         // The person's other devices are heard from the start, so a list one
@@ -813,6 +871,13 @@ impl Client {
     #[must_use]
     pub fn publisher(&self) -> EndpointId {
         self.plane.borrow().publisher
+    }
+
+    /// Whether this session answers `alpn` on this device's endpoint: what it
+    /// was handed beside its own planes, from the pass the endpoint bound.
+    #[must_use]
+    pub fn serves(&self, alpn: &[u8]) -> bool {
+        self.beside.iter().any(|served| served == alpn)
     }
 
     /// The desktop's presence, shared with whatever draws who is here.
@@ -868,13 +933,46 @@ impl Client {
     /// This device joined `call`, or left it (`None`): said again in the
     /// workspace in front, so everyone here reads which channel this person is
     /// in beside their face. Whether that changed anything.
-    pub fn in_call(&self, call: Option<ui::CallPresence>) -> bool {
+    pub fn in_call(&self, call: Option<InCall>) -> bool {
         let mut own = self.own.borrow().clone();
         if own.call == call {
             return false;
         }
         own.call = call;
         self.set_own(own)
+    }
+
+    /// The services carrying this device's media into the call it is in, as
+    /// everyone here reads them (`["web"]` for a page bridged into its call).
+    /// Said again in the workspace in front; empty when nothing bridges it.
+    /// Whether that changed anything.
+    pub fn bridged(&self, services: Vec<String>) -> bool {
+        let mut own = self.own.borrow().clone();
+        if own.bridge == services {
+            return false;
+        }
+        own.bridge = services;
+        self.set_own(own)
+    }
+
+    /// Whether this person is in the call in `channel`, on any of their
+    /// devices: what a Join is not offered for.
+    #[must_use]
+    pub fn is_in_call(&self, channel: &str) -> bool {
+        let own = self.own.borrow();
+        if own
+            .call
+            .as_ref()
+            .is_some_and(|call| call.call.channel == channel)
+        {
+            return true;
+        }
+        let user = own.user.clone();
+        drop(own);
+        self.calls()
+            .iter()
+            .any(|call| call.channel == channel && call.joined_by(user.as_deref()))
+
     }
 
     /// Follow `tree`'s workspaces: take part in each, leave the
@@ -1448,7 +1546,9 @@ impl Client {
             PeerPresencePayload::Arrived,
             PeerPresencePayload::Availability {
                 state: own.availability.id().to_owned(),
-                call: own.call.as_ref().map(ui::CallPresence::encode),
+                call: own.call.as_ref().map(|call| call.call.encode()),
+                camera: own.call.as_ref().is_some_and(|call| call.camera),
+                screen: own.call.as_ref().is_some_and(|call| call.screen),
             },
         ];
         if let Some(status) = own.status {
@@ -1466,6 +1566,12 @@ impl Client {
             payloads.push(PeerPresencePayload::Wave {
                 seq: wave.seq,
                 target: wave.target,
+            });
+        }
+        if let Some(call) = &own.call {
+            payloads.push(PeerPresencePayload::Bridge {
+                channel: call.call.channel.clone(),
+                services: own.bridge.clone(),
             });
         }
         for payload in payloads {
@@ -1625,7 +1731,7 @@ impl Client {
             layout: None,
             following: own.following,
             availability: Some(own.availability.id().to_owned()),
-            call: own.call.as_ref().map(ui::CallPresence::encode),
+            call: own.call.as_ref().map(|call| call.call.encode()),
         }
     }
 
@@ -1744,6 +1850,7 @@ impl Client {
                 fabric: None,
                 device_actions: Arc::new(std::sync::OnceLock::new()),
                 reachability,
+                beside: Vec::new(),
                 thread: None,
             },
             said,
@@ -1821,6 +1928,28 @@ fn host_addr(value: &str) -> Option<EndpointAddr> {
     serde_json::from_str(value)
         .ok()
         .or_else(|| value.parse::<EndpointId>().ok().map(EndpointAddr::new))
+}
+
+/// This device's fabric before the endpoint runs, so a device that proves
+/// itself at the actor's first tick is recorded with it: the record it keeps
+/// is this device's, named by its certificate.
+fn restored_fabric(
+    identity: Option<&HostIdentity>,
+    outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    media: MediaContinuity,
+) -> Option<Arc<SessionFabric>> {
+    let identity = identity?;
+    let device = (
+        DeviceId::new(hex::encode(identity.device_cert.device_public_key)).ok()?,
+        identity.device_cert.device_label.clone(),
+    );
+    let runtime = FabricRuntime::restored(Some(device), None).ok()?;
+    Some(SessionFabric::new(
+        runtime,
+        outgoing,
+        identity.device_cert.user_public_key,
+        media,
+    ))
 }
 
 /// The endpoint the peer actor binds, and the relays held back from it

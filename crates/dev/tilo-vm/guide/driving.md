@@ -66,6 +66,15 @@ key|type|click` there. While a slot holds seat0, its input goes to seat0.
 
 ## Opening apps: a throwaway identity
 
+Everything in this guide drives the desktop over the control socket the image
+binds at `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`, and today only the
+old shell binds it. A slot whose session is `tilo-session` therefore fails
+these commands — `tilo-control` finds no socket there — instead of accepting
+them. The session serves a socket of its own, but only where the command line
+names one: `tilo-session --test-control PATH` (development builds; this is how
+`dist/dev/shell-run.sh` runs it) answers `snapshot`, `click_at` and
+`provision_test_identity`, not input or named controls.
+
 A control-socket session skips the first-login flow, so a new slot's user
 has no identity and every app refuses to start. `--identity` gives it one:
 
@@ -74,8 +83,11 @@ tilo-vm slot create apps --headful --identity
 tilo-vm control --slot apps actions list
 ```
 
-The session mints it through a control op (`provision_test_identity`) that
-only dev-image shells carry; a release build refuses it. The identity is
+The session mints it through a control op (`provision_test_identity`); a
+release build refuses it. The op belongs to the shell's socket, so a slot
+whose session is `tilo-session` cannot be given an identity this way yet, and
+`--identity device` needs the shell too: it presses the onboarding controls by
+name, which no session serves. The identity is
 named "Throwaway test identity" and marked as one beside its record, and the
 op never replaces or adopts a real identity. A newly minted identity comes
 with fresh desktop state: tilo-vmd stops the session, removes the user's

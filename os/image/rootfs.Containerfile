@@ -111,7 +111,7 @@ RUN case "${TILO_GENERATION}" in \
       "${TILO_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
  && echo "generation ${TILO_GENERATION}: sealed via kargs.d, readable at /usr/lib/tilo/generation"
 
-# The shell and the browser engine must resolve every library they load from
+# The session and the browser engine must resolve every library they load from
 # this rootfs: a gap is a loader error at the first launch, on a device.
 ARG TILO_WITH_BROWSER
 ARG CHROMIUM_RUNTIME_VERSION
@@ -119,7 +119,7 @@ RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,targ
     for f in /usr/libexec/tilo/tilo-relay /usr/libexec/tilo/tilo-relay-admin /usr/libexec/tilo/tilo-enroll \
         /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-state-migrate \
         /usr/libexec/tilo-windows-vm-control /usr/libexec/tilo-windows-rail \
-        /usr/bin/shell /usr/bin/fs /usr/libexec/tilo/tilo-greeter \
+        /usr/bin/tilo-session /usr/bin/fs /usr/libexec/tilo/tilo-greeter \
         /usr/libexec/tilo/tilo-installer /usr/libexec/tilo/tilo-launcher /usr/libexec/tilo/tilo-runtime-bundle \
         /usr/libexec/tilo/tilo-install /usr/libexec/tilo/tilo-app-package /usr/libexec/tilo-cli-shim \
         /usr/libexec/tilo-unlock-helper /usr/libexec/tilo-ush \
@@ -134,9 +134,9 @@ RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,targ
         echo "/usr/bin/$name is tilo's noun and also $(rpm -qf "/usr/bin/$name")'s command" >&2; exit 1; \
       fi; \
     done \
-    && missing="$(ldd /usr/bin/shell /usr/bin/xwayland-satellite | awk '/not found/ { print $1 }')" \
+    && missing="$(ldd /usr/bin/tilo-session /usr/bin/xwayland-satellite | awk '/not found/ { print $1 }')" \
     && { if [ -n "$missing" ]; then \
-         printf 'shell or xwayland-satellite has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
+         printf 'the session or xwayland-satellite has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
          exit 1; \
        fi; } \
     && engine="/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}/lib/chromium" \

@@ -8,17 +8,17 @@
 #
 # Usage:
 #   dist/dev/fedora44-vm-iterate.sh bootstrap
-#   dist/dev/fedora44-vm-iterate.sh build [shell|host|shots|PACKAGE ...]
-#   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh deploy [shell|PACKAGE ...]
+#   dist/dev/fedora44-vm-iterate.sh build [tilo-session|host|PACKAGE ...]
+#   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh deploy [tilo-session|PACKAGE ...]
 #   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh deploy-apps RELEASE_STAGE
 #   dist/dev/fedora44-vm-iterate.sh handoff
 #   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh verify
-#   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh cycle [shell|PACKAGE ...]
+#   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh cycle [tilo-session|PACKAGE ...]
 #
 # Before the first UI logout/login, install the *developer session* entry in the
 # disposable VM and select “Tilo (my build)” once in its greeter.  `deploy`
 # writes ~/.config/tilo/dev-session, so subsequent UI logins pick up the new
-# marked debug shell without any RPM install.
+# marked debug session without any RPM install.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
@@ -141,8 +141,7 @@ build_one() {
         # Match the shipped host-session feature set. The default HDR decoder
         # pulls Fedora multimedia DSOs which are deliberately not part of the
         # host-session runtime contract.
-        shell) args=(-p shell --bin shell --no-default-features --features dev-session) ;;
-        shots) args=(-p shell --bin shots --no-default-features --features dev-session,hosted-test-control,test-support) ;;
+        tilo-session) args=(-p tilo-session --bin tilo-session --no-default-features --features dev-session) ;;
         tilo-launcher) args=(-p launcher --bin tilo-launcher) ;;
         tilo-unlock-helper) args=(-p tilo-unlock-helper --bin tilo-unlock-helper) ;;
         *) safe_name "$package"; args=(-p "$package") ;;
@@ -184,8 +183,8 @@ build_one() {
           cargo build --locked$quoted"
 }
 
-build_shell_pair() {
-    note "debug-building shell, its matched launcher and the flight recorder in one cached Cargo invocation"
+build_session_pair() {
+    note "debug-building the session, its matched launcher and the flight recorder in one cached Cargo invocation"
     container_run "set -euo pipefail
         export SCCACHE_SERVER_PORT='$sccache_port'
         export SCCACHE_DIR=\"\$HOME/.cache/$sccache_cache_name\"
@@ -202,12 +201,12 @@ build_shell_pair() {
           CARGO_TARGET_DIR='$target_rel' \\
           RUSTC_WRAPPER=sccache \\
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-cpu=x86-64-v3 -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack -C link-arg=-Wl,-z,shstk -C link-arg=-fuse-ld=mold --remap-path-prefix=/build=.' \\
-          cargo build --locked -p shell --bin shell --no-default-features --features dev-session \\
+          cargo build --locked -p tilo-session --bin tilo-session --no-default-features --features dev-session \\
             -p launcher --bin tilo-launcher -p tilo-session-record --bin tilo-flight-recorder"
 }
 
 cmd_build() {
-    (($#)) || set -- shell
+    (($#)) || set -- tilo-session
     safe_target_rel
     ensure_target_visible_in_container
     safe_sccache_port
@@ -217,8 +216,8 @@ cmd_build() {
         if [[ $package == host ]]; then
             build_one tilo-launcher
             build_one tilo-unlock-helper
-        elif [[ $package == shell ]]; then
-            build_shell_pair
+        elif [[ $package == tilo-session ]]; then
+            build_session_pair
         else
             note "debug-building $package only"
             build_one "$package"
@@ -314,7 +313,6 @@ assert_vm_runtime_compatible() {
 
 deploy_one() {
     local package=$1 binary=$package
-    [[ $package == shell ]] && binary=shell
     safe_name "$binary"
     local source="$repo_root/$target_rel/debug/$binary"
     local transfer
@@ -322,7 +320,7 @@ deploy_one() {
     dev_transfer_image "$source" "$transfer"
     assert_vm_runtime_compatible "$transfer" "$binary"
     remote_install "$transfer" "$binary"
-    if [[ $package == shell ]]; then
+    if [[ $package == tilo-session ]]; then
         local launcher_transfer
         launcher_transfer=$(mktemp "${TMPDIR:-/tmp}/tilo-launcher.XXXXXX")
         dev_transfer_image "$repo_root/$target_rel/debug/tilo-launcher" "$launcher_transfer"
@@ -336,11 +334,11 @@ deploy_one() {
         [[ -x $wrapper ]] || die "developer session wrapper is missing: $wrapper"
         [[ -x $runner ]] || die "session lifecycle runner is missing: $runner"
         ssh_base "set -eu
-            shell_path=\"\$HOME/$vm_root/shell\"
-            grep -aFq 'tilo-app-session-build-marker-v1' \"\$shell_path\"
+            session_path=\"\$HOME/$vm_root/tilo-session\"
+            grep -aFq 'tilo-app-session-build-marker-v1' \"\$session_path\"
             install -d -m 700 \"\$HOME/.config/tilo\"
-            printf '%s\\n' \"\$shell_path\" > \"\$HOME/.config/tilo/dev-session\"
-            sha256sum \"\$shell_path\" | cut -d' ' -f1 > \"\$HOME/.config/tilo/dev-session.sha256\"
+            printf '%s\\n' \"\$session_path\" > \"\$HOME/.config/tilo/dev-session\"
+            sha256sum \"\$session_path\" | cut -d' ' -f1 > \"\$HOME/.config/tilo/dev-session.sha256\"
             chmod 600 \"\$HOME/.config/tilo/dev-session\"
             chmod 600 \"\$HOME/.config/tilo/dev-session.sha256\"
             wrapper=\"\$HOME/$vm_root/tilo-session-dev\"
@@ -363,7 +361,7 @@ deploy_one() {
 }
 
 cmd_deploy() {
-    (($#)) || set -- shell
+    (($#)) || set -- tilo-session
     local package
     for package in "$@"; do
         [[ $package != host ]] || die "deploy host as its concrete binaries: tilo-launcher tilo-unlock-helper"
@@ -425,7 +423,7 @@ cmd_verify() {
     # launch-time digest. This works under Fedora's /proc restrictions and also
     # detects when a newer binary was atomically deployed after login.
     ssh_base "set -euo pipefail
-        wanted=\$(readlink -e \"\$HOME/$vm_root/shell\")
+        wanted=\$(readlink -e \"\$HOME/$vm_root/tilo-session\")
         test -n \"\$wanted\"
         grep -aFq 'tilo-app-session-build-marker-v1' \"\$wanted\"
         attest=\"\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}/tilo-app-session/active\"
@@ -436,8 +434,8 @@ cmd_verify() {
         wanted_sha=\$(sha256sum -- \"\$wanted\" | cut -d' ' -f1)
         test \"\$actual_path\" = \"\$wanted\" || { echo 'active developer session used a different path' >&2; exit 1; }
         test \"\$actual_sha\" = \"\$wanted_sha\" || { echo 'active developer session is an older deployed build' >&2; exit 1; }
-        kill -0 \"\$pid\" 2>/dev/null || { echo 'attested developer shell is no longer running' >&2; exit 1; }
-        printf 'VM developer shell verified: pid=%s exe=%s sha256=%s\\n' \"\$pid\" \"\$wanted\" \"\$actual_sha\""
+        kill -0 \"\$pid\" 2>/dev/null || { echo 'attested developer session is no longer running' >&2; exit 1; }
+        printf 'VM developer session verified: pid=%s exe=%s sha256=%s\\n' \"\$pid\" \"\$wanted\" \"\$actual_sha\""
 }
 
 cmd_cycle() {
@@ -450,12 +448,12 @@ usage() {
     cat <<'EOF'
 Usage:
   dist/dev/fedora44-vm-iterate.sh bootstrap
-  dist/dev/fedora44-vm-iterate.sh build [shell|host|shots|PACKAGE ...]
-  TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh deploy [shell|PACKAGE ...]
+  dist/dev/fedora44-vm-iterate.sh build [tilo-session|host|PACKAGE ...]
+  TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh deploy [tilo-session|PACKAGE ...]
   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh deploy-apps RELEASE_STAGE
   dist/dev/fedora44-vm-iterate.sh handoff
   TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh verify
-  TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh cycle [shell|PACKAGE ...]
+  TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh cycle [tilo-session|PACKAGE ...]
 
 `bootstrap` creates a persistent Fedora 44 dependency container.  `cycle`
 uses debug builds only, deploys executable files into a disposable VM, then

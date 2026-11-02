@@ -56,7 +56,7 @@ default-members = [
     "crates/doc/tilo-doc",
     "crates/doc/tilo-doc-codecs",
     "crates/system/fs",
-    "crates/session/shell",
+    "crates/session/session",
     "crates/session/control-cli",
     "crates/sdk/ui-core",
     "crates/packaging/tilo-app-package",
@@ -87,8 +87,6 @@ members = [
     "crates/browser/content-blocker",
     "crates/browser/tilo-web-desktop",
     # Core product surfaces
-    "crates/session/shell",
-    "crates/session/render-service",
     "crates/sdk/ui-core",
 
     # Applications
@@ -208,7 +206,6 @@ members = [
     "crates/collab/threshold-identity",
     "crates/collab/tilo-call-lane",
     "crates/collab/tilo-callstream",
-    "crates/collab/tilo-lan-discovery",
     "crates/collab/tilo-store-link",
     "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
@@ -236,7 +233,6 @@ members = [
     "crates/dev/ui-graph",
     "crates/dev/ui-examples",
     "crates/dev/click-test-client",
-    "crates/dev/ux-bench",
 
     # Doc
     "crates/doc/bounded-zip",
@@ -434,8 +430,6 @@ members = [
     "crates/session/notifications-service",
     "crates/session/onboarding",
     "crates/session/onboarding-host",
-    "crates/session/output-passes",
-    "crates/session/overview",
     "crates/session/polkit-agent",
     "crates/session/portal",
     "crates/session/capture-studio",
@@ -951,7 +945,7 @@ opt-level = 3
 # unoptimised; this is not the release profile. Its tests build it as the test
 # profile builds every crate: optimised with debug information it took five
 # times as long to compile and link for each test run.
-[profile.dev.package.shell]
+[profile.dev.package.tilo-compositor]
 opt-level = 1
 debug = 2
 debug-assertions = true
@@ -1113,7 +1107,7 @@ opt-level = 3
 [profile.test.package.crypto-bigint]
 opt-level = 3
 
-# Every app and the shell index their search records in tantivy; an
+# Every app and the session index their search records in tantivy; an
 # unoptimised engine makes each test that builds a catalogue slow.
 [profile.dev.package.tantivy]
 opt-level = 3
@@ -1149,10 +1143,10 @@ opt-level = 3
 opt-level = 3
 
 # Release binaries keep their symbol table (`strip = "debuginfo"`), so a field
-# crash log (shell::crash_log) names each frame's function; fully stripped,
+# crash log (the session's crash log) names each frame's function; fully stripped,
 # the same backtrace was only `<unknown>` frames. The line tables compiled
 # below are stripped: kept in the compositor they would also give file:line,
-# but measured on `shell` (thin LTO as packages build it, panic = "abort")
+# but measured on `tilo-session` (thin LTO as packages build it, panic = "abort")
 # they grow the zstd-compressed binary from 46 MB to 220 MB, against 42 MB
 # fully stripped.
 # The OS image, RPM, Debian and Arch packages ship these binaries as built
@@ -1201,7 +1195,7 @@ strip = "symbols"
 # No debug info or symbol table: the bundle size is what matters in a browser.
 # Local development builds that must run at near-release speed (the desktop,
 # screenshots, a device swap). `release` links with fat LTO and one codegen
-# unit: a single rustc for the shell reached 24 GB and took the laptop down.
+# unit: a single rustc for the session reached 24 GB and took the laptop down.
 # Without LTO, with parallel codegen and incremental builds, this compiles in
 # a fraction of the time and memory and still runs smoothly.
 [profile.fast]
@@ -1326,12 +1320,12 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 
-# The demo profile keeps release optimisation while enabling shell's
+# The demo profile keeps release optimisation while enabling the session's
 # debug-only test-control surface for recordings.
 [profile.demo]
 inherits = "release"
 
-[profile.demo.package.shell]
+[profile.demo.package.tilo-session]
 debug-assertions = true
 
 # The headless harnesses point a demo-profile launcher at their own app store

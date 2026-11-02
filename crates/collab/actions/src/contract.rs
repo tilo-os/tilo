@@ -638,7 +638,11 @@ pub struct Offload {
     /// The package's catalogue (CLI) command that performs it.
     pub entrypoint: String,
     /// Whether it needs a GPU.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ///
+    /// Encoded always, false or not: the declaration travels inside frames of
+    /// formats that carry no field names or lengths, where a field skipped
+    /// when absent is read out of the next field's bytes.
+    #[serde(default)]
     pub gpu: bool,
     pub cpu_time_ms: u64,
     /// Memory ceiling, in bytes. The inputs count against it.

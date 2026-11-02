@@ -67,7 +67,7 @@ the provisioning-image flow, while a hosted service supplies its provider
 identity through its control plane.
 
 A desktop session finds the person's own devices on the local network with
-sealed probes only those devices can read (`tilo-lan-discovery`); nothing on
+sealed probes only those devices can read; nothing on
 the network learns the endpoint id. Invite addresses work without it.
 
 ## Wire protocol

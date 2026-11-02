@@ -707,32 +707,23 @@ fn console_reports_input_only_once_the_compositor_focuses_the_window() {
 #[test]
 fn a_session_choice_appears_only_when_there_is_one_to_make() {
     // The image installs os/usr/share/wayland-sessions as-is, so this is
-    // exactly what the greeter on a fresh install reads: the native session,
-    // selected first, and the old shell beside it.
+    // exactly what the greeter on a fresh install reads: the one Tilo session,
+    // which signing in starts.
     {
         let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../os/usr/share/wayland-sessions");
         let sessions = read_sessions(&shipped);
         let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Tilo", "Tilo (old shell)"]);
+        assert_eq!(names, ["Tilo"]);
 
         let app = GreeterApp::with_sessions(sessions);
-        assert!(app.offers_session_choice());
-        assert!(find_test_id(card_of(&app).as_ref(), "greeter.session").is_some());
-        assert_eq!(app.console_state()["session_choice"], true);
-        assert_eq!(
-            app.console_state()["sessions"],
-            serde_json::json!(["Tilo", "Tilo (old shell)"])
-        );
-        // Signing in without a choice starts the native session.
+        assert!(!app.offers_session_choice());
+        assert!(find_test_id(card_of(&app).as_ref(), "greeter.session").is_none());
+        assert_eq!(app.console_state()["session_choice"], false);
         assert_eq!(app.session_label(), "Tilo");
         assert_eq!(
             app.sessions[app.selected_session].argv,
             ["/usr/libexec/tilo-session", "--backend", "drm"]
-        );
-        assert_eq!(
-            app.sessions[1].argv,
-            ["/usr/libexec/tilo-session", "--shell", "--backend", "drm"]
         );
     }
     {

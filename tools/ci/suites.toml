@@ -360,7 +360,7 @@ name = "app-store"
 inputs = [
   "os/", "apps/", "Cargo.toml", "*Cargo.toml",
   "crates/packaging/install/", "crates/packaging/launcher/", "crates/packaging/runtime-bundle/",
-  "crates/session/shell/src/compositor/",
+  "crates/session/session/",
 ]
 suites = ["os/tests/app_store.sh"]
 
@@ -392,14 +392,14 @@ suites = [
 name = "printing"
 inputs = [
   "os/", "docs/printing-threat-model.md", "crates/packaging/launcher/",
-  "crates/session/shell/src/portal/", "crates/system/os-actions/", "crates/system/sandbox-core/",
+  "crates/system/os-actions/", "crates/system/sandbox-core/",
   "crates/platform/tilo-capture/src/scanner.rs",
 ]
 suites = ["os/tests/printing_isolation.sh"]
 
 [[group]]
 name = "remote-capture"
-inputs = ["os/", "crates/session/shell/src/shell/remote_capture/"]
+inputs = ["os/", "crates/platform/tilo-capture/", "crates/platform/tilo-media/"]
 suites = ["os/tests/remote_capture_image_contract.sh"]
 
 [[group]]
@@ -413,7 +413,6 @@ suites = ["os/tests/test_image_size_budget.py"]
 name = "windows"
 inputs = [
   "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/windows/",
-  "crates/session/shell/src/shell/windows_compat.rs",
   # test_windows_compat_sysext.py: the helper that installs the image, and the checks that
   # publish it.
   "crates/system/extension-helper/src/",
@@ -496,14 +495,11 @@ inputs = [
   # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_timing.rs",
-  "crates/session/shell/src/compositor/switch_latency.rs",
   # ... the FILES-NAME-INDEX parser equal to the Files search test's line,
-  "crates/session/shell/src/shell/search/providers/files.rs",
   # ... and the hosting-load KPI ids equal to the relay load bench's.
   "crates/hosting/tilo-relay/examples/relay_load/main.rs",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
-  "crates/session/shell/examples/redraw_bench.rs",
   # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
   "tools/web/chrome.mjs",
   # ... and the native stream qualification's Safari run drives Safari through
@@ -541,14 +537,6 @@ name = "agent-trials"
 inputs = ["examples/agent-trials/"]
 suites = [
   "examples/agent-trials/documents-and-forms/tests/test_pack.py",
-]
-
-[[group]]
-name = "ux-bench"
-inputs = ["scripts/ux-bench/"]
-suites = [
-  "scripts/ux-bench/test_suite.py",
-  "scripts/ux-bench/usability_test.py",
 ]
 
 [[group]]
@@ -701,7 +689,7 @@ package = "tilo-ui"
 # builder that lives with the ui-examples scenarios. The paint stream's tests
 # draw the layout snapshots and screenshot recorded for tilo-paint-stream.
 inputs = [
-  "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs",
+  "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/session/src/*.rs",
   "crates/sdk/tilo-app/src/framework/app.rs",
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/dev/ui-examples/examples/common/gallery_scene.rs",
@@ -728,7 +716,7 @@ readers = [
 # toolkit suite; the vendored quit request is compiled into the library, so a
 # change there still runs everything.
 scope = { inputs = [
-  "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs",
+  "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/session/src/*.rs",
   "crates/sdk/tilo-app/src/framework/app.rs",
 ], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/)" }
 
@@ -1125,7 +1113,7 @@ inputs = [
   "os/usr/share/tilo/system-interfaces.toml", "tools/font-catalog.py",
   "crates/sdk/ui-core/assets/fonts/**",
   # The session file must start the login wrapper.
-  "os/usr/share/wayland-sessions/shell.desktop",
+  "os/usr/share/wayland-sessions/tilo-session.desktop",
 ]
 readers = [
   "crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs",
@@ -1413,59 +1401,6 @@ readers = ["apps/notes/build.rs"]
 
 
 [[cargo]]
-package = "shell"
-inputs = [
-  "apps/browser/tilo-app.toml",
-  "apps/imager/packaging/linux/tilo-imager.svg",
-  "apps/file-explorer/tilo-app.toml",
-  # The session names Settings' own surface as it holds the app's records.
-  "apps/settings/surface.toml",
-  "tools/protocols/airdrop_sender.py",
-  "tools/test-assets.py",
-  "crates/sdk/ui-core/assets/fonts/",
-  "dist/VERSION",
-  "docs/shell-navigation-keyboard-map.md",
-  "docs/architecture/dictation-whistle-aot-review.json",
-  "docs/architecture/dictation-whistle-aot-image.json",
-  "docs/architecture/dictation-whistle-aot-image-120s.json",
-  # The registry the session and the shell both decode, as builds that kept
-  # lifecycle records wrote it.
-  "crates/session/fixtures/",
-  "tools/with-test-environment.sh",
-  "tools/atspi_external_client.py",
-  "scripts/headless-examples/",
-  # The search relevance table runs over every app's manifest and keywords.
-  "apps/*/tilo-app.toml",
-  "apps/*/search/*.ftl",
-  # The ask-agent chord's test finds the apps that share a selection in their
-  # sources and checks each manifest asks for the shell-ui service.
-  "apps/*.rs",
-  # The first-party apps the e2e tests install ship their manifest and surface.
-  "apps/*/surface.toml",
-]
-readers = [
-  "crates/session/shell/tests/support/first_party_apps.rs",
-  "crates/session/shell/src/bin/shots/driver/downloaded_scene.rs",
-  "crates/session/shell/src/shell/doc_open.rs",
-  "crates/session/shell/src/shell/search/relevance_tests.rs",
-  "crates/session/shell/src/shell/selection_agent.rs",
-  "crates/session/shell/examples/files_clipboard_native.rs",
-  "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
-  "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
-  "crates/session/shell/examples/packaged_native_bootstrap.rs",
-  "crates/session/shell/src/linux_main.rs",
-  "crates/session/shell/tests/support/snapshot.rs",
-  "crates/session/shell/tests/input_method_wire.rs",
-  "crates/session/shell/src/shell/fixed_chords.rs",
-  "crates/session/shell/src/compositor/chooser_service.rs",
-  "crates/session/shell/src/shell/settings_records.rs",
-  "crates/session/shell/src/shell/mls_vault.rs",
-]
-
-
-
-
-[[cargo]]
 package = "tilo-session"
 # The first-boot unit the image ships, and the components that name where
 # each binary is installed; the shell package it compiles from source.
@@ -1476,7 +1411,7 @@ inputs = [
   # development session seeds the notebook the shell's tests place.
   "apps/tl/notes/",
   "apps/tl/session/",
-  "os/usr/lib/systemd/system/shell-firstboot.service",
+  "os/usr/lib/systemd/system/tilo-firstboot.service",
   "os/components.toml",
   # The registry both vaults decode, as builds that kept lifecycle records wrote it.
   "crates/session/fixtures/",
@@ -1508,14 +1443,6 @@ package = "tilo-test-env"
 # that ends with its owner.
 inputs = [".config/nextest.toml", "tools/test-env-setup.sh", "tools/with-headless-audio.sh", "tools/with-test-environment.sh"]
 readers = ["crates/dev/test-env/tests/run_environment.rs"]
-
-[[cargo-exempt]]
-file = "crates/session/shell/tests/headless_examples_smoke.rs"
-reason = "#[ignore]d: runs scripts/headless-examples/ against a built compositor on request"
-
-[[cargo-exempt]]
-file = "crates/dev/ux-bench/src/ux_bench_support/tests.rs"
-reason = "#[ignore]d: writes evidence under target/ from a prebuilt ux-bench"
 
 # Exercised by a suite that is already gated.
 

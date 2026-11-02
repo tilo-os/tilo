@@ -2004,9 +2004,11 @@ impl RootSearch for ResourceRoot {
         // The app's one search source: what its content widgets show beside
         // the resource reaches it as their surfaces' entries, never as a
         // provider of their own.
-        let mut source = ResourceSearch::new(self.resource.label, indexed);
+        let mut source = ResourceSearch::new(self.resource.label, self.dispatch.app_id(), indexed);
         source.scopes = self.typed.search_scopes(&*self.typed.state());
         source.queries = queries;
+        // A person who may not read the record is found nothing of it.
+        source.readable = self.dispatch.may_read();
         source.live = Some(LiveSearch {
             cache: Rc::clone(&self.search),
             answered: std::cell::RefCell::new(None),
@@ -2681,6 +2683,7 @@ mod tests {
         let open = tilo_actions::ActionAddress::new("notes.page:1", "open");
         let search = ResourceSearch {
             name: "Notes",
+            app: "so.tilo.notes",
             indexed: Arc::new(IndexedEntries::built(
                 vec![
                     SearchEntry::new("Groceries", "milk and eggs").invoking(open.clone()),
@@ -2690,6 +2693,7 @@ mod tests {
             )),
             scopes: Vec::new(),
             queries: Vec::new(),
+            readable: true,
             live: None,
             opens: None,
         };
@@ -2707,6 +2711,7 @@ mod tests {
         let reveal = tilo_actions::ActionAddress::new("video.marker:1", "reveal");
         let search = ResourceSearch {
             name: "Project",
+            app: "so.tilo.project",
             indexed: Arc::new(IndexedEntries::built(
                 vec![
                     SearchEntry::new("Sunset", "the last light")
@@ -2721,6 +2726,7 @@ mod tests {
             )),
             scopes: Vec::new(),
             queries: Vec::new(),
+            readable: true,
             live: None,
             opens: None,
         };
@@ -2751,6 +2757,7 @@ mod tests {
     fn every_entry_stays_findable_page_by_page() {
         let search = ResourceSearch::new(
             "Tracks",
+            "so.tilo.test",
             Arc::new(IndexedEntries::built(
                 (0..257)
                     .map(|n| SearchEntry::new(format!("Common track {n}"), ""))
@@ -2777,6 +2784,7 @@ mod tests {
     fn no_caller_materialises_more_than_one_page_at_once() {
         let search = ResourceSearch::new(
             "Tables",
+            "so.tilo.test",
             Arc::new(IndexedEntries::built(
                 (0..300)
                     .map(|n| SearchEntry::new(format!("table {n}"), ""))
@@ -2839,6 +2847,7 @@ mod tests {
         ])));
         let search = ResourceSearch::new(
             "Library",
+            "so.tilo.test",
             Arc::new(IndexedEntries::built(
                 vec![
                     SearchEntry::new("Storm Tales", "")
@@ -2874,6 +2883,7 @@ mod tests {
         use tilo_resource::SearchWeight;
         let search = ResourceSearch::new(
             "Mail",
+            "so.tilo.test",
             Arc::new(IndexedEntries::built(
                 vec![
                     SearchEntry::new("Lunch plans", "")

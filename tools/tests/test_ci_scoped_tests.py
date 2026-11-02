@@ -58,9 +58,9 @@ class ScopedTestsTests(unittest.TestCase):
     def test_a_packages_test_features_reach_the_run_through_the_wrapper(self):
         # Cargo leaves a target whose Cargo.toml needs a feature out of the
         # build, and --test names it: without the wrapper's features (here the
-        # shell's, tools/ci/package_features.py) every run selecting such a
+        # tilo-ui's, tools/ci/package_features.py) every run selecting such a
         # test failed to build it.
-        shell = {"package": "shell", "test": "it", "filter": "binary(it) and test(desktop_smoke::)"}
+        ui = {"package": "tilo-ui", "test": "it", "filter": "binary(it) and test(desktop_smoke::)"}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in ("run_scoped_tests.py", "nextest.sh", "package_features.py"):
@@ -79,7 +79,7 @@ class ScopedTestsTests(unittest.TestCase):
             cargo.chmod(0o755)
             env = {key: value for key, value in os.environ.items() if key != "CI"}
             env.update({"PATH": f"{root / 'bin'}:{os.environ['PATH']}",
-                        "SCOPED_TESTS": json.dumps([shell])})
+                        "SCOPED_TESTS": json.dumps([ui])})
             result = subprocess.run([sys.executable, str(root / "tools/ci/run_scoped_tests.py")],
                                     cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -87,10 +87,10 @@ class ScopedTestsTests(unittest.TestCase):
             nextest = [argv for argv in runs if argv[:2] == ["nextest", "run"]]
             self.assertEqual(len(nextest), 1, result.stdout)
             argv = nextest[0]
-            self.assertEqual(argv[argv.index("-p") + 1], "shell")
+            self.assertEqual(argv[argv.index("-p") + 1], "tilo-ui")
             self.assertEqual(argv[argv.index("--test") + 1], "it")
             features = argv[argv.index("--features") + 1]
-            self.assertIn("shell/hosted-test-control", features)
+            self.assertIn("tilo-ui/test-support", features)
 
     def test_success_without_a_scoped_report_fails_even_with_an_affected_report(self):
         for existing in (False, True):

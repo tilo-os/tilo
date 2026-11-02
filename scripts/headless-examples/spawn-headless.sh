@@ -72,7 +72,7 @@ fi
 
 if [ ! -x "$BINARY" ]; then
     echo "FAIL: compositor not built at $BINARY" >&2
-    echo "      run: cargo build -p shell --bin shell" >&2
+    echo "      run: cargo build -p tilo-session --bin tilo-session" >&2
     exit 1
 fi
 

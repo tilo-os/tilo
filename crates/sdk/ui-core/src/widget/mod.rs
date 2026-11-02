@@ -3546,6 +3546,8 @@ pub mod map;
 pub use map::{MAP_ZOOM_MAX, MAP_ZOOM_MIN, Map, MapCamera, MapPinProps, MapProps, PinPlace};
 pub mod window_well;
 pub use window_well::{Wells, WindowWell, WindowWellProps};
+pub mod window_preview;
+pub use window_preview::{Previews, WindowPreview, WindowPreviewProps};
 pub mod window_frame;
 pub use window_frame::{WindowFrame, WindowFrameProps};
 pub mod empty_state;

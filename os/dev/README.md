@@ -84,7 +84,7 @@ compositor**, so pick per task:
 `vm.sh serial` works in both (the image boots with `console=ttyS0` on x86 and
 `console=ttyAMA0` on ARM).
 
-* **`--2d` reaches the desktop.** `/usr/bin/shell --backend drm` paints the
+* **`--2d` reaches the desktop.** `/usr/bin/tilo-session --backend drm` paints the
   full desktop through llvmpipe, slowly. `--2d` captures a whole boot — firmware,
   bootloader, console, greeter, login and desktop — in one continuous take, and
   it is what `record-boot.py` defaults to.

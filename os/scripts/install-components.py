@@ -57,8 +57,8 @@ MODE_RE = re.compile(r"^0[0-7]{3}$")
 
 EXAMPLES = """\
 examples:
-  # What would the shell component install? (no sources needed)
-  install-components.py --dry-run shell
+  # What would the session component install? (no sources needed)
+  install-components.py --dry-run tilo-session
 
   # Everything the image ships, as JSON, for tooling
   install-components.py --dry-run --all --format json
@@ -68,9 +68,9 @@ examples:
   install-components.py --dev --dry-run --format cargo
   install-components.py --dev --from /out --dest /image
 
-  # Assemble a development sysext layer for the shell and launcher from a
+  # Assemble a development sysext layer for the session and launcher from a
   # local release build
-  install-components.py --from target/release --dest /tmp/layer shell launcher
+  install-components.py --from target/release --dest /tmp/layer tilo-session launcher
 
   # What the production Containerfile runs: every image file, one tree per
   # image layer under /image/<layer>/
@@ -408,8 +408,8 @@ def native_cosign(manifest_dir: Path, copied: Path | None = None) -> Path:
     return candidate
 
 
-def source_shell_fonts(entry: FileEntry, build_root: Path | None) -> bool:
-    return (build_root is None and entry.component == "shell"
+def source_session_fonts(entry: FileEntry, build_root: Path | None) -> bool:
+    return (build_root is None and entry.component == "tilo-session"
             and entry.source == "/usr/share/fonts/tilo/")
 
 
@@ -420,16 +420,16 @@ def font_catalog_command(*args: str) -> str:
         result = subprocess.run([sys.executable, str(tool), *args],
                                 capture_output=True, text=True, timeout=600, check=True)
     except subprocess.CalledProcessError as error:
-        raise ManifestError(f"mandatory shell font catalog: {error.stderr.strip()}") from error
+        raise ManifestError(f"mandatory session font catalog: {error.stderr.strip()}") from error
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise ManifestError(f"mandatory shell font catalog: {error}") from error
+        raise ManifestError(f"mandatory session font catalog: {error}") from error
     return result.stdout.strip()
 
 
 def resolve_source(entry: FileEntry, from_dirs: list[Path], build_root: Path | None) -> Path | None:
     assert entry.source is not None
     relative = entry.source.rstrip("/")
-    if source_shell_fonts(entry, build_root):
+    if source_session_fonts(entry, build_root):
         fonts = Path(__file__).resolve().parents[2] / "crates/sdk/ui-core/assets/fonts"
         return Path(font_catalog_command("root", str(fonts), "--scope", "os"))
     if relative == "@asset/cosign-v2.5.2":
@@ -509,9 +509,9 @@ def install(entries: list[FileEntry], from_dirs: list[Path], build_root: Path | 
         if entry.tree:
             if not source.is_dir():
                 raise ManifestError(f"component {entry.component!r}: {source} is not a directory")
-            if source_shell_fonts(entry, build_root):
+            if source_session_fonts(entry, build_root):
                 # Stage only admitted faces and notices, and verify copied bytes.
-                # A shell layer must never depend on the guest's older catalog.
+                # A session layer must never depend on the guest's older catalog.
                 font_catalog_command("stage", str(source), str(target), "--scope", "os")
             else:
                 shutil.copytree(source, target, symlinks=True, dirs_exist_ok=True)

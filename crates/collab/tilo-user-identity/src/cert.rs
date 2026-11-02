@@ -44,7 +44,7 @@ const EXTENDED_ADMINISTER: u8 = 2;
 /// What a device may do on behalf of its user.
 ///
 /// The four booleans map directly to enforceable policy checks in
-/// `crates/session/shell/` and `crates/system/fs/`. Currently a user's *primary* device (the one
+/// `crates/session/session/` and `crates/system/fs/`. Currently a user's *primary* device (the one
 /// that holds the root private key) gets `can_own_workspaces:
 /// true, can_admit_devices: true`, phones/tablets get
 /// `can_own_workspaces: true` but `can_admit_devices: false`, and

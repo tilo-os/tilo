@@ -130,12 +130,12 @@ class TiloClient:
             binary = os.environ.get("TILO_SHELL_BINARY")
         if binary is None:
             here = pathlib.Path(__file__).resolve().parent
-            binary = here.parent.parent / "target" / "debug" / "shell"
+            binary = here.parent.parent / "target" / "debug" / "tilo-session"
         binary = pathlib.Path(binary).resolve()
         if not binary.exists():
             raise FileNotFoundError(
                 f"compositor binary not found at {binary} — "
-                "run `cargo build -p shell --bin shell` first"
+                "run `cargo build -p tilo-session --bin tilo-session` first"
             )
 
         env, profile = scratch_session_env()

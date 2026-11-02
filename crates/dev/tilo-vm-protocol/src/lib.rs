@@ -386,7 +386,7 @@ pub const USERSPACE_COMPONENTS: &[&str] = &[
     "control",
     "app-cli",
     "ush",
-    "shell",
+    "tilo-session",
 ];
 
 /// A build/import receipt from the same frozen source inventory. Historical

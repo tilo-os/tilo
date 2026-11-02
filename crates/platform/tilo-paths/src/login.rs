@@ -21,6 +21,18 @@ pub const ADMIN_CONTROL_SOCKET_FILE: &str = "admin-control.sock";
 /// `tilo-app dev`) joins, as an app the shell starts joins the room it names
 /// with the launcher's `--workspace-id`.
 pub const WORKSPACE_ID_FILE: &str = "workspace-id";
+/// Prefix of the socket in [`SESSION_DIR`] on which this session says whether
+/// its first use is over: the installed folder importer asks before it
+/// continues a saved import, so nothing it carries lands under an identity
+/// ceremony still under way.
+pub const IMPORT_READINESS_SOCKET_PREFIX: &str = "import-readiness";
+/// The installed folder importer's directory under the login's local data
+/// directory, holding the state of the imports it was asked to carry over.
+pub const IMPORTER_DIR: &str = "tilo-imager";
+/// The saved folder import the importer keeps for the next login: what the
+/// person reviewed and left, whose `show_on_login` says whether it opens once
+/// their first use is over.
+pub const IMPORTER_CONTINUATION_FILE: &str = "desktop-continuation.json";
 
 /// The sockets a Tilo compositor serves in [`SESSION_DIR`] for the life of
 /// its session. Either one's presence is the session's own marker.
@@ -35,6 +47,60 @@ pub fn session_dir(runtime_dir: Option<OsString>) -> Option<PathBuf> {
     runtime_dir
         .is_absolute()
         .then(|| runtime_dir.join(SESSION_DIR))
+}
+
+/// [`import_readiness_socket_file`] in [`session_dir`], for the session whose
+/// Wayland socket is `display`. `None` without a runtime directory, or when
+/// `display` is not a name a Wayland socket can have.
+#[cfg(unix)]
+#[must_use]
+pub fn import_readiness_socket(
+    runtime_dir: Option<OsString>,
+    display: &OsStr,
+    wayland: u64,
+) -> Option<PathBuf> {
+    Some(session_dir(runtime_dir)?.join(import_readiness_socket_file(display, wayland)?))
+}
+
+/// The file name [`import_readiness_socket`] ends in: the running session's
+/// own, since a click of Add folders belongs to the session the person is
+/// looking at even when another one of this login runs beside it. `None`
+/// when `display` could not name a Wayland socket.
+#[cfg(unix)]
+#[must_use]
+pub fn import_readiness_socket_file(display: &OsStr, wayland: u64) -> Option<String> {
+    use std::fmt::Write as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    let bytes = display.as_bytes();
+    if bytes.is_empty() || bytes.len() > 32 || bytes.contains(&b'/') {
+        return None;
+    }
+    let mut key = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        let _ = write!(key, "{byte:02x}");
+    }
+    Some(format!(
+        "{IMPORT_READINESS_SOCKET_PREFIX}-{key}-{wayland}.sock"
+    ))
+}
+
+/// Where the installed folder importer keeps the state of the imports it was
+/// asked to carry over: the importer writes it, and the login reads the review
+/// it left. `None` when this account has no local data directory.
+#[must_use]
+pub fn importer_migrations_dir() -> Option<PathBuf> {
+    Some(
+        crate::data_local_dir()?
+            .join(IMPORTER_DIR)
+            .join("migrations"),
+    )
+}
+
+/// The saved folder import the login continues: [`importer_migrations_dir`]
+/// and [`IMPORTER_CONTINUATION_FILE`]. `None` without a local data directory.
+#[must_use]
+pub fn importer_continuation() -> Option<PathBuf> {
+    Some(importer_migrations_dir()?.join(IMPORTER_CONTINUATION_FILE))
 }
 
 /// Whether an `XDG_CURRENT_DESKTOP` value names a Tilo login. The value is a
@@ -208,6 +274,31 @@ mod tests {
         assert_eq!(session_dir(Some("run/user".into())), None);
         assert_eq!(session_dir(Some(OsString::new())), None);
         assert_eq!(session_dir(None), None);
+    }
+
+    /// The importer and the session derive one path from the display the
+    /// person is looking at, and no path from a name no socket can have.
+    #[cfg(unix)]
+    #[test]
+    fn the_import_readiness_socket_names_the_session_by_its_display() {
+        assert_eq!(
+            import_readiness_socket(Some("/run/user/1000".into()), OsStr::new("wayland-1"), 42),
+            Some(PathBuf::from(
+                "/run/user/1000/tilo-session/import-readiness-7761796c616e642d31-42.sock"
+            ))
+        );
+        assert_eq!(
+            import_readiness_socket(None, OsStr::new("wayland-1"), 42),
+            None
+        );
+        let too_long = "n".repeat(33);
+        for impossible in ["", "../escape", "wayland-1/other", too_long.as_str()] {
+            assert_eq!(
+                import_readiness_socket(Some("/run/user/1000".into()), OsStr::new(impossible), 1),
+                None,
+                "{impossible:?}"
+            );
+        }
     }
 
     #[cfg(unix)]

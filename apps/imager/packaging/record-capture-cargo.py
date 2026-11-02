@@ -23,7 +23,7 @@ ROLES = {
     'host': ('apps/imager', 'imager', 'bin', False),
     'imager_tests': ('apps/imager', 'imager', 'lib', True),
     'backend_tests': ('crates/platform/imager-backend', 'imager_backend', 'lib', True),
-    'shell': ('crates/session/shell', 'shell', 'bin', False),
+    'shell': ('crates/session/session', 'tilo-session', 'bin', False),
     'fs': ('crates/system/fs', 'fs', 'bin', False),
     'credential_helper': ('crates/system/account-custody', 'tilo-account-credential', 'bin', False),
     'prepared_helper': ('apps/imager', 'tilo-prepared-setup', 'bin', False),

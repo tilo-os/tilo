@@ -11,8 +11,8 @@
 # the native session. It is not a nested compositor wrapper.
 #
 # `X-Tilo-Session-Default=true` is what the greeter offers first
-# (crates/session/greeter/src/sessions.rs); entries without it follow in name
-# order, which is where the old shell entry comes.
+# (crates/session/greeter/src/sessions.rs); it is the only entry the image
+# ships.
 #
 # `DesktopNames=tilo` is what the xdg-desktop-portal `tilo.portal`
 # file matches via `UseIn=tilo` to activate our portal backend.

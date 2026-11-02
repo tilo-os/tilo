@@ -5,9 +5,9 @@ A unit nothing installs is a unit nothing starts, and systemd only says so when
 a recipe enables it by name (the build then fails with "Unit does not exist").
 Dropped from the recipe *and* from the line that enabled it, a hook leaves no
 trace at all until the machine needs it. That is how the machine's first boot
-went: os/image stopped copying shell-firstboot.service, nothing ran
-`tilo-session --firstboot-only` any more, and the charge limit in Settings kept
-starting a `tilo-battery-cap@` instance the image never shipped.
+went: os/image stopped copying the machine's first-boot unit, nothing ran the
+first-boot setup any more, and the charge limit in Settings kept starting a
+`tilo-battery-cap@` instance the image never shipped.
 
 So, over every unit this repository keeps:
 

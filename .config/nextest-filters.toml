@@ -10,8 +10,7 @@
 # Keep identical to the gpu-golden override in nextest.toml.
 golden = """
 (package(tilo-ui) and test(typography_visual_regression::)) or
-(package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
-(package(shell) and test(e2e_shell_flows::))
+(package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))
 """
 
 # Suites that drive real FUSE daemons or an emulated TPM with LUKS2 images

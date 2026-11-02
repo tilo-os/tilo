@@ -41,7 +41,7 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 BINARY = pathlib.Path(
     os.environ.get(
         "TILO_SHELL_BINARY",
-        SCRIPT_DIR / ".." / ".." / "target" / "debug" / "shell",
+        SCRIPT_DIR / ".." / ".." / "target" / "debug" / "tilo-session",
     )
 ).resolve()
 # A snapshot renders a whole frame, and the first one on a software adapter
@@ -207,7 +207,7 @@ def assert_palette_is_visually_gone(open_path: pathlib.Path, closed_path: pathli
 def main() -> int:
     if not BINARY.exists():
         print(f"FAIL: compositor not built at {BINARY}", file=sys.stderr)
-        print("      run: cargo build -p shell --bin shell", file=sys.stderr)
+        print("      run: cargo build -p tilo-session --bin tilo-session", file=sys.stderr)
         return 1
 
     # 1. Spawn.

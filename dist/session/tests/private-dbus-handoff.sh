@@ -34,15 +34,15 @@ private_bus() {
     printf '%s\n' '#!/bin/sh' 'exit 0' >"$root/loginctl"
     printf '%s\n' \
         '#!/bin/sh' \
-        'printf "tilo-shell:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
+        'printf "tilo-session:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
         'trap '\''exit 0'\'' HUP INT TERM' \
         'while :; do sleep 1; done' \
-        >"$root/tilo-shell"
+        >"$root/compositor"
     printf '%s\n' \
         '#!/bin/sh' \
         'printf "dbus-activation:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
         >"$root/dbus-probe"
-    chmod 0755 "$root/systemctl" "$root/loginctl" "$root/tilo-shell" "$root/dbus-probe"
+    chmod 0755 "$root/systemctl" "$root/loginctl" "$root/compositor" "$root/dbus-probe"
     for probe_name in Initial Tilo Empty EmptyLogout Gnome; do
         printf '[D-BUS Service]\nName=org.tilo.SessionProbe%s\nExec=%s\n' \
             "$probe_name" "$root/dbus-probe" \
@@ -58,7 +58,7 @@ private_bus() {
         LOGINCTL="$root/loginctl" \
         FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER" || return 1
     tilo_stage_script "$repo/dist/session/tilo-session" "$root/tilo-session" \
-        TILO_SHELL="$root/tilo-shell" \
+        TILO_SESSION="$root/compositor" \
         SESSION_RUNNER="$root/tilo-session-runner" || return 1
     export XDG_RUNTIME_DIR="$root/runtime" XDG_STATE_HOME="$root/state"
     mkdir -m 0700 "$XDG_RUNTIME_DIR"
@@ -86,10 +86,10 @@ private_bus() {
     "$root/tilo-session" &
     wrapper_pid=$!
     for _ in $(seq 1 100); do
-        grep -Fq 'tilo-shell:tilo:wayland' "$TILO_SESSION_TEST_LOG" 2>/dev/null && break
+        grep -Fq 'tilo-session:tilo:wayland' "$TILO_SESSION_TEST_LOG" 2>/dev/null && break
         sleep 0.02
     done
-    grep -Fqx 'tilo-shell:tilo:wayland' "$TILO_SESSION_TEST_LOG"
+    grep -Fqx 'tilo-session:tilo:wayland' "$TILO_SESSION_TEST_LOG"
     probe Tilo
     await_probe 'dbus-activation:tilo:wayland'
 
@@ -105,12 +105,12 @@ private_bus() {
     printf '%s\n' \
         '#!/bin/sh' \
         'case "${TILO_SESSION_LOGOUT_REQUEST:-}" in /*) ;; *) exit 42 ;; esac' \
-        'printf "tilo-shell:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
+        'printf "tilo-session:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
         'printf "%s\\n" "$TILO_SESSION_LOGOUT_REQUEST" >"$TILO_SESSION_TEST_LOG.logout-path"' \
         'printf "logout\\n" >"$TILO_SESSION_LOGOUT_REQUEST"' \
         'exit 19' \
-        >"$root/tilo-shell"
-    chmod 0755 "$root/tilo-shell"
+        >"$root/compositor"
+    chmod 0755 "$root/compositor"
     set +e
     "$root/tilo-session"
     logout_status=$?

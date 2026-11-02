@@ -222,6 +222,14 @@ impl Shell {
         part.set_display(Some((output.to_owned(), rect)));
         part.set_fullscreen(fullscreen.to_vec());
         part.set_edges(self.edges());
+        // The windows the views picture, each display's own: the reading's window keys stand
+        // for the tabs of the workspace in front, and a window whose app holds secrets is left
+        // out, so its view shows the app's mark instead of its pixels.
+        let handle = self.desk.handle.clone();
+        part.show_pictures(
+            ui::widget::Previews::new(),
+            Rc::new(move |key: &str| pictured(&handle, key)),
+        );
         let part = Rc::new(RefCell::new(part));
         compositor.add_host(Box::new(Held(Rc::clone(&part))));
         // Each display's bar is its own surface on the door: what the person, a script or an
@@ -649,6 +657,27 @@ fn outputs_of(compositor: &Compositor) -> Vec<(String, (i32, i32, u32, u32))> {
             })
         })
         .collect()
+}
+
+/// The compositor's window for the reading's window `key` (its tab's id), when it may be
+/// pictured: this device draws the window and its app shows no secrets. A window this device
+/// does not draw, or one whose app holds secrets, is pictured by nothing, and its view shows
+/// the app's mark instead.
+fn pictured(handle: &tilo_desktop_surface::DesktopHandle, key: &str) -> Option<u64> {
+    use tilo_desktop_model::TileContent;
+    let (app, surface) = handle.read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id.to_string() == key)
+            .and_then(|tab| match &tab.tile {
+                TileContent::Foreign { app_id, surface_id } => Some((app_id.clone(), *surface_id)),
+                _ => None,
+            })
+    })?;
+    (!handle.withholds(&app)).then_some(surface)
 }
 
 /// `value` (the text the shell's effect wrote) as the door's arguments take it, in the type

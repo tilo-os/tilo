@@ -25,7 +25,7 @@
 //! clipboard-*manager* protocol Tilo deliberately withholds from sandboxed
 //! apps: it exposes every selection on the seat with no focus check, and the
 //! fleet copies TOTP codes and recovery phrases (see
-//! `crates/session/shell/src/compositor/selection.rs`). The Wayland backend's
+//! `crates/session/compositor/src/`). The Wayland backend's
 //! `wl_data_device` is focus-gated instead; `arboard` is kept only for X11.
 
 use std::sync::{Mutex, OnceLock};

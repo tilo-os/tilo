@@ -72,11 +72,18 @@ pub enum PeerPresencePayload {
         automatic: bool,
     },
     /// How available the sender is (`available`, `focusing`, `away`,
-    /// `idle`) and the voice channel they are in. Desktop presence: shells
-    /// show it, apps never receive it.
+    /// `idle`), the voice channel they are in, and whether their camera and
+    /// screen are on there. Desktop presence: shells show it, apps never
+    /// receive it.
+    ///
+    /// `camera` and `screen` end the message: adding them changed what a
+    /// device reads after `call`, so the interface's version was raised with
+    /// them.
     Availability {
         state: String,
         call: Option<String>,
+        camera: bool,
+        screen: bool,
     },
     /// What the sender says beside their pointer (cursor chat) in a room
     /// with no live plane: `text` while the bubble is open (empty with
@@ -111,6 +118,18 @@ pub enum PeerPresencePayload {
     Composing {
         composing: bool,
     },
+    /// Which services carry the sender's media into the voice channel
+    /// `channel` of this workspace: a page has no call lane of its own, so the
+    /// device whose key its frames name carries them, and everyone in the call
+    /// is told which software its frames pass through. Empty when nothing
+    /// bridges the sender's call.
+    ///
+    /// Appended so new decoders continue to read every older postcard frame;
+    /// older peers reject only what they cannot say of a bridge.
+    Bridge {
+        channel: String,
+        services: Vec<String>,
+    },
 }
 
 #[cfg(test)]
@@ -139,6 +158,8 @@ mod tests {
             PeerPresencePayload::Availability {
                 state: "idle".into(),
                 call: Some("voice".into()),
+                camera: true,
+                screen: false,
             },
             PeerPresencePayload::Chat {
                 text: Some("look at the second paragraph".into()),
@@ -158,6 +179,14 @@ mod tests {
             },
             PeerPresencePayload::Composing { composing: true },
             PeerPresencePayload::Composing { composing: false },
+            PeerPresencePayload::Bridge {
+                channel: "c_standup".into(),
+                services: vec!["web".into()],
+            },
+            PeerPresencePayload::Bridge {
+                channel: "c_standup".into(),
+                services: Vec::new(),
+            },
         ]
     }
 

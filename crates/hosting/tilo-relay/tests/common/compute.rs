@@ -83,6 +83,160 @@ pub fn installed_package(
     (package, package_digest)
 }
 
+/// One device's workspace file versions, as its own jobs name them.
+///
+/// A file version is addressed by its manifest hash, a job input by the
+/// blake3 of its bytes; binding a version records the other address, so a
+/// worker reading the content's locator proves its own copy of the version
+/// instead of the bytes moving.
+#[derive(Clone)]
+pub struct WorkspaceVersions {
+    store: std::sync::Arc<fs::store::ContentStore>,
+    bound: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], [u8; 32]>>>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl WorkspaceVersions {
+    /// The versions of `store`, whose blocking reads run on `runtime`.
+    pub fn new(
+        store: std::sync::Arc<fs::store::ContentStore>,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        Self {
+            store,
+            bound: std::sync::Arc::default(),
+            runtime,
+        }
+    }
+
+    /// Bind the file version `manifest` and return the digest a job names it
+    /// by.
+    pub async fn bind_file(&self, manifest: [u8; 32]) -> Result<[u8; 32], String> {
+        let bytes = read_version(&self.store, manifest).await?;
+        let digest = *blake3::hash(&bytes).as_bytes();
+        self.bound
+            .lock()
+            .map_err(|_| "workspace versions poisoned".to_string())?
+            .insert(digest, manifest);
+        Ok(digest)
+    }
+
+    fn manifest_of(&self, digest: [u8; 32]) -> Option<[u8; 32]> {
+        let bound = self.bound.lock().ok()?;
+        bound.get(&digest).copied()
+    }
+
+    async fn read(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        let Some(manifest) = self.manifest_of(digest) else {
+            return Ok(None);
+        };
+        let bytes = read_version(&self.store, manifest).await?;
+        if blake3::hash(&bytes).as_bytes() == &digest {
+            Ok(Some(bytes))
+        } else {
+            Err("bound workspace content changed under its digest".into())
+        }
+    }
+
+    async fn store_bytes(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String> {
+        if blake3::hash(bytes).as_bytes() != &digest {
+            return Err("content does not match its digest".into());
+        }
+        let manifest = self
+            .store
+            .write_content(bytes)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "empty content has no file version".to_string())?;
+        self.bound
+            .lock()
+            .map_err(|_| "workspace versions poisoned".to_string())?
+            .insert(digest, *manifest.as_bytes());
+        Ok(())
+    }
+
+    fn block<T: Send + 'static>(
+        &self,
+        future: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> Result<T, String> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        self.runtime.spawn(async move {
+            let _ = sender.send(future.await);
+        });
+        receiver
+            .recv()
+            .map_err(|_| "workspace versions runtime stopped".to_string())
+    }
+}
+
+/// The whole of file version `manifest`, checked against it.
+async fn read_version(
+    store: &fs::store::ContentStore,
+    manifest: [u8; 32],
+) -> Result<Vec<u8>, String> {
+    let decoded = store
+        .manifest(manifest.into())
+        .await
+        .ok_or_else(|| "no workspace content under that manifest".to_string())?;
+    let bytes = store
+        .read_local(manifest.into(), &decoded, 0..decoded.total_len())
+        .await
+        .ok_or_else(|| "the file's content is not on this device yet".to_string())?;
+    if decoded.verify(&bytes) {
+        Ok(bytes)
+    } else {
+        Err("the file's local content does not match its manifest".into())
+    }
+}
+
+impl tilo_relay::ComputeContentStore for WorkspaceVersions {
+    fn get(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        let this = self.clone();
+        self.block(async move { this.read(digest).await })?
+    }
+
+    fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String> {
+        let this = self.clone();
+        let bytes = bytes.to_vec();
+        self.block(async move { this.store_bytes(digest, &bytes).await })?
+    }
+
+    fn locator(&self, digest: [u8; 32]) -> Option<[u8; 32]> {
+        self.manifest_of(digest)
+    }
+}
+
+impl tilo_relay::HeldContent for WorkspaceVersions {
+    fn held(
+        &self,
+        digest: [u8; 32],
+        locator: Option<[u8; 32]>,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let Some(manifest) = locator.or_else(|| self.manifest_of(digest)) else {
+            return Ok(None);
+        };
+        let store = std::sync::Arc::clone(&self.store);
+        let bytes = self.block(async move {
+            let Some(decoded) = store.manifest(manifest.into()).await else {
+                return Ok(None);
+            };
+            if decoded.total_len() > max_bytes {
+                return Ok(None);
+            }
+            let read = store
+                .read_local(manifest.into(), &decoded, 0..decoded.total_len())
+                .await;
+            Ok::<_, String>(read.filter(|bytes| decoded.verify(bytes)))
+        })??;
+        Ok(bytes.filter(|bytes| blake3::hash(bytes).as_bytes() == &digest))
+    }
+
+    fn locates(&self) -> bool {
+        true
+    }
+}
+
 /// What worker `worker` offers for `app` in `workspace`, to its executor.
 pub fn worker_advertisement(worker: [u8; 32], workspace: u64, app: &str) -> ServerAdvertisement {
     ServerAdvertisement {

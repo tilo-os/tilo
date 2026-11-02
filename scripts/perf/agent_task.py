@@ -57,7 +57,7 @@ Records (tools/perf/record.py), one sample per repetition:
   agent.task.notes.retries       tool calls asked again
   agent.task.notes.step.<step>   one step's tool calls, ms
 
-The desktop is `crates/session/shell/examples/agent_task_desktop.rs`: a
+The desktop is `crates/session/session`: a
 signed-in person with one empty Notes notebook, restored from a seeded
 profile, serving its agent door in the profile's runtime directory. The
 compositor, its profile, its sockets and the client are removed on exit,

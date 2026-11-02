@@ -295,7 +295,7 @@ fn saved_service_claim_cannot_downgrade_to_cloud_only() {
     for key in service::ROUTE_KEYS {
         saved[key] = "ab".repeat(32).into();
     }
-    saved["receiving_shell_path"] = "/usr/bin/shell".into();
+    saved["receiving_shell_path"] = service::SHELL.into();
     saved["receiving_dependencies"] = json!({});
     saved["receiving_python_path"] = "/usr/bin/python3".into();
     let error = service_produce(&runtime.root, Some(&saved), false).unwrap_err();
@@ -322,7 +322,7 @@ pub(crate) fn route_contract_receipt() -> Vec<u8> {
     for path in RECEIVING_DEPENDENCIES
         .iter()
         .copied()
-        .chain(["/usr/bin/shell", "/usr/bin/python3.13"])
+        .chain([service::SHELL, "/usr/bin/python3.13"])
     {
         executable(
             &root.join(path.strip_prefix('/').unwrap()),
@@ -355,7 +355,7 @@ pub(crate) fn route_contract_receipt() -> Vec<u8> {
     // The default callback must never fabricate a successful receiving route.
     let mut native = service::native_route_qualify;
     assert!(
-        service::qualify_receiving_route(&root, &sdk, &candidate, "/usr/bin/shell", &mut native)
+        service::qualify_receiving_route(&root, &sdk, &candidate, service::SHELL, &mut native)
             .is_err()
     );
     let mut fixture = |command: &[OsString], env: &[(&str, OsString)], request: &[u8]| {
@@ -385,7 +385,7 @@ pub(crate) fn route_contract_receipt() -> Vec<u8> {
         })))
     };
     receipt["service_sessions"] =
-        service::qualify_receiving_route(&root, &sdk, &candidate, "/usr/bin/shell", &mut fixture)
+        service::qualify_receiving_route(&root, &sdk, &candidate, service::SHELL, &mut fixture)
             .unwrap();
     let path = root.join("receipt.json");
     std::fs::write(&path, json::canonical_ascii(&receipt)).unwrap();

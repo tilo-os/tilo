@@ -210,11 +210,18 @@ pub fn selection_tier(theme: &Theme, state: SelectionState) -> SelectionTier {
 /// visible step measures under a light-theme threshold.
 pub const SELECTION_MIN_STEP: f32 = 0.06;
 
+/// Share of the theme's hover lift a floored control's rest face sits at.
+/// A theme whose hover is quieter than the stock half step
+/// ([`crate::tokens::ResponseStep::LIFT_ADMITTED`] admits `0.25`) takes the
+/// rest face down with it, so a hovered control never reads quieter than an
+/// idle one on any theme.
+pub const FLOOR_REST_SHARE: f32 = 0.7;
+
 /// Where the rest face of a control with its own floor sits on the ramp
-/// [`selection_floor_ramp`] walks from the ground.
-pub const FLOOR_IDLE_T: f32 = 0.35;
-/// Where its hovered face sits.
-pub const FLOOR_HOVER_T: f32 = 0.65;
+/// [`selection_floor_ramp`] walks from the ground, in surface steps: under
+/// the stock hover lift, the calmest a floor goes while the theme's hover
+/// stays at the stock half step.
+pub const FLOOR_IDLE_T: f32 = crate::tokens::ResponseStep::HOVER_LIFT * FLOOR_REST_SHARE;
 
 /// [`selection_tier`] for a control that sits on `ground` rather than on
 /// `surfaces.base`: a list row on a sidebar, a menu row on
@@ -358,15 +365,32 @@ pub fn paint_row_selection_joined(
 /// ramp from the ground, so rest, hover and active are each further from
 /// the ground than the last on every material, and no state mixes a floor
 /// with the transparent tier.
+///
+/// Every rung is the ground's own [`Colors::lift_on`] — the same OKLCH ramp
+/// and the same theme response the hover tier takes
+/// ([`selection_tier`], [`selection_tier_on`]) — and the rest face sits at a
+/// [`FLOOR_REST_SHARE`] of the theme's hover lift, never above it. A control
+/// with a floor and a control without therefore agree on how loud a hover
+/// is, and a palette whose surface ladder is squeezed near black cannot lift
+/// an idle face past a hovered one.
 pub fn selection_floor_ramp(theme: &Theme, state: SelectionState, ground: Color) -> Color {
+    let colors = &theme.tokens.colors;
+    // The chosen face is the selection's own tier, never the response's.
     let t = if state.active || state.pressed {
         1.0
     } else if state.hover {
-        FLOOR_HOVER_T
+        theme.tokens.response.hover.lift
     } else {
-        FLOOR_IDLE_T
+        FLOOR_IDLE_T.min(theme.tokens.response.hover.lift * FLOOR_REST_SHARE)
     };
-    theme.tokens.colors.lift_on(ground, t)
+    colors.lift_on(ground, t)
+}
+
+/// The rest face of a control with its own floor on `ground`: the idle rung
+/// of [`selection_floor_ramp`], for the painters that keep the floor under
+/// every state themselves.
+pub fn selection_floor(theme: &Theme, ground: Color) -> Color {
+    selection_floor_ramp(theme, SelectionState::default(), ground)
 }
 
 /// An alignment guide: the line a dragged object lines up with while it
@@ -852,8 +876,11 @@ mod tests {
                     let rest = ramp(SelectionState::default());
                     let hovered = ramp(SelectionState::new(false, true, false));
                     let chosen = ramp(SelectionState::active(true));
+                    // Like any half step, the floor can round to the ground
+                    // itself in 8-bit sRGB at the black end; it never passes
+                    // the hovered rung.
                     assert!(
-                        rest < hovered && hovered < chosen,
+                        rest <= hovered && hovered < chosen,
                         "{name}/{ground_name}: floor ramp {rest} {hovered} {chosen}"
                     );
                 }
@@ -924,6 +951,69 @@ mod tests {
                     a.scale, ah.scale,
                     "{name}: an active control resized on hover"
                 );
+            }
+        }
+    }
+
+    /// A control with its own floor (an idle tile, a list row on a panel)
+    /// must never look louder at rest than it does under the pointer, and
+    /// every other control answers the pointer with the hover tier. So the
+    /// floor's rest face is measured against that tier on the same ground —
+    /// including for a theme whose own hover is quieter than the stock one.
+    #[test]
+    fn a_floored_rest_face_is_quieter_than_a_hovered_one() {
+        use crate::theme::Preset;
+        use crate::tokens::{Response, ResponseStep};
+        let quiet = {
+            let mut document = Preset::Dark.document();
+            document.response = Some(Response {
+                hover: ResponseStep {
+                    lift: *ResponseStep::LIFT_ADMITTED.start(),
+                    ..Response::STOCK.hover
+                },
+                ..Response::STOCK
+            });
+            Theme::from_document(&document).expect("a hover lift inside its admitted band")
+        };
+        for (name, theme) in themes().into_iter().chain([("quiet_hover", quiet)]) {
+            let colors = &theme.tokens.colors;
+            let hover_state = SelectionState::new(false, true, false);
+            for (ground_name, ground) in [
+                ("base", colors.surfaces.base),
+                ("content", colors.surfaces.content),
+                ("panel", panel_ground(&theme)),
+                ("white", Color::WHITE),
+                ("black", Color::BLACK),
+            ] {
+                let dist = |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs();
+                let rest = selection_floor(&theme, ground);
+                for (tier_name, hovered) in [
+                    (
+                        "floor ramp",
+                        selection_floor_ramp(&theme, hover_state, ground),
+                    ),
+                    (
+                        "hover tier",
+                        selection_tier_on(&theme, hover_state, ground).fill,
+                    ),
+                ] {
+                    // At the black end a half step can round to the ground
+                    // itself; the rest face still never passes it.
+                    assert!(
+                        dist(rest) <= dist(hovered),
+                        "{name}/{ground_name}: rest ({:.4}) must stay under the {tier_name} \
+                         ({:.4}) from its ground",
+                        dist(rest),
+                        dist(hovered)
+                    );
+                    assert!(
+                        dist(hovered) <= 0.0 || dist(rest) < dist(hovered),
+                        "{name}/{ground_name}: a {tier_name} that registers ({:.4}) must read \
+                         above the rest face ({:.4})",
+                        dist(hovered),
+                        dist(rest)
+                    );
+                }
             }
         }
     }

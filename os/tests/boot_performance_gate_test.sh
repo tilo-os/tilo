@@ -339,7 +339,7 @@ grep -Fq 'After=local-fs.target network.target systemd-tmpfiles-setup.service' "
 # the one boot after installation: its marker keeps it out of every later
 # boot's transaction, and the person's own setup is never this unit's work.
 if ! grep -Fqx 'ConditionPathExists=!/etc/tilo/.firstboot-done' \
-    "$repo/os/usr/lib/systemd/system/shell-firstboot.service"; then
+    "$repo/os/usr/lib/systemd/system/tilo-firstboot.service"; then
   echo 'machine first-boot setup is not limited to the machine first boot' >&2
   exit 1
 fi
@@ -381,8 +381,8 @@ for containerfile in "$repo/os/Containerfile" "$repo/os/image/system.Containerfi
     }
   done
 done
-shell_firstboot_unit="$repo/os/usr/lib/systemd/system/shell-firstboot.service"
-if grep -Eq '^(After|Wants)=.*network-online.target' "$shell_firstboot_unit"; then
+firstboot_unit="$repo/os/usr/lib/systemd/system/tilo-firstboot.service"
+if grep -Eq '^(After|Wants)=.*network-online.target' "$firstboot_unit"; then
   echo 'local-only machine firstboot setup still waits for network readiness' >&2
   exit 1
 fi

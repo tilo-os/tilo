@@ -16,6 +16,7 @@ impl Shared {
             .as_ref()
             .map(|sync| sync.calls())
             .unwrap_or_default();
+        let joined = self.calls_this_person_is_in();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
@@ -68,6 +69,7 @@ impl Shared {
                     }
                     let calls = calls
                         .iter()
+                        .filter(|call| !joined.contains(&call.channel))
                         .filter(|call| call.workspace == workspace_id)
                         .map(|call| CallHere {
                             channel: call.channel.clone(),
@@ -112,6 +114,22 @@ impl Shared {
             workspaces.sort_by_key(|workspace| !workspace.active);
             workspaces
         })
+    }
+}
+
+impl Shared {
+    /// The calls this person is in, on any of their devices: what a Join is
+    /// not offered for.
+    fn calls_this_person_is_in(&self) -> Vec<String> {
+        let Some(sync) = self.sync.as_ref() else {
+            return Vec::new();
+        };
+        sync.calls()
+            .iter()
+            .map(|call| call.channel.clone())
+            .chain(sync.own().call.map(|call| call.call.channel))
+            .filter(|channel| sync.is_in_call(channel))
+            .collect()
     }
 }
 

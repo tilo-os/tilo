@@ -46,7 +46,6 @@ from rust_source import blank_test_items, is_test_file, lex  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path("tools/policy/swallowed_decodes_baseline.toml")
 SCANNED = (
-    Path("crates/session/shell"),
     Path("crates/collab/tilo-action-broker"),
     Path("crates/collab/collaboration"),
     Path("crates/platform/tilolang-host"),

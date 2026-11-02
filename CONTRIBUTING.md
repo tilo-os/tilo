@@ -77,7 +77,7 @@ For an app, `cargo run --locked -p notes` opens it in its own window (replace
 `cargo test` to run only that test.
 
 Some packages are large (the compositor, `shell`, is the largest); check them
-with `cargo check --locked -p shell --tests` while you iterate and run their
+with `cargo check --locked -p tilo-session --tests` while you iterate and run their
 tests once before you send the change.
 
 Repository rules (formatting, licences, dependency hygiene, platform code only
@@ -101,7 +101,7 @@ dist/dev/nested-session.sh --apps "notes chat"
 
 It does not touch your login session; close the window or press Ctrl-C to stop
 it. `--headless` runs it offscreen and `--help` lists the other options. On
-macOS the shell runs as a native app: `cargo run --locked -p shell --bin shell`.
+macOS each app runs as a native window of its own: `cargo run --locked -p notes`.
 
 For changes to the OS image, boot or devices, use a development VM:
 `cargo run --locked -p tilo-vm -- guide quickstart`.

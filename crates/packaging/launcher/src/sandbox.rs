@@ -1635,7 +1635,7 @@ mod tests {
         // Phase `sandbox_binds_only_the_public_wayland_socket`.
         // The sandbox must bind exactly one Wayland socket — the public one
         // — never the privileged one, which is how the clipboard-manager gate
-        // in `crates/session/shell/src/compositor/selection.rs` stays closed to a sandboxed app.
+        // in `crates/session/compositor/src/` stays closed to a sandboxed app.
         {
             let mut argv = Vec::new();
             let bind = wayland_bind_for(Path::new("/run/user/1000/wayland-4"), 1000);

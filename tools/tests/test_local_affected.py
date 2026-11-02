@@ -135,13 +135,13 @@ class CheckOnlyTests(unittest.TestCase):
             cargo.chmod(0o755)
             root = SCRIPT.parents[2]
             result = subprocess.run(
-                ["bash", str(root / "tools/ci/lint-affected.sh"), "--check-only", "--", "-p", "shell"],
+                ["bash", str(root / "tools/ci/lint-affected.sh"), "--check-only", "--", "-p", "tilo-ui"],
                 capture_output=True, text=True, check=True,
                 env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"})
             argv = json.loads(result.stdout)
             self.assertEqual(argv[:3], ["check", "--locked", "--all-targets"])
             self.assertIn("--features", argv)
-            self.assertIn("shell/hosted-test-control", argv[argv.index("--features") + 1])
+            self.assertIn("tilo-ui/test-support", argv[argv.index("--features") + 1])
 
 
 class HelpTests(unittest.TestCase):

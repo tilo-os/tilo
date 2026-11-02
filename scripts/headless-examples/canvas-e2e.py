@@ -134,8 +134,8 @@ class CanvasSession:
         # A viewer is looking: headless frames are rasterized, so the frame trace measures
         # painting and not layout alone.
         self.control({"op": "watch", "watching": True})
-        # Apps open in the Home workspace once this device's native owner holds its workspace.
-        until("the Home workspace to be native", lambda: (self.state / "native-workspace").is_file(), 120, 0.2)
+        # Apps open once the session answers with a frame of its own desktop.
+        until("the session to answer", lambda: (self.state / "session-ready").is_file(), 120, 0.2)
         return self
 
     def stop(self) -> None:
@@ -155,7 +155,7 @@ class CanvasSession:
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait(10)
-        log = self.state / "logs/shell.log"
+        log = self.state / "logs/session.log"
         if log.is_file():
             shutil.copy(log, self.out / f"shell-{self.tag}.log")
         self.ready = None
@@ -174,7 +174,7 @@ class CanvasSession:
     def control(self, payload: dict | str, timeout: float = 30.0) -> dict:
         """Send one request to the test control socket and answer its reply, whose one key names
         its shape (`ok`, `state`, `answer`, `foreign_frames`, ...); an `err` reply raises. `payload` is a dict or its JSON text. See
-        crates/session/shell/src/shell/test_control.rs for the ops."""
+        crates/session/session/src/test_control.rs for the ops."""
         if isinstance(payload, str):
             payload = json.loads(payload)
         if self.ready is None:
@@ -787,7 +787,7 @@ def check_windows_back(session: CanvasSession, before: dict) -> dict:
         until("a presented frame of every restored app", lambda: all(session.presented(a) for a in before), 60)
     except Failed:
         missing = [a for a in before if not session.presented(a)]
-        log = (session.state / "logs/shell.log").read_text(errors="replace").splitlines()
+        log = (session.state / "logs/session.log").read_text(errors="replace").splitlines()
         said = [line[-300:] for line in log
                 if any(f"[app {a} stderr] error" in line or f"[app {a} stderr] Error" in line for a in missing)]
         raise Failed(f"the windows came back ({json.dumps(restored)}) but these apps present no frame: "

@@ -296,50 +296,27 @@ else
     unit="$REPO/$unit_rel"
     users="$(grep -l "^$svc *= *\"required@" "${manifests[@]}" \
                | sed 's|.*/apps/\([^/]*\)/.*|\1|' | tr '\n' ' ')"
-    # Collaboration is session state owned by the compositor, not an
-    # independent daemon. Starting a second broker would race the compositor
+    # Collaboration is session state owned by the desktop, not an
+    # independent daemon. Starting a second broker would race the desktop
     # for the same socket and split apps across two CRDT sessions. Prove the
     # image ships the owner and that it binds the launcher's canonical path.
     if [ "$svc" = "collab" ]; then
-      native="$REPO/crates/session/shell/src/compositor/native.rs"
-      if grep -Eq 'let (mut )?collab_broker.*=' "$native" \
-          && grep -q 'spawn_session_collab_broker' "$native" \
-          && grep -q 'launcher::services::collab_socket()' "$native"; then
-        ok "the native compositor starts 'collab' on the launcher's canonical service socket"
+      native="$REPO/crates/session/session/src/mount/services.rs"
+      if grep -Fq 'pub(crate) fn start_action_plane(' "$native" \
+          && grep -Fq 'launcher::services::collab_socket()' "$native" \
+          && grep -Fq 'start_action_plane(' "$REPO/crates/session/session/src/lib.rs"; then
+        ok "the session starts 'collab' on the launcher's canonical service socket"
       else
-        bad "apps [$users] require 'collab', but the native compositor does not visibly start its broker on launcher::services::collab_socket()."
+        bad "apps [$users] require 'collab', but the session does not visibly serve its plane on launcher::services::collab_socket()."
       fi
-      containerfile_installs_output "$CONTAINERFILE" shell /usr/bin/shell \
-        && ok "the image installs the compositor that owns 'collab'" \
-        || bad "os/Containerfile does not install /usr/bin/shell, so the compositor-owned 'collab' broker cannot start."
+      containerfile_installs_output "$CONTAINERFILE" tilo-session /usr/bin/tilo-session \
+        && ok "the image installs the session that owns 'collab'" \
+        || bad "os/Containerfile does not install /usr/bin/tilo-session, so the session-owned 'collab' plane cannot start."
       continue
     fi
-    # Typed tool launches are also compositor-owned session state. Their
-    # handler dispatches into the shell and pumps workspace routes on its UI
-    # loop; a separate systemd daemon cannot supply that ownership.
-    if [ "$svc" = "tools" ]; then
-      native="$REPO/crates/session/shell/src/compositor/native.rs"
-      service="$REPO/crates/session/shell/src/shell/tool_intents.rs"
-      if grep -Fq 'let tool_service = match crate::shell::tool_intents::spawn()' "$native" \
-          && python3 -c '
-import pathlib, re, sys
-source = pathlib.Path(sys.argv[1]).read_text()
-# Keep the call connected to the compositor chrome handle, including when
-# a local binding is shared with adjacent workspace/identity handlers.
-pattern = r"if let Some\(service\) = tool_service\.as_ref\(\)\s*\{\s*(?:service\.pump_workspace_settings\(&frame_builder\.chrome_handle\(\)\)|let (\w+) = frame_builder\.chrome_handle\(\);\s*service\.pump_workspace_settings\(&\1\))"
-sys.exit(0 if re.search(pattern, source) else 1)
-' "$native" \
-          && grep -Fq 'pub const TOOL_SERVICE: &str = "tools";' "$service" \
-          && grep -Fq 'launcher::services::socket_for(TOOL_SERVICE)' "$service"; then
-        ok "the native compositor starts 'tools' on the canonical socket and handles workspace routes"
-      else
-        bad "apps [$users] require 'tools', but its compositor-owned socket and workspace handler are not wired."
-      fi
-      containerfile_installs_output "$CONTAINERFILE" shell /usr/bin/shell \
-        && ok "the image installs the compositor that owns 'tools'" \
-        || bad "os/Containerfile does not install the compositor-owned 'tools' service."
-      continue
-    fi
+    # 'tools' stays optional for the four apps that declare it, and nothing in
+    # the image binds its socket yet: typed tool launches wait for the desktop
+    # to serve them again.
     # The system interface is no daemon either: it is the launcher's
     # image-owned system authority grant, served to the image's control panel
     # when it declares it, at a version the image declares serving.

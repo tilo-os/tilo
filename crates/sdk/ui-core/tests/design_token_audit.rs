@@ -1,6 +1,6 @@
 //! Colour, radius and paint audits. A hard-coded styling literal with no
 //! inherited debt fails outright (`forbidden_patterns`); the rest are
-//! ratchets over the toolkit, the shell and every app (`theme_ratchet`,
+//! ratchets over the toolkit and every app (`theme_ratchet`,
 //! `app_paint_ratchet`, `chrome_border_ratchet`) whose counts may only fall.
 //! Every value must flow through the theme or a widget so the OS can enforce
 //! one design language.
@@ -160,15 +160,11 @@ fn is_theme_source(path: &Path) -> bool {
 /// Escape hatches the hard-fail set above cannot see: the real
 /// `Color::from_rgb8`/`from_rgba8` constructors, `Color::WHITE`/`BLACK`, and
 /// the `surface_white_*`/`border_white_*` tiers HIG §9.5 deprecates. Counted
-/// in the toolkit, the shell and every app.
+/// in the toolkit and every app.
 pub fn theme_ratchet() -> Ratchet {
     Ratchet {
         name: "theme",
-        roots: &[
-            "crates/sdk/ui-core/src",
-            "crates/session/shell/src",
-            "apps/*/src",
-        ],
+        roots: &["crates/sdk/ui-core/src", "apps/*/src"],
         patterns: vec![
             // The constructor this tree actually calls, with a literal first
             // argument. A variable first argument (`Color::from_rgba8(c.r(), …)`,
@@ -199,7 +195,7 @@ pub fn theme_ratchet() -> Ratchet {
 /// class in [`app_paint_ratchet`].
 const ICON_GLYPHS: &str = "✕×⟳↻⌫⇅«»‹›▾▸▴◍◎◷⚓➤⏰";
 
-/// Appearance an app or the shell states for itself instead of taking it
+/// Appearance an app states for itself instead of taking it
 /// from a widget, a region or a theme token. Genuine content drawing keeps a
 /// painting surface; its counts stay here and shrink as values move onto
 /// tokens.
@@ -208,7 +204,7 @@ pub fn app_paint_ratchet() -> Ratchet {
     let glyph_icon = format!(r#""[^"\n]*{glyph}|'{glyph}'"#);
     Ratchet {
         name: "app-paint",
-        roots: &["crates/session/shell/src", "apps/*/src"],
+        roots: &["apps/*/src"],
         patterns: vec![
             Pattern::new(
                 "literal_color_new",
@@ -280,7 +276,6 @@ pub fn chrome_border_ratchet() -> Ratchet {
             "crates/sdk/ui-core/src/widget",
             "crates/sdk/ui-core/src/chrome",
             "crates/sdk/ui-core/src/surface.rs",
-            "crates/session/shell/src",
         ],
         patterns: vec![Pattern::new(
             "declared_border",
@@ -445,15 +440,15 @@ fn ratcheted_colour_patterns_match_exactly_the_shapes_they_name() {
     }
 }
 
-/// Theme escape hatches may not grow in the toolkit, the shell or any app.
+/// Theme escape hatches may not grow in the toolkit or any app.
 #[test]
 fn theme_escape_hatches_do_not_grow() {
     theme_ratchet().check();
 }
 
-/// App and shell appearance knobs may not grow.
+/// App appearance knobs may not grow.
 #[test]
-fn app_and_shell_paint_knobs_do_not_grow() {
+fn app_paint_knobs_do_not_grow() {
     app_paint_ratchet().check();
 }
 

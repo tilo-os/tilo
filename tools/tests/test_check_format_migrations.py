@@ -20,7 +20,7 @@ def declaration(oldest):
     return f'''
 pub(crate) const STATE: tilo_files::native::migration::Format =
     tilo_files::native::migration::Format {{
-        name: "desktop state",
+        name: "fixture state",
         version: STATE_VERSION,
         oldest: {oldest},
         steps: &[one_to_two],
@@ -35,7 +35,7 @@ class FormatMigrationTests(unittest.TestCase):
 
     def test_the_oldest_version_is_a_number(self):
         self.assertEqual(
-            formats.declarations({"a.rs": declaration(1)}), {"desktop state": ("a.rs", "1")}
+            formats.declarations({"a.rs": declaration(1)}), {"fixture state": ("a.rs", "1")}
         )
         with tempfile.TemporaryDirectory() as root:
             path = Path(root, "crates/x/src/lib.rs")
@@ -90,7 +90,11 @@ class FormatMigrationTests(unittest.TestCase):
 
     def test_the_repository_holds_to_it(self):
         self.assertEqual(formats.check(), [])
-        self.assertIn("desktop state", formats.declarations(formats.sources(formats.ROOT)))
+        declared = formats.declarations(formats.sources(formats.ROOT))
+        # The type is named through an import as often as in full, so a
+        # declaration written as `Format { .. }` is found too.
+        self.assertIn("sign-in record", declared)
+        self.assertIn("room wait list", declared)
 
 
 if __name__ == "__main__":

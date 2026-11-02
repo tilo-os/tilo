@@ -18,6 +18,10 @@ view desk(d: Desk) {
 /// windows standing where they were left would show their corners cut off, the traditional
 /// desktop shows the window the person is in that way, and the dock takes its own room at the
 /// foot rather than standing over the window, as a phone's does.
+///
+/// The switcher is a panel over the desk rather than a page of it: it takes that room and
+/// centres itself there, where the surfaces that go on past a display are given the same room
+/// as a page that scrolls.
 view desk_around(d: Desk, front: Option<Arrangement>) {
     let s = shell
     let docked = front != .none and dock_shows(s, d) and s.dock_edge == .bottom
@@ -35,6 +39,8 @@ view desk_around(d: Desk, front: Option<Arrangement>) {
                 } else {
                     at_rest(d)
                 }
+            } else if d.here == "switcher" {
+                surface(d, fill)
             } else {
                 scroll(fill) {
                     surface(d)

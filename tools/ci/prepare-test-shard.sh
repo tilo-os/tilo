@@ -18,7 +18,7 @@ set -euo pipefail
 
 env_file=${GITHUB_ENV:?prepare-test-shard.sh writes the shard environment to GITHUB_ENV}
 
-# Exact package names, so `-p shell` never matches some `-p shell-...`.
+# Exact package names, so `-p notes` never matches some `-p notes-...`.
 tested=" "
 read -r -a arguments <<<"${TEST_PACKAGES:-}"
 for (( index = 0; index < ${#arguments[@]}; index++ )); do

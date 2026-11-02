@@ -15,7 +15,7 @@ use crate::keys::{
 };
 use crate::panels::{Held, Popover, Readout};
 use crate::setup::Setup;
-use crate::{DeviceHost, Doors, OnboardingView, Options, PanelHost, QuickSettings, SessionCommand};
+use crate::{BeforeDesk, DeviceHost, Doors, Options, PanelHost, QuickSettings, SessionCommand};
 
 /// Quick settings as a popover under the bar.
 pub(crate) fn mount_quick_settings(
@@ -47,19 +47,20 @@ pub(crate) fn mount_quick_settings(
 
 /// A sheet lent `seat`, hosted over the desktop and its panels with its
 /// actions behind the door while it is up; the seat, when it mounted.
-/// Setup, when the person has not been through it: above everything,
-/// first to the keyboard, and while it is up the only surface offering
-/// actions.
+/// What stands before the desk, when it stands there at all: above
+/// everything, first to the keyboard, and while it is up the only surface
+/// offering actions.
 pub(crate) fn mount_setup(
     compositor: &mut Compositor,
     doors: &mut Doors,
-    view: Option<OnboardingView>,
+    surface: Option<BeforeDesk>,
     person: &str,
     scale: f64,
 ) -> Option<Rc<RefCell<Setup>>> {
-    crate::setup::lend(compositor.waker(), person);
-    view.map(|view| {
-        let setup = Rc::new(RefCell::new(Setup::new(view, scale)));
+    let waiter = compositor.waker();
+    crate::setup::lend(waiter.clone(), person);
+    surface.map(|surface| {
+        let setup = Rc::new(RefCell::new(Setup::new(surface, scale, waiter)));
         compositor.add_host(Box::new(Held(Rc::clone(&setup))));
         doors.add(Rc::clone(&setup) as tilo_surface_host::Shared);
         setup

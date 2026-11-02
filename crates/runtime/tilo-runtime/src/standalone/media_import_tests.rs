@@ -269,18 +269,6 @@ fn owner_import_through_the_canonical_door_grants_only_the_selected_workspace() 
         own.read_all(&hash.to_hex()).unwrap(),
         ReadOutcome::Unavailable
     );
-    let runtime = session.media_host().handle().unwrap();
-    let route_content = tilo_relay::offload::WorkspaceContent::of_media(
-        Arc::new(tilo_relay::offload::SessionMedia::new(
-            profile.join(BLOB_SOCKET),
-        )),
-        runtime.clone(),
-    );
-    let own_scope = runtime_fs::blobs::BlobScope::new(workspace, "so.tilo.photos").unwrap();
-    assert_eq!(
-        runtime.block_on(route_content.bind_blob(&own_scope, *hash.as_bytes())),
-        Err(tilo_relay::offload::BindError::NotLocal)
-    );
     let asked = request(workspace, &hash.to_hex());
     refuse_scoped_imports(&session, &host, &owner, &asked);
     assert_eq!(
@@ -301,16 +289,6 @@ fn owner_import_through_the_canonical_door_grants_only_the_selected_workspace() 
             bytes: b"old profile content".to_vec(),
             total_len: 19,
         }
-    );
-    assert_eq!(
-        runtime.block_on(route_content.bind_blob(&own_scope, *hash.as_bytes())),
-        Ok(19)
-    );
-    let other_scope =
-        runtime_fs::blobs::BlobScope::new("another-workspace", "so.tilo.photos").unwrap();
-    assert_eq!(
-        runtime.block_on(route_content.bind_blob(&other_scope, *hash.as_bytes())),
-        Err(tilo_relay::offload::BindError::NotLocal)
     );
     assert_eq!(
         other.read_all(&hash.to_hex()).unwrap(),
@@ -337,8 +315,6 @@ fn owner_import_through_the_canonical_door_grants_only_the_selected_workspace() 
     // second server or bypass that custody.
     assert!(crate::cli::owner_action::<Standalone>(&profile, &cli_request).is_err());
     drop(host);
-    drop(route_content);
-    drop(runtime);
     drop(own);
     drop(other);
     drop(client);

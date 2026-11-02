@@ -5,7 +5,7 @@ Runs `shell --backend headless` with a render thread and a simulated display
 (`TILO_HEADLESS_VBLANK_HZ`): every frame is rendered by the real GPU into an
 offscreen target, its flip is queued behind the previous one and retires on a
 vblank grid at the panel's rate, as the DRM presenter does. A synthetic
-`wl_shm` client (`crates/session/shell/examples/latency_client.rs`) redraws its
+`wl_shm` client (`crates/session/session`) redraws its
 whole window on every key and damages either all of it (`--damage full`) or
 only the text line the key typed on (`--damage line`). Keys are injected through the control socket at
 random phases of the refresh interval, through the compositor's input funnel as

@@ -366,11 +366,8 @@ file-chooser-unavailable = Das kann die Dateiauswahl gerade nicht.
 
 ## The lock screen.
 lock-title = Gesperrt
-lock-description = Gib dein Passwort ein und drücke die Eingabetaste, um zu entsperren.
 lock-unlock = Entsperren
 lock-password = Passwort
-lock-welcome = Willkommen zurück
-lock-enter-hint = Mit der Eingabetaste entsperren
 lock-caps-lock = Feststelltaste ist an
 lock-checking = Wird geprüft …
 lock-no-password = Gib dein Passwort ein, um zu entsperren.

@@ -8584,21 +8584,35 @@ impl BlockEditor {
         });
         let x0 = origin.x + f64::from(content_layout.location.x);
         let width = f64::from(content_layout.size.width);
-        self.stack
-            .tops
-            .iter()
-            .zip(&self.stack.heights)
-            .map(|(&top, &height)| {
-                let (top, height) = if rounding {
-                    let edge = absolute_top + top;
-                    (top.round(), (edge + height).round() - edge.round())
-                } else {
-                    (top, height)
-                };
-                let y0 = origin.y + f64::from(top);
-                Rect::new(x0, y0, x0 + width, y0 + f64::from(height))
-            })
-            .collect()
+        // Round the whole stack's edges, not each block's top and height on
+        // their own: `absolute_top + top + height` and
+        // `absolute_top + (top + height)` differ in the last f32 bit, so two
+        // contiguous blocks could round their shared edge apart by a pixel and
+        // split what paints as one block. A block with no margin above it
+        // takes the edge the block before it ended on.
+        let mut rects = Vec::with_capacity(self.stack.tops.len());
+        let mut shared_top: Option<f32> = None;
+        for (index, (&top, &height)) in self.stack.tops.iter().zip(&self.stack.heights).enumerate()
+        {
+            let (top, height) = if rounding {
+                let edge = absolute_top + top;
+                let rounded_top = shared_top.take().unwrap_or_else(|| top.round());
+                let rounded_height = (edge + height).round() - edge.round();
+                let butt_joint = self
+                    .stack_boxes
+                    .get(index.saturating_add(1))
+                    .is_some_and(|next| next.margin_top == 0.0);
+                if butt_joint {
+                    shared_top = Some(rounded_top + rounded_height);
+                }
+                (rounded_top, rounded_height)
+            } else {
+                (top, height)
+            };
+            let y0 = origin.y + f64::from(top);
+            rects.push(Rect::new(x0, y0, x0 + width, y0 + f64::from(height)));
+        }
+        rects
     }
 }
 

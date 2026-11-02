@@ -2,9 +2,11 @@
 
 The root `Cargo.toml` lists every workspace member, grouped by domain. Package
 names and binaries stay stable when directories move. `apps/README.md` describes
-the desktop applications; `session/shell/` contains the desktop surface, while
-`sdk/ui-core/` implements the application toolkit behind `sdk/tilo-app`,
-while `system/fs/` owns the collaborative filesystem service.
+the desktop applications; `session/session/` contains the session's desktop,
+`session/compositor/` its display server and `session/desktop-surface/` the
+surfaces it shows, while `sdk/ui-core/` implements the application toolkit
+behind `sdk/tilo-app`, and `system/fs/` owns the collaborative filesystem
+service.
 
 | Directory | Role |
 |---|---|
@@ -29,7 +31,6 @@ while `system/fs/` owns the collaborative filesystem service.
 - `dev/nested-session-bus`: the build environment's dbus-daemon in a cargo-built executable, the
   private session bus of a nested session on hosts without one.
 - `dev/click-test-client`: the minimal Wayland client the shell's sandbox and desktop tests drive.
-- `dev/ux-bench`: runs the `scripts/ux-bench` journeys against the native shell tree (macOS).
 - `dev/collab-probe`: sandboxed collaboration test app, driven by
   `scripts/sandboxed-app-collab.py`.
 - `dev/tilo-app-template-smoke`: compiles generated app code to validate the SDK templates.

@@ -206,7 +206,7 @@ COPY os/etc/profile.d/tilo-apps.sh /etc/profile.d/tilo-apps.sh
 # store volume (/var/lib/tilo/store) before it, giving installs without a
 # store partition an image-backed one attached by tilo-store-loop.service;
 # fs.service pulls both in, so neither needs enabling.
-# shell-firstboot.service is the machine's one first boot: the session runs
+# tilo-firstboot.service is the machine's one first boot: the session runs
 # `--firstboot-only` once (/etc/tilo/.firstboot-done), before the greeter and
 # after the device key and the login account exist. The person's identity is
 # not this unit's: setup asks for it in the session, in front of them.
@@ -222,7 +222,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.service \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.timer \
     os/usr/lib/systemd/system/tilo-firstboot-user.service \
-    os/usr/lib/systemd/system/shell-firstboot.service \
+    os/usr/lib/systemd/system/tilo-firstboot.service \
     os/usr/lib/systemd/system/tilo-battery-cap@.service \
     os/usr/lib/systemd/system/tilo-flatpak-defaults.service \
     os/usr/lib/systemd/system/tilo-cache-gc.service \
@@ -267,14 +267,14 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 # tmpfiles.d copies it to /var/lib/tilo on first boot, where it can be
 # edited and survives image updates. See fs.service for why the subject
 # is a principal rather than a key.
-# The system interfaces this image serves sit beside it, installed by the shell
+# The system interfaces this image serves sit beside it, installed by the session
 # component (os/components.toml), which judges apps against them: an app from
 # the registry updates past its preinstalled copy only to a build this OS can
 # run, and that copy is the fallback for one it cannot
 # (crates/packaging/package-store/src/interfaces.rs).
 COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 # The community workspace a computer is in by default: the vendor's site,
-# which /etc/tilo/community.toml overrides (crates/session/shell, community.rs).
+# which /etc/tilo/community.toml overrides (crates/session/session/src/directory.rs).
 COPY os/usr/share/tilo/community.toml /usr/share/tilo/community.toml
 # Git compares only the stat fields that sync between devices (mtime and
 # size, not inode or ctime), so a synced repository is clean everywhere
@@ -282,13 +282,11 @@ COPY os/usr/share/tilo/community.toml /usr/share/tilo/community.toml
 COPY os/usr/share/tilo/git/synced-worktree.gitconfig /usr/share/tilo/git/synced-worktree.gitconfig
 COPY os/etc/gitconfig /etc/gitconfig
 
-# The Wayland sessions: the shell, which tilo-greeter selects first, and the
-# native session that replaces it, which the picker offers beside it. Nothing
-# else may land in /usr/share/wayland-sessions or /usr/share/xsessions; the
-# image contract enforces that. The separate text-mode tuigreet package is
+# The Wayland session: the one login entry this image offers. Nothing else may
+# land in /usr/share/wayland-sessions or /usr/share/xsessions; the image
+# contract enforces that. The separate text-mode tuigreet package is
 # intentionally absent from this image.
-COPY os/usr/share/wayland-sessions/shell.desktop \
-    os/usr/share/wayland-sessions/tilo-session.desktop \
+COPY os/usr/share/wayland-sessions/tilo-session.desktop \
     /usr/share/wayland-sessions/
 COPY --chmod=0755 \
     os/usr/libexec/tilo-security-audit \
@@ -724,7 +722,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
        /etc/systemd/system/graphical.target.wants/power-profiles-daemon.service \
        /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
-    systemctl enable shell-firstboot.service && \
+    systemctl enable tilo-firstboot.service && \
     systemctl enable tilo-flatpak-defaults.service && \
     # Fedora's remote-add starts with tilo-flatpak-defaults, off the greeter's path; enabled
     # on its own, multi-user.target and so graphical.target would wait for it.
@@ -770,7 +768,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
 # Boot-time prune. These units sit on the critical chain but their work
 # is either irrelevant to a desktop Tilo (offline man-db caching), or a
 # `Wants=network-online.target` wait we don't need (nothing on the boot
-# path blocks on a routable interface — the shell + peer sync tolerate
+# path blocks on a routable interface — the session + peer sync tolerate
 # late network). Masking (not just disabling) makes them
 # unable to be pulled in by transitive `Wants=`.
 #

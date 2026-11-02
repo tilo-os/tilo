@@ -537,7 +537,7 @@ fi
 if grep -Fq 'ConditionKernelCommandLine=!tilo.install' \
       "$repo_root/os/usr/lib/systemd/system/tilo-rollback-harden.service" \
    && grep -Fq 'ConditionKernelCommandLine=!tilo.install' \
-      "$repo_root/os/usr/lib/systemd/system/shell-firstboot.service"; then
+      "$repo_root/os/usr/lib/systemd/system/tilo-firstboot.service"; then
   ok "disposable live boots cannot consume first-boot state or mutate TPM lockout policy"
 else
   bad "live installer can run installed-system first-boot or TPM-hardening services"

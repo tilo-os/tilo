@@ -12,21 +12,24 @@
 //! is the host's own state, and a workspace this host does not govern is not
 //! held at all.
 //!
-//! App actions are not answered here: one reaches the host through the
-//! session its members run, where the caller's certificate and the
-//! workspace's policy decide it
-//! ([`AppServingPlane`](crate::app_serving::AppServingPlane)).
+//! An action whose declaration says it is a transform ([`HostJobs`]) is work
+//! this host can take: it says so, and it runs the invocation that comes back
+//! on the same plane as a compute job over content it keeps. Every other app
+//! action is not answered here: those reach the host through the session its
+//! members run, where the caller's certificate and the workspace's policy
+//! decide them ([`AppServingPlane`](crate::app_serving::AppServingPlane)).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use neighbour_wire::offer::{Answer, Power, Route, State, Work};
-use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLedger,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending, Reservation,
 };
+use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ActionPlane, Offering, ReadFuture, Workspaces};
 use tokio::sync::Mutex as AsyncMutex;
@@ -37,20 +40,142 @@ use super::GovernedRoom;
 /// keeps and this plane reads.
 pub(crate) type RoomsMap = AsyncMutex<BTreeMap<String, Arc<AsyncMutex<GovernedRoom>>>>;
 
+/// The work a host runs for the devices of its workspaces: an action that
+/// declares a transform, run as a compute job over content the host keeps.
+///
+/// What it answers through is its own: the inputs it already holds, and how
+/// busy it is. Two hosts of the same person differ only in that.
+pub trait HostJobs: Send + Sync {
+    /// Whether this host would run `work`'s transform in `workspace` now: the
+    /// work declares one and this host has the package that performs it.
+    fn runs(&self, workspace: &str, work: &Work) -> bool;
+
+    /// Which of `work`'s inputs this host keeps already, so moving them is no
+    /// part of what a run here costs.
+    fn holds(&self, workspace: &str, work: &Work) -> Vec<[u8; 32]>;
+
+    /// Run `request`, an invocation of work this host answered an offer for,
+    /// as a compute job of `workspace` asked by the device `requester`, and
+    /// answer with what it produced: each output kept where the workspace's
+    /// devices fetch its content, addressed as `tilo.content:<hex>`.
+    fn run(
+        &self,
+        workspace: &str,
+        work: &Work,
+        requester: [u8; 32],
+        request: InvokeRequest,
+    ) -> Pending<Result<ActionOutput, ActionHostError>>;
+
+    /// Stop the job running here for `invocation`, when it still runs: what
+    /// the device that asked for it gets when it stops following it.
+    fn cancel(&self, invocation: InvocationId) {
+        let _ = invocation;
+    }
+}
+
+/// The work each route was last offered here, as this host answered it: what
+/// an invocation arriving on this plane is.
+struct Offered {
+    workspace: String,
+    app: String,
+    resource: String,
+    action: String,
+    work: Work,
+}
+
+/// How many offers this host remembers at once. A device asks and then
+/// invokes at once; what it is not invoked on within this many later offers
+/// is forgotten.
+const MAX_OFFERED: usize = 256;
+
+/// The jobs a host runs, shared by the offering that answers offers and the
+/// dispatcher that answers invocations, and the work offered here.
+///
+/// The plane is built before any embedder hands the host a job runner, so
+/// [`Self::serve`] fills it in. A host without one says it runs no app
+/// actions, as it always did.
+pub(crate) struct HostWork {
+    jobs: std::sync::RwLock<Option<Arc<dyn HostJobs>>>,
+    offered: std::sync::Mutex<Vec<Offered>>,
+    ledger: std::sync::Mutex<InvocationLedger<InvocationState>>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl HostWork {
+    /// The work this host answered an offer for.
+    fn offered_work(&self, workspace: &str, route: &Route) -> Option<Work> {
+        self.offered
+            .lock_recover()
+            .iter()
+            .find(|offered| {
+                offered.workspace == workspace
+                    && offered.app == route.app
+                    && offered.resource == route.resource
+                    && offered.action == route.action
+            })
+            .map(|offered| offered.work.clone())
+    }
+
+    /// Remember `work` as what `route` was offered with, replacing an earlier
+    /// offer of the same route.
+    fn remember(&self, workspace: &str, route: &Route, work: &Work) {
+        let offered = Offered {
+            workspace: workspace.to_owned(),
+            app: route.app.clone(),
+            resource: route.resource.clone(),
+            action: route.action.clone(),
+            work: work.clone(),
+        };
+        let mut offers = self.offered.lock_recover();
+        offers.retain(|held| {
+            !(held.workspace == workspace
+                && held.app == route.app
+                && held.resource == route.resource
+                && held.action == route.action)
+        });
+        if offers.len() >= MAX_OFFERED {
+            offers.remove(0);
+        }
+        offers.push(offered);
+    }
+}
+
+impl HostWork {
+    /// Run the work offered here through `jobs`.
+    pub(super) fn serve(&self, jobs: Arc<dyn HostJobs>) {
+        *self.jobs.write_recover() = Some(jobs);
+    }
+
+    /// This host for the plane of the device that signs as `device`.
+    ///
+    /// # Panics
+    ///
+    /// Outside a runtime context, where there is nothing to answer on.
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            jobs: std::sync::RwLock::default(),
+            offered: std::sync::Mutex::default(),
+            ledger: std::sync::Mutex::default(),
+            runtime: tokio::runtime::Handle::current(),
+        })
+    }
+}
+
 /// The device plane of a host governing the workspaces in `rooms`, as the
-/// device whose signing key is `device`.
+/// device whose signing key is `device`, running `jobs`.
 ///
 /// # Panics
 ///
 /// Outside a runtime context, where there is nothing to answer on.
-pub(crate) fn plane(rooms: Arc<RoomsMap>, device: SigningKey) -> ActionPlane {
+pub(crate) fn plane(rooms: Arc<RoomsMap>, device: SigningKey) -> (ActionPlane, Arc<HostWork>) {
+    let work = HostWork::new();
     let plane = ActionPlane::over(
         device,
-        Arc::new(NoAppActions),
+        Arc::new(HostActions(Arc::clone(&work))),
         Arc::new(GovernedRooms(rooms)),
     );
-    plane.offering(HostOffering);
-    plane
+    plane.offering(HostOffering(Arc::clone(&work)));
+    (plane, work)
 }
 
 /// The workspaces this host governs, as the plane reads them: each is locked
@@ -80,33 +205,42 @@ impl Workspaces for GovernedRooms {
 /// What a host says of itself when another device of one of its workspaces
 /// offers it work.
 ///
-/// It holds the workspace and is there to answer. It runs no app actions on the
-/// device plane, so it says it cannot run the app asked for: a host never
-/// claims work it cannot run. Once it does run them there, this is where it
-/// reports its standing — how it is powered, and the inputs it already keeps
-/// — so the device that asks can weigh moving them against the run where the
-/// job was asked.
-struct HostOffering;
+/// It holds the workspace, is there to answer, and runs on external power as
+/// the always-on server it is. It takes the work only when the route's action
+/// declares a transform and it has the package that performs it
+/// ([`HostJobs::runs`]); having taken it, it says which of the inputs it
+/// already keeps, so the device that asks weighs moving them against the run
+/// where the job was asked.
+struct HostOffering(Arc<HostWork>);
 
 impl Offering for HostOffering {
-    fn report(&self, _workspace: &str, _route: &Route, _work: &Work) -> Answer {
+    fn report(&self, workspace: &str, route: &Route, work: &Work) -> Answer {
+        let jobs = self.0.jobs.read_recover().clone();
+        let takes = jobs.as_ref().is_some_and(|jobs| jobs.runs(workspace, work));
+        let holds = match (&jobs, takes) {
+            (Some(jobs), true) => {
+                self.0.remember(workspace, route, work);
+                jobs.holds(workspace, work)
+            }
+            _ => Vec::new(),
+        };
         Answer {
             state: State {
                 requester: false,
                 online: true,
                 holds_workspace: true,
-                app_installed: false,
+                app_installed: takes,
                 // It holds the workspace's state as a member, not as a store of
                 // ciphertext it has no keys for.
                 store_role: false,
                 data_saving: false,
                 critical_battery: false,
                 priority: 0,
-                power: Power::Unknown,
+                power: Power::External,
                 load_permille: load_permille(),
                 latency_ms: 0,
             },
-            holds: Vec::new(),
+            holds,
         }
     }
 }
@@ -137,20 +271,23 @@ fn load_permille() -> u32 {
     thousandths.checked_div(cores.max(1)).unwrap_or(0)
 }
 
-/// The host answers no app actions on the device plane: an app's action
-/// reaches it through the session its members run, which carries the
-/// caller's certificate for the workspace's policy to decide. A request that
-/// arrives here anyway is refused as one this device does not serve, so its
+/// The host's answers on the device plane: the work it was offered, run as a
+/// compute job, and nothing else.
+///
+/// An app action reaches the host through the session its members run, which
+/// carries the caller's certificate for the workspace's policy to decide. A
+/// request that arrives here is run only for work this host answered an offer
+/// for; anything else is refused as one this device does not serve, so its
 /// caller learns at once instead of waiting.
-struct NoAppActions;
+struct HostActions(Arc<HostWork>);
 
 fn not_served() -> ActionHostError {
     ActionHostError::Unavailable {
-        reason: "this host answers no app actions on the device plane".into(),
+        reason: "this host runs only the work it was offered on the device plane".into(),
     }
 }
 
-impl ActionHost for NoAppActions {
+impl ActionHost for HostActions {
     fn query(
         &self,
         _caller: &Caller,
@@ -161,17 +298,101 @@ impl ActionHost for NoAppActions {
 
     fn invoke(
         &self,
-        _caller: &Caller,
-        _request: InvokeRequest,
+        caller: &Caller,
+        request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        Pending::ready(Err(not_served()))
+        let Some(requester) = caller.device_public_key().copied() else {
+            return Pending::ready(Err(ActionHostError::UnknownAction));
+        };
+        let Some((workspace, app)) =
+            tilo_actions::remote::application_provider(&request.target.provider)
+        else {
+            return Pending::ready(Err(ActionHostError::UnknownAction));
+        };
+        let route = Route::new(
+            app,
+            request.target.address.resource.clone(),
+            request.target.address.action.clone(),
+        );
+        // Unknown, not offered and forbidden are the same answer: no app
+        // action is answered here that this host did not offer to run.
+        let Some(work) = self.0.offered_work(workspace, &route) else {
+            return Pending::ready(Err(ActionHostError::UnknownAction));
+        };
+        let Some(jobs) = self.0.jobs.read_recover().clone() else {
+            return Pending::ready(Err(not_served()));
+        };
+        if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
+            return Pending::ready(Err(refused));
+        }
+        let invocation = request.invocation;
+        // An invocation this host already admitted is answered with what it
+        // has, and is never run a second time.
+        let admitted = {
+            let mut ledger = self.0.ledger.lock_recover();
+            match ledger.reserve(caller, &request) {
+                Err(error) => return Pending::ready(Err(error)),
+                Ok(Reservation::Admitted) => Some(
+                    ledger
+                        .get(caller, &invocation)
+                        .map(InvocationState::receipt)
+                        .ok_or(ActionHostError::UnknownInvocation),
+                ),
+                Ok(Reservation::Reserved) => None,
+            }
+        };
+        if let Some(receipt) = admitted {
+            return Pending::ready(receipt);
+        }
+        let shared = Arc::clone(&self.0);
+        let workspace = workspace.to_owned();
+        let (completer, answer) = tilo_actions::remote::pending();
+        self.0.runtime.spawn(async move {
+            let output = jobs
+                .run(&workspace, &work, requester, request)
+                .await
+                .unwrap_or(Err(ActionHostError::Unavailable {
+                    reason: "this host stopped following the job".into(),
+                }));
+            let update = match output {
+                Ok(output) => InvocationUpdate::Succeeded { invocation, output },
+                Err(error) => InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: error.code().into(),
+                        message: error.to_string(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            };
+            let state = InvocationState::new(invocation, update);
+            let receipt = state.receipt();
+            shared.ledger.lock_recover().complete(&invocation, state);
+            completer.complete(Ok(receipt));
+        });
+        answer
     }
 
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.0.ledger.lock_recover().get(caller, id).cloned()
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
-        Pending::ready(Err(not_served()))
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+        let Some(jobs) = self.0.jobs.read_recover().clone() else {
+            return Pending::ready(Err(not_served()));
+        };
+        match self.0.ledger.lock_recover().get(caller, id) {
+            Some(state) if state.is_terminal() => {
+                Pending::ready(Err(ActionHostError::NotCancellable {
+                    reason: "the job already finished here".into(),
+                }))
+            }
+            Some(_) => {
+                jobs.cancel(*id);
+                Pending::ready(Ok(()))
+            }
+            None => Pending::ready(Err(ActionHostError::UnknownInvocation)),
+        }
     }
 }

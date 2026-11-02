@@ -951,7 +951,7 @@ class Fixture:
         _version, native_chat = packaged.install_packages(self.binaries, publisher, environments["alice"])
         self.record("same-source-native-inputs", digests={
             name: packaged.digest_file(path) for name, path in {
-                "fixture": pathlib.Path(__file__), "shell": self.binaries / "shell",
+                "fixture": pathlib.Path(__file__), "shell": self.binaries / "tilo-session",
                 "governor": self.binaries / "examples/native_pair_host",
                 "launcher": self.binaries / "tilo-launcher", "native_chat": native_chat,
                 "signed_chat": publisher / "chat.tapp",
@@ -987,7 +987,7 @@ class Fixture:
             env = environments[name]
             if not state_only:
                 self.audio(name, env, frequency)
-            shell = self.spawn(name, [self.binaries / "shell", "--mode", "native",
+            shell = self.spawn(name, [self.binaries / "tilo-session", "--mode", "native",
                                       "--backend", "headless", "--enable-peer-sync"], env)
             socket = env["TILO_TEST_CONTROL"]
             packaged.wait_for(f"{name} native control socket", lambda: pathlib.Path(socket).exists(), shell)

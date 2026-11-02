@@ -423,10 +423,8 @@ pub struct MigrationStore {
 
 impl MigrationStore {
     pub fn open_default() -> Result<Self, String> {
-        let root = tilo_paths::data_local_dir()
-            .ok_or_else(|| "no private local data directory is available".to_string())?
-            .join("tilo-imager")
-            .join("migrations");
+        let root = tilo_paths::login::importer_migrations_dir()
+            .ok_or_else(|| "no private local data directory is available".to_string())?;
         Self::open_at(&root)
     }
 
@@ -512,7 +510,7 @@ impl MigrationStore {
         self.root
             .validate_destination()
             .map_err(|e| e.to_string())?;
-        let name = Path::new("desktop-continuation.json");
+        let name = Path::new(tilo_paths::login::IMPORTER_CONTINUATION_FILE);
         let expected = match metadata_nofollow(&self.root.file, name) {
             Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -551,7 +549,7 @@ impl MigrationStore {
         self.root
             .validate_destination()
             .map_err(|e| e.to_string())?;
-        let name = OsStr::new("desktop-continuation.json");
+        let name = OsStr::new(tilo_paths::login::IMPORTER_CONTINUATION_FILE);
         let mut temporary = OwnedTemporary::create(&self.root, name).map_err(|e| e.to_string())?;
         temporary.file.write_all(bytes).map_err(|e| e.to_string())?;
         migration_durability::sync_file(&temporary.file).map_err(|e| e.to_string())?;

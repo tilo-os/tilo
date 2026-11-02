@@ -357,7 +357,8 @@ pub const KINDS: &[OriginKind] = &[
             field(
                 "recency",
                 "Int",
-                "How recently it was in front: lower is more recent.",
+                "Where it stands in the walk a switcher takes: 1 is the window in front, then \
+                 the ones it was in front of, then the rest along their strips.",
             ),
             field(
                 "seen",
