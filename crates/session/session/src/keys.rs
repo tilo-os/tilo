@@ -898,7 +898,7 @@ mod tests {
             repeat: false,
             keysym,
             unmodified_keysym: keysym,
-            text,
+            text: text.map(String::from),
             modifiers,
         }
     }

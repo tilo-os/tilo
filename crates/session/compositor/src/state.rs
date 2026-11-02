@@ -17,7 +17,7 @@ use smithay::backend::input::KeyState;
 use smithay::backend::input::{Axis, ButtonState};
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType};
-use smithay::input::keyboard::{FilterResult, XkbConfig};
+use smithay::input::keyboard::{FilterResult, Keysym, XkbConfig};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
@@ -199,6 +199,9 @@ pub struct State {
     pub(crate) idle: crate::power::Idle,
     /// The keys hosted surfaces hold, and their repeat.
     pub(crate) host_keys: HostKeys,
+    /// What a dead key's or the Compose key's sequence types; `None` when
+    /// the session's locale has no compose table.
+    pub(crate) compose: Option<crate::compose::Compose>,
     /// The pointer buttons that are down: a drag, a resize or any press in
     /// flight is an ongoing gesture for whatever must not move under it.
     pub(crate) buttons_down: std::collections::BTreeSet<u32>,
@@ -312,6 +315,7 @@ impl State {
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
             host_keys: HostKeys::default(),
+            compose: crate::compose::Compose::for_session_locale(),
             buttons_down: std::collections::BTreeSet::new(),
             typed_at: None,
             pointer_lock: crate::pointer_lock::PointerLock::default(),
@@ -741,20 +745,27 @@ impl State {
                     .first()
                     .copied()
                     .unwrap_or_else(|| handle.modified_sym());
+                let modifiers = KeyModifiers {
+                    ctrl: modifiers.ctrl,
+                    alt: modifiers.alt,
+                    shift: modifiers.shift,
+                    logo: modifiers.logo,
+                    caps_lock: modifiers.caps_lock,
+                };
+                let keysym = handle.modified_sym();
+                let text = if pressed {
+                    state.typed(keysym, modifiers)
+                } else {
+                    None
+                };
                 let key = HostKey {
                     keycode,
                     pressed,
                     repeat: false,
-                    keysym: handle.modified_sym().raw(),
+                    keysym: keysym.raw(),
                     unmodified_keysym: unmodified.raw(),
-                    text: handle.modified_sym().key_char().filter(|c| !c.is_control()),
-                    modifiers: KeyModifiers {
-                        ctrl: modifiers.ctrl,
-                        alt: modifiers.alt,
-                        shift: modifiers.shift,
-                        logo: modifiers.logo,
-                        caps_lock: modifiers.caps_lock,
-                    },
+                    text,
+                    modifiers,
                 };
                 if !pressed {
                     if let Some(host) = state.host_keys.release(keycode) {
@@ -819,6 +830,21 @@ impl State {
             && let Some(host) = self.hosts.get_mut(index)
         {
             host.key(&key);
+        }
+    }
+
+    /// What pressing the key with `keysym` types into a hosted surface's
+    /// field, the modifiers held being `modifiers`: the key's own character,
+    /// or what the dead key or the Compose key before it finishes into.
+    fn typed(&mut self, keysym: Keysym, modifiers: KeyModifiers) -> Option<String> {
+        // A chord types no text: it neither starts nor continues a sequence.
+        if modifiers.ctrl || modifiers.logo {
+            return None;
+        }
+        let own = keysym.key_char().filter(|ch| !ch.is_control());
+        match self.compose.as_mut() {
+            Some(compose) => compose.typed(keysym, own),
+            None => own.map(String::from),
         }
     }
 

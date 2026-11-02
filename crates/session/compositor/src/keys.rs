@@ -244,7 +244,7 @@ mod tests {
             repeat: false,
             keysym: 0x61,
             unmodified_keysym: 0x61,
-            text: Some('a'),
+            text: Some("a".to_owned()),
             modifiers: KeyModifiers::default(),
         }
     }

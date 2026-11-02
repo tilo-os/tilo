@@ -29,6 +29,7 @@ pub mod capture;
 pub mod clipboard_history;
 pub mod color_filter;
 mod color_management;
+mod compose;
 pub mod config;
 mod cursor;
 pub mod dim;

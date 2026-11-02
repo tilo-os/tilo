@@ -540,10 +540,10 @@ pub(crate) fn modifiers_state(modifiers: KeyModifiers) -> ModifiersState {
 pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
     let text = key
         .pressed
-        .then_some(key.text)
+        .then_some(key.text.as_deref())
         .flatten()
-        .map(|c| SmolStr::new(c.to_string()));
-    let (logical_key, location) = key_for(key.keysym, key.text);
+        .map(SmolStr::new);
+    let (logical_key, location) = key_for(key.keysym, key.text.as_deref());
     let (key_without_modifiers, _) = key_for(key.unmodified_keysym, None);
     let state = if key.pressed {
         ElementState::Pressed
@@ -573,21 +573,23 @@ pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
 /// modifiers held: what a shortcut table matches against.
 #[must_use]
 pub fn toolkit_key(key: &HostKey) -> (Key, Modifiers) {
-    let (logical, _) = key_for(key.keysym, key.text);
+    let (logical, _) = key_for(key.keysym, key.text.as_deref());
     (logical, Modifiers::from(modifiers_state(key.modifiers)))
 }
 
-/// The key `keysym` is: a named key when winit names it, else the
-/// character it types.
-fn key_for(keysym: u32, text: Option<char>) -> (Key, KeyLocation) {
+/// The key `keysym` is: a named key when winit names it, else the text it
+/// types, else the character of the keysym itself.
+fn key_for(keysym: u32, text: Option<&str>) -> (Key, KeyLocation) {
     let (key, location) = winit::platform::scancode::keysym_to_key(keysym);
     if !matches!(key, Key::Unidentified(_)) {
         return (key, location);
     }
-    let typed = text.or_else(|| char::from_u32(keysym).filter(|c| !c.is_control()));
-    match typed {
-        Some(c) => (Key::Character(SmolStr::new(c.to_string())), location),
-        None => (key, location),
+    match text {
+        Some(text) => (Key::Character(SmolStr::new(text)), location),
+        None => match char::from_u32(keysym).filter(|c| !c.is_control()) {
+            Some(c) => (Key::Character(SmolStr::new(c.to_string())), location),
+            None => (key, location),
+        },
     }
 }
 

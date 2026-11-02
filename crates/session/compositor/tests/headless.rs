@@ -16,6 +16,8 @@
 mod harness;
 #[path = "headless/session_follow.rs"]
 mod session_follow;
+#[path = "headless/typing.rs"]
+mod typing;
 #[path = "headless/window_icons.rs"]
 mod window_icons;
 
@@ -604,8 +606,8 @@ fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window()
     let keys = log.borrow().keys.clone();
     assert_eq!(keys.len(), 2);
     assert_eq!(
-        (keys[0].keycode, keys[0].pressed, keys[0].text),
-        (KEY_A, true, Some('a'))
+        (keys[0].keycode, keys[0].pressed, keys[0].text.as_deref()),
+        (KEY_A, true, Some("a"))
     );
     assert_eq!(keys[0].keysym, 0x61, "XK_a");
     assert!(!keys[1].pressed);
@@ -622,35 +624,6 @@ fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window()
         clients[0].seen.keys.len() == 1
     });
     assert_eq!(log.borrow().keys.len(), 2);
-}
-
-#[test]
-fn the_keyboard_types_in_the_persons_layout() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut client = mapped_client(&mut compositor, "typing", (200, 100), [0, 255, 0, 255]);
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.keymap.is_some()
-    });
-    let before = client.seen.keymap.clone().expect("the client has a keymap");
-
-    compositor.set_keyboard_layout(&KeyboardLayout {
-        layout: "de".into(),
-        ..KeyboardLayout::default()
-    });
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0]
-            .seen
-            .keymap
-            .as_ref()
-            .is_some_and(|keymap| keymap.contains("German"))
-    });
-    let after = client.seen.keymap.clone().expect("the new keymap");
-    assert_ne!(before, after, "the client's keys type other characters now");
-    assert!(
-        after.contains("German"),
-        "the client's keymap is the German one the person chose"
-    );
-    assert_eq!(compositor.keyboard_layout().as_deref(), Some("German"));
 }
 
 #[test]
