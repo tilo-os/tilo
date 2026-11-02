@@ -36,7 +36,7 @@ from _control import call, runtime_socket_path
 
 SOCKET = sys.argv[1] if len(sys.argv) > 1 else runtime_socket_path("action-api.sock")
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
-BINARY = (SCRIPT_DIR / ".." / ".." / "target" / "debug" / "shell").resolve()
+BINARY = (SCRIPT_DIR / ".." / ".." / "target" / "debug" / "tilo-session").resolve()
 
 # An overlay-opening action: the chrome flag it flips is exposed in
 # `state_dump`, so the effect is observable from outside the process
@@ -63,7 +63,7 @@ def chrome_state() -> dict:
 def main() -> int:
     if not BINARY.exists():
         print(f"FAIL: compositor not built at {BINARY}", file=sys.stderr)
-        print("      run: cargo build -p shell --bin shell", file=sys.stderr)
+        print("      run: cargo build -p tilo-session --bin tilo-session", file=sys.stderr)
         return 1
 
     try:
@@ -80,7 +80,7 @@ def main() -> int:
     #
     # `TILO_STATE_PATH` alone is not enough. It moves the workspace tree;
     # record documents live under `XDG_DATA_HOME` (see
-    # `crates/session/shell/src/shell/room_records.rs`), so isolating only the former
+    # `crates/session/session/src/records.rs`), so isolating only the former
     # leaves every run sharing one set of documents.
     state_dir = tempfile.mkdtemp(prefix="tilo-action-proof-")
     env = {

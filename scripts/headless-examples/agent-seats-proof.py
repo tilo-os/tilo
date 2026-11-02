@@ -25,7 +25,7 @@ The frames (each agent's strip, and the whole screen) are written to the
 output directory.
 
 Usage:
-  cargo build -p shell --bin shell --features agent-control
+  cargo build -p tilo-session --bin tilo-session --features agent-control
   cargo build -p terminal --bin terminal
   cargo build -p tilo-runtime --bin tilo-runtime
   ./agent-seats-proof.py [OUTDIR]
@@ -46,7 +46,7 @@ import urllib.request
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The nightly ignored-test lane points these at the binaries Cargo built for the run
 # (the shell with `--features agent-control`).
-SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "shell"))
+SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "tilo-session"))
 TERMINAL = pathlib.Path(os.environ.get("TILO_TERMINAL_BINARY", REPO / "target" / "debug" / "terminal"))
 PROTOCOL = "2025-06-18"
 # What a shell types to title its terminal (OSC 2) with the quoted text after it.
@@ -224,7 +224,7 @@ def main() -> int:
         "TILO_RUNTIME_MCP_HTTP": f"127.0.0.1:{port}",
         "TILO_RUNTIME_MCP_HTTP_TOKEN_FILE": str(token_file),
     }
-    log = open(out / "shell.log", "w")
+    log = open(out / "session.log", "w")
     shell = subprocess.Popen([str(SHELL), "--backend", "headless"], env=compositor_env,
                              stdout=log, stderr=subprocess.STDOUT)
     terminals: list[subprocess.Popen] = []
@@ -233,7 +233,7 @@ def main() -> int:
         deadline = time.time() + 90
         while not (os.path.exists(agent_sock) and os.path.exists(test_sock)):
             if time.time() > deadline or shell.poll() is not None:
-                print("the compositor did not come up; see shell.log", file=sys.stderr)
+                print("the compositor did not come up; see session.log", file=sys.stderr)
                 return 1
             time.sleep(0.3)
         time.sleep(2)

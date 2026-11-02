@@ -5,7 +5,7 @@
 //! decides its size, weight and leading, so one text scale changes every
 //! screen at once. Every literal size, every size constant and every call
 //! into the pixel-size measuring and drawing API is a place where that chain
-//! breaks. They are counted per file in widget, chrome, shell and app
+//! breaks. They are counted per file in widget, chrome and app
 //! production code (`tests/baselines/typography/<unit>.txt`, see
 //! `support::ratchet`) and may only fall.
 
@@ -93,7 +93,6 @@ pub fn typography_ratchet() -> Ratchet {
         roots: &[
             "crates/sdk/ui-core/src/widget",
             "crates/sdk/ui-core/src/chrome",
-            "crates/session/shell/src",
             "apps/*/src",
         ],
         patterns: vec![

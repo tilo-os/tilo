@@ -202,7 +202,7 @@ def main() -> None:
     if args.alternate_mesa_seed and (not args.mesa_seed or args.mesa_seed_source != "package" or args.samples % 2):
         parser.error("alternating seed mode requires a package seed and an even sample count")
     binaries = args.binaries.resolve()
-    paths = {"shell": binaries / "shell", "launcher": binaries / "tilo-launcher",
+    paths = {"shell": binaries / "tilo-session", "launcher": binaries / "tilo-launcher",
              "probe": binaries / "examples/startup-frame-probe"}
     for path in paths.values():
         if not path.is_file():

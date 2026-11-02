@@ -78,7 +78,7 @@ X86_ONLY = {"shell"}
 # and tilolang-tilo) also runs scripts/headless-examples/session-e2e.py: one headless nested
 # session of this tree, built on the arm builder and run here, since the builders' containers
 # cannot start Tilo's sandboxes.
-SESSION_E2E_PATHS = ("crates/session/shell/", "crates/collab/", "crates/platform/tilolang-host/",
+SESSION_E2E_PATHS = ("crates/session/session/", "crates/collab/", "crates/platform/tilolang-host/",
                      "crates/platform/tilolang-tilo/", "scripts/headless-examples/session-e2e.py")
 # nextest's status line for a test that did not pass, and the test it names.
 FAILED_LINE = re.compile(

@@ -64,11 +64,8 @@ SEEDED_SIGNATURES = ("/signatures" + SEEDED_TREE, SEEDED_TREE)
 # The session starts its surface apps (the lock screen, the on-screen keyboard,
 # the window menu) as programs of its own: `program_path` looks beside the
 # session's executable first and then on PATH (crates/session/session/src/
-# surfaces.rs), so each one has to be installed there by a component. The old
-# shell in `crates/session/shell/` is not part of this: it starts no such
-# program itself.
+# surfaces.rs), so each one has to be installed there by a component.
 SESSION_CRATES = "crates/session"
-OLD_SHELL = "crates/session/shell/"
 SESSION_BINARY = "tilo-session"
 # The component that ships the session binary and, with it, the PAM session
 # wrapper and the interface declaration every layer of a session is judged by.
@@ -345,7 +342,7 @@ def session_programs(repo: Path) -> tuple[list[tuple[str, int, str]], list[tuple
     unreadable: list[tuple[str, int, str]] = []
     for path in sorted((repo / SESSION_CRATES).rglob("*.rs")):
         relative = path.relative_to(repo).as_posix()
-        if relative.startswith(OLD_SHELL) or "/tests/" in f"/{relative}" \
+        if "/tests/" in f"/{relative}" \
                 or path.stem in ("tests", "examples") or path.stem.endswith("_tests"):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")

@@ -517,7 +517,7 @@ jobs:
         run: |
           # The packages with goldens (.config/nextest-filters.toml).
           case " ${{ matrix.test_packages }} " in
-            *" -p shell "*|*" -p tilo-ui "*|*" -p ebook "*) ;;
+            *" -p tilo-ui "*|*" -p ebook "*) ;;
             *) exit 0 ;;
           esac
           if ! bash tools/ci/golden-image.sh check "$BUILDER_IMAGE" 2>goldens-image.txt; then

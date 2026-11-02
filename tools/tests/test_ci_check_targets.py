@@ -117,15 +117,15 @@ class RoutedSitesTests(unittest.TestCase):
         render = [line for line in script.splitlines() if "--no-tests=pass" in line]
         self.assertEqual(len(render), 1, script)
         self.assertIn('"${features[@]}"', render[0])
-        # The package whose golden test target needs a feature (the shell's e2e
-        # shell flows) is one of the packages the filter names.
+        # The package whose golden test target needs a feature is one of the
+        # packages the filter names.
         filter_text = (ROOT / ".config/nextest-filters.toml").read_text()
         golden = re.search(r'^golden = """(.*?)"""', filter_text, re.MULTILINE | re.DOTALL).group(1)
         packages = sorted(set(re.findall(r"package\(([A-Za-z0-9_-]+)\)", golden)))
         argv = subprocess.run([sys.executable, str(ROOT / "tools/ci/package_features.py"),
                                *[flag for name in packages for flag in ("-p", name)]],
                               capture_output=True, text=True, check=True).stdout.split()
-        self.assertIn("shell/hosted-test-control", argv[argv.index("--features") + 1].split(","))
+        self.assertIn("tilo-ui/test-support", argv[argv.index("--features") + 1].split(","))
 
 
 if __name__ == "__main__":

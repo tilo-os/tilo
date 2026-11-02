@@ -35,16 +35,16 @@ RUNNER = "tools/ci/vm-acceptance.sh"
 INPUT = "input,B04,W17"
 FEATURES = [
     (re.compile(r"^crates/dev/tilo-vm[a-z-]*/"), INPUT),
-    (re.compile(r"^crates/session/shell/src/compositor/(input|client_input\.rs|lock_|backend/drm/)"), INPUT),
+    (re.compile(r"^crates/session/compositor/src/(input|client_input\.rs|lock_|backend/drm/)"), INPUT),
     (re.compile(r"^os/usr/lib/udev/"), INPUT),
     (re.compile(r"^os/hardware/profiles/lenovo-83ed/input/"), INPUT),
     (re.compile(r"^crates/runtime/tilo-runtime/src/(session_door|mcp|daemon|cli)"), "agent"),
-    (re.compile(r"^crates/session/shell/src/(compositor/agent_door|shell/agent_admission)"), "agent"),
+    (re.compile(r"^crates/session/session/src/(compositor/agent_door|shell/agent_admission)"), "agent"),
     # Where the compositor's secrets go: the store, its client, the MLS vault, the portal
     # backend and the identity's secret providers.
     (re.compile(r"^crates/system/secret-service/"), "secrets"),
     (re.compile(r"^crates/platform/tilo-secrets/"), "secrets"),
-    (re.compile(r"^crates/session/shell/src/(shell/mls_vault\.rs|portal/secret\.rs)$"), "secrets"),
+    (re.compile(r"^crates/session/session/src/(shell/mls_vault\.rs|portal/secret\.rs)$"), "secrets"),
     (re.compile(r"^crates/runtime/runtime-identity/src/secure_store\.rs$"), "secrets"),
     # The guest-side MCP client belongs to the agent checks that run it.
     (re.compile(r"^scripts/vm-acceptance/guest/mcp_client\.py$"), "agent"),

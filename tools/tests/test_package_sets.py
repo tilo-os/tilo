@@ -104,7 +104,6 @@ class PackageSetsTests(unittest.TestCase):
         # finding them, whatever else it finds.
         known = {
             "tilo-sandbox": "clone3 assembly, microvm or virt machine",
-            "shell": "syscall table, open or creat",
             "tilo-agent-participant": "seccomp confinement",
             "app-cli": "ISA detection",
             "tilo-environment": "the host architecture",

@@ -331,7 +331,7 @@ def declared_action(chain: str, code: str = "") -> str | None:
     if literal is not None:
         return literal.group(1)
     # An `Action` literal names the id it is declared with: written out, or
-    # the constant the crate declares the action under (`APP_UNINSTALL_ID`),
+    # the constant the crate declares the action under (`UNINSTALL_ACTION`),
     # which is a string constant elsewhere in the tree.
     named = re.search(
         r"\bid\s*:\s*(?:\"([^\"]+)\""

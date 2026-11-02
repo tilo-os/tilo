@@ -13,7 +13,7 @@
 #   * It is a separate, differently-named entry in the session picker. The
 #     production session never consults a config file at all.
 #   * The target must carry the build marker that a compositor only gets from
-#     `cargo build -p shell --features dev-session` in a debug profile. So the
+#     `cargo build -p tilo-session --features dev-session` in a debug profile. So the
 #     entry starts *a Tilo compositor someone deliberately built*, not an
 #     arbitrary executable — it is not a general run-this-at-login primitive.
 #   * The config file, its directory chain, the target binary and *its*
@@ -92,7 +92,7 @@ chain_is_trusted "$(dirname -- "$TARGET_REAL")" || die "the directories above $T
 
 LC_ALL=C grep -q -a -F -e "$MARKER" -- "$TARGET_REAL" || die \
     "$TARGET_REAL carries no dev-session build marker — build it with
-    cargo build -p shell --features dev-session
+    cargo build --locked -p tilo-session --bin tilo-session --features dev-session
   (a --release build never carries the marker, by design)"
 
 # Optional developer app/runtime overlay.  The file is intentionally a tiny
@@ -180,8 +180,8 @@ SESSION_RUNNER=$(dirname -- "$SELF_REAL")/tilo-session-runner
 [ -x "$SESSION_RUNNER" ] || die "the package-owned lifecycle runner is missing"
 TILO_DEV_SESSION_ATTESTATION="$ATTEST_DIR/active"
 export TILO_DEV_SESSION_ATTESTATION
-# The arguments the production wrapper passes a shell build: this entry's
-# target is built from the shell crate, whose host declaration and first-boot
+# The arguments the production wrapper passes a session build: this entry's
+# target is built from the session crate, whose host declaration and first-boot
 # preparation a developer session needs exactly as a packaged login does.
 exec "$SESSION_RUNNER" "$TARGET_REAL" \
-    --host-desktop-session --firstboot --backend drm "$@"
+    --host-desktop --firstboot --backend drm "$@"

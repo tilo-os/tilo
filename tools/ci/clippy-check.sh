@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fail on any Clippy diagnostic in the selected workspace packages.
 #
-#   clippy-check.sh [cargo package arguments...]    # e.g. -p shell -p tilo-ui
+#   clippy-check.sh [cargo package arguments...]    # e.g. -p tilo-session -p tilo-ui
 #   clippy-check.sh --workspace
 #
 # The workspace lint table in Cargo.toml is the policy, and every workspace

@@ -1,12 +1,11 @@
 # Tilo shell navigation and keyboard map
 
 Status: implemented contract, 2026-09-01. This is the compact product map for
-shell navigation. Chords Settings cannot rebind live in one table,
-`crates/session/shell/src/shell/fixed_chords.rs`, rendered below under "Fixed
-shell chords"; a test fails when that section and the table disagree.
-Editable bindings default to what this page shows and follow the user's
-Settings. Overlay-specific behavior lives in
-`crates/session/shell/src/shell/overlay_host/mod.rs`.
+shell navigation. Every chord the desktop answers lives in one table,
+`crates/session/session/src/keys.rs`, rendered below under "Fixed shell
+chords". Editable bindings default to what this page shows and follow the
+user's Settings. Overlay-specific behavior lives in
+`crates/session/session/src/overlays.rs`.
 
 ## Containment and focus
 

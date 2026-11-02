@@ -39,8 +39,8 @@ pub type Counts = BTreeMap<(String, String), usize>;
 
 /// Set to `1` to rewrite baselines from the tree instead of checking them.
 pub const UPDATE_VAR: &str = "UPDATE_RATCHET_BASELINES";
-/// Restricts an update to one unit (`apps/mail`, `crates/session/shell`,
-/// `crates/sdk/ui-core`, or a unit name such as `apps-mail`).
+/// Restricts an update to one unit (`apps/mail`, `crates/sdk/ui-core`, or a
+/// unit name such as `apps-mail`).
 pub const SCOPE_VAR: &str = "RATCHET_SCOPE";
 /// Set to `1` to let an update raise a count. Review the diff first.
 pub const GROWTH_VAR: &str = "RATCHET_ALLOW_GROWTH";
@@ -161,9 +161,8 @@ pub fn baselines_root() -> PathBuf {
 }
 
 /// The shard a repository-relative path belongs to: `apps/mail/src/x.rs` →
-/// `apps-mail`, `crates/sdk/ui-core/src/x.rs` → `ui-core`,
-/// `crates/session/shell/src/x.rs` → `shell`, any other crate → its
-/// directory name.
+/// `apps-mail`, `crates/sdk/ui-core/src/x.rs` → `ui-core`, any other crate →
+/// its directory name.
 pub fn shard_of(rel: &str) -> String {
     let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
     match parts.as_slice() {
@@ -802,7 +801,7 @@ fn test_modules_split_into_files_or_directories_are_test_files() {
         "crates/sdk/ui-core/tests/it.rs",
         "apps/chat/src/tests.rs",
         "apps/chat/src/room_tests.rs",
-        "crates/session/shell/src/shell/network/one_host_tests/member_controls.rs",
+        "crates/session/desktop/src/bar/network_tests/member_controls.rs",
     ] {
         assert!(is_test_file(Path::new(test)), "{test}");
     }
@@ -880,14 +879,14 @@ fn ratchet_reports_growth_and_stale_entries_separately() {
 }
 
 #[test]
-fn shards_are_one_file_per_app_toolkit_and_shell() {
+fn shards_are_one_file_per_app_and_toolkit() {
     assert_eq!(shard_of("apps/mail/src/app.rs"), "apps-mail");
     assert_eq!(shard_of("apps/git-client/src/a/b.rs"), "apps-git-client");
     assert_eq!(shard_of("crates/sdk/ui-core/src/widget/x.rs"), "ui-core");
-    assert_eq!(shard_of("crates/session/shell/src/main.rs"), "shell");
+    assert_eq!(shard_of("crates/session/desktop/src/main.rs"), "desktop");
     assert_eq!(scope_unit("apps/mail"), "apps-mail");
     assert_eq!(scope_unit("apps/mail/"), "apps-mail");
-    assert_eq!(scope_unit("crates/session/shell"), "shell");
+    assert_eq!(scope_unit("crates/session/desktop"), "desktop");
     assert_eq!(scope_unit("crates/sdk/ui-core"), "ui-core");
     assert_eq!(scope_unit("apps-mail"), "apps-mail");
 }
@@ -1022,7 +1021,7 @@ fn a_root_that_yields_no_file_fails_the_ratchet() {
     let tree = tempfile::tempdir().expect("temporary tree");
     let ratchet = Ratchet {
         name: "demo",
-        roots: &["apps/*/src", "crates/session/shell/src"],
+        roots: &["apps/*/src", "crates/sdk/ui-core/src"],
         patterns: vec![Pattern::new("x", "x", "")],
         exempt: no_exemptions,
         advice: "",
@@ -1031,7 +1030,7 @@ fn a_root_that_yields_no_file_fails_the_ratchet() {
         .run(tree.path(), &tree.path().join("b"), &Mode::default())
         .expect_err("an empty scan is not a pass");
     assert!(
-        failure.contains("did not reach apps/*/src, crates/session/shell/src"),
+        failure.contains("did not reach apps/*/src, crates/sdk/ui-core/src"),
         "{failure}"
     );
 }

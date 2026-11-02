@@ -410,7 +410,7 @@ def proof(binaries, output, size):
             "isolated_session": True, "enabled": True,
         }, indent=2))
         inputs = {
-            "shell": binaries / "shell", "launcher": binaries / "tilo-launcher",
+            "shell": binaries / "tilo-session", "launcher": binaries / "tilo-launcher",
             "record_source": REPO / "crates/sdk/ui-core/src/record.rs",
             "framework_source": REPO / "crates/sdk/tilo-app/src/framework/app.rs",
             "admission_source": REPO / "crates/sdk/ui-core/src/collaboration/native_initial.rs",
@@ -457,10 +457,10 @@ def proof(binaries, output, size):
         invitation = json.loads(invitation_path.read_text())
         if invitation.get("empty_app_records") is not True:
             raise RuntimeError("fixture must not seed app records")
-        log = open(output / "shell.log", "w")
+        log = open(output / "session.log", "w")
         logs.append(log)
         shell_env = {**env, "RUST_LOG": "warn,tilo_action_broker::collab_app_broker=debug"}
-        shell = subprocess.Popen([str(binaries / "shell"), "--backend", "headless",
+        shell = subprocess.Popen([str(binaries / "tilo-session"), "--backend", "headless",
                                   "--enable-peer-sync"], env=shell_env,
                                  stdout=log, stderr=log, start_new_session=True,
                                  preexec_fn=die_with_parent())

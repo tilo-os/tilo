@@ -61,10 +61,9 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
 - Run the tests of the packages you touched (`cargo test --locked -p NAME`) and
   `bash tools/policy/run.sh`.
 - Extensive checks (images, macOS, VMs) only when you change what they test.
-- Shell: `cargo test --locked -p shell --features hosted-test-control --test it MODULE::` and
-  `cargo check --locked -p shell --features hosted-test-control --tests`: the `it`
-  target requires `hosted-test-control`, and without it cargo leaves the target out
-  rather than checking or running it.
+- Session: `cargo test --locked -p tilo-session` runs the session's tests (the desktop,
+  its windows and its strips); `cargo check --locked -p tilo-session --tests` type-checks
+  them while you iterate. A test names its module, as `cargo test -p tilo-session MODULE::`.
 - Browser crates: also check them for `--target wasm32-unknown-unknown`.
 - Never ignore a failure, weaken an assertion, or lean on a tautological helper.
 - Test through production interfaces, including cancellation and denial.

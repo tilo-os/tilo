@@ -14,7 +14,7 @@
 # and portals cannot collide with the host desktop or another Tilo session.
 #
 # Usage:
-#   dist/dev/nested-session.sh [options] [-- extra shell arguments]
+#   dist/dev/nested-session.sh [options] [-- extra session arguments]
 #
 # Options:
 #   --apps "NAME ..."  apps to install (directory names under apps/; "files"
@@ -26,15 +26,15 @@
 #   --no-build         use the last build in target/nested-session (or in
 #                      $TILO_NESTED_SESSION_BUILD, where a check hands its
 #                      build over in a read-only tree)
-#   --prepare-only     build and install, then exit without starting the shell
+#   --prepare-only     build and install, then exit without starting the session
 #   --reset-identity   discard the throwaway identity and mint a new one
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
 #   --headless         run without a window on the offscreen backend, for
 #                      scripted runs driven only through tilo-control
 #   --software         render with Mesa's software Vulkan driver (lavapipe)
-#                      only, and never open this machine's GPU: the shell
+#                      only, and never open this machine's GPU: the session
 #                      and every app it launches load lavapipe alone, and
-#                      the shell advertises no render node, so it neither
+#                      the session advertises no render node, so it neither
 #                      probes the GPU's drivers nor exchanges a buffer with
 #                      it. For agents and tests beside a live desktop.
 #   --community SITE   the community site this session is in (a site's
@@ -45,14 +45,14 @@
 #   --model-provider SPEC  give the session's person a model provider, as
 #                      Settings' provider pane does (provider settings, and
 #                      the key in the model gateway's own custody), before
-#                      the shell starts. SPEC is PRESET:MODEL (a Settings
+#                      the session starts. SPEC is PRESET:MODEL (a Settings
 #                      preset slug: anthropic, openai, gemini, openrouter,
 #                      ollama, ...) with the key from $TILO_DEV_MODEL_KEY or
 #                      the provider's usual variable (ANTHROPIC_API_KEY,
 #                      OPENAI_API_KEY, ...), or `host`: the default provider
 #                      and key of this machine's own Tilo configuration. The
 #                      key travels on a pipe only, never an argument.
-#   --ready FILE       once the shell answers on its control socket, write the
+#   --ready FILE       once the session answers on its control socket, write the
 #                      socket, the runtime directory and the state directory to
 #                      FILE as JSON (also kept as session.json in the runtime
 #                      directory)
@@ -82,7 +82,7 @@ community=
 model_provider=
 install_tapps=()
 ready_out=
-shell_args=()
+session_args=()
 
 die() { printf 'nested-session: %s\n' "$*" >&2; exit 1; }
 say() { printf '==> %s\n' "$*" >&2; }
@@ -102,7 +102,7 @@ while (($#)); do
         --community) community=${2:?--community needs a site}; shift 2 ;;
         --model-provider) model_provider=${2:?--model-provider needs PRESET:MODEL or host}; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
-        --) shift; shell_args=("$@"); break ;;
+        --) shift; session_args=("$@"); break ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
 done
@@ -175,7 +175,7 @@ if ((build)); then
     "$repo_root/dist/dev/nested-session-build.sh" "$build_out" \
         || die "the nested-session build failed (see above)"
 fi
-for name in shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
+for name in tilo-session tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
             tilo-model-gateway tilo-ush tilo-control; do
     [[ -f $bin/$name ]] || die "missing $bin/$name (run without --no-build)"
     chmod +x "$bin/$name"
@@ -186,15 +186,15 @@ case $(uname -m) in
     aarch64) machine='AArch64' ;;
     *) machine= ;;
 esac
-if [[ -n $machine ]] && ! readelf -hW "$bin/shell" | grep -q "Machine:.*$machine"; then
-    die "$bin/shell is not built for $(uname -m): build on a builder of this architecture"
+if [[ -n $machine ]] && ! readelf -hW "$bin/tilo-session" | grep -q "Machine:.*$machine"; then
+    die "$bin/tilo-session is not built for $(uname -m): build on a builder of this architecture"
 fi
 [[ -f $thin/libruntime_dylib.so && -f $thin/runtime-engines ]] \
     || die "no thin-app build in $thin (run without --no-build)"
 # A build without the env-runtime trees ships none (nested-session-build.sh).
 [[ -f $build_out/env-runtime/publisher.hex ]] \
     || say "no env-runtime in $build_out/env-runtime: Terminal opens no shell in this session"
-# Each shell gets a private session bus (dist/dev/session-bus.sh). Tilo OS
+# Each session gets a private session bus (dist/dev/session-bus.sh). Tilo OS
 # hosts have no dbus-daemon of their own; the build carries the build
 # environment's (nested-session-bus, or a dbus-daemon from older builds).
 session_bus=$repo_root/dist/dev/session-bus.sh
@@ -205,7 +205,7 @@ if ! dbus_daemon=$(command -v dbus-daemon); then
     chmod +x "$dbus_daemon"
 fi
 
-# The product fonts: the shell sets text in them from a `fonts/` directory
+# The product fonts: the session sets text in them from a `fonts/` directory
 # beside its executable, and the runtime bundle carries the same catalog. They
 # are pinned artifacts the catalog tool materializes, not build outputs.
 fonts=$state/fonts
@@ -216,7 +216,7 @@ ln -sfn "$fonts" "$bin/fonts"
 
 # The developer's provider, read now, in this machine's own environment, before
 # the session's is put in place: the record (profile and key) stays in this
-# shell's memory until it is piped into the session's configuration below.
+# session's memory until it is piped into the session's configuration below.
 provider_record=
 provider_key=
 if [[ -n $model_provider ]]; then
@@ -352,10 +352,10 @@ if ((software)); then
         done
     done
     [[ -n $lavapipe ]] || die "--software needs Mesa's lavapipe (no lvp_icd.json under */vulkan/icd.d)"
-    # The loader of the shell, and of every app it launches (they follow a
+    # The loader of the session, and of every app it launches (they follow a
     # compositor pinned to lavapipe), loads this driver alone; wgpu takes its
     # adapter. An empty TILO_DMABUF_DEVICE advertises no render node, so the
-    # shell never opens /dev/dri to probe one.
+    # session never opens /dev/dri to probe one.
     export VK_DRIVER_FILES=$lavapipe VK_ICD_FILENAMES=$lavapipe WGPU_ADAPTER_NAME=llvmpipe
     export TILO_DMABUF_DEVICE=
 fi
@@ -379,7 +379,7 @@ export TILO_LAUNCHER_BIN=$bin/tilo-launcher
 # (crates/packaging/launcher/src/live_module.rs). A shipped launcher ignores it.
 export TILO_LAUNCHER_LIVE_MODULES=1
 # A development session logs warnings and errors unless RUST_LOG says
-# otherwise: a shipped shell logs errors only, and a watch that could not
+# otherwise: a shipped session logs errors only, and a watch that could not
 # start or a catalogue that did not settle would leave no trace here.
 export RUST_LOG=${RUST_LOG:-warn}
 # The interfaces this build of the system provides, not the host's: on a Tilo
@@ -392,7 +392,7 @@ export TILO_SYSTEM_INTERFACES=$repo_root/os/usr/share/tilo/system-interfaces.tom
 export TILO_SECRETS_DIR=$state/secrets
 unset TILO_APPS_SYSTEM_PAYLOAD_DIR TILO_TEST_CONTROL TILO_STATE_PATH
 if [[ -n $community ]]; then
-    # The shell reads its community site from this file instead of
+    # The session reads its community site from this file instead of
     # /etc/tilo/community.toml and /usr/share/tilo/community.toml.
     printf 'site = "%s"\n' "$community" > "$state/community.toml"
     export TILO_COMMUNITY_CONFIG=$state/community.toml
@@ -520,7 +520,7 @@ export TILO_AGENT_DOOR=${TILO_AGENT_DOOR:-$runtime/tilo-session/agent.sock}
 control=$runtime/control.sock
 children=()
 # Stop the process groups the given children lead: each child leads its own
-# group, so apps a shell started go too, and so does the shell itself when
+# group, so apps the session started go too, and so does the session itself when
 # the child that started it (its session bus) has already gone.
 stop_groups() {
     local pid
@@ -538,7 +538,7 @@ stop_groups() {
 }
 cleanup() {
     # A second signal (the pair stops its whole group, then stops this
-    # script again) must not cut the cleanup short and leave the shell up.
+    # script again) must not cut the cleanup short and leave the session up.
     trap '' INT TERM HUP
     stop_groups "${children[@]}"
     rm -f "$pidfile"
@@ -569,7 +569,7 @@ if ((fresh_desktop)); then
 fi
 
 # A throwaway identity's certificates last 24 hours; mint a fresh one well
-# before that, rather than have the shell refuse an expired chain.
+# before that, rather than have the session refuse an expired chain.
 identity_dir=$XDG_CONFIG_HOME/tilo/identity
 marker=$identity_dir/throwaway-test-identity
 if ((reset_identity)) || { [[ -f $marker ]] && [[ -n $(find "$marker" -mmin +1200) ]]; }; then
@@ -587,10 +587,10 @@ if [[ ! -f $marker ]]; then
     # development identity a dev image would, then exits.
     say "minting a throwaway identity"
     env -u WAYLAND_DISPLAY -u DISPLAY TILO_TEST_CONTROL="$control" setsid "$session_bus" "$dbus_daemon" \
-        "$bin/shell" --backend headless > "$logs/identity.log" 2>&1 &
+        "$bin/tilo-session" --backend headless > "$logs/identity.log" 2>&1 &
     pid=$!
     children+=("$pid")
-    wait_for_socket "$control" "$pid" || die "headless shell did not start (see $logs/identity.log)"
+    wait_for_socket "$control" "$pid" || die "the headless session did not start (see $logs/identity.log)"
     TILO_TEST_CONTROL=$control "$bin/tilo-control" raw '{"op":"provision_test_identity"}' \
         | grep -q '"throwaway": *true' || die "identity provisioning failed (see $logs/identity.log)"
     # Gone before the session starts: it holds the state file's writer lease
@@ -601,15 +601,13 @@ if [[ ! -f $marker ]]; then
     mkdir -m 700 "$runtime"
 fi
 
-# --- Native workspace ---------------------------------------------------------
-# Agent tasks act with a workspace's native authority, and an app opens in a
-# room only once the room lets it author there. The Home workspace becomes
-# native as on any device: the shell places it on this device's own room
-# host before it lets apps start, and the device's native owner is enrolled
-# in it there. The session notes when it is (the marker below), so a check
-# waits for it rather than for a guess.
-native_marker=$state/native-workspace
-rm -f "$native_marker"
+# --- The session's own desktop ------------------------------------------------
+# The session places the Home workspace on this device's own room host before
+# it lets apps start, and the device's native owner is enrolled in it there.
+# The marker below says the session answers with a frame, so a check waits for
+# that rather than for a guess.
+ready_marker=$state/session-ready
+rm -f "$ready_marker"
 
 mkdir -p "$runtime/tilo/services"
 chmod 700 "$runtime/tilo" "$runtime/tilo/services"
@@ -661,66 +659,67 @@ elif [[ -z ${TILO_WINIT_SIZE:-} ]]; then
 fi
 
 # The host desktop reads a Wayland client's namespaces to admit it, which
-# the kernel hides once the nested shell makes itself non-dumpable (it does
+# the kernel hides once the nested session makes itself non-dumpable (it does
 # as it loads its device key, before its window connects): a dumpable helper
 # connects for it and hands the connection over as WAYLAND_SOCKET.
 host_client=()
 if ((headless)); then
     backend=(--backend headless)
     display_env=(-u WAYLAND_DISPLAY -u DISPLAY)
-    say "starting the shell headless at ${TILO_HEADLESS_SIZE} (log: $logs/shell.log)"
+    say "starting the session headless at ${TILO_HEADLESS_SIZE} (log: $logs/session.log)"
 else
-    backend=(--backend winit)
+    backend=(--backend nested)
     display_env=(-u DISPLAY -u WAYLAND_DISPLAY)
     host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
-    say "starting the nested shell at ${TILO_WINIT_SIZE} (log: $logs/shell.log)"
+    say "starting the nested session at ${TILO_WINIT_SIZE} (log: $logs/session.log)"
 fi
 cat >&2 <<EOF
-    drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control actions list
+    drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control snapshot /tmp/shot.png
 EOF
 env "${display_env[@]}" TILO_TEST_CONTROL="$control" setsid "$session_bus" "$dbus_daemon" \
-    "${host_client[@]}" "$bin/shell" "${backend[@]}" "${shell_args[@]}" > "$logs/shell.log" 2>&1 &
-shell_pid=$!
-children+=("$shell_pid")
+    "${host_client[@]}" "$bin/tilo-session" "${backend[@]}" "${session_args[@]}" > "$logs/session.log" 2>&1 &
+session_pid=$!
+children+=("$session_pid")
 
-# Note once this device's native owner holds the Home workspace.
-confirm_native() {
-    local dump tries=600
+# Note once the session answers on its control socket with a frame of its own
+# desktop, which is the first point its loop and the desktop it drew are up.
+confirm_ready() {
+    local shot=$state/session-ready.png tries=600
     while ((tries--)); do
-        kill -0 "$shell_pid" 2>/dev/null || return 0
-        dump=$("$bin/tilo-control" state-dump 2>/dev/null) || dump='{}'
-        if jq -e '.workspace_tree as $t
-                | (($t.workspaces // [])[] | select(.id == $t.active) | .id) as $workspace
-                | any((.held_workspaces // [])[]; .workspace == $workspace)' <<<"$dump" >/dev/null; then
-            touch "$native_marker"
-            echo "the Home workspace is native"
+        kill -0 "$session_pid" 2>/dev/null || return 0
+        if TILO_TEST_CONTROL=$control "$bin/tilo-control" snapshot "$shot" >/dev/null 2>&1; then
+            rm -f "$shot"
+            touch "$ready_marker"
+            echo "the session answers"
             return 0
         fi
         sleep 0.2
     done
-    echo "the Home workspace did not become native; see shell.log"
+    echo "the session did not answer; see session.log"
     return 1
 }
-TILO_TEST_CONTROL=$control confirm_native > "$logs/native.log" 2>&1 &
+TILO_TEST_CONTROL=$control confirm_ready > "$logs/ready.log" 2>&1 &
 # Where this session is, for tools that attach to it by its runtime directory
 # or control socket (`tilolang dev --session`): the same JSON as --ready.
 jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" \
     '{control: $control, runtime: $runtime, state: $state}' > "$runtime/session.json"
-# Tell whoever drives the session that it answers: the shell serves its
+# Tell whoever drives the session that it answers: the session serves its
 # control socket once it is up.
 if [[ -n $ready_out ]]; then
     rm -f "$ready_out"
     (
-        wait_for_socket "$control" "$shell_pid" || exit 1
+        wait_for_socket "$control" "$session_pid" || exit 1
         tries=600
-        until TILO_TEST_CONTROL=$control "$bin/tilo-control" state-dump >/dev/null 2>&1; do
-            ((tries--)) && kill -0 "$shell_pid" 2>/dev/null || exit 1
+        shot=$state/session-ready.png
+        until TILO_TEST_CONTROL=$control "$bin/tilo-control" snapshot "$shot" >/dev/null 2>&1; do
+            ((tries--)) && kill -0 "$session_pid" 2>/dev/null || exit 1
             sleep 0.2
         done
+        rm -f "$shot"
         cp "$runtime/session.json" "$ready_out.partial"
         mv "$ready_out.partial" "$ready_out"
     ) &
 fi
 status=0
-wait "$shell_pid" || status=$?
+wait "$session_pid" || status=$?
 exit "$status"

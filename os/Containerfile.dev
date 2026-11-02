@@ -290,7 +290,7 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
        tilo-device-admin.service \
     && test -x /usr/libexec/tilo/tilo-control && test -x /usr/libexec/tilo/tilo-vmd \
     && /usr/libexec/tilo/tilo-vmd --version && /usr/libexec/tilo/tilo-device-admin --version \
-    && grep -aq 'dev-overrides build: developer environment overrides' /usr/bin/shell \
+    && grep -aq 'tilo-app-session-build-marker-v1' /usr/bin/tilo-session \
     && systemd-sysext --version >/dev/null \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \
     && /usr/sbin/sshd -t -h /run/tilo-dev-hostkey \

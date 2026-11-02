@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build everything dist/dev/nested-session.sh runs, into one directory: the
-# host programs (shell, launcher, installer, packager, runtime-bundle tool,
-# model gateway, the ush supervisor, tilo-control, the native-room governor
+# host programs (the session, launcher, installer, packager, runtime-bundle tool,
+# model gateway, the ush supervisor, tilo-control
 # fixture), the `tilolang` CLI (`tilolang dev --session` installs into the
 # session), the thin apps, the tilolang runtime binary (apps/tilolang,
 # which nested-session.sh bakes into the tilolang runtime bundle), the shared
@@ -61,7 +61,7 @@ export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
 
 # The thin apps' graph shares no compiled unit with the host programs' (its
 # profile, features and wrapper differ), and each build spends minutes on a few
-# large crates (tilo-ui, the shell) with most cores idle: one after another, the
+# large crates (tilo-ui, the session) with most cores idle: one after another, the
 # job used a third of its cores. So the thin build runs beside the host and
 # tilolang-host builds, under one jobserver holding the job's cores: together they never
 # run more compilers (or take more memory) than one build of that width would.
@@ -81,9 +81,9 @@ rm -rf "$timings"
 
 # --- Host programs -----------------------------------------------------------
 # Release optimisation without the shipped profile's fat LTO and single
-# codegen unit, whose link alone takes tens of minutes on every shell change.
+# codegen unit, whose link alone takes tens of minutes on every session change.
 # No line tables: release strips debug information from the binaries anyway.
-# `dev-overrides` lets the shell mint a throwaway identity and serve the
+# `dev-overrides` lets the session mint a throwaway identity and serve the
 # control socket, and lets the launcher and installer take the runtime and
 # trust inputs from the session's state directory (the installer installs the
 # session's own builds, signed with its key, under the local-build size
@@ -100,18 +100,18 @@ host_profile=nested
 # tilo-runtime-mcp is the agent's end of the session's agent door
 # (`tilo-runtime-mcp --connect`), so a check that drives the session as an
 # admitted agent runs against the staged build without building its own.
-host_bins=(shell tilo-runtime-mcp tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
+host_bins=(tilo-session tilo-runtime-mcp tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
            tilo-model-gateway tilo-ush tilo-control tilolang-host tilolang nested-session-bus)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
-    # The shell, the launcher and the installer read the session's own
+    # The session, the launcher and the installer read the session's own
     # inputs (system interfaces, runtimes, trust) through the crates they
     # share, whose `dev-overrides` features unify only when the three build
     # together under the plain feature name: a `package/feature` form leaves
-    # the shell reading the host's declarations through a remote builder.
+    # the session reading the host's declarations through a remote builder.
     cargo build --locked --timings "${args[@]}" \
-        -p shell --bin shell --example packaged_native_governor \
+        -p tilo-session --bin tilo-session \
         -p tilo-runtime --bin tilo-runtime-mcp \
         -p launcher --bin tilo-launcher \
         -p install --bin tilo-install \
@@ -123,13 +123,13 @@ build_host() {
         -p tilo-control --bin tilo-control \
         -p nested-session-bus --bin nested-session-bus || return 1
     # The gateway, on a build of its own: its binary needs `server`, which no
-    # longer comes from building beside the shell, and the session's gateway
+    # longer comes from building beside the session, and the session's gateway
     # runs with the features the workspace builds it with.
     cargo build --locked --timings "${args[@]}" \
         -p tilo-model-gateway --bin tilo-model-gateway \
         --features server,host-backend,local-models,runtime-client
 }
-# The tilolang host, in a build of its own: built with the shell, the features the shell
+# The tilolang host, in a build of its own: built with the session, the features the session
 # turns on in the crates both use (media, the toolkit's services) would unify into it, and its
 # binary would link libraries its sandbox, the tilolang runtime on the app runtime alone, does
 # not hold.
@@ -254,9 +254,8 @@ unset MAKEFLAGS
 
 # --- Stage ----------------------------------------------------------------------
 rm -rf "$out"
-mkdir -p "$out/bin/examples" "$out/thin-app"
+mkdir -p "$out/bin" "$out/thin-app"
 for name in "${host_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
-cp -p "$target/$host_profile/examples/packaged_native_governor" "$out/bin/examples/"
 # Cargo writes the timings where it ran; a build forwarded to a builder leaves none here.
 [[ ! -d $timings ]] || cp -rp "$timings" "$out/timings"
 cp -p "$target/$thin_profile/libruntime_dylib.so" "$target/$thin_profile/runtime-engines" "$out/thin-app/"
@@ -275,7 +274,7 @@ needed_std=$(readelf -dW "$out/thin-app/libruntime_dylib.so" \
 cp -p "$(rustc --print target-libdir)/$needed_std" "$out/thin-app/"
 # The session's private D-Bus: Tilo OS hosts run their user bus on
 # dbus-broker and carry no dbus-daemon, which the nested session starts one
-# of per shell (dist/dev/session-bus.sh). nested-session-bus carries the
+# of per session (dist/dev/session-bus.sh). nested-session-bus carries the
 # build environment's (the build image's, the same Fedora release's, linking
 # only libraries every Tilo host has) inside a cargo-built executable, so it
 # comes back with the other programs from a build on another machine. A build

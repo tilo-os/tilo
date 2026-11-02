@@ -34,13 +34,13 @@ cat >"$work/bin/cargo" <<'EOF'
 printf 'cargo %s\n' "$*" >>"$FAST_LOOP_LOG"
 test "$1" = build
 case " $* " in
-  *' -p shell '* )
+  *' -p tilo-session '* )
     [[ " $* " != *' --profile release '* ]] || exit 99
     [[ " $* " != *' --release '* ]] || exit 99
     mkdir -p "$CARGO_TARGET_DIR/debug"
-    printf 'tilo-app-session-build-marker-v1\n' >"$CARGO_TARGET_DIR/debug/shell"
+    printf 'tilo-app-session-build-marker-v1\n' >"$CARGO_TARGET_DIR/debug/tilo-session"
     printf 'recorder\n' >"$CARGO_TARGET_DIR/debug/tilo-flight-recorder"
-    chmod 700 "$CARGO_TARGET_DIR/debug/shell" "$CARGO_TARGET_DIR/debug/tilo-flight-recorder"
+    chmod 700 "$CARGO_TARGET_DIR/debug/tilo-session" "$CARGO_TARGET_DIR/debug/tilo-flight-recorder"
     ;;
   *' -p launcher '* )
     mkdir -p "$CARGO_TARGET_DIR/debug"
@@ -73,13 +73,13 @@ chmod 755 "$work/bin"/*
 target_rel="target/.fedora44-loop-test-$$"
 env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
     TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
-    "$tool" build shell
+    "$tool" build tilo-session
 
-test -x "$repo_root/$target_rel/debug/shell"
+test -x "$repo_root/$target_rel/debug/tilo-session"
 test -f "$repo_root/$target_rel/CACHEDIR.TAG"
 grep -Fqx 'Signature: 8a477f597d28d172789f06886806bc55' "$repo_root/$target_rel/CACHEDIR.TAG"
 grep -Fq -- '--features dev-session' "$log"
-grep -Fq -- '--bin shell' "$log"
+grep -Fq -- '--bin tilo-session' "$log"
 grep -Fq -- '-p launcher --bin tilo-launcher' "$log"
 grep -Fq -- '--no-default-features' "$log"
 grep -Fq 'SCCACHE_SERVER_PORT=' "$log"
@@ -91,7 +91,7 @@ grep -Fq 'tilo-fedora44-' "$log"
 : >"$log"
 env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
     TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
-    TILO_FEDORA44_SCCACHE_PORT=45555 "$tool" build shell
+    TILO_FEDORA44_SCCACHE_PORT=45555 "$tool" build tilo-session
 grep -Fq "SCCACHE_SERVER_PORT='45555'" "$log"
 
 : >"$log"
@@ -114,7 +114,7 @@ chmod 600 "$work/test_vm_key"
 : >"$log"
 env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
     TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
-    TILO_VM_SSH_PORT=29999 TILO_VM_SSH_IDENTITY="$work/test_vm_key" "$tool" deploy shell
+    TILO_VM_SSH_PORT=29999 TILO_VM_SSH_IDENTITY="$work/test_vm_key" "$tool" deploy tilo-session
 grep -Fq -- "-i $work/test_vm_key" "$log"
 grep -Fq 'Tilo *developer* session entry point.' "$log"
 grep -Fq 'sudo install -m 0755 "$wrapper" /usr/libexec/tilo-session-dev' "$log"

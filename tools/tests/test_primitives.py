@@ -54,10 +54,10 @@ class PrimitivesTests(unittest.TestCase):
     def test_ui_core_is_out_of_scope_and_session_is_in(self):
         root = self.fixture({
             "crates/sdk/ui-core/src/widget/button.rs": HAND_ROLLED,
-            "crates/session/shell/src/panel.rs": HAND_ROLLED,
+            "crates/session/session/src/panel.rs": HAND_ROLLED,
         })
         found = primitives.scan(root)
-        self.assertIn(("crates/session/shell/src/panel.rs", "glyph-join"), found)
+        self.assertIn(("crates/session/session/src/panel.rs", "glyph-join"), found)
         self.assertFalse(any(file.startswith("crates/sdk") for file, _ in found))
 
     def test_the_agents_model_text_is_out_of_the_text_rules_only(self):

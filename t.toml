@@ -42,7 +42,7 @@ WGPU_ADAPTER_NAME = "llvmpipe"
 # `python3 tools/ci/package_sets.py per-arch` disagree.
 #
 # app-catalogue app-cli browser compat-service env-tools fs-native install launcher launcher-macos
-# local-model-service runtime-bundle shell store tilo-agent-participant tilo-app-cli
+# local-model-service runtime-bundle store tilo-agent-participant tilo-app-cli
 # tilo-environment tilo-liveness tilo-oci-images tilo-sandbox tilo-sandbox-core tilo-vmd
 # tilolang-cli tilolang-tilo ush windows-vm
 
@@ -60,14 +60,14 @@ args = ["--locked", "--profile", "ci", "--tests"]
 exclude = [
     "app-catalogue", "app-cli", "browser", "canvas", "compat-service", "env-tools", "fs-native",
     "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "music", "pdf-viewer", "runtime-bundle", "shell", "store", "tilo-agent-participant",
+    "music", "pdf-viewer", "runtime-bundle", "store", "tilo-agent-participant",
     "tilo-app-cli", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
     "tilo-sandbox-core", "tilo-ui", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
 ]
 # The tests that start sandboxes of their own need nested namespaces, which a job's sandbox does
 # not give them.
-isolation = { nested = ["shell", "launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle"] }
+isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle"] }
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
@@ -79,12 +79,12 @@ wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
 packages = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "install",
-    "launcher", "launcher-macos", "local-model-service", "runtime-bundle", "shell", "store",
+    "launcher", "launcher-macos", "local-model-service", "runtime-bundle", "store",
     "tilo-agent-participant", "tilo-app-cli", "tilo-environment", "tilo-liveness",
     "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli",
     "tilolang-tilo", "ush", "windows-vm",
 ]
-isolation = { nested = ["launcher", "runtime-bundle", "shell", "tilo-sandbox-core", "tilo-vmd", "ush"] }
+isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo-vmd", "ush"] }
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 matrix = { arch = ["x86_64", "aarch64"] }
 
@@ -123,7 +123,7 @@ args = ["--locked", "--examples"]
 packages = [
     "accounts", "agent", "app-cli", "browser", "calculator", "channel-crypto", "code-editor",
     "containers", "discord-worker", "file-explorer", "imager", "launcher", "local-model-service",
-    "notes", "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "shell", "store",
+    "notes", "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
     "tilo-agent-participant", "tilo-app", "tilo-bluez", "tilo-browser-compute",
     "tilo-browser-peer", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
@@ -146,7 +146,7 @@ trailing = ["-D", "warnings"]
 exclude = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service", "music",
-    "runtime-bundle", "shell", "store", "tilo-agent-participant", "tilo-app-cli",
+    "runtime-bundle", "store", "tilo-agent-participant", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -170,7 +170,7 @@ trailing = ["-D", "warnings"]
 packages = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "shell", "store", "tilo-agent-participant", "tilo-app-cli",
+    "runtime-bundle", "store", "tilo-agent-participant", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core",
     "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
 ]
@@ -184,7 +184,7 @@ args = ["--locked", "--all-targets"]
 exclude = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "shell", "store", "tilo-agent-participant", "tilo-app-cli",
+    "runtime-bundle", "store", "tilo-agent-participant", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core",
     "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm", "workspace-unify",
 ]
@@ -200,7 +200,7 @@ tool = "nextest"
 requires = ["arch=x86_64"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
 wrapper = ["bash", "-c", "export TILO_FONT_ASSET_CACHE=\"$CARGO_TARGET_DIR/font-artifacts\"; exec bash tools/test-env.sh \"$@\"", "goldens"]
-args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and test(e2e_shell_flows::))"]
+args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))"]
 env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 on = ["idle"]
 
@@ -483,7 +483,7 @@ on = ["schedule:20 5 * * *", "dispatch"]
 
 [[check]]
 name = "visual-goldens"
-run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p ebook -p shell -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and test(e2e_shell_flows::))'"
+run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p ebook -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))'"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
 env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
@@ -504,8 +504,8 @@ name = "relay-agents"
 run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail -p tilo-relay --features agents --lib -E 'test(reseal::) | test(rooms::sealed_records::) | test(compaction::)'\n"
 
 [[check]]
-name = "shell-binaries-{arch}"
-run = "cargo build --locked -p shell --bins\n"
+name = "session-binaries-{arch}"
+run = "cargo build --locked -p tilo-session --bins\n"
 requires = ["arch={arch}"]
 on = ["stable", "dispatch"]
 heavy = true
@@ -738,25 +738,6 @@ on = ["schedule:30 4 * * *", "dispatch"]
 secrets = ["TILO_LIVE_WEBDAV_URL", "TILO_LIVE_WEBDAV_USER", "TILO_LIVE_WEBDAV_PASSWORD", "TILO_LIVE_NEXTCLOUD_URL", "TILO_LIVE_NEXTCLOUD_USER", "TILO_LIVE_NEXTCLOUD_PASSWORD"]
 
 [[check]]
-name = "legacy-apps-build"
-run = "cargo build --locked -p shell --bin shell"
-requires = ["arch=x86_64"]
-outputs = ["/target/debug/shell"]
-on = ["schedule:30 3 * * *", "dispatch"]
-
-[[check]]
-name = "legacy-apps"
-run = "bash scripts/legacy-app-subjects.sh\npython3 scripts/legacy-app-caret-e2e.py --shell /target/debug/shell --artifacts /target/legacy-app-e2e\n"
-needs = ["legacy-apps-build"]
-env = { WGPU_BACKEND = "vulkan", VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", WGPU_ADAPTER_NAME = "llvmpipe" }
-requires = ["arch=x86_64"]
-isolation = "vm"
-outputs = ["/target/legacy-app-e2e/**"]
-cache = false
-timeout_secs = 2700
-on = ["schedule:30 3 * * *", "dispatch"]
-
-[[check]]
 name = "sandbox-host-ids-build"
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\nbinary_target() {\n  package=$1\n  target=$2\n  name=$3\n  # Read every message before selecting: closing cargo's pipe early makes it\n  # fail with a broken pipe while it is still writing build messages.\n  executable=$(cargo test --locked -p \"$package\" --test \"$target\" --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$target\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib() {\n  package=$1\n  lib=$2\n  name=$3\n  executable=$(cargo test --locked -p \"$package\" --lib --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$lib\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_target tilo-sandbox job tilo-sandbox-job\nbinary_lib runtime-fs runtime_fs runtime-fs-lib\nbinary_lib account-custody account_custody account-custody-lib\nbinary_lib runtime-bundle runtime_bundle runtime-bundle-lib\nbinary_target tilo-install-helpers native_python tilo-install-helpers-native-python\nbinary_target env-tools it env-tools-it\nbinary_target tilo-install-helpers accounts_native installer-accounts-native\n"
 requires = ["arch=x86_64"]
@@ -879,16 +860,6 @@ requires = ["arch=x86_64"]
 on = ["dispatch"]
 
 [[check]]
-name = "nightly-ignored-shell-{arch}"
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\nexport TILO_TEST_NTFS_FIXTURES=0\n# The MCP proof drives the compositor with tilo-control, built beside it.\ncargo build --locked -p tilo-control --bin tilo-control\nbash tools/with-test-environment.sh cargo nextest run -p shell --locked --profile ci --run-ignored only --test-threads 1 -E 'test(headless_examples_smoke::full_loop_writes_two_pngs) or test(headless_examples_smoke::mcp_live_proof_drives_a_compositor_over_mcp) or test(session_lock_e2e::)'\ncargo build --locked -p terminal --bin terminal\nTILO_TERMINAL_BINARY=$CARGO_TARGET_DIR/debug/terminal bash tools/with-test-environment.sh cargo nextest run -p shell --features agent-control --locked --profile ci --run-ignored only --test-threads 1 -E 'test(headless_examples_smoke::agent_seats_proof_keeps_two_agents_apart)'\n"
-env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.{arch}.json" }
-requires = ["arch={arch}"]
-on = ["stable", "dispatch"]
-heavy = true
-[check.matrix]
-arch = ["x86_64", "aarch64"]
-
-[[check]]
 name = "nightly-live-music"
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\nexport TILO_TEST_NTFS_FIXTURES=0\nbash tools/test-env.sh cargo nextest run -p music --locked --profile ci --run-ignored all -E 'test(live_search_and_stream_resolve_through_the_app)'\n"
 cache = false
@@ -923,7 +894,7 @@ on = ["dispatch"]
 
 [[check]]
 name = "nightly-arm64-goldens"
-run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p ebook -p shell -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and test(e2e_shell_flows::))'"
+run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p ebook -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))'"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=arm64"]
@@ -2228,24 +2199,6 @@ env = { TILO_TEST_NTFS_FIXTURES = "0", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUS
 requires = ["arch=x86_64"]
 outputs = ["/target/app-screenshots/**"]
 timeout_secs = 5400
-default = false
-
-[[check]]
-name = "motion-recordings"
-run = "rm -rf /target/motion-recordings\ncargo build --locked -p shell --features test-support,hosted-test-control,in-process-apps --bin shots\nfor theme in light dark; do\n  mkdir -p \"/target/motion-recordings/$theme\"\n  for scenario in motion_gallery motion_review_quick_settings motion_review_notifications motion_review_windows motion_review_overview motion_review_popovers motion_review_tabs motion_review_sheets motion_review_ribbon motion_review_launcher; do\n    TILO_SHOTS_THEME=\"$theme\" bash tools/test-env.sh \"$CARGO_TARGET_DIR/debug/shots\" --mode recording --scenario \"$scenario\" --fps 60 --step-duration 0.1 --out \"/target/motion-recordings/$theme/$scenario.mp4\"\n  done\ndone\n"
-env = { TILO_TEST_NTFS_FIXTURES = "0" }
-requires = ["arch=x86_64"]
-outputs = ["/target/motion-recordings/**"]
-timeout_secs = 5400
-default = false
-
-[[check]]
-name = "shell-scenes"
-run = "rm -rf /target/shell-scenes\ncargo build --locked -p shell --features test-support,hosted-test-control,in-process-apps --bin shots\nfor theme in light dark; do\n  mkdir -p \"/target/shell-scenes/$theme\"\n  TILO_SHOTS_THEME=\"$theme\" bash tools/test-env.sh \"$CARGO_TARGET_DIR/debug/shots\" \\\n    --mode offscreen --width 1280 --height 800 --out \"/target/shell-scenes/$theme\"\ndone\n"
-env = { TILO_TEST_NTFS_FIXTURES = "0", TILO_UI_DEBUG = "1" }
-requires = ["arch=x86_64"]
-outputs = ["/target/shell-scenes/**"]
-timeout_secs = 3600
 default = false
 
 [[check]]

@@ -276,20 +276,20 @@ class Session:
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait(10)
-        log = self.state / "logs/shell.log"
+        log = self.state / "logs/session.log"
         if log.is_file():
             shutil.copy(log, self.out / f"shell-{self.starts}.log")
         self.ready = {}
 
     def log_lines(self) -> list[str]:
         try:
-            return (self.state / "logs/shell.log").read_text(errors="replace").splitlines()
+            return (self.state / "logs/session.log").read_text(errors="replace").splitlines()
         except OSError:
             return []
 
     def log_tail(self, lines: int = 20) -> str:
         try:
-            text = (self.state / "logs/shell.log").read_text(errors="replace").splitlines()
+            text = (self.state / "logs/session.log").read_text(errors="replace").splitlines()
         except OSError:
             return "(no shell log)"
         return "\n".join(line[:300] for line in text[-lines:] if "WARN" in line or "ERROR" in line)

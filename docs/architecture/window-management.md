@@ -262,7 +262,7 @@ and its width-change tests.
 
 Pinned by `edge_resize.rs`'s unit tests (the rule), `group_row.rs`'s row
 tests (hover highlight, push, Shift, limits, cancel, auto-scroll) and the
-pointer tests in `crates/session/shell/tests/desktop_env_interactions.rs`.
+pointer tests in `crates/session/session/tests/`.
 
 **Why it kept regressing.** Seam ownership used to be nobody's decision. The
 seam handle was keyed to its left neighbour (its drag set "left width + dx"),
@@ -386,7 +386,7 @@ frame) keeps its cadence on an integrated GPU. Each transition is measured
 headless with `TILO_FRAME_TRACE`, and its first animated frame must equal the
 last static one: no jump at the start, none at the end. The keyboard rule is
 held by `the_first_frame_after_a_chord_shows_the_final_layout` in
-`crates/session/shell/tests/strip_navigation.rs`.
+`crates/session/desktop/tests/navigation.rs`.
 
 ## Delivery
 

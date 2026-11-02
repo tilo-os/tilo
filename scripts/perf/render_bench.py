@@ -8,10 +8,10 @@ way in every lane:
 - `ui-perf dashboard_perf_bench` (`crates/dev/ui-examples`): a ~250-widget
   toolkit window driven through hover, click and animation events, each
   redraw drawn into an offscreen target;
-- `redraw_bench` (`crates/session/shell/examples`): 1,000 clicks through the
+- `redraw_bench` (`crates/session/session`): 1,000 clicks through the
   shell's `FrameBuilder`, each painted, rendered by the DRM bridge, read back
   and swizzled into an XRGB buffer. No page flip or scanout.
-- `strip_pan_bench` (`crates/session/shell/examples`, optional): a continuous
+- `strip_pan_bench` (`crates/session/session`, optional): a continuous
   strip pan and strip-to-strip moves through `FrameBuilder` and the DRM direct
   path's GPU target, with the presenter compositing pans from retained strip
   layers: frame time and the pixels each frame rasterises.

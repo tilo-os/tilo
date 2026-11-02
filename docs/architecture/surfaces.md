@@ -7,7 +7,7 @@ everything else follows from that description. The host does not ask "which
 overlay is this?" to decide how input reaches it, what it makes inert or what
 assistive technology hears; it reads the surface.
 
-The vocabulary is `crates/session/shell/src/shell/overlay_host/layers.rs`
+The vocabulary is `crates/session/desktop-surface/src/`
 (`Role`, `Anchor`, `Modality`, `Owner`, `Material`, `Lifecycle`, `Surface`), and
 `ShellLayer::surface` is how a component answers with it.
 

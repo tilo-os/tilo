@@ -15,7 +15,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "crates/session/shell/**"
+      - "crates/session/**"
       - "apps/imager/**"
       - "crates/system/block-devices/**"
       - "crates/sdk/tilo-app/**"

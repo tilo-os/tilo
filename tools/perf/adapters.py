@@ -22,21 +22,21 @@ Each adapter reads what a benchmark already prints and emits records through
   sample of `footprint.runtime.<metric>.<arch>`: `bytes`, `relocation_bytes`,
   `relocated_bytes` (bytes) and `symbol_relocations` (count).
 - `workspace-switch LOG...`: the compositor's `WORKSPACE-SWITCH` session-log
-  lines (`crates/session/shell/src/compositor/switch_latency.rs`), one per
+  lines (`crates/session/compositor/src/pacing.rs`), one per
   switch, become `latency.workspace_switch.first_frame` (chord to the first
   frame shown), `.settled` (chord to the resting frame shown after the frame
   run) and `.dropped_frames` (refresh intervals in the run that showed no new
   frame). `scripts/perf/latency_bench.py` (headless, nightly) and
   `scripts/perf/device_latency_bench.py` (reference hardware) call it.
 - `idle-wakeups LOG...`: the idle-wakeup gate
-  (`crates/session/shell/examples/idle-wakeups.rs`) prints one
+  (`crates/session/compositor/src/pacing.rs`) prints one
   `IDLE-WAKEUPS total_per_s=<x> shell_per_s=<y> ...` line per run. Each log is
   one run; repeated runs become the samples of `wakeups.headless_two_apps`
   (the compositor's whole process tree), `.shell` (its own process) and
   `wakeups.frame_loop_ticks.headless_two_apps` (its frame loop's iterations).
 - `files-name-index LOG...`: the Files search name-index test
   (`a_watched_change_costs_one_record_not_a_rebuild` in
-  `crates/session/shell/src/shell/search/providers/files.rs`) prints one
+  `crates/session/session/src/search.rs`) prints one
   `FILES-NAME-INDEX names=<n> rebuild_ms=<x> change_ms=<a,b,...>
   unchanged_ms=<a,b,...> rename_ms=<y> burst64_ms=<z>` line per run: process
   CPU for one watched change to an index of `n` names, for an unchanged

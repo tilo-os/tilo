@@ -123,13 +123,13 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         config = tomllib.loads((ROOT / ".config/nextest.toml").read_text())
         self.assertIn("setup-scripts", config["experimental"])
         scripts = dict(config["scripts"]["setup"])
-        # The shell's sibling binaries are built before its tests in every
+        # The session's sibling binaries are built before its tests in every
         # profile that has no environment of its own (the default one).
-        siblings = scripts.pop("shell-siblings")
+        siblings = scripts.pop("session-siblings")
         self.assertEqual(siblings["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
         self.assertIn("click-test-client:click_test_client", siblings["command"][2:])
         default_rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["default"]["scripts"]}
-        self.assertEqual(default_rules, {"package(shell)": "shell-siblings"})
+        self.assertEqual(default_rules, {"package(tilo-session)": "session-siblings"})
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "headless-audio": ["audio"],
                                  "ntfs-fixtures": ["ntfs"]})

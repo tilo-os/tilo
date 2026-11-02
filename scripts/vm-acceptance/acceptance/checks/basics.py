@@ -222,7 +222,7 @@ def keyboard_layout(ctx, res):
 
 
 # The GNOME keyboard import is not checked here: the session imports the host's GNOME
-# input settings only in host-desktop mode (`--host-desktop-session`, which only the
+# input settings only in host-desktop mode (`--host-desktop`, which only the
 # packaged tilo-session-runner passes), so a Tilo OS session never runs it. The
 # host-desktop VM test (dist/session/vm-e2e, H05) seeds GNOME de+nodeadkeys and
 # compose:ralt and requires the session to import them.

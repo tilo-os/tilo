@@ -148,5 +148,7 @@ resumes by itself once both speak the same version:
   replaces it with the migrated bytes; a newer file is refused untouched. Each
   step is tested against a file the previous version wrote, and only that.
   `tools/policy/check_format_migrations.py` keeps the chain from losing a step,
-  so a machine that missed updates still loads. The shell's `state.json` is the
-  first such format.
+  so a machine that missed updates still loads. The desktop state the old shell
+  kept in `~/.config/tilo/state.json` was the first such format: it went with
+  the shell, and the session keeps the desktop in the workspace's documents
+  instead, so nothing opens that file now.

@@ -61,7 +61,7 @@ So no sandbox gets it. Instead:
 (untrusted)     (compositor)      (OS chrome)      (compositor)   (confined)
 ```
 
-The app calls `org.freedesktop.impl.portal.Print` (`crates/session/shell/src/portal/print.rs`)
+The app calls `org.freedesktop.impl.portal.Print` (`crates/session/portal/src/print.rs`)
 and gets exactly two abilities: hand over **bytes** via a file descriptor, and
 ask **the user** to send them somewhere. It cannot name a destination the
 user's CUPS does not already have, cannot speak IPP, and cannot see the
@@ -220,7 +220,7 @@ files, or persistence in `/usr`. On a bootc image an attacker who cannot write
 | Property | Enforced by |
 |---|---|
 | Apps never get the cups socket | No print binding in `launcher::capabilities`; asserted by `os/tests/printing_isolation.sh` |
-| Apps print via a consented portal | `crates/session/shell/src/portal/print.rs`, through `flow::resolve` |
+| Apps print via a consented portal | `crates/session/portal/src/print.rs`, through `flow::resolve` |
 | Scheduler confinement | `os/usr/lib/systemd/system/cups.service.d/tilo-confinement.conf` |
 | No network listener | `os/usr/lib/systemd/system/cups.socket.d/tilo-local-only.conf`, `os/etc/cups/cupsd.conf` |
 | Discovery off | `cups-browsed` and `avahi` not installed; `Browsing Off` |

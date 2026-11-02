@@ -34,7 +34,7 @@ class NestedSandboxes(unittest.TestCase):
         self.assertEqual(sorted(set(listed) - workspace_packages()), [])
 
     def test_names_filter_the_list(self) -> None:
-        self.assertEqual(read("-p", "shell", "-p", "collab-types", "ush"), ["shell", "ush"])
+        self.assertEqual(read("-p", "thumbnails", "-p", "collab-types", "ush"), ["thumbnails", "ush"])
         self.assertEqual(read("-p", "collab-types"), [])
 
 

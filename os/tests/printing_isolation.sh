@@ -20,7 +20,7 @@ SOCKET_DROPIN="$OS_ROOT/usr/lib/systemd/system/cups.socket.d/tilo-local-only.con
 CUPSD_CONF="$OS_ROOT/etc/cups/cupsd.conf"
 CONTAINERFILE="$OS_ROOT/Containerfile"
 SCANNER_RS="$OS_ROOT/../crates/platform/tilo-capture/src/scanner.rs"
-PORTAL_PRINT_RS="$OS_ROOT/../crates/session/shell/src/portal/print.rs"
+PORTAL_PRINT_RS="$OS_ROOT/../crates/session/portal/src/print.rs"
 
 fails=0
 checks=0

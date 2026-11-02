@@ -611,7 +611,7 @@ TRACE_FLUSH_S = 1.05
 SESSION_LOG = "$HOME/.local/state/tilo/session-logs/latest.log"
 
 # The compositor's own timing of each workspace switch
-# (crates/session/shell/src/compositor/switch_latency.rs), one session-log line each.
+# (crates/session/compositor/src/switch_latency.rs), one session-log line each.
 SWITCH_FIELDS = ("first_queued_us", "first_shown_us", "settled_queued_us", "settled_shown_us",
                  "frames", "dropped", "interval_us")
 SWITCH_LINE = re.compile(r"(?:^|\s)WORKSPACE-SWITCH ((?:[a-z_]+=[0-9]+ ?)+)$")

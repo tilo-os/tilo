@@ -61,7 +61,7 @@ fi
 # same explicit device policy; line-order checks against an older startup
 # layout made this lifecycle test fail without proving a runtime defect.
 identity_line=$(grep -n 'tilo_session::startup::identity()' "$session_main" | cut -d: -f1)
-desk_start_line=$(grep -n '^    start(ours, command, line, host_desktop)$' "$session_main" | cut -d: -f1)
+desk_start_line=$(grep -n '^    start(ours, command, line,' "$session_main" | cut -d: -f1)
 if [ -z "$identity_line" ] || [ -z "$desk_start_line" ] \
    || [ "$identity_line" -ge "$desk_start_line" ]; then
   echo 'identity helper no longer returns before the session services start' >&2

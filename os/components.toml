@@ -105,24 +105,6 @@ external_units = ["greetd.service"]
 # ---- Session: compositor and desktop ---------------------------------------
 
 [[component]]
-name = "shell"
-kind = "userspace"
-scope = "session"
-packages = ["shell"]
-bins = ["shell"]
-# The only desktop a developer can drive today: the shell serves the dev
-# test-control socket, which the session does not yet. Dropping this drops
-# `tilo-vm shot`, `input`, `control` and `--identity` from every dev image.
-dev_features = ["shell/dev-overrides"]
-layer = "desktop-binaries"
-files = [
-  { from = "shell", to = "/usr/bin/shell", mode = "0755" },
-]
-
-# The native session, which replaces the shell: offered by the greeter beside
-# it (os/usr/share/wayland-sessions/tilo-session.desktop) and started by the
-# image's session wrapper for a login that names no session flag.
-[[component]]
 name = "tilo-session"
 kind = "userspace"
 scope = "session"
@@ -155,22 +137,6 @@ files = [
   # store also ships as an app.
   { from = "tilo-lock-screen", to = "/usr/bin/tilo-lock-screen", mode = "0755" },
   { from = "osk", to = "/usr/bin/tilo-osk", mode = "0755" },
-]
-
-# The old compositor. The production image never ships it — a login starts the
-# session above — but a developer VM still swaps and drives it, so the dev
-# image builds it until the shell's crate is deleted, together with this
-# component.
-[[component]]
-name = "shell"
-kind = "userspace"
-scope = "session"
-packages = ["shell"]
-bins = ["shell"]
-dev_features = ["shell/dev-overrides"]
-layer = "dev-desktop-binaries"
-files = [
-  { from = "shell", to = "/usr/bin/shell", mode = "0755" },
 ]
 
 # The network-answers helper: search's one door to the network (exchange

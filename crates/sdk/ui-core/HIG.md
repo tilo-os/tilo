@@ -1769,7 +1769,7 @@ Updating a shard:
 - With cargo (CI, or a checkout with a local toolchain):
   `UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=apps/mail cargo test -p tilo-ui --test it do_not_grow`
   rewrites only that unit's shards (`RATCHET_SCOPE` also takes
-  `crates/session/shell`, `crates/sdk/ui-core` or a unit name). Without
+  `crates/session/session`, `crates/sdk/ui-core` or a unit name). Without
   `RATCHET_SCOPE` every shard is rewritten. An update refuses to raise any
   count unless `RATCHET_ALLOW_GROWTH=1` is also set; set it only after
   reviewing why each count grew.

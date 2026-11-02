@@ -413,8 +413,8 @@ class InstallerTests(unittest.TestCase):
                 installed = {p.relative_to(image).as_posix()
                              for p in image.rglob("*") if p.is_file() or p.is_symlink()}
                 self.assertEqual(installed, expected)
-                shell = image / "desktop-binaries/usr/bin/shell"
-                self.assertEqual(shell.stat().st_mode & 0o777, 0o755)
+                session = image / "desktop-binaries/usr/bin/tilo-session"
+                self.assertEqual(session.stat().st_mode & 0o777, 0o755)
                 self.assertEqual(os.readlink(image / "desktop-binaries/usr/bin/store"), "app")
                 self.assertEqual(os.readlink(image / "desktop-binaries/usr/bin/ush"), "../libexec/tilo-ush")
                 self.assertFalse((image / "desktop-binaries/usr/bin/browser").exists())
@@ -423,14 +423,13 @@ class InstallerTests(unittest.TestCase):
             production = {c.name for c in installer.select_components(manifest, [], True)}
             dev = {c.name for c in installer.select_components(manifest, [], False, True)}
             self.assertIn("vmd", dev)
-            self.assertIn("shell", dev)
             self.assertIn("native-runtime-host", dev)
             # The control CLI is a plain client every image ships.
             self.assertIn("control", production)
             self.assertNotIn("control", dev)
             self.assertNotIn("vmd", production)
             self.assertNotIn("test-registry", production)
-            self.assertIn("shell", production)
+            self.assertIn("tilo-session", production)
             self.assertIn("native-runtime-host", production)
         with self.subTest(phase='developer CLI installs globally through its VM component'):
             manifest = installer.load_manifest(REPO / "os/components.toml")
@@ -455,15 +454,15 @@ class InstallerTests(unittest.TestCase):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             dev = installer.select_components(manifest, [], False, True)
             packages, bins, features = installer.cargo_plan(dev, True)
-            self.assertTrue({"shell/dev-overrides", "tilo-runtime/dev-overrides"} <= set(features))
-            self.assertEqual(set(bins), {"shell", "tilo-runtime-mcp", "tilo-vmd", "tilo-device-admin", "tilo-vm",
+            self.assertIn("tilo-runtime/dev-overrides", features)
+            self.assertEqual(set(bins), {"tilo-runtime-mcp", "tilo-vmd", "tilo-device-admin", "tilo-vm",
                                          "tilo-test-registry"})
             _, _, production_features = installer.cargo_plan(dev, False)
             self.assertFalse([feature for feature in production_features
                               if feature.endswith("dev-overrides")], production_features)
         with self.subTest(phase='mixed dev and production layers are rejected'):
             document = {"component": [{
-                "name": "mixed", "kind": "userspace", "scope": "session", "packages": ["shell"],
+                "name": "mixed", "kind": "userspace", "scope": "session", "packages": ["tilo-session"],
                 "files": [
                     {"from": "a", "to": "/usr/bin/a", "mode": "0755", "layer": "dev-tools"},
                     {"from": "b", "to": "/usr/bin/b", "mode": "0755", "layer": "desktop-binaries"},
@@ -474,9 +473,10 @@ class InstallerTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 with contextlib.redirect_stderr(io.StringIO()) as stderr:
-                    status = self.run_installer("--from", str(root), "--dest", str(root / "layer"), "shell")
+                    status = self.run_installer("--from", str(root), "--dest", str(root / "layer"),
+                                                "tilo-session")
                 self.assertEqual(status, 1)
-                self.assertIn("build output 'shell' not found", stderr.getvalue())
+                self.assertIn("build output 'tilo-session' not found", stderr.getvalue())
 
 
 if __name__ == "__main__":

@@ -70,7 +70,7 @@ class MotionLibraryTests(unittest.TestCase):
         self.assertEqual(self.whats(root), [])
 
     def test_literal_motion_durations_in_every_spelling_are_found(self):
-        widget = "crates/session/shell/src/shell/thing.rs"
+        widget = "crates/session/desktop/src/thing.rs"
         for source in (
             "pub const OSD_FADE: Duration = Duration::from_millis(210);\n",
             "pub(crate) const BAR_FADE_MS: u64 = 320;\n",
@@ -84,7 +84,7 @@ class MotionLibraryTests(unittest.TestCase):
     def test_timings_that_are_not_motions_pass(self):
         root = self.fixture(
             {
-                "crates/session/shell/src/shell/thing.rs": (
+                "crates/session/desktop/src/thing.rs": (
                     "const ANIMATION_LABEL_REFRESH: Duration = Duration::from_secs(1);\n"
                     "const DRAG_SPRING_LOAD: Duration = Duration::from_millis(500);\n"
                     "const FADE_STOPS: usize = 9;\n"
@@ -113,7 +113,7 @@ class MotionLibraryTests(unittest.TestCase):
                 self.assertEqual(self.whats(root), ["spring built outside the library"])
 
     def test_time_bounded_interpolation_is_found(self):
-        widget = "crates/session/shell/src/shell/thing.rs"
+        widget = "crates/session/desktop/src/thing.rs"
         for source in (
             "fn f(now: Instant) -> f32 { now.duration_since(t).as_millis() as f32 / FADE_MS as f32 }\n",
             "fn f(now: Instant) -> f64 { (now - start).as_secs_f64() / SLIDE_SECS }\n",
@@ -144,7 +144,7 @@ class MotionLibraryTests(unittest.TestCase):
                     "}\n"
                 ),
                 # How many days old a file is.
-                "crates/session/shell/src/shell/search/files.rs": (
+                "crates/session/desktop/src/search/files.rs": (
                     "fn f() -> u64 { age.as_secs() / DAY }\n"
                 ),
             }

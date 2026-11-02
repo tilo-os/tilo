@@ -47,7 +47,7 @@ fn remove_dropin_in(dir: &str, unit: &str, file: &str) -> Result<(), DaemonError
     }
 }
 const SYSEXT_DIR: &str = "/var/lib/extensions";
-/// Where tilo-vmd leaves notices for the owner's desktop; the shell reads
+/// Where tilo-vmd leaves notices for the owner's desktop; the session reads
 /// `held-layers.json` from here.
 const NOTICE_DIR: &str = "/run/tilo-vm";
 /// Where `systemd-sysext` finds extension trees, `SYSEXT_DIR` among them.
@@ -185,9 +185,8 @@ fn greetd_login(
 
 /// The process name `tilo-session` runs under (its script's file name).
 const LOGIN_WRAPPER: &str = "tilo-session";
-/// The desktop's process names: the native session, and the old shell a login
-/// can still name with `--shell`.
-const COMPOSITORS: [&str; 2] = ["tilo-session", "shell"];
+/// The desktop's process name: the one session a login starts.
+const COMPOSITORS: [&str; 1] = ["tilo-session"];
 
 fn parent_of(pid: u32) -> Option<u32> {
     proc_field(pid, "PPid:")?.parse().ok()
@@ -1051,17 +1050,7 @@ impl Apply for SystemdApply {
         if !switched() {
             return None;
         }
-        // Prefer the compositor itself, tilo-session's child.
-        let children =
-            fs::read_to_string(format!("/proc/{main}/task/{main}/children")).unwrap_or_default();
-        let pid = children
-            .split_whitespace()
-            .filter_map(|c| c.parse::<u32>().ok())
-            .find(|c| {
-                fs::read_to_string(format!("/proc/{c}/comm"))
-                    .is_ok_and(|comm| comm.trim() == "shell")
-            })
-            .unwrap_or(main);
+        let pid = main;
         let hex = |field: &str| {
             proc_field(pid, field).and_then(|v| u64::from_str_radix(v.trim(), 16).ok())
         };
@@ -2093,18 +2082,13 @@ mod tests {
                 "{}",
                 wrapper.display()
             );
-            assert!(script.contains("readonly SHELL_BIN=/usr/bin/shell"));
-            for binary in ["/usr/bin/tilo-session", "/usr/bin/shell"] {
-                assert!(
-                    COMPOSITORS.contains(&Path::new(binary).file_name().unwrap().to_str().unwrap()),
-                    "{binary} is a desktop this wrapper starts"
-                );
-            }
+            assert!(script.contains("readonly COMPOSITOR_BIN=/usr/bin/tilo-session"));
+            assert_eq!(COMPOSITORS, ["tilo-session"]);
             assert!(script.contains(
                 r#"export TILO_TEST_CONTROL="$runtime_dir/tilo-session/test-control.sock""#
             ));
             let session =
-                fs::read_to_string(repo.join("os/usr/share/wayland-sessions/shell.desktop"))
+                fs::read_to_string(repo.join("os/usr/share/wayland-sessions/tilo-session.desktop"))
                     .unwrap();
             assert!(session.contains(&format!("Exec=/usr/libexec/{LOGIN_WRAPPER} ")));
         }

@@ -55,10 +55,16 @@ fi
 
 # A login runs the one compositor this image installs. `--native` still names
 # it, so an entry or a script written before the old shell was dropped keeps
-# starting the same session.
+# starting the same session. `--shell` names a session this image no longer
+# carries: refusing it stops such an entry from reaching the compositor with an
+# argument it does not understand.
 compositor_bin=$COMPOSITOR_BIN
 case "${1:-}" in
   --native) shift ;;
+  --shell)
+    echo 'tilo-session: unknown argument: --shell' >&2
+    exit 2
+    ;;
 esac
 if [ ! -x "$compositor_bin" ]; then
   echo "tilo-session: $compositor_bin is missing or not executable" >&2

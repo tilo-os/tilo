@@ -514,8 +514,8 @@ at runtime.
 The compositor takes the kernel's orientation at face value — a native-portrait
 panel therefore needs no second rotation and no copy pass. It only turns the
 panel further when the accelerometer reports the device was rotated
-(`crates/session/shell/src/compositor/device_rotation.rs`), and that path
-already refuses to touch an external monitor.
+(`crates/session/session/src/rotation.rs`), and that path already refuses to
+touch an external monitor.
 
 ### Controls
 
@@ -525,13 +525,11 @@ surface, with the on-screen keyboard driven by text focus rather than by any
 handheld-specific code. The DMI-bound quirk above is what makes the built-in
 keyboard pair with the touchpad for disable-while-typing.
 
-The face and shoulder buttons and the sticks are a different matter. The
-shell already decodes a physical controller through
-`crates/session/shell/src/shell/physical_gamepad.rs`, but that path forwards
-the controller to a focused application over the personal-device fabric — it
-is for play, not for moving focus around the desktop or dismissing a dialog.
-Driving Tilo's own UI from an XI2 gamepad is **not implemented**, and neither
-is a handheld-specific power or suspend policy (TDP limits and battery
+The face and shoulder buttons and the sticks are a different matter. A
+physical controller reaches a focused application over the personal-device
+fabric, for play, not for moving focus around the desktop or dismissing a
+dialog. Driving Tilo's own UI from an XI2 gamepad is **not implemented**, and
+neither is a handheld-specific power or suspend policy (TDP limits and battery
 charge thresholds are firmware- and vendor-specific). Those need a design
 decision about which chords the shell owns, so this change does not invent
 one.

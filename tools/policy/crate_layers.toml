@@ -22,10 +22,6 @@ reason = "it is the toolkit's CPU fallback renderer, and a UI draws through ui-c
   package = "tilo-ui-kms"
   why = "the toolkit's KMS host keeps one rasterizer across frames and copies only the damaged regions into dumb buffers, which ui-core's offscreen renderer does not expose"
 
-  [[rule.allow]]
-  package = "shell"
-  why = "the compositor's DRM backend presents the desktop on the CPU for devices whose GPU cannot run vello, and the compositor is what draws there, not a UI"
-  paths = ["src/compositor/"]
 
   [[rule.allow]]
   package = "ebook"
@@ -45,10 +41,6 @@ reason = "it is the Wayland protocol and buffer stack, and everything else talks
   package = "tilo-compositor"
   why = "the compositor is the one crate that speaks Wayland protocol and buffer types"
 
-  [[rule.allow]]
-  package = "shell"
-  why = "the compositor's code still lives in the shell crate until it is extracted, and it moves with the compositor"
-  paths = ["src/compositor/", "examples/"]
 
   [[rule.allow]]
   package = "tilo-wayland-ext"
@@ -62,9 +54,6 @@ reason = "it is the Wayland protocol and buffer stack, and everything else talks
 crate = "tilo-peer-state"
 reason = "it is the sync engine, and everyone else acts on the workspace through published actions, never by holding engine state"
 
-  [[rule.allow]]
-  package = "shell"
-  why = "the session runs the person's local engine: its network host, broker services and native workspace owner hold the workspace and publish actions into it"
 
   [[rule.allow]]
   package = "tilo-session"

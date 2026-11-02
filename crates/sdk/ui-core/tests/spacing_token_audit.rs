@@ -1,7 +1,7 @@
 //! Spacing and geometry ratchet: the pixel literals the `Theme` should own.
 //!
 //! `design_token_audit.rs` ratchets colour escape hatches; this file does
-//! the same for spacing in widget, chrome, shell and app code. Counts live in
+//! the same for spacing in widget, chrome and app code. Counts live in
 //! `tests/baselines/spacing/<unit>.txt` (see `support::ratchet`) and may only
 //! fall.
 //!
@@ -53,7 +53,7 @@ fn is_authored_geometry(path: &std::path::Path) -> bool {
     path.ends_with("apps/canvas/src/content_geometry.rs")
 }
 
-/// Spacing and geometry literals in widget, chrome, shell and app
+/// Spacing and geometry literals in widget, chrome and app
 /// production code.
 pub fn spacing_ratchet() -> Ratchet {
     Ratchet {
@@ -61,7 +61,6 @@ pub fn spacing_ratchet() -> Ratchet {
         roots: &[
             "crates/sdk/ui-core/src/widget",
             "crates/sdk/ui-core/src/chrome",
-            "crates/session/shell/src",
             "apps/*/src",
         ],
         patterns: vec![
@@ -224,7 +223,7 @@ fn spacing_audit_sees_what_it_polices_and_literals_do_not_grow() {
     // Case `spacing_literals_do_not_grow`.
     // The `#[cfg(test)]` span finder's shapes are pinned once in
     // `support::ratchet` (every ratchet scans through the same finder).
-    // Spacing literals in widget, chrome, shell and app production code may
+    // Spacing literals in widget, chrome and app production code may
     // not grow; the engine also fails if any root yields no file.
     spacing_ratchet().check();
 }

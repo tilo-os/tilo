@@ -117,9 +117,8 @@ pub(crate) fn repaints_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
 /// What a host keeps between frames to rasterize them into one retained
 /// target: the damage scratch, the backdrop blur and, on a software adapter,
 /// the CPU canvas. The app's own render worker draws with it, and so does the
-/// workspace's render service for each surface it draws for an app
-/// (`tilo-render-service`), so both produce the same pixels from the same
-/// frame.
+/// workspace's render service for each surface it draws for an app, so both
+/// produce the same pixels from the same frame.
 pub struct RetainedRaster {
     damage_cache: DamageCache,
     /// Built with the first frame that draws a floating surface over the

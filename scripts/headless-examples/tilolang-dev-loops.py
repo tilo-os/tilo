@@ -112,7 +112,7 @@ class Session:
         return self.control_json("actions", "invoke", provider, ident, "--wait")
 
     def log(self) -> str:
-        return (self.state / "logs/shell.log").read_text(errors="replace")
+        return (self.state / "logs/session.log").read_text(errors="replace")
 
 
 class Log:
@@ -299,7 +299,7 @@ def main() -> int:
             run([SESSION, "--no-build", "--prepare-only", "--apps", "", "--state", state])
             session_proc, session, ready = start_session(state, out)
             session_pid = session_proc.pid
-        shell_log = Log(state / "logs/shell.log")
+        shell_log = Log(state / "logs/session.log")
         dev_log_path = out / "dev.log"
         dev_argv = [tool, "dev", out / "src/notes", "--session", ready, "--repo", REPO]
         if not args.skip_runtime:

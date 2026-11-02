@@ -75,7 +75,7 @@ names are stable even when directories move.
 | Identity, MLS channels, action policy, collaboration state | `crates/collab/` (`tilo-user-identity`, `channel-crypto`, `action-policy`, `tilo-peer-state`) |
 | Automerge (vendored fork) | `vendor/automerge`, used through `crates/doc/tilo-automerge` |
 | Files and storage | `crates/system/fs`, `crates/system/fs-native` |
-| Compositor and shell | `crates/session/shell` |
+| Compositor and shell | `crates/session/session` |
 | Web runtime and web desktop | `crates/browser/tilo-browser-runtime`, `crates/browser/tilo-web-desktop` |
 | Platform services with one API on Linux, macOS and the web | `crates/platform/` |
 | Packages, sandboxed launch, the registry | `crates/packaging/` |

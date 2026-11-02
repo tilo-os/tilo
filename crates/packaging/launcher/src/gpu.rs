@@ -60,7 +60,7 @@ pub const CAPABILITY: &str = "gpu";
 /// Whether `manifest`'s app opens the GPU itself.
 ///
 /// A toolkit app does not: the render service of its workspace draws its frames
-/// (`tilo-render-service`), so its sandbox has no GPU node, no loader pin and
+/// (the session's render service), so its sandbox has no GPU node, no loader pin and
 /// no shader-cache seed, and the launcher spends nothing preparing them.
 /// Apps that do (a web engine, video, games, 3D, ML) declare `gpu`.
 ///
