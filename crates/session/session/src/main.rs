@@ -246,6 +246,10 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
 
 /// The session `line` describes, run until `command` exits.
 #[cfg(target_os = "linux")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the session's startup reads in one place, from its services to the doors it opens"
+)]
 fn start(
     ours: &[String],
     command: &[String],
@@ -377,7 +381,7 @@ fn start(
         session_bus,
         reach.export_displays,
         host_desktop,
-        Doors {
+        &Doors {
             agent: agent_door.as_deref(),
             test_control: test_control.as_deref(),
         },
@@ -432,7 +436,7 @@ fn run(
     session_bus: Option<&str>,
     export_displays: bool,
     host_desktop: bool,
-    doors: Doors<'_>,
+    doors: &Doors<'_>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
 

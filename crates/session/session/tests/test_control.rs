@@ -11,6 +11,11 @@
     clippy::significant_drop_tightening,
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a rectangle the test measured in the output it drew is within that output"
+)]
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -169,9 +174,6 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
 /// notes are found by their title, and the inbox is among what the session publishes.
 #[test]
 fn the_seeded_apps_publish_their_records_to_the_session() {
-    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the apps load and seed");
-    let resources = apps.resources();
-    let mut kinds = std::collections::BTreeSet::new();
     fn walk(
         resources: &[tilo_actions::ResourceSpec],
         kinds: &mut std::collections::BTreeSet<String>,
@@ -181,6 +183,9 @@ fn the_seeded_apps_publish_their_records_to_the_session() {
             walk(&resource.children, kinds);
         }
     }
+    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the apps load and seed");
+    let resources = apps.resources();
+    let mut kinds = std::collections::BTreeSet::new();
     walk(&resources, &mut kinds);
     for kind in [
         "tl.so.tilo.lang.notes.Note",
@@ -277,13 +282,17 @@ fn a_session_ended_by_sigterm_unmounts_what_it_mounted() {
 
 /// How many pixels of `shot` in `rect` (logical, at scale 1) are as light as text on the
 /// dark theme's ground: what is written there.
-fn written(shot: &image::RgbaImage, (x, y, w, h): (f64, f64, f64, f64)) -> usize {
-    let mut light = 0;
-    for py in (y as u32)..((y + h) as u32).min(shot.height()) {
-        for px in (x as u32)..((x + w) as u32).min(shot.width()) {
-            let [r, g, b, _] = shot.get_pixel(px, py).0;
-            if u32::from(r) + u32::from(g) + u32::from(b) > 3 * 128 {
-                light += 1;
+fn written(shot: &image::RgbaImage, rect: (f64, f64, f64, f64)) -> usize {
+    let (left, top, width, height) = rect;
+    let mut light = 0usize;
+    for row in (top as u32)..((top + height) as u32).min(shot.height()) {
+        for column in (left as u32)..((left + width) as u32).min(shot.width()) {
+            let [red, green, blue, _] = shot.get_pixel(column, row).0;
+            let glow = u32::from(red)
+                .saturating_add(u32::from(green))
+                .saturating_add(u32::from(blue));
+            if glow > 384 {
+                light = light.saturating_add(1);
             }
         }
     }
