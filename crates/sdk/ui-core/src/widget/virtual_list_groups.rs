@@ -7,6 +7,11 @@
 //! with, which the model stands last (the model's [`super::RowGroup::Tail`]): it stands under
 //! the list's tail title, closed until the person opens it, and its rows meanwhile take no
 //! room and are never built.
+//!
+//! A heading is a disclosure of the list's own, in its focus order: the arrow keys reach it
+//! like a row, Enter or Space folds and unfolds its group, and the accessibility tree carries
+//! it as a focusable disclosure, expanded while its rows show and holding the count of the
+//! rows under it, which an agent opens and closes by its [`HEADING_TARGET`].
 
 use std::collections::HashMap;
 
@@ -20,8 +25,12 @@ use crate::theme::Theme;
 use crate::widget::Interaction;
 use crate::widget::section::{SectionHeaderFace, band_height};
 
+/// What an accessibility target naming a heading starts with: the rest is the heading, as
+/// [`super::VirtualList`] hands it to `perform_semantic_action`.
+pub(super) const HEADING_TARGET: &str = "group:";
+
 /// A group's heading and whether it is the list's tail.
-type Group = (String, bool);
+pub(super) type Group = (String, bool);
 
 /// A heading's band as the last layout placed it, in the list's own coordinates (a y of zero
 /// is the top of the box, as [`super::VirtualList::item_view_top`] reads).
@@ -55,7 +64,7 @@ pub(super) struct Groups {
 }
 
 /// What the row `index` is grouped by, without the model's help when it groups nothing.
-fn group_of<M: ListModel>(model: &M, index: usize, tail: Option<&str>) -> Option<Group> {
+pub(super) fn group_of<M: ListModel>(model: &M, index: usize, tail: Option<&str>) -> Option<Group> {
     Some(match model.group_at(index)? {
         super::RowGroup::Heading(heading) => (heading, false),
         super::RowGroup::Tail => (tail?.to_owned(), true),
@@ -123,8 +132,17 @@ impl Groups {
     /// A heading's group opened or closed: whether it is open now.
     pub(super) fn toggle(&mut self, heading: &str) -> bool {
         let open = !self.open.get(heading).copied().unwrap_or(true);
-        self.open.insert(heading.to_owned(), open);
+        self.set_open(heading, open);
         open
+    }
+
+    /// Show the heading's group's rows, or fold them away: whether that changed it.
+    pub(super) fn set_open(&mut self, heading: &str, open: bool) -> bool {
+        if self.open.get(heading).copied().unwrap_or(true) == open {
+            return false;
+        }
+        self.open.insert(heading.to_owned(), open);
+        true
     }
 
     /// The band of the group the row `index` starts, as the layout placed it.
@@ -138,18 +156,24 @@ impl Groups {
         });
     }
 
-    /// The bands in view, the one holding the top of the box first, held at its top.
-    pub(super) fn in_view(&mut self, held: Option<(Group, bool)>, viewport: f64) -> Vec<Band> {
+    /// The bands in view, the one holding the top of the box first, held at its top. `held` is
+    /// the group under the top of the box, whether it is closed, and the index of its first
+    /// row.
+    pub(super) fn in_view(
+        &mut self,
+        held: Option<(Group, bool, usize)>,
+        viewport: f64,
+    ) -> Vec<Band> {
         let height = self.height;
         self.bands.sort_by(|a, b| a.top.total_cmp(&b.top));
         let mut bands = std::mem::take(&mut self.bands);
-        if let Some((group, closed)) = held {
+        if let Some((group, closed, start)) = held {
             let at = bands.iter().position(|band| band.heading == group.0);
             let starts = at.is_some_and(|at| bands[at].top >= 0.0);
             if !starts {
                 // The group under the top holds its heading there: the one sliding out above
                 // it is not drawn as well, or its label would read over the held one.
-                let index = at.map(|at| bands[at].index).unwrap_or_default();
+                let index = at.map_or(start, |at| bands[at].index);
                 bands.retain(|band| band.heading != group.0);
                 bands.insert(
                     0,
@@ -182,14 +206,14 @@ impl Groups {
         std::mem::take(&mut self.folded)
     }
 
-    /// The heading whose band holds the y `local` of the list's box.
-    pub(super) fn heading_at(&self, local: f64) -> Option<String> {
+    /// The band holding the y `local` of the list's box.
+    pub(super) fn band_at(&self, local: f64) -> Option<Band> {
         let height = self.height;
         self.bands
             .iter()
             .rev()
             .find(|band| local >= band.top && local < band.top + height)
-            .map(|band| band.heading.clone())
+            .cloned()
     }
 }
 
@@ -315,14 +339,26 @@ impl<M: ListModel> VirtualList<M> {
                 return None;
             }
             let closed = !self.row_open(top);
-            Some((group, closed))
+            let start = self.group_start(top);
+            Some((group, closed, start))
         });
         let viewport = self.viewport.viewport();
         self.groups.in_view(held, viewport)
     }
 
+    /// The box the band at `top` (the list's own coordinates) is drawn in.
+    pub(super) fn band_rect(&self, top: f64) -> Rect {
+        let x1 = if self.rows_beside_bar {
+            self.rect.x1 - self.gutter
+        } else {
+            self.rect.x1
+        };
+        let top = self.rect.y0 + top;
+        Rect::new(self.rect.x0, top, x1, top + self.groups.height)
+    }
+
     /// Paint the heading of every group in view over the rows, the one holding the top of the
-    /// box at its top.
+    /// box at its top. The heading holding the keyboard wears its focus ring.
     pub(super) fn draw_bands(
         &mut self,
         scene: &mut Scene,
@@ -335,18 +371,16 @@ impl<M: ListModel> VirtualList<M> {
             return;
         }
         let cursor = self.last_cursor;
-        let height = self.groups.height;
-        let x1 = if self.rows_beside_bar {
-            self.rect.x1 - self.gutter
+        let focused = if self.is_focused {
+            self.focused_group
+                .as_ref()
+                .map(|(heading, _)| heading.clone())
         } else {
-            self.rect.x1
+            None
         };
         let rects = bands
             .iter()
-            .map(|band| {
-                let top = self.rect.y0 + band.top;
-                Rect::new(self.rect.x0, top, x1, top + height)
-            })
+            .map(|band| self.band_rect(band.top))
             .collect::<Vec<_>>();
         // A band hides what it slides over: the rows of the group it holds while they scroll
         // under it, and the band of the group leaving at the top.
@@ -359,10 +393,27 @@ impl<M: ListModel> VirtualList<M> {
                 rect,
             );
         }
+        let radius = f64::from(theme.tokens.radii.item);
+        // The ring goes under the heading it belongs to, so both are drawn in one pass over
+        // the bands and the ring first.
+        for band in &bands {
+            let has_keyboard = focused.as_deref() == Some(band.heading.as_str());
+            if has_keyboard {
+                let rect = self.band_rect(band.top);
+                crate::widget::paint_focus_ring(
+                    scene,
+                    transform,
+                    rect.inset(2.0),
+                    (radius - 2.0).max(0.0),
+                    theme,
+                );
+            }
+        }
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         for (band, rect) in bands.iter().zip(rects) {
             let hovered = cursor.is_some_and(|point| rect.contains(point));
             let held = self.groups.held() == Some(band.heading.as_str());
+            let has_keyboard = focused.as_deref() == Some(band.heading.as_str());
             SectionHeaderFace::group(&band.heading)
                 .disclosure(!band.closed)
                 .paint(
@@ -371,6 +422,7 @@ impl<M: ListModel> VirtualList<M> {
                     Interaction {
                         hovered,
                         pressed: hovered && held,
+                        focused: has_keyboard,
                         ..Interaction::default()
                     },
                 );
@@ -378,16 +430,18 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// A press at `point` (the list's own coordinates) on a heading's band, held until it is
-    /// let go. Whether a band was there.
+    /// let go, the heading taking the keyboard. Whether a band was there.
     pub(super) fn hold_band(&mut self, point: Point) -> bool {
         if !self.rect.contains(point) {
             return false;
         }
         self.bands_in_view();
-        let Some(heading) = self.groups.heading_at(point.y - self.rect.y0) else {
+        let Some(band) = self.groups.band_at(point.y - self.rect.y0) else {
             return false;
         };
-        self.groups.hold(heading);
+        self.focused_key = None;
+        self.focused_group = Some((band.heading.clone(), band.index));
+        self.groups.hold(band.heading);
         true
     }
 
@@ -399,7 +453,11 @@ impl<M: ListModel> VirtualList<M> {
         };
         self.bands_in_view();
         if !self.rect.contains(point)
-            || self.groups.heading_at(point.y - self.rect.y0).as_deref() != Some(heading.as_str())
+            || self
+                .groups
+                .band_at(point.y - self.rect.y0)
+                .map(|band| band.heading)
+                != Some(heading.clone())
         {
             return false;
         }
@@ -414,5 +472,234 @@ impl<M: ListModel> VirtualList<M> {
         self.remount = true;
         self.visible_window_changed();
         self.structure_dirty = true;
+    }
+}
+
+/// One stop of the list's keyboard: a group's heading, or one of its rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Stop {
+    /// The heading over the group whose first row is this index.
+    Heading(usize),
+    /// The row at this index.
+    Row(usize),
+}
+
+impl<M: ListModel> VirtualList<M> {
+    /// The heading holding the keyboard, and the index of the first row under it, while the
+    /// rows still say the heading heads that group.
+    fn heading_focus(&mut self) -> Option<(String, usize)> {
+        let (heading, index) = self.focused_group.clone()?;
+        if !self
+            .row_group(index)
+            .is_some_and(|group| group.0 == heading)
+        {
+            // The rows moved under it: the heading is not there any more.
+            self.focused_group = None;
+            return None;
+        }
+        let start = self.group_start(index);
+        self.focused_group = Some((heading.clone(), start));
+        Some((heading, start))
+    }
+
+    /// The first row of the group the row `index` is in.
+    fn group_start(&mut self, index: usize) -> usize {
+        let Some(group) = self.row_group(index) else {
+            return index;
+        };
+        let mut start = index;
+        while start > 0
+            && self
+                .row_group(start - 1)
+                .is_some_and(|before| before.0 == group.0)
+        {
+            start -= 1;
+        }
+        start
+    }
+
+    /// The stop the row `index` is: its group's heading while the group is closed, the row
+    /// itself while it shows.
+    fn stop_at(&mut self, index: usize) -> Stop {
+        if self.row_open(index) {
+            Stop::Row(index)
+        } else {
+            Stop::Heading(self.group_start(index))
+        }
+    }
+
+    /// The index the keyboard is on: under the focused heading, or the focused row's.
+    fn keyboard_index(&mut self) -> Option<usize> {
+        if let Some((_, start)) = self.heading_focus() {
+            return Some(start);
+        }
+        let key = self.focused_key.clone()?;
+        self.model.index_of(&key)
+    }
+
+    /// The stop the keyboard is on.
+    fn keyboard_stop(&mut self) -> Option<Stop> {
+        if let Some((_, start)) = self.heading_focus() {
+            return Some(Stop::Heading(start));
+        }
+        let key = self.focused_key.clone()?;
+        self.model.index_of(&key).map(Stop::Row)
+    }
+
+    /// The stop after the keyboard's, down the list: a heading's group opens under it, or,
+    /// closed, the heading gives the keyboard to the heading below it.
+    fn next_stop(&mut self) -> Option<Stop> {
+        let count = self.model.len();
+        match self.keyboard_stop()? {
+            Stop::Heading(start) => {
+                if self.row_open(start) {
+                    return Some(Stop::Row(start));
+                }
+                let Some(group) = self.row_group(start) else {
+                    return None;
+                };
+                let mut below = start.saturating_add(1);
+                while below < count && self.row_group(below).is_some_and(|at| at.0 == group.0) {
+                    below = below.saturating_add(1);
+                }
+                (below < count).then(|| {
+                    // The heading under a folded group is the stop the keyboard meets next,
+                    // standing over the rows it heads however they are.
+                    if self.row_starts(below) {
+                        Stop::Heading(below)
+                    } else {
+                        self.stop_at(below)
+                    }
+                })
+            }
+            Stop::Row(index) => {
+                let below = index.checked_add(1)?;
+                (below < count).then(|| self.stop_at(below))
+            }
+        }
+    }
+
+    /// The stop before the keyboard's, up the list.
+    fn prev_stop(&mut self) -> Option<Stop> {
+        match self.keyboard_stop()? {
+            Stop::Heading(start) => {
+                let above = start.checked_sub(1)?;
+                Some(self.stop_at(above))
+            }
+            Stop::Row(index) => {
+                if self.row_starts(index) {
+                    // The heading over the row the keyboard is on comes first.
+                    return Some(Stop::Heading(index));
+                }
+                let above = index.checked_sub(1)?;
+                Some(self.stop_at(above))
+            }
+        }
+    }
+
+    /// The first stop of the list.
+    fn first_stop(&mut self) -> Option<Stop> {
+        (self.model.len() > 0).then(|| self.stop_at(0))
+    }
+
+    /// The last stop of the list: the heading of a closed group its rows end under.
+    fn last_stop(&mut self) -> Option<Stop> {
+        let last = self.model.len().checked_sub(1)?;
+        Some(self.stop_at(last))
+    }
+
+    /// Hand the keyboard to `stop`, as the arrow keys and the page keys do. Whether it went.
+    fn focus_stop(&mut self, stop: Stop, extend: bool) -> bool {
+        match stop {
+            Stop::Row(index) => self.focus_index(index, extend),
+            Stop::Heading(index) => {
+                let Some(group) = self.row_group(index) else {
+                    return false;
+                };
+                let start = self.group_start(index);
+                self.focused_key = None;
+                self.focused_group = Some((group.0, start));
+                self.scroll_to_index(start);
+                true
+            }
+        }
+    }
+
+    /// The index of the first row under the heading: where the last layout placed its band,
+    /// else where the keyboard left it.
+    pub(super) fn heading_start(&self, heading: &str) -> Option<usize> {
+        if let Some((focused, index)) = &self.focused_group
+            && focused == heading
+        {
+            return Some(*index);
+        }
+        self.groups
+            .bands
+            .iter()
+            .find(|band| band.heading == heading)
+            .map(|band| band.index)
+    }
+
+    /// Hand the keyboard to the heading `heading`. Whether it is there.
+    pub(super) fn focus_heading(&mut self, heading: &str) -> bool {
+        let Some(index) = self.heading_start(heading) else {
+            return false;
+        };
+        self.focused_key = None;
+        self.focused_group = Some((heading.to_owned(), index));
+        self.scroll_to_index(index);
+        true
+    }
+
+    /// Fold or unfold the heading's group, as a press on its band does.
+    pub(super) fn toggle_heading(&mut self, heading: &str) -> bool {
+        self.groups.toggle(heading);
+        self.regroup();
+        true
+    }
+
+    /// Show or fold away the heading's group's rows: whether that changed it.
+    pub(super) fn set_heading_open(&mut self, heading: &str, open: bool) -> bool {
+        if !self.groups.set_open(heading, open) {
+            return false;
+        }
+        self.regroup();
+        true
+    }
+
+    /// The heading the keyboard is on, before a key the list takes itself.
+    pub(super) fn heading_keyboard(&mut self) -> Option<String> {
+        self.heading_focus().map(|(heading, _)| heading)
+    }
+
+    /// The row the keyboard is on, for the keys that start where the keyboard is.
+    pub(super) fn keyboard_row(&mut self) -> Option<usize> {
+        self.keyboard_index()
+    }
+
+    /// The arrow, home and end keys move the keyboard through the headings and rows: from
+    /// nowhere, to the first stop as a row list does.
+    pub(super) fn move_stop(&mut self, key: &winit::keyboard::Key, extend: bool) -> Option<bool> {
+        use winit::keyboard::{Key, NamedKey};
+        let stop = match key {
+            Key::Named(NamedKey::ArrowDown) => {
+                if self.keyboard_stop().is_some() {
+                    self.next_stop()
+                } else {
+                    self.first_stop()
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                if self.keyboard_stop().is_some() {
+                    self.prev_stop()
+                } else {
+                    self.first_stop()
+                }
+            }
+            Key::Named(NamedKey::Home) => self.first_stop(),
+            Key::Named(NamedKey::End) => self.last_stop(),
+            _ => return None,
+        };
+        Some(stop.is_some_and(|stop| self.focus_stop(stop, extend)))
     }
 }

@@ -1220,6 +1220,15 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     {
         ak.add_action(AkAction::Click);
     }
+    // A control that models whether it is expanded opens and closes, whatever its role: a
+    // disclosure heading is a button as often as it is a combo box.
+    if let Some(expanded) = access.state.expanded.filter(|_| !access.state.disabled) {
+        ak.add_action(if expanded {
+            AkAction::Collapse
+        } else {
+            AkAction::Expand
+        });
+    }
     match access.role {
         Role::Slider | Role::Separator | Role::SpinButton => {
             if !access.state.disabled {
@@ -1229,16 +1238,6 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
                 {
                     ak.add_action(AkAction::SetValue);
                 }
-            }
-        }
-        Role::ComboBox | Role::TreeItem => {
-            // Expand/collapse only when the control models the state.
-            if let Some(expanded) = access.state.expanded {
-                ak.add_action(if expanded {
-                    AkAction::Collapse
-                } else {
-                    AkAction::Expand
-                });
             }
         }
         Role::TextInput | Role::MultilineTextInput
