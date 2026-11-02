@@ -239,7 +239,11 @@ pub struct Work {
     /// a device that takes the work runs over these inputs, as a signed
     /// package's entrypoint. A device without it has no work it could run,
     /// and answers so.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Encoded always, absent or not: the frame is postcard, which carries no
+    /// field names or lengths, so a field skipped when absent would be read
+    /// out of the next field's bytes.
+    #[serde(default)]
     pub offload: Option<Offload>,
 }
 
