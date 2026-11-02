@@ -283,8 +283,10 @@ them there.
 
 - **A new window** (a launch, a search result, Super+T) opens as its own
   group right of the group you are in; a plain launch from inside a tabbed
-  group joins it as a tab, a search result never does. With nothing focused it
-  takes the border between windows that is on screen.
+  group joins it as a tab, a search result never does. The exception is the
+  search a group's own new-tab control opens: it lists the apps a tab of that
+  group could show, and the one chosen becomes a tab there. With nothing
+  focused it takes the border between windows that is on screen.
 - **Its width**: when it and the window it opens beside would not fit on
   screen together, it takes the room beside that window if that is at least
   480 px, else the two share the display equally; only a display too narrow
