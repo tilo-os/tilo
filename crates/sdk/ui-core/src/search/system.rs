@@ -241,7 +241,7 @@ pub trait SearchRow {
 }
 /// One contiguous run of same-kind results, as [`group_by_kind`] arranges
 /// them.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct KindGroup<Row> {
     pub kind: ResourceKind,
     /// The rows to render — at most the cap the caller asked for.

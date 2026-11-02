@@ -115,3 +115,27 @@ fn a_preview_that_only_echoes_the_row_is_not_drawn() {
         .with_preview(crate::search::SearchPreview::titled("Rust Blog").body("Rust Blog"));
     assert!(headed.preview.is_some(), "a heading is the preview's own");
 }
+
+/// A list is told apart from one the card would cut: as many rows as
+/// the cap holds stand inside it, under their group headers, and one
+/// more does not.
+#[test]
+fn a_list_that_fits_the_card_is_told_apart_from_one_that_does_not() {
+    let mut palette = ActionPalette::rows(Vec::new());
+    palette.set_max_list_height(420.0);
+    let groups = 3;
+    let capacity = palette.entry_row_capacity_for(groups, false);
+    let rows = |count: usize| -> Vec<CommandEntry> {
+        (0..count)
+            .map(|index| CommandEntry::new(format!("r{index}"), format!("Row {index}")))
+            .collect()
+    };
+    assert!(
+        palette.entries_fit(&rows(capacity), groups),
+        "{capacity} rows stand under {groups} headers inside the cap"
+    );
+    assert!(
+        !palette.entries_fit(&rows(capacity + 1), groups),
+        "one row more would be cut at the card's edge"
+    );
+}

@@ -95,3 +95,4 @@ search-downloaded-locate = { $name } suchen
 search-downloaded-add = { $name } zu den Apps hinzufügen
 search-downloaded-uninstall = { $name } deinstallieren
 search-downloaded-remove = { $name } aus den Apps entfernen
+search-show-all-results = Alle { $count } Ergebnisse zeigen

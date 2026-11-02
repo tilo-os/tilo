@@ -95,3 +95,4 @@ search-downloaded-locate = Locate { $name }
 search-downloaded-add = Add { $name } to apps
 search-downloaded-uninstall = Uninstall { $name }
 search-downloaded-remove = Remove { $name } from apps
+search-show-all-results = Show all { $count } results

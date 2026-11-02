@@ -3666,8 +3666,8 @@ mod tests {
         // The list grows with the display, and stops at the shortest and
         // tallest it may be.
         let tall = |height| list_cap(Rect::new(0.0, 0.0, 1280.0, height), &theme);
-        assert!((tall(800.0) - 440.0).abs() < 1e-9);
-        assert!((tall(1200.0) - 504.0).abs() < 1e-9);
+        assert!((tall(800.0) - 624.0).abs() < 1e-9);
+        assert!((tall(1200.0) - 660.0).abs() < 1e-9);
         assert!((tall(200.0) - 160.0).abs() < 1e-9);
     }
 

@@ -420,6 +420,20 @@ impl ActionPalette {
         crate::num::usize_of_f64((room / row).floor()).max(1)
     }
 
+    /// Whether the rows `entries` stand inside the list, under the headers
+    /// of `groups` groups: every line at its own band, against the cap the
+    /// card gives its rows. A list that holds more is cut at the card's
+    /// edge, so a host asks this before it hands its rows over.
+    #[must_use]
+    pub fn entries_fit(&self, entries: &[CommandEntry], groups: usize) -> bool {
+        let headers = crate::num::f64_of_usize(groups) * self.results.header_band();
+        let rows: f64 = entries
+            .iter()
+            .map(|entry| self.results.row_band(entry.description.is_some()))
+            .sum();
+        headers + rows <= self.list_cap() + 0.5
+    }
+
     /// The result list's rect (the card under its field and band, with the
     /// rows' padding), from the card's.
     pub(crate) fn sync_list(&mut self) {
