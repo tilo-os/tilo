@@ -26,24 +26,8 @@ Each adapter reads what a benchmark already prints and emits records through
   switch, become `latency.workspace_switch.first_frame` (chord to the first
   frame shown), `.settled` (chord to the resting frame shown after the frame
   run) and `.dropped_frames` (refresh intervals in the run that showed no new
-  frame). `scripts/perf/latency_bench.py` (headless, nightly) and
-  `scripts/perf/device_latency_bench.py` (reference hardware) call it.
-- `idle-wakeups LOG...`: the idle-wakeup gate
-  (`crates/session/compositor/src/pacing.rs`) prints one
-  `IDLE-WAKEUPS total_per_s=<x> shell_per_s=<y> ...` line per run. Each log is
-  one run; repeated runs become the samples of `wakeups.headless_two_apps`
-  (the compositor's whole process tree), `.shell` (its own process) and
-  `wakeups.frame_loop_ticks.headless_two_apps` (its frame loop's iterations).
-- `files-name-index LOG...`: the Files search name-index test
-  (`a_watched_change_costs_one_record_not_a_rebuild` in
-  `crates/session/session/src/search.rs`) prints one
-  `FILES-NAME-INDEX names=<n> rebuild_ms=<x> change_ms=<a,b,...>
-  unchanged_ms=<a,b,...> rename_ms=<y> burst64_ms=<z>` line per run: process
-  CPU for one watched change to an index of `n` names, for an unchanged
-  one, a rename, a 64-file burst, and a whole-index build. Each becomes
-  `search.files_name_index.<metric>.<size>` (`change_cpu_ms`,
-  `unchanged_cpu_ms`, `rename_cpu_ms`, `burst64_cpu_ms`, `rebuild_cpu_ms`),
-  every listed value one sample, with sizes written `50k`.
+  frame). `scripts/perf/device_latency_bench.py` (the reference-hardware lane)
+  calls it.
 - `framework-open LOG...`: the `FRAMEWORK-OPEN tasks=<n> samples_ms=<a,b,...>
   allocations=<x> heap_per_task=<y>` lines of
   `crates/sdk/tilo-app/examples/framework-scaling.rs`, one per list
@@ -104,8 +88,6 @@ Usage:
     python3 tools/perf/adapters.py tapp-sizes --env-json env.json entries.json >> results.jsonl
     python3 tools/perf/adapters.py runtime-sizes --env-json env.json runtime.json >> results.jsonl
     python3 tools/perf/adapters.py workspace-switch --env-json env.json session.log >> results.jsonl
-    python3 tools/perf/adapters.py idle-wakeups --env-json env.json run-*.log >> results.jsonl
-    python3 tools/perf/adapters.py files-name-index --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py framework-open --env-json env.json framework-open.log >> results.jsonl
     python3 tools/perf/adapters.py framework-scroll --env-json env.json framework-scroll.log >> results.jsonl
     python3 tools/perf/adapters.py framework-focus --env-json env.json framework-focus.log >> results.jsonl
@@ -251,35 +233,6 @@ def workspace_switch(samples: list[dict[str, int]], env: dict[str, Any],
             for name, (unit, values) in series.items()]
 
 
-IDLE_WAKEUPS_LINE = re.compile(r"(?:^|\s)IDLE-WAKEUPS ((?:[a-z_]+=[0-9.]+ ?)+)$")
-IDLE_WAKEUPS_KPIS = {"total_per_s": "wakeups.headless_two_apps",
-                     "shell_per_s": "wakeups.headless_two_apps.shell",
-                     "loop_ticks_per_s": "wakeups.frame_loop_ticks.headless_two_apps"}
-
-
-def idle_wakeups(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
-    """Records for one or more runs of the idle-wakeup gate."""
-    samples: dict[str, list[float]] = {kpi: [] for kpi in IDLE_WAKEUPS_KPIS.values()}
-    windows = []
-    for log in logs:
-        lines = [match for line in log.splitlines() if (match := IDLE_WAKEUPS_LINE.search(line.rstrip()))]
-        if len(lines) != 1:
-            raise ValueError(f"expected one `IDLE-WAKEUPS` line per run, found {len(lines)}: "
-                             "did the idle-wakeups executable finish its measurement?")
-        fields = dict(pair.split("=", 1) for pair in lines[0].group(1).split())
-        missing = [name for name in (*IDLE_WAKEUPS_KPIS, "window_ms") if name not in fields]
-        if missing:
-            raise ValueError(f"IDLE-WAKEUPS line lacks {missing}")
-        for field, kpi in IDLE_WAKEUPS_KPIS.items():
-            samples[kpi].append(float(fields[field]))
-        windows.append(fields["window_ms"])
-    if not logs:
-        raise ValueError("no idle-wakeup gate logs")
-    meta = {**env.get("meta", {}), "runs": str(len(logs)), "window_ms": ",".join(sorted(set(windows)))}
-    base = {name: value for name, value in env.items() if name != "meta"}
-    return [record.from_samples(kpi, "per_s", values, meta=meta, **base) for kpi, values in samples.items()]
-
-
 FRAMEWORK_OPEN_LINE = re.compile(
     r"^FRAMEWORK-OPEN tasks=(?P<tasks>[0-9]+) samples_ms=(?P<samples>[0-9.]+(?:,[0-9.]+)*) "
     r"allocations=(?P<allocations>[0-9]+) heap_per_task=(?P<heap>[0-9]+)$")
@@ -413,40 +366,6 @@ def notes_latency(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
                 samples.setdefault(f"render.notes_latency.{workload}.{stage}", []).extend(values)
     if not logs:
         raise ValueError("no notes-latency logs")
-    meta = {**env.get("meta", {}), "runs": str(len(logs))}
-    base = {name: value for name, value in env.items() if name != "meta"}
-    return [record.from_samples(kpi, "ms", values, meta=meta, **base) for kpi, values in samples.items()]
-
-
-FILES_NAME_INDEX_LINE = re.compile(
-    r"(?:^|\s)FILES-NAME-INDEX names=(?P<names>[0-9]+) rebuild_ms=(?P<rebuild_ms>[0-9.]+) "
-    r"change_ms=(?P<change_ms>[0-9.]+(?:,[0-9.]+)*) unchanged_ms=(?P<unchanged_ms>[0-9.]+(?:,[0-9.]+)*) "
-    r"rename_ms=(?P<rename_ms>[0-9.]+) burst64_ms=(?P<burst64_ms>[0-9.]+)$")
-# Line field -> KPI metric. Fields listing several values give one sample each.
-FILES_NAME_INDEX_KPIS = {"change_ms": "change_cpu_ms", "unchanged_ms": "unchanged_cpu_ms",
-                         "rename_ms": "rename_cpu_ms", "burst64_ms": "burst64_cpu_ms",
-                         "rebuild_ms": "rebuild_cpu_ms"}
-
-
-def files_name_index(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
-    """Records for one or more runs of the Files search name-index update test."""
-    samples: dict[str, list[float]] = {}
-    sizes = set()
-    for log in logs:
-        lines = [match for line in log.splitlines() if (match := FILES_NAME_INDEX_LINE.search(line.rstrip()))]
-        if len(lines) != 1:
-            raise ValueError(f"expected one `FILES-NAME-INDEX` line per run, found {len(lines)}: "
-                             "did the test run with --nocapture?")
-        line = lines[0]
-        size = framework_open_size(int(line.group("names")))
-        sizes.add(size)
-        for field, metric in FILES_NAME_INDEX_KPIS.items():
-            kpi = f"search.files_name_index.{metric}.{size}"
-            samples.setdefault(kpi, []).extend(float(value) for value in line.group(field).split(","))
-    if not logs:
-        raise ValueError("no Files search name-index logs")
-    if len(sizes) != 1:
-        raise ValueError(f"runs measured different index sizes: {sorted(sizes)}")
     meta = {**env.get("meta", {}), "runs": str(len(logs))}
     base = {name: value for name, value in env.items() if name != "meta"}
     return [record.from_samples(kpi, "ms", values, meta=meta, **base) for kpi, values in samples.items()]
@@ -606,12 +525,6 @@ def main(argv: list[str] | None = None) -> int:
     switch = commands.add_parser("workspace-switch", help="records from WORKSPACE-SWITCH session-log lines")
     switch.add_argument("--env-json", required=True, type=Path)
     switch.add_argument("logs", nargs="+", type=Path)
-    idle = commands.add_parser("idle-wakeups", help="records from idle-wakeup gate logs")
-    idle.add_argument("--env-json", required=True, type=Path)
-    idle.add_argument("logs", nargs="+", type=Path)
-    names = commands.add_parser("files-name-index", help="records from FILES-NAME-INDEX test lines")
-    names.add_argument("--env-json", required=True, type=Path)
-    names.add_argument("logs", nargs="+", type=Path)
     opening = commands.add_parser("framework-open", help="records from framework-scaling's FRAMEWORK-OPEN lines")
     opening.add_argument("--env-json", required=True, type=Path)
     opening.add_argument("logs", nargs="+", type=Path)
@@ -667,11 +580,6 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "notes-latency":
             records = notes_latency([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
                                     env)
-        elif args.command == "idle-wakeups":
-            records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
-        elif args.command == "files-name-index":
-            records = files_name_index([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
-                                       env)
         else:
             records = tapp_sizes(json.loads(args.entries.read_text(encoding="utf-8")), env,
                                  tapp_size_ratchet.load().apps())

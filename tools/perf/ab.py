@@ -387,14 +387,6 @@ def run_hosting(ctx: RunContext) -> list[record.Record]:
     return adapters.hosting_load(report, prices, ctx.env, require_all=False)
 
 
-def run_latency(ctx: RunContext) -> list[record.Record]:
-    records = ctx.dir / "records.jsonl"
-    call([sys.executable, "scripts/perf/latency_bench.py", "--shell-bin", ctx.bins["shell"],
-          "--out", ctx.dir / "run", "--env-json", ctx.env_json, "--records", records],
-         ctx.dir / "bench.log", ctx.repo)
-    return record.read(records)
-
-
 def run_agent(ctx: RunContext) -> list[record.Record]:
     records = ctx.dir / "records.jsonl"
     call(["bash", "tools/with-test-environment.sh", sys.executable, "scripts/perf/agent_rtt.py",
@@ -402,22 +394,20 @@ def run_agent(ctx: RunContext) -> list[record.Record]:
           "--transport", "test-control socket, headless, release + dev-overrides, thin LTO",
           "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "compositor.log"],
          ctx.dir / "bench.log", ctx.repo)
-    if "agent_task_desktop" in ctx.bins:
-        call(["bash", "tools/with-test-environment.sh", sys.executable, "scripts/perf/agent_task.py",
-              "--spawn", ctx.bins["shell"], "--seeder", ctx.bins["agent_task_desktop"],
-              "--mcp", ctx.bins["tilo-runtime-mcp"], "--repetitions", "30", "--warmup", "3",
-              "--transport", "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO",
-              "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "task-compositor.log",
-              "--client-log", ctx.dir / "task-client.log"],
-             ctx.dir / "task.log", ctx.repo)
+    call(["bash", "tools/with-test-environment.sh", sys.executable, "scripts/perf/agent_task.py",
+          "--spawn", ctx.bins["shell"], "--mcp", ctx.bins["tilo-runtime-mcp"],
+          "--repetitions", "30", "--warmup", "3",
+          "--transport", "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO",
+          "--env-json", ctx.env_json, "--out", records, "--log", ctx.dir / "task-session.log",
+          "--client-log", ctx.dir / "task-client.log"],
+         ctx.dir / "task.log", ctx.repo)
     return record.read(records)
 
 
 def run_render(ctx: RunContext) -> list[record.Record]:
     records = ctx.dir / "records.jsonl"
-    pans = ["--strip-pan-bench", ctx.bins["strip_pan_bench"]] if "strip_pan_bench" in ctx.bins else []
     call([sys.executable, "scripts/perf/render_bench.py", "timing", ctx.bins["ui-perf"],
-          ctx.bins["redraw_bench"], "--env-json", ctx.env_json, "--out", ctx.dir, *pans, "--records", records],
+          "--env-json", ctx.env_json, "--out", ctx.dir, "--records", records],
          ctx.dir / "bench.log", ctx.repo)
     opening = ctx.dir / "framework-open.log"
     call([ctx.bins["framework-scaling"], "5000,50000", "open"], opening, ctx.repo)
@@ -433,25 +423,6 @@ def run_render(ctx: RunContext) -> list[record.Record]:
     return measured
 
 
-def run_wakeups(ctx: RunContext) -> list[record.Record]:
-    log = ctx.dir / "idle.log"
-    # A run over budget still produces evidence for A/B comparison, just as
-    # in the other groups. The scheduled lane also enforces the executable's exit.
-    if "idle-wakeups" in ctx.bins:
-        command = [ctx.bins["idle-wakeups"]]
-        cwd = ctx.repo
-    else:
-        # Historical refs kept the same measurement in the integration suite.
-        command = [ctx.bins["it"],
-                   "idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget",
-                   "--exact", "--nocapture"]
-        cwd = ctx.cwd["it"]
-    call(["bash", ctx.repo / "tools/test-env.sh", *command],
-         log, cwd, {"TILO_IDLE_WAKEUP_WINDOW_SECS": str(ctx.options.wakeups_window),
-                    "TILO_IDLE_SESSION_BIN": str(ctx.bins["shell"])}, check=False)
-    return adapters.idle_wakeups([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
-
-
 def run_fs(ctx: RunContext) -> list[record.Record]:
     log = ctx.dir / "fs-gate.log"
     call(["bash", ctx.repo / "tools/with-test-environment.sh", ctx.bins["performance_timing"], "--nocapture",
@@ -459,26 +430,11 @@ def run_fs(ctx: RunContext) -> list[record.Record]:
     return adapters.fs_gate([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
-FILES_NAME_INDEX_TEST = "shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild"
-
-
-def run_search(ctx: RunContext) -> list[record.Record]:
-    log = ctx.dir / "files-name-index.log"
-    # The nightly job's index size: the walk's MAX_ENTRIES. A cost over the
-    # test's own bound fails it but still measured; the adapter fails only
-    # when the run printed no measurement.
-    call(["bash", ctx.repo / "tools/with-test-environment.sh", ctx.bins["shell-lib"], FILES_NAME_INDEX_TEST,
-          "--exact", "--nocapture", "--test-threads=1"], log, ctx.cwd["shell-lib"],
-         {"TILO_FILES_NAME_INDEX_NAMES": "50000"}, check=False)
-    return adapters.files_name_index([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
-
-
+# The session and the agent task's client, as tools/ci/perf-scheduled.sh builds
+# them: tilo-runtime's dev-overrides turn on the throwaway identity a
+# development login opens its desk with, which the task's spawned session mints.
 RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "tilo-session", "--bin", "tilo-session",
-                 "--features", "dev-overrides")
-# The agent task's client and seeded desktop, as perf-scheduled.sh builds them.
-AGENT_TASK_BUILD = (*RELEASE_SHELL, "-p", "tilo-runtime", "--bin", "tilo-runtime-mcp",
-                    "--example", "agent_task_desktop")
-AGENT_TASK_SEEDER = "crates/session/compositor/src/agent_task_desktop.rs"
+                 "-p", "tilo-runtime", "--bin", "tilo-runtime-mcp", "--features", "dev-overrides")
 
 
 def run_browser(ctx: RunContext) -> list[record.Record]:
@@ -515,43 +471,24 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
                                 ("cargo", "build", "--locked", "-p", "tilo-relay", "--example",
                                  "keystroke_writes"),
                                 "target/debug/examples/keystroke_writes")}),
-    Group("latency", "dev", "lavapipe",
-          (("cargo", "build", "--locked", "-p", "tilo-session", "--bin", "tilo-session"),),
-          {"shell": "target/debug/tilo-session"}, {}, {}, run_latency),
     Group("agent", "release", "lavapipe", (RELEASE_SHELL,),
-          {"shell": "target/release/tilo-session"}, {}, {}, run_agent,
-          {"agent_task_desktop": (AGENT_TASK_SEEDER, AGENT_TASK_BUILD,
-                                  "target/release/examples/agent_task_desktop"),
-           "tilo-runtime-mcp": (AGENT_TASK_SEEDER, AGENT_TASK_BUILD, "target/release/tilo-runtime-mcp")}),
+          {"shell": "target/release/tilo-session", "tilo-runtime-mcp": "target/release/tilo-runtime-mcp"},
+          {}, {}, run_agent),
     Group("render", "release", "lavapipe",
           (("cargo", "build", "--locked", "--release", "-p", "ui-examples", "--example", "ui-perf"),
-           ("cargo", "build", "--locked", "--release", "-p", "tilo-session", "--example", "redraw_bench"),
            ("cargo", "build", "--locked", "--release", "-p", "tilo-app", "--features", "test-support",
             "--example", "framework-scaling")),
-          {"ui-perf": "target/release/examples/ui-perf", "redraw_bench": "target/release/examples/redraw_bench",
+          {"ui-perf": "target/release/examples/ui-perf",
            "framework-scaling": "target/release/examples/framework-scaling"},
           {}, {}, run_render,
-          {"strip_pan_bench": ("crates/session/compositor/src/strip_pan_bench.rs",
-                               ("cargo", "build", "--locked", "--release", "-p", "tilo-session", "--example",
-                                "strip_pan_bench"),
-                               "target/release/examples/strip_pan_bench"),
-           "notes-latency": ("apps/notes/examples/notes-latency.rs",
+          {"notes-latency": ("apps/notes/examples/notes-latency.rs",
                              ("cargo", "build", "--locked", "--release", "-p", "notes", "--example",
                               "notes-latency"),
                              "target/release/examples/notes-latency")}),
-    Group("wakeups", "dev", "lavapipe",
-          (("cargo", "build", "--locked", "-p", "tilo-session", "--example", "idle-wakeups",
-            "--features", "scheduled-idle-benchmark"),
-           ("cargo", "build", "--locked", "-p", "tilo-session", "--bin", "tilo-session")),
-          {"shell": "target/debug/tilo-session", "idle-wakeups": "target/debug/examples/idle-wakeups"},
-          {}, {"shell": "target/debug/tilo-session"}, run_wakeups),
     Group("fs", "dev", "none", (),
           {}, {"performance_timing": (("cargo", "test", "--locked", "-p", "tilo-fs", "--test",
                                        "performance_timing", "--no-run"), "performance_timing")},
           {}, run_fs),
-    Group("search", "dev", "none", (),
-          {}, {"shell-lib": (("cargo", "test", "--locked", "-p", "tilo-session", "--lib", "--no-run"), "shell")},
-          {}, run_search),
     Group("browser", "release", "swiftshader", (BROWSER_BUILD,),
           {"browser-bundle": BROWSER_BUNDLE}, {}, {}, run_browser),
 )}
@@ -591,12 +528,7 @@ def side_group(group: Group, repo: Path) -> Group:
         return dataclasses.replace(group, tests={"performance_timing": (
             ("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_gate", "--no-run"),
             "performance_gate")})
-    if group.name != "wakeups" or (repo / "crates/session/compositor/src/idle-wakeups.rs").is_file():
-        return group
-    return dataclasses.replace(
-        group, builds=(("cargo", "build", "--locked", "-p", "tilo-session", "--bin", "tilo-session"),),
-        binaries={"shell": "target/debug/tilo-session"},
-        tests={"it": (("cargo", "test", "--locked", "-p", "tilo-session", "--test", "it", "--no-run"), "it")})
+    return group
 
 
 def artifact(repo: Path, path: str) -> Path:
@@ -732,7 +664,6 @@ def main(argv: list[str] | None = None) -> int:
     go.add_argument("--hosting-minutes", type=int, default=3, help="measured minutes per hosting run")
     go.add_argument("--hosting-relay-cpus", type=int, default=0,
                     help="confine the relay to this many CPUs, as on a VM with that many vCPUs (0: all)")
-    go.add_argument("--wakeups-window", type=int, default=30, help="idle window per wakeups run, seconds")
     again = commands.add_parser("analyse", help="analyse the records of an earlier run again")
     again.add_argument("records", type=Path)
     args = parser.parse_args(argv)

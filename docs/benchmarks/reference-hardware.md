@@ -8,20 +8,17 @@ latency targets:
 - **Workspace switch:** first frame within one refresh, no dropped frame,
   at most 300 ms in total.
 
-Two lanes measure them. Neither blocks a merge.
+One lane measures them: a weekly, report-only run on a reference machine below,
+through `tilo-vm`. It never blocks a merge.
 
 | Lane | Where | Clock | KPI ids |
 |---|---|---|---|
-| Compositor side | `tools/ci/perf-scheduled.sh latency`, a headless debug compositor, lavapipe | input taken by the loop → frame finished (headless has no flip) | `latency.input_to_frame.pointer`, `latency.workspace_switch.{first_frame,settled,dropped_frames}` |
 | Weekly, report-only | a reference machine below, through `tilo-vm` | kernel input event → KMS presentation (the flip's vblank) | `hw.key_to_present.notes.<hz>hz`, `hw.workspace_switch.{first_frame,settled,dropped_frames}.<hz>hz` |
 
-The compositor lane answers "did the compositor's own work get slower". Its input
-comes through the control socket rather than libinput, and it has no panel, so
-its numbers are not input to photon and are never marketed. The weekly lane is
-the true number up to the presentation timestamp. Neither sees peripheral scan
-time (USB polling) or panel pixel response: only a photodiode does, and a
-marketed photon-to-photon figure must either add one or say that it stops at
-presentation.
+The clock is the true number up to the presentation timestamp. It does not see
+peripheral scan time (USB polling) or panel pixel response: only a photodiode
+does, and a marketed photon-to-photon figure must either add one or say that it
+stops at presentation.
 
 ## The cohort
 

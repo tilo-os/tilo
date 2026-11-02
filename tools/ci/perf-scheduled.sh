@@ -71,8 +71,13 @@ case $group in
     exit "$status"
     ;;
   agent)
+    # What a person waits for when an agent works in their session: the round
+    # trip of the calls an agent makes (list, state, invoke) and a whole task
+    # an agent in the login runs — find a notebook, make a note, write and
+    # read it back — through tilo-runtime-mcp and the agent door, on a
+    # headless session this build starts for the run.
     cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp \
-      --example agent_task_desktop --features dev-overrides
+      --features dev-overrides
     test -r "$VK_DRIVER_FILES"
     env_json release lavapipe kvm > "$out/env.json"
     bash tools/with-test-environment.sh python3 scripts/perf/agent_rtt.py \
@@ -136,23 +141,31 @@ case $group in
     cat "$out"/image-*.jsonl > "$out/footprint-image.jsonl" 2>/dev/null || true
     exit "$status"
     ;;
-  latency)
-    cargo build --locked -p tilo-session --bin tilo-session
-    env_json dev lavapipe kvm > "$out/env.json"
-    python3 scripts/perf/latency_bench.py --shell-bin "$target/debug/tilo-session" \
-      --out "$out/run" --env-json "$out/env.json" --records "$out/latency.jsonl"
-    ;;
   render)
+    # What a person notices: how long the desk takes to draw its first frame,
+    # what a frame costs while it animates and while a document is typed
+    # into, and what frames offered at rest cost. session_perf measures the
+    # shared desktop surface on the frame path both hosts draw with, per tile
+    # profile: `arriving` is the native session's chrome, `apps` the page's
+    # chrome and app paint. Its budgets are [devices.x86.session.*] in
+    # tools/perf/kpi-budgets.toml, so a phase over budget fails this check.
+    # Around it: the toolkit's own 4K redraw (ui-perf), the framework's
+    # scaling with item counts, and a document's keystroke-to-frame latency.
+    cargo build --locked --release -p tilo-desktop --example session_perf
     cargo build --locked --release -p ui-examples --example ui-perf
-    cargo build --locked --release -p tilo-session --example redraw_bench --example strip_pan_bench
     cargo build --locked --release -p tilo-app --features test-support --example framework-scaling
     cargo build --locked --release -p notes --example notes-latency
     test -r "$VK_DRIVER_FILES"
     examples=$target/release/examples
     env_json release lavapipe kvm > "$out/env.json"
-    python3 scripts/perf/render_bench.py timing "$examples/ui-perf" "$examples/redraw_bench" \
-      --env-json "$out/env.json" --out "$out" --strip-pan-bench "$examples/strip_pan_bench" \
-      --records "$out/render.jsonl" || status=$?
+    status=0
+    for profile in arriving apps; do
+      TILO_PERF_DEVICE=x86 "$examples/session_perf" --profile "$profile" \
+        --json "$out/session-$profile.json" || status=$?
+    done
+    python3 tools/perf/check_kpi.py check "$out"/session-*.json || status=$?
+    python3 scripts/perf/render_bench.py timing "$examples/ui-perf" \
+      --env-json "$out/env.json" --out "$out" --records "$out/render.jsonl" || status=$?
     for plan in "5000,50000 open framework-open" "5000 scroll framework-scroll" "500,1000,2500 focus framework-focus"; do
       read -r sizes action adapter <<< "$plan"
       "$examples/framework-scaling" "$sizes" "$action" | tee "$out/$adapter.log" || status=$?
@@ -166,41 +179,15 @@ case $group in
     # what a shell reports, so each step keeps its own.
     exit "$status"
     ;;
-  wakeups)
-    cargo build --locked -p tilo-session --example idle-wakeups --features scheduled-idle-benchmark
-    cargo build --locked -p tilo-session --bin tilo-session
-    status=0
-    for run in 1 2 3; do
-      TILO_IDLE_SESSION_BIN="$target/debug/tilo-session" TILO_IDLE_WAKEUP_WINDOW_SECS=60 \
-        bash tools/test-env.sh "$target/debug/examples/idle-wakeups" > "$out/idle-$run.log" 2>&1 || status=$?
-      # The report: every thread's row, the frame loop and what was logged.
-      if grep -q '^IDLE-WAKEUPS ' "$out/idle-$run.log"; then
-        sed -n '/^idle wakeups over/,/^IDLE-WAKEUPS /p' "$out/idle-$run.log"
-      else
-        tail -n 40 "$out/idle-$run.log"
-      fi
-    done
-    env_json dev lavapipe kvm > "$out/env.json"
-    python3 tools/perf/adapters.py idle-wakeups --env-json "$out/env.json" "$out"/idle-*.log > "$out/wakeups.jsonl"
-    exit "$status"
-    ;;
   search)
-    cargo test --locked -p tilo-session --lib --no-run
-    status=0
-    for run in 1 2 3 4 5; do
-      TILO_SEARCH_PERF_GATE=1 TILO_FILES_NAME_INDEX_NAMES=50000 bash tools/test-env.sh cargo test --locked -p tilo-session --lib \
-        shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild \
-        -- --exact --nocapture --test-threads=1 > "$out/files-name-index-$run.log" 2>&1 || status=$?
-      grep 'FILES-NAME-INDEX' "$out/files-name-index-$run.log" || true
-    done
-    TILO_SEARCH_PERF_GATE=1 bash tools/test-env.sh cargo test --locked -p tilo-session --lib \
-      against_the_full_index_only_searches_it -- --nocapture --test-threads=1 > "$out/palette-keystroke.log" 2>&1 \
-      || status=$?
-    grep 'keystrokes: median' "$out/palette-keystroke.log" || tail -n 40 "$out/palette-keystroke.log"
-    env_json dev none kvm > "$out/env.json"
-    python3 tools/perf/adapters.py files-name-index --env-json "$out/env.json" "$out"/files-name-index-*.log \
-      > "$out/search.jsonl"
-    exit "$status"
+    # What a person notices: the palette answers while they type. The
+    # measurement is the palette search's own: every registry app's entry
+    # ranked against a query, best of 25 tries, under its budget (2 ms
+    # optimised, 10 ms in the test profile). A query over budget fails the
+    # test, and so this check; nothing is recorded for comparison.
+    bash tools/with-test-environment.sh cargo test --release --locked -p tilo-desktop-search --lib \
+      providers::tests::a_query_against_every_registry_app_stays_under_two_milliseconds \
+      -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$out/palette-keystroke.log"
     ;;
   hosting)
     cargo build --locked --release -p tilo-relay --example relay_load

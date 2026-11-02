@@ -57,13 +57,14 @@ Records (tools/perf/record.py), one sample per repetition:
   agent.task.notes.retries       tool calls asked again
   agent.task.notes.step.<step>   one step's tool calls, ms
 
-The desktop is `crates/session/session`: a
-signed-in person with one empty Notes notebook, restored from a seeded
-profile, serving its agent door in the profile's runtime directory. The
-compositor, its profile, its sockets and the client are removed on exit,
-whatever happens. Against a running desktop (`--socket`, a device's
-admin-control.sock, with its `agent.sock` beside it) nothing is seeded, and
-the task never touches the notebook a person already has: the run first
+The desktop is `crates/session/session` (--spawn): a
+development build started headless on a scratch profile, its desk opened
+with the throwaway identity a development login mints, and its agent door
+served in the profile's runtime directory. The session, its profile, its
+sockets and the client are removed on exit, whatever happens. Against a
+running desktop (`--socket`, a device's admin-control.sock, with its
+`agent.sock` beside it) the person's desktop is left as it was found. Either
+way the task never touches a notebook a person already has: the run first
 creates a workspace of its own and opens Notes there
 (`scratch_notes.py`), so the agent is admitted to that workspace and its
 `notes` is that workspace's notebook; the agent is removed again at the end.
@@ -781,29 +782,37 @@ def describe_desktop(conn: Connection, path: Path | None) -> str:
 
 
 @contextlib.contextmanager
-def seeded_desktop(shell: Path, seeder: Path, log: Path, timeout: int) -> Iterator[tuple[str, Path]]:
-    """The seeded Notes desktop through spawn-headless.sh, serving its agent
-    door: (control socket, runtime directory). Its profile is removed on exit."""
-    if not seeder.is_file() or not os.access(seeder, os.X_OK):
-        raise BenchError(f"no desktop seeder at {seeder}")
+def spawned_desktop(shell: Path, log: Path, timeout: int) -> Iterator[tuple[str, Path]]:
+    """A headless session through spawn-headless.sh, serving its agent door:
+    (control socket, runtime directory). Its profile is removed on exit.
+
+    A session with no identity opens setup instead of a desk, so a first pass
+    mints the throwaway identity a development login opens its desk with and
+    exits; the pass that is measured starts on it.
+    """
+    if not shell.is_file() or not os.access(shell, os.X_OK):
+        raise BenchError(f"no session at {shell}")
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     cache.mkdir(parents=True, exist_ok=True)
     profile = Path(tempfile.mkdtemp(prefix="agent-task.", dir=cache))
     try:
-        for sub in ("config/tilo/identity", "data", "state", "cache", "home", "run"):
+        for sub in ("config", "data", "state", "cache", "home", "run"):
             (profile / sub).mkdir(parents=True, exist_ok=True, mode=0o700)
-        seeded = subprocess.run([str(seeder), "--profile", str(profile)], capture_output=True,
-                                text=True, check=False)
-        if seeded.returncode != 0:
-            raise BenchError(f"the seeder failed: {seeded.stderr.strip()[-2000:]}")
-        env = json.loads(seeded.stdout.strip().splitlines()[-1])
-        env = {key: str(value) for key, value in env.items()}
-        env["TILO_HEADLESS_PROFILE"] = str(profile)
-        # spawn-headless.sh runs the compositor with XDG_RUNTIME_DIR=<profile>/run;
-        # the door goes where a client in that login looks for it.
         runtime = profile / "run"
-        env["TILO_AGENT_DOOR"] = str(runtime / "tilo-session" / "agent.sock")
-        env.setdefault("RUST_LOG", os.environ.get("RUST_LOG", "info"))
+        env = {"TILO_HEADLESS_PROFILE": str(profile),
+               # spawn-headless.sh runs the session with XDG_RUNTIME_DIR=<profile>/run;
+               # the door goes where a client in that login looks for it.
+               "TILO_AGENT_DOOR": str(runtime / "tilo-session" / "agent.sock"),
+               "RUST_LOG": os.environ.get("RUST_LOG", "info")}
+        with spawned(shell, profile / "identity.log", timeout, env) as socket_path:
+            conn = Connection(socket_path, timeout=60)
+            try:
+                minted = control(conn, {"op": "provision_test_identity"}, "provision the test identity")
+            finally:
+                conn.close()
+            if not isinstance(minted, dict) or minted.get("throwaway") is not True:
+                raise BenchError(f"no throwaway identity for the measured session: "
+                                 f"{json.dumps(minted)[:400]} (see {profile / 'identity.log'})")
         with spawned(shell, log, timeout, env) as socket_path:
             yield socket_path, runtime
     finally:
@@ -937,9 +946,8 @@ def session(socket_path: str, runtime: Path, args: argparse.Namespace,
     conn = Connection(socket_path, timeout=60)
     door: Door | None = None
     try:
-        if args.own_notebook:
-            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            open_own_notebook(conn, f"Agent task bench {stamp}", args.startup_timeout)
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        open_own_notebook(conn, f"Agent task bench {stamp}", args.startup_timeout)
         wait_for_door(runtime / "tilo-session" / "agent.sock", args.startup_timeout)
         door = Door.start(args.mcp, client_env(runtime, scratch), args.client_log)
         args.tools = admit(conn, door, args.startup_timeout)
@@ -950,12 +958,11 @@ def session(socket_path: str, runtime: Path, args: argparse.Namespace,
     finally:
         if door is not None:
             door.close()
-        if args.own_notebook:
-            # The agent leaves the person's desktop as it found it.
-            with contextlib.suppress(OSError, BenchError):
-                control(conn, {"op": "actions_invoke", "provider": "actions", "id": "agent.remove",
-                               "args": {"name": AGENT, "confirm": True}, "wait_ms": WAIT_MS},
-                        "remove the agent")
+        # The agent leaves the desktop as it found it.
+        with contextlib.suppress(OSError, BenchError):
+            control(conn, {"op": "actions_invoke", "provider": "actions", "id": "agent.remove",
+                           "args": {"name": AGENT, "confirm": True}, "wait_ms": WAIT_MS},
+                    "remove the agent")
         conn.close()
 
 
@@ -967,9 +974,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="a running desktop's admin control socket; its agent.sock is beside "
                         "it, and the run opens Notes in a new workspace of its own")
     target.add_argument("--spawn", type=Path, metavar="SHELL",
-                        help="start this compositor headless on a seeded Notes desktop")
-    parser.add_argument("--seeder", type=Path,
-                        help="the agent_task_desktop example (default beside SHELL)")
+                        help="start this session headless on a throwaway desktop")
     parser.add_argument("--mcp", type=Path,
                         help="tilo-runtime-mcp (default beside SHELL, else on PATH)")
     parser.add_argument("--repetitions", type=int, default=30)
@@ -990,11 +995,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.repetitions < 1 or args.warmup < 0:
         parser.error("--repetitions must be positive and --warmup not negative")
     if args.transport is None:
-        args.transport = ("tilo-runtime-mcp --connect, agent door, headless compositor" if args.spawn
+        args.transport = ("tilo-runtime-mcp --connect, agent door, headless session" if args.spawn
                           else "tilo-runtime-mcp --connect, agent door")
-    # Only the seeded throwaway desktop's notebook is the bench's; on any
-    # running desktop the notebooks belong to a person.
-    args.own_notebook = not args.spawn
     if args.mcp is None:
         beside = args.spawn.resolve().parent / "tilo-runtime-mcp" if args.spawn else None
         found = shutil.which("tilo-runtime-mcp")
@@ -1002,10 +1004,9 @@ def main(argv: list[str] | None = None) -> int:
     env = record.load_env(args.env_json) if args.env_json else None
     try:
         if args.spawn:
-            seeder = args.seeder or args.spawn.resolve().parent / "examples" / "agent_task_desktop"
-            log = args.log or Path(tempfile.gettempdir()) / "agent-task-compositor.log"
+            log = args.log or Path(tempfile.gettempdir()) / "agent-task-session.log"
             args.log = log
-            with seeded_desktop(args.spawn, seeder, log, args.startup_timeout) as (socket_path, runtime):
+            with spawned_desktop(args.spawn, log, args.startup_timeout) as (socket_path, runtime):
                 runs = session(socket_path, runtime, args, runtime.parent)
         else:
             runs = session(str(args.socket), args.socket.resolve().parent.parent, args, None)

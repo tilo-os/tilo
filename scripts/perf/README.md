@@ -22,12 +22,9 @@ executable stand-alone; the higher-level flow is described below.
   already-built binaries and an existing app store, so it does not build an
   RPM or image.
 
-- `latency_bench.py` — the nightly `latency` KPI group: a headless compositor
-  times 600 pointer moves (input to finished frame, from the frame trace) and
-  100 workspace switches (the compositor's `WORKSPACE-SWITCH` lines: chord to
-  first frame, to the resting frame, dropped intervals), and writes records.
-  `device_latency_bench.py` is its weekly hardware counterpart (kernel input to
-  KMS presentation, through `tilo-vm`); see
+- `device_latency_bench.py` — the weekly, report-only latency run on a
+  reference machine (kernel input event to KMS presentation, through
+  `tilo-vm`): pointer and workspace-switch KPIs per refresh rate; see
   [reference hardware](../../docs/benchmarks/reference-hardware.md).
 
 - `drm_hardware_checks.py --device yoga --slot device --commit C
@@ -83,7 +80,7 @@ executable stand-alone; the higher-level flow is described below.
   action. With `--env-json` it writes `tools/perf/record.py` records.
   The performance run runs it as the `agent` group.
 
-- `agent_task.py (--socket PATH | --spawn SHELL [--seeder EXAMPLE] [--mcp CLIENT])` —
+- `agent_task.py (--socket PATH | --spawn SHELL [--mcp CLIENT])` —
   a whole agent task the way an agent in a terminal of a Tilo login runs it:
   a scripted model, streamed like the Messages API from a loopback fake,
   drives `tilo-runtime-mcp --connect`, which relays to the session's agent
@@ -94,11 +91,12 @@ executable stand-alone; the higher-level flow is described below.
   the time in Tilo, in the (fake) model and in the agent loop, the turns,
   the calls asked again because the note was not there yet, and each step.
   `--think-ms` and `--tokens-per-s` model a real provider; both default to
-  0. `--spawn` seeds a signed-in Notes desktop with the `agent_task_desktop`
-  example of `shell` and serves its agent door in the profile; `--socket`
-  takes a device's admin-control.sock (its agent.sock beside it) and works
-  in a workspace of its own. The performance run runs it in the `agent`
-  group.
+  0. `--spawn` starts a headless session on a scratch profile, mints the
+  throwaway identity a development login opens its desk with, and serves its
+  agent door in the profile; `--socket` takes a device's admin-control.sock
+  (its agent.sock beside it). Either way the task works in a workspace of its
+  own and removes the agent afterwards. The performance run runs it in the
+  `agent` group.
 
 ### Windowed desktop input
 
