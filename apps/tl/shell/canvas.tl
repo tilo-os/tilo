@@ -71,7 +71,7 @@ view framed_place(a: Arrangement, p: ArrangementPlace) {
 view space_content(a: Arrangement, p: ArrangementPlace) {
     stack(gap: .related, fill) {
         place_controls(a, p)
-        ui.Text(if p.title == "" { p.shows } else { p.title }, role: .label, secondary: true)
+        ui.Text(place_title(p), role: .label, secondary: true)
         place_view(p, fill)
     }
 }

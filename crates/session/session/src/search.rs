@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::app_names::app_name;
 use crate::lists::{AppLists, Lists};
 use crate::records::Records;
 
@@ -173,11 +174,6 @@ fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, 
         serde_json::json!({ "path": [{ "field": field }], "op": "set", "value": value }),
     );
     edit
-}
-
-/// An app's name as people know it.
-pub(crate) fn app_name(app: &str) -> String {
-    tilo_desktop_search::availability::name_for(app).map_or_else(|| app.to_owned(), str::to_owned)
 }
 
 impl SessionSearch {

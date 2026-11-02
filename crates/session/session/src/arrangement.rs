@@ -420,16 +420,66 @@ impl Arrangement {
         own_arrangement::read(&self.doc)
     }
 
+    /// The desk's windows by tab id, as a place shows one: the app it shows, what the window
+    /// calls itself, and whether that name is the person's own. Read once for a whole reading,
+    /// so naming a place costs no more than walking the desk the reading already describes.
+    fn shown_windows(&self) -> BTreeMap<u64, (String, String, bool)> {
+        use tilo_desktop_model::TileContent;
+        self.handle.read(|tree| {
+            let mut shown = BTreeMap::new();
+            for workspace in &tree.workspaces {
+                for strip in &workspace.strips {
+                    for group in &strip.window_groups {
+                        for tab in &group.tabs {
+                            let app = match &tab.tile {
+                                TileContent::Foreign { app_id, .. }
+                                | TileContent::LocalApp { app_id, .. }
+                                | TileContent::PeerWindow { app_id, .. }
+                                | TileContent::HostedWindow { app_id, .. } => app_id.clone(),
+                                TileContent::AppPlaceholder { label, .. }
+                                | TileContent::Stub { label, .. } => label.clone(),
+                            };
+                            shown.insert(tab.id, (app, tab.title.clone(), tab.app_title.is_some()));
+                        }
+                    }
+                }
+            }
+            shown
+        })
+    }
+
     /// The arrangement as a shell's views read it: every workspace, row, strip and place, each
     /// by its key, laid out as the shell's arrangement type holds it. This is what the session
     /// publishes on its door for a shell to draw.
     #[must_use]
     pub fn reading(&self) -> Reading {
         let strips = self.strips();
+        let shown = self.shown_windows();
         let mut places = Vec::new();
         let mut strips_reading = Vec::new();
         for strip in &strips.strips {
             for place in &strip.places {
+                // What the place shows, as the desk has it now: a window the person renamed, or
+                // one whose app took another id, is named by what it says today, not by what
+                // the record kept when it opened. A place the desk no longer holds keeps the
+                // record's own title.
+                let held = shown.get(&place.id);
+                let record_title = self
+                    .catalog
+                    .borrow()
+                    .get(&place.record)
+                    .map(|target| target.title.trim().to_owned())
+                    .unwrap_or_default();
+                let (app, title) = match held {
+                    // A place showing a record is named by that record: its window shows it,
+                    // so its title is the window's, unless the person named the window itself.
+                    Some((app, title, named)) if !*named && !record_title.is_empty() => {
+                        (app.clone(), record_title)
+                    }
+                    Some((app, title, _)) => (app.clone(), title.clone()),
+                    None if !record_title.is_empty() => (place.shows.clone(), record_title),
+                    None => (place.shows.clone(), place.title.clone()),
+                };
                 places.push(PlaceReading {
                     key: place.id.to_string(),
                     strip: strip.id.to_string(),
@@ -437,6 +487,7 @@ impl Arrangement {
                     shown_as: place.view.clone(),
                     record: place.record.clone(),
                     title: place.title.clone(),
+                    name: crate::app_names::window_name(&app, &title),
                     pinned: place.pinned,
                     shell: place.shell.clone(),
                 });

@@ -11,6 +11,8 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use crate::app_names::claimant;
+
 use serde_json::Value;
 use tilo_actions::ResourceSpec;
 use tilo_bluetooth_agent::{Method as PairingMethod, PairingDetails};
@@ -799,19 +801,13 @@ fn keeps_answer(shown: &Shown, answer: &Answer) -> bool {
             ))
 }
 
-/// Who asks, as the person reads it: the app's own name where it has one.
+/// Who asks, as the person reads it: the app's own name where this device knows
+/// the app, else the id it claims.
 fn who(question: &Question) -> String {
     match &question.app_id {
-        Some(app_id) => app_name(app_id),
+        Some(app_id) => claimant(app_id),
         None => question.label.clone(),
     }
-}
-
-/// What the app `app_id` is called.
-pub(crate) fn app_name(app_id: &str) -> String {
-    let scan = desktop_entry::cache::cached_scan();
-    scan.find(app_id)
-        .map_or_else(|| app_id.to_owned(), |entry| entry.name.clone())
 }
 
 /// A sheet that asks the person to allow `detail`, and nothing else.
@@ -1128,7 +1124,7 @@ fn shortcuts(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> 
         let status = match (row.status.as_deref(), &row.taken_by) {
             (Some("reserved"), _) => Some(word("portal-shortcut-reserved")),
             (Some("taken"), Some(app)) => {
-                Some(words("portal-shortcut-taken", &[("app", &app_name(app))]))
+                Some(words("portal-shortcut-taken", &[("app", &claimant(app))]))
             }
             _ => None,
         };
@@ -1238,7 +1234,7 @@ fn share(handle: &str, who: &str, details: Value, remote: bool) -> Option<(Dialo
 /// How the source the app offers reads.
 fn source_label(source: &OfferedSource) -> String {
     match (&source.app_id, source.kind) {
-        (Some(app), SourceKind::Window) => format!("{}: {}", app_name(app), source.label),
+        (Some(app), SourceKind::Window) => format!("{}: {}", claimant(app), source.label),
         _ => source.label.clone(),
     }
 }
@@ -1551,7 +1547,7 @@ fn request(question: &Question, asked: &FileChooserQuestion) -> FileRequest {
     FileRequest {
         handle: question.handle.clone(),
         title: asked.title.clone(),
-        app_name: question.app_id.as_deref().map(app_name),
+        app_name: question.app_id.as_deref().map(claimant),
         app_id: question.app_id.clone(),
         mode: if asked.directory {
             FileMode::Folder

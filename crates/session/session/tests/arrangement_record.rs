@@ -80,6 +80,11 @@ fn strip_of(session: &Session, tab: u64) -> Option<u64> {
 
 /// A window of `app` on the desk, its tab's id.
 fn open_window(session: &mut Session, app: &str) -> u64 {
+    open_window_called(session, app, app)
+}
+
+/// A window of `app` on the desk calling itself `title`, its tab's id.
+fn open_window_called(session: &mut Session, app: &str, title: &str) -> u64 {
     // A table's window, opened the way the launcher opens one: a tab of the
     // strip in front.
     let handle = session.handle().clone();
@@ -96,7 +101,7 @@ fn open_window(session: &mut Session, app: &str) -> u64 {
         id: group,
         tabs: vec![tilo_desktop_model::Tab {
             id: tab,
-            title: app.to_owned(),
+            title: title.to_owned(),
             tile: tilo_desktop_model::TileContent::LocalApp {
                 app_id: app.to_owned(),
                 label: app.to_owned(),
@@ -496,6 +501,45 @@ fn the_arrangement_reads_out_by_key_for_the_shells_views() {
     assert!(
         !reading.workspaces.is_empty(),
         "the desk shows its workspaces"
+    );
+}
+
+// A place reads out named the way every surface shows it: the window's own title and its app's
+// own name, never an app id, and the app's name alone for a window that has no title.
+#[test]
+fn a_place_reads_out_named_by_its_window_and_its_app_never_an_id() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let window = open_window_called(&mut session, "org.example.TextEditor", "Groceries");
+    step(&mut session);
+    let reading = session.arrangement().borrow().reading();
+    let place = reading
+        .places
+        .iter()
+        .find(|place| place.key == window.to_string())
+        .expect("the place reads out by its key");
+    assert_eq!(
+        place.name, "Groceries — Text Editor",
+        "the window's own title, then the app's name: never the id it is opened by"
+    );
+    assert!(
+        !place.name.contains("org.example"),
+        "no surface ever reads an app id: {}",
+        place.name
+    );
+
+    let untitled = open_window_called(&mut session, "org.example.TextEditor", "");
+    step(&mut session);
+    let reading = session.arrangement().borrow().reading();
+    let place = reading
+        .places
+        .iter()
+        .find(|place| place.key == untitled.to_string())
+        .expect("the untitled window reads out");
+    assert_eq!(
+        place.name, "Text Editor",
+        "a window with no title of its own is its app alone"
     );
 }
 

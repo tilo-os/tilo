@@ -1632,9 +1632,11 @@ pub const RAIL_SEG_H: f64 = 6.0;
 pub const RAIL_SEG_W: f64 = 22.0;
 pub const RAIL_SEG_W_FOCUSED: f64 = 40.0;
 pub const RAIL_GAP: f64 = RAIL_HIT_H - RAIL_SEG_W;
-/// Flush with the screen's bottom edge, for the same reason as
-/// [`RIBBON_MARGIN`]; ten pixels up it floated over the windows' bottom margin.
-pub const RAIL_MARGIN: f64 = 0.0;
+/// How far the rail keeps inside the content's bottom edge, within the strip's
+/// bottom gutter: flush with the screen's edge, six pixels of mark on the last
+/// rows read as a pager the screen had cropped, and further up it floated over
+/// the windows' own bottom edge.
+pub const RAIL_MARGIN: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 /// Minimum pointer target (HIG §9.6) across the rail's short axis.
 pub const RAIL_HIT_H: f64 = 32.0;
 
@@ -1663,10 +1665,10 @@ fn rail_fill(theme: &Theme, focused: f64, hover: bool, present: bool) -> Color {
 }
 
 impl StripRail {
-    /// Drawn for any strip with a window, like the ribbon for any
-    /// workspace with a strip: the pair reads as one object turned ninety
-    /// degrees, and the rail missing while the ribbon showed a lone strip
-    /// read as the rail being gone, not as "one window here".
+    /// Drawn for any strip with a window: the rail says where the windows
+    /// on screen stand and takes a press to focus one, which a lone window
+    /// still wants. (The ribbon is the other way round — it only shows
+    /// where there is another strip to choose.)
     pub fn is_meaningful(&self) -> bool {
         self.count >= 1
     }
@@ -1755,9 +1757,10 @@ impl StripRail {
                 continue;
             };
             let present = self.visible.contains(&i);
-            // Square where it meets the screen edge, rounded inward.
+            // Rounded all round: inside the desk's edge it is a control, and a
+            // square corner there would read as an edge crop.
             let r = ChromeRole::Selector.radius(theme, seg.height());
-            let shape = RoundedRect::from_rect(seg, RoundedRectRadii::new(r, r, 0.0, 0.0));
+            let shape = RoundedRect::from_rect(seg, RoundedRectRadii::new(r, r, r, r));
             let fill = rail_fill(theme, focus_weight(i, focus), hover == Some(i), present);
             scene.fill(
                 Fill::NonZero,
@@ -1829,8 +1832,8 @@ mod rail_tests {
             assert!(
                 rects
                     .iter()
-                    .all(|s| (s.y1 - r.content.y1).abs() < f64::EPSILON),
-                "every segment sits flush on the screen's bottom edge"
+                    .all(|s| (s.y1 - (r.content.y1 - RAIL_MARGIN)).abs() < f64::EPSILON),
+                "every segment keeps RAIL_MARGIN inside the bottom edge, never on it"
             );
             assert!(
                 (0..4).all(|i| r
@@ -1838,6 +1841,31 @@ mod rail_tests {
                     .is_some_and(|h| (h.y1 - r.content.y1).abs() < f64::EPSILON)),
                 "each target runs to the edge, so the pointer pinned there hits it"
             );
+        }
+
+        // The pager stands inside the desk's bottom gutter, with room under it:
+        // a mark flush on the screen's last rows read as a page indicator the
+        // screen had cropped.
+        {
+            let r = rail(3, 1, vec![0, 1, 2]);
+            let gutter = crate::widget::STRIP_BOTTOM_GUTTER_PX;
+            for i in 0..3 {
+                let seg = r.segment_rect(i).unwrap();
+                assert!(
+                    seg.y1 <= r.content.y1 - RAIL_MARGIN,
+                    "segment {i} ends {} past its inset",
+                    seg.y1 - (r.content.y1 - RAIL_MARGIN)
+                );
+                assert!(
+                    seg.y0 >= r.content.y1 - gutter,
+                    "segment {i} starts {} above the gutter's ceiling, over the windows",
+                    (r.content.y1 - gutter) - seg.y0
+                );
+                assert!(
+                    r.content.y1 - seg.y1 >= RAIL_MARGIN,
+                    "segment {i} leaves less than its own inset below"
+                );
+            }
         }
 
         // Case `weights_stay_ordered_on_every_palette`:

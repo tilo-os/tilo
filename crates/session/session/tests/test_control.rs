@@ -374,9 +374,18 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     for _ in 0..50 {
         session.step(Duration::from_millis(1)).expect("step");
     }
-    let title = session
-        .shell_control("Groceries")
-        .expect("the frame's title");
+    // The frame names its window the way every surface does: the window's own title and its
+    // app's own name, resolved once by the session.
+    let shown = session
+        .arrangement()
+        .borrow()
+        .reading()
+        .places
+        .iter()
+        .find(|place| place.title == "Groceries")
+        .map(|place| place.name.clone())
+        .expect("the desk holds the note's place");
+    let title = session.shell_control(&shown).expect("the frame's title");
 
     let png = root.path().join("shot.png");
     let answer = ask(

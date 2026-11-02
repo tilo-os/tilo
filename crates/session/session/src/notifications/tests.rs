@@ -205,7 +205,11 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
     message.contact_endpoint = Some("mailto:ada@example.org".into());
     message.incoming_call = true;
     let handle_only = shown(message.clone(), 0);
-    assert_eq!(handle_only.app_name.as_deref(), Some("so.tilo.chat"));
+    assert_eq!(
+        handle_only.app_name.as_deref(),
+        Some("Chat"),
+        "an attributed app is named by what the device calls it, never its id"
+    );
     assert_eq!(handle_only.app_id.as_deref(), Some("so.tilo.chat"));
     assert_eq!(handle_only.from, None, "a handle alone names no one");
     assert_eq!(handle_only.addressed, None, "a call needs its caller");
@@ -405,8 +409,8 @@ fn the_centre_lists_what_arrived_named_after_its_app() {
     assert_eq!(view.rows.len(), 1, "the centre lists it");
     assert_eq!(view.rows[0].title, "New mail");
     assert_eq!(
-        view.rows[0].app, "so.tilo.mail",
-        "named after the app it came from"
+        view.rows[0].app, "Mail",
+        "named by the app's own name, never its id"
     );
     assert!(view.rows[0].opens, "it can be opened");
     assert_eq!(view.quiet, None, "it is not held by quiet");
@@ -450,8 +454,8 @@ fn the_centre_publishes_what_it_keeps_and_the_verbs_that_change_it() {
     assert_eq!(centre.count, 2, "the root page counts them");
     let newest = centre.rows[0].clone();
     assert_eq!(
-        newest.app, "so.tilo.mail",
-        "named after the app it came from"
+        newest.app, "Mail",
+        "named by the app's own name, never its id"
     );
     assert_eq!(
         newest.actions,

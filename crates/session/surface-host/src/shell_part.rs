@@ -510,7 +510,13 @@ pub struct ArrangementPlaceReading {
     pub shows: String,
     pub shown_as: String,
     pub record: String,
+    /// The title the place recorded when it was made, kept for the record's own bookkeeping:
+    /// what a surface shows a window by is [`Self::name`].
     pub title: String,
+    /// What every surface calls this place: its window's title and the app's own name
+    /// (`Groceries — Notes`), or the app's name alone when the window has no title. Never an
+    /// app id.
+    pub name: String,
     pub pinned: bool,
     pub shell: String,
 }
@@ -1377,6 +1383,7 @@ fn place_fields(p: &ArrangementPlaceReading) -> Vec<(&'static str, Value)> {
         ("shown_as", text(&p.shown_as)),
         ("record", text(&p.record)),
         ("title", text(&p.title)),
+        ("name", text(&p.name)),
         ("pinned", Value::Bool(p.pinned)),
         ("shell", text(&p.shell)),
     ]

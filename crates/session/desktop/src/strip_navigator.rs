@@ -51,9 +51,13 @@ pub struct StripFrame {
     pub windows: Vec<GroupId>,
     /// How far the shown strip is scrolled, in layout pixels.
     pub scroll_x: f64,
-    /// The ribbon and its labels show and take input: off under an
-    /// overview, a fullscreen window, or a panel that replaces them.
+    /// The ribbon shows and takes input: off under an overview, a fullscreen
+    /// window or a panel that replaces them, and in a workspace of one strip,
+    /// where a mark would stand on the content's edge with nothing to choose.
     pub ribbon_offered: bool,
+    /// The labels may open here, from the top bar, a key or the workspace
+    /// menu: off wherever they would cover a panel that replaces the desk.
+    pub switcher_offered: bool,
     /// The rail shows and takes input: off under an overview or a
     /// fullscreen window.
     pub rail_offered: bool,
@@ -79,6 +83,7 @@ impl StripFrame {
             windows: Vec::new(),
             scroll_x: 0.0,
             ribbon_offered: false,
+            switcher_offered: false,
             rail_offered: false,
         }
     }
@@ -133,7 +138,11 @@ impl StripFrame {
             strip: strip.map(|strip| strip.id),
             windows: groups.iter().map(|group| group.id).collect(),
             scroll_x,
-            ribbon_offered: !covered && !workspace.strips.is_empty(),
+            // One strip has nothing to switch to, so its mark would stand on the
+            // content's edge as a handle that does nothing: the ribbon shows
+            // where there is another strip to choose.
+            ribbon_offered: !covered && workspace.strips.len() > 1,
+            switcher_offered: !covered,
             rail_offered: !covered,
         }
     }
@@ -217,10 +226,10 @@ impl StripNavigator {
     }
 
     /// Read `frame` at `now`: a change from what was last read is
-    /// navigation, and shows the ribbon and rail. Closes the labels when the
-    /// ribbon is not offered; returns whether it did.
+    /// navigation, and shows the ribbon and rail. Closes the labels when they
+    /// are not offered; returns whether it did.
     pub fn observe(&mut self, frame: &StripFrame, now: Instant) -> bool {
-        let closed = !frame.ribbon_offered && self.switcher.is_open();
+        let closed = !frame.switcher_offered && self.switcher.is_open();
         if closed {
             self.switcher.close();
         }
@@ -298,7 +307,7 @@ impl StripNavigator {
         p: Point,
         now: Instant,
     ) -> Option<Option<StripNavigation>> {
-        if !frame.ribbon_offered || !self.switcher.is_open() {
+        if !frame.switcher_offered || !self.switcher.is_open() {
             return None;
         }
         self.switcher.place(&frame.ribbon);
@@ -333,7 +342,7 @@ impl StripNavigator {
         p: Point,
         now: Instant,
     ) -> Option<Option<StripNavigation>> {
-        if !frame.ribbon_offered {
+        if !frame.switcher_offered {
             return None;
         }
         if !self.switcher.is_open() && !self.open_from_ribbon(frame, p, now) {
@@ -353,9 +362,9 @@ impl StripNavigator {
 
     /// The workspace menu's New strip: the labels open pinned and a strip
     /// is made, whose name then goes in place for typing. `None` where the
-    /// switcher is not offered.
+    /// labels are not offered.
     pub fn new_strip(&mut self, frame: &StripFrame, now: Instant) -> Option<StripNavigation> {
-        if !frame.ribbon_offered {
+        if !frame.switcher_offered {
             return None;
         }
         self.switcher.place(&frame.ribbon);
@@ -416,7 +425,7 @@ impl StripNavigator {
     /// Whether a wheel at `p` is the navigator's: over the ribbon or the
     /// open labels.
     pub fn takes_wheel_at(&self, frame: &StripFrame, p: Point) -> bool {
-        frame.ribbon_offered && (frame.zone().contains(p) || self.switcher.target_at(p).is_some())
+        frame.switcher_offered && (frame.zone().contains(p) || self.switcher.target_at(p).is_some())
     }
 
     /// A wheel or two-finger scroll at `p`: over the ribbon or the labels it
@@ -473,7 +482,7 @@ impl StripNavigator {
 
     /// Open the labels for choosing, as a menu, on the shown strip.
     pub fn open_for_choosing(&mut self, frame: &StripFrame, now: Instant) {
-        if frame.ribbon_offered {
+        if frame.switcher_offered {
             self.switcher.place(&frame.ribbon);
             self.switcher.open_for_choosing(now);
             self.switcher.place(&frame.ribbon);
@@ -482,7 +491,7 @@ impl StripNavigator {
 
     /// Open the labels with the shown strip's name in place for typing.
     pub fn rename_focused(&mut self, frame: &StripFrame, now: Instant) {
-        if frame.ribbon_offered {
+        if frame.switcher_offered {
             self.switcher.place(&frame.ribbon);
             self.switcher.rename_focused(now);
             self.switcher.place(&frame.ribbon);
@@ -491,7 +500,7 @@ impl StripNavigator {
 
     /// Open or close the labels for the keyboard.
     pub fn toggle_from_keyboard(&mut self, frame: &StripFrame, now: Instant) {
-        if frame.ribbon_offered {
+        if frame.switcher_offered {
             self.switcher.place(&frame.ribbon);
             self.switcher.toggle_from_keyboard(now);
             self.switcher.place(&frame.ribbon);
@@ -560,7 +569,7 @@ impl StripNavigator {
         cx: &mut DrawCx<'_>,
         now: Instant,
     ) -> Option<Rect> {
-        if !frame.ribbon_offered || !self.switcher.is_open() {
+        if !frame.switcher_offered || !self.switcher.is_open() {
             return None;
         }
         self.switcher
@@ -851,6 +860,27 @@ mod tests {
             .map(|s| s.removable)
             .collect();
         assert_eq!(removable, vec![false, true], "only an empty strip may go");
+    }
+
+    /// A workspace with one strip has nothing to switch to, so the ribbon
+    /// stays off and no bare mark stands on the content's edge; a second
+    /// strip brings it back.
+    #[test]
+    fn one_strip_offers_no_ribbon_and_a_second_one_does() {
+        let mut alone = tree();
+        alone.workspaces[0].strips.truncate(1);
+        let one = frame(&alone, &[(1001, Rect::new(40.0, 60.0, 600.0, 780.0))], 0.0);
+        assert!(!one.ribbon_offered, "nothing to switch to");
+        assert_eq!(one.zone(), Rect::ZERO, "and nothing to rest on");
+        assert!(one.switcher_offered, "though its labels still open");
+        assert!(one.rail_offered, "the strip's windows still show");
+
+        let two = frame(&tree(), &[(1001, Rect::new(40.0, 60.0, 600.0, 780.0))], 0.0);
+        assert!(
+            two.ribbon_offered,
+            "a second strip gives the ribbon its job"
+        );
+        assert!(two.zone().x1 > CONTENT.x1 - 1.0, "it stands on the edge");
     }
 
     /// Hidden at rest; a strip or window change shows the ribbon and rail,

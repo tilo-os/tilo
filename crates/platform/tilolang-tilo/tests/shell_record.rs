@@ -451,6 +451,52 @@ fn the_macos_bar_carries_the_focused_windows_own_menus() {
     );
 }
 
+/// Every surface that names a window reads the session's one answer: the window's own title and
+/// its app's own name, never an app id.
+#[test]
+fn a_window_is_named_by_its_window_and_app_never_an_id() {
+    let mut r = workspace();
+    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.commit();
+    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    r.commit();
+    let arrangement = scenario(&r, APP, "a reference lands beside its place");
+    let meta = r.host.package(APP).unwrap().meta;
+    let front = meta
+        .views
+        .iter()
+        .find(|v| v.name == "front_window")
+        .expect("the front window's view")
+        .id
+        .clone();
+    let view = r
+        .host
+        .runtime()
+        .open_view(
+            &Principal::new("ada"),
+            &front,
+            vec![arrangement, Value::Bool(false)],
+        )
+        .unwrap();
+    let names: Vec<String> = nodes(&view, "ui.WindowFrame")
+        .iter()
+        .filter_map(|frame| match frame.props.get("name") {
+            Some(Value::Text(name)) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec!["design — Chat".to_owned()],
+        "a window reads as its own title and its app: {names:?}"
+    );
+    let tree = format!("{:?}", view.tree());
+    assert!(
+        !tree.contains("so.tilo.lang.chat\""),
+        "the desk never shows the id it opens a place by: {tree}"
+    );
+}
+
 #[test]
 fn a_bar_that_hides_until_reached_for_shows_when_the_pointer_comes_to_the_edge() {
     let mut r = workspace();

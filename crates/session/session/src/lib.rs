@@ -32,6 +32,7 @@ mod activity_models;
 mod activity_provider;
 pub mod agent_door;
 mod app_icons;
+mod app_names;
 mod app_sheets;
 pub mod arrangement;
 mod asks;

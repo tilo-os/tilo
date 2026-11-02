@@ -87,10 +87,12 @@ view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bo
     }
 }
 
-/// What a place is called: its resource's title, else the title the place was given, else what
-/// it shows.
+/// What a place is called, on every surface: `p.name`, resolved once by the session for all of
+/// them — the window's title and its app's own name (`Groceries — Notes`), or the app alone when
+/// the window has no title. A bar, a chip, a switcher row and a search row never disagree, and
+/// none of them ever falls back to an app id.
 fn place_title(p: ArrangementPlace) -> Text {
-    if let r = placed_resource(p.record) { meta(r).title } else if p.title == "" { p.shows } else { p.title }
+    p.name
 }
 
 /// A frame's controls: the way to carry the place to another row, and close. Each is one

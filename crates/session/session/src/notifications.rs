@@ -112,10 +112,10 @@ pub(crate) fn shown(
     };
     notification.sender_id = Some(sent.id);
     // `app_name` is the sender's own word: an attributed app is named by
-    // its id, an unattributed sender's name is shown as its claim, never
-    // as who it is.
+    // what the device calls that app, an unattributed sender's name is shown
+    // as its claim, never as who it is.
     notification.app_name = match app_id.as_deref() {
-        Some(id) => Some(id.to_owned()),
+        Some(id) => Some(crate::app_names::app_name(id)),
         None => notifications::sender_claim(&sent.app_name),
     };
     // Artwork from what proves the app first, then lower-trust hints that
