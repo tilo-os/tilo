@@ -1125,7 +1125,6 @@ inputs = [
   "os/usr/share/tilo/system-interfaces.toml", "tools/font-catalog.py",
   "crates/sdk/ui-core/assets/fonts/**",
   # The session file must start the login wrapper.
-  "os/usr/share/wayland-sessions/shell.desktop",
 ]
 readers = [
   "crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs",
