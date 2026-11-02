@@ -1,0 +1,184 @@
+# tilolang messages: generated from the package's source, commit it. Translate in
+# locales/<language>.ftl beside it; edit the words in the source, not here.
+
+d-lmdoxbnn = Channels
+    .doc = The workspace's conversations in the sidebar's order: channels outside any category, the
+    .noun = { $count ->
+        [one] channels
+       *[other] channelses
+    }
+
+d-5kzdptyg = Items
+
+d-fe2st4jb = Category
+    .doc = A named group of channels in the sidebar.
+    .noun = { $count ->
+        [one] category
+       *[other] categories
+    }
+
+d-hbhrds5c = Name
+
+d-hvqgmwrk = Channels
+    .doc = TODO: `Collection<Channel>` with `type Channel = TextChannel | VoiceChannel |
+
+d-q7llygsa = Text channel
+    .doc = Messages in one stream; any message can start a thread. A post is a change of its channel,
+    .noun = { $count ->
+        [one] text channel
+       *[other] text channels
+    }
+
+d-x3haugpo = Name
+
+d-u6b35mgm = Topic
+
+d-ksuxpopi = Messages
+
+d-ztou5nin = Threads
+    .doc = The threads its messages started, each the one a message's `thread` names.
+
+d-hk2t6bvk = Message
+    .doc = A message. Who wrote it, when, and its edits come from the log.
+    .noun = { $count ->
+        [one] message
+       *[other] messages
+    }
+
+d-xfrqdy3y = Body
+
+d-4uwxpnw2 = Reply to
+    .doc = The message this one answers inline, quoted above it.
+
+d-kxekobh6 = Thread
+    .doc = The side conversation branched off this message.
+
+d-mwily5kw = Parts
+    .doc = What a message said before messages were rich text, kept as it was written.
+
+d-4zr7hti6 = Pinned
+    .doc = Whether it is pinned to its channel, which search finds.
+
+d-ofad24rc = Reactions
+    .doc = Who reacted, by emoji.
+
+d-dh6346no = Sent view
+    .doc = A view the message sends, as its sender had it among their views: its tilolang
+
+d-6qpql3pg = Thread
+    .doc = A side conversation branched off one message.
+    .noun = { $count ->
+        [one] thread
+       *[other] threads
+    }
+
+d-xuvfifa5 = Name
+
+d-ijy454g6 = Messages
+
+d-2ki7h2z5 = Archived
+
+d-5nkbpj6q = Direct
+    .doc = A private conversation: one other person, or a named group of them, in the same message
+    .noun = { $count ->
+        [one] direct
+       *[other] directs
+    }
+
+d-5stv6ro7 = Name
+
+d-ycadyqh5 = Person
+    .doc = The one person it is with, for a direct message. TODO(language): a group holds several
+
+d-y65whtrn = Messages
+
+d-3p73kpuw = Threads
+
+d-yx5sbebu = Part
+    .doc = A piece of a message from before messages were rich text: its text, or a block's source.
+    .noun = { $count ->
+        [one] part
+       *[other] parts
+    }
+
+d-zevnbs3i = Kind
+    .doc = `text` or `block`.
+
+d-3hkzkqvr = Body
+
+d-msf7yzn7 = New channel
+    .doc = Adds a text channel to the sidebar.
+
+d-26f7sh5k = New category
+    .doc = Adds a category to the sidebar.
+
+d-abono4ra = New channel
+    .doc = Adds a text channel to a category.
+
+d-3cetzzm3 = Message
+    .doc = Opens the direct message with `who`, in the sidebar, or the one already open with them: a
+
+d-peb7lz2j = Send
+    .doc = Posts a message in a channel, a thread or a direct conversation as the invoker, answering
+
+d-qaa5kdra = Send a view
+    .doc = Sends a view as a message: its title as what the message says, its definition for anyone
+
+d-255qjx7d = Edit
+    .doc = Changes what a message says. Only its author may.
+
+d-vhmhrq2t = Delete
+    .doc = Deletes a message from the channel or thread it is in. Its author, or anyone the
+
+d-2ojqeubz = Pin
+    .doc = Pins a message to its channel, or unpins it.
+
+d-np3mn65k = React
+    .doc = Adds your reaction with an emoji to a message, or takes it back when you had reacted with it.
+
+d-6uysx57s = Start thread
+    .doc = Starts a thread from a message of a channel or a direct conversation, named after what the
+
+d-dgrvpxre = Send view~present
+
+d-comllwls = Edit~present
+
+d-c2x2a6dh = Pin~present
+
+d-5rkfnkg4 = Sidebar
+    .doc = The sidebar: channels outside any category first, then each category with its channels.
+
+d-ymtess4x = Channel
+    .doc = A text channel: its messages, and a composer that can answer one of them.
+
+d-jbezqvlc = Direct
+    .doc = A direct conversation: the same messages and composer as a channel, with the person's name
+
+d-enkgjyn7 = Thread
+    .doc = A thread: its messages and a composer, the same way.
+
+d-rydgecpc = Typing here
+    .doc = Who is typing here, from the system's presence: the lenses on `of` whose person is
+
+d-tx3zjawu = Direct typing here
+    .doc = {""}[`typing_here`] for a direct conversation.
+
+d-dcprca6g = Thread typing here
+    .doc = {""}[`typing_here`] for a thread.
+
+d-hjw5xd6b = Said
+    .doc = What a message says, and that it was edited when its history holds an edit.
+
+d-5rkfnkg4~row0~row0 = Sidebar for ch
+
+d-5rkfnkg4~row0 = Sidebar for item
+
+d-5rkfnkg4~row1 = Sidebar for p
+
+d-ymtess4x~row0 = Channel for m
+
+d-jbezqvlc~row0 = Direct for m
+
+d-enkgjyn7~row0 = Thread for m
+
+d-hjw5xd6b~row0 = Said for p
