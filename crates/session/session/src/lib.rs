@@ -1150,6 +1150,10 @@ impl Session {
             &overlays,
         )));
         compositor.add_host(shell::bar_under(options.shell, Held(Rc::clone(&chrome))));
+        // Search's code is asked for as the session starts, so it is in by the
+        // time someone searches; a search asked for before then opens now,
+        // and the desk publishes it on its next pass.
+        handle.search_palette().borrow_mut().adopt();
         // The desk as the session publishes it, which the shell reads through the door.
         let desk_overlays = Rc::new(overlays::Overlays::new());
         let chrome_door = shell::chrome_door(options.shell, &chrome, &desk_overlays);
