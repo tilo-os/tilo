@@ -91,23 +91,11 @@ impl ShellPart {
         if !applied {
             return;
         }
-        {
-            let mut record = self.record.borrow_mut();
-            record.commit();
-            self.seen_heads = record
-                .committed_heads()
-                .iter()
-                .map(ToString::to_string)
-                .collect();
-        }
-        {
-            let record = self.record.borrow();
-            self.instance.sync(Some(&record));
-        }
-        // The record moved: the part's next turn settles what that started, as the seed's
-        // commit does, so the views draw the shell as the setting left it.
-        self.instance.moved();
-        self.work.syncing = self.work.syncing.saturating_add(at.elapsed());
+        // The record moved: the part's next turn settles what that started and draws the
+        // shell as the setting left it, as it does a change another part of this shell
+        // committed, since both write the record the parts share.
+        self.record.borrow_mut().commit();
+        self.work.committing = self.work.committing.saturating_add(at.elapsed());
     }
 
     /// `argument` as an argument of a parameter of type `ty`: a choice takes the name of its
