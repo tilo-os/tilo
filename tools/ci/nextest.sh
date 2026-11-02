@@ -170,7 +170,14 @@ PY
 if (( nextest )) && [[ ${3:-} == run ]] && declares_no_test; then
     arguments+=(--no-tests=pass)
 fi
-if (( nextest )) && [[ ${3:-} == run ]] && [[ " $* " != *" --profile "* ]]; then
+# nextest's profile, given either as `--profile` or its short `-P`.
+given_profile=0
+for argument in "$@"; do
+    case $argument in
+        --profile|--profile=*|-P|-P=*) given_profile=1 ;;
+    esac
+done
+if (( nextest )) && [[ ${3:-} == run ]] && (( ! given_profile )); then
     # The profile CI tests with (`.config/nextest.toml`): the failure
     # output and the hang bound the job expects.
     arguments+=(--profile ci)
@@ -187,7 +194,7 @@ fi
 # hand, and nextest's report is not a selection at all.
 for (( index = 0; index < ${#arguments[@]}; index++ )); do
     case ${arguments[index]} in
-        --no-fail-fast|--profile) ;;
+        --no-fail-fast|--profile|-P) ;;
         -E|--filterset|--filter-expr) timed=0 ;;
         --junit|--junit=*) [[ " $* " == *" --junit "xml" "* || " $* " == *" --junit=xml "* ]] || timed=0 ;;
         --test|--exact|--test-threads=*|--run-ignored=*|--retries=*) timed=0 ;;
