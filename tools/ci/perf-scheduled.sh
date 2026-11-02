@@ -187,7 +187,9 @@ case $group in
     # ranked against a query, best of 25 tries, under its budget (2 ms
     # optimised, 10 ms in the test profile). A query over budget fails the
     # test, and so this check; nothing is recorded for comparison.
-    bash tools/with-test-environment.sh cargo test --release --locked -p tilo-desktop-search --lib \
+    # The test binary runs inside tools/with-test-environment.sh (the cargo
+    # runner), like every other test.
+    cargo test --release --locked -p tilo-desktop-search --lib \
       providers::tests::a_query_against_every_registry_app_stays_under_two_milliseconds \
       -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$out/palette-keystroke.log"
     ;;
