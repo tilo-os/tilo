@@ -287,11 +287,6 @@ impl SearchResultsView {
         self.bands = RowBands::resolve(theme);
     }
 
-    /// A group header's band: the room a group costs above its rows.
-    pub(crate) fn header_band(&self) -> f64 {
-        self.bands.header
-    }
-
     /// A one- or two-line row's band.
     pub(crate) fn row_band(&self, two_line: bool) -> f64 {
         if two_line {
@@ -299,6 +294,38 @@ impl SearchResultsView {
         } else {
             self.bands.one_line
         }
+    }
+
+    /// What the list spends around its rows: the padding at both ends, the
+    /// band a row's preview keeps, `groups` headers and the gaps between
+    /// them. A cap compares against a row's share by taking this away.
+    fn rows_overhead(&self, groups: usize) -> f64 {
+        let gaps = f64::from(u32::try_from(groups.saturating_sub(1)).unwrap_or(u32::MAX));
+        PAD * 2.0
+            + self.preview_band()
+            + crate::num::f64_of_usize(groups) * self.bands.header
+            + self.group_gap * gaps
+    }
+
+    /// The height `two_lines` rows take in the list under `groups` headers,
+    /// as the plan lays them out: padding, headers and the gaps between
+    /// groups included. An owner that has rows but not the list asks this
+    /// before handing them over.
+    pub(crate) fn height_for(&self, two_lines: &[bool], groups: usize) -> f64 {
+        let rows: f64 = two_lines
+            .iter()
+            .map(|&two_line| self.row_band(two_line))
+            .sum();
+        self.rows_overhead(groups) + rows
+    }
+
+    /// How many rows of one band the list takes in `cap` under `groups`
+    /// headers, never less than one: the room left once the padding,
+    /// headers and gaps are paid for.
+    pub(crate) fn row_capacity(&self, cap: f64, groups: usize, two_line: bool) -> usize {
+        let band = self.row_band(two_line).max(1.0);
+        let room = (cap - self.rows_overhead(groups)).max(band);
+        crate::num::usize_of_f64((room / band).floor()).max(1)
     }
 
     /// Keep `height` free under the empty-state line, for controls the

@@ -507,7 +507,7 @@ impl DesktopSearch {
         let browsing = query.trim().is_empty();
         let mut rows = Vec::new();
         let mut more_rows = Vec::new();
-        let entries = self.fitted(groups, two_lines, browsing, &mut rows, &mut more_rows);
+        let entries = self.fitted(groups, browsing, &mut rows, &mut more_rows);
         self.more_rows = more_rows;
         // A source answering late re-ranks the rows of the same query: the
         // row the person moved to stays chosen, so Enter does not open
@@ -570,7 +570,6 @@ impl DesktopSearch {
     fn fitted(
         &self,
         mut groups: Vec<KindGroup<Hit>>,
-        two_lines: bool,
         browsing: bool,
         rows: &mut Vec<Hit>,
         more: &mut Vec<ResourceKind>,
@@ -578,10 +577,14 @@ impl DesktopSearch {
         let total: usize = groups.iter().map(|group| group.total).sum();
         let mut dropped = false;
         loop {
+            // Short rows hold more than tall ones, so the room is counted in
+            // the shortest a row can be and every plan is weighed at its own
+            // line heights: a list that lost a row it could have kept would
+            // hide a result for nothing.
             let cap = if self.everything {
                 usize::MAX
             } else {
-                self.palette.entry_row_capacity_for(groups.len(), two_lines)
+                self.palette.entry_row_capacity_for(groups.len(), false)
             };
             // A lone group is kept whole to spare it a "Show all" row it
             // would not need, so its own rows are trimmed to the room left
@@ -2142,10 +2145,46 @@ mod tests {
             .iter()
             .find(|entry| entry.id == ALL_RESULTS_ID)
             .unwrap_or_else(|| panic!("a crowded card offers the rest in one row: {entries:?}"));
+        let count: usize = rest
+            .label
+            .split_whitespace()
+            .find_map(|word| word.parse().ok())
+            .unwrap_or_default();
         assert!(
-            rest.label.contains('1') || rest.label.contains('2') || rest.label.contains('3'),
+            rest.label.starts_with("Show all ") && count > 0,
             "the row says how many results it lists: {}",
             rest.label
+        );
+    }
+
+    /// Choosing the row that lists the rest shows every result the search
+    /// found, groups and all, and leaves the card to scroll them: nothing
+    /// the query found stays out of reach.
+    #[test]
+    fn the_rest_of_the_results_are_listed_when_their_row_is_chosen() {
+        let mut search = DesktopSearch::new();
+        search.set_room(500.0, 160.0);
+        search.open(crowded());
+        settled(&mut search);
+        let before = search.results().len();
+        let entries = search.palette().visible_entries();
+        let at = entries
+            .iter()
+            .position(|entry| entry.id == ALL_RESULTS_ID)
+            .unwrap_or_else(|| panic!("a crowded card offers the rest: {:?}", entries));
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+        assert!(!search.observe(), "listing the rest keeps search open");
+        assert!(search.is_open(), "the card stays up");
+        let after = search.results().len();
+        assert!(after > before, "{before} rows became {after}");
+        assert!(
+            search
+                .palette()
+                .visible_entries()
+                .iter()
+                .all(|entry| entry.id != ALL_RESULTS_ID),
+            "nothing is left over to offer"
         );
     }
 

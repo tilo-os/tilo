@@ -7,8 +7,9 @@ use winit::event::{ElementState, WindowEvent};
 use super::ActionPalette;
 use crate::theme::Theme;
 
-/// How much of the height a card may give its result list.
-const LIST_SHARE: f64 = 0.78;
+/// How much of the height a card may give its result list: four fifths,
+/// which on an 800-pixel window still leaves the card inside it.
+const LIST_SHARE: f64 = 0.80;
 /// The tallest result list, at the theme's own text size.
 const LIST_MAX: f64 = 660.0;
 /// The shortest result list a card keeps, however little room it has.

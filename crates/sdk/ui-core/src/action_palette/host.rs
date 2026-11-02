@@ -414,10 +414,7 @@ impl ActionPalette {
     /// put there, which the palette does not hold yet.
     #[must_use]
     pub fn entry_row_capacity_for(&self, groups: usize, two_line: bool) -> usize {
-        let row = self.results.row_band(two_line).max(1.0);
-        let headers = crate::num::f64_of_usize(groups) * self.results.header_band();
-        let room = (self.list_cap() - headers).max(row);
-        crate::num::usize_of_f64((room / row).floor()).max(1)
+        self.results.row_capacity(self.list_cap(), groups, two_line)
     }
 
     /// Whether the rows `entries` stand inside the list, under the headers
@@ -426,12 +423,11 @@ impl ActionPalette {
     /// edge, so a host asks this before it hands its rows over.
     #[must_use]
     pub fn entries_fit(&self, entries: &[CommandEntry], groups: usize) -> bool {
-        let headers = crate::num::f64_of_usize(groups) * self.results.header_band();
-        let rows: f64 = entries
+        let two_lines: Vec<bool> = entries
             .iter()
-            .map(|entry| self.results.row_band(entry.description.is_some()))
-            .sum();
-        headers + rows <= self.list_cap() + 0.5
+            .map(|entry| entry.description.is_some())
+            .collect();
+        self.results.height_for(&two_lines, groups) <= self.list_cap() + 0.5
     }
 
     /// The result list's rect (the card under its field and band, with the
