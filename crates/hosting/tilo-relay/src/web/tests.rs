@@ -130,6 +130,47 @@ async fn browser_as(
     protocol::decode_grant(&body).unwrap().0.token
 }
 
+/// A page takes its seat in a room by subscribing to it over its session, as
+/// the page's own client does once it joined: the room's bootstrap and replay
+/// reach the page, then its `Ready`.
+async fn subscribe(addr: SocketAddr, token: [u8; 32], workspace_id: u64) {
+    let (status, _) = post(
+        addr,
+        "/send",
+        Some(token),
+        postcard::to_allocvec(&vec![crate::Envelope::Subscribe { workspace_id }]).unwrap(),
+    )
+    .await;
+    assert_eq!(status, 204, "the page's subscription");
+    let mut ack = None;
+    let mut ready = false;
+    for _ in 0..10 {
+        let (status, body) = post(
+            addr,
+            "/events",
+            Some(token),
+            postcard::to_allocvec(&protocol::EventsRequest {
+                ack,
+                wait_ms: 5_000,
+            })
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, 200, "the page's events");
+        let page: protocol::EventsPage = postcard::from_bytes(&body).unwrap();
+        if page
+            .envelopes
+            .iter()
+            .any(|envelope| matches!(envelope, crate::Envelope::Ready { .. }))
+        {
+            ready = true;
+            break;
+        }
+        ack = page.cursor;
+    }
+    assert!(ready, "the room admitted the page");
+}
+
 #[test]
 fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
     let files = |host| TlsSource::Files {
@@ -265,9 +306,6 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         sessions,
         host_info: HostInfo {
             host_cert: host.clone(),
-            webtransport_port: Some(0),
-            certificate_sha256: None,
-            webtransport_origin: None,
         },
         allowed_origins: vec![],
         features: 0,
@@ -319,7 +357,7 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         403,
         "a spectator without a seat"
     );
-    let subscription = native(&relay, &watch_key, &watch, room.workspace_id).await;
+    subscribe(addr, watching, room.workspace_id).await;
     let (code, body) = ask(watching, record).await;
     assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
     let keys: protocol::ChannelKeys = postcard::from_bytes(&body).unwrap();
@@ -347,7 +385,6 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
     assert_eq!(ask(watching, record).await.0, 403);
 
     serving.abort();
-    subscription.close().await;
     crate::daemon::Relay::shutdown(relay).await;
 }
 
@@ -559,9 +596,6 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         sessions,
         host_info: HostInfo {
             host_cert: host.clone(),
-            webtransport_port: Some(0),
-            certificate_sha256: None,
-            webtransport_origin: None,
         },
         allowed_origins: vec!["https://app.example".into()],
         features: protocol::FEATURE_FETCH_PROXY,
@@ -819,9 +853,6 @@ async fn a_page_turns_its_call_at_the_host_and_only_an_admitted_device_is_answer
         sessions,
         host_info: HostInfo {
             host_cert: host.clone(),
-            webtransport_port: None,
-            certificate_sha256: None,
-            webtransport_origin: None,
         },
         allowed_origins: vec![],
         features: 0,

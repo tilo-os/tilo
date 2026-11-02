@@ -1,7 +1,7 @@
 //! A browser session's part in a governed call, through the session the
 //! page runs (`PeerHandle`): it lists the workspace's calls, joins one and keeps
 //! the participation across a reconnect, and leaving ends its grant: the
-//! others' roster shrinks and its token admits no carrier.
+//! others' roster shrinks.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,11 +19,10 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle, VoiceEvent};
-use tilo_moq::client::Status;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
 
-use call::{GovernedCall, carrier, native, operate, until};
+use call::{GovernedCall, native, operate};
 use support::{ready, start_peer, wait_for};
 
 /// The next call event of `peer` that `pick` accepts.
@@ -113,16 +112,13 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     peer.voice_join(workspace_id, workspace.call.call).unwrap();
     let bob = voice(&peer, &mut pending, "Bob's grant", granted).await;
     assert_eq!(bob.participants.len(), 2);
-    assert_eq!(
-        bob.subscriptions,
-        vec![alice_alone.publication.clone().unwrap()]
-    );
+    assert_eq!(alice_alone.participants.len(), 1);
     let alice = native(&workspace.owner, |envelope| match envelope {
         Envelope::VoiceGranted { grant, .. } if grant.participants.len() == 2 => Some(*grant),
         _ => None,
     })
     .await;
-    assert_eq!(alice.subscriptions, vec![bob.publication.clone().unwrap()]);
+    assert!(alice.directions.publish && alice.directions.subscribe);
     // The page watches the list since it first asked: each join pushed a
     // new one, so the list naming Bob may follow one with Alice alone.
     peer.voice_calls(workspace_id).unwrap();
@@ -140,14 +136,6 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     .await;
     assert_eq!(listed[0].participants.len(), 2);
 
-    // Bob's grant admits his carrier.
-    let bob_carrier = carrier(&bob, 1);
-    until("Bob's carrier", &bob_carrier, |status| {
-        status == Status::Live
-    })
-    .await;
-    bob_carrier.close();
-
     // A dropped session resumes the same participation: the host keeps Bob
     // in the call and answers the resumed join with his grant.
     peer.reconnect().unwrap();
@@ -155,19 +143,14 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     assert_eq!(resumed.participation, bob.participation);
     assert_eq!(resumed.participants.len(), 2);
 
-    // Bob leaves: Alice's roster shrinks and his token admits no carrier.
+    // Bob leaves: Alice's roster shrinks.
     peer.voice_leave(workspace_id).unwrap();
     let alone_again = native(&workspace.owner, |envelope| match envelope {
         Envelope::VoiceGranted { grant, .. } if grant.participants.len() == 1 => Some(*grant),
         _ => None,
     })
     .await;
-    assert!(alone_again.subscriptions.is_empty());
-    let stale = carrier(&resumed, 1);
-    until("Bob's stale carrier", &stale, |status| {
-        matches!(status, Status::Failed | Status::Denied | Status::Closed)
-    })
-    .await;
+    assert_eq!(alone_again.participation, alice_alone.participation);
 
     // Bob joins again; when Alice ends the call his session reports it ended.
     peer.voice_join(workspace_id, workspace.call.call).unwrap();

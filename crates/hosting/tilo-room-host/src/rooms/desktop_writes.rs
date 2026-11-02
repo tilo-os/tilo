@@ -45,13 +45,13 @@ impl GovernedRoom {
     }
 
     /// The governor's copy of the shared desktop, sealed or not.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "agents")]
     async fn held_desktop(&self) -> Result<Option<Vec<u8>>, String> {
         self.readable_document(DESKTOP_APP, DESKTOP_RECORD).await
     }
 
     /// The governor's copy of the shared desktop, written in the clear.
-    #[cfg(not(any(feature = "agents", feature = "web")))]
+    #[cfg(not(feature = "agents"))]
     #[expect(
         clippy::unused_async,
         reason = "one signature with the build that opens sealed records"
@@ -79,7 +79,7 @@ impl GovernedRoom {
     /// sealed and put back together when it is one segment of a larger
     /// write.
     #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
+        not(feature = "agents"),
         expect(
             clippy::unused_async,
             reason = "one signature with the build that opens sealed records"
@@ -93,7 +93,7 @@ impl GovernedRoom {
             // A sealed write of a channel this relay does not take part in (it
             // holds no keys for it) is the one write it cannot read: the
             // room's devices, which open it, decide it on receipt.
-            #[cfg(any(feature = "agents", feature = "web"))]
+            #[cfg(feature = "agents")]
             match self
                 .open_write(DESKTOP_APP, DESKTOP_RECORD, envelope)
                 .await?
@@ -101,7 +101,7 @@ impl GovernedRoom {
                 Some(plaintext) => plaintext,
                 None => return Ok(Readable::Sealed),
             }
-            #[cfg(not(any(feature = "agents", feature = "web")))]
+            #[cfg(not(feature = "agents"))]
             return Ok(Readable::Sealed);
         } else {
             envelope.payload.clone()

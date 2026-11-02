@@ -89,7 +89,7 @@ pub(crate) enum MenuTarget {
     Message(Id),
     /// The workspace itself: what can be made in it.
     Workspace,
-    /// Someone else in the call, by person or guest id: how loud they play
+    /// Someone else in the call, by person: how loud they play
     /// on this device.
     CallParticipant(String),
 }

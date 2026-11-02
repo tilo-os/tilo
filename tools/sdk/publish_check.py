@@ -95,8 +95,6 @@ UPSTREAM_SUFFICES = {
     "libspa-sys": "Fedora 44 PipeWire header fix; only the optional `pipewire` feature builds it",
     "rustls-native-certs": "Tilo OS's single trust bundle; the original's discovery is right elsewhere",
     "wayland-backend": "a compositor (server) fix; SDK apps are Wayland clients",
-    "web-transport-quinn": "adds a server entry point for the host's shared HTTP/3 endpoint "
-    "and follows the workspace's kio; tilo-net's client uses neither",
     "wgpu": "a lost device is reported from `poll` instead of panicking; an app on the "
     "release panics on a GPU reset as before",
     "wgpu-hal": "Metal presentation observer (only the optional `presentation-feedback` "

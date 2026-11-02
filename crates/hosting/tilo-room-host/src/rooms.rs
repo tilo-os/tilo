@@ -55,14 +55,13 @@ pub(crate) use layout_scope::LAYOUT_REFUSAL;
 pub use private::PrivateProtocol;
 mod publisher;
 mod revocations;
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "agents")]
 pub(crate) mod sealed_records;
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub use sealed_records::fixtures as sealed_fixtures;
 mod participation;
 pub use device_keys::{ChannelKeys, DeviceKeys};
 mod shares;
-#[cfg(feature = "web")]
 mod spectator_keys;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -255,7 +254,7 @@ struct GovernedRoom {
     /// Member writes to follow before compacting a sealed record history
     /// again, after a compaction failed: each attempt opens and merges the
     /// whole history.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "agents")]
     compaction_wait: usize,
     /// The room's shared desktop as members' writes of it are decided,
     /// followed from the first such write ([`desktop_writes`]).
@@ -405,7 +404,7 @@ impl GovernedRoom {
             record,
             peer,
             publisher: Arc::default(),
-            #[cfg(any(feature = "agents", feature = "web"))]
+            #[cfg(feature = "agents")]
             compaction_wait: 0,
             desktop: None,
             desktop_segments: collab_types::DocumentReassembler::default(),
@@ -468,7 +467,7 @@ impl GovernedRoom {
             participation,
             device: device.cloned(),
             publisher: Arc::default(),
-            #[cfg(any(feature = "agents", feature = "web"))]
+            #[cfg(feature = "agents")]
             compaction_wait: 0,
             desktop: None,
             desktop_segments: collab_types::DocumentReassembler::default(),
@@ -878,7 +877,7 @@ pub(crate) struct RoomServices {
     /// The live handshake trust policy, for [`crate::room_access::decide`],
     /// which a host with app surfaces or bots of its own decides with.
     #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
+        not(feature = "agents"),
         expect(dead_code, reason = "only such a host asks for its own keys")
     )]
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
@@ -1116,7 +1115,6 @@ impl Rooms {
     }
 
     /// These rooms, held without keeping them alive.
-    #[cfg(feature = "web")]
     #[must_use]
     pub fn downgrade(&self) -> WeakRooms {
         WeakRooms(Arc::downgrade(&self.inner))
@@ -1499,12 +1497,12 @@ impl Rooms {
     ) -> Result<Option<Vec<u8>>, CollaborationError> {
         let state = self.room(room).await?;
         let governed = state.lock().await;
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "agents")]
         let document = governed
             .readable_document(app, record)
             .await
             .map_err(CollaborationError::new)?;
-        #[cfg(not(any(feature = "agents", feature = "web")))]
+        #[cfg(not(feature = "agents"))]
         let document = governed.peer().document(app, record);
         drop(governed);
         Ok(document)
@@ -1954,9 +1952,9 @@ impl Rooms {
         // relay takes part in that channel, it retains the write and the governor
         // keeps no copy. A record that starts sealed, as each new part of a
         // chained record does, is followed like any other where it does.
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "agents")]
         let readable = !sealed || room.takes_part_in_channel(&app_id, &record_id).await;
-        #[cfg(not(any(feature = "agents", feature = "web")))]
+        #[cfg(not(feature = "agents"))]
         let readable = !sealed;
         if !readable {
             return Ok(());
@@ -2233,7 +2231,7 @@ impl Rooms {
     /// before one is full (past its bound the copy would stop following
     /// the record), and tell whoever follows the room's records.
     #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
+        not(feature = "agents"),
         expect(
             clippy::unused_async,
             reason = "only a relay that takes part in channels compacts what it follows"
@@ -2255,7 +2253,7 @@ impl Rooms {
             self.replay_soon(room.room().to_owned());
         }
         crate::timing::window("room.follow", following);
-        #[cfg(any(feature = "agents", feature = "web"))]
+        #[cfg(feature = "agents")]
         {
             let compacting = crate::timing::start();
             if let Err(error) = self.compact_sealed_histories(room).await {

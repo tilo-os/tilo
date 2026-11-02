@@ -125,12 +125,9 @@ pub(crate) enum Hit {
     CallScreen,
     CallExpand,
     CallLeave,
-    /// Someone else in the call, by person or guest id: opens how loud
-    /// they play here.
+    /// Someone else in the call, by person id: opens how loud they play
+    /// here.
     CallParticipant(String),
-    /// The mark of the service a bridge carries a call guest in from,
-    /// beside their name: hovering it says where they are.
-    CallMark(String),
     /// Toggle the right flap (members / thread).
     ToggleRightFlap,
     /// Show or hide the open channel's pinned messages in the detail drawer.
@@ -653,7 +650,7 @@ impl ChatApp {
                     Hit::CallParticipant(id) => (
                         content(crate::i18n::t_args(
                             "chat-call-participant",
-                            &[("name", self.call_label(id).into())],
+                            &[("name", self.user_name(id).into())],
                         )),
                         Role::Button,
                         false,
@@ -696,16 +693,6 @@ impl ChatApp {
                 .as_ref()
                 .filter(|(rect, _)| rect.contains(point))
                 .cloned()
-        }) {
-            return Some(tip);
-        }
-        // So does a call guest's, beside their name. It lies under their
-        // tile's own target, which takes the click.
-        if let Some(tip) = self.hits.iter().find_map(|(rect, hit)| match hit {
-            Hit::CallMark(user) if rect.contains(point) => {
-                self.call_mark(user).map(|(_, tip)| (*rect, tip))
-            }
-            _ => None,
         }) {
             return Some(tip);
         }

@@ -5,17 +5,19 @@ import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT, TURN_MS, ba
 import {createPeerVoice} from './voice-peer.mjs';
 
 const CALL = 'c'.repeat(64);
-/** This page's own participation in the call's presence: its device. */
+/** This page's person. */
 const ME = 'a'.repeat(64);
 const BOB = 'b'.repeat(64);
-/** The host's device: the one its bridge seals this page's frames as. */
+/** The host's device: its participation in the call, which seals this
+ * page's frames as their sender. */
 const HOST = 'f'.repeat(64);
 const drain = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 
 function grantFor({publish = true, others = [BOB]} = {}) {
-  const participants = [ME, ...others].map(id => ({namespace: `${CALL}/${id}`, device: id, user: id, publishes: true}));
+  const participants = [{device: HOST, user: ME}, ...others.map(id => ({device: id, user: id}))]
+    .map(participant => ({...participant, publishes: true}));
   return {
-    call: CALL, epoch: 1, participation: `${CALL}/${ME}`,
+    call: CALL, epoch: 1,
     directions: {publish, subscribe: true},
     participants,
   };

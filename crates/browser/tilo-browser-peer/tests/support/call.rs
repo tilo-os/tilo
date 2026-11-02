@@ -8,18 +8,13 @@
     reason = "each voice test binary uses a different subset of these fixtures"
 )]
 
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::SystemTime;
 
 use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::HttpsLink;
-use tilo_moq::client::{
-    CapturedOpus, Client, ClientAuthority, Connection, ConnectionScope, Status,
-};
-use tilo_moq::relay::Direction;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::RelayClient;
@@ -47,85 +42,6 @@ pub async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
         .bind()
         .await
         .unwrap()
-}
-
-/// The grant is the whole authority; the client checks nothing more.
-pub struct Granted;
-impl ClientAuthority for Granted {
-    fn current(&self, _: &ConnectionScope, _: Direction, _: &str) -> bool {
-        true
-    }
-}
-
-/// A voice carrier admitted by `grant` alone.
-pub fn carrier(grant: &VoiceGrant, generation: u64) -> Client {
-    Client::start(
-        Connection {
-            scope: scope(grant, generation),
-            authorization: grant.token.clone(),
-        },
-        Arc::new(Granted),
-    )
-    .unwrap()
-}
-
-/// The carrier scope `grant` admits as carrier `generation`. As the native
-/// shell's participation does, a new grant replaces the carrier only when
-/// this changes: a renewed token or another roster keeps it.
-pub fn scope(grant: &VoiceGrant, generation: u64) -> ConnectionScope {
-    ConnectionScope {
-        endpoint: grant.endpoint.clone(),
-        fingerprints: grant.fingerprints.clone(),
-        owner_epoch: grant.participation,
-        carrier_generation: generation,
-        publication: grant.publication.clone(),
-        subscription_prefix: grant.directions.subscribe.then(|| hex::encode(grant.call)),
-    }
-}
-
-/// Until `client`'s status is `done`; a timeout names the statuses it went
-/// through, so a carrier that was denied or failed says so.
-pub async fn until(what: &str, client: &Client, done: fn(Status) -> bool) {
-    let started = Instant::now();
-    let mut seen: Vec<(Status, Duration)> = Vec::new();
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let status = client.status();
-        if seen.last().is_none_or(|(last, _)| *last != status) {
-            seen.push((status, started.elapsed()));
-        }
-        if done(status) {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for {what}; its statuses: {seen:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
-/// Speak on `speaker` until `listener` hears it from `namespace`.
-pub async fn hears(what: &str, speaker: &Client, listener: &Client, namespace: &str) {
-    let mut timestamp = 0;
-    wait_for(what, || {
-        let _ = speaker.try_send(CapturedOpus {
-            timestamp_48k: timestamp,
-            duration_samples: tilo_moq::voice::FRAME_SAMPLES,
-            payload: vec![0xf8, 0xff, 0xfe],
-            captured_at: Instant::now(),
-        });
-        timestamp = timestamp.saturating_add(u64::from(tilo_moq::voice::FRAME_SAMPLES));
-        let mut heard = false;
-        while let Some(frame) = listener.try_recv() {
-            heard |= frame.publisher.namespace == namespace;
-        }
-        async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            heard.then_some(())
-        }
-    })
-    .await;
 }
 
 /// The next envelope from the browser session that `pick` accepts.

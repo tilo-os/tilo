@@ -23,9 +23,7 @@ case $part in
     ;;
   bundle)
     wasm=${3:?$usage}
-    moq=$scratch/moq-browser
-    rm -rf "$moq" && cp -r scripts/moq-browser "$moq"
-    TILO_MOQ_BROWSER_DIR=$moq crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --bundle desktop --wasm-from "$wasm" >/dev/null
+    crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --bundle desktop --wasm-from "$wasm" >/dev/null
     ;;
   *) echo "$usage" >&2; exit 2 ;;
 esac

@@ -163,8 +163,6 @@ grep -q "<link rel=\"preload\" href=\"./v/$version/pkg/tilo_browser_runtime_bg.w
   || fail "the entry page does not preload the versioned runtime module"
 grep -q "<link rel=\"preload\" href=\"../v/$version/pkg/tilo_browser_runtime_bg.wasm\"" <<<"$(get /app/)" \
   || fail "the app entry does not preload the versioned runtime module"
-grep -q "<link rel=\"modulepreload\" href=\"./v/$version/media-moq-library.mjs\"" <<<"$page" \
-  || fail "the entry page does not preload the versioned live-plane library"
 # Every module the entry module statically reaches is named beside the entry
 # module itself (layout.py): a browser then fetches the whole graph at once,
 # instead of one level per round trip. Each hint must name a file the image

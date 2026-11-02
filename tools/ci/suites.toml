@@ -579,10 +579,9 @@ reason = "requires live Chromium and browser storage; executed by the required a
 name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
 # and the scripts that assemble the web core. app-installer reads the Rust
-# app catalogue. The live transport suites load the MoQ library built from
-# scripts/moq-browser before the offline suites run.
-# bundle-update runs the split modules' loader that wasm-split's main.rs writes.
-inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "scripts/moq-browser/", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
+# app catalogue. bundle-update runs the split modules' loader that wasm-split's
+# main.rs writes.
+inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-prefetch.test.mjs",
@@ -1877,10 +1876,6 @@ reason = "manual smoke test across two hosts on a LAN"
 [[unrequired]]
 suite = "tools/tests/test_vendor_history.sh"
 reason = "needs the vendor-upstream refs fetched from the network"
-
-[[unrequired]]
-suite = "scripts/moq-browser/bundle.test.mjs"
-reason = "a bun test of the MoQ bundle, which needs its npm dependencies installed from the network"
 
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/close-recovery.test.mjs"

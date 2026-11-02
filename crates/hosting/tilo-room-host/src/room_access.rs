@@ -126,16 +126,11 @@ pub enum RoomOperation {
     Publish,
     /// Replaying retained state to a subscriber.
     Replay,
-    #[cfg(any(test, feature = "web"))]
+    /// A browser page's session in the room's live plane.
     Live,
-    /// A browser live-plane grant that only receives, or its observation:
-    /// the members' cursors and previews, without publishing any.
-    #[cfg(any(test, feature = "web"))]
-    Watch,
     /// A spectator taking the content keys of one of the room's channels, to
     /// open what members sealed there without being the channel's member
     /// (see the module documentation).
-    #[cfg(any(test, feature = "web"))]
     ChannelReadKeys,
     /// Discovering the room's content endpoints.
     ContentDiscovery,
@@ -177,24 +172,19 @@ impl RoomOperation {
     /// Whether this plane only reads the room: the planes a spectator is
     /// admitted on.
     pub(crate) const fn reads(self) -> bool {
-        match self {
-            Self::Subscribe | Self::State | Self::Replay => true,
-            #[cfg(any(test, feature = "web"))]
-            Self::Watch => true,
-            _ => false,
-        }
+        matches!(self, Self::Subscribe | Self::State | Self::Replay)
     }
 
     const fn owner_device(self) -> OwnerDevice {
         match self {
             Self::Subscribe | Self::Compute => OwnerDevice::Enrol,
-            #[cfg(any(test, feature = "web"))]
-            Self::Live | Self::Watch => OwnerDevice::Admit,
-            #[cfg(any(test, feature = "web"))]
-            Self::ChannelReadKeys => OwnerDevice::Refuse,
-            Self::ContentDiscovery | Self::Environment => OwnerDevice::Admit,
-            Self::State | Self::Publish | Self::Replay | Self::RemoteAction => OwnerDevice::Refuse,
-            Self::OwnChannelKeys => OwnerDevice::Refuse,
+            Self::ContentDiscovery | Self::Environment | Self::Live => OwnerDevice::Admit,
+            Self::State
+            | Self::Publish
+            | Self::Replay
+            | Self::RemoteAction
+            | Self::ChannelReadKeys
+            | Self::OwnChannelKeys => OwnerDevice::Refuse,
             #[cfg(any(test, feature = "agents"))]
             Self::DelegateMembership => OwnerDevice::Refuse,
         }
@@ -243,11 +233,9 @@ pub enum DenyReason {
     SpectatorsFull,
     /// Channel keys asked for by a spectator of a room that is not public,
     /// or of one it holds no seat in.
-    #[cfg(any(test, feature = "web"))]
     SealedFromSpectators,
     /// Channel keys asked for outside the channel by a device that is no
     /// spectator: a member is admitted to the channel by the node.
-    #[cfg(any(test, feature = "web"))]
     OverTheChannel,
     /// Channel keys asked for by a device other than the one governing the
     /// room on this relay.
@@ -272,11 +260,9 @@ impl DenyReason {
             Self::NotAMember => "device not in workspace membership",
             Self::WatchOnly => "a spectator only watches this room",
             Self::SpectatorsFull => "too many people are watching this room",
-            #[cfg(any(test, feature = "web"))]
             Self::SealedFromSpectators => {
                 "this room keeps what its members write from those who only watch"
             }
-            #[cfg(any(test, feature = "web"))]
             Self::OverTheChannel => {
                 "a member takes a channel's keys from the node over the channel"
             }
@@ -583,7 +569,6 @@ pub(crate) fn decide_in(
             Decision::Deny(DenyReason::NotADelegatedAgent)
         };
     }
-    #[cfg(any(test, feature = "web"))]
     if op == RoomOperation::ChannelReadKeys {
         // Never by membership: members are admitted to a channel by its
         // participants. A spectator, in a public room, while it holds a seat.

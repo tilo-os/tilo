@@ -21,7 +21,7 @@ test-support = ["tilo-room-host/test-support"]
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
 agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
-web = ["tilo-room-host/web", "dep:tilo-moq", "dep:tilo-call-lane", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
+web = ["dep:tilo-call-lane", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:bytes"]
 
 [[bin]]
 name = "tilo-relay"
@@ -136,7 +136,6 @@ uuid.workspace = true
 
 # Runtime + config.
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
 thiserror.workspace = true
 
 # Observability.
@@ -147,17 +146,15 @@ tracing.workspace = true
 sd-notify.workspace = true
 workspace-hack = { version = "0.1" }
 
-# Browser carriers (feature `web`): HTTPS for the durable plane and device
-# certification, WebTransport + moq-lite for the live plane. quinn (under
-# web-transport-quinn) is a second QUIC stack next to iroh's noq, so only
-# hosts that serve browsers link it.
-tilo-moq = { path = "../tilo-moq", features = ["relay"], optional = true }
+# The browser listener (feature `web`): HTTPS for the durable plane, device
+# certification and the pages' calls.
 hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto"], optional = true }
 http-body = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 # The calls pages take part in: the host carries a page's sealed media onto
 # the call's lane as itself, and opens none of it.
@@ -246,6 +243,8 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The TLS tests write a PEM pair and read it back.
+rcgen.workspace = true
 # The room host's fixtures: a certified test host and the devices around it.
 tilo-room-host = { path = "../tilo-room-host", features = ["test-support"] }
 tilo-desktop-model = { path = "../../session/desktop-model" }

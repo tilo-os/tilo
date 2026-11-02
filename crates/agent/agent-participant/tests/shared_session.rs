@@ -1,7 +1,7 @@
 //! A simulated browser and an agent share one workspace on a local host.
 //!
 //! The browser is the page's session code built natively: HTTPS for
-//! documents and remote actions, WebTransport `moq-lite` for presence, and
+//! documents and remote actions, its workspace session for presence, and
 //! the app mounted from the same component the browser runtime mounts. The
 //! agent is a host-side participant over iroh with its own device key,
 //! certified under the user's root through the ordinary certification flow
@@ -144,7 +144,6 @@ async fn start_host(
             allowed_origins: Vec::new(),
             plain_listen: None,
             public_origin: None,
-            live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,

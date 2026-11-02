@@ -49,10 +49,10 @@ pub(super) async fn handle_live_join(
 }
 
 /// Where `peer`'s calls in `workspace_id` are held: by this relay's room
-/// authority when it governs the room, else by the rooms whose voice
-/// carrier it serves, as a room it carries (a person's own workspace,
-/// synced across their devices through it). None unless they subscribed to
-/// it, and none for a spectator, who takes no part in the room's calls.
+/// authority when it governs the room, else by the room it carries (a
+/// person's own workspace, synced across their devices through this host).
+/// None unless they subscribed to it, and none for a spectator, who takes
+/// no part in the room's calls.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the registry guard only lives for the lookup and the workspace guard for the answer read from it"

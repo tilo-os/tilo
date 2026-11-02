@@ -355,25 +355,16 @@ async fn post_decoded<T: serde::de::DeserializeOwned>(
 #[serde(rename_all = "camelCase")]
 struct JsHostInfo {
     host_cert: DeviceCert,
-    webtransport_port: Option<u16>,
-    certificate_sha256: Option<String>,
-    webtransport_origin: Option<String>,
 }
 
-/// What the host publishes before certification: its certificate, the
-/// WebTransport port (absent behind an HTTPS-only proxy without a direct
-/// origin), the origin to dial WebTransport at when it is not the page's
-/// and, for a development certificate, its SHA-256 for
-/// `serverCertificateHashes`. Resolves to JSON.
+/// What the host publishes before certification: its certificate. Resolves
+/// to JSON.
 #[wasm_bindgen(js_name = hostInfo)]
 pub async fn host_info(post: Function) -> Result<String, JsError> {
     let info: tilo_relay_protocol::web::HostInfo =
         post_decoded(&PageHttp(post), "/host", Vec::new()).await?;
     serde_json::to_string(&JsHostInfo {
         host_cert: info.host_cert,
-        webtransport_port: info.webtransport_port,
-        certificate_sha256: info.certificate_sha256,
-        webtransport_origin: info.webtransport_origin,
     })
     .map_err(js_error)
 }
@@ -1383,7 +1374,6 @@ impl From<tilo_relay_protocol::voice::Directions> for JsDirections {
 struct JsVoiceParticipant {
     device: String,
     user: String,
-    namespace: String,
     publishes: bool,
     camera: bool,
     /// It shares a screen.
@@ -1392,19 +1382,6 @@ struct JsVoiceParticipant {
     muted: bool,
     /// It hears nothing of the call.
     deafened: bool,
-    /// Who a bridge's participation stands for; absent for everyone else.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    bridged: Option<JsBridged>,
-}
-
-/// `tilo_relay_protocol::voice::Bridged`, the linked member as hex.
-#[derive(Serialize)]
-struct JsBridged {
-    service: String,
-    account: Option<String>,
-    name: String,
-    avatar: Option<String>,
-    linked: Option<String>,
 }
 
 fn voice_participants(
@@ -1415,18 +1392,10 @@ fn voice_participants(
         .map(|participant| JsVoiceParticipant {
             device: hex::encode(participant.device_public_key),
             user: hex::encode(participant.user_public_key),
-            namespace: participant.namespace,
             publishes: participant.publishes,
             camera: participant.showing.camera,
             screen: participant.showing.screen,
             muted: participant.showing.muted,
-            bridged: participant.bridged.map(|bridged| JsBridged {
-                service: bridged.service,
-                account: bridged.account,
-                name: bridged.name,
-                avatar: bridged.avatar,
-                linked: bridged.linked.map(hex::encode),
-            }),
             deafened: participant.showing.deafened,
         })
         .collect()
@@ -1438,15 +1407,8 @@ fn voice_participants(
 struct JsVoiceGrant {
     call: String,
     epoch: u64,
-    participation: String,
-    token: String,
-    endpoint: String,
-    fingerprints: Vec<String>,
     directions: JsDirections,
-    publication: Option<String>,
-    subscriptions: Vec<String>,
     participants: Vec<JsVoiceParticipant>,
-    expires_at_ns: u64,
 }
 
 /// A call of the workspace as `web/voice.mjs` lists it.
@@ -1572,15 +1534,8 @@ fn voice_event(
                 grant: JsVoiceGrant {
                     call: hex::encode(grant.call),
                     epoch: grant.epoch,
-                    participation: hex::encode(grant.participation),
-                    token: hex::encode(&grant.token),
-                    endpoint: grant.endpoint,
-                    fingerprints: grant.fingerprints,
                     directions: grant.directions.into(),
-                    publication: grant.publication,
-                    subscriptions: grant.subscriptions,
                     participants: voice_participants(grant.participants),
-                    expires_at_ns: grant.expires_at_ns,
                 },
             }
         }

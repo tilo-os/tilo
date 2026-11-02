@@ -1,6 +1,6 @@
 //! Every workspace has voice. For each kind of workspace a person is in on
 //! a host, two of its devices open a voice channel's call and are granted
-//! the carrier, hearing each other:
+//! their parts in it, each seeing the other:
 //!
 //! - a workspace the host governs (one of a workspace service's, like the Lounge);
 //! - a workspace the host governs that a guest was invited into;
@@ -181,13 +181,9 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
             "{kind:?}: a member speaks and hears"
         );
         assert_eq!(
-            heard.subscriptions.len(),
-            1,
-            "{kind:?}: each device hears the other"
-        );
-        assert!(
-            !heard.endpoint.is_empty(),
-            "{kind:?}: the grant names the host's voice carrier"
+            heard.participants.len(),
+            2,
+            "{kind:?}: each device sees the other in the call"
         );
     }
 

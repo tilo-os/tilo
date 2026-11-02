@@ -113,12 +113,10 @@ fn camera_frame(fill: u8) -> tilo_call_lane::Frame {
 fn grant_json(grant: &VoiceGrant) -> Value {
     json!({
         "call": hex::encode(grant.call), "epoch": grant.epoch,
-        "participation": hex::encode(grant.participation), "token": hex::encode(&grant.token),
-        "endpoint": grant.endpoint, "fingerprints": grant.fingerprints,
-        "directions": grant.directions, "publication": grant.publication,
-        "subscriptions": grant.subscriptions, "expiresAtNs": grant.expires_at_ns,
+        "participation": hex::encode(grant.participation),
+        "directions": grant.directions,
         "participants": grant.participants.iter().map(|p| json!({
-            "namespace": p.namespace, "device": hex::encode(p.device_public_key),
+            "device": hex::encode(p.device_public_key),
             "user": hex::encode(p.user_public_key), "publishes": p.publishes,
         })).collect::<Vec<_>>(),
     })

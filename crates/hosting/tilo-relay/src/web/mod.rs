@@ -1,13 +1,10 @@
-//! The host's browser listener (feature `web`): PR 541's carriers, served by
-//! the relay itself.
+//! The host's browser listener (feature `web`): HTTPS (TCP, HTTP/2 and
+//! HTTP/1.1), served by the relay itself.
 //!
-//! - **HTTPS** (TCP, HTTP/2 and HTTP/1.1): device certification, the session
-//!   handshake, the durable plane and presence — `/send` and the
-//!   long-polled `/events` of `sessions` — and the page's calls. Routes are
-//!   listed in [`tilo_relay_protocol::web`].
-//! - **WebTransport** (UDP, HTTP/3, same port number): the calls of the
-//!   rooms this relay governs, at
-//!   [`VOICE_PATH`](tilo_moq::relay::VOICE_PATH).
+//! Device certification, the session handshake, the durable plane and
+//! presence — `/send` and the long-polled `/events` of `sessions` — and the
+//! page's calls all ride it. Routes are listed in
+//! [`tilo_relay_protocol::web`].
 //!
 //! Browser sessions are ordinary relay peers (see `sessions`): their
 //! presence, previews and window streams travel with every other device's,
@@ -55,8 +52,7 @@ use sessions::{SessionError, Sessions};
 /// Configuration of the browser listener.
 #[derive(Clone, Debug)]
 pub struct WebConfig {
-    /// TCP address for HTTPS; WebTransport binds the same address over UDP.
-    /// Port 0 picks one free for both.
+    /// TCP address for HTTPS. Port 0 picks one free.
     pub listen: SocketAddr,
     /// Certificate source.
     pub tls: TlsSource,
@@ -72,11 +68,6 @@ pub struct WebConfig {
     /// address (the proxy is the way in), and this origin is what pages
     /// and links are told.
     pub public_origin: Option<String>,
-    /// The `https://` origin browsers dial WebTransport (and voice) at, when
-    /// a proxy in front of the page passes HTTP only (a CDN): QUIC reaches
-    /// `listen` directly under this name, with the certificate from `tls`,
-    /// while pages stay on the page origin.
-    pub live_origin: Option<String>,
     /// How many browsers the listener serves at once.
     pub limits: WebLimits,
     /// Where the proxy in front of the host names a client's country. The
@@ -119,11 +110,11 @@ impl Default for WebLimits {
 
 /// A running browser listener. Dropping it stops serving.
 pub struct WebHandle {
-    /// HTTPS (and WebTransport) address.
+    /// HTTPS address.
     pub addr: SocketAddr,
     /// `https://host:port` of the listener.
     pub origin: String,
-    /// SHA-256 of a development certificate, for `serverCertificateHashes`.
+    /// SHA-256 of a development certificate.
     pub certificate_sha256: Option<String>,
     /// `http://localhost:port` of the plain loopback listener, if any.
     pub plain_origin: Option<String>,
@@ -188,9 +179,8 @@ struct Web {
     calls: Arc<call_lane::CallLane>,
 }
 
-/// Checks the published origins against the listeners they front, and
-/// returns the live origin without a trailing slash.
-fn checked_origins(config: &WebConfig) -> Result<Option<String>, String> {
+/// Checks the published origins against the listeners they front.
+fn checked_origins(config: &WebConfig) -> Result<(), String> {
     if config.public_origin.is_none()
         && config
             .plain_listen
@@ -209,17 +199,7 @@ fn checked_origins(config: &WebConfig) -> Result<Option<String>, String> {
             "a public origin is an https:// origin published for the plain listener".into(),
         );
     }
-    let live_origin = config
-        .live_origin
-        .as_deref()
-        .map(|origin| origin.trim_end_matches('/').to_owned());
-    if live_origin
-        .as_deref()
-        .is_some_and(|origin| !origin.starts_with("https://") || origin.len() <= 8)
-    {
-        return Err("a live origin is an https:// origin".into());
-    }
-    Ok(live_origin)
+    Ok(())
 }
 
 /// An unspecified listener is not a usable browser destination. Only its
@@ -311,7 +291,7 @@ impl Relay {
         Ok(published)
     }
 
-    /// Serve browsers: HTTPS and WebTransport on `config.listen`.
+    /// Serve browsers: HTTPS on `config.listen`.
     ///
     /// # Errors
     ///
@@ -343,10 +323,9 @@ impl Relay {
         lane: Option<iroh::Endpoint>,
     ) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
-        let live_origin = checked_origins(&config).map_err(failed)?;
+        checked_origins(&config).map_err(failed)?;
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
-        let (tcp, udp) =
-            bind_port_pair(config.listen).map_err(|error| failed(error.to_string()))?;
+        let tcp = bind_listener(config.listen).map_err(|error| failed(error.to_string()))?;
         let addr = tcp
             .local_addr()
             .map_err(|error| failed(error.to_string()))?;
@@ -354,11 +333,8 @@ impl Relay {
             Some(origin) => Some(origin),
             None => browser_locator_origin(&config.tls, addr)?,
         };
-        let certificate = identity.certificate().map_err(failed)?;
-        let endpoint = tilo_moq::carrier::listener_on(udp, certificate.clone()).map_err(failed)?;
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
-            tilo_moq::tls::https_server_config(certificate).map_err(failed)?,
-        ));
+        let acceptor =
+            tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
         let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;
         let context = self.web_context().clone();
         let sessions = Sessions::with_limits(context.clone(), config.limits);
@@ -369,16 +345,7 @@ impl Relay {
         let web = Arc::new(Web {
             sessions: sessions.clone(),
             calls: carried_calls(&context, lane),
-            host_info: HostInfo {
-                host_cert,
-                // Behind a TLS-terminating proxy the page only reaches the
-                // proxy's HTTPS; WebTransport (UDP) does not pass through it,
-                // so it is announced only with a direct origin of its own.
-                webtransport_port: (config.public_origin.is_none() || live_origin.is_some())
-                    .then_some(addr.port()),
-                certificate_sha256: identity.pinned_sha256.clone(),
-                webtransport_origin: live_origin.clone(),
-            },
+            host_info: HostInfo { host_cert },
             allowed_origins: config.allowed_origins,
             features: self.web_features() | fetch.features(),
             rooms: self.rooms().cloned(),
@@ -393,14 +360,6 @@ impl Relay {
         });
         let mut tasks = Vec::new();
         tasks.extend(fetch.metrics);
-        if let Some(voice) = self.voice_carrier(
-            &config.tls,
-            addr,
-            live_origin.as_deref(),
-            identity.pinned_sha256.clone(),
-        ) {
-            tasks.push(tokio::spawn(voice.serve(endpoint)));
-        }
         let mut plain_origin = None;
         if let Some(plain) = config.plain_listen {
             let plain = tokio::net::TcpListener::bind(plain)
@@ -419,7 +378,7 @@ impl Relay {
         Ok(WebHandle {
             addr,
             origin: public_origin.unwrap_or_else(|| format!("https://{addr}")),
-            certificate_sha256: identity.pinned_sha256,
+            certificate_sha256: identity.fingerprint,
             plain_origin,
             tasks,
             locator_origin: Arc::clone(&self.browser_origin),
@@ -440,88 +399,20 @@ impl Relay {
         };
         protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION | rooms
     }
-
-    /// The voice carrier of the calls in this relay's rooms, served beside
-    /// the live carrier on the listener at `addr`; `None` when it governs no
-    /// rooms.
-    fn voice_carrier(
-        &self,
-        tls: &TlsSource,
-        addr: SocketAddr,
-        live_origin: Option<&str>,
-        pinned_sha256: Option<String>,
-    ) -> Option<tilo_moq::relay::Relay> {
-        let rooms = self.rooms()?;
-        if let Some(origin) = live_origin {
-            return Some(rooms.voice_carrier(
-                format!("{origin}{}", tilo_moq::relay::VOICE_PATH),
-                pinned_sha256.into_iter().collect(),
-            ));
-        }
-        // Grants name the host a device dials: the certificate's name when
-        // the listener is bound to every address.
-        let host = match tls {
-            TlsSource::Development { hosts, .. } => hosts
-                .iter()
-                .find(|host| {
-                    host.parse::<std::net::IpAddr>()
-                        .map_or(true, |ip| !ip.is_unspecified())
-                })
-                .cloned(),
-            TlsSource::Managed { domain } => Some(domain.clone()),
-            TlsSource::Files { host, .. } => host.clone(),
-        }
-        .filter(|_| addr.ip().is_unspecified())
-        .unwrap_or_else(|| addr.ip().to_string());
-        let host = if host.contains(':') {
-            format!("[{host}]")
-        } else {
-            host
-        };
-        Some(rooms.voice_carrier(
-            format!(
-                "https://{host}:{}{}",
-                addr.port(),
-                tilo_moq::relay::VOICE_PATH
-            ),
-            pinned_sha256.into_iter().collect(),
-        ))
-    }
 }
 
-/// Ephemeral ports tried for a TCP and UDP pair before giving up.
-const PORT_PAIR_ATTEMPTS: usize = 64;
-
-/// HTTPS (TCP) and WebTransport (UDP) sockets on one port of `listen`. For
-/// port 0 the kernel picks the TCP port, which another socket may hold for
-/// UDP; the next pick is tried then.
-fn bind_port_pair(
-    listen: SocketAddr,
-) -> std::io::Result<(tokio::net::TcpListener, std::net::UdpSocket)> {
-    let mut attempts = 0;
-    loop {
-        let socket = if listen.is_ipv4() {
-            tokio::net::TcpSocket::new_v4()?
-        } else {
-            tokio::net::TcpSocket::new_v6()?
-        };
-        // As `TcpListener::bind`: a restarted host takes its port back while
-        // its old connections linger in TIME_WAIT.
-        socket.set_reuseaddr(true)?;
-        socket.bind(listen)?;
-        let tcp = socket.listen(1024)?;
-        match std::net::UdpSocket::bind(tcp.local_addr()?) {
-            Ok(udp) => return Ok((tcp, udp)),
-            Err(error)
-                if listen.port() == 0
-                    && error.kind() == std::io::ErrorKind::AddrInUse
-                    && attempts < PORT_PAIR_ATTEMPTS =>
-            {
-                attempts = attempts.saturating_add(1);
-            }
-            Err(error) => return Err(error),
-        }
-    }
+/// The HTTPS listener on `listen`. For port 0 the kernel picks the port.
+fn bind_listener(listen: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    let socket = if listen.is_ipv4() {
+        tokio::net::TcpSocket::new_v4()?
+    } else {
+        tokio::net::TcpSocket::new_v6()?
+    };
+    // As `TcpListener::bind`: a restarted host takes its port back while its
+    // old connections linger in TIME_WAIT.
+    socket.set_reuseaddr(true)?;
+    socket.bind(listen)?;
+    socket.listen(1024)
 }
 
 /// Accepted connections belong to their listener's loop: aborting the loop

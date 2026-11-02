@@ -3,8 +3,8 @@
 //! The host runs `tilo_relay::agents::start`: an [`AgentHost`] whose
 //! supervisor is the host's app-serving plane, one thread per agent, state
 //! under a directory. A simulated browser (the page's session code built
-//! natively: HTTPS for documents and remote actions, WebTransport for
-//! presence) asks for a grant; a root-holding laptop approves the agent and
+//! natively: HTTPS for documents, remote actions and presence) asks for a
+//! grant; a root-holding laptop approves the agent and
 //! signs its delegation in the same step; the browser spawns the agent with
 //! a plain-words task planned by the scripted model. The agent edits Notes
 //! and Sheets, the browser receives the edits and sees the agent's presence
@@ -123,7 +123,6 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             allowed_origins: Vec::new(),
             plain_listen: None,
             public_origin: None,
-            live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
@@ -448,7 +447,7 @@ impl Browser {
     }
 
     /// An agent's presence, as the browser's session delivers it.
-    async fn watch(&self) -> Presence {
+    fn watch(&self) -> Presence {
         let (frames, rx) = tokio::sync::mpsc::unbounded_channel();
         let events = self.peer.events();
         let task = tokio::spawn(async move {
@@ -569,7 +568,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     // plans them against what Notes publishes once it is open. The watch runs
     // from here on: presence is a frame each time an agent says where it is,
     // not state a late reader is given.
-    let mut presence = browser.watch().await;
+    let mut presence = browser.watch();
     let spawned = browser
         .call(
             SUPERVISOR_RESOURCE,

@@ -1,6 +1,5 @@
 //! A native [`HttpClient`] for tests: HTTP/1.1 over rustls to one host,
-//! trusting exactly the certificate whose SHA-256 the host published — the
-//! same pin a page gives WebTransport as `serverCertificateHashes`.
+//! trusting exactly the certificate whose SHA-256 the host published.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

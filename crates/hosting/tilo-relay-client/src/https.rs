@@ -1,8 +1,7 @@
 //! The HTTPS carrier to a host: the durable plane and certification for a
 //! browser page (through its `fetch`), and for a native device reaching a
 //! host that publishes no iroh address (`tilo_relay_session::RelayClient`
-//! over this link). The live plane runs over WebTransport in the page and
-//! only needs [`live_grant`] from here.
+//! over this link).
 //!
 //! A [`HttpsLink`] is the same session an iroh peer has: the
 //! [`auth`] challenge (the device signs only the
@@ -18,8 +17,8 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::auth::{self, AuthError, Hello, HelloAck2};
 use tilo_relay_protocol::certify::CertifyReply;
 use tilo_relay_protocol::web::{
-    API_PREFIX, AgentLiveGrantRequest, EventsPage, EventsRequest, FEATURE_RESUME, LiveGrant,
-    MAX_POLL_MS, MAX_REQUEST_BYTES, SessionChallenge, SessionFinish, SessionRefusal, decode_grant,
+    API_PREFIX, EventsPage, EventsRequest, FEATURE_RESUME, MAX_POLL_MS, MAX_REQUEST_BYTES,
+    SessionChallenge, SessionFinish, SessionRefusal, decode_grant,
 };
 use tilo_user_identity::{CertificationRequest, DeviceCert, RevocationList};
 use tokio::sync::{mpsc, watch};
@@ -152,8 +151,7 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, LinkError> {
     postcard::to_allocvec(value).map_err(|error| LinkError::Malformed(error.to_string()))
 }
 
-/// What the host publishes before any session: its certificate, the
-/// WebTransport port and a development certificate's hash.
+/// What the host publishes before any session: its certificate.
 pub async fn host_info(
     client: &dyn HttpClient,
 ) -> Result<tilo_relay_protocol::web::HostInfo, LinkError> {
@@ -184,45 +182,6 @@ pub async fn certify_wait(
     digest: [u8; 32],
 ) -> Result<CertifyReply, LinkError> {
     call(client, "/certify/wait", None, encode(&digest)?).await
-}
-
-/// A live-plane grant for `workspace_id`, for the WebTransport admission
-/// preface (or the HTTPS fallback `open`).
-///
-/// # Errors
-///
-/// Returns [`LinkError::Refused`] when this device is not admitted there.
-pub async fn live_grant(
-    client: &dyn HttpClient,
-    session: &str,
-    workspace_id: u64,
-) -> Result<LiveGrant, LinkError> {
-    call(client, "/live/grant", Some(session), encode(&workspace_id)?).await
-}
-
-/// A live-plane grant for agent `agent_id` this device runs in
-/// `workspace_id`: it publishes under the agent's own namespace.
-///
-/// # Errors
-///
-/// Returns [`LinkError::Refused`] when this device is not admitted there.
-pub async fn agent_live_grant(
-    client: &dyn HttpClient,
-    session: &str,
-    workspace_id: u64,
-    agent_id: String,
-) -> Result<LiveGrant, LinkError> {
-    let request = AgentLiveGrantRequest {
-        workspace_id,
-        agent_id,
-    };
-    call(
-        client,
-        "/live/grant/agent",
-        Some(session),
-        encode(&request)?,
-    )
-    .await
 }
 
 /// Post this person's own recent semantic actions in `request.workspace_id`
@@ -504,7 +463,7 @@ impl HttpsLink {
         &self.host
     }
 
-    /// The session token, for [`live_grant`].
+    /// The session token the routes after the handshake carry.
     pub fn session(&self) -> &str {
         &self.session
     }

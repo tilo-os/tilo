@@ -1,5 +1,5 @@
-//! The browser carriers of the relay: HTTPS for the durable plane, presence
-//! and calls, and WebTransport for voice. Served by the host itself.
+//! The browser carrier of the relay: HTTPS for the durable plane, presence
+//! and calls. Served by the host itself.
 //!
 //! HTTPS carries the *same* values as the `tilo-relay/1` stream: the
 //! [`auth`](crate::auth) handshake, then [`Envelope`]s both ways. A browser
@@ -19,9 +19,6 @@
 //! | `/session/end` ([`SESSION_END_PATH`]) | the session token, lowercase hex text | `204` |
 //! | `/send` | `Vec<Envelope>` | `204` |
 //! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
-//! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
-//! | `/live/grant/agent` | [`AgentLiveGrantRequest`] | [`LiveGrant`] for [`agent_publisher`] |
-//! | `/live/fallback/{open,send,resume}` | live fallback frames | frame stream |
 //! | `/rooms` | [`RoomsRequest`](crate::rooms::RoomsRequest) | [`RoomsReply`](crate::rooms::RoomsReply) |
 //! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
@@ -130,8 +127,6 @@ pub struct Installed {
     pub user_public_key: String,
 }
 
-/// WebTransport path of the live relay.
-pub const LIVE_PATH: &str = "/moq/live";
 /// Longest an `/events` or `/certify/wait` poll is held.
 pub const MAX_POLL_MS: u32 = 25_000;
 /// Largest request body a route accepts.
@@ -173,12 +168,7 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         | Envelope::RemoteActionUndeliverable { reason, .. }
         | Envelope::CommitRefused { reason, .. }
         | Envelope::VoiceRefused { reason, .. } => reason.len(),
-        Envelope::VoiceGranted { grant, .. } => grant
-            .participants
-            .len()
-            .saturating_add(grant.subscriptions.len())
-            .saturating_mul(200)
-            .saturating_add(grant.endpoint.len()),
+        Envelope::VoiceGranted { grant, .. } => grant.participants.len().saturating_mul(200),
         Envelope::VoiceCallList { result, .. } => match result {
             Ok(calls) => calls.iter().fold(0usize, |bytes, call| {
                 bytes.saturating_add(
@@ -202,19 +192,6 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
 pub struct HostInfo {
     /// The host's device certificate (pin its device key).
     pub host_cert: tilo_user_identity::DeviceCert,
-    /// UDP port of the WebTransport listener (same address as HTTPS), or
-    /// `None` when browsers reach the host through a proxy that publishes
-    /// only HTTPS: a page then opens the live plane over the HTTPS stream at
-    /// once instead of first failing a WebTransport handshake.
-    pub webtransport_port: Option<u16>,
-    /// SHA-256 of the TLS certificate (lowercase hex) when it is a
-    /// development certificate a browser pins with `serverCertificateHashes`.
-    pub certificate_sha256: Option<String>,
-    /// The `https://` origin to dial WebTransport at when it is not the
-    /// page's: a proxy in front of the page passes HTTP only, so QUIC
-    /// reaches the host directly under another name. The HTTPS stream
-    /// fallback stays on the page origin.
-    pub webtransport_origin: Option<String>,
 }
 
 /// What a node runs beside its relay, for a member's session.
@@ -367,55 +344,6 @@ pub struct EventsPage {
     pub cursor: Option<Cursor>,
     /// The envelopes the relay stream would have delivered.
     pub envelopes: Vec<Envelope>,
-}
-
-/// Admission to the live plane of one room.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LiveGrant {
-    /// Opaque grant for the WebTransport admission preface (or the HTTPS
-    /// fallback `open`).
-    pub token: Vec<u8>,
-    /// Room component of the live namespace (64 lowercase hex).
-    pub room: String,
-    /// This device's publisher component (64 lowercase hex).
-    pub publisher: String,
-    /// The grant ends here; request a new one before.
-    pub expires_at_ns: u64,
-}
-
-/// A live grant for an agent this device runs: its presence and typing
-/// previews publish under [`agent_publisher`], not the device's own key.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentLiveGrantRequest {
-    /// The room's workspace, as for `/live/grant`.
-    pub workspace_id: u64,
-    /// The agent's id on this device, 1..=[`MAX_AGENT_ID_BYTES`] bytes.
-    pub agent_id: String,
-}
-
-/// Bound of [`AgentLiveGrantRequest::agent_id`].
-pub const MAX_AGENT_ID_BYTES: usize = 128;
-
-/// Publisher component of the live namespace of agent `agent_id` run by
-/// `device` in `room` (64 hex, [`live_room`]):
-/// `blake3(domain ‖ u64le(len room) ‖ room ‖ device ‖ agent_id)`. A digest,
-/// never a device key, so an agent's presence cannot pass for a device's.
-pub fn agent_publisher(room: &str, device: [u8; 32], agent_id: &str) -> [u8; 32] {
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"tilo-live-agent-publisher-v1\0");
-    hash.update(&(room.len() as u64).to_le_bytes());
-    hash.update(room.as_bytes());
-    hash.update(&device);
-    hash.update(agent_id.as_bytes());
-    *hash.finalize().as_bytes()
-}
-
-/// Room component of the live namespace of `workspace_id`.
-pub fn live_room(workspace_id: u64) -> String {
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"tilo-live-room-v1\0");
-    hash.update(&workspace_id.to_le_bytes());
-    hex::encode(hash.finalize().as_bytes())
 }
 
 /// Route a spectator of a public room takes a channel's content keys from,
@@ -596,21 +524,6 @@ pub struct HerePerson {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn agent_publishers_are_per_room_device_and_agent_and_never_the_device() {
-        let room = live_room(7);
-        let device = [3u8; 32];
-        let agent = agent_publisher(&room, device, "Reading agent");
-        assert_eq!(agent, agent_publisher(&room, device, "Reading agent"));
-        assert_ne!(agent, device);
-        assert_ne!(agent, agent_publisher(&room, device, "Other agent"));
-        assert_ne!(agent, agent_publisher(&room, [4u8; 32], "Reading agent"));
-        assert_ne!(
-            agent,
-            agent_publisher(&live_room(8), device, "Reading agent")
-        );
-    }
 
     #[test]
     fn here_requests_past_their_bounds_are_refused() {

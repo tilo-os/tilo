@@ -972,7 +972,7 @@ mod tests {
     #[test]
     fn a_file_card_names_the_file_and_never_a_path() {
         let file = Attachment::File {
-            name: "moq-over-iroh.md".into(),
+            name: "transport-notes.md".into(),
             blob: "sha256:file".into(),
             size: 18_944,
         };

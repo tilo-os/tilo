@@ -28,7 +28,6 @@ exclude = [
     "vendor/serde_json",
     # Built only by the OS image's bootc (os/Containerfile, bootc-builder).
     "vendor/zlink-macros",
-    "vendor/web-transport-quinn",
     "vendor/automerge",
     "vendor/librespot-core",
     "vendor/hyper-proxy2",
@@ -44,7 +43,6 @@ exclude = [
     "vendor/rustypipe",
     "vendor/miracast",
     "vendor/smithay",
-    "vendor/web-transport-proto",
     "vendor/davey",
     "vendor/zbus",
 ]
@@ -80,7 +78,6 @@ members = [
     "crates/browser/tilo-browser-compute",
     "crates/browser/tilo-browser-peer",
     "crates/browser/paint-stream",
-    "crates/hosting/tilo-moq",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
@@ -704,8 +701,6 @@ mime_guess = "2.0.5"
 # Percent-encoding and form-urlencoding outside a whole `url::Url`.
 percent-encoding = "2"
 form_urlencoded = "1"
-# Media over QUIC networking (moq-lite); driven over web-transport-quinn.
-moq-net = "0.3.3"
 
 # ---------------------------------------------------------------------------
 # Serialisation and encoding
@@ -1375,12 +1370,6 @@ zbus = { path = "vendor/zbus" }
 # build no longer compiles a protobuf compiler for one message.
 # See vendor/google-cast-protocol/PROVENANCE.md.
 google-cast-protocol = { path = "vendor/google-cast-protocol" }
-# Preserve raw HTTP/3 routing fields before URL normalization.
-# See vendor/web-transport-proto/PROVENANCE.md.
-web-transport-proto = { path = "vendor/web-transport-proto" }
-# Adds `Request::from_parts` so one QUIC endpoint serves plain HTTP/3 delivery
-# requests and WebTransport. See vendor/web-transport-quinn/PROVENANCE.md.
-web-transport-quinn = { path = "vendor/web-transport-quinn" }
 # libspa-sys 0.10.1 lets bindgen discover newer PipeWire inline functions
 # through transitive headers, but its emitted C wrapper includes only the
 # narrower wrapper.h. Keep the missing direct includes locally until upstream

@@ -90,7 +90,6 @@ impl Readers {
     /// Whether a Read Deny keeps `channel`'s record from any device; a
     /// channel whose record the node cannot name counts as withheld, as it
     /// may be a member's own.
-    #[cfg(feature = "web")]
     pub fn withholds(&self, channel: ChannelId) -> bool {
         !self
             .withheld
@@ -592,7 +591,7 @@ impl Participation {
     }
 }
 
-#[cfg(any(feature = "agents", feature = "web"))]
+#[cfg(feature = "agents")]
 impl Rooms {
     /// The content keys of `route`'s channel, for this host's own endpoints
     /// (the room actions it runs for its members' pages). `create` opens the
@@ -1069,7 +1068,7 @@ mod tests {
     /// What a member seals in a channel opens with the content keys the node
     /// reads for a spectator, also from a node that only finds the channel
     /// on disk; a channel never created stays missing.
-    #[cfg(any(feature = "agents", feature = "web"))]
+    #[cfg(feature = "agents")]
     #[test]
     fn a_members_content_opens_with_the_nodes_existing_keys() {
         let tmp = tempfile::tempdir().unwrap();
