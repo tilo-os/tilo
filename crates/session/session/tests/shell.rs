@@ -502,6 +502,10 @@ fn an_apps_notification_is_counted_on_the_bar() {
     until(&mut session, |session| {
         desk(session).unread == 1 && says(session, "Notifications, 1 unread")
     });
+    // And the notice rises as the shell's banner, in place of the desk's own banners app,
+    // which draws nothing under the shell: the desk names the one it has up, and the shell
+    // draws that one.
+    until(&mut session, |session| says(session, "New mail"));
     keep(&mut session, "shell-bar-notification");
 }
 
@@ -1237,18 +1241,28 @@ fn session_with_devices(width: i32, height: i32) -> Session {
     session_with_services(width, height, Vec::new())
 }
 
-/// The devices session with quick settings' own app installed: the panel a
-/// desktop shows, started as a process of the session and standing where the
-/// stack places the slot, over the bar's status.
+/// The devices session of the desk's own chrome, with quick settings' app
+/// installed: the panel the chrome shows, started as a process of the session
+/// and standing where the stack places the slot, over the bar's status. The
+/// screen shell draws its own quick settings (`quick.tl`), so the panel's app
+/// is the desk's.
 fn session_with_the_panel(width: i32, height: i32) -> Session {
-    session_where(
-        width,
-        height,
-        Vec::new(),
-        vec![tilo_session::quick_settings::surface_of(
-            tilo_test_env::sibling_binary("tilo-quick-settings", "tilo-quick-settings"),
-        )],
+    Session::headless(
+        Options {
+            services: vec![
+                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(speaker()),
+            ],
+            collab: false,
+            shell: false,
+            surfaces: vec![tilo_session::quick_settings::surface_of(
+                tilo_test_env::sibling_binary("tilo-quick-settings", "tilo-quick-settings"),
+            )],
+            ..options()
+        },
+        &[OutputConfig::new("HEADLESS-1", width, height)],
     )
+    .expect("session")
 }
 
 /// A session serving the settings and the sound, and `extra` beside them.
@@ -1483,9 +1497,15 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
     let mut session = session_with_the_panel(WIDTH, HEIGHT);
     until_settled(&mut session, |session| says(session, &desk(session).clock));
     let desk_only = keep(&mut session, "quick-settings-closed");
-    // The press is the desk's own verb: it takes the stack's slot, and the
+    // The press is the chrome's own verb: it takes the stack's slot, and the
     // session starts the panel's app where the stack placed it.
-    press_at_rest(&mut session, "Volume, 40%");
+    session
+        .invoke(
+            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            "quick-settings",
+            &serde_json::Map::new(),
+        )
+        .unwrap();
     until_settled(&mut session, |session| session.quick_settings_open());
     until_settled(&mut session, |session| {
         session.surfaces().running(quick_settings::SURFACE)

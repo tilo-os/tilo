@@ -468,6 +468,10 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
         self.0.borrow_mut().prepare_frame()
     }
 
+    fn advance(&mut self) -> bool {
+        self.0.borrow_mut().advance()
+    }
+
     fn next_deadline(&self) -> Option<std::time::Instant> {
         self.0.borrow().next_deadline()
     }

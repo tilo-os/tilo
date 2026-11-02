@@ -22,7 +22,6 @@ mod common;
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
-use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
 
 use common::{
@@ -250,7 +249,7 @@ fn the_chromes_actions_show_the_shells_surfaces() {
 }
 
 /// The chrome's `switch-workspace` shows another workspace on the shell's screen: the one made,
-/// through the door, and back by a step; the workspace the desk holds changes under it.
+/// through the door, and back by a step; the windows' workspace changes under it.
 #[test]
 fn switching_workspace_through_the_door_shows_it_on_the_shell() {
     let _settled = ui::motion::testing::settled();
@@ -303,7 +302,10 @@ fn switching_workspace_through_the_door_shows_it_on_the_shell() {
 fn active_workspace(session: &Session) -> String {
     session
         .handle()
-        .read(|tree| tree.active_workspace().map(|workspace| workspace.name.clone()))
+        .read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.name.clone())
+        })
         .expect("a workspace is in front")
 }
 

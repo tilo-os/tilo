@@ -59,7 +59,7 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
     until(&mut session, "the bar's parts", |session| {
         on_screen(session, "Notifications").is_some()
     });
-    let bars = session.shell_bars();
+    let bars = session.shell_parts();
     assert_eq!(
         bars.len(),
         1,

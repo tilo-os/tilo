@@ -991,7 +991,7 @@ fn a_place_whose_reading_never_arrives_shows_its_waiting_state_and_the_rest_work
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![Box::new(Withholding {
                 inner: apps,

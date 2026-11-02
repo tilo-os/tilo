@@ -81,6 +81,10 @@ pub struct WidgetHost {
     previews: Option<ui::widget::Previews>,
     /// What an assistive technology knows the tree's window by.
     name: Option<String>,
+    /// Something outside the tree asked for its next pass without holding the
+    /// host to ask (a command queued on the desk's handle): the frame that
+    /// answers it.
+    asked: Rc<std::cell::Cell<bool>>,
 }
 
 impl WidgetHost {
@@ -125,7 +129,16 @@ impl WidgetHost {
             wells: None,
             previews: None,
             name: None,
+            asked: Rc::new(std::cell::Cell::new(false)),
         }
+    }
+
+    /// The flag something outside the tree sets to ask for its next pass: what
+    /// wakes the host holding a desk another surface commands, without holding
+    /// the host to ask.
+    #[must_use]
+    pub fn asking(&self) -> Rc<std::cell::Cell<bool>> {
+        Rc::clone(&self.asked)
     }
 
     /// Report the wells of a tree's places ([`ui::widget::WindowWell`]) to
@@ -214,7 +227,7 @@ impl WidgetHost {
     /// draw every frame while one is shown. A tree fed only through these (a tilolang view's
     /// patches arrive as a relayout) asks this before [`SurfaceHost::prepare_frame`].
     pub fn wants_frame(&mut self) -> bool {
-        if self.owed != Owed::Nothing {
+        if self.owed != Owed::Nothing || self.asked.replace(false) {
             return true;
         }
         let frame = self.host.frame_schedule();
@@ -232,7 +245,7 @@ impl WidgetHost {
 
     /// A frame is owed for what just moved, unless the tree already owes one
     /// of its material: that frame draws what moved as well.
-    fn owe(&mut self) {
+    pub(crate) fn owe(&mut self) {
         if self.owed == Owed::Nothing {
             self.owed = Owed::Frame;
         }
@@ -270,6 +283,27 @@ impl WidgetHost {
     pub fn relayout(&mut self) {
         self.with_reports(ui::headless::FrameHarness::relayout);
         self.owe();
+    }
+
+    /// Run the tree's own pass — what it takes up, and the layout it lays
+    /// itself out by — without building or drawing a scene, for a host whose
+    /// drawing stands behind another's ([`WidgetHost`]). Whether the tree moved,
+    /// so the frame it stands under is drawn again.
+    ///
+    /// Only what is asked of it brings it a pass: a command queued on its
+    /// handle, an invocation or a change it owes. A clock or a motion its views
+    /// would draw brings none, as nothing of them shows — an idle host behind
+    /// another's drawing asks for no frame at all.
+    pub fn advance(&mut self) -> bool {
+        let queued = self.host.frame_schedule().queued_work;
+        let asked = self.asked.replace(false);
+        if !asked && !queued && self.owed == Owed::Nothing {
+            return false;
+        }
+        self.owed = Owed::Nothing;
+        self.with_reports(ui::headless::FrameHarness::relayout);
+        self.revision = self.revision.wrapping_add(1);
+        true
     }
 
     /// A rectangle of the tree's physical pixels, as the desktop's logical
@@ -588,6 +622,9 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn prepare_frame(&mut self) -> bool {
+        if self.asked.replace(false) {
+            self.owe();
+        }
         // Translucent material records what lies below it; the compositor
         // blurs that and hands it back (`set_backdrops`). The images are
         // this tree's: every host on the thread provides its own before it

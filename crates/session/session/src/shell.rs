@@ -851,15 +851,15 @@ impl tilo_surface_host::Published for ShellDesk {
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE && address.action == "search"
         {
-            if let Some(Value::String(query)) = arguments.get("query") {
-                if !query.is_empty() {
-                    // The desk runs its search as it always does, so its rows are published on
-                    // its search resource for the palette and the agents; the shell's launcher
-                    // is what draws, and it opens on what was asked for.
-                    let started = self.desk.borrow_mut().invoke(address, arguments)?;
-                    self.surfaces.overlays.search(query);
-                    return Ok(started);
-                }
+            if let Some(Value::String(query)) = arguments.get("query")
+                && !query.is_empty()
+            {
+                // The desk runs its search as it always does, so its rows are published on its
+                // search resource for the palette and the agents; the shell's launcher is what
+                // draws, and it opens on what was asked for.
+                let started = self.desk.borrow_mut().invoke(address, arguments)?;
+                self.surfaces.overlays.search(query);
+                return Ok(started);
             }
             self.surfaces
                 .toggle(crate::overlays::Overlay::Launcher.name());
@@ -909,10 +909,12 @@ impl tilo_surface_host::Published for ShellDesk {
 }
 
 /// A surface of the session's own the shell stands in for: the desktop's bar, which the
-/// shell's bar replaces, and the desktop's desk, whose strips the shell draws. It draws nothing,
-/// prepares nothing and takes no pointer and no key: every chord the person presses is the
-/// shell's to answer or the session's own. It still hears the outputs change, so what it holds
-/// follows the displays the shell stands on.
+/// shell's bar replaces, and the desktop's desk, whose strips the shell draws. It draws nothing
+/// and takes no pointer and no key: every chord the person presses is the shell's to answer or
+/// the session's own. What it holds still moves with what is asked of it
+/// ([`SurfaceHost::advance`]), so a workspace switched or a window closed is the shell's to
+/// draw, and it still hears the outputs change, so what it holds follows the displays the shell
+/// stands on. Left alone it asks for no frame, as none of it shows.
 pub(crate) struct Aside<T>(pub(crate) T);
 
 impl<T: SurfaceHost> SurfaceHost for Aside<T> {
@@ -943,7 +945,10 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
     }
 
     fn prepare_frame(&mut self) -> bool {
-        false
+        // Nothing of it shows, but what it holds still moves with what the
+        // person and the session command of it — a workspace switched, a window
+        // closed — so it takes up its own pass without drawing any of it.
+        self.0.advance()
     }
 }
 

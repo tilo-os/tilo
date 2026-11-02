@@ -1323,7 +1323,7 @@ impl Session {
                     &mut doors,
                     desk(),
                     options.scale,
-                    wells.clone(),
+                    wells,
                     presentation.theme.clone(),
                 )
                 .map_err(|why| {

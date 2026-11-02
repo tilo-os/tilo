@@ -268,11 +268,15 @@ struct Shared {
     /// pass, and what the person did there, for the apps' connections
     /// ([`DesktopHandle::declare_bar`] and its siblings).
     bars: window_bars::Bars,
+    /// What wakes the host holding this desk for a change queued on its handle
+    /// ([`DesktopHandle::set_wake`]).
+    wake: crate::wake::Waker,
 }
 
 impl Shared {
     fn changed(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+        self.wake.wake();
     }
 
     fn present(&mut self, presentation: Presentation) {
@@ -295,7 +299,9 @@ impl DesktopHandle {
     /// copied"): a short-lived pill, said politely to screen readers,
     /// never a notification. The host asks for a redraw.
     pub fn acknowledge(&self, text: impl Into<String>) {
-        self.shared.borrow().acknowledger.say(text);
+        let shared = self.shared.borrow_mut();
+        shared.acknowledger.say(text);
+        shared.wake.wake();
     }
 
     pub fn revision(&self) -> u64 {
@@ -311,6 +317,13 @@ impl DesktopHandle {
 
     pub fn read<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R {
         read(&self.shared.borrow().tree)
+    }
+
+    /// Have `wake` run whenever what this handle commands or changes is
+    /// waiting for the desk's next pass: the host holding the desk asks for
+    /// that frame, however little of the desk shows.
+    pub fn set_wake(&self, wake: Rc<dyn Fn()>) {
+        self.shared.borrow_mut().wake.set(wake);
     }
 
     /// The apps whose windows keep what they show to themselves: a password
@@ -417,6 +430,7 @@ impl DesktopHandle {
             _ => {}
         }
         shared.queue.push(admitted);
+        shared.wake.wake();
         Ok(())
     }
 
@@ -587,6 +601,7 @@ impl DesktopHandle {
             return false;
         };
         shared.queue.push(Admitted::Select(ids));
+        shared.wake.wake();
         true
     }
 
@@ -883,6 +898,7 @@ impl DesktopSurface {
             #[cfg(not(target_arch = "wasm32"))]
             peers: Rc::new(RefCell::new(peer_view::PeerSurfaces::default())),
             bars: window_bars::Bars::default(),
+            wake: crate::wake::Waker::default(),
         }));
         let acknowledger = shared.borrow().acknowledger.clone();
         #[cfg(not(target_arch = "wasm32"))]

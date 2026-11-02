@@ -41,6 +41,11 @@ use crate::system_sounds::SystemSounds;
 
 /// Mount the banners app on the desk: what it shows of the desktop's
 /// notifications, and its own link to them.
+///
+/// Under the shell nothing of it is mounted: the shell draws the banner a
+/// notice rises as from the desk it reads (`Desk.banner`), so a banner stack of
+/// its own would draw a second one over it and take the presses meant for what
+/// the shell shows there.
 pub(crate) fn mount_banners(
     compositor: &mut tilo_compositor::Compositor,
     doors: &mut tilo_surface_host::Doors,
@@ -49,6 +54,10 @@ pub(crate) fn mount_banners(
     options: &crate::Options,
 ) -> Link {
     let banners = Link::new();
+    if options.shell {
+        notices.show_banners_elsewhere();
+        return banners;
+    }
     match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
         .and_then(|component| ui::App::from_component(component, (options.presentation)()))
     {

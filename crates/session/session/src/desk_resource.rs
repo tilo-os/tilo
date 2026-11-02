@@ -494,7 +494,13 @@ impl Desk {
             switcher_revealed: self.surfaces.overlays.revealed(instant),
             switcher_scope: self.surfaces.overlays.scope().name().to_owned(),
             spotlight: self.surfaces.overlays.spotlight(),
-            banner: String::new(),
+            banner: self
+                .notices
+                .log()
+                .active()
+                .last()
+                .map(|notice| notice.id.to_string())
+                .unwrap_or_default(),
             windows: self.windows_reaching(tree, instant),
             agents: Vec::new(),
             rooms: tree

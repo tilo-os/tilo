@@ -261,7 +261,7 @@ impl Overlays {
     /// Search from `query`: the launcher opens with what the person asked for, whether it was
     /// already up or not.
     pub fn search(&self, query: &str) {
-        *self.spotlight.borrow_mut() = query.to_owned();
+        query.clone_into(&mut self.spotlight.borrow_mut());
         self.show(Overlay::Launcher);
         self.revision.set(self.revision.get().wrapping_add(1));
     }
