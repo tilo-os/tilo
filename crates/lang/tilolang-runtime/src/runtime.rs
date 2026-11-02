@@ -275,6 +275,21 @@ impl Runtime {
         self.core.foreign.borrow_mut().take_wanted()
     }
 
+    /// Whether `error` — a view call's failure — was waiting on a reading that has not arrived
+    /// yet (a place whose app publishes nothing yet, or whose record the session has not
+    /// published): the call failed for want of data, not for a fault. A host shows that call's
+    /// place its waiting state and draws the rest of the screen; the call runs again when the
+    /// reading comes (`Runtime::set_reading`).
+    pub fn waiting(&self, error: &str) -> bool {
+        self.core.foreign.borrow().waiting(error)
+    }
+
+    /// Forget the waiting errors gathered so far: a turn's tree is built afresh, and what it
+    /// gathers is what it failed for.
+    pub fn clear_waiting(&self) {
+        self.core.foreign.borrow().take_waiting();
+    }
+
     /// The reading of `target`, a resource of an app this runtime does not run, as the
     /// session's watch last saw it: the JSON its service read. Views that read a field of it
     /// run again at the next poll. Whether it differs from the reading held before: `false`
@@ -311,6 +326,8 @@ impl Runtime {
         let seen = i64::try_from(generation).unwrap_or(i64::MAX);
         let mut states = self.core.view_states.borrow_mut();
         states.set(crate::foreign::reading_key(target), Value::Int(seen));
+        // Any reading that comes in: a view call waiting on one it could not know runs again.
+        states.set(crate::foreign::arrived_key(), Value::Int(seen));
         // A resource known here for the first time: views that looked it up by id
         // (`resource(id)`) and found nothing run again.
         if first {

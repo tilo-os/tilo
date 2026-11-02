@@ -332,6 +332,81 @@ impl Core {
         })
     }
 
+    /// Render a view as a boundary, and when it fails for want of a reading that has not
+    /// arrived yet (its app publishes nothing yet, or the session has not published its
+    /// record), the waiting node in its place: the whole tree stands, and this place shows that
+    /// reading is still coming rather than failing the screen around it. The boundary reads the
+    /// slot that moves when the reading comes, so it runs again then, and the reading is asked
+    /// of the host in the meantime. A failure for any other reason is the caller's to report.
+    ///
+    /// # Errors
+    ///
+    /// A view that traps or returns no node, and anything else but a missing reading.
+    pub(crate) fn render_boundary_waiting(
+        &self,
+        target: &ViewTarget,
+        args: &[Value],
+        offer: Offer<'_>,
+        scoped: Option<Scoped<'_, '_>>,
+    ) -> Result<Rendered, RuntimeError> {
+        match self.render_boundary(target, args, offer, None, scoped) {
+            Ok(rendered) => Ok(rendered),
+            Err(error) if self.read_waited(&error) => Ok(self.waiting_rendered()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Whether `error` is a read waiting on a reading that has not arrived: kept per message,
+    /// so each of several places waiting on its own reading is told apart from a fault beside it.
+    fn read_waited(&self, error: &RuntimeError) -> bool {
+        self.foreign.borrow().waiting(&error.to_string())
+    }
+
+    /// What a view call waiting on a reading renders as it stands: the toolkit's waiting state
+    /// (its skeleton, saying "Loading" to assistive technology), keyed by where the call
+    /// stands, with the slot that moves when the reading comes noted as read so the call runs
+    /// again then.
+    fn waiting_rendered(&self) -> Rendered {
+        let mut acc = Acc {
+            reads: Vec::new(),
+            colls: Vec::new(),
+            space_reads: Vec::new(),
+            retained: Vec::new(),
+            state_reads: Vec::new(),
+            state_seen: Vec::new(),
+            changes_at: None,
+        };
+        let key = crate::foreign::arrived_key();
+        let generation = self.view_states.borrow().generation(&key);
+        let seen = self
+            .view_states
+            .borrow()
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(Value::none);
+        acc.state_reads.push((key.clone(), generation));
+        acc.state_seen.push((key, seen));
+        let root = UiNode {
+            kind: "ui.Skeleton".to_owned(),
+            key: "waiting".to_owned(),
+            props: std::collections::BTreeMap::from([("shape".to_owned(), Value::text("page"))]),
+            binding: None,
+            events: std::collections::BTreeMap::new(),
+            anchor: None,
+            children: Vec::new(),
+        };
+        Rendered {
+            root,
+            reads: acc.reads,
+            colls: acc.colls,
+            space_reads: acc.space_reads,
+            retained: acc.retained,
+            state_reads: acc.state_reads,
+            state_seen: acc.state_seen,
+            changes_at: acc.changes_at,
+        }
+    }
+
     fn build_node<'h>(
         &self,
         cx: &Build<'_>,

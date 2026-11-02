@@ -555,17 +555,24 @@ fn register_fields(meta: &Meta, ty: &str) -> Result<Vec<(String, Ty)>, String> {
 /// The collection inside the root's collection `outer` that people use: one of the root's
 /// records (the workspace's mail accounts) holds conversations, which open in a window of
 /// their own and hold messages. `None` when one of them does not.
+///
+/// A holder may hold more than one collection with a window of its own (an account's mailboxes
+/// and its conversations): the one people work in is the deepest, whose own items hold a
+/// collection in turn (a conversation's messages), not the one that stops at a list of names.
 fn inside(meta: &Meta, outer: &List) -> Option<List> {
     let holder_schema = lookup(&outer.item_ty)?;
+    let mut found: Vec<List> = Vec::new();
     for field in &holder_schema.fields {
         if field.kind != MergeKind::Collection {
             continue;
         }
-        let item_ty = field.record.clone()?;
+        let Some(item_ty) = field.record.clone() else {
+            continue;
+        };
         if meta.default_view(&item_ty).is_none() {
             continue;
         }
-        return list_in(
+        let Some(list) = list_in(
             &field.id,
             item_ty,
             vec![Holder {
@@ -573,9 +580,13 @@ fn inside(meta: &Meta, outer: &List) -> Option<List> {
                 ty: outer.item_ty.clone(),
                 texts: texts_of(holder_schema),
             }],
-        );
+        ) else {
+            continue;
+        };
+        found.push(list);
     }
-    None
+    let at = found.iter().position(|list| list.nested.is_some())?;
+    found.into_iter().nth(at)
 }
 
 /// The id the seeded item number `i` has.
