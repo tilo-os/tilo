@@ -457,3 +457,114 @@ fn a_repl_named_when_the_session_starts_is_admitted_without_asking() {
     the_repl_works_as_the_person(&mut session, &mut repl, &note);
     assert!(questions.pending().is_empty(), "nobody was asked");
 }
+
+/// Placing what a text finds, twice, through the door: each place is the person's step, and the
+/// session keeps answering, the connection that asked and a new one alike.
+#[test]
+fn placing_what_text_finds_twice_keeps_the_session_answering() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let questions = Questions::new();
+    let program = std::env::current_exe().expect("this test's program");
+    let (mut session, note) = session(root.path(), &questions, vec![program]);
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+
+    for placed_before in 0..2 {
+        let (answer, failed) = repl.call(
+            &mut session,
+            "tilo",
+            json!({"program": format!(
+                "session.place_found(text: \"{NOTE_TITLE}\", view: .none, x: .some({}), y: .some(60))",
+                80 + placed_before * 400
+            )}),
+        );
+        assert!(!failed, "the program ran: {answer}");
+        until(&mut session, "the note placed once more", |session| {
+            placed(session, &note) == placed_before as usize + 1
+        });
+    }
+
+    // The connection that asked is still answered.
+    let (apps, failed) = repl.call(&mut session, "tilo_ls", json!({}));
+    assert!(!failed, "{apps}");
+    // And so is a new one.
+    let mut second = Repl::connect(&root.path().join("agent.sock"));
+    let tools = second.opened(&mut session);
+    assert!(tools.iter().any(|tool| tool == "tilo"), "{tools:?}");
+}
+
+/// What the session's services publish (the seeded apps' records) is listed through the door
+/// past the first page of the session's rows, page by page as its cursor reads on, and a note
+/// is found by its title.
+#[test]
+fn a_record_the_sessions_services_publish_is_found_through_the_door() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let questions = Questions::new();
+    let program = std::env::current_exe().expect("this test's program");
+    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: Some(ShellLayer::Screen),
+            collab: false,
+            services: vec![Box::new(apps)],
+            questions: Some(questions.clone()),
+            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            agent_door: Some(root.path().join("agent.sock")),
+            admit_repl: vec![program],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    let mut repl = Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+
+    // Every page of the session's listing, as its cursors read on.
+    let mut listed = String::new();
+    let mut cursor = String::new();
+    for _ in 0..20 {
+        let (page, failed) = repl.call(
+            &mut session,
+            "tilo_ls",
+            json!({"path": "session", "cursor": cursor}),
+        );
+        assert!(!failed, "{page}");
+        listed.push_str(&page);
+        listed.push('\n');
+        let Some(next) = page
+            .rsplit_once("cursor \"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(next, _)| next.to_owned())
+        else {
+            break;
+        };
+        cursor = next;
+    }
+    for kind in [
+        "tl.so.tilo.lang.tasks.",
+        "tl.so.tilo.lang.chat.",
+        "tl.so.tilo.lang.mail.",
+    ] {
+        assert!(
+            listed.contains(kind),
+            "the session lists the seeded {kind} records: {listed}"
+        );
+    }
+
+    let (found, failed) = repl.call(&mut session, "tilo_find", json!({"query": NOTE_TITLE}));
+    assert!(!failed, "{found}");
+    assert!(
+        found.lines().any(|line| line.contains(NOTE_TITLE)),
+        "the note is found by its title: {found}"
+    );
+}
