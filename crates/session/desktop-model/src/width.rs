@@ -116,18 +116,20 @@ pub fn share_beside(
     (screen_half >= SIDE_BY_SIDE_MIN_PX).then(|| (fitting(half), fitting(half)))
 }
 
-/// The largest per-mille of `usable` that resolves to no more than `px`.
+/// The largest per-mille of `usable` that [`WindowWidth::resolve`]s to no
+/// more than `px`.
+///
+/// Floored on the pixels it resolves to, not on the fraction: `resolve`
+/// rounds the fraction back to whole pixels, and a fraction floored before
+/// that rounding can resolve a pixel short of the room it was given — which,
+/// for a pair sharing the strip, would leave the trailing gutter wider than
+/// the leading one.
 fn floor_permille(px: f64, usable: f64) -> u32 {
-    let raw = (px.max(0.0) / usable * 1000.0).floor();
-    let clamped = raw.clamp(f64::from(WIDTH_MIN_PERMILLE), f64::from(WIDTH_MAX_PERMILLE));
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to the storable per-mille range above, which fits losslessly in u32"
-    )]
-    {
-        clamped as u32
+    let mut permille = permille_for_px(px, usable);
+    while permille > WIDTH_MIN_PERMILLE && WindowWidth::Fraction(permille).resolve(usable) > px {
+        permille = permille.saturating_sub(1);
     }
+    permille
 }
 
 /// Give every window of `strip` the same share of it: each one
@@ -282,9 +284,8 @@ mod tests {
             assert!(pair_px(pair, usable, gap) <= usable, "{pair:?}");
             assert!(pair.0.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
             assert!(
-                usable - pair_px(pair, usable, gap) < 4.0,
-                "the pair tiles the strip to within a per-mille's rounding, \
-                 both gutters stand: {pair:?}"
+                usable - pair_px(pair, usable, gap) < 1.0,
+                "the pair tiles the strip, both gutters stand: {pair:?}"
             );
         }
         {
@@ -316,7 +317,7 @@ mod tests {
             );
             assert!(pair_px(pair, usable, 8.0) <= usable, "{pair:?}");
             assert!(
-                usable - pair_px(pair, usable, 8.0) < 4.0,
+                usable - pair_px(pair, usable, 8.0) < 1.0,
                 "the newcomer takes the room beside it, both gutters stand: {pair:?}"
             );
             assert!(pair.1.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
