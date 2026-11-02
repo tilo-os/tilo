@@ -269,18 +269,19 @@ async fn import_checks_roots_and_whole_selection_bounds_before_publication() {
     );
 }
 
-/// A request written while its scopes were called rooms still reads, and a
-/// new one is written under the workspace's name: the owner action it names
-/// is the same, so its approval still covers it.
+/// A request is written under the keys it was first stored under; one written
+/// while the fields were named for the workspace still reads. The owner action
+/// it names is the same, so its approval still covers it.
 #[test]
-fn a_request_stored_under_the_old_field_names_still_reads() {
+fn a_request_names_its_scopes_under_the_stored_keys() {
     let (request, _) = action(vec!["ab".repeat(32)], 1024);
     let written = serde_json::to_string(&request).unwrap();
-    assert!(written.contains("\"source_workspace\""), "{written}");
-    assert!(written.contains("\"destination_workspace\""), "{written}");
+    assert!(written.contains("\"source_room\""), "{written}");
+    assert!(written.contains("\"destination_room\""), "{written}");
+    assert!(!written.contains("\"source_workspace\""), "{written}");
     let stored = written
-        .replace("\"source_workspace\"", "\"source_room\"")
-        .replace("\"destination_workspace\"", "\"destination_room\"");
+        .replace("\"source_room\"", "\"source_workspace\"")
+        .replace("\"destination_room\"", "\"destination_workspace\"");
     let read: LegacyImportRequest = serde_json::from_str(&stored).unwrap();
     assert_eq!(read, request);
 }

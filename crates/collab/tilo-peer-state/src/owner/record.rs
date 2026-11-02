@@ -87,10 +87,11 @@ pub(crate) struct StoredWorkspace {
     #[serde(rename = "workspace")]
     pub workspace_id: u64,
     /// The host this workspace's commits are ordered by: a device of its owner,
-    /// this device itself for a workspace its own host keeps. Files written by
-    /// builds before this record called it the workspace's governor keep their
-    /// layout: their workspaces' hosts read under that name.
-    #[serde(alias = "governor")]
+    /// this device itself for a workspace its own host keeps. Written under
+    /// `room_host`, the key builds before the vocabulary change wrote (and
+    /// older ones under `governor`); a file written while the field was named
+    /// for the workspace reads as the same host.
+    #[serde(rename = "room_host", alias = "governor", alias = "workspace_host")]
     pub workspace_host: DeviceCert,
     pub device: DeviceCert,
     /// How this device joined the workspace its host governs. A workspace it founded

@@ -743,6 +743,29 @@ mod tests {
         );
     }
 
+    /// The successor goes into the stamp under the key a record written
+    /// before the rename carries it, and a stamp naming it for the workspace
+    /// reads as the same successor.
+    #[test]
+    fn a_retirement_names_its_successor_under_the_stored_key() {
+        let mut doc = AutoCommit::new();
+        stamp_retired(&mut doc, &moved()).unwrap();
+        let meta = meta_ro(&doc).expect("a stamped record has meta");
+        let Some((Value::Object(ObjType::Map), retired)) = doc.get(&meta, RETIRED).unwrap() else {
+            panic!("the retirement is a map");
+        };
+        assert!(doc.get(&retired, "room").unwrap().is_some(), "stored key");
+        assert!(
+            doc.get(&retired, "workspace").unwrap().is_none(),
+            "one key, one spelling"
+        );
+        let mut renamed = doc.fork();
+        renamed.put(&retired, "workspace", TO.to_owned()).unwrap();
+        renamed.delete(&retired, "room").unwrap();
+        renamed.commit();
+        assert_eq!(retirement(&renamed), Some(moved()));
+    }
+
     fn seeded(root: &std::path::Path) -> (RecordCheckout, RecordStore) {
         let checkout = RecordCheckout::new(
             RecordId::derived("default", &RecordId::for_tab(0)),

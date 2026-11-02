@@ -783,8 +783,8 @@ mod tests {
                     answer: Answer::Allow,
                 },
                 [
-                    &[0x03, 0x01, b't', 0x0b][..],
-                    b"workspace:r",
+                    &[0x03, 0x01, b't', 0x06][..],
+                    b"room:r",
                     &[0x01, 0x00, 0x02],
                 ]
                 .concat(),
@@ -820,12 +820,14 @@ mod tests {
         }
     }
 
-    /// A grant command stored while the level was named `room` still reads, and
-    /// reads as the grant it was: the node it names is the workspace's.
+    /// A grant command stored while the level was named for the workspace still
+    /// reads, and reads as the grant it was: the node it names is the
+    /// workspace's.
     #[test]
-    fn a_grant_command_stored_under_the_old_path_name_still_reads() {
+    fn a_grant_command_stored_under_the_workspace_path_name_still_reads() {
         let held = [
-            0x03, 0x01, b't', 0x06, b'r', b'o', b'o', b'm', b':', b'r', 0x01, 0x00, 0x02,
+            0x03, 0x01, b't', 0x0b, b'w', b'o', b'r', b'k', b's', b'p', b'a', b'c', b'e', b':',
+            b'r', 0x01, 0x00, 0x02,
         ];
         let command = postcard::from_bytes::<WorkspaceMembershipCommand>(&held).unwrap();
         assert_eq!(

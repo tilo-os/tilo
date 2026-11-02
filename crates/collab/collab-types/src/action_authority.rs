@@ -204,8 +204,6 @@ mod tests {
         assert_eq!(read, original);
     }
 
-    /// A projection written while its policy named the workspace `room`
-    /// still reads.
     /// Every grant a read restores (the roles', the session app's, the
     /// device panel's) is narrowed again, so an app's launch reads back
     /// the projection its host wrote, also for a room no one owns yet.
@@ -226,12 +224,22 @@ mod tests {
         }
     }
 
+    /// A projection written while its policy named the workspace for what it
+    /// means still reads.
     #[test]
-    fn a_projection_written_with_a_room_policy_still_reads() {
+    fn a_projection_written_with_a_workspace_policy_still_reads() {
         let written = serde_json::to_string(&policy()).unwrap();
-        assert!(written.contains("\"workspace\":\"room-a\""), "{written}");
-        let stored = written.replace("\"workspace\":", "\"room\":");
-        assert_eq!(stored.matches("\"room\":\"room-a\"").count(), 2, "{stored}");
+        assert_eq!(
+            written.matches("\"room\":\"room-a\"").count(),
+            2,
+            "{written}"
+        );
+        let stored = written.replace("\"policy\":{\"room\":", "\"policy\":{\"workspace\":");
+        assert_eq!(
+            stored.matches("\"workspace\":\"room-a\"").count(),
+            1,
+            "{stored}"
+        );
         let read: AppActionAuthorityProjection = serde_json::from_str(&stored).unwrap();
         read.validate().unwrap();
         assert_eq!(read, policy());

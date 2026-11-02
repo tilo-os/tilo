@@ -81,8 +81,8 @@ fn request(workspace: &str, hash: &str) -> InvokeRequest {
         },
         argument: InvokeArgument::Json(
             serde_json::from_value(serde_json::json!({
-                "source_store": "runtime-profile-content", "source_workspace": "unscoped",
-                "destination_workspace": workspace, "hashes": [hash], "max_bytes": 1024
+                "source_store": "runtime-profile-content", "source_room": "unscoped",
+                "destination_room": workspace, "hashes": [hash], "max_bytes": 1024
             }))
             .unwrap(),
         ),
@@ -225,7 +225,7 @@ fn refuse_scoped_imports(
     outside.invocation = tilo_actions::InvocationId::new();
     if let InvokeArgument::Json(fields) = &mut outside.argument {
         fields.insert(
-            "destination_workspace".into(),
+            "destination_room".into(),
             serde_json::json!("another-workspace"),
         );
     }

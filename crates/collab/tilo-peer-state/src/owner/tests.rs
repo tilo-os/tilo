@@ -930,30 +930,65 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
 }
 
 #[test]
-fn an_owner_file_from_before_the_workspace_host_had_its_name_restores() {
+fn a_state_file_names_a_workspaces_host_under_the_stored_key() {
     let joined = enrolled();
     let host = joined
         .owner
         .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
         .unwrap();
     drop(joined.owner);
-    let mut value: serde_json::Value =
+    let value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
-    let workspace = &mut value["workspaces"][joined.workspace.to_string()];
-    let stored = workspace.as_object_mut().expect("a stored workspace");
-    let named_as_the_host = stored
-        .remove("workspace_host")
-        .expect("the record names the host");
-    stored.insert("governor".into(), named_as_the_host);
-    std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
-    let reopened = open_file(&joined.path).expect("a file from before the rename reads");
+    let stored = value["rooms"][joined.workspace.to_string()]
+        .as_object()
+        .expect("a stored workspace");
+    assert!(
+        stored.contains_key("room_host"),
+        "a build any image can roll back to reads this key: {}",
+        serde_json::to_string_pretty(&value).unwrap()
+    );
+    assert!(
+        !stored.contains_key("workspace_host"),
+        "one key, one spelling"
+    );
+    let reopened = open_file(&joined.path).expect("the file this build wrote reads");
     assert_eq!(
         reopened
             .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
             .unwrap(),
         host,
-        "the governor field is the workspace's host"
+        "the stored key names the workspace's host"
     );
+}
+
+#[test]
+fn a_host_written_under_each_renamed_key_reads() {
+    for key in ["governor", "workspace_host"] {
+        let joined = enrolled();
+        let host = joined
+            .owner
+            .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
+            .unwrap();
+        drop(joined.owner);
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+        let stored = value["rooms"][joined.workspace.to_string()]
+            .as_object_mut()
+            .expect("a stored workspace");
+        let named_as_the_host = stored
+            .remove("room_host")
+            .expect("the record names the host");
+        stored.insert(key.into(), named_as_the_host);
+        std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let reopened = open_file(&joined.path).expect("a file written under that key reads");
+        assert_eq!(
+            reopened
+                .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
+                .unwrap(),
+            host,
+            "the {key} field is the workspace's host"
+        );
+    }
 }
 
 #[test]
@@ -1044,7 +1079,7 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
     // build before the version bump.
     let mut value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
-    let stored = value["workspaces"][joined.workspace.to_string()]
+    let stored = value["rooms"][joined.workspace.to_string()]
         .as_object_mut()
         .expect("a stored workspace");
     let invitation = STANDARD
@@ -1113,7 +1148,7 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
         serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
     let stored_intent = STANDARD
         .decode(
-            value["workspaces"][joined.workspace.to_string()]["enrollment_intent"]
+            value["rooms"][joined.workspace.to_string()]["enrollment_intent"]
                 .as_str()
                 .expect("base64 intent"),
         )
@@ -1137,7 +1172,7 @@ fn owner_file_holds_byte_fields_as_compact_base64() {
     let current = std::fs::read(&joined.path).unwrap();
     assert!(!current.contains(&b'\n'), "the owner file is compact");
     let value: serde_json::Value = serde_json::from_slice(&current).unwrap();
-    let workspace = &value["workspaces"][joined.workspace.to_string()];
+    let workspace = &value["rooms"][joined.workspace.to_string()];
     for field in ["peer", "invitation", "enrollment_intent"] {
         assert!(workspace[field].is_string(), "{field} is base64 text");
     }
