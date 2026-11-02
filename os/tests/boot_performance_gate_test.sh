@@ -335,11 +335,12 @@ if grep -Eq '^(After|Wants)=.*network-online.target|^Before=.*(greetd|graphical)
 fi
 grep -Fq 'After=local-fs.target network.target systemd-tmpfiles-setup.service' "$fs_unit"
 
-# Native Tilo performs personal setup in the compositor OOBE. The old system
-# unit only created /root/.config, yet its oneshot delayed multi-user.target
-# and therefore the greeter on every fresh installation.
-if grep -Fq 'systemctl enable shell-firstboot.service' "$repo/os/Containerfile"; then
-  echo 'root-only shell firstboot work still blocks the native login path' >&2
+# The machine's first boot is a oneshot on the login path, so it may only cost
+# the one boot after installation: its marker keeps it out of every later
+# boot's transaction, and the person's own setup is never this unit's work.
+if ! grep -Fqx 'ConditionPathExists=!/etc/tilo/.firstboot-done' \
+    "$repo/os/usr/lib/systemd/system/shell-firstboot.service"; then
+  echo 'machine first-boot setup is not limited to the machine first boot' >&2
   exit 1
 fi
 grep -Fq 'systemd-timesyncd.service' "$repo/os/Containerfile" \

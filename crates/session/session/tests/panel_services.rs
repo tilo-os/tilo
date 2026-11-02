@@ -243,8 +243,8 @@ fn a_process_the_session_did_not_start_reaches_no_service() {
     let report = root.path().join("report");
     let mut session = session_alone(&socket);
 
-    // The same panel binary, by the same app id, in the same room, on the same
-    // socket — started by anyone but the session, so no launch of the
+    // The same panel binary, by the same app id, in the same workspace, on the
+    // same socket — started by anyone but the session, so no launch of the
     // session's names its process.
     let launched_in = session
         .handle()

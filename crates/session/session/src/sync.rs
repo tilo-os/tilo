@@ -1332,8 +1332,8 @@ impl Client {
     }
 
     /// This device's collaboration endpoint, once it has bound: where what a
-    /// call carries runs, beside the rooms' own traffic. `None` on a client
-    /// taking part in no transport.
+    /// call carries runs, beside the workspaces' own traffic. `None` on a
+    /// client taking part in no transport.
     #[must_use]
     pub fn endpoint(&self) -> Option<iroh::Endpoint> {
         self.endpoint_handle.get().cloned()

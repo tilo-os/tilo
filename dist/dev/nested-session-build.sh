@@ -111,7 +111,8 @@ build_host() {
     # together under the plain feature name: a `package/feature` form leaves
     # the shell reading the host's declarations through a remote builder.
     cargo build --locked --timings "${args[@]}" \
-        -p shell --bin shell --bin tilo-runtime-mcp --example packaged_native_governor \
+        -p shell --bin shell --example packaged_native_governor \
+        -p tilo-runtime --bin tilo-runtime-mcp \
         -p launcher --bin tilo-launcher \
         -p install --bin tilo-install \
         --features dev-overrides || return 1

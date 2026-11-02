@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FeedbackDestination {
-    #[serde(rename = "workspace", alias = "room")]
+    // Sent as `room`: a frame reaches peers on other builds, which read the key they know.
+    #[serde(rename = "room", alias = "workspace")]
     pub workspace: String,
     pub provider: String,
     pub channel: String,
@@ -90,7 +91,7 @@ mod tests {
                 result: Err(ActionHostError::NotPermitted)
             }
         ));
-        let untrusted = serde_json::json!({"destination":{"workspace":"existing-workspace","provider":"record:so.tilo.chat:","channel":"existing-channel"},"standing":{"person":"owner"}});
+        let untrusted = serde_json::json!({"destination":{"room":"existing-workspace","provider":"record:so.tilo.chat:","channel":"existing-channel"},"standing":{"person":"owner"}});
         assert!(serde_json::from_value::<FeedbackQuery>(untrusted).is_err());
     }
 }

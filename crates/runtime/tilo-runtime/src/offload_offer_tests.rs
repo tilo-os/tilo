@@ -53,7 +53,7 @@ impl Media {
     fn note(&self, scope: &BlobScope) {
         self.scopes
             .lock_recover()
-            .push((scope.room().to_owned(), scope.app().to_owned()));
+            .push((scope.workspace().to_owned(), scope.app().to_owned()));
     }
 }
 

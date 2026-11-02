@@ -465,23 +465,23 @@ fn workspace_settings_pins_an_app_for_the_workspace() {
     );
 }
 
-/// What Chat's record of `room`'s emoji holds, as the device's store keeps
+/// What Chat's record of `workspace`'s emoji holds, as the device's store keeps
 /// it: read without taking its writer (Chat owns the record), the changes a
 /// window made committed as the store writes them.
 ///
 /// Read on a thread of its own: the session's loop never waits on storage
 /// and is told "not yet" instead, while this asks the disk itself, as the
 /// session's own reader of other apps' records does.
-fn chat_emoji(home: &tilo_test_env::TestHome, room: &str) -> Option<Vec<String>> {
+fn chat_emoji(home: &tilo_test_env::TestHome, workspace: &str) -> Option<Vec<String>> {
     let data = home.data().to_path_buf();
-    let room = room.to_owned();
-    std::thread::spawn(move || read_chat_emoji(&data, &room))
+    let workspace = workspace.to_owned();
+    std::thread::spawn(move || read_chat_emoji(&data, &workspace))
         .join()
         .ok()
         .flatten()
 }
 
-fn read_chat_emoji(data: &std::path::Path, room: &str) -> Option<Vec<String>> {
+fn read_chat_emoji(data: &std::path::Path, workspace: &str) -> Option<Vec<String>> {
     let record = ui::record::RecordId::parse(&collab_types::workspace_record_id(
         tilo_app::tilo_workspace_emoji::KIND,
     ))?
@@ -489,7 +489,11 @@ fn read_chat_emoji(data: &std::path::Path, room: &str) -> Option<Vec<String>> {
     let store = app_state::FsStore::new(data.to_path_buf());
     let stored = durable_store::DurableStore::read(
         &store,
-        &durable_store::StorageKey::record(tilo_app::tilo_workspace_emoji::OWNER, room, record),
+        &durable_store::StorageKey::record(
+            tilo_app::tilo_workspace_emoji::OWNER,
+            workspace,
+            record,
+        ),
     )
     .ok()
     .flatten()?;
@@ -535,7 +539,7 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &[]);
-    let room = session.handle().read(|tree| {
+    let workspace = session.handle().read(|tree| {
         tree.active_workspace()
             .expect("a workspace in front")
             .room()
@@ -594,7 +598,7 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         app.settle();
         app.harness().a11y_node_named(":wave:").is_some()
     });
-    let held = held_by_chat(&mut session, &home, &room, |held| {
+    let held = held_by_chat(&mut session, &home, &workspace, |held| {
         held.is_some_and(|names| names.iter().any(|name| name == "wave"))
     });
     assert!(
@@ -610,7 +614,7 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         app.settle();
         app.harness().a11y_node_named(":wave:").is_none()
     });
-    let held = held_by_chat(&mut session, &home, &room, |held| {
+    let held = held_by_chat(&mut session, &home, &workspace, |held| {
         held.is_some_and(|names| !names.iter().any(|name| name == "wave"))
     });
     assert!(
@@ -620,17 +624,17 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
     );
 }
 
-/// What Chat's record of `room` holds once `done` says it does, stepping the
+/// What Chat's record of `workspace` holds once `done` says it does, stepping the
 /// session meanwhile: the store commits a window's change after a debounce.
 fn held_by_chat(
     session: &mut Session,
     home: &tilo_test_env::TestHome,
-    room: &str,
+    workspace: &str,
     mut done: impl FnMut(Option<&[String]>) -> bool,
 ) -> Option<Vec<String>> {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
-        let held = chat_emoji(home, room);
+        let held = chat_emoji(home, workspace);
         if done(held.as_deref()) || std::time::Instant::now() >= deadline {
             return held;
         }

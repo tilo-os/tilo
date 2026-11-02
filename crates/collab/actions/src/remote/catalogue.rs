@@ -40,7 +40,8 @@ pub struct ResourceViewLocator {
     /// Host-configured HTTPS listener origin.
     pub origin: String,
     /// Current governed workspace, supplied by the host.
-    #[serde(rename = "workspace", alias = "room")]
+    // Sent as `room`: a frame reaches peers on other builds, which read the key they know.
+    #[serde(rename = "room", alias = "workspace")]
     pub workspace: String,
     /// Certified host device key as hexadecimal.
     #[serde(rename = "hostDevice")]
@@ -59,7 +60,8 @@ pub struct ResourceViewLocator {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CanonicalActionRoute {
-    #[serde(rename = "workspace", alias = "room")]
+    // Sent as `room`: a frame reaches peers on other builds, which read the key they know.
+    #[serde(rename = "room", alias = "workspace")]
     pub workspace: String,
     pub app_id: String,
     /// Empty names the package-primary record, never any record.
@@ -305,7 +307,8 @@ pub struct CatalogueProvider {
     pub provider: String,
     pub app_id: String,
     /// The workspace the publisher belongs to.
-    #[serde(rename = "workspace", alias = "room")]
+    // Sent as `room`: a frame reaches peers on other builds, which read the key they know.
+    #[serde(rename = "room", alias = "workspace")]
     pub workspace: String,
     /// The publisher's own record, when it names one.
     #[serde(default, skip_serializing_if = "String::is_empty")]

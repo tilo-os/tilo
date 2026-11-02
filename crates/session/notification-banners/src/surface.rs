@@ -31,6 +31,19 @@ pub struct BannerSurface {
     state: Rc<RefCell<State>>,
 }
 
+/// What the surface owes the host for the frame it just drew.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Owed {
+    /// Nothing: the screen still shows what the surface means to show.
+    Nothing,
+    /// The frame just drawn: its area is the damage the host presents, and
+    /// the surface rests once that is on screen.
+    Drawn,
+    /// The frame just drawn, and one more once it is on screen (a focus ring
+    /// that lands after the stack is laid out).
+    Again,
+}
+
 struct State {
     stack: NotificationStack,
     link: Link,
@@ -46,7 +59,14 @@ struct State {
     call_edges: Vec<Rect>,
     /// Focus was asked for before the stack was first laid out.
     focus_pending: bool,
-    dirty: bool,
+    /// What the next frame owes, and so where it paints.
+    owed: Owed,
+    /// What the last frame painted, shadows and all, and what the frame
+    /// before it did: between them they say what of the screen the next
+    /// frame changes, so a banner that left is cleared as well as one that
+    /// arrived.
+    painted: Rect,
+    painted_before: Rect,
 }
 
 impl BannerSurface {
@@ -106,7 +126,9 @@ impl State {
             machine: Vec::new(),
             call_edges: Vec::new(),
             focus_pending: false,
-            dirty: true,
+            owed: Owed::Drawn,
+            painted: Rect::ZERO,
+            painted_before: Rect::ZERO,
         };
         if own {
             surface.stage_scenario(None);
@@ -122,7 +144,7 @@ impl State {
             // A focus ring needs the stack laid out once.
             self.link.command(Command::FocusNewest);
         }
-        self.dirty = true;
+        self.owed = Owed::Drawn;
     }
 
     /// Show the desktop's newest feed, when there is one.
@@ -130,7 +152,7 @@ impl State {
         if let Some((generation, feed)) = self.link.feed_after(self.shown) {
             self.shown = generation;
             self.stack.set_feed(feed);
-            self.dirty = true;
+            self.owed = Owed::Drawn;
         }
     }
 
@@ -168,7 +190,7 @@ impl State {
                     .perform_semantic(&target, &ui::a11y::Action::Activate);
             }
         }
-        self.dirty = true;
+        self.owed = Owed::Drawn;
     }
 
     /// Bring what is shown up to date with the desktop.
@@ -357,7 +379,7 @@ impl State {
         self.stack.draw(scene, transform, text_renderer, theme);
         // Focus asked for before the stack was laid out lands now; its ring
         // shows on the next frame.
-        let again = std::mem::take(&mut self.focus_pending) && self.stack.focus_newest();
+        let focus_landed = std::mem::take(&mut self.focus_pending) && self.stack.focus_newest();
         // The state of the whole machine is on every display. Banners about
         // the machine repeat, at rest, on the displays other than the one in
         // use, where the stack takes clicks and keys; a ringing call, whose
@@ -387,8 +409,57 @@ impl State {
                 );
             }
         }
-        self.dirty = again;
+        self.owed = if focus_landed {
+            Owed::Again
+        } else {
+            Owed::Drawn
+        };
+        self.painted_before = self.painted;
+        self.painted = self.painted_bounds(theme);
         self.hand_over();
+    }
+
+    /// Where this frame paints, for the host to repaint: the stack and the
+    /// banners on the other displays, with the shadow they float on. Zero
+    /// when the frame paints nothing.
+    fn painted_bounds(&self, theme: &Theme) -> Rect {
+        let mut bounds = self.stack.rect();
+        for rect in self.machine.iter().chain(&self.call_edges) {
+            bounds = bounds.union(*rect);
+        }
+        if bounds.is_zero_area() {
+            return Rect::ZERO;
+        }
+        let shadow = &theme.tokens.elevation.floating;
+        let reach = f64::from(shadow.blur) * 2.0 + f64::from(shadow.offset_y).abs();
+        bounds.inflate(reach, reach)
+    }
+
+    /// The part of the surface the next frame changes: everything this frame
+    /// and the one before it painted, inside the surface. Nothing when
+    /// nothing is owed a frame.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.owed == Owed::Nothing {
+            return;
+        }
+        let bounds = self.painted.union(self.painted_before);
+        if bounds.is_zero_area() {
+            return;
+        }
+        let clipped = bounds.intersect(self.rect);
+        if !clipped.is_zero_area() {
+            regions.push(clipped);
+        }
+    }
+
+    /// The frame is on screen: what it changed is no longer owed, but a frame
+    /// it asked for next still is.
+    fn mark_drawn(&mut self) {
+        self.owed = if self.owed == Owed::Again {
+            Owed::Drawn
+        } else {
+            Owed::Nothing
+        };
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -413,7 +484,7 @@ impl State {
                     .stack
                     .handle_pointer_event(event, ctx.scale_factor, ctx.handled)
                 {
-                    self.dirty = true;
+                    self.owed = Owed::Drawn;
                 }
             }
         }
@@ -421,7 +492,7 @@ impl State {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        self.owed != Owed::Nothing
             || self.link.has_commands()
             || self.link.generation() != self.shown
             || self.stack.needs_animation_frame()
@@ -509,6 +580,14 @@ impl Widget for BannerSurface {
         self.state.borrow().needs_redraw()
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.state.borrow().collect_damage(regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        self.state.borrow_mut().mark_drawn();
+    }
+
     fn needs_animation_frame(&self) -> bool {
         self.state.borrow().stack.needs_animation_frame()
     }
@@ -559,7 +638,7 @@ impl ResourceSurface<Banners, BannerEffect> for BannerSurface {
         let mut state = self.state.borrow_mut();
         state.catch_up();
         state.answer(effect)?;
-        state.dirty = true;
+        state.owed = Owed::Drawn;
         Ok(Effected::done())
     }
 

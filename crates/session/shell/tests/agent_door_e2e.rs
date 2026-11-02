@@ -293,24 +293,29 @@ struct McpClient {
 
 impl McpClient {
     fn start(session: &Session) -> Self {
-        let mut child = Command::new(tilo_test_env::package_binary!("tilo-runtime-mcp"))
-            .arg("--connect")
-            .env("XDG_RUNTIME_DIR", session.runtime_dir())
-            // Every directory the client could write is the session's own:
-            // a run never touches the person's real profile.
-            .env("HOME", session.runtime_dir().join("home"))
-            .env("XDG_CONFIG_HOME", session.runtime_dir().join("config"))
-            .env("XDG_DATA_HOME", session.runtime_dir().join("data"))
-            .env("XDG_STATE_HOME", session.runtime_dir().join("state"))
-            .env("XDG_CACHE_HOME", session.runtime_dir().join("cache"))
-            .env_remove("XDG_CURRENT_DESKTOP")
-            .env_remove("TILO_RUNTIME_PROFILE")
-            .env_remove("TILO_RUNTIME_STANDALONE")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn_locked()
-            .expect("spawn tilo-runtime-mcp");
+        // The runtime host is the `tilo-runtime` package's binary, not this
+        // package's, so Cargo names no path for it here.
+        let mut child = Command::new(tilo_test_env::sibling_binary(
+            "tilo-runtime",
+            "tilo-runtime-mcp",
+        ))
+        .arg("--connect")
+        .env("XDG_RUNTIME_DIR", session.runtime_dir())
+        // Every directory the client could write is the session's own:
+        // a run never touches the person's real profile.
+        .env("HOME", session.runtime_dir().join("home"))
+        .env("XDG_CONFIG_HOME", session.runtime_dir().join("config"))
+        .env("XDG_DATA_HOME", session.runtime_dir().join("data"))
+        .env("XDG_STATE_HOME", session.runtime_dir().join("state"))
+        .env("XDG_CACHE_HOME", session.runtime_dir().join("cache"))
+        .env_remove("XDG_CURRENT_DESKTOP")
+        .env_remove("TILO_RUNTIME_PROFILE")
+        .env_remove("TILO_RUNTIME_STANDALONE")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn_locked()
+        .expect("spawn tilo-runtime-mcp");
         // Read on a thread of its own, so a reply that never comes fails the
         // wait at the hang bound instead of blocking the test.
         let stdout = child.stdout.take().unwrap();

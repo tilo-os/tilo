@@ -27,6 +27,7 @@ use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt as _, InputFocus, Pr
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
+use crate::config::KeyboardLayout;
 use crate::state::State;
 use crate::{Error, io};
 
@@ -76,6 +77,9 @@ pub struct X11Icon {
 pub(crate) struct X11Windows {
     connection: RustConnection,
     icon: Atom,
+    /// The root window property that says which layout types
+    /// ([`Self::publish_keyboard`]).
+    rules_names: Atom,
     identities: HashMap<X11Window, Identity>,
     /// The window X input focus was last set to.
     focused: Option<X11Window>,
@@ -86,6 +90,8 @@ pub(crate) struct X11Windows {
     /// The pointer theme last published to X clients; empty until the first
     /// time.
     cursor_theme: String,
+    /// The layout last published to X clients; `None` until the first time.
+    keyboard: Option<KeyboardLayout>,
 }
 
 impl X11Windows {
@@ -98,15 +104,40 @@ impl X11Windows {
             .reply()
             .map_err(io)?
             .atom;
+        let rules_names = connection
+            .intern_atom(false, b"_XKB_RULES_NAMES")
+            .map_err(io)?
+            .reply()
+            .map_err(io)?
+            .atom;
         Ok(Self {
             connection,
             icon,
+            rules_names,
             identities: HashMap::new(),
             focused: None,
             client,
             scale: 0.0,
             cursor_theme: String::new(),
+            keyboard: None,
         })
+    }
+
+    /// Say which layout X clients type in, in the root window's
+    /// `_XKB_RULES_NAMES`, which every layout tool reads
+    /// (`setxkbmap -query`, layout indicators): a person whose layout is not
+    /// US would otherwise be told, and told any program that asks, that they
+    /// type in US. What the keys actually produce is Xwayland's own keymap,
+    /// which follows the one the seat hands it ([`State::keyboard`]); this
+    /// says the same to everything that asks rather than types.
+    pub(crate) fn publish_keyboard(&mut self, layout: &KeyboardLayout) {
+        if self.keyboard.as_ref() == Some(layout) {
+            return;
+        }
+        match set_rules_names(&self.connection, self.rules_names, layout) {
+            Ok(()) => self.keyboard = Some(layout.clone()),
+            Err(error) => tracing::warn!(%error, "X clients were told no keyboard layout"),
+        }
     }
 
     /// Tell X clients how dense the display is and which pointer theme to
@@ -383,6 +414,57 @@ pub(crate) fn set_resources(
     connection.flush().map_err(io)
 }
 
+/// Write `layout` into the root window's `_XKB_RULES_NAMES`.
+fn set_rules_names(
+    connection: &RustConnection,
+    property: Atom,
+    layout: &KeyboardLayout,
+) -> Result<(), Error> {
+    let root = connection
+        .setup()
+        .roots
+        .first()
+        .ok_or_else(|| io("the X server has no screen"))?
+        .root;
+    connection
+        .change_property8(
+            PropMode::REPLACE,
+            root,
+            property,
+            AtomEnum::STRING,
+            &rules_names(layout),
+        )
+        .map_err(io)?;
+    connection.flush().map_err(io)
+}
+
+/// The `_XKB_RULES_NAMES` value for `layout`, as `setxkbmap` writes it: the
+/// rules set that compiled the keymap, the model, and the layouts, variants
+/// and options, each field NUL-terminated.
+fn rules_names(layout: &KeyboardLayout) -> Vec<u8> {
+    // What xkbcommon and Xwayland compile from on Linux unless the
+    // environment names another set, which no session sets.
+    const RULES: &str = "evdev";
+    // The model a keymap compiles for when the person chose none.
+    const MODEL: &str = "pc105";
+    let model = if layout.model.is_empty() {
+        MODEL
+    } else {
+        layout.model.as_str()
+    };
+    let mut value = [
+        RULES,
+        model,
+        layout.layout.as_str(),
+        layout.variant.as_str(),
+        layout.options.as_str(),
+    ]
+    .join("\0")
+    .into_bytes();
+    value.push(0);
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +512,25 @@ mod tests {
     fn icons_larger_than_a_tab_needs_are_skipped() {
         let data = [MAX_EDGE + 1, MAX_EDGE + 1];
         assert_eq!(icon(&data), None);
+    }
+
+    #[test]
+    fn the_layout_is_written_as_the_tools_read_it() {
+        assert_eq!(
+            rules_names(&KeyboardLayout::default()),
+            b"evdev\0pc105\0\0\0\0",
+            "no layout yet is the default model on no layouts"
+        );
+        assert_eq!(
+            rules_names(&KeyboardLayout {
+                layout: "de,us".into(),
+                variant: "nodeadkeys,".into(),
+                model: "pc104".into(),
+                options: "compose:ralt,grp:alt_shift_toggle".into(),
+            }),
+            b"evdev\0pc104\0de,us\0nodeadkeys,\0compose:ralt,grp:alt_shift_toggle\0",
+            "the active layout first, its variant beside it, and the options"
+        );
     }
 
     #[test]

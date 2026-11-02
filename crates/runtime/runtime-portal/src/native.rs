@@ -181,10 +181,10 @@ mod unix {
             .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
     }
 
-    /// Host executables to attach to, in preference order. Inside a Tilo
-    /// login only the session's own host serves, so an app never attaches
-    /// to a second authority beside it; elsewhere the standalone host comes
-    /// first.
+    /// Host executables to attach to, in preference order. Both names are the
+    /// same runtime host; a Tilo login installs it as `tilo-runtime-mcp` and
+    /// attaches to nothing else, so an app never reaches a second authority
+    /// beside the login's. Elsewhere the runtime's own executable comes first.
     fn host_names() -> &'static [&'static str] {
         if tilo_paths::login::is_tilo_login() {
             &["tilo-runtime-mcp"]
@@ -229,17 +229,16 @@ mod unix {
                     }
                 }
             }
-            let build = if names == ["tilo-runtime-mcp"] {
-                "cargo build --locked -p shell --bin tilo-runtime-mcp --no-default-features"
-            } else {
-                "cargo build --locked -p tilo-runtime --bin tilo-runtime"
-            };
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "no runtime host found; in this checkout run `{build}` once, then rerun the app"
-                ),
-            ));
+            // `host_names` names the host this one asks for first.
+            if let Some((preferred, _)) = names.split_first() {
+                let build = format!("cargo build --locked -p tilo-runtime --bin {preferred}");
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "no runtime host found; in this checkout run `{build}` once, then rerun the app"
+                    ),
+                ));
+            }
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,

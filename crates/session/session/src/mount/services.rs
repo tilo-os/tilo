@@ -94,15 +94,38 @@ impl Published for ServiceDoor {
 }
 
 /// What the plane decides against on the collaboration side: what each of
-/// this device's rooms revokes, the client to the person's collaboration
-/// plane when there is one, and the broker and keys a room's sealed records
-/// are opened with.
+/// this device's workspaces revokes, the client to the person's
+/// collaboration plane when there is one, and the broker and keys a
+/// workspace's sealed records are opened with.
 pub(crate) struct Collaboration<'a> {
     pub revocations: crate::engine::Revocations,
     pub sync: Option<&'a crate::sync::Client>,
+    /// This session's own workspaces, as its engine holds them, when it has an
+    /// identity to hold them with: what a change to a workspace's people is
+    /// written through, whatever the session's collaboration plane.
+    pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub sealed: Sealed,
     /// The records' content this session keeps and asks the workspaces for.
     pub content: Option<std::sync::Arc<crate::content::Plane>>,
+}
+
+/// Where this session's apps reach its services, when it serves them: the
+/// socket the launcher hands them, or the one it was told to serve.
+///
+/// # Errors
+///
+/// The services root the launcher hands apps could not be made this user's.
+fn action_plane_path(options: &Options) -> Result<Option<std::path::PathBuf>, Error> {
+    Ok(match &options.action_plane {
+        ActionPlane::Off => return Ok(None),
+        ActionPlane::Launcher => {
+            // The launcher hands an app the socket under the services root,
+            // which only its owner may reach.
+            launcher::services::ensure_services_root()?;
+            Some(launcher::services::collab_socket())
+        }
+        ActionPlane::At(path) => Some(path.clone()),
+    })
 }
 
 /// The plane the apps read and invoke this session's services on, when it
@@ -110,8 +133,8 @@ pub(crate) struct Collaboration<'a> {
 /// answers their calls through.
 ///
 /// The broker it serves on is `collaboration`'s, which the session's channel
-/// service gates a room's sealed records with, and whose keys an endpoint
-/// asks a record's keys from.
+/// service gates a workspace's sealed records with, and whose keys an
+/// endpoint asks a record's keys from.
 pub(crate) fn start_action_plane(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
@@ -124,18 +147,12 @@ pub(crate) fn start_action_plane(
     let Collaboration {
         revocations,
         sync,
+        engine,
         sealed,
         content,
     } = collaboration;
-    let path = match &options.action_plane {
-        ActionPlane::Off => return Ok(None),
-        ActionPlane::Launcher => {
-            // The launcher hands an app the socket under the services root,
-            // which only its owner may reach.
-            launcher::services::ensure_services_root()?;
-            launcher::services::collab_socket()
-        }
-        ActionPlane::At(path) => path.clone(),
+    let Some(path) = action_plane_path(options)? else {
+        return Ok(None);
     };
     let link = plane::Link::new(options.wake.handle());
     // What the broker decides against, from this pass on: the desk as it is
@@ -166,14 +183,15 @@ pub(crate) fn start_action_plane(
     activity.serve_apps(std::sync::Arc::clone(&activity_wire));
     // Calls run over the collaboration plane: an app joins a channel through
     // the service, the session says the channel in its presence, and what the
-    // room says of its calls is what the app's channels show.
+    // workspace says of its calls is what the app's channels show.
     let calls = crate::calls::Calls::new();
     let calls_service = sync.map(|sync| {
         calls.follow(sync, None);
         let service = tilo_native_media::NativeMediaService::new();
         // A call's lane runs on the session's own endpoint, sealed with the
-        // room's channel keys and admitted by the room's governance: what
-        // every member of the room needs to be in the channel's call.
+        // workspace's channel keys and admitted by the workspace's
+        // governance: what every member of the workspace needs to be in the
+        // channel's call.
         let roster = sync.engine().map_or_else(
             || {
                 std::sync::Arc::new(|_: &str| Vec::new())
@@ -181,8 +199,8 @@ pub(crate) fn start_action_plane(
             },
             |engine| {
                 let engine = std::sync::Arc::clone(engine);
-                std::sync::Arc::new(move |room: &str| {
-                    engine.roster_devices(room).unwrap_or_default()
+                std::sync::Arc::new(move |workspace: &str| {
+                    engine.roster_devices(workspace).unwrap_or_default()
                 })
             },
         );
@@ -228,9 +246,13 @@ pub(crate) fn start_action_plane(
             agent_runs: Some(agent_runs),
             sealed,
             own_device,
-            engine: sync.and_then(crate::sync::Client::engine).cloned(),
             record_content: content,
             action_offload,
+            // What the broker writes a workspace's people through, and where
+            // it keeps what it admits: this session's own workspaces, else the
+            // ones its collaboration plane holds.
+            engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
+            journal_root: options.state.as_deref().map(plane::journal_root),
         },
     )?;
     // What arrives on this device's action plane is answered by the broker

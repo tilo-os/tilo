@@ -137,14 +137,14 @@ pub trait Resource: Sized + 'static {
     ///
     /// The genesis is made under an actor derived from the record's identity,
     /// at time zero, so it is the same change byte for byte on every device:
-    /// two people who each create the same record before they sync (a room's
-    /// default record, the record of one file) converge on one record rather
-    /// than two competing roots. It must therefore depend on nothing but the
-    /// resource type — not on who creates it, the device, the clock or a
-    /// file. Content that does depend on those (the creator as owner, a
-    /// first-run import of settings that already exist) is the app's seed,
-    /// applied as actions right after the genesis (`ResourceApp::seed` in
-    /// `tilo-app`).
+    /// two people who each create the same record before they sync (a
+    /// workspace's default record, the record of one file) converge on one
+    /// record rather than two competing roots. It must therefore depend on
+    /// nothing but the resource type — not on who creates it, the device, the
+    /// clock or a file. Content that does depend on those (the creator as
+    /// owner, a first-run import of settings that already exist) is the app's
+    /// seed, applied as actions right after the genesis (`ResourceApp::seed`
+    /// in `tilo-app`).
     ///
     /// # Errors
     /// Returns the document's write error.

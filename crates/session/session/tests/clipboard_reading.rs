@@ -1,5 +1,5 @@
 //! What the person copied is the session's own reading: the device panel
-//! reads it over the wire, and an app the room does not grant is refused it
+//! reads it over the wire, and an app the workspace does not grant is refused it
 //! as it is refused an action.
 
 #![cfg(target_os = "linux")]
@@ -23,7 +23,7 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, CLIPBOARD_RESOURCE, Launches, Options, Session};
 
 /// The app the person's device shows the session's own state in, and an app
-/// of its own: what the room grants apart.
+/// of its own: what the workspace grants apart.
 const PANEL: &str = "so.tilo.quick-settings";
 const APP: &str = "so.tilo.settings";
 
@@ -45,8 +45,8 @@ fn session(socket: &std::path::Path, app: &str) -> (Session, String) {
     )
     .expect("session");
     // The app runs in the workspace the session opened its desk on, which is
-    // the room it reads the session's resources in.
-    let room = session.handle().read(|tree| {
+    // the workspace it reads the session's resources in.
+    let workspace = session.handle().read(|tree| {
         tree.active_workspace()
             .map(|workspace| workspace.room().to_string())
             .expect("a workspace")
@@ -54,8 +54,8 @@ fn session(socket: &std::path::Path, app: &str) -> (Session, String) {
     // The app speaks from this test's own process, so the launch the session
     // would have recorded for it names that process: what the broker admits
     // the connection by.
-    launches.started(std::process::id(), app, &room, true);
-    (session, room)
+    launches.started(std::process::id(), app, &workspace, true);
+    (session, workspace)
 }
 
 /// What the app read of the clipboard: its reading now, and the one its
@@ -68,7 +68,7 @@ struct Seen {
 
 /// The app's side of the wire: the launcher's handoff on a connection to
 /// `socket`, then a read and a watch of the clipboard.
-fn app(socket: &std::path::Path, id: &str, room: &str, seen: &std::sync::mpsc::Sender<Seen>) {
+fn app(socket: &std::path::Path, id: &str, workspace: &str, seen: &std::sync::mpsc::Sender<Seen>) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -76,7 +76,7 @@ fn app(socket: &std::path::Path, id: &str, room: &str, seen: &std::sync::mpsc::S
     runtime.block_on(async {
         let mut stream =
             std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
-        launcher::services::write_collab_handoff(&mut stream, id, room)
+        launcher::services::write_collab_handoff(&mut stream, id, workspace)
             .expect("the launcher names the app on the connection");
         stream
             .set_nonblocking(true)
@@ -137,7 +137,7 @@ fn private_home() -> tempfile::TempDir {
     root
 }
 
-/// What the person copied reaches the panel's launch, and an app the room
+/// What the person copied reaches the panel's launch, and an app the workspace
 /// grants nothing reads nothing.
 #[test]
 fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
@@ -156,7 +156,7 @@ fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
     panel.join().expect("the panel's thread");
 
     // The app that was granted nothing is refused as it asks: its connection
-    // arrives as the session starts, and the room's grants decide it before
+    // arrives as the session starts, and the workspace's grants decide it before
     // the session's loop turns to serve anything of its own.
     let (sent, received) = std::sync::mpsc::channel();
     let ordinary = std::thread::spawn(move || app(&app_socket, APP, &app_room, &sent));

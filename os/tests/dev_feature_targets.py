@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Every dev feature reaches the package the dev image intends to build.
 
-Cargo reads `pkg/feature` as a dependency feature when a package named `pkg`
-also has a dependency of that name. The shell has a self dev-dependency for
-its integration tests, so its dev image must request bare `dev-overrides`.
-Bare features are safe here only when one selected dev-image package declares
-them; both the image's combined build and a single-component swap then target
-the same package.
+Cargo reads `pkg/feature` as a dependency feature when the package named
+`pkg` also has a dependency of that name, so a dev feature is normally
+package-qualified and both the image's combined build and a single-component
+swap then target the same package. A bare dev feature is only for a component
+whose one package has a dependency of its own name, and it must then be the
+only dev-image package declaring it.
 """
 
 from __future__ import annotations

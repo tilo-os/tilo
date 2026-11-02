@@ -253,13 +253,14 @@ impl ChannelLink {
         }
     }
 
-    /// Send this device's owner's outgoing custody of `room` to the room's
+    /// Send this device's owner's outgoing custody of `workspace` to its
     /// peers: what the owner committed leaves this device on the plane's
-    /// session with the room's host, as every other change of the room does.
-    pub(crate) fn publish_custody(&self, room: RoomId) {
+    /// session with the workspace's host, as every other change of the
+    /// workspace does.
+    pub(crate) fn publish_custody(&self, workspace: RoomId) {
         let outgoing = self.outgoing.lock_recover().clone();
         if let Some(outgoing) = outgoing {
-            let _ = outgoing.send(Outgoing::PublishCustody(workspace_topic_id(room)));
+            let _ = outgoing.send(Outgoing::PublishCustody(workspace_topic_id(workspace)));
         }
     }
 

@@ -39,8 +39,8 @@ const NOTES: &str = "so.tilo.lang.notes";
 const NOTE_TITLE: &str = "Groceries";
 const BTN_LEFT: u32 = 0x110;
 
-/// A notebook kept by the notes app, published as the session publishes a room's records, and
-/// one note in it titled [`NOTE_TITLE`], made through the app's own actions.
+/// A notebook kept by the notes app, published as the session publishes a workspace's records,
+/// and one note in it titled [`NOTE_TITLE`], made through the app's own actions.
 fn notebook() -> (RecordService, String) {
     let mut record = tilo_resource::Doc::new();
     let host = Host::new(&record, Principal::new(PERSON), || None).unwrap();
@@ -54,7 +54,7 @@ fn notebook() -> (RecordService, String) {
     for committed in host.take_committed() {
         let action = &committed.action;
         let context =
-            ui::tilo_actions::ActionContext::for_resource("room", &action.kind, &action.kind)
+            ui::tilo_actions::ActionContext::for_resource("workspace", &action.kind, &action.kind)
                 .with_invoker(ui::tilo_actions::ActionInvoker::actor(PERSON));
         host.with_schemas(|| {
             ui::tilo_actions::apply_local_with_context(
@@ -207,7 +207,7 @@ impl Repl {
     }
 
     /// Send `method` with `params` and wait for its answer.
-    fn ask(&mut self, session: &mut Session, method: &str, params: Value) -> Value {
+    fn ask(&mut self, session: &mut Session, method: &str, params: &Value) -> Value {
         self.next = self.next.saturating_add(1);
         self.asks
             .send(json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params}))
@@ -216,11 +216,11 @@ impl Repl {
     }
 
     /// Call the door's tool `name`: its text, and whether it is an error.
-    fn call(&mut self, session: &mut Session, name: &str, arguments: Value) -> (String, bool) {
+    fn call(&mut self, session: &mut Session, name: &str, arguments: &Value) -> (String, bool) {
         let reply = self.ask(
             session,
             "tools/call",
-            json!({"name": name, "arguments": arguments}),
+            &json!({"name": name, "arguments": arguments}),
         );
         let result = reply
             .get("result")
@@ -244,7 +244,7 @@ impl Repl {
         self.asks
             .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
             .unwrap();
-        let listed = self.ask(session, "tools/list", json!({}));
+        let listed = self.ask(session, "tools/list", &json!({}));
         listed["result"]["tools"]
             .as_array()
             .into_iter()
@@ -310,7 +310,7 @@ fn press(session: &mut Session, name: &str) {
 }
 
 /// Press the portal sheet's `effect`, as its control does.
-fn press_sheet(session: &mut Session, effect: &str, args: Value) {
+fn press_sheet(session: &mut Session, effect: &str, args: &Value) {
     fn publisher(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
             if resource.actions.iter().any(|offered| offered.id == action) {
@@ -354,13 +354,13 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     );
 
     // `ls`: the apps, the session's own resources among them.
-    let (apps, failed) = repl.call(session, "tilo_ls", json!({}));
+    let (apps, failed) = repl.call(session, "tilo_ls", &json!({}));
     assert!(!failed, "{apps}");
     assert!(
         apps.lines().any(|line| line.starts_with("session")),
         "the session's own resources are listed: {apps}"
     );
-    let (desk, failed) = repl.call(session, "tilo_ls", json!({"path": "session"}));
+    let (desk, failed) = repl.call(session, "tilo_ls", &json!({"path": "session"}));
     assert!(!failed, "{desk}");
     assert!(
         desk.contains("shell:arrangement") || desk.contains("arrangement"),
@@ -368,7 +368,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     );
 
     // `ls` lists each action as a program calls it, what it may go without included.
-    let (chrome, failed) = repl.call(session, "tilo_ls", json!({"path": "session/Desktop"}));
+    let (chrome, failed) = repl.call(session, "tilo_ls", &json!({"path": "session/Desktop"}));
     assert!(!failed, "{chrome}");
     assert!(
         chrome
@@ -376,7 +376,8 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
             .any(|line| line.starts_with("session.overview(open: Option<Bool> = .none)  ")),
         "the overview's action, as it is typed: {chrome}"
     );
-    let (arranging, failed) = repl.call(session, "tilo_ls", json!({"path": "session/arrangement"}));
+    let (arranging, failed) =
+        repl.call(session, "tilo_ls", &json!({"path": "session/arrangement"}));
     assert!(!failed, "{arranging}");
     let place = arranging
         .lines()
@@ -396,7 +397,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     let (notebook, failed) = repl.call(
         session,
         "tilo_ls",
-        json!({"path": format!("session/{book}")}),
+        &json!({"path": format!("session/{book}")}),
     );
     assert!(!failed, "{notebook}");
     let reference = notebook
@@ -407,7 +408,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         .unwrap_or_else(|| panic!("the note goes by a reference: {notebook}"))
         .to_owned();
     // An action read as a value says how it is called.
-    let (named, failed) = repl.call(session, "tilo", json!({"program": "session.overview"}));
+    let (named, failed) = repl.call(session, "tilo", &json!({"program": "session.overview"}));
     assert!(failed, "{named}");
     assert!(
         named.contains("call it: `session.overview(open: Option<Bool> = .none)`"),
@@ -427,7 +428,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     let (placed_it, failed) = repl.call(
         session,
         "tilo",
-        json!({"program": format!("session.place(resource: {reference}, x: 80, y: 60)")}),
+        &json!({"program": format!("session.place(resource: {reference}, x: 80, y: 60)")}),
     );
     assert!(!failed, "the program ran: {placed_it}");
     assert!(placed_it.contains("step 1"), "{placed_it}");
@@ -447,7 +448,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     );
 
     // `undo` takes the step back.
-    let (undone, failed) = repl.call(session, "tilo", json!({"program": "undo"}));
+    let (undone, failed) = repl.call(session, "tilo", &json!({"program": "undo"}));
     assert!(!failed, "{undone}");
     until(session, "the note off the canvas", |session| {
         placed(session, note) == 0 && on_screen(session, NOTE_TITLE).is_none()
@@ -479,8 +480,8 @@ fn the_person_admits_the_repl_on_the_sheet_and_it_works_as_them() {
         "who asks: {}",
         shown.heading
     );
-    press_sheet(&mut session, PortalEffect::SELECT.id, json!({"index": 0}));
-    press_sheet(&mut session, PortalEffect::CONFIRM.id, json!({}));
+    press_sheet(&mut session, PortalEffect::SELECT.id, &json!({"index": 0}));
+    press_sheet(&mut session, PortalEffect::CONFIRM.id, &json!({}));
 
     the_repl_works_as_the_person(&mut session, &mut repl, &note);
 }
@@ -522,7 +523,7 @@ fn placing_what_text_finds_twice_keeps_the_session_answering() {
         let (answer, failed) = repl.call(
             &mut session,
             "tilo",
-            json!({"program": format!(
+            &json!({"program": format!(
                 "session.place_found(text: \"{NOTE_TITLE}\", view: .none, x: .some({}), y: .some(60))",
                 80 + placed_before * 400
             )}),
@@ -534,7 +535,7 @@ fn placing_what_text_finds_twice_keeps_the_session_answering() {
     }
 
     // The connection that asked is still answered.
-    let (apps, failed) = repl.call(&mut session, "tilo_ls", json!({}));
+    let (apps, failed) = repl.call(&mut session, "tilo_ls", &json!({}));
     assert!(!failed, "{apps}");
     // And so is a new one.
     let mut second = Repl::connect(&root.path().join("agent.sock"));
@@ -581,7 +582,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         let (page, failed) = repl.call(
             &mut session,
             "tilo_ls",
-            json!({"path": "session", "cursor": cursor}),
+            &json!({"path": "session", "cursor": cursor}),
         );
         assert!(!failed, "{page}");
         listed.push_str(&page);
@@ -606,7 +607,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         );
     }
 
-    let (found, failed) = repl.call(&mut session, "tilo_find", json!({"query": NOTE_TITLE}));
+    let (found, failed) = repl.call(&mut session, "tilo_find", &json!({"query": NOTE_TITLE}));
     assert!(!failed, "{found}");
     assert!(
         found.lines().any(|line| line.contains(NOTE_TITLE)),
@@ -654,7 +655,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     let (answer, failed) = repl.call(
         &mut session,
         "tilo",
-        json!({"program": format!(
+        &json!({"program": format!(
             "session.place_found(text: \"{NOTE_TITLE}\", view: .none, x: .some(80), y: .some(60))"
         )}),
     );
@@ -668,7 +669,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     let (answer, failed) = repl.call(
         &mut session,
         "tilo",
-        json!({"program": "session.place_found(text: \"Inbox\", view: .none, x: .some(640), y: .some(60))"}),
+        &json!({"program": "session.place_found(text: \"Inbox\", view: .none, x: .some(640), y: .some(60))"}),
     );
     assert!(!failed, "the program ran: {answer}");
     let mailbox = |session: &Session| {

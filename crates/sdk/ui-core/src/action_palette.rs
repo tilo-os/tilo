@@ -79,7 +79,7 @@ mod window_place;
 pub use api::{ACTION_PALETTE, MakeActionPalette, builtin_action_palette};
 pub(crate) use api::{ActionPaletteBox, make_action_palette};
 pub use rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
-pub use window_place::placement;
+pub use window_place::{list_cap, placement};
 
 /// The window a palette was asked for from, when a host lays several app
 /// tiles out in one tree (the desktop's strip of windows): the innermost
@@ -3605,6 +3605,49 @@ mod tests {
                 "below the top of {window:?}"
             );
         }
+    }
+
+    /// A card standing on the display — a desktop's own search — takes
+    /// three fifths of it, between 360 and 640 wide, a little below its
+    /// top, and its list grows with the display's height: the same rule a
+    /// card in a window follows, so the display's card needs no size of
+    /// its own.
+    #[test]
+    fn the_card_on_a_display_follows_the_display() {
+        let theme = Theme::dark();
+        for (display, width, top) in [
+            (Rect::new(0.0, 0.0, 1280.0, 800.0), 640.0, 96.0),
+            (Rect::new(0.0, 0.0, 1000.0, 700.0), 600.0, 84.0),
+            (Rect::new(0.0, 0.0, 2000.0, 1200.0), 640.0, 144.0),
+            (Rect::new(1920.0, 0.0, 3200.0, 800.0), 640.0, 96.0),
+        ] {
+            let (origin, card) = placement(display, &theme);
+            assert!(
+                (card - width).abs() < 1e-9,
+                "a card on {display:?} is {card} wide, not {width}"
+            );
+            assert!(
+                (origin.x + card / 2.0 - display.center().x).abs() < 1e-9,
+                "centred across {display:?}"
+            );
+            assert!(
+                (origin.y - display.y0 - top).abs() < 1e-9,
+                "a card on {display:?} stands at {}, not {top}",
+                origin.y - display.y0
+            );
+        }
+        // A display too narrow for three fifths of it to be a card keeps
+        // its card inside its own edges.
+        let (origin, card) = placement(Rect::new(0.0, 0.0, 600.0, 800.0), &theme);
+        assert!((card - (600.0 - 16.0)).abs() < 1e-9, "{card} wide");
+        assert!((origin.x - 8.0).abs() < 1e-9, "at {}", origin.x);
+
+        // The list grows with the display, and stops at the shortest and
+        // tallest it may be.
+        let tall = |height| list_cap(Rect::new(0.0, 0.0, 1280.0, height), &theme);
+        assert!((tall(800.0) - 440.0).abs() < 1e-9);
+        assert!((tall(1200.0) - 504.0).abs() < 1e-9);
+        assert!((tall(200.0) - 160.0).abs() < 1e-9);
     }
 
     /// A minimal replayable action: set a string under a root key.

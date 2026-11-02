@@ -92,6 +92,11 @@ fn start_wm(
     match crate::x11_windows::X11Windows::connect(display, client) {
         Ok(mut x11) => {
             x11.publish_x_hints(&mut data.state);
+            // The layout the person chose before the server started is the
+            // one its clients are told of.
+            if let Some(keyboard) = data.state.keyboard.clone() {
+                x11.publish_keyboard(&keyboard);
+            }
             data.x11_windows = Some(x11);
         }
         Err(error) => tracing::warn!(%error, "X11 windows have no identity"),

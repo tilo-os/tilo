@@ -14,8 +14,11 @@ use crate::resource::Passwords;
 /// The vault as the palette, an agent and a control see it: what the vault
 /// publishes, with its effects beside it.
 static VAULT: LazyLock<ResourceSpec> = LazyLock::new(|| {
-    let mut vault =
-        ui::tilo_resource::publish::<Passwords>(Passwords::KIND, Passwords::LABEL, &Passwords::default());
+    let mut vault = ui::tilo_resource::publish::<Passwords>(
+        Passwords::KIND,
+        Passwords::LABEL,
+        &Passwords::default(),
+    );
     vault.actions.extend(PasswordsEffect::specs());
     vault
 });
@@ -39,18 +42,17 @@ mod tests {
         let item = "the-item".to_owned();
         for (binding, id) in [
             (
-                effect(&PasswordsEffect::CopyIdentity {
-                    item: item.clone(),
-                }),
+                effect(&PasswordsEffect::CopyIdentity { item: item.clone() }),
                 "copy-identity",
             ),
             (
-                effect(&PasswordsEffect::CopyOrigins {
-                    item: item.clone(),
-                }),
+                effect(&PasswordsEffect::CopyOrigins { item: item.clone() }),
                 "copy-origins",
             ),
-            (effect(&PasswordsEffect::Reveal { item: item.clone() }), "reveal"),
+            (
+                effect(&PasswordsEffect::Reveal { item: item.clone() }),
+                "reveal",
+            ),
             (effect(&PasswordsEffect::Hide { item }), "hide"),
             (
                 effect(&PasswordsEffect::RevokeAccess {
@@ -81,7 +83,10 @@ mod tests {
             confirmation("revoke-access"),
             Some(ConfirmationPolicy::Confirm)
         );
-        assert_eq!(confirmation("copy-identity"), Some(ConfirmationPolicy::None));
+        assert_eq!(
+            confirmation("copy-identity"),
+            Some(ConfirmationPolicy::None)
+        );
         assert_eq!(confirmation("hide"), Some(ConfirmationPolicy::None));
     }
 }

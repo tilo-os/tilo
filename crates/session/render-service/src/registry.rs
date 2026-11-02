@@ -1,9 +1,9 @@
 //! Fonts and images, as the service holds them for its apps.
 //!
 //! **Fonts from the shared view** are mapped once per path and shared by
-//! every app of the room: they are public, read-only files, so sharing them
-//! leaks nothing, and the glyph outlines vello caches for one app serve all.
-//! A path is accepted only inside the font directories the service was
+//! every app of the workspace: they are public, read-only files, so sharing
+//! them leaks nothing, and the glyph outlines vello caches for one app serve
+//! all. A path is accepted only inside the font directories the service was
 //! started with (the same read-only view apps see), and only after the file
 //! parses as a font.
 //!

@@ -159,8 +159,8 @@ struct State {
     active: Option<String>,
     /// Decoded pictures by the value they show.
     images: HashMap<Option<String>, ImageData>,
-    /// The temperature each picture gives a room, by the value it shows: a
-    /// picture is millions of pixels, so its hue is found once.
+    /// The temperature each picture gives a workspace, by the value it
+    /// shows: a picture is millions of pixels, so its hue is found once.
     hues: HashMap<Option<String>, Option<f32>>,
     /// Values decoding off this thread.
     decoding: HashSet<Option<String>>,
@@ -255,11 +255,11 @@ impl Wallpapers {
         self.state.lock_recover().active = id;
     }
 
-    /// The temperature workspace `id`'s wallpaper gives its room: its
-    /// picture's dominant hue, found once per picture and kept while a
-    /// workspace shows it. `None` while the picture is not decoded yet, and
-    /// for a picture with no hue (a grey photograph, a missing file), which
-    /// leaves the room neutral.
+    /// The temperature workspace `id`'s wallpaper gives it: its picture's
+    /// dominant hue, found once per picture and kept while a workspace shows
+    /// it. `None` while the picture is not decoded yet, and for a picture
+    /// with no hue (a grey photograph, a missing file), which leaves the
+    /// workspace neutral.
     pub(crate) fn hue(&self, id: &str) -> Option<f32> {
         let mut state = self.state.lock_recover();
         let value = state.records.value_for(id).map(str::to_owned);
@@ -427,7 +427,7 @@ mod tests {
             let mut state = wallpapers.state.lock_recover();
             state.images.insert(None, picture(rgb));
         };
-        // No picture decoded yet: the room is neutral until one arrives.
+        // No picture decoded yet: the workspace is neutral until one arrives.
         assert_eq!(wallpapers.hue("1"), None);
         shown([20, 40, 220]);
         let blue = wallpapers.hue("1").expect("a blue picture has a hue");

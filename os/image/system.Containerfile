@@ -131,6 +131,7 @@ COPY \
     os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules \
     os/etc/polkit-1/rules.d/49-tilo-session-priority.rules \
     os/etc/polkit-1/rules.d/49-tilo-time-zone.rules \
+    os/etc/polkit-1/rules.d/49-tilo-battery-cap.rules \
     /etc/polkit-1/rules.d/
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.
@@ -205,6 +206,12 @@ COPY os/etc/profile.d/tilo-apps.sh /etc/profile.d/tilo-apps.sh
 # store volume (/var/lib/tilo/store) before it, giving installs without a
 # store partition an image-backed one attached by tilo-store-loop.service;
 # fs.service pulls both in, so neither needs enabling.
+# shell-firstboot.service is the machine's one first boot: the session runs
+# `--firstboot-only` once (/etc/tilo/.firstboot-done), before the greeter and
+# after the device key and the login account exist. The person's identity is
+# not this unit's: setup asks for it in the session, in front of them.
+# tilo-battery-cap@ is started on request — the charge limit in Settings — and
+# never at boot: it is the one writer of the vendor's threshold files.
 COPY \
     os/usr/lib/systemd/system/fs.service \
     os/usr/lib/systemd/system/tilo-store-volume.service \
@@ -215,6 +222,8 @@ COPY \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.service \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.timer \
     os/usr/lib/systemd/system/tilo-firstboot-user.service \
+    os/usr/lib/systemd/system/shell-firstboot.service \
+    os/usr/lib/systemd/system/tilo-battery-cap@.service \
     os/usr/lib/systemd/system/tilo-flatpak-defaults.service \
     os/usr/lib/systemd/system/tilo-cache-gc.service \
     os/usr/lib/systemd/system/tilo-cache-gc.timer \
@@ -288,6 +297,7 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-session-recovery \
     os/usr/libexec/tilo-cage-session \
     os/usr/libexec/tilo-clock-floor \
+    os/usr/libexec/tilo-battery-cap \
     os/usr/libexec/tilo-authselect-unchanged \
     /usr/libexec/
 # The graphical-session user target. (`systemctl --global enable` further down
@@ -714,6 +724,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
        /etc/systemd/system/graphical.target.wants/power-profiles-daemon.service \
        /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
+    systemctl enable shell-firstboot.service && \
     systemctl enable tilo-flatpak-defaults.service && \
     # Fedora's remote-add starts with tilo-flatpak-defaults, off the greeter's path; enabled
     # on its own, multi-user.target and so graphical.target would wait for it.

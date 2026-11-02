@@ -71,7 +71,7 @@ case $group in
     exit "$status"
     ;;
   agent)
-    cargo build --locked --release -p shell --bin shell --bin tilo-runtime-mcp \
+    cargo build --locked --release -p shell --bin shell -p tilo-runtime --bin tilo-runtime-mcp \
       --example agent_task_desktop --features dev-overrides
     test -r "$VK_DRIVER_FILES"
     env_json release lavapipe kvm > "$out/env.json"

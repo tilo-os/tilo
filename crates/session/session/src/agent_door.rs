@@ -19,8 +19,8 @@
 //! list and revoke, so removing it there ends what the client may do.
 //!
 //! **The broker**: an admitted connection is served as
-//! `Caller::local_agent(agent).in_workspace(room)`, so discovery and invocation
-//! pass the same gate as every other caller.
+//! `Caller::local_agent(agent).in_workspace(workspace)`, so discovery and
+//! invocation pass the same gate as every other caller.
 //!
 //! **Acting as the person.** A client may ask to act as the person rather
 //! than as an agent of theirs: a REPL (`tilolang repl`), whose lines the
@@ -182,7 +182,7 @@ struct Request {
 struct Waiting {
     facts: Facts,
     as_person: bool,
-    room: String,
+    workspace: String,
     proposed: String,
     /// The question up for it; dropping it withdraws the question.
     asked: Option<Asked>,
@@ -448,9 +448,9 @@ impl Loop {
             return;
         };
         let now = unix_now();
-        let Some((room, workspace)) = handle.read(|tree| {
+        let Some((workspace, name)) = handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| (workspace.room().to_string(), workspace.name.clone()))
+                .map(|held| (held.room().to_string(), held.name.clone()))
         }) else {
             let _ = decide.send(Consent::Refuse(word("agent-door-no-workspace")));
             return;
@@ -469,7 +469,7 @@ impl Loop {
             if named || earlier {
                 tracing::info!(client = %facts.client, pid = facts.pid, named, "agent door: the person admitted this client to act as them");
                 let _ = decide.send(Consent::Person {
-                    workspace: room,
+                    workspace,
                     person: person.to_owned(),
                 });
                 return;
@@ -481,12 +481,12 @@ impl Loop {
             .cloned();
         if !as_person
             && let Some(agent) = &remembered
-            && Self::member(handle, &room, agent, now)
+            && Self::member(handle, &workspace, agent, now)
         {
             // What the person said to remember: this client is this agent,
             // let in wherever that agent is already a member.
             let _ = decide.send(Consent::Admit {
-                workspace: room,
+                workspace,
                 agent: agent.clone(),
                 person: person.to_owned(),
             });
@@ -494,7 +494,7 @@ impl Loop {
         }
         let proposed = remembered.unwrap_or_else(|| proposed_agent_id(&facts.client));
         let details = serde_json::to_value(Admission {
-            workspace,
+            workspace: name,
             agent: proposed.clone(),
             as_person,
         })
@@ -504,7 +504,7 @@ impl Loop {
             client = %facts.client,
             pid = facts.pid,
             agent = %proposed,
-            %room,
+            %workspace,
             "agent door: asking the person"
         );
         let asked = questions.ask(Question {
@@ -517,7 +517,7 @@ impl Loop {
         self.waiting.push(Waiting {
             facts,
             as_person,
-            room,
+            workspace,
             proposed,
             asked: Some(asked),
             decide,
@@ -581,11 +581,11 @@ impl Loop {
                 self.person_session.insert(key);
             }
             return Consent::Person {
-                workspace: waiting.room.clone(),
+                workspace: waiting.workspace.clone(),
                 person: person.to_owned(),
             };
         }
-        if let Err(reason) = self.admit(handle, &waiting.room, &waiting.proposed, person) {
+        if let Err(reason) = self.admit(handle, &waiting.workspace, &waiting.proposed, person) {
             return Consent::Refuse(reason);
         }
         if let Some(key) = waiting.facts.key() {
@@ -601,13 +601,13 @@ impl Loop {
             }
         }
         Consent::Admit {
-            workspace: waiting.room.clone(),
+            workspace: waiting.workspace.clone(),
             agent: waiting.proposed.clone(),
             person: person.to_owned(),
         }
     }
 
-    /// Make `agent` a member of the workspace in `room` with the Observer
+    /// Make `agent` a member of the workspace `workspace` with the Observer
     /// preset's grants, unless it already is one.
     ///
     /// # Errors
@@ -615,7 +615,7 @@ impl Loop {
     fn admit(
         &self,
         handle: &DesktopHandle,
-        room: &str,
+        workspace: &str,
         agent: &str,
         person: &str,
     ) -> Result<(), String> {
@@ -624,7 +624,7 @@ impl Loop {
         let Some(workspace) = tree
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.room().to_string() == room)
+            .find(|held| held.room().to_string() == workspace)
         else {
             return Err(word("agent-door-workspace-gone"));
         };
@@ -642,13 +642,13 @@ impl Loop {
         Ok(())
     }
 
-    /// Whether `agent` is a live member of the workspace in `room`.
-    fn member(handle: &DesktopHandle, room: &str, agent: &str, now: u64) -> bool {
+    /// Whether `agent` is a live member of the workspace `workspace`.
+    fn member(handle: &DesktopHandle, workspace: &str, agent: &str, now: u64) -> bool {
         handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .find(|workspace| workspace.room().to_string() == room)
-                .is_some_and(|workspace| workspace.agent_role_at(agent, now).is_some())
+                .find(|held| held.room().to_string() == workspace)
+                .is_some_and(|held| held.agent_role_at(agent, now).is_some())
         })
     }
 
@@ -1032,7 +1032,7 @@ type Answered =
 const ANSWERED_KEPT: usize = 256;
 
 /// The broker as an admitted client's door, with the session's own doors
-/// beside it: every call passes the gate as the agent or person and room the
+/// beside it: every call passes the gate as the agent or person and workspace the
 /// connection was admitted for.
 struct Host {
     state: Arc<AppBrokerState>,

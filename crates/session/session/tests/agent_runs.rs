@@ -289,7 +289,7 @@ fn an_ask_queued_through_the_door_is_a_run_the_session_follows_to_its_result() {
     let socket = directory.path().join("collab.sock");
     let runs = Arc::new(AgentRuns::new(Some(LoopWake::default().handle())));
     let mut session = session(&socket, Arc::clone(&runs));
-    let room = session
+    let workspace = session
         .handle()
         .read(|tree| {
             tree.active_workspace()
@@ -332,7 +332,7 @@ fn an_ask_queued_through_the_door_is_a_run_the_session_follows_to_its_result() {
     );
 
     // The agent takes it up, and the app following it sees that.
-    runs.absorb_report(&room, &asked.run.issue, 1, &TaskRunUpdate::Accepted);
+    runs.absorb_report(&workspace, &asked.run.issue, 1, &TaskRunUpdate::Accepted);
     until(&mut session, &seen, "the run accepted", |seen| {
         seen.iter().any(|run| run.phase == "accepted")
     });
@@ -347,9 +347,9 @@ fn an_ask_queued_through_the_door_is_a_run_the_session_follows_to_its_result() {
         finish: None,
         detail: String::new(),
     };
-    runs.absorb_presentation(&room, &asked.run.issue, 1, Some(&showing));
+    runs.absorb_presentation(&workspace, &asked.run.issue, 1, Some(&showing));
     runs.absorb_report(
-        &room,
+        &workspace,
         &asked.run.issue,
         1,
         &TaskRunUpdate::Progress {
@@ -369,7 +369,7 @@ fn an_ask_queued_through_the_door_is_a_run_the_session_follows_to_its_result() {
         seen.iter().any(|run| run.messages == 1)
     });
     runs.absorb_report(
-        &room,
+        &workspace,
         &asked.run.issue,
         1,
         &TaskRunUpdate::DirectionsApplied { revision: 1 },
@@ -380,14 +380,14 @@ fn an_ask_queued_through_the_door_is_a_run_the_session_follows_to_its_result() {
 
     // It ends its turn, the turn's last snapshot included.
     runs.absorb_report(
-        &room,
+        &workspace,
         &asked.run.issue,
         1,
         &TaskRunUpdate::Succeeded {
             message: "tidied three notes".into(),
         },
     );
-    runs.absorb_presentation(&room, &asked.run.issue, 1, None);
+    runs.absorb_presentation(&workspace, &asked.run.issue, 1, None);
     until(&mut session, &seen, "the run done", |seen| {
         seen.iter().any(|run| run.phase == "done")
     });

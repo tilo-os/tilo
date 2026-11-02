@@ -40,8 +40,9 @@ const BTN_LEFT: u32 = 0x110;
 /// The framed canvas's entry, named for what it holds: the text typed to find what to place.
 const CANVAS_ENTRY: &str = "Typed";
 
-/// A notebook kept by the notes app, published as the session publishes a room's records, and
-/// one note in it titled [`NOTE_TITLE`], made through the app's own actions.
+/// A notebook kept by the notes app, published as the session publishes a
+/// workspace's records, and one note in it titled [`NOTE_TITLE`], made
+/// through the app's own actions.
 fn notebook() -> (RecordService, String) {
     let mut record = tilo_resource::Doc::new();
     let host = Host::new(&record, Principal::new(PERSON), || None).unwrap();
@@ -55,7 +56,7 @@ fn notebook() -> (RecordService, String) {
     for committed in host.take_committed() {
         let action = &committed.action;
         let context =
-            ui::tilo_actions::ActionContext::for_resource("room", &action.kind, &action.kind)
+            ui::tilo_actions::ActionContext::for_resource("workspace", &action.kind, &action.kind)
                 .with_invoker(ui::tilo_actions::ActionInvoker::actor(PERSON));
         host.with_schemas(|| {
             ui::tilo_actions::apply_local_with_context(

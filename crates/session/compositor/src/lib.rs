@@ -29,6 +29,7 @@ pub mod capture;
 pub mod clipboard_history;
 pub mod color_filter;
 mod color_management;
+mod compose;
 pub mod config;
 mod cursor;
 pub mod dim;
@@ -1410,6 +1411,12 @@ impl Compositor {
 
     /// Type with the person's keyboard layout.
     pub fn set_keyboard_layout(&mut self, layout: &KeyboardLayout) {
+        self.data.state.keyboard = Some(layout.clone());
+        // X11 clients type in the seat's layout too, and everything that
+        // asks which layout is in force hears the same.
+        if let Some(x11) = self.data.x11_windows.as_mut() {
+            x11.publish_keyboard(layout);
+        }
         let LoopData { state, .. } = &mut self.data;
         let Some(keyboard) = state.seat.get_keyboard() else {
             return;

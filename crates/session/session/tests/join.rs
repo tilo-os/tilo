@@ -35,7 +35,7 @@ const APP: &str = "so.tilo.notes";
 /// The record of `APP` the apps change.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000aa";
 /// The workspace the desk shows and the channel is in.
-const ROOM: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
+const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
 /// The person's keys: the identity store's device, and a second device of
 /// theirs the store enrolled when it was paired.
@@ -74,7 +74,7 @@ fn person() -> Person {
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let profile = tilo_identity_host::registry::selected_identity_profile(ROOM)
+    let profile = tilo_identity_host::registry::selected_identity_profile(WORKSPACE)
         .expect("the identity registry")
         .expect("the identity is selected for the workspace");
     let device = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
@@ -131,10 +131,12 @@ fn principal(root: &[u8; 32]) -> String {
 /// device's proof that it is the certificate's.
 fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8> {
     runtime_collab::CertifiedJoinIdentity {
-        workspace_id: ROOM.to_owned(),
+        workspace_id: WORKSPACE.to_owned(),
         device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
         proof: device
-            .sign(&runtime_identity::collaboration_join_signing_bytes(ROOM))
+            .sign(&runtime_identity::collaboration_join_signing_bytes(
+                WORKSPACE,
+            ))
             .to_bytes()
             .to_vec(),
     }
@@ -142,11 +144,11 @@ fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8
     .expect("a presentation encodes")
 }
 
-/// A desk showing the workspace, in its room, owned by the person.
+/// A desk showing the workspace, known by its id, owned by the person.
 fn desk(person: &Keys) -> DesktopTree {
-    let room = RoomId::parse(ROOM).expect("a room id");
-    let id = WorkspaceId::of_room(room);
-    let mut workspace = Workspace::in_workspace(id, room, "Desk");
+    let workspace = RoomId::parse(WORKSPACE).expect("a workspace id");
+    let id = WorkspaceId::of_room(workspace);
+    let mut workspace = Workspace::in_workspace(id, workspace, "Desk");
     workspace.set_owner(principal(&person.root));
     DesktopTree {
         workspaces: vec![workspace.clone()],
@@ -161,7 +163,7 @@ fn session(socket: &Path, person: &Keys) -> Session {
     // The apps speak from this test's own process, so the launches the
     // session would have recorded for them name that process.
     let launches = std::sync::Arc::new(Launches::default());
-    launches.started(std::process::id(), APP, ROOM, true);
+    launches.started(std::process::id(), APP, WORKSPACE, true);
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -186,7 +188,7 @@ fn session(socket: &Path, person: &Keys) -> Session {
 
 /// The channel key of the app's record in the workspace.
 fn channel() -> String {
-    tilo_action_broker::route::CrdtRoute::record(APP, ROOM, RECORD).channel_key()
+    tilo_action_broker::route::CrdtRoute::record(APP, WORKSPACE, RECORD).channel_key()
 }
 
 /// One change of the record: `value` written under `key`, as an app writes it.
@@ -209,9 +211,9 @@ fn op(device: &ed25519_dalek::SigningKey, key: &str, value: &str, seq: u64) -> V
     let author = collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
     let mut op = collab_types::SignedOp::new_unsigned(
         change(key, value),
-        collab_types::document_artifact_id(APP, ROOM, RECORD),
+        collab_types::document_artifact_id(APP, WORKSPACE, RECORD),
         author,
-        collab_types::document_attestation_id(APP, ROOM, RECORD),
+        collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
         collab_types::OpKind::Change,
         std::time::SystemTime::now(),
         seq,
@@ -277,11 +279,11 @@ fn until_the_apps_are_done<T>(session: &mut Session, received: &std::sync::mpsc:
     panic!("the apps never finished their calls");
 }
 
-/// An app connected to the session's plane as `APP` in `ROOM`, as the
+/// An app connected to the session's plane as `APP` in `WORKSPACE`, as the
 /// launcher hands it the connection.
 fn connect(socket: &PathBuf) -> CollabClient {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
-    launcher::services::write_collab_handoff(&mut stream, APP, ROOM)
+    launcher::services::write_collab_handoff(&mut stream, APP, WORKSPACE)
         .expect("the launcher names the app on the connection");
     stream
         .set_nonblocking(true)

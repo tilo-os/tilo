@@ -7,12 +7,13 @@
 # `BlobRef`; the bytes are reached through this capability.
 #
 # The capability is scoped. The launcher connects to the daemon on the app's
-# behalf and names the app and its room in a handoff frame the app never sees,
-# so the `DocumentBlobs` an app receives answers only for document media of
-# that room: content an app in the room put there on this device, or that a
-# collaborator's device in the room served for it. Knowing a hash never grants
-# access: anything else (files, other rooms, content that does not exist)
-# reads as `unavailable`, so the answer cannot be used to probe the store.
+# behalf and names the app and its workspace in a handoff frame the app never
+# sees, so the `DocumentBlobs` an app receives answers only for document media
+# of that workspace: content an app in the workspace put there on this device,
+# or that a collaborator's device in the workspace served for it. Knowing a
+# hash never grants access: anything else (files, other workspaces, content
+# that does not exist) reads as `unavailable`, so the answer cannot be used to
+# probe the store.
 #
 # ## Schema evolution rules
 #
@@ -30,9 +31,9 @@ interface DocumentBlobs {
   upload @1 (mime :Text) -> (upload :BlobUpload);
 
   # Read up to `maxLen` bytes of `hash` from `offset`. `pending` means this
-  # device is fetching it from a collaborator in the room: ask again later
-  # rather than waiting on this call. `unavailable` covers both "does not
-  # exist" and "not yours to read".
+  # device is fetching it from a collaborator in the workspace: ask again
+  # later rather than waiting on this call. `unavailable` covers both "does
+  # not exist" and "not yours to read".
   get @2 (hash :Text, offset :UInt64, maxLen :UInt32) -> (read :BlobRead);
 
   # Whether `hash` is readable through this capability and its bytes are on
@@ -44,9 +45,9 @@ interface DocumentBlobs {
 
   # A small public file this device can keep a copy of (a book catalogue),
   # named as the daemon knows it (`gutenberg-catalogue`). It belongs to no
-  # room and no app: one copy per device, readable from every workspace, kept
-  # while some app keeps it, evicted like any cached content and fetched again
-  # from where it came from when read. An unknown name is refused.
+  # workspace and no app: one copy per device, readable from every workspace,
+  # kept while some app keeps it, evicted like any cached content and fetched
+  # again from where it came from when read. An unknown name is refused.
   publicContent @5 (name :Text) -> (content :PublicContent);
 }
 
@@ -96,6 +97,7 @@ struct BlobRead {
 # app it has authenticated (the shell staging content an app asked it to open
 # in another app), so it reads through that app's scope rather than around it.
 interface SessionBlobs {
+  # The field keeps `room`: it is wire that the one-wire replacement removes.
   scope @0 (room :Text, app :Text) -> (blobs :DocumentBlobs);
 
   # Ask where each kept public copy came from whether it changed, and take a

@@ -160,7 +160,7 @@ done
 
 # The identity chain check the release gate runs on an installed session, in
 # the person's own session so their secret store answers.
-"$vm" ssh 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus /usr/bin/shell --verify-collaboration-identity' \
+"$vm" ssh 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus /usr/bin/tilo-session --verify-collaboration-identity' \
   > "$out/verify-identity.txt" 2>&1 || {
     cat "$out/verify-identity.txt" >&2
     die "the joined identity does not verify at login"

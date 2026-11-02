@@ -668,17 +668,18 @@ fn build_native(
 }
 
 /// The shared runtime daemon (`tilo-runtime-mcp`, a binary of the SDK's
-/// `shell` package) in the app's profile, without the hosted test-control
-/// socket. Outside the SDK checkout it builds under the app's target
-/// directory, never inside a Cargo git checkout.
+/// `tilo-runtime` package) in the app's profile. Outside the SDK checkout it
+/// builds under the app's target directory, never inside a Cargo git checkout.
 fn build_runtime_host(project: &Project, request: &TargetRequest) -> Result<PathBuf> {
-    let manifest = project.sdk_root.join("crates/session/shell/Cargo.toml");
+    let manifest = project
+        .sdk_root
+        .join("crates/runtime/tilo-runtime/Cargo.toml");
     let mut command = ProcessCommand::new(cargo_program());
     command
         .arg("build")
         .arg("--manifest-path")
         .arg(&manifest)
-        .args(["--bin", macos::RUNTIME_HOST, "--no-default-features"])
+        .args(["--bin", macos::RUNTIME_HOST])
         .arg("--message-format=json-render-diagnostics")
         .current_dir(&project.sdk_root)
         .stdout(Stdio::piped());

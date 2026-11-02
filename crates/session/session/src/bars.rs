@@ -86,7 +86,7 @@ impl Session {
             .with_chrome_mut(|chrome| chrome.follow_reveals(hide, held, now))
             .unwrap_or(false);
         if changed {
-            // A bar docked in the desk's column takes its room there: docking
+            // A bar docked in the desk's column takes its place there: docking
             // it, hiding it or showing it over a window lays the windows out
             // again for what is left.
             self.shared

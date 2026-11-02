@@ -110,7 +110,7 @@ kind = "userspace"
 scope = "session"
 packages = ["shell"]
 bins = ["shell"]
-dev_features = ["dev-overrides"]
+dev_features = ["shell/dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "shell", to = "/usr/bin/shell", mode = "0755" },
@@ -214,13 +214,15 @@ files = [
   { link = "tilo", to = "/usr/bin/tilo-control" },
 ]
 
+# The runtime host a login runs: an app started in a Tilo login outside the
+# session's own launcher attaches to the profile's services through it.
 [[component]]
 name = "native-runtime-host"
 kind = "userspace"
 scope = "session"
-packages = ["shell"]
+packages = ["tilo-runtime"]
 bins = ["tilo-runtime-mcp"]
-dev_features = ["dev-overrides"]
+dev_features = ["tilo-runtime/dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-runtime-mcp", to = "/usr/libexec/tilo/tilo-runtime-mcp", mode = "0755" },

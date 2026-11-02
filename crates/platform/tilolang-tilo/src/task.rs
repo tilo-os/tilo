@@ -494,7 +494,7 @@ impl Invoker for DoorInvoker {
                     steps.apps.push(app.to_owned());
                     let resource = if published {
                         call.get("resource")
-                            .and_then(Json::as_str)
+                            .and_then(serde_json::Value::as_str)
                             .unwrap_or_default()
                             .to_owned()
                     } else {

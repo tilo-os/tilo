@@ -17,7 +17,7 @@ use tilo_actions::{
 
 /// The link to the resource as a URL.
 pub const SHARE_LINK: &str = "share-link";
-/// The link with an invitation for someone not yet in the room.
+/// The link with an invitation for someone not yet in the workspace.
 pub const SHARE_INVITE_LINK: &str = "share-invite-link";
 /// `share-link` on `resource`, which `provider` publishes: how one app asks
 /// another app's resource for its link without knowing its views.
@@ -232,7 +232,7 @@ fn spec(invite: bool, kind: String, views: Vec<SharedView>) -> ActionSpec {
     )
     .of_kind(action_kind)
     .with_description(description);
-    // Minting waits on the room's host for a fresh locator, which only
+    // Minting waits on the workspace's host for a fresh locator, which only
     // answers in-process at once; over the session it arrives later.
     let contract = &mut spec.type_mut().contract;
     contract.execution = ExecutionMode::Background { cancellable: true };

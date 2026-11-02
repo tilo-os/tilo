@@ -16,6 +16,8 @@
 mod harness;
 #[path = "headless/session_follow.rs"]
 mod session_follow;
+#[path = "headless/typing.rs"]
+mod typing;
 #[path = "headless/window_icons.rs"]
 mod window_icons;
 
@@ -604,8 +606,8 @@ fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window()
     let keys = log.borrow().keys.clone();
     assert_eq!(keys.len(), 2);
     assert_eq!(
-        (keys[0].keycode, keys[0].pressed, keys[0].text),
-        (KEY_A, true, Some('a'))
+        (keys[0].keycode, keys[0].pressed, keys[0].text.as_deref()),
+        (KEY_A, true, Some("a"))
     );
     assert_eq!(keys[0].keysym, 0x61, "XK_a");
     assert!(!keys[1].pressed);
@@ -622,35 +624,6 @@ fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window()
         clients[0].seen.keys.len() == 1
     });
     assert_eq!(log.borrow().keys.len(), 2);
-}
-
-#[test]
-fn the_keyboard_types_in_the_persons_layout() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut client = mapped_client(&mut compositor, "typing", (200, 100), [0, 255, 0, 255]);
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.keymap.is_some()
-    });
-    let before = client.seen.keymap.clone().expect("the client has a keymap");
-
-    compositor.set_keyboard_layout(&KeyboardLayout {
-        layout: "de".into(),
-        ..KeyboardLayout::default()
-    });
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0]
-            .seen
-            .keymap
-            .as_ref()
-            .is_some_and(|keymap| keymap.contains("German"))
-    });
-    let after = client.seen.keymap.clone().expect("the new keymap");
-    assert_ne!(before, after, "the client's keys type other characters now");
-    assert!(
-        after.contains("German"),
-        "the client's keymap is the German one the person chose"
-    );
-    assert_eq!(compositor.keyboard_layout().as_deref(), Some("German"));
 }
 
 #[test]
@@ -2670,19 +2643,29 @@ fn the_crosshair_guides_follow_the_pointer() {
 }
 
 #[test]
-fn the_visual_alert_flashes_the_screen_and_fades() {
+fn the_visual_alert_lights_the_display_edge_and_fades() {
     let mut compositor = headless(Box::new(StackPolicy));
     compositor.render().expect("render");
     let before = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    assert_eq!(before.pixel(10, 10), Some(BACKGROUND));
+    assert_eq!(before.pixel(320, 240), Some(BACKGROUND));
 
     compositor.flash();
     compositor.render().expect("render");
     let lit = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    let lit = lit.pixel(10, 10).expect("pixel");
+    let edge = lit.pixel(320, 1).expect("pixel");
     assert!(
-        lit[0] > 200 && lit[1] > 200 && lit[2] > 200,
-        "the alert is on screen: {lit:?}"
+        edge[2] > 120 && edge[0] < edge[2],
+        "the display's edge lights up in the accent: {edge:?}"
+    );
+    assert_eq!(
+        lit.pixel(320, 240),
+        Some(BACKGROUND),
+        "the middle of the screen is left as it was"
+    );
+    assert_eq!(
+        lit.pixel(320, 8),
+        Some(BACKGROUND),
+        "the alert is an edge, not a wash over the screen"
     );
 
     // It fades out as time passes: once its run is over the frame is the
@@ -2695,7 +2678,7 @@ fn the_visual_alert_flashes_the_screen_and_fades() {
             .expect("dispatch");
         compositor.render().expect("render");
         let frame = compositor.screenshot("HEADLESS-1").expect("screenshot");
-        if frame.pixel(10, 10) == Some(BACKGROUND) {
+        if frame.pixel(320, 1) == Some(BACKGROUND) {
             faded = true;
             break;
         }
@@ -2710,15 +2693,15 @@ fn a_frame_after_the_alerts_run_puts_the_visual_alert_away() {
     compositor.flash();
     compositor.render().expect("render");
     let lit = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    let lit = lit.pixel(10, 10).expect("pixel");
-    assert!(lit[0] > 200, "the alert is on screen: {lit:?}");
+    let edge = lit.pixel(320, 1).expect("pixel");
+    assert!(edge[2] > 120, "the alert is on screen: {edge:?}");
     // No frame is drawn while the alert runs: the next one comes after it,
     // as a busy machine's would.
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(600));
     compositor.render().expect("render");
     let frame = compositor.screenshot("HEADLESS-1").expect("screenshot");
     assert_eq!(
-        frame.pixel(10, 10),
+        frame.pixel(320, 1),
         Some(BACKGROUND),
         "the alert is not left on screen"
     );

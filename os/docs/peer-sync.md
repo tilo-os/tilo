@@ -27,7 +27,7 @@ workspace bindings, and full-replication configuration; it then retains CRDT
 state, app checkpoints, file bytes, and thumbnails around the clock. The
 container deployment is documented in `os/containers/tilo-relay/README.md`.
 
-The identity files are created together by `shell --provision-identity`:
+The identity files are created together by `tilo-session --provision-identity`:
 
 ```text
 ~/.config/tilo/identity/primary.json

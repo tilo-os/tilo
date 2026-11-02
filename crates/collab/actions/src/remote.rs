@@ -1233,7 +1233,8 @@ pub const MAX_FETCHED_RECORD_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordQuery {
-    #[serde(rename = "workspace", alias = "room")]
+    // Sent as `room`: a frame reaches peers on other builds, which read the key they know.
+    #[serde(rename = "room", alias = "workspace")]
     pub workspace: String,
     /// The application whose record it is.
     pub app: String,
@@ -2301,6 +2302,42 @@ mod tests {
                 }),
             },
         ]
+    }
+
+    #[test]
+    fn a_record_query_keeps_the_key_peers_on_other_builds_read() {
+        let request = RemoteActionMessage::RecordRequest {
+            correlation: 1,
+            query: RecordQuery {
+                workspace: "studio".into(),
+                app: "dev.tilo.notes".into(),
+                record: "uuid:1".into(),
+                offset: 0,
+            },
+        };
+        let wire = RemoteActionFrame::new(request.clone()).encode().unwrap();
+        let written: serde_json::Value = serde_json::from_slice(&wire).unwrap();
+        let query = &written["message"]["RecordRequest"]["query"];
+        assert_eq!(
+            query["room"], "studio",
+            "a peer on another build reads this"
+        );
+        assert!(
+            query.get("workspace").is_none(),
+            "the frame is not written in two keys"
+        );
+        let older = serde_json::json!({
+            "version": REMOTE_ACTIONS_VERSION,
+            "message": {"RecordRequest": {"correlation": 1, "query": {
+                "workspace": "studio", "app": "dev.tilo.notes", "record": "uuid:1", "offset": 0}}},
+        });
+        let decoded = RemoteActionFrame::decode(&serde_json::to_vec(&older).unwrap())
+            .unwrap()
+            .message;
+        assert_eq!(
+            decoded, request,
+            "a frame written after the rename still reads"
+        );
     }
 
     #[test]

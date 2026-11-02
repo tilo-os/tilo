@@ -448,42 +448,19 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
 }
 
 const OFFLOAD_TEST: &str =
-    "standalone::tests::the_session_hands_its_broker_the_route_its_home_relay_configures";
-
-/// The person's always-on relay at `address`, registered as retaining
-/// `workspace`, as enrollment writes it beside the identity.
-fn register_home_relay(
-    identity_dir: &Path,
-    user: [u8; 32],
-    workspace: &str,
-    address: iroh::EndpointAddr,
-) {
-    let relay_device = *address.id.as_bytes();
-    let registration = tilo_relay::HomePeerRegistration {
-        schema_version: tilo_relay::HomePeerRegistration::CURRENT_SCHEMA,
-        device_node_id: hex::encode(relay_device),
-        relay_service_node_id: hex::encode(relay_device),
-        relay_endpoint: Some(address),
-        label: "home".into(),
-        user_public_key: hex::encode(user),
-        device_cert: None,
-        relay_workspace_ids: vec![tilo_relay_protocol::room_workspace_id(workspace).unwrap()],
-        environments: tilo_relay_protocol::RelayEnvironments::default(),
-    };
-    let path = tilo_relay::home_peer_registry_path(identity_dir);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, serde_json::to_vec(&[registration]).unwrap()).unwrap();
-}
+    "standalone::tests::the_session_hands_its_broker_the_round_its_workspaces_devices_answer";
 
 #[test]
 #[allow(
     clippy::significant_drop_tightening,
     reason = "each session holds the profile for its whole phase on purpose"
 )]
-fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
+fn the_session_hands_its_broker_the_round_its_workspaces_devices_answer() {
     let Some(root) = isolated_root(OFFLOAD_TEST) else {
         return;
     };
+    // The job nothing here holds the inputs of: the round weighs no transfer,
+    // and no other device of the workspace is there to answer it.
     let request = |workspace: &str| tilo_actions::offload::OffloadRequest {
         workspace: workspace.to_owned(),
         app_id: "so.tilo.photos".into(),
@@ -496,62 +473,45 @@ fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
             memory_bytes: 1024 * 1024 * 1024,
             output_bytes: 16 * 1024 * 1024,
         },
-        inputs: vec![hex::encode([1; 32])],
+        inputs: Vec::new(),
+    };
+    let invocation = || tilo_actions::remote::InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: "photos.library".into(),
+            address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
+        },
+        argument: tilo_actions::remote::InvokeArgument::default(),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
     };
     let run_here = |route: &Arc<dyn tilo_actions::offload::ActionOffload>, workspace: &str| {
         let answer = tilo_rt::app()
             .handle()
-            .block_on(route.offload(request(workspace)));
+            .block_on(route.offload_invocation(request(workspace), invocation()));
         let tilo_actions::offload::Offloaded::RunHere { reason } = answer else {
             panic!("nothing here can run elsewhere: {answer:?}");
         };
         reason
     };
 
-    // No home relay yet: the broker holds the route, which runs every
-    // offloadable action through its app's handler and says why.
+    // The broker holds the round: it asks the workspace's other devices and,
+    // with none of them answering, runs the job here and says so.
     let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
     let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
     let route = state
         .action_offload()
-        .expect("the session routes its workspaces' offloadable actions")
+        .expect("the session asks its workspaces' devices")
         .clone();
     let session_workspace = session.workspace().to_owned();
     assert_eq!(
         run_here(&route, &session_workspace),
-        "no home relay of this device retains the room"
+        "no device offered to run it"
     );
-
-    // The person registers their home relay as retaining the workspace while the
-    // session runs: the same session's route reaches it from the next
-    // invocation on. This relay never answers, so the route cannot place
-    // anything elsewhere, and says so: the door runs the app's handler.
-    let (_, cert) = tilo_identity_host::broker::trusted_current_device(&session_workspace).unwrap();
-    let identity_root = std::path::PathBuf::from(std::env::var_os("TILO_IDENTITY_ROOT").unwrap());
-    let unreachable = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[5; 32]).public())
-        .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 9)));
-    register_home_relay(
-        &identity_root,
-        cert.user_public_key,
-        &session_workspace,
-        unreachable,
-    );
-    let reason = run_here(&route, &session_workspace);
-    assert!(reason.contains("offload route"), "{reason}");
-    drop(route);
-    drop(state);
-    drop(session);
-
-    // A session started with the relay registered holds the workspace's route
-    // from the start.
-    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
-    let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
-    let route = state
-        .action_offload()
-        .expect("the configured home relay routes the workspace's offloadable actions")
-        .clone();
-    let reason = run_here(&route, &session_workspace);
-    assert!(reason.contains("offload route"), "{reason}");
     drop(route);
     drop(state);
     drop(session);
@@ -826,11 +786,13 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     assert!(!grants.may_grant(&workspace_id, "stranger"));
     assert!(!grants.may_grant(&RoomId::new().to_string(), "owner"));
     let recorded = |person: &str| {
-        tilo_rt::app().handle().block_on(grants.record(
-            &consent(&workspace_id, person),
-            app_grant(&workspace_id),
-            AppActionConsent::Always,
-        ))
+        tilo_rt::app()
+            .block_on(grants.record(
+                &consent(&workspace_id, person),
+                app_grant(&workspace_id),
+                AppActionConsent::Always,
+            ))
+            .unwrap()
     };
     assert!(recorded("stranger").is_err());
 

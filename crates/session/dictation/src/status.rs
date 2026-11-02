@@ -156,7 +156,10 @@ impl DictationStatus {
     /// is gone.
     #[must_use]
     pub const fn running(self) -> bool {
-        !matches!(self, Self::Idle | Self::Unavailable(_) | Self::Recovery { .. })
+        !matches!(
+            self,
+            Self::Idle | Self::Unavailable(_) | Self::Recovery { .. }
+        )
     }
 }
 
@@ -180,10 +183,7 @@ impl RuntimeError {
     #[must_use]
     pub const fn word(self) -> &'static str {
         match self {
-            Self::Worker(
-                SpeechError::ModelUnavailable
-                | SpeechError::ModelReceipt,
-            ) => "model",
+            Self::Worker(SpeechError::ModelUnavailable | SpeechError::ModelReceipt) => "model",
             Self::Worker(SpeechError::UnsupportedLanguage) => "language",
             Self::Worker(_) => "recognizer",
             Self::MicrophoneUnavailable => "microphone",

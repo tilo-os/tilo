@@ -66,6 +66,7 @@ pub(crate) mod device_certification;
 pub mod device_fabric_runtime;
 pub mod device_local_actions;
 pub(crate) mod device_pairing;
+pub(crate) mod device_plane;
 pub mod device_unlock_runtime;
 #[cfg(target_os = "linux")]
 pub mod device_vpn;
