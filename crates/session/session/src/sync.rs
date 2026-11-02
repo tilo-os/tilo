@@ -972,7 +972,6 @@ impl Client {
         self.calls()
             .iter()
             .any(|call| call.channel == channel && call.joined_by(user.as_deref()))
-
     }
 
     /// Follow `tree`'s workspaces: take part in each, leave the
