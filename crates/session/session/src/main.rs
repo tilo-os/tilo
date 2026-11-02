@@ -1,5 +1,5 @@
 //! The native session: `tilo-session [--backend drm|headless|nested]
-//! [--size WxH] [--shell bar|screen] [--host-desktop]
+//! [--size WxH] [--shell screen] [--host-desktop]
 //! [--firstboot|--firstboot-only]
 //! [--provision-identity|--verify-collaboration-identity] [--no-x11]
 //! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
@@ -9,10 +9,10 @@
 //! Xwayland for X11 clients (unless `--no-x11`), prints both displays and the
 //! agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl --door`
 //! takes) and starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set to
-//! them; with a command, the session lasts as long as it does. `--shell`
-//! shows the tilolang shell (`apps/tl/shell`): its bar over the desktop
-//! (`bar`), or the whole screen (`screen`), its bar, dock and the person's
-//! arrangement as their preset shows it, every window in its place's well. The desktop services serve
+//! them; with a command, the session lasts as long as it does. `--shell
+//! screen` shows the tilolang shell (`apps/tl/shell`): the whole screen, its
+//! bar, dock and the person's arrangement as their preset shows it, every
+//! window in its place's well. The desktop services serve
 //! on the buses the environment names unless a flag names another (or none);
 //! a nested session, which runs in a window of a desktop it did not start,
 //! serves no bus unless a flag names one and exports nothing to that
@@ -188,8 +188,8 @@ struct CommandLine {
     backend: Backend,
     size: (u16, u16),
     reach: Reach,
-    /// What the tilolang shell shows, when the command line asked for it.
-    shell: Option<tilo_surface_host::shell_part::ShellLayer>,
+    /// Whether the tilolang shell runs, when the command line asked for it.
+    shell: bool,
     /// The programs the person admits to act as them at the agent door
     /// (`--admit-repl PATH`, as often as they name one): their decision,
     /// made as they start the session.
@@ -238,11 +238,10 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
         return None;
     };
     let shell = match value("--shell").map(String::as_str) {
-        None => None,
-        Some("bar") => Some(tilo_surface_host::shell_part::ShellLayer::Bar),
-        Some("screen") => Some(tilo_surface_host::shell_part::ShellLayer::Screen),
+        None => false,
+        Some("screen") => true,
         Some(other) => {
-            eprintln!("tilo-session: unknown shell {other} (bar, screen)");
+            eprintln!("tilo-session: unknown shell {other} (screen)");
             return None;
         }
     };

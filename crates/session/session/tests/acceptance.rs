@@ -30,7 +30,7 @@ use tilo_agent_runs::{AgentRuns, wire};
 use tilo_compositor::OutputConfig;
 use tilo_reference::{ProgramStep, ResourceAt, ResourceRef, StepOutcome};
 use tilo_session::{Options, Session};
-use tilo_surface_host::shell_part::{DESK_RESOURCE, ShellLayer};
+use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 use common::{
     HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources, press, press_sheet,
@@ -47,7 +47,7 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             ..Options::default()
         },

@@ -106,8 +106,8 @@ impl SurfaceHost for ShellPart {
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
-        // A part not yet told which output it stands on spans all of them, as a bar stretched
-        // across the tightest bounding box there is.
+        // A part not yet told which output it stands on covers all of them, the tightest
+        // bounding box there is.
         if self.output.is_some() || self.retired() {
             return;
         }
@@ -125,7 +125,7 @@ impl SurfaceHost for ShellPart {
             return;
         };
         self.output = Some((String::new(), (x0, y0, width, height)));
-        self.place(self.edges);
+        self.place();
     }
 
     fn wants_keyboard(&self) -> bool {

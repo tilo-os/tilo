@@ -34,7 +34,6 @@ use tilo_desktop_model::{
 use tilo_service::Service as _;
 use tilo_session::mount::shell::WINDOW_MENU;
 use tilo_session::{Options, Session};
-use tilo_surface_host::shell_part::ShellLayer;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use common::{HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
@@ -50,7 +49,7 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             test_control: Some(socket.clone()),
             ..Options::default()
@@ -428,7 +427,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![Box::new(apps)],
             test_control: Some(socket.clone()),

@@ -26,7 +26,6 @@ use tilo_compositor::OutputConfig;
 use tilo_service::{Questions, Service as _, Started};
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
-use tilo_surface_host::shell_part::ShellLayer;
 use tilolang_tilo::records_service::RecordService;
 
 use common::{
@@ -269,7 +268,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![Box::new(apps)],
             questions: Some(questions),
@@ -529,7 +528,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![Box::new(apps)],
             questions: Some(questions),
@@ -611,7 +610,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![Box::new(apps)],
             questions: Some(questions),

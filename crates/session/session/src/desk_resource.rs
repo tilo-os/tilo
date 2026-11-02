@@ -147,16 +147,78 @@ pub(crate) enum DeskEffect {
     CommitSwitcher,
 }
 
+/// The surfaces the desk shows over its windows, and where each stands: the shell's own views,
+/// except the quick settings, which stand in the panel's own app where the device has one and
+/// no shell covers the desk that app stands in.
+/// What `show-surface` and `close-surface` open and close, whether the person asks on the
+/// desk's door or on the chrome's above it, so both open the one surface.
+#[derive(Clone)]
+pub(crate) struct Surfaces {
+    /// Whether the device has the quick settings' app; without, the status opens the shell's
+    /// own view of them.
+    pub(crate) status_panel: bool,
+    /// Whether the shell draws the whole screen over the desk: the desk draws none of the
+    /// panel's app there, so the quick settings are the shell's own view, as every other
+    /// surface is.
+    pub(crate) shell: bool,
+    /// The stack the panel's own app is placed in.
+    pub(crate) panel: tilo_desktop::overlays::Overlays,
+    /// The surface the shell's views show (`crate::overlays::Overlay`).
+    pub(crate) overlays: Rc<crate::overlays::Overlays>,
+}
+
+impl Surfaces {
+    /// Whether the quick settings stand in the panel's own app: the device has it, and the
+    /// desk draws the app it stands in.
+    fn panel_shows(&self, surface: &str) -> bool {
+        surface == crate::quick_settings::SURFACE && self.status_panel && !self.shell
+    }
+
+    /// Show `surface` (`show-surface`): the one up closes, and any other opens.
+    pub(crate) fn toggle(&self, surface: &str) {
+        // The quick settings are their own app, standing where the stack places its slot: a
+        // press opens the slot, and the panel's app draws it there. A device without that app,
+        // or one the shell covers, keeps the shell's own view of the surface.
+        if self.panel_shows(surface) {
+            use tilo_desktop::overlays::Slot;
+            if self.panel.is_open(Slot::QuickSettings) {
+                self.panel.close(Slot::QuickSettings);
+            } else {
+                self.panel.open(Slot::QuickSettings, None);
+            }
+            return;
+        }
+        self.overlays.toggle(surface);
+    }
+
+    /// Show the surface `name` names (`show-surface`), whether or not it is up.
+    pub(crate) fn open(&self, name: &str) {
+        if self.panel_shows(name) {
+            self.panel
+                .open(tilo_desktop::overlays::Slot::QuickSettings, None);
+            return;
+        }
+        self.overlays.open(name);
+    }
+
+    /// Close `surface` (`close-surface`), when it is the one up.
+    pub(crate) fn close(&self, surface: &str) {
+        if self.panel_shows(surface) {
+            self.panel
+                .close(tilo_desktop::overlays::Slot::QuickSettings);
+            return;
+        }
+        self.overlays.close(surface);
+    }
+}
+
 /// The desk as the session reads it. See the module docs.
 pub(crate) struct Desk {
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
     pub(crate) signals: Rc<NoticeSignals>,
-    /// Whether the device has quick settings; without, its status is its notifications.
-    pub(crate) status_panel: bool,
-    /// What stands over the windows, where the panel's own app is placed when
-    /// the device has one: the stack the bar's status press opens.
-    pub(crate) panel: tilo_desktop::overlays::Overlays,
+    /// The surfaces the desk shows over its windows, and where they stand.
+    pub(crate) surfaces: Surfaces,
     /// Who is here, when this session takes part in the collaboration plane.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the
@@ -167,8 +229,6 @@ pub(crate) struct Desk {
     pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
     /// The notification centre the reading lists, and what it last said.
     pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
-    /// The surface the person is in, as the chrome keeps it.
-    pub(crate) overlays: Rc<crate::overlays::Overlays>,
     /// The runs of what the person asked the session's agents: each run's conversation is
     /// the desk's to show (shell.md §8.1).
     pub(crate) runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
@@ -329,11 +389,11 @@ impl Desk {
                 self.handle.personal_ask_revision(),
                 self.tray.as_ref().map_or(0, |tray| tray.revision()),
                 self.notices.revision(),
-                self.overlays.revision(),
-                self.overlays.here(),
+                self.surfaces.overlays.revision(),
+                self.surfaces.overlays.here(),
                 self.runs.revision(),
             ),
-            revealed: self.overlays.revealed(std::time::Instant::now()),
+            revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
         }
     }
 
@@ -348,7 +408,7 @@ impl Desk {
                 60_u64.saturating_sub(u64::try_from(second).unwrap_or(0)),
             ))
             .unwrap_or(now);
-        [self.overlays.deadline(now), Some(minute)]
+        [self.surfaces.overlays.deadline(now), Some(minute)]
             .into_iter()
             .flatten()
             .min()
@@ -363,9 +423,10 @@ impl Desk {
         now: std::time::Instant,
     ) -> Vec<shell_part::WindowReading> {
         let mut windows = windows(tree, &self.handle);
-        if self.overlays.revealed(now) {
-            let (walked, front) = walked(&windows, self.overlays.scope());
+        if self.surfaces.overlays.revealed(now) {
+            let (walked, front) = walked(&windows, self.surfaces.overlays.scope());
             if let Some(at) = self
+                .surfaces
                 .overlays
                 .reached(walked.len(), front)
                 .and_then(|at| walked.get(at).copied())
@@ -411,7 +472,7 @@ impl Desk {
             date: ui::format::month_day(now.date_naive()),
             unread: self.signals.unread(),
             quiet: self.signals.quiet(),
-            status_panel: self.status_panel,
+            status_panel: self.surfaces.status_panel,
             workspace: tree
                 .active_workspace()
                 .map(|workspace| workspace.name.clone())
@@ -429,10 +490,10 @@ impl Desk {
             // The native session runs no agent tasks of its own yet: none is published until a
             // task host reports to it.
             tasks: Vec::new(),
-            here: self.overlays.here(),
-            switcher_revealed: self.overlays.revealed(instant),
-            switcher_scope: self.overlays.scope().name().to_owned(),
-            spotlight: self.overlays.spotlight(),
+            here: self.surfaces.overlays.here(),
+            switcher_revealed: self.surfaces.overlays.revealed(instant),
+            switcher_scope: self.surfaces.overlays.scope().name().to_owned(),
+            spotlight: self.surfaces.overlays.spotlight(),
             banner: String::new(),
             windows: self.windows_reaching(tree, instant),
             agents: Vec::new(),
@@ -740,8 +801,9 @@ impl Desk {
     /// walk counts from the window in front, over the windows its scope crosses, wrapping.
     fn commit_switcher(&self) {
         let windows = self.handle.read(|tree| windows(tree, &self.handle));
-        let (walked, front) = walked(&windows, self.overlays.scope());
+        let (walked, front) = walked(&windows, self.surfaces.overlays.scope());
         let reached = self
+            .surfaces
             .overlays
             .reached(walked.len(), front)
             .and_then(|at| walked.get(at).copied())
@@ -749,8 +811,8 @@ impl Desk {
         if let Some(tab) = reached.and_then(|window| window.key.parse::<u64>().ok()) {
             self.handle.focus_tab(tab);
         }
-        self.overlays.forget_walk();
-        self.overlays.show(crate::overlays::Overlay::Rest);
+        self.surfaces.overlays.forget_walk();
+        self.surfaces.overlays.show(crate::overlays::Overlay::Rest);
     }
 }
 
@@ -914,24 +976,11 @@ impl Service for Desk {
             _ => {}
         }
         if let DeskEffect::ShowSurface { surface } = &effect {
-            // The quick settings are their own app, standing where the stack
-            // places its slot: the press opens the slot, and the panel's app
-            // draws it there. A device without that app keeps the shell's own
-            // view of the surface.
-            if surface == crate::quick_settings::SURFACE && self.status_panel {
-                use tilo_desktop::overlays::Slot;
-                if self.panel.is_open(Slot::QuickSettings) {
-                    self.panel.close(Slot::QuickSettings);
-                } else {
-                    self.panel.open(Slot::QuickSettings, None);
-                }
-                return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-            }
-            self.overlays.toggle(surface);
+            self.surfaces.toggle(surface);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::CloseSurface { surface } = &effect {
-            self.overlays.close(surface);
+            self.surfaces.close(surface);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::ClearNotices) {
@@ -939,7 +988,9 @@ impl Service for Desk {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::WalkSwitcher { steps, scope } = &effect {
-            self.overlays.walk(scope.as_deref(), steps.unwrap_or(1));
+            self.surfaces
+                .overlays
+                .walk(scope.as_deref(), steps.unwrap_or(1));
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::CommitSwitcher) {
@@ -983,5 +1034,66 @@ impl Service for Desk {
             })
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::overlays::Overlay;
+
+    fn surfaces(status_panel: bool, shell: bool) -> Surfaces {
+        Surfaces {
+            status_panel,
+            shell,
+            panel: tilo_desktop::overlays::Overlays::new(),
+            overlays: Rc::new(crate::overlays::Overlays::new()),
+        }
+    }
+
+    #[test]
+    fn a_shell_draws_the_quick_settings_it_shows() {
+        for status_panel in [false, true] {
+            let surfaces = surfaces(status_panel, true);
+            surfaces.toggle(crate::quick_settings::SURFACE);
+            assert_eq!(surfaces.overlays.here(), Overlay::QuickSettings.name());
+            assert!(
+                !surfaces
+                    .panel
+                    .is_open(tilo_desktop::overlays::Slot::QuickSettings)
+            );
+            surfaces.close(crate::quick_settings::SURFACE);
+            assert_eq!(surfaces.overlays.here(), Overlay::Rest.name());
+        }
+    }
+
+    #[test]
+    fn the_desk_leaves_the_quick_settings_to_the_panels_app_it_has() {
+        let surfaces = surfaces(true, false);
+        surfaces.toggle(crate::quick_settings::SURFACE);
+        assert!(
+            surfaces
+                .panel
+                .is_open(tilo_desktop::overlays::Slot::QuickSettings)
+        );
+        assert_eq!(surfaces.overlays.here(), Overlay::Rest.name());
+        surfaces.close(crate::quick_settings::SURFACE);
+        assert!(
+            !surfaces
+                .panel
+                .is_open(tilo_desktop::overlays::Slot::QuickSettings)
+        );
+    }
+
+    #[test]
+    fn without_the_panels_app_the_desk_shows_the_shells_quick_settings() {
+        let surfaces = surfaces(false, false);
+        surfaces.open(crate::quick_settings::SURFACE);
+        assert_eq!(surfaces.overlays.here(), Overlay::QuickSettings.name());
+        assert!(
+            !surfaces
+                .panel
+                .is_open(tilo_desktop::overlays::Slot::QuickSettings)
+        );
     }
 }

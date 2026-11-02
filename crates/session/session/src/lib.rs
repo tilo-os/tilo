@@ -1141,7 +1141,7 @@ impl Session {
         a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(display_settings::PanelBacklight::find()));
         let machine = mount::power::install(&mut compositor, &options);
-        compositor.add_host(shell::desk_under(options.shell, desktop.clone()));
+        compositor.add_host(shell::under(options.shell, desktop.clone()));
         // The desk draws every window whole — its card, the lift under it
         // and its edge, in the theme's colours, brighter on the window in
         // use. The compositor shapes a window's corners to that card and
@@ -1150,7 +1150,21 @@ impl Session {
         compositor.set_window_frame(tilo_compositor::WindowFrame::corners(f64::from(
             presentation.theme.tokens.radii.tile,
         )));
-        let desk_door: tilo_surface_host::Shared = Rc::new(RefCell::new(desktop.clone()));
+        // What stands over the windows, opened by the chrome's own widgets, by the session's
+        // verbs and by the views bound to them, and read by whoever asks through the door.
+        let overlays = Overlays::new();
+        let desk_overlays = Rc::new(overlays::Overlays::new());
+        // The surfaces the desk shows over its windows, and where each stands: the shell's own
+        // views, or the quick settings' app where the device has one and the desk draws it. The
+        // desk's door and the chrome's door open them through it.
+        let surfaces = desk_resource::Surfaces {
+            status_panel: quick_settings::installed(&options.surfaces),
+            shell: options.shell,
+            panel: overlays.clone(),
+            overlays: Rc::clone(&desk_overlays),
+        };
+        let desk_door: tilo_surface_host::Shared =
+            shell::desk_door(options.shell, desktop.clone(), surfaces.clone());
         doors.add(Rc::clone(&desk_door));
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
@@ -1248,10 +1262,6 @@ impl Session {
         // The emoji picker is the chrome's; the session holds its picks,
         // writes them into the focused field and keeps its recents.
         let emoji = emoji::Emoji::mount();
-        // What stands over the windows, opened by the chrome's own widgets,
-        // by the session's verbs and by the views bound to them, and read by
-        // whoever asks through the door.
-        let overlays = Overlays::new();
         // Settings' Identify answers: the session reads the request each pass
         // and the bar says each display's number and name on it.
         let numbers = display_identify::Numbers::default();
@@ -1279,14 +1289,13 @@ impl Session {
             &emoji.link(),
             &overlays,
         )));
-        compositor.add_host(shell::bar_under(options.shell, Held(Rc::clone(&chrome))));
+        compositor.add_host(shell::under(options.shell, Held(Rc::clone(&chrome))));
         // Search's code is asked for as the session starts, so it is in by the
         // time someone searches; a search asked for before then opens now,
         // and the desk publishes it on its next pass.
         handle.search_palette().borrow_mut().adopt();
         // The desk as the session publishes it, which the shell reads through the door.
-        let desk_overlays = Rc::new(overlays::Overlays::new());
-        let chrome_door = shell::chrome_door(options.shell, &chrome, &desk_overlays);
+        let chrome_door = shell::chrome_door(options.shell, &chrome, surfaces.clone());
         doors.add(Rc::clone(&chrome_door));
         // The runs people ask of this session's agents: the session keeps
         // its own, or plays the run channel a test handed it. Its broker
@@ -1300,37 +1309,37 @@ impl Session {
             person: options.person.clone(),
             signals: Rc::clone(&notice_signals),
             clock: Rc::clone(&clock),
-            status_panel: quick_settings::installed(&options.surfaces),
-            panel: overlays.clone(),
+            surfaces: surfaces.clone(),
             sync: sync.clone(),
             notices: notices.clone(),
-            overlays: Rc::clone(&desk_overlays),
             tray: tray.clone(),
             engine: engine.clone(),
         };
         let desk_service = desk();
-        let shell = options.shell.and_then(|layer| {
-            shell::Shell::mount(
-                &mut compositor,
-                &mut doors,
-                desk(),
-                options.scale,
-                layer,
-                wells.clone(),
-                presentation.theme.clone(),
+        let shell = if options.shell {
+            Some(
+                shell::Shell::mount(
+                    &mut compositor,
+                    &mut doors,
+                    desk(),
+                    options.scale,
+                    wells.clone(),
+                    presentation.theme.clone(),
+                )
+                .map_err(|why| {
+                    Error::Backend(tilo_compositor::BackendError(format!(
+                        "the shell did not start: {why}"
+                    )))
+                })?,
             )
-            .map_err(|why| tracing::error!(why, ?layer, "the shell did not start"))
-            .ok()
-        });
-        // A surface the shell's own screen stands in for reads as nothing,
-        // as it draws nothing: the shell's parts are the windows a client
-        // finds, while the desktop's own desk and chrome keep their actions.
+        } else {
+            None
+        };
+        // The surfaces the shell stands in for read as nothing, as they draw
+        // nothing: the shell's parts are what a client finds there, while the
+        // desktop's own desk and chrome keep their actions.
         let aside: Vec<tilo_surface_host::Shared> = if shell.is_some() {
-            if options.shell == Some(tilo_surface_host::shell_part::ShellLayer::Screen) {
-                vec![Rc::clone(&desk_door), Rc::clone(&chrome_door)]
-            } else {
-                vec![Rc::clone(&chrome_door)]
-            }
+            vec![Rc::clone(&desk_door), Rc::clone(&chrome_door)]
         } else {
             Vec::new()
         };

@@ -1,8 +1,8 @@
-//! The tilolang shell's top bar on the native session (headless backend):
-//! it shows the desk the session publishes on its door (the time, the
-//! workspace and strip in front, the person, the unread notifications),
-//! switching workspace from it brings that workspace to the front, and with
-//! nothing changing it does no work.
+//! The tilolang shell on the native session (headless backend), its whole
+//! screen under the windows: its bar shows the desk the session publishes on
+//! its door (the time, the workspace and strip in front, the person, the
+//! unread notifications), switching workspace from it brings that workspace to
+//! the front, and with nothing changing it does no work.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -40,7 +40,7 @@ fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
-        shell: Some(tilo_surface_host::shell_part::ShellLayer::Bar),
+        shell: true,
         ..Options::default()
     }
 }
@@ -212,9 +212,10 @@ fn the_bar_shows_the_time_the_workspace_its_strip_and_the_person_the_session_pub
     assert!(band.len() > 8, "the bar draws in its band");
     // Its controls stand where the bar's band is.
     let (_, y, _, h) = session.shell_control(&desk.workspace).unwrap();
+    let band = bar_band(&session);
     assert!(
-        y >= 0.0 && y + h <= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX) + 0.5,
-        "the workspace's control stands in the bar's band: {y} {h}"
+        y >= band.1 - 0.5 && y + h <= band.1 + band.3 + 0.5,
+        "the workspace's control stands in the bar's band: {y} {h} of {band:?}"
     );
 }
 
@@ -1997,7 +1998,7 @@ fn bar_band(session: &Session) -> (f64, f64, f64, f64) {
     // The band the bar holds at the top of the output it stands on, when the ground has no
     // bounds of its own; the bar's controls stand inside it, and nothing of the desk does.
     session
-        .shell_bars()
+        .shell_parts()
         .first()
         .map_or((0.0, 0.0, 0.0, 0.0), |bar| {
             let (x, y, w, _) = bar.rect;

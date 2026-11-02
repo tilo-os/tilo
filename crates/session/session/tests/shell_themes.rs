@@ -43,7 +43,6 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 use tilo_compositor::{OutputConfig, Screenshot};
 use tilo_session::{Options, Session};
-use tilo_surface_host::shell_part::ShellLayer;
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -133,7 +132,7 @@ fn session() -> Session {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: Some(ShellLayer::Screen),
+            shell: true,
             collab: false,
             services: vec![
                 Box::new(apps),

@@ -1,4 +1,4 @@
-//! A part of a tilolang shell (its top bar first) shown on the desktop.
+//! A part of a tilolang shell, covering one output, drawn under the windows.
 //!
 //! A shell package's views run in a tilolang instance (`tilolang_tilo::instance`), exactly as
 //! an app's do, and draw through the same UI host half (`tilo_ui_host::AppWindow`, here as a
@@ -177,15 +177,11 @@ pub const fn shell_ids() -> &'static str {
     SHELL_IDS
 }
 
-/// The shell's layer over the desk: the `desk` view over the `Desk` root, the bar and the
-/// surface under it. The shell package has two roots (`Desk` and its `Arrangement`), so each
-/// layer names its own; the part is never "the first root's default view".
-///
-/// The part lays the whole desk view out at its band, so at rest only the bar's band shows and
-/// a closed surface lays nothing out below it; while a surface or a menu of the bar's is up the
-/// part covers the outputs and the same view has the room to show it.
+/// The desk the session writes its reading into: the `desk` view over the `Desk` root, the
+/// bar and the surface under it. The shell package has two roots (`Desk` and its `Arrangement`),
+/// so each names its own; the instance is never "the first root's default view".
 #[must_use]
-pub fn bar_layer() -> RootView {
+pub fn desk_layer() -> RootView {
     RootView {
         root: Some("Desk".to_owned()),
         view: Some("desk".to_owned()),
@@ -201,29 +197,6 @@ pub fn screen_layer() -> RootView {
     RootView {
         root: Some("arrangement".to_owned()),
         view: Some("screen".to_owned()),
-    }
-}
-
-/// What a shell part stands as on its display.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ShellLayer {
-    /// The bar's band over the windows ([`bar_layer`]): the rest of the display is the
-    /// desktop's, and the part covers it only while a menu or a surface of the desk's is up.
-    #[default]
-    Bar,
-    /// The whole display, under the windows ([`screen_layer`]): the shell draws the desk, and
-    /// every window stands in the well its place leaves it.
-    Screen,
-}
-
-impl ShellLayer {
-    /// The root and view the part shows.
-    #[must_use]
-    pub fn root_view(self) -> RootView {
-        match self {
-            Self::Bar => bar_layer(),
-            Self::Screen => screen_layer(),
-        }
     }
 }
 
@@ -649,39 +622,6 @@ pub struct ScreenEdges {
     pub bar_covered: bool,
     pub dock_reached: bool,
     pub dock_covered: bool,
-}
-
-/// Which edges the shell's chrome stands on: what the part covers of the outputs. The session
-/// reads it from the shell's record — a bar on the top or bottom, a dock on the bottom or the
-/// top — and the part covers each band it names.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each edge's own facts, read one at a time"
-)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct HostEdges {
-    /// The bar rides an edge (whether it shows now or not): the part covers its band.
-    pub bar: bool,
-    /// The bar rides the top rather than the bottom.
-    pub bar_top: bool,
-    /// The dock rides an edge.
-    pub dock: bool,
-    /// The dock rides the bottom rather than the top.
-    pub dock_bottom: bool,
-}
-
-impl HostEdges {
-    /// Whether the bar's band is at the top.
-    #[must_use]
-    pub const fn bar_at_top(&self) -> bool {
-        self.bar && self.bar_top
-    }
-
-    /// Whether the dock's band is at the bottom.
-    #[must_use]
-    pub const fn dock_at_bottom(&self) -> bool {
-        self.dock && self.dock_bottom
-    }
 }
 
 /// What a screen says of its edges: the pointer at `pointer` and the windows `windows`, over
@@ -1743,7 +1683,7 @@ impl Origin for SessionOrigin {
             tracing::error!(app = cx.app, "the shell's package is not loaded");
             return polled;
         };
-        let root = match cx.host.root_of_layer(cx.app, &bar_layer()) {
+        let root = match cx.host.root_of_layer(cx.app, &desk_layer()) {
             Ok(root) => root,
             Err(error) => {
                 tracing::error!(%error, "the shell has no desk to write the session into");
@@ -1948,8 +1888,8 @@ pub struct ShellWork {
 pub struct ShellPart {
     widgets: WidgetHost,
     instance: Instance,
-    /// The shell's record, shared by every part of one shell: the bar draws it and each other
-    /// display draws the same, so a change any part commits is the whole shell's.
+    /// The shell's record, shared by every part of one shell: every display draws the same
+    /// record, so a change any part commits is the whole shell's.
     record: Rc<RefCell<tilo_resource::Doc>>,
     origin: Rc<RefCell<SessionOrigin>>,
     /// Input reached the part since its last turn.
@@ -1959,8 +1899,6 @@ pub struct ShellPart {
     work: ShellWork,
     /// What the shell refused, in its words.
     refusals: Vec<String>,
-    /// How high the part stands at rest (the bar's band), logical pixels.
-    band: u32,
     /// The output this part stands on: its connector name, and its logical rectangle
     /// `(x, y, w, h)`. `None` before the outputs are told, when it spans their bounding box.
     output: Option<(String, (i32, i32, u32, u32))>,
@@ -1972,17 +1910,12 @@ pub struct ShellPart {
     /// steps aside, as the desktop's own bar does there, and leaves the display to the window.
     fullscreen: Vec<String>,
     /// A menu the part opened, or a surface of the desk's (its overview, the switcher, the
-    /// launcher, the notifications), is up: the part covers the outputs so it has room. At
-    /// rest it covers only its bands, so a change draws only that.
+    /// launcher, the notifications), is up: the part stands over its output even where a
+    /// fullscreen window owns it, so what the person opened shows.
     cover: bool,
-    /// The edges the shell's chrome stands on: what the part covers of the outputs.
-    edges: HostEdges,
     /// The shell's record's heads the instance was last brought up to date with: a commit any
     /// part of the shell made reaches this one by them, so every display shows one shell.
     seen_heads: Vec<String>,
-    /// What the part stands as: the bar's band over the windows, or the whole display under
-    /// them.
-    layer: ShellLayer,
     /// The previews the part's views name ([`ui::widget::WindowPreview`]), and which of the
     /// compositor's windows each is: the part hands the compositor every window's live picture
     /// where its view would draw it, and none for a window `windows` leaves out (one that may
@@ -2016,21 +1949,17 @@ pub struct ShellIdentity<'a> {
 
 impl ShellPart {
     /// The root view of `identity.app` (the last of its packages, which come in load order) for
-    /// its person, across the top `band` logical pixels of the part's output at `scale`, kept in
-    /// step with the session through its link; `waker` wakes the session's loop when work the
-    /// instance waits for is ready.
+    /// its person, across the part's output at `scale`, kept in step with the session through
+    /// its link; `waker` wakes the session's loop when work the instance waits for is ready.
     ///
     /// The views' wells ([`ui::widget::Wells`]) report to `wells`, the handle the window policy
-    /// placing the windows they stand for shares (`crate::WellPolicy`); `None` for a part with
-    /// no windows of its own (the bar).
+    /// placing the windows they stand for shares (`crate::WellPolicy`).
     ///
-    /// `layer` says what the part is: the bar's band over the windows, or the whole display
-    /// under them, which shows the person's arrangement and puts each window in its well.
+    /// The part is the desk's whole screen ([`screen_layer`]): it shows the person's
+    /// arrangement and puts each window in its well.
     #[must_use]
     pub fn new(
         identity: ShellIdentity<'_>,
-        layer: ShellLayer,
-        band: u32,
         scale: f64,
         waker: Waker,
         wells: Option<ui::widget::Wells>,
@@ -2045,7 +1974,7 @@ impl ShellPart {
         } = identity;
         let placement = Placement {
             origin: (0, 0),
-            size: (1, band.max(1)),
+            size: (1, 1),
             scale,
         };
         tilo_ui_host::i18n::ensure();
@@ -2059,9 +1988,8 @@ impl ShellPart {
                 index_dir: None,
                 record_loader: None,
                 sink: None,
-                // The bar's band shows the bar and the screen the desk, not whatever root the
-                // package lists first.
-                root: layer.root_view(),
+                // The desk's whole screen, not whatever root the package lists first.
+                root: screen_layer(),
             },
             Rc::new(ShellPlatform {
                 packages: Rc::new(packages),
@@ -2081,15 +2009,7 @@ impl ShellPart {
         let window = AppWindow::part(Box::new(window_end));
         // The whole screen lies under the windows, which stand in its wells; the bar rides over
         // them.
-        let mut widgets = WidgetHost::new(
-            Box::new(window),
-            placement,
-            matches!(layer, ShellLayer::Screen),
-        )
-        .named(match layer {
-            ShellLayer::Bar => "Shell bar",
-            ShellLayer::Screen => "Desktop shell",
-        });
+        let mut widgets = WidgetHost::new(Box::new(window), placement, true).named("Desktop shell");
         widgets.install_wells(wells);
         let mut part = Self {
             widgets,
@@ -2100,19 +2020,11 @@ impl ShellPart {
             again: true,
             work: ShellWork::default(),
             refusals: Vec::new(),
-            band: band.max(1),
             output: None,
             gone: None,
             fullscreen: Vec::new(),
             cover: false,
-            edges: HostEdges {
-                bar: true,
-                bar_top: true,
-                dock: false,
-                dock_bottom: false,
-            },
             seen_heads: Vec::new(),
-            layer,
             previews: None,
             deadline: None,
         };
@@ -2124,7 +2036,7 @@ impl ShellPart {
     }
 
     /// Make the shell's own record (`root shell: Shell`) and let the package's migration seed
-    /// it — the bar's parts and the dock's items, on a shell never arranged — as the package
+    /// it — the bar's fields and the dock's items, on a shell never arranged — as the package
     /// version's change, as an app's migration is. Both go through the part's own turns: the
     /// record is created as a queued change, the migration runs once the record is had, and
     /// [`Self::commit`] writes each into the part's record.
@@ -2173,14 +2085,12 @@ impl ShellPart {
             .collect();
     }
 
-    /// Stand on this part's output: the whole of it while a menu of the part's is up, and else
-    /// the band at each edge the shell's bar and dock ride — a bar at the top takes the top
-    /// band, a dock at the bottom the bottom one — through `edges`. A shell whose chrome is off
-    /// at an edge, or is a bar at the top alone (the first shell), takes that band only.
+    /// Stand on this part's whole output: the desk is the screen, its bar and dock over the
+    /// places the windows stand in.
     ///
     /// A part on an output a fullscreen window covers takes no room and draws nothing: the
     /// window owns the display there, as it owns the desktop's own bar's display.
-    fn place(&mut self, edges: HostEdges) {
+    fn place(&mut self) {
         let Some((name, (x, y, width, output_height))) = self.output.clone() else {
             return;
         };
@@ -2197,38 +2107,17 @@ impl ShellPart {
             self.widgets.relayout();
             return;
         }
-        let band = self.band.min(output_height);
-        // The screen, a menu of the part's or a surface of the desk's takes the whole output;
-        // else the part stands in the band at each edge the chrome rides, so a change draws
-        // only what shows there.
-        let whole = self.cover || self.layer == ShellLayer::Screen;
-        let at_top = !whole && edges.bar_at_top();
-        let at_bottom = !whole && edges.dock_at_bottom();
-        let height = match (at_top, at_bottom) {
-            (true, false) | (false, true) => band,
-            _ => output_height.max(band),
-        };
-        let origin_y = if at_bottom && !at_top {
-            y.saturating_add(
-                i32::try_from(output_height.saturating_sub(height)).unwrap_or(i32::MAX),
-            )
-        } else {
-            y
-        };
         self.widgets.set_placement(Placement {
-            origin: (x, origin_y),
-            size: (width.max(1), height.max(1)),
+            origin: (x, y),
+            size: (width.max(1), output_height.max(1)),
             scale,
         });
-        // A view laid out at the band keeps its old height until it is laid out again: the
-        // menus and overlays it only holds room for when it covers the outputs need that.
         self.widgets.relayout();
     }
 
     /// Follow whether the part stands over the whole outputs: while a menu it opened is up,
     /// or while a surface of the desk's is (the overview, the switcher, the launcher, the
-    /// notifications, the workspaces, the composer). At rest it goes back to the band, so a
-    /// change draws only that.
+    /// notifications, the workspaces, the composer).
     fn follow_cover(&mut self) {
         let menu = self
             .widgets
@@ -2243,7 +2132,7 @@ impl ShellPart {
         let cover = menu || surface;
         if cover != self.cover {
             self.cover = cover;
-            self.place(self.edges);
+            self.place();
         }
     }
 
@@ -2363,17 +2252,6 @@ impl ShellPart {
         self.previews = Some((previews, windows));
     }
 
-    /// The edges the shell's chrome stands on, as the session read them from the shell's
-    /// record: where the part covers the outputs. A change moves the part to the edges it
-    /// now names.
-    pub fn set_edges(&mut self, edges: HostEdges) {
-        if edges == self.edges {
-            return;
-        }
-        self.edges = edges;
-        self.place(edges);
-    }
-
     /// When the session has something of its own to draw, which the part does not know: it
     /// wakes at `deadline` rather than sleeping over it, and draws what the session publishes
     /// by then.
@@ -2397,7 +2275,7 @@ impl ShellPart {
             self.cover = false;
         }
         self.output = output;
-        self.place(self.edges);
+        self.place();
     }
 
     /// Whether the display the part stood on went, and it stands nowhere now.
@@ -2419,7 +2297,7 @@ impl ShellPart {
             return;
         }
         self.fullscreen = outputs;
-        self.place(self.edges);
+        self.place();
     }
 
     /// Where the part stands now, in the desktop's logical layout `(x, y, w, h)`, and the

@@ -1,8 +1,8 @@
 //! The shell on the native session: the tilolang shell package
-//! (`apps/tl/shell`) shown by a [`ShellPart`] per display — its top bar over
-//! the desktop, or the whole screen under the windows, which stand in its
-//! wells — kept in step with the session's desk (`crate::desk`) and asking the
-//! session's door for what the person presses.
+//! (`apps/tl/shell`) shown by a [`ShellPart`] per display — the whole screen
+//! under the windows, which stand in its wells — kept in step with the
+//! session's desk (`crate::desk`) and asking the session's door for what the
+//! person presses.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,7 +12,7 @@ use tilo_actions::ActionAddress;
 use tilo_compositor::Compositor;
 use tilo_compositor::{CursorIcon, HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_service::Services;
-use tilo_surface_host::shell_part::{ArrangementReading, Ask, ShellLayer};
+use tilo_surface_host::shell_part::{ArrangementReading, Ask};
 use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 
 use crate::desk_resource::Desk;
@@ -44,7 +44,8 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
     ]
 }
 
-/// The height of the band the chrome leaves the shell's bar, logical pixels.
+/// The height of the bar's band, logical pixels: what a bar or a dock that shows only at an
+/// edge takes, so the screen's views can tell the pointer is at that edge.
 fn band() -> u32 {
     #[allow(
         clippy::cast_possible_truncation,
@@ -55,17 +56,7 @@ fn band() -> u32 {
     band
 }
 
-/// The shell record's edge settings, as the session reads them for the part's place.
-struct EdgeSettings {
-    bar_shown: bool,
-    /// `top` or `bottom`; anything else (a leading or trailing bar, which the view does not
-    /// place today) leaves the band to the desk.
-    bar_edge: String,
-    dock_shown: bool,
-    dock_edge: String,
-}
-
-/// The shell's bar on the session, and what feeds it.
+/// The shell on the session, and what feeds it.
 pub(crate) struct Shell {
     desk: Desk,
     /// The due timer ids announced already, so an unchanged one is announced once.
@@ -84,8 +75,8 @@ pub(crate) struct Shell {
     /// How many of the session's turns read some of them: what the views composed in places
     /// waited on comes in one turn for everything one run of them read, not one per resource.
     rounds: u64,
-    /// The shell's record, shared by every part: the bar draws it and every other display's
-    /// bar draws the same.
+    /// The shell's record, shared by every part: one display draws what another wrote, so a
+    /// change any part commits is the whole shell's.
     record: Rc<RefCell<tilo_resource::Doc>>,
     /// One part per output, in the order the outputs are known: each stands on its own
     /// display, and a display added (or taken away) has its part made (or dropped) to follow.
@@ -95,13 +86,10 @@ pub(crate) struct Shell {
     app: String,
     person: String,
     scale: f64,
-    /// The band the chrome leaves the bar, logical pixels: a window reaching into it covers a
-    /// bar there.
+    /// The height of the bar's band, logical pixels: a window reaching into the top band
+    /// covers a bar there.
     band: u32,
-    /// What each part stands as: the bar's band, or the whole screen.
-    layer: ShellLayer,
-    /// The wells the screen's views report, which the desktop places the windows at: `None`
-    /// for the bar, which has no windows of its own.
+    /// The wells the screen's views report, which the desktop places the windows at.
     wells: Option<ui::widget::Wells>,
     /// The services' revision the platform readings were last read at: they are read again
     /// only when it moved.
@@ -112,15 +100,14 @@ pub(crate) struct Shell {
 }
 
 impl Shell {
-    /// The shell over every output of `compositor` as `layer`, published on `doors`. The
-    /// whole screen's views report their wells to `wells`, the handle the window policy
-    /// places every window by ([`tilo_surface_host::WellPolicy`]).
+    /// The shell over every output of `compositor`, published on `doors`. The screen's views
+    /// report their wells to `wells`, the handle the window policy places every window by
+    /// ([`tilo_surface_host::WellPolicy`]).
     pub(crate) fn mount(
         compositor: &mut Compositor,
         doors: &mut Doors,
         desk: Desk,
         scale: f64,
-        layer: ShellLayer,
         wells: Option<ui::widget::Wells>,
         theme: ui::Theme,
     ) -> Result<Self, String> {
@@ -146,7 +133,6 @@ impl Shell {
             person: String::new(),
             scale,
             band: band(),
-            layer,
             wells,
             services_seen: None,
             theme,
@@ -166,7 +152,7 @@ impl Shell {
     }
 
     /// Make a part for each output `compositor` shows that has none, stand each part on its
-    /// output's rectangle, and stand the parts of outputs it no longer shows nowhere: one bar
+    /// output's rectangle, and stand the parts of outputs it no longer shows nowhere: one part
     /// per display, following a display plugged in, moved or taken away. A part whose display
     /// went keeps its place with the compositor and the door, drawing and offering nothing, and
     /// stands again when that display comes back, so unplugging and replugging makes no new
@@ -211,9 +197,6 @@ impl Shell {
                 // other display's part draws the one the shell already has.
                 seed: self.parts.is_empty(),
             },
-            self.layer,
-            // The bar's band, at rest: what the chrome leaves it.
-            self.band,
             self.scale,
             std::sync::Arc::new(move || wake.wake_by_ref()),
             self.wells.clone(),
@@ -221,7 +204,6 @@ impl Shell {
         part.set_theme(self.theme.clone());
         part.set_display(Some((output.to_owned(), rect)));
         part.set_fullscreen(fullscreen.to_vec());
-        part.set_edges(self.edges());
         // The windows the views picture, each display's own: the reading's window keys stand
         // for the tabs of the workspace in front, and a window whose app holds secrets is left
         // out, so its view shows the app's mark instead of its pixels.
@@ -232,7 +214,7 @@ impl Shell {
         );
         let part = Rc::new(RefCell::new(part));
         compositor.add_host(Box::new(Held(Rc::clone(&part))));
-        // Each display's bar is its own surface on the door: what the person, a script or an
+        // Each display's part is its own surface on the door: what the person, a script or an
         // agent drives the shell through, and what reads its labels.
         doors.add(Rc::clone(&part) as tilo_surface_host::Shared);
         self.parts.push((output.to_owned(), part));
@@ -449,83 +431,6 @@ impl Shell {
         self.link.has_asks()
     }
 
-    /// The edges the shell's chrome stands on, read from the shell's own record: a bar at the
-    /// top or the bottom (`bar_shown`, `bar_edge`) and a dock at the bottom or the top. A
-    /// leading or trailing dock, or a bar or dock the person turned off, leaves that edge's
-    /// band to the desk. Until the record holds them, the first shell: a bar at the top alone.
-    pub(crate) fn edges(&self) -> tilo_surface_host::shell_part::HostEdges {
-        use tilo_surface_host::shell_part::HostEdges;
-        let Some(fields) = self.shell_edges() else {
-            return HostEdges {
-                bar: true,
-                bar_top: true,
-                dock: false,
-                dock_bottom: false,
-            };
-        };
-        HostEdges {
-            bar: fields.bar_shown,
-            bar_top: fields.bar_edge == "top",
-            dock: fields.dock_shown && (fields.dock_edge == "top" || fields.dock_edge == "bottom"),
-            dock_bottom: fields.dock_edge == "bottom",
-        }
-    }
-
-    /// The shell record's edge settings as it holds them: each an enum's case id, which the
-    /// package names in `chrome.tl`. `None` until the record exists (the bar alone).
-    fn shell_edges(&self) -> Option<EdgeSettings> {
-        let part = self.parts.first()?.1.borrow();
-        let record = part.shell_record()?;
-        let package = part.package()?;
-        let meta = &package.meta;
-        let ty = meta.types.iter().find(|ty| ty.name == "Shell")?;
-        let read = |name: &str| {
-            ty.fields
-                .iter()
-                .find(|field| field.name == name)
-                .and_then(|field| record.get(&field.id).cloned())
-        };
-        let flag = |name: &str| {
-            matches!(
-                read(name),
-                Some(tilolang_tilo::record::DynValue::Register(
-                    serde_json::Value::Bool(true)
-                ))
-            )
-        };
-        // A case of an enum is its variant's id in the record; `Edge.top` and friends are the
-        // names the settings use, so the case is read by the name its variant's id stands for.
-        let case = |name: &str, ty_name: &str| -> String {
-            let Some(field) = read(name) else {
-                return String::new();
-            };
-            let tilolang_tilo::record::DynValue::Register(serde_json::Value::String(id)) = field
-            else {
-                return String::new();
-            };
-            meta.enums
-                .iter()
-                .find(|en| en.name == ty_name)
-                .and_then(|en| en.variants.iter().find(|v| v.id == id))
-                .map_or_else(String::new, |v| v.name.clone())
-        };
-        Some(EdgeSettings {
-            bar_shown: flag("bar_shown"),
-            bar_edge: case("bar_edge", "Edge"),
-            dock_shown: flag("dock_shown"),
-            dock_edge: case("dock_edge", "Edge"),
-        })
-    }
-
-    /// Move every part to the bands the shell's chrome stands in: a bar at the top or bottom, a
-    /// dock at the bottom or top. A change of the person's settings moves them on the next
-    /// frame.
-    pub(crate) fn set_edges(&self, edges: tilo_surface_host::shell_part::HostEdges) {
-        for (_, part) in &self.parts {
-            part.borrow_mut().set_edges(edges);
-        }
-    }
-
     /// Run what the shell asked through `invoke` (the session's door).
     ///
     /// The shell's calls of the session's actions (`session.close_place(place: 3)`) reach the
@@ -560,8 +465,8 @@ impl Shell {
         part.borrow_mut().run_setting(setting, arguments)
     }
 
-    /// How much work the bar did since the session started, over every display: its view turns
-    /// and frames summed, since a bar on each display does the same work on each.
+    /// How much work the shell did since the session started, over every display: its view
+    /// turns and frames summed, since a part on each display does the same work on each.
     pub(crate) fn work(&self) -> ShellWork {
         let mut work = ShellWork::default();
         let mut seen_event = false;
@@ -595,8 +500,8 @@ impl Shell {
         }
     }
 
-    /// What the bar refused since the session started, in its words: every display's, and
-    /// what the door refused of what the bar asked.
+    /// What the shell refused since the session started, in its words: every display's, and
+    /// what the door refused of what it asked.
     pub(crate) fn refusals(&self) -> Vec<String> {
         self.parts
             .iter()
@@ -605,8 +510,9 @@ impl Shell {
             .collect()
     }
 
-    /// Where the bar's control named `name` stands, logical `(x, y, w, h)`: the first part
-    /// that shows it, since a name is the bar's one control and every bar carries the same.
+    /// Where the shell's control named `name` stands, logical `(x, y, w, h)`: the first part
+    /// that shows it, since a name is the shell's one control and every display carries the
+    /// same.
     pub(crate) fn control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.parts
             .iter()
@@ -640,15 +546,15 @@ impl Shell {
             .find_map(|(_, part)| part.borrow_mut().text_bounds(text))
     }
 
-    /// Where each display's bar stands now, by connector name: what a test reads to prove a
-    /// bar on every display, and none on one a fullscreen window owns.
-    pub(crate) fn parts(&self) -> Vec<BarPlace> {
+    /// Where each display's part stands now, by connector name: what a test reads to prove a
+    /// part on every display, and none on one a fullscreen window owns.
+    pub(crate) fn parts(&self) -> Vec<PartPlace> {
         self.parts
             .iter()
             .filter_map(|(name, part)| {
                 let part = part.borrow();
                 let (_, rect) = part.placement()?;
-                Some(BarPlace {
+                Some(PartPlace {
                     output: name.clone(),
                     rect,
                     aside: part.aside(),
@@ -658,20 +564,20 @@ impl Shell {
     }
 }
 
-/// A display's bar, as it stands now: the output it is on, where it stands in the logical
-/// layout, and whether it stepped aside for a fullscreen window there.
+/// A display's part of the shell, as it stands now: the output it is on, where it stands in the
+/// logical layout, and whether it stepped aside for a fullscreen window there.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BarPlace {
+pub struct PartPlace {
     /// The output's connector name (`HEADLESS-1`).
     pub output: String,
-    /// Where the bar stands, logical `(x, y, w, h)`.
+    /// Where the part stands, logical `(x, y, w, h)`.
     pub rect: (i32, i32, u32, u32),
-    /// A fullscreen window owns the output, so the bar draws nothing there.
+    /// A fullscreen window owns the output, so the part draws nothing there.
     pub aside: bool,
 }
 
 /// Every output `compositor` shows, by connector name and logical rectangle `(x, y, w, h)`:
-/// one bar stands on each, and none spans them all.
+/// one part stands on each, its whole screen, and none spans them all.
 fn outputs_of(compositor: &Compositor) -> Vec<(String, (i32, i32, u32, u32))> {
     compositor
         .outputs()
@@ -738,100 +644,141 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
     }
 }
 
-/// `host`, the desktop's bar, as the desk stands under `layer`: the shell's whole screen draws
-/// its own bar, so the desktop's steps aside ([`Aside`]), and still answers its chords.
-pub(crate) fn bar_under(
-    layer: Option<ShellLayer>,
-    host: impl SurfaceHost + 'static,
-) -> Box<dyn SurfaceHost> {
-    if layer == Some(ShellLayer::Screen) {
+/// `host`, the desktop's bar or desk, as the desk stands under the shell: the shell draws the
+/// bar and the desk itself (its strips, their frames and the places in them, around the wells
+/// the windows stand in), so the desktop's own step aside ([`Aside`]) rather than drawing a
+/// second set of either. It still keeps the windows' model the wells place them by.
+/// Without a shell, the desktop is the shell and stands as itself.
+pub(crate) fn under(shell: bool, host: impl SurfaceHost + 'static) -> Box<dyn SurfaceHost> {
+    if shell {
         Box::new(Aside(host))
     } else {
         Box::new(host)
     }
 }
 
-/// `host`, the desktop's desk, as the desk stands under `layer`: the shell's whole screen draws
-/// the desk itself (its strips, their frames and the places in them, around the wells the windows
-/// stand in), so the desktop's own desk steps aside ([`Aside`]) rather than drawing a second set of
-/// strips under it. It still keeps the windows' model the wells place them by, and answers its
-/// chords.
-pub(crate) fn desk_under(
-    layer: Option<ShellLayer>,
-    host: impl SurfaceHost + 'static,
-) -> Box<dyn SurfaceHost> {
-    bar_under(layer, host)
-}
-
-/// The chrome's published side as the desk stands under `layer`: on the shell's whole screen
-/// the chrome draws none of its surfaces, so its `overview` (what the touchpad's pinch, the
-/// overview's shortcut, an agent and the REPL run) opens and closes the shell's own overview,
-/// the surface the desk shows over its windows (`overlays`), which the screen's views draw.
-/// Every other action is the chrome's.
+/// The chrome's published side as the desk stands under the shell: the shell draws the
+/// surfaces, so each action of the chrome's that opens one opens the shell's view of it on
+/// `surfaces` — the overview, the notifications, the quick settings and the workspaces —
+/// while the chrome's own draws nothing. Every other action is the chrome's.
 pub(crate) fn chrome_door<T: tilo_surface_host::Published + 'static>(
-    layer: Option<ShellLayer>,
+    shell: bool,
     chrome: &Rc<RefCell<T>>,
-    overlays: &Rc<crate::overlays::Overlays>,
+    surfaces: crate::desk_resource::Surfaces,
 ) -> tilo_surface_host::Shared {
     let chrome = Rc::clone(chrome) as tilo_surface_host::Shared;
-    if layer == Some(ShellLayer::Screen) {
-        let overlays = Rc::clone(overlays);
-        Rc::new(RefCell::new(ScreenChrome { chrome, overlays }))
+    if shell {
+        Rc::new(RefCell::new(ShellChrome { chrome, surfaces }))
     } else {
         chrome
     }
 }
 
-/// The chrome's door on the shell's whole screen ([`chrome_door`]).
-struct ScreenChrome {
-    chrome: tilo_surface_host::Shared,
-    overlays: Rc<crate::overlays::Overlays>,
+/// The desk's published side as the desk stands under the shell: its `search` opens the
+/// shell's launcher (on what the person asked for, when a query comes with it), as the
+/// desktop's own search draws nothing under the shell; a search with a query still runs, its
+/// rows published for the palette and the agents.
+pub(crate) fn desk_door<T: tilo_surface_host::Published + 'static>(
+    shell: bool,
+    desk: T,
+    surfaces: crate::desk_resource::Surfaces,
+) -> tilo_surface_host::Shared {
+    let desk: tilo_surface_host::Shared = Rc::new(RefCell::new(desk));
+    if shell {
+        Rc::new(RefCell::new(ShellDesk { desk, surfaces }))
+    } else {
+        desk
+    }
 }
 
-impl ScreenChrome {
-    /// Whether the overview is to be open after `address` with `arguments`, when it is one of
-    /// the chrome's ways of opening or closing it: `Ok(None)` for every other action.
-    fn overview(
+/// The chrome's door on the shell ([`chrome_door`]).
+struct ShellChrome {
+    chrome: tilo_surface_host::Shared,
+    surfaces: crate::desk_resource::Surfaces,
+}
+
+impl ShellChrome {
+    /// The surface `address` opens or closes on the shell, when it is one of the chrome's ways
+    /// of showing one: `Ok(None)` for every other action.
+    fn show_surface(
         &self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-    ) -> Result<Option<bool>, tilo_actions::DoorError> {
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::DoorError> {
         if address.resource != tilo_desktop::desk_verbs::CHROME_RESOURCE {
             return Ok(None);
         }
-        let open = self.overlays.here() == crate::overlays::Overlay::Overview.name();
-        match address.action.as_str() {
-            "overview" => match arguments.get("open") {
-                None | Some(Value::Null) => Ok(Some(!open)),
-                Some(Value::Bool(wanted)) => Ok(Some(*wanted)),
-                Some(other) => Err(tilo_actions::DoorError::InvalidArguments(format!(
-                    "argument `open` must be boolean, got {other}"
-                ))),
-            },
+        let here = |name: &str| self.surfaces.overlays.here() == name;
+        let started = match address.action.as_str() {
+            "overview" => {
+                let open = here(crate::overlays::Overlay::Overview.name());
+                if opens(address, arguments, open)? {
+                    self.surfaces
+                        .open(crate::overlays::Overlay::Overview.name());
+                } else {
+                    self.surfaces
+                        .close(crate::overlays::Overlay::Overview.name());
+                }
+                true
+            }
+            "notifications" => {
+                let name = crate::overlays::Overlay::Centre.name();
+                if opens(address, arguments, here(name))? {
+                    self.surfaces.open(name);
+                } else {
+                    self.surfaces.close(name);
+                }
+                true
+            }
+            "quick-settings" => {
+                self.surfaces
+                    .toggle(crate::overlays::Overlay::QuickSettings.name());
+                true
+            }
+            // The workspaces are the shell's one workspace surface: the desk's menu, the
+            // workspaces a person switches between and the actions on them.
+            "workspace-menu" => {
+                self.surfaces
+                    .toggle(crate::overlays::Overlay::Workspaces.name());
+                true
+            }
             "shortcut"
                 if arguments.get("action").cloned().and_then(|action| {
                     serde_json::from_value::<ui::shortcut_table::ShortcutAction>(action).ok()
                 }) == Some(ui::shortcut_table::ShortcutAction::WorkspaceOverview) =>
             {
-                Ok(Some(!open))
+                let name = crate::overlays::Overlay::Overview.name();
+                self.surfaces.toggle(name);
+                true
             }
-            _ => Ok(None),
-        }
-    }
-
-    /// Open or close the shell's overview.
-    fn show_overview(&self, open: bool) -> ui::host_operation::ResourceOperationStart {
-        let name = crate::overlays::Overlay::Overview.name();
-        if open {
-            self.overlays.open(name);
-        } else {
-            self.overlays.close(name);
-        }
-        ui::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            _ => false,
+        };
+        Ok(
+            started.then_some(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )),
+        )
     }
 }
 
-impl tilo_surface_host::Published for ScreenChrome {
+/// Whether the chrome's action at `address` opens its surface, given whether it is up
+/// (`here`): an action that names `open` says so, and one that does not toggles.
+fn opens(
+    address: &ActionAddress,
+    arguments: &Map<String, Value>,
+    here: bool,
+) -> Result<bool, tilo_actions::DoorError> {
+    match arguments.get("open") {
+        None | Some(Value::Null) => Ok(!here),
+        Some(Value::Bool(wanted)) => Ok(*wanted),
+        Some(other) => Err(tilo_actions::DoorError::InvalidArguments(format!(
+            "`{}` takes `open` as a boolean, got {other}",
+            address.action
+        ))),
+    }
+}
+
+impl tilo_surface_host::Published for ShellChrome {
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
         self.chrome.borrow_mut().resources()
     }
@@ -841,8 +788,8 @@ impl tilo_surface_host::Published for ScreenChrome {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
-        if let Some(open) = self.overview(address, arguments)? {
-            return Ok(self.show_overview(open));
+        if let Some(started) = self.show_surface(address, arguments)? {
+            return Ok(started);
         }
         self.chrome.borrow_mut().invoke(address, arguments)
     }
@@ -853,8 +800,8 @@ impl tilo_surface_host::Published for ScreenChrome {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
-        if let Some(open) = self.overview(address, arguments)? {
-            return Ok(self.show_overview(open));
+        if let Some(started) = self.show_surface(address, arguments)? {
+            return Ok(started);
         }
         self.chrome
             .borrow_mut()
@@ -886,10 +833,86 @@ impl tilo_surface_host::Published for ScreenChrome {
     }
 }
 
-/// A surface of the session's own the shell's whole screen stands in for: the desktop's bar,
-/// whose band the screen's bar takes, and the desktop's desk, whose strips the screen draws. It
-/// draws nothing and takes no pointer, and still answers the chords it answers anywhere, so a key
-/// the person presses does what it did.
+/// The desk's door on the shell ([`desk_door`]).
+struct ShellDesk {
+    desk: tilo_surface_host::Shared,
+    surfaces: crate::desk_resource::Surfaces,
+}
+
+impl tilo_surface_host::Published for ShellDesk {
+    fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
+        self.desk.borrow_mut().resources()
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &Map<String, Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        if address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE && address.action == "search"
+        {
+            if let Some(Value::String(query)) = arguments.get("query") {
+                if !query.is_empty() {
+                    // The desk runs its search as it always does, so its rows are published on
+                    // its search resource for the palette and the agents; the shell's launcher
+                    // is what draws, and it opens on what was asked for.
+                    let started = self.desk.borrow_mut().invoke(address, arguments)?;
+                    self.surfaces.overlays.search(query);
+                    return Ok(started);
+                }
+            }
+            self.surfaces
+                .toggle(crate::overlays::Overlay::Launcher.name());
+            return Ok(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ));
+        }
+        self.desk.borrow_mut().invoke(address, arguments)
+    }
+
+    fn invoke_as(
+        &mut self,
+        actor: &str,
+        address: &ActionAddress,
+        arguments: &Map<String, Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        if address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE && address.action == "search"
+        {
+            return self.invoke(address, arguments);
+        }
+        self.desk.borrow_mut().invoke_as(actor, address, arguments)
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        self.desk.borrow_mut().accessible_labels()
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.desk.borrow().revision()
+    }
+
+    fn offered(&self) -> bool {
+        self.desk.borrow().offered()
+    }
+
+    fn exclusive(&self) -> bool {
+        self.desk.borrow().exclusive()
+    }
+
+    fn serves_while_locked(&self) -> bool {
+        self.desk.borrow().serves_while_locked()
+    }
+
+    fn locked_resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
+        self.desk.borrow_mut().locked_resources()
+    }
+}
+
+/// A surface of the session's own the shell stands in for: the desktop's bar, which the
+/// shell's bar replaces, and the desktop's desk, whose strips the shell draws. It draws nothing,
+/// prepares nothing and takes no pointer and no key: every chord the person presses is the
+/// shell's to answer or the session's own. It still hears the outputs change, so what it holds
+/// follows the displays the shell stands on.
 pub(crate) struct Aside<T>(pub(crate) T);
 
 impl<T: SurfaceHost> SurfaceHost for Aside<T> {
@@ -905,13 +928,11 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
-        self.0.claim_key(key, locked, inhibited)
+    fn claim_key(&mut self, _key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {
+        KeyClaim::Pass
     }
 
-    fn key(&mut self, key: &HostKey) {
-        self.0.key(key);
-    }
+    fn key(&mut self, _key: &HostKey) {}
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
         self.0.outputs_changed(outputs);
@@ -922,14 +943,12 @@ impl<T: SurfaceHost> SurfaceHost for Aside<T> {
     }
 
     fn prepare_frame(&mut self) -> bool {
-        // It keeps up with what it hears, and shows none of it.
-        self.0.prepare_frame();
         false
     }
 }
 
 impl crate::Session {
-    /// Hand the shell's bar the desk when it changed, and run what the bar
+    /// Hand the shell the desk when it changed, and run what it
     /// asked through the door, as any caller of the action protocol does.
     pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
         let Some(shell) = self.shell.as_ref() else {
@@ -958,12 +977,9 @@ impl crate::Session {
         shell.follow_places(&arrangement, &mut self.shared.services.borrow_mut());
         shell.publish_arrangement(arrangement);
         // What the screen says of its edges is what a bar or dock that shows only sometimes
-        // follows; it moves without the desk, so it goes every turn. The part covers the bands
-        // the record says the chrome stands in.
-        let edges = shell.edges();
+        // follows; it moves without the desk, so it goes every turn.
         shell.publish_edges(&self.compositor);
-        shell.set_edges(edges);
-        // One bar per display: a display plugged in, taken away or taken by a fullscreen window
+        // One part per display: a display plugged in, taken away or taken by a fullscreen window
         // moves its part.
         shell.follow_displays(&mut self.compositor, &mut self.shared.doors);
         if !shell.has_asks() {
@@ -1014,7 +1030,7 @@ impl crate::Session {
         Ok(())
     }
 
-    /// What the shell's bar reads the desk through: a test stages a reading on it, as a
+    /// What the shell reads the desk through: a test stages a reading on it, as a
     /// collaborating session's presence would arrive.
     #[must_use]
     pub fn shell_link(&self) -> Option<Rc<tilo_surface_host::SessionLink>> {
@@ -1035,22 +1051,22 @@ impl crate::Session {
         &self.shared.notices
     }
 
-    /// How much work the shell's bar did since the session started:
+    /// How much work the shell's views did since the session started:
     /// `None` when its package did not start.
     #[must_use]
     pub fn shell_work(&self) -> Option<tilo_surface_host::ShellWork> {
         self.shell.as_ref().map(Shell::work)
     }
 
-    /// What the shell's bar refused since the session started, in its own
-    /// words: a press whose action could not run.
+    /// What the shell refused since the session started, in its own words: a
+    /// press whose action could not run.
     #[must_use]
     pub fn shell_refusals(&self) -> Vec<String> {
         self.shell.as_ref().map(Shell::refusals).unwrap_or_default()
     }
 
-    /// Where the shell bar's control named `name` (as assistive technology
-    /// hears it) stands, logical `(x, y, w, h)`: what a test presses it by.
+    /// Where the shell's control named `name` (as assistive technology hears
+    /// it) stands, logical `(x, y, w, h)`: what a test presses it by.
     #[must_use]
     pub fn shell_control(&self, name: &str) -> Option<(f64, f64, f64, f64)> {
         self.shell.as_ref()?.control(name)
@@ -1103,10 +1119,10 @@ impl crate::Session {
         self.shell.as_ref().map(Shell::reads).unwrap_or_default()
     }
 
-    /// The shell's bars, one per display, as each stands now: the output it is on, where it
+    /// The shell's parts, one per display, as each stands now: the output it is on, where it
     /// stands, and whether it stepped aside for a fullscreen window there.
     #[must_use]
-    pub fn shell_bars(&self) -> Vec<BarPlace> {
+    pub fn shell_parts(&self) -> Vec<PartPlace> {
         self.shell.as_ref().map(Shell::parts).unwrap_or_default()
     }
 
@@ -1188,6 +1204,82 @@ mod tests {
                 "{name} is retired"
             );
         }
+    }
+
+    /// A host that counts what is asked of it, to show what the aside never asks.
+    #[derive(Default)]
+    struct Asked {
+        frames: u32,
+        keys: u32,
+        outputs: u32,
+    }
+
+    impl tilo_compositor::SurfaceHost for Asked {
+        fn layers(&self) -> Vec<tilo_compositor::HostLayer> {
+            Vec::new()
+        }
+
+        fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+            true
+        }
+
+        fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+        fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+        fn claim_key(
+            &mut self,
+            _key: &tilo_compositor::HostKey,
+            _locked: bool,
+            _inhibited: bool,
+        ) -> tilo_compositor::KeyClaim {
+            self.keys = self.keys.saturating_add(1);
+            tilo_compositor::KeyClaim::Take
+        }
+
+        fn key(&mut self, _key: &tilo_compositor::HostKey) {
+            self.keys = self.keys.saturating_add(1);
+        }
+
+        fn outputs_changed(&mut self, _outputs: &[(i32, i32, i32, i32)]) {
+            self.outputs = self.outputs.saturating_add(1);
+        }
+
+        fn prepare_frame(&mut self) -> bool {
+            self.frames = self.frames.saturating_add(1);
+            true
+        }
+    }
+
+    /// The desk the shell stands in for draws nothing, prepares nothing and takes no key or
+    /// pointer: what it hears still reaches it, so it follows the displays the shell is on.
+    #[test]
+    fn the_desktop_aside_prepares_draws_and_takes_nothing() {
+        use tilo_compositor::SurfaceHost as _;
+        let key = tilo_compositor::HostKey {
+            keycode: 0,
+            pressed: true,
+            repeat: false,
+            keysym: 0xff1b,
+            unmodified_keysym: 0xff1b,
+            latin_keysym: 0xff1b,
+            text: None,
+            modifiers: tilo_compositor::KeyModifiers::default(),
+        };
+        let mut aside = super::Aside(Asked::default());
+        assert!(!aside.prepare_frame(), "nothing to draw");
+        assert_eq!(aside.0.frames, 0, "the desk behind it never prepared");
+        assert_eq!(
+            aside.claim_key(&key, false, false),
+            tilo_compositor::KeyClaim::Pass,
+            "the shell answers the keys"
+        );
+        aside.key(&key);
+        assert_eq!(aside.0.keys, 0, "no key reached the desk behind it");
+        assert!(aside.layers().is_empty(), "it draws nothing");
+        assert!(!aside.accepts_pointer(1.0, 1.0), "it takes no pointer");
+        aside.outputs_changed(&[(0, 0, 1280, 800)]);
+        assert_eq!(aside.0.outputs, 1, "it follows the displays");
     }
 
     /// The device's surface the shell compiles against is the one the session publishes.
