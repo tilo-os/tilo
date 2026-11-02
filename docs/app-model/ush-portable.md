@@ -88,8 +88,8 @@ Compilers, native binaries, anything that needs syscalls WASI doesn't have,
 and interactive Linux programs such as `bash`. Each command becomes a compute
 job on the existing placement system:
 
-- **Where it runs.** The relay places it where it can run: the person's own
-  device, one of their relays, or a workspace host that offers compute.
+- **Where it runs.** The offer round places it where it can run: the
+  person's own device, or a workspace member that offers compute.
   The sandbox is whatever that place runs: a bwrap guest on a Linux device, a
   microVM or a container on a host.
 - **Inputs and outputs.** The inputs are the files the command can see, by
@@ -127,9 +127,9 @@ agents and History see one model whichever tier ran a command.
 - **On tilo.coffee, in the Lounge or a member's workspace:**
   - `ls`, `cat`, `mv`, `grep` and `jq` work right away, on the host or in the
     browser, with no VM;
-  - `cargo build` asks for a compute place: the member's own device or relay
-    if they have one, or the host's compute if the host offers it. If none is
-    available, the shell says so in plain words.
+  - `cargo build` asks for a compute place: the member's own device, another
+    of their devices if they have one, or the host's compute if the host
+    offers it. If none is available, the shell says so in plain words.
 - **On the person's own laptop:** tiers 1 and 2 run in-process, and tier 3 in
   the local guest, as today, but only for the commands that need it.
 - **For agents:** an agent calls the same resolved commands, or the actions
@@ -174,7 +174,7 @@ Decided on 2026-10-28:
    name.
 2. **Host compute:** hosts may offer tier-3 compute to members, but only in a
    limited way on Tilo's own host (a quota). Otherwise tier 3 runs on the
-   person's own devices and relays.
+   person's own devices.
 3. **WebAssembly:**
    - only for existing third-party programs; everything Tilo's own is a Tilo
      action;
