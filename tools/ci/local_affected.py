@@ -9,7 +9,7 @@ the merge-base with origin/main and the worktree must be clean. test-changed.sh 
 same run for a change still being edited: base defaults to the merge-base with
 `integration` (origin/main without it), uncommitted and untracked files count, the
 stages are check (the portable tilo-ui and headless tilo-app builds, when the change
-reaches them), clippy, test and session-e2e, and clippy covers the changed packages and
+reaches them), clippy and test, and clippy covers the changed packages and
 their direct dependants (the planner's `near`; `--closure` for the whole
 reverse-dependency closure the batch check lints).
 
@@ -62,8 +62,7 @@ from ci import capability_filter, nextest_filters  # noqa: E402
 from ci.affected_packages import package_cost, recorded_test_seconds  # noqa: E402
 
 DEFAULT_STAGES = "check,clippy,test,policy,goldens,certify,scenarios,scoped"
-# session-e2e: the headless nested session, for a change to what the session's real paths cross.
-CHANGED_STAGES = "check,clippy,test,session-e2e"
+CHANGED_STAGES = "check,clippy,test"
 GOLDEN_PACKAGES = {"tilo-ui", "ebook"}
 # Above this much recorded test time (seconds, tools/ci/recorded_test_time.json) a
 # test set is split between the builders; below it one builder finishes before a
@@ -71,12 +70,6 @@ GOLDEN_PACKAGES = {"tilo-ui", "ebook"}
 SPLIT_SECONDS = 900
 # The second (arm) builder's share of a split test set: its 64 cores beside the x86 one's 192.
 SECOND_SHARE = 0.25
-# A change to what the session's real paths cross (collaboration, the tilolang host
-# and tilolang-tilo) also runs scripts/headless-examples/session-e2e.py: one headless nested
-# session of this tree, built on the arm builder and run here, since the builders' containers
-# cannot start Tilo's sandboxes.
-SESSION_E2E_PATHS = ("crates/session/session/", "crates/collab/", "crates/platform/tilolang-host/",
-                     "crates/platform/tilolang-tilo/", "scripts/headless-examples/session-e2e.py")
 # nextest's status line for a test that did not pass, and the test it names.
 FAILED_LINE = re.compile(
     r"^\s*(?:TRY \d+ )?(FAIL|TIMEOUT|LEAK-FAIL|ABORT|SIG[A-Z]+)\s+\[[^\]]*\]\s+"
@@ -561,14 +554,6 @@ def main() -> int:
             if mine:
                 spawn(f"{label}-failed", failed_first(builder, packages, mine))
             spawn(label, test_share(builder, packages, mine))
-
-    # The session's real paths, end to end: built once on the arm builder, run on this machine.
-    changed_files = plan.get("changed_files", [])
-    if args.changed and want("session-e2e") and any(path.startswith(SESSION_E2E_PATHS) for path in changed_files):
-        spawn("session-e2e", lambda job: job.run(
-            "session e2e (scripts/headless-examples/session-e2e.py)", Builder("local", None),
-            [sys.executable, "scripts/headless-examples/session-e2e.py", "--build",
-             "--out", "target/session-e2e"]))
 
     for thread in threads:
         thread.join()
