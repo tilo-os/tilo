@@ -413,6 +413,12 @@ print(xs, fields: [.title, .due])
   the subject as an `if` does; over another argument it is read where the action is applied
   with it, `button(move_to(b, card, col))`. `button(pin(n))` reads its `label:`, `icon:` and
   `on:` with the arguments it applies, as the view draws: Pin turns into Unpin, toggled.
+- An action declares its shortcut: `key: "Ctrl+Enter"`, `key: "Ctrl+Shift+M"`, `key: "Delete"` —
+  modifiers in any order, then one key. The command modifier is the platform's own, so
+  `Ctrl+Enter` is Command+Enter on a Mac. Where the action is offered its key runs it: an
+  action on an item while that item has the keyboard, an action on the app's root window-wide.
+  `std`'s menus and buttons show it, and so does the palette. The key is checked when the app
+  compiles, and two actions of one subject cannot answer the same keys.
 - A slot that holds a component (`ui.BoardLane` holds `ui.BoardCard`s) takes a view of the
   package whose body is that component: views are components.
 - `require <condition> "<reason>"` lines head an action's body: when the action is available
