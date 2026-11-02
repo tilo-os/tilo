@@ -119,8 +119,7 @@ fn json_encodings_are_pinned() {
             r#""relay_service_node_id":"2222222222222222222222222222222222222222222222222222222222222222","#,
             r#""relay_endpoint":null,"label":"Attic server","#,
             r#""user_public_key":"3333333333333333333333333333333333333333333333333333333333333333","#,
-            r#""device_cert":null,"relay_workspace_ids":[7,18446744073709551615],"#,
-            r#""environments":{"sessions":false,"legacy_apps":false}}"#,
+            r#""device_cert":null,"relay_workspace_ids":[7,18446744073709551615]}"#,
         ),
     );
     // Metrics snapshot, written pretty-printed.
