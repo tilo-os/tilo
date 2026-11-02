@@ -289,9 +289,9 @@ scenario "a banner" {
     d.notice_actions.insert(NoticeAction(notice: "n4", key: "retry", label: "Retry"))
 }
 
-/// The bar's status and who is here: the faces of the two people working alongside Ada and the
-/// chip that names them, the device's sound, connection and charge, the person's own avatar and
-/// the notifications with what waits in them.
+/// The bar's status and who is here: the faces of the two people working alongside Ada, the
+/// device's sound, connection and charge, the person's own avatar and the notifications with
+/// what waits in them.
 scenario "the bar's status" {
     let d = root Desk
     d.person = "Ada Lovelace"
