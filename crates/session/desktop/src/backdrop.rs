@@ -554,7 +554,7 @@ impl Widget for DesktopBackdrop {
             || self
                 .child
                 .as_ref()
-                .is_some_and(|c| (c.needs_redraw() || c.needs_animation_frame()))
+                .is_some_and(|c| c.needs_redraw() || c.needs_animation_frame())
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {

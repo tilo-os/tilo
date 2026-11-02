@@ -627,7 +627,7 @@ impl Widget for DeskLayer {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if (self.backdrop.needs_redraw() || self.backdrop.needs_animation_frame()) {
+        if self.backdrop.needs_redraw() || self.backdrop.needs_animation_frame() {
             regions.push(self.rect);
             return;
         }
