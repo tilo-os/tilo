@@ -1312,12 +1312,18 @@ impl NotificationStack {
         let card_radius = ui::widget::toast::card_radius(ctx.theme);
         let control_radius = f64::from(ctx.theme.tokens.radii.control);
         let held = self.held();
+        // What the reply field shows, kept across the loop so a frame of
+        // none allocates nothing: one buffer, filled only while typing.
+        let mut reply_text = String::new();
         for (index, banner) in banners.iter().enumerate() {
             let n = &banner.notification;
             let actions = &banner.actions;
             let time = relative_time(n, now);
             let draft = self.reply.as_ref().filter(|draft| draft.id == n.id);
-            let reply_text = draft.map_or(String::new(), |draft| draft.text.clone());
+            reply_text.clear();
+            if let Some(draft) = draft {
+                reply_text.clone_from(&draft.text);
+            }
             let card = self.banner_card(n, actions, &time, &reply_text, draft.is_some());
             let height = ui::widget::toast::card_height(ctx.text_renderer, ctx.theme, &card, width)
                 .max(TOAST_HEIGHT);
