@@ -188,6 +188,13 @@ fn provision(
 /// this returns.
 #[must_use]
 pub fn identity() -> Identity {
+    // A device enrolled without the person's root (a node's session, certified
+    // when its node was installed) takes up the identity it holds before the
+    // store below is asked what is here, so this login reads the person's
+    // record rather than the absence setup would take as a first use.
+    if let Err(error) = tilo_onboarding_host::identity_provisioning::complete_enrolled_device() {
+        tracing::warn!(%error, "the enrolled device could not take up its identity");
+    }
     let store = match DiskIdentityStore::from_env() {
         Ok(store) => store,
         Err(error) => return Identity::Refused(format!("no identity store: {error}")),
