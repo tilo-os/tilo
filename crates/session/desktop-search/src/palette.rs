@@ -185,6 +185,9 @@ pub struct DesktopSearch {
     /// The row capacity the rows were cut to: when the card grew or shrank
     /// since, the groups are cut again.
     shown_capacity: usize,
+    /// Whether the rows the palette holds stand two lines tall: what the
+    /// capacity is counted in.
+    shown_two_lines: bool,
     /// The row the person moved to in this search, kept while the rows fill
     /// in: a frame that has no room for it yet does not take their choice
     /// away.
@@ -226,6 +229,7 @@ impl DesktopSearch {
             costs: SourceCosts::default(),
             order: Vec::new(),
             shown_capacity: 0,
+            shown_two_lines: false,
             kept_choice: None,
         }
     }
@@ -360,7 +364,7 @@ impl DesktopSearch {
             return true;
         }
         // The card grew or shrank: the groups share what it shows now.
-        if self.palette.entry_row_capacity() != self.shown_capacity {
+        if self.palette.entry_row_capacity_for(0, self.shown_two_lines) != self.shown_capacity {
             self.render(&query, generation);
             return true;
         }
@@ -487,8 +491,14 @@ impl DesktopSearch {
         // Each group shares what the palette shows without scrolling; a
         // group cut short offers the rest in place. The groups' own headers
         // take room the rows would have held.
-        let capacity = self.palette.entry_row_capacity();
-        let row_budget = self.palette.entry_row_capacity_with(groups.len());
+        // The rows about to be drawn, not the ones the palette still holds:
+        // a row with a line under its name is twice as tall, and a list
+        // counted in short rows runs past the card.
+        let two_lines = groups
+            .iter()
+            .any(|group| group.results.iter().any(|hit| under_title(hit).0.is_some()));
+        let capacity = self.palette.entry_row_capacity_for(0, two_lines);
+        let row_budget = self.palette.entry_row_capacity_for(groups.len(), two_lines);
         let groups = ui::search::system::trim_groups(groups, row_budget, &self.expanded);
         // A source answering late re-ranks the rows of the same query: the
         // row the person moved to stays chosen, so Enter does not open
@@ -576,6 +586,7 @@ impl DesktopSearch {
         self.shown_query = Some(query.to_owned());
         self.shown_generation = generation;
         self.shown_capacity = capacity;
+        self.shown_two_lines = two_lines;
     }
 
     /// List every row of the group behind "Show all" row `more`, keeping

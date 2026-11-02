@@ -406,7 +406,15 @@ impl ActionPalette {
     /// four groups holds fewer rows than one with two.
     #[must_use]
     pub fn entry_row_capacity_with(&self, groups: usize) -> usize {
-        let row = self.row_height().max(1.0);
+        self.entry_row_capacity_for(groups, self.show_two_lines())
+    }
+
+    /// How many rows a full list holds under the headers of `groups` groups
+    /// when its rows are `two_line` tall: for the rows a query is about to
+    /// put there, which the palette does not hold yet.
+    #[must_use]
+    pub fn entry_row_capacity_for(&self, groups: usize, two_line: bool) -> usize {
+        let row = self.results.row_band(two_line).max(1.0);
         let headers = crate::num::f64_of_usize(groups) * self.results.header_band();
         let room = (self.list_cap() - headers).max(row);
         crate::num::usize_of_f64((room / row).floor()).max(1)
@@ -482,11 +490,15 @@ impl ActionPalette {
     /// The list's nominal row: what capacity, the default cap and a wheel
     /// notch count in. Each row is as tall as its own lines.
     fn row_height(&self) -> f64 {
-        let any_subtitle = self
-            .visible_entries()
+        self.results.row_band(self.show_two_lines())
+    }
+
+    /// Whether the rows the palette shows stand two lines tall: one of them
+    /// says something under its name.
+    fn show_two_lines(&self) -> bool {
+        self.visible_entries()
             .iter()
-            .any(|entry| entry.description.is_some());
-        self.results.row_band(any_subtitle)
+            .any(|entry| entry.description.is_some())
     }
 
     fn band_height(&self) -> f64 {
