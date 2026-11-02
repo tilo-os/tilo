@@ -885,7 +885,7 @@ fn the_bridge_field_edits_only_chats_messages() {
         .collect();
     assert_eq!(
         field_edits,
-        ["workspace:*/app:so.tilo.chat/kind:chat.messages/resource:*/**/action:field-edit"]
+        ["room:*/app:so.tilo.chat/kind:chat.messages/resource:*/**/action:field-edit"]
     );
     // Where the bot's own door offers and admits the field edit (the
     // resource), and where the workspace decides a reaction (its field).
