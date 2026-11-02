@@ -1877,3 +1877,38 @@ fn an_agent_presses_a_dialog_footer_through_its_published_controls() {
         .expect("Save is reachable");
     assert_eq!(saved.get(), 1);
 }
+
+#[test]
+fn a_closed_sheet_names_no_target_and_an_open_one_is_where_it_shows() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    use crate::widget::Column;
+    let sheet = |open: bool| {
+        let mut dialog = ModalDialog::new("About", Column::new().push(Box::new(Text::new("Tilo"))))
+            .with_test_id("about-sheet");
+        dialog.set_open(open);
+        crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            Column::new().push(Box::new(dialog)),
+            (800, 600),
+            Theme::dark(),
+        )
+    };
+    let closed = sheet(false);
+    let targets = closed.targets();
+    assert!(
+        !targets.contains_key("about-sheet"),
+        "a hidden sheet stands nowhere: {:?}",
+        targets.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !targets.keys().any(|name| name.contains("ModalDialog")),
+        "nor does its widget path: {:?}",
+        targets.keys().collect::<Vec<_>>()
+    );
+    let open = sheet(true);
+    assert!(
+        open.targets().contains_key("about-sheet"),
+        "an open sheet is where it shows"
+    );
+}

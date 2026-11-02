@@ -168,6 +168,11 @@ pub(super) fn collect_targets(
     let Ok(_entry) = crate::bound_dispatch::enter_widget(w) else {
         return;
     };
+    // What a widget hides is not on screen: no name reaches it, and the
+    // pointer passes through it, as [`crate::pick`] reads a hidden node.
+    if w.accessibility_hidden() {
+        return;
+    }
     let (name, path, my_index) = next_widget_path(w, parent_path, sibling_counts);
     out.insert(path.clone(), w.get_rect());
     if my_index == 0 {

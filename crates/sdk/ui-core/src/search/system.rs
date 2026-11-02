@@ -16,10 +16,10 @@ use crate::search::Scope;
 pub enum ResourceKind {
     /// A palette-registered chrome action (e.g. "Open workspace settings").
     Action,
-    /// An app the person has or can get: a Tilo app, a Flatpak, a
-    /// downloaded program or one of the system's. Where it comes from is a
-    /// fact on its row, not a kind of its own. Enter starts it in the
-    /// workspace you are looking at.
+    /// An app the person has: a Tilo app, a Flatpak, a downloaded program or
+    /// one of the system's. Enter starts it in the workspace you are
+    /// looking at. Apps they only could have belong to their source's own
+    /// kind ([`Self::Custom`]), so a name finds what is here first.
     Application,
     /// A note document (title + body). Enter opens/focuses the note tab.
     Note,

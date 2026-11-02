@@ -401,6 +401,10 @@ impl crate::Published for WidgetHost {
             shown.insert(name, self.logical(rect));
         }
         for (_, node) in self.host.a11y_nodes() {
+            // A hidden node stands nowhere the person can reach.
+            if node.is_hidden() {
+                continue;
+            }
             let (Some(name), Some(bounds)) = (node.label(), node.bounds()) else {
                 continue;
             };
