@@ -2240,6 +2240,21 @@ impl ShellPart {
             })
     }
 
+    /// Whether anything the shell lays out for assistive technology says `text`: a node's
+    /// name, description or value holds it. What a test reads a composed view's content by.
+    pub fn says(&mut self, text: &str) -> bool {
+        self.widgets
+            .host_mut()
+            .a11y_nodes()
+            .into_iter()
+            .any(|(_, node)| {
+                [node.label(), node.description(), node.value()]
+                    .into_iter()
+                    .flatten()
+                    .any(|said| said.contains(text))
+            })
+    }
+
     /// Draw the shell with `theme`, the person's as their appearance settings make it: a
     /// change of mode (dark mode in the quick settings, a theme chosen in Settings) redraws
     /// the bar and every surface over the desk in it.

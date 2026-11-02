@@ -95,6 +95,7 @@ mod records;
 mod rotation;
 pub mod run;
 mod search;
+pub mod seeded_apps;
 pub mod session_package;
 mod setup;
 mod sheets;
@@ -107,6 +108,8 @@ mod status;
 pub mod surfaces;
 pub mod sync;
 mod system_sounds;
+pub mod termination;
+pub mod test_control;
 pub mod unlock;
 mod wallpapers;
 mod window_motion;
@@ -961,6 +964,9 @@ pub struct Session {
     /// The plane the apps it runs read and invoke its services on, while it
     /// serves one.
     action_plane: Option<Plane>,
+    /// The development test-control socket `tilo-control` drives this
+    /// session over, when it was started with one.
+    test_control: Option<test_control::TestControl>,
     /// The shortcuts the person saved, started by their triggers.
     automation: automation::Automation,
     /// The runtime the shortcuts' runs execute on, which the apps' broker
@@ -1581,20 +1587,11 @@ impl Session {
                 .as_ref()
                 .map(|desktop| desktop.questions().clone())
         });
-        let door = options.agent_door.as_deref().and_then(|path| {
-            agent_door::mount(
-                path,
-                questions.clone(),
-                std::sync::Arc::clone(&options.launches),
-                options.wake.handle(),
-                options.state.as_deref(),
-                &options.admit_repl,
-            )
-            .map_err(|error| {
-                tracing::warn!(%error, path = %path.display(), "the agent door does not open");
-            })
-            .ok()
-        });
+        let door = agent_door::mount_named(&options, questions.clone());
+        // The development test-control socket `tilo-control` reaches, when
+        // the session was started with one.
+        let test_control =
+            test_control::open_named(options.test_control.as_deref(), options.wake.handle());
         let agent_door = door.map(|door| {
             door.serve(
                 action_plane.as_ref().and_then(Plane::agent_broker),
@@ -1873,6 +1870,7 @@ impl Session {
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
+            test_control,
             automation,
             _automation_runtime: automation_runtime,
             screen_locked: false,
@@ -2365,34 +2363,6 @@ impl Session {
     #[must_use]
     pub const fn input_config(&self) -> &tilo_compositor::InputConfig {
         &self.input
-    }
-
-    /// Tell every open app window the temperature of the workspace it is in
-    /// and the colour of the person at this machine, whenever that differs
-    /// from what that window was told: when it opens, when it moves to
-    /// another workspace, when that workspace's picture or temperature
-    /// changes, and when the person chooses another colour.
-    fn follow_window_warmth(&mut self) {
-        // A theme the person's settings changed to is what the desk and the shell draw in
-        // from this frame, as every window is told it below.
-        if let Some(theme) = self.warmth.follow_settings(&self.shared.person) {
-            self.shared.desktop.set_theme(theme.clone());
-            if let Some(shell) = self.shell.as_mut() {
-                shell.set_theme(&theme);
-            }
-        }
-        let Some(tabs) = &mut self.tabs else {
-            return;
-        };
-        let network = window_warmth::network_status(&self.shared.readings);
-        self.warmth.follow(
-            tabs,
-            &self.shared.handle,
-            &self.shared.wallpapers,
-            &self.shared.person,
-            network,
-            ui::time::now(),
-        );
     }
 
     /// Carry out everything asked since the last look: the desktop's asks,
@@ -2966,6 +2936,8 @@ impl Session {
         // compositor draws their own pixels.
         self.shared.overview.step(&self.shared, now);
         self.compositor.render()?;
+        // What `tilo-control` asks of the frame just drawn.
+        test_control::serve(self.test_control.as_ref(), &mut self.compositor);
         // A live projection is sent the desktop as the pass just drew it.
         let video = self.display_sheet.video_stream();
         self.projection_video

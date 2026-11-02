@@ -93,7 +93,9 @@ impl Checker<'_> {
 
     /// The arguments of an action applied as a value (from a view, a flow or a block): those
     /// left out at the end are computed by the runtime when it is invoked, on the invoker's
-    /// state. A gap before a given argument is refused.
+    /// state. A gap before a given argument is refused, unless the parameter's default is
+    /// `.none`: a constant, which needs nothing before it, so the call passes it there. An
+    /// optional parameter of a published action is left out wherever it stands.
     pub(super) fn applied_args(
         &mut self,
         c: &Callable,
@@ -103,8 +105,16 @@ impl Checker<'_> {
         let given = bound.iter().rposition(Option::is_some).map_or(0, |i| i + 1);
         let mut out = Vec::new();
         for (i, slot) in bound.into_iter().take(given).enumerate() {
+            let param = c.params.get(i);
             match slot {
                 Some(v) => out.push(v),
+                None if param
+                    .and_then(|p| p.default.as_ref())
+                    .is_some_and(crate::resolve::ParamDefault::is_none) =>
+                {
+                    let ty = param.map_or(Ty::Error, |p| p.ty.clone());
+                    out.push(Ex::host(crate::abi::Imp::NoneV, Vec::new(), ty));
+                }
                 None => {
                     let name = c.params.get(i).map_or("", |p| p.name.as_str());
                     self.err("E028", span, format!("this leaves out `{name}` of `{}` but gives a parameter after it; an action applied from a view, a flow or a block leaves out only its last parameters, so give `{name}` too", c.name));

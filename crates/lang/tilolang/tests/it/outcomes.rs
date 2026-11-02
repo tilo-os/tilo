@@ -251,3 +251,130 @@ fn other_computations_from_a_register_are_legitimate_replays() {
 fn codes_of(src: &str) -> Vec<String> {
     diagnostics(src).into_iter().map(|d| d.code).collect()
 }
+
+#[test]
+fn a_parameter_whose_default_is_none_is_left_out_wherever_it_stands() {
+    // `.none` is a constant: it needs no parameter before it, so leaving it out before one that
+    // is given is no gap.
+    let decl = "action file(item: Todo, under: Option<Text> = .none, title: Text) {\n    item.title = title\n}\n";
+    for applied in [
+        "view v(item: Todo) {\n    button(file(item, title: \"x\"))\n}",
+        "flow f(item: Todo) {\n    file(item, title: \"x\")\n}",
+    ] {
+        let src = body(&format!("{decl}{applied}"));
+        assert!(codes_of(&src).is_empty(), "{applied}: {:?}", codes_of(&src));
+        validate(&compile(&src).wasm);
+    }
+    // A default that is computed still reads the parameters before it.
+    let computed = body(
+        "action change(item: Todo, done: Bool = not item.done, title: Text) {\n    item.done = done\n    item.title = title\n}\nflow f(item: Todo) {\n    change(item, title: \"x\")\n}",
+    );
+    assert_eq!(codes_of(&computed), vec!["E028"]);
+}
+
+/// An action of a package published without a module (a native app's, the session's), as the
+/// platform reads its surface: a parameter the app may go without is `Option<T> = .none`.
+fn published() -> tilolang::PackageMeta {
+    use tilolang::meta::{ActionMeta, DefaultMeta, ParamMeta};
+    let param = |name: &str, ty: &str, optional: bool| ParamMeta {
+        name: name.to_owned(),
+        ty: if optional {
+            format!("Option<{ty}>")
+        } else {
+            ty.to_owned()
+        },
+        default: optional.then(DefaultMeta::none),
+    };
+    tilolang::PackageMeta {
+        app: "so.tilo.session".to_owned(),
+        title: "Session".to_owned(),
+        actions: vec![ActionMeta {
+            id: "place".to_owned(),
+            name: "place".to_owned(),
+            doc: String::new(),
+            params: vec![
+                param("workspace", "Text", true),
+                param("row", "Int", true),
+                param("resource", "tilo.host.Resource", false),
+                param("x", "Int", true),
+                param("y", "Int", true),
+                param("width", "Int", true),
+            ],
+            result: None,
+            class: tilolang::types::EffectClass::Undoable,
+            proposal: None,
+            reaches: Vec::new(),
+            label: String::new(),
+            icon: None,
+            role: None,
+            scenario: false,
+            present: None,
+            toggles: None,
+            key: None,
+            group: None,
+            frequent: false,
+        }],
+        ..tilolang::PackageMeta::default()
+    }
+}
+
+#[test]
+fn an_imported_name_read_as_a_value_says_what_to_write() {
+    let session = published();
+    let said = |flow: &str| -> Vec<(String, String)> {
+        let src = format!("app t.x \"X\"\nuse so.tilo.session as session\n{TODO}{flow}\n");
+        crate::common::compile_with(&src, std::slice::from_ref(&session))
+            .err()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| (d.code, d.message))
+            .collect()
+    };
+    let action = said("flow f(item: Todo) {\n    let a = session.place\n}");
+    assert!(
+        matches!(action.as_slice(), [(code, message)] if code == "E026"
+            && message.contains("call it: `session.place(workspace: Option<Text> = .none")
+            && message.contains("resource: tilo.host.Resource")),
+        "{action:?}"
+    );
+    let unknown = said("flow f(item: Todo) {\n    let a = session.plac\n}");
+    assert!(
+        matches!(unknown.as_slice(), [(code, message)] if code == "E014"
+            && message.contains("did you mean `session.place`?")),
+        "{unknown:?}"
+    );
+}
+
+#[test]
+fn an_imported_action_keeps_its_optional_parameters() {
+    let session = published();
+    let codes = |flow: &str| -> Vec<String> {
+        let src = format!("app t.x \"X\"\nuse so.tilo.session as session\n{TODO}{flow}\n");
+        match crate::common::compile_with(&src, std::slice::from_ref(&session)) {
+            Ok(compiled) => {
+                validate(&compiled.wasm);
+                Vec::new()
+            }
+            Err(d) => d.into_iter().map(|d| d.code).collect(),
+        }
+    };
+    // The optional ones are left out, before and after the one given; a value for an
+    // `Option<Int>` is written as the Int, and a resource is passed as the value it is.
+    assert_eq!(
+        codes("flow f(item: Todo) {\n    session.place(resource: item, x: 80, y: 60)\n}"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        codes("flow f(item: Todo) {\n    session.place(resource: item)\n}"),
+        Vec::<String>::new()
+    );
+    // What the app needs is still required, and a resource is no text.
+    assert_eq!(
+        codes("flow f(item: Todo) {\n    session.place(x: 80)\n}"),
+        vec!["E022"]
+    );
+    assert_eq!(
+        codes("flow f(item: Todo) {\n    session.place(resource: \"tl:x:1\")\n}"),
+        vec!["E020"]
+    );
+}

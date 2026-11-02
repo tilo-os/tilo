@@ -302,23 +302,40 @@ impl Source for Actions {
         }
         let records: std::collections::HashSet<&str> =
             self.0.iter().map(|record| record.id.as_str()).collect();
-        tilo_actions::flatten(&self.0)
+        let flats: Vec<_> = tilo_actions::flatten(&self.0)
             .into_iter()
             .filter(|flat| offered_for(flat.action, needle))
+            .collect();
+        // An open record's actions answer to what they do. An item's (one
+        // message of a chat, one card of a board) answer only to the item
+        // named: "edit message" must not list the same edit once for every
+        // message there is. Each kind is ranked as one list.
+        let (own, items): (Vec<_>, Vec<_>) = flats
+            .iter()
+            .partition(|flat| records.contains(flat.resource_id.as_str()));
+        let mut own_scores = rank::action_match_scores(
+            needle,
+            own.iter().map(|flat| {
+                (
+                    flat.action.label.as_str(),
+                    flat.action.keywords.as_slice(),
+                    flat.resource_label.as_str(),
+                )
+            }),
+        )
+        .into_iter();
+        let mut item_scores = rank::item_action_match_scores(
+            needle,
+            items.iter().map(|flat| flat.resource_label.as_str()),
+        )
+        .into_iter();
+        flats
+            .iter()
             .filter_map(|flat| {
-                // An open record's actions answer to what they do. An item's
-                // (one message of a chat, one card of a board) answer only to
-                // the item named: "edit message" must not list the same edit
-                // once for every message there is.
                 let score = if records.contains(flat.resource_id.as_str()) {
-                    rank::action_match_score(
-                        needle,
-                        &flat.action.label,
-                        &flat.action.keywords,
-                        &flat.resource_label,
-                    )?
+                    own_scores.next().flatten()?
                 } else {
-                    rank::item_action_match_score(needle, &flat.resource_label)?
+                    item_scores.next().flatten()?
                 };
                 Some(Hit {
                     faces: Vec::new(),
@@ -393,40 +410,51 @@ impl Source for Published {
         if needle.trim().is_empty() {
             return Vec::new();
         }
+        let offered: Vec<_> = self
+            .0
+            .iter()
+            .flat_map(|published| {
+                published
+                    .actions
+                    .iter()
+                    .filter(|action| descriptor_offered(action, needle))
+                    .map(move |action| (published, action))
+            })
+            .collect();
+        let scores = rank::action_match_scores(
+            needle,
+            offered.iter().map(|(_, action)| {
+                (
+                    action.action_label.as_str(),
+                    action.keywords.as_slice(),
+                    action.resource_label.as_str(),
+                )
+            }),
+        );
         let mut hits = Vec::new();
-        for published in &self.0 {
-            for action in &published.actions {
-                if !descriptor_offered(action, needle) {
-                    continue;
-                }
-                let Some(score) = rank::action_match_score(
-                    needle,
-                    &action.action_label,
-                    &action.keywords,
-                    &action.resource_label,
-                ) else {
-                    continue;
-                };
-                hits.push(Hit {
-                    faces: Vec::new(),
-                    outcome: None,
-                    kind: ResourceKind::Action,
-                    provider: self.id().into(),
-                    id: Self::row_id(published, &action.address),
-                    title: action.action_label.clone(),
-                    subtitle: action.description.clone(),
-                    facts: Vec::new(),
-                    score,
-                    icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
-                    target: Target::Invoke(Box::new(crate::model::InvokeTarget {
-                        app: published.app.clone(),
-                        workspace: published.workspace.clone(),
-                        address: action.address.clone(),
-                        arguments: serde_json::Map::new(),
-                        descriptor: Some(action.clone()),
-                    })),
-                });
-            }
+        for ((published, action), score) in offered.into_iter().zip(scores) {
+            let Some(score) = score else {
+                continue;
+            };
+            hits.push(Hit {
+                faces: Vec::new(),
+                outcome: None,
+                kind: ResourceKind::Action,
+                provider: self.id().into(),
+                id: Self::row_id(published, &action.address),
+                title: action.action_label.clone(),
+                subtitle: action.description.clone(),
+                facts: Vec::new(),
+                score,
+                icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
+                target: Target::Invoke(Box::new(crate::model::InvokeTarget {
+                    app: published.app.clone(),
+                    workspace: published.workspace.clone(),
+                    address: action.address.clone(),
+                    arguments: serde_json::Map::new(),
+                    descriptor: Some(action.clone()),
+                })),
+            });
         }
         // Equal matches: the action that does it in one step before the
         // one asking for input, and a switch before a view of the same

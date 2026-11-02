@@ -128,6 +128,14 @@ pub struct ParamDefault {
     pub text: String,
 }
 
+impl ParamDefault {
+    /// Whether the default is `.none`, a constant: see [`crate::meta::DefaultMeta::is_none`].
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        self.text == crate::meta::DefaultMeta::NONE
+    }
+}
+
 /// The function of an action parameter's default, which the checker lowers.
 #[derive(Clone, Debug)]
 pub struct DefaultFn {
@@ -259,7 +267,15 @@ impl Callable {
         let params: Vec<String> = self
             .params
             .iter()
-            .map(|p| format!("{}: {}", p.name, p.ty.display(own_app)))
+            .map(|p| {
+                // A default says the argument may be left out, and what it then is.
+                let default = p
+                    .default
+                    .as_ref()
+                    .map(|d| format!(" = {}", d.text))
+                    .unwrap_or_default();
+                format!("{}: {}{default}", p.name, p.ty.display(own_app))
+            })
             .collect();
         let result = if matches!(self.result, Ty::Unit) {
             String::new()
