@@ -42,6 +42,7 @@ struct Permit {
     publish: String,
     subscribe: Vec<String>,
     active: Arc<AtomicBool>,
+    changed: tokio::sync::watch::Receiver<u64>,
 }
 
 impl SessionAuthorization for Permit {
@@ -58,11 +59,15 @@ impl SessionAuthorization for Permit {
                 Direction::Subscribe => self.subscribe.iter().any(|name| name == namespace),
             }
     }
+    fn changed(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        Some(self.changed.clone())
+    }
 }
 
 /// `drain-a` can be revoked alone; `drain-b` stays current.
 struct Authority {
     a: Arc<AtomicBool>,
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl RelayAuthority for Authority {
@@ -80,6 +85,7 @@ impl RelayAuthority for Authority {
             publish: publish.into(),
             subscribe: vec![subscribe.into()],
             active,
+            changed: self.changed.subscribe(),
         }))
     }
 }
@@ -183,8 +189,10 @@ struct Drain {
 
 async fn drain() -> Drain {
     let a_active = Arc::new(AtomicBool::new(true));
+    let (changed, _) = tokio::sync::watch::channel(0_u64);
     let relay = LoopbackRelay::start(Arc::new(Authority {
         a: a_active.clone(),
+        changed: changed.clone(),
     }))
     .unwrap();
     let dialer = Dialer::new(&relay.endpoint, &relay.fingerprints);
@@ -222,6 +230,8 @@ async fn drain() -> Drain {
 
     let revoked = Instant::now();
     a_active.store(false, Ordering::SeqCst);
+    // The membership change, as the watch the session already holds reports it.
+    changed.send_modify(|generation| *generation += 1);
     // The relay counts the lapse once A's media is cut off both ways.
     tilo_test_env::wait_until("revocation observed", || relay.counters().expired == 1);
     let (a_cut, b_cut) = (last_sequence(&a_sent), last_sequence(&b_sent));

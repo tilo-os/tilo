@@ -22,7 +22,7 @@ mod mirror;
 pub mod relay;
 
 #[cfg(feature = "relay")]
-mod session_authority;
+mod authority;
 
 #[cfg(feature = "relay")]
 pub mod client;

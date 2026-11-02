@@ -24,9 +24,9 @@ use std::sync::{
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
+use crate::authority::{AuthorityDriver, Verdict};
 use crate::carrier;
 pub use crate::carrier::{HANDSHAKE_BUDGET, SETUP_BUDGET};
-use crate::session_authority::{AuthorityDriver, Verdict};
 use crate::voice;
 
 /// Sessions still being admitted at once. An admitted session is bounded by
@@ -112,7 +112,7 @@ pub trait SessionAuthorization: Send + Sync {
     /// broadcast the relay carries, instead of the fixed exact
     /// [`subscriptions`](Self::subscriptions) set. The relay observes each
     /// offered namespace through [`status_offered`](Self::status_offered)
-    /// every authority interval, so a roster change needs no new session.
+    /// on every change, so a roster change needs no new session.
     /// Only a publisher admitted into the same call can publish beneath it.
     fn subscription_prefix(&self) -> Option<&str> {
         None
@@ -131,10 +131,19 @@ pub trait SessionAuthorization: Send + Sync {
             merge_status(status, self.status(Direction::Subscribe, name))
         })
     }
-    /// Told every authority interval while this session's connection is
-    /// open (its idle timeout ends one whose device went away): the owner
+    /// Told whenever this session's authority is observed while its connection
+    /// is open (its idle timeout ends one whose device went away): the owner
     /// may count it as the holder being present. The default ignores it.
     fn connected(&self) {}
+
+    /// The change signal of everything [`status_all`](Self::status_all) reads:
+    /// a membership change, a roster change, a new channel epoch. The relay
+    /// re-observes on each change and never on a timer, so a removal cuts when
+    /// its event arrives. `None` for an authority that cannot change while the
+    /// connection lives, which is never re-observed.
+    fn changed(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        None
+    }
 }
 
 /// Admission runs before any origin is attached. The opaque proof is passed
@@ -409,8 +418,10 @@ impl Relay {
                 (Some(consumer), None)
             }
         };
-        let authority =
-            AuthorityDriver::admit(self.observe(authorization.as_ref(), offered.as_mut()))?;
+        let authority = AuthorityDriver::admit(
+            self.observe(authorization.as_ref(), offered.as_mut()),
+            authorization.changed(),
+        )?;
         let ingress = authorization.publication().map(|_| {
             let (origin, task) =
                 carrier::OriginTask::produce(carrier::origin_config(INGRESS_BYTES, PICTURE_RETAIN));
@@ -527,7 +538,7 @@ impl Relay {
         // connection measures.
         downlink.attach((*transport).clone());
         // Scopes were observed Current during admission; the loop below
-        // re-observes them on the authority driver's schedule.
+        // re-observes them when the authority's own source reports a change.
         if !scopes_well_formed(authorization.as_ref()) {
             session.abort(moq_net::Error::Unauthorized);
             self.counters.rejected.fetch_add(1, Ordering::Relaxed);
@@ -1036,7 +1047,7 @@ mod status_all_tests {
     }
 
     #[test]
-    fn periodic_observation_uses_one_owner_turn_for_all_scopes() {
+    fn one_owner_turn_observes_every_scope() {
         let owner = OneTurn {
             observed: AtomicUsize::new(0),
             names: vec!["call/one".into(), "call/two".into()],

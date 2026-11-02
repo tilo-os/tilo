@@ -86,6 +86,8 @@ struct Permit {
     expires: u64,
     clock: Arc<ManualClock>,
     active: Arc<AtomicBool>,
+    /// The change signal of the authority state this permit reads.
+    changed: tokio::sync::watch::Receiver<u64>,
 }
 
 impl SessionAuthorization for Permit {
@@ -103,10 +105,35 @@ impl SessionAuthorization for Permit {
                 Direction::Subscribe => self.subscribe.iter().any(|name| name == namespace),
             }
     }
+    fn changed(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        Some(self.changed.clone())
+    }
+}
+
+/// The test's handle on the authority state: revoking a permit or advancing
+/// the grants' clock also reports the change, as the workspace's membership
+/// and channel-encryption watches do in the product.
+#[derive(Clone)]
+struct Revoker {
+    active: Arc<AtomicBool>,
+    changed: tokio::sync::watch::Sender<u64>,
+}
+
+impl Revoker {
+    /// Revoke every permit's authority.
+    fn revoke(&self) {
+        self.active.store(false, Ordering::SeqCst);
+        self.changed.send_modify(|generation| *generation += 1);
+    }
+
+    /// Report that the grants' clock moved.
+    fn moved(&self) {
+        self.changed.send_modify(|generation| *generation += 1);
+    }
 }
 
 struct Authority {
-    active: Arc<AtomicBool>,
+    revoker: Revoker,
     /// The grants' clock: it moves only when a test advances it.
     clock: Arc<ManualClock>,
 }
@@ -129,7 +156,8 @@ impl RelayAuthority for Authority {
             subscribe: subscriptions,
             expires: self.clock.now_ms() + ttl,
             clock: self.clock.clone(),
-            active: self.active.clone(),
+            active: self.revoker.active.clone(),
+            changed: self.revoker.changed.subscribe(),
         }))
     }
 }
@@ -145,26 +173,30 @@ async fn until(what: &str, mut done: impl FnMut() -> bool) {
     .await;
 }
 
-fn setup() -> (Dialer, Arc<AtomicBool>, LoopbackRelay) {
-    let (dialer, active, _clock, relay) = setup_with_clock();
-    (dialer, active, relay)
+fn setup() -> (Dialer, Revoker, LoopbackRelay) {
+    let (dialer, revoker, _clock, relay) = setup_with_clock();
+    (dialer, revoker, relay)
 }
 
-fn setup_with_clock() -> (Dialer, Arc<AtomicBool>, Arc<ManualClock>, LoopbackRelay) {
-    let active = Arc::new(AtomicBool::new(true));
+fn setup_with_clock() -> (Dialer, Revoker, Arc<ManualClock>, LoopbackRelay) {
+    let (changed, _) = tokio::sync::watch::channel(0_u64);
+    let revoker = Revoker {
+        active: Arc::new(AtomicBool::new(true)),
+        changed,
+    };
     let clock = Arc::new(ManualClock::new(0));
     let relay = LoopbackRelay::start(Arc::new(Authority {
-        active: active.clone(),
+        revoker: revoker.clone(),
         clock: clock.clone(),
     }))
     .unwrap();
     let dialer = Dialer::new(&relay.endpoint, &relay.fingerprints);
-    (dialer, active, clock, relay)
+    (dialer, revoker, clock, relay)
 }
 
 #[tokio::test]
 async fn exact_voice_route_accepts_and_rejects_other_routes_and_queries() {
-    let (dialer, _active, relay) = setup();
+    let (dialer, _revoker, relay) = setup();
     let admitted = dialer.connect(b"isolated-a", None, None).await.unwrap();
     until("the exact route's session accepted", || {
         relay.counters().accepted == 1
@@ -223,7 +255,7 @@ fn voice(sequence: u64) -> Vec<u8> {
 
 #[tokio::test]
 async fn real_webtransport_relays_bidirectional_exact_voice_objects_and_reconnects() {
-    let (dialer, _active, _relay) = setup();
+    let (dialer, _revoker, _relay) = setup();
     let (a_pub, a_sub, b_pub, b_sub) = (Origin::new(), Origin::new(), Origin::new(), Origin::new());
     let (_ab, mut at) = a_pub.publish("opaque-call/a");
     let (_bb, mut bt) = b_pub.publish("opaque-call/b");
@@ -271,7 +303,7 @@ async fn real_webtransport_relays_bidirectional_exact_voice_objects_and_reconnec
 
 #[tokio::test]
 async fn denied_proof_expiry_and_active_revocation_close_real_sessions() {
-    let (dialer, active, clock, relay) = setup_with_clock();
+    let (dialer, revoker, clock, relay) = setup_with_clock();
     assert!(dialer.connect(b"wrong-proof", None, None).await.is_err());
     // The grants' clock stands still until the test moves it, so a valid
     // short-lived grant is admitted and stays open however slow the run.
@@ -283,16 +315,17 @@ async fn denied_proof_expiry_and_active_revocation_close_real_sessions() {
     until("both grants admitted", || relay.counters().accepted == 2).await;
     assert_eq!(relay.counters().expired, 0);
     clock.advance(250);
+    revoker.moved();
     tilo_test_env::within("expired forwarding stops", expired.closed()).await;
     assert_eq!(relay.counters().expired, 1, "only the expired grant lapsed");
-    active.store(false, Ordering::SeqCst);
+    revoker.revoke();
     tilo_test_env::within("revocation stops established forwarding", admitted.closed()).await;
     assert_eq!(relay.counters().expired, 2);
 }
 
 #[tokio::test]
 async fn a_publish_grant_does_not_authorize_descendants_or_changed_namespaces() {
-    let (dialer, _active, _relay) = setup();
+    let (dialer, _revoker, _relay) = setup();
     let (incoming, outgoing) = (Origin::new(), Origin::new());
     let mut announced = incoming.producer.consume().announced();
     // The publisher announces the granted namespace and two it may not
@@ -356,7 +389,7 @@ async fn a_publish_grant_does_not_authorize_descendants_or_changed_namespaces() 
 
 #[tokio::test]
 async fn unauthorized_publisher_cannot_attach_media_before_admission() {
-    let (dialer, _active, relay) = setup();
+    let (dialer, _revoker, relay) = setup();
     let (incoming, outgoing) = (Origin::new(), Origin::new());
     let mut announced = incoming.producer.consume().announced();
     let (_broadcast, mut track) = outgoing.publish("opaque-call/a");
@@ -395,7 +428,7 @@ async fn unauthorized_publisher_cannot_attach_media_before_admission() {
 
 #[tokio::test]
 async fn real_webtransport_relays_voice_datagram_bundles_and_drops_invalid_ones() {
-    let (dialer, _active, relay) = setup();
+    let (dialer, _revoker, relay) = setup();
     let (a_pub, b_sub) = (Origin::new(), Origin::new());
     let (_ab, mut at) = a_pub.publish("opaque-call/a");
     let a_session = tokio::time::timeout(
@@ -630,7 +663,7 @@ async fn measure(
 #[tokio::test]
 #[ignore = "measurement; run with --ignored --nocapture"]
 async fn forwarded_voice_costs_its_opus_bitrate_while_speaking_and_almost_nothing_while_silent() {
-    let (dialer, _active, _relay) = setup();
+    let (dialer, _revoker, _relay) = setup();
     let (a_pub, b_sub) = (Origin::new(), Origin::new());
     let (_ab, mut at) = a_pub.publish("opaque-call/a");
     let a_session = dialer
