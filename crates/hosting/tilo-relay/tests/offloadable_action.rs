@@ -247,12 +247,12 @@ async fn host_on(user: &TestUser, device: &TestDevice) -> Hosted {
     }
 }
 
-/// Admit `laptop` to `room` as its invited member device, through the
-/// workspace-join exchange the room's governor answers, so the host knows the
+/// Admit `laptop` to `workspace` as its invited member device, through the
+/// workspace-join exchange the workspace's host answers, so the host knows the
 /// device that asks it for work.
 async fn invited(
     hosted: &Hosted,
-    room: &str,
+    workspace: &str,
     user: &TestUser,
     laptop: &TestDevice,
     endpoint: &iroh::Endpoint,
@@ -261,7 +261,7 @@ async fn invited(
         .host
         .rooms()
         .issue(
-            room,
+            workspace,
             hosted.host.device_cert(),
             IssueInvitationRequest {
                 request_id: [3; 32],
@@ -292,8 +292,8 @@ async fn invited(
         .await
         .unwrap();
     assert_eq!(
-        admission.bootstrap.room, room,
-        "the room this device joined"
+        admission.bootstrap.room, workspace,
+        "the workspace this device joined"
     );
 }
 
@@ -383,8 +383,8 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     // are the workspace's, so the device that asks reads them exactly where
     // the host does.
     let hosted = host_on(&owner, &desk).await;
-    let room = hosted.host.rooms().create("Photos").await.unwrap();
-    let workspace = room.room.clone();
+    let created = hosted.host.rooms().create("Photos").await.unwrap();
+    let workspace = created.room.clone();
     let content = Arc::new(Media::default());
     let photographs: Vec<Vec<u8>> = (0..IMAGES)
         .map(|seed| photograph(u32::try_from(seed).unwrap()))
