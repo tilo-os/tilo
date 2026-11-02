@@ -90,6 +90,15 @@ fn window_mode(size: Size<i32, Physical>) -> Option<Mode> {
     })
 }
 
+/// Offer `mode` as the one size `output` has: the window is the mode, so the
+/// sizes it had before a resize are no displays to offer — picking one would
+/// ask the window for a size it does not have.
+fn one_mode(output: &Output, mode: Mode) {
+    for stale in output.modes().into_iter().filter(|known| *known != mode) {
+        output.delete_mode(stale);
+    }
+}
+
 struct Inner {
     window: WinitGraphicsBackend<GlesRenderer>,
     output: Output,
@@ -215,6 +224,7 @@ fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: WinitEvent
             inner
                 .output
                 .change_current_state(Some(mode), None, None, None);
+            one_mode(&inner.output, mode);
             inner.output.set_preferred(mode);
             inner.damage = window_damage(&inner.output);
             inner.next_frame = Instant::now();
@@ -429,6 +439,33 @@ mod tests {
         assert_eq!(mode.refresh, REFRESH_MHZ);
         assert!(window_mode((0, 900).into()).is_none());
         assert!(window_mode((1600, 0).into()).is_none());
+    }
+
+    /// A window that was another size before offers only the size it has now:
+    /// the sizes it had are not displays the window can be put into.
+    #[test]
+    fn a_window_offers_the_one_size_it_has() {
+        use smithay::output::{PhysicalProperties, Subpixel};
+
+        let output = Output::new(
+            OUTPUT_NAME.to_owned(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "Tilo".into(),
+                model: "test".into(),
+            },
+        );
+        let small = window_mode((640, 800).into()).unwrap();
+        let large = window_mode((1280, 800).into()).unwrap();
+        output.change_current_state(Some(small), None, None, None);
+        output.set_preferred(small);
+        output.change_current_state(Some(large), None, None, None);
+        one_mode(&output, large);
+        output.set_preferred(large);
+        assert_eq!(output.modes(), vec![large]);
+        assert_eq!(output.current_mode(), Some(large));
+        assert_eq!(output.preferred_mode(), Some(large));
     }
 
     /// The flip a framebuffer adds to the scene, taken back out for the

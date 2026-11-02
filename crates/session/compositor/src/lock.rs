@@ -19,7 +19,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
-use smithay::utils::{Logical, Point, SERIAL_COUNTER, Scale};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER, Scale, Size};
 use smithay::wayland::seat::WaylandFocus as _;
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
@@ -229,6 +229,40 @@ impl State {
         }
     }
 
+    /// Make every lock screen the size of the display it is on: a display that
+    /// changes size while the lock is up (a session in a window, resized in the
+    /// desktop it draws in) shows a screen made for its new size, not the old
+    /// one stretched onto it.
+    pub(crate) fn fit_lock_surfaces(&self) {
+        for (output, surface) in &self.lock.surfaces {
+            let Some(size) = self.lock_screen_size(output) else {
+                continue;
+            };
+            surface.with_pending_state(|state| {
+                state.size = Some(size);
+            });
+            // A screen already this size is sent nothing: smithay keeps the
+            // configure it would otherwise repeat.
+            surface.send_configure();
+        }
+    }
+
+    /// The size of `output` as the person sees it, in logical pixels: its
+    /// place in the layout, else its own mode before it is placed.
+    #[allow(clippy::cast_sign_loss, reason = "output sizes are positive")]
+    fn lock_screen_size(&self, output: &Output) -> Option<Size<u32, Logical>> {
+        let size = match self.space.output_geometry(output) {
+            Some(placed) => placed.size,
+            None => output
+                .current_mode()?
+                .size
+                .to_f64()
+                .to_logical(output.current_scale().fractional_scale())
+                .to_i32_round(),
+        };
+        (size.w > 0 && size.h > 0).then(|| Size::from((size.w as u32, size.h as u32)))
+    }
+
     /// The lock screen an output shows, and how much of the screen fills it:
     /// the surface made for that output, else the first one, stretched to the
     /// output's size. The lock is one screen — the session drew it once and
@@ -352,19 +386,18 @@ impl SessionLockHandler for State {
         let Some(output) = Output::from_resource(&wl_output) else {
             return;
         };
-        if let Some(mode) = output.current_mode() {
-            let scale = output.current_scale().fractional_scale();
-            let size = mode.size.to_f64().to_logical(scale).to_i32_round::<i32>();
-            #[allow(clippy::cast_sign_loss, reason = "output sizes are positive")]
-            surface.with_pending_state(|state| {
-                state.size = Some((size.w as u32, size.h as u32).into());
-            });
-        }
-        surface.send_configure();
-        let focus = surface.wl_surface().clone();
         self.lock.surfaces.push((output, surface));
+        // The lock screen is made for the display it is on, the size the
+        // person sees there: what the session drew is what they read, never a
+        // surface of another size stretched onto it.
+        self.fit_lock_surfaces();
+        let focus = self
+            .lock
+            .surfaces
+            .last()
+            .map(|(_, surface)| surface.wl_surface().clone());
         if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
+            keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
         }
     }
 }

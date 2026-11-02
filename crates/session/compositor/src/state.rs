@@ -431,6 +431,8 @@ impl State {
         }
         // Layer surfaces follow the output they are on.
         self.place_layers();
+        // A lock screen up on a display takes the size that display has now.
+        self.fit_lock_surfaces();
         for host in &mut self.hosts {
             host.outputs_changed(&outputs);
         }
