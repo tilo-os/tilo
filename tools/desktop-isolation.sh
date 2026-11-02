@@ -29,7 +29,7 @@ tilo_test_isolate() {
 }
 
 # Installed commands a staged script must never reach on a developer host.
-tilo_test_host_commands='/usr/libexec/tilo|/usr/bin/tilo-|/usr/bin/shell\b|/usr/bin/systemctl|/usr/bin/loginctl'
+tilo_test_host_commands='/usr/libexec/tilo|/usr/bin/tilo-|/usr/bin/systemctl|/usr/bin/loginctl'
 
 tilo_stage_script() {
     local source=$1 dest=$2 assignment name value

@@ -35,16 +35,16 @@ def fake_cargo(directory: Path, script: str) -> dict:
 class CheckAllTargetsTests(unittest.TestCase):
     def test_the_selected_packages_are_checked_with_their_test_features(self):
         with tempfile.TemporaryDirectory() as directory:
-            result = subprocess.run(["bash", str(HELPER), "-p", "shell", "-p", "tilo-media"],
+            result = subprocess.run(["bash", str(HELPER), "-p", "tilo-ui", "-p", "tilo-media"],
                                     capture_output=True, text=True, check=True,
                                     env=fake_cargo(Path(directory), PRINT_ARGV))
             argv = json.loads(result.stdout)
             self.assertEqual(argv[:4], ["check", "--locked", "--all-targets", "--keep-going"])
             self.assertEqual(argv[argv.index("-p") + 1:argv.index("--features")],
-                             ["shell", "-p", "tilo-media"])
+                             ["tilo-ui", "-p", "tilo-media"])
             features = set(argv[argv.index("--features") + 1].split(","))
             # A target behind these is no target of `--all-targets` without them.
-            self.assertLessEqual({"shell/hosted-test-control", "tilo-media/decode",
+            self.assertLessEqual({"tilo-ui/test-support", "tilo-media/decode",
                                   "tilo-media/test-support"}, features)
 
     def test_a_selection_none_of_which_gates_a_target_gets_no_features(self):
@@ -61,14 +61,14 @@ class CheckAllTargetsTests(unittest.TestCase):
             env = fake_cargo(Path(directory), RECORD_ARGV)
             env["CARGO_ARGV_LOG"] = str(log)
             subprocess.run(["bash", str(HELPER), "--receipt", str(Path(directory) / "receipt.json"),
-                            "-p", "shell"], capture_output=True, text=True, check=True, env=env)
+                            "-p", "tilo-ui"], capture_output=True, text=True, check=True, env=env)
             # Whatever the receipt could observe, the check ran as the helper builds it.
             checked = [json.loads(line) for line in log.read_text().splitlines()]
             checked = [argv for argv in checked if argv[:1] == ["check"]]
             self.assertTrue(checked)
             for argv in checked:
                 self.assertEqual(argv[:2], ["check", "--locked"])
-                self.assertIn("shell/hosted-test-control", argv[argv.index("--features") + 1])
+                self.assertIn("tilo-ui/test-support", argv[argv.index("--features") + 1])
 
 
 class WarningCheckTests(unittest.TestCase):
@@ -85,7 +85,7 @@ class WarningCheckTests(unittest.TestCase):
             for argv in runs:
                 self.assertIn("--workspace", argv)
                 self.assertIn("--all-targets", argv)
-                self.assertLessEqual({"shell/hosted-test-control", "tilo-media/decode"},
+                self.assertLessEqual({"tilo-ui/test-support", "tilo-media/decode"},
                                      set(argv[argv.index("--features") + 1].split(",")))
 
 

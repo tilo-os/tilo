@@ -262,7 +262,7 @@ def input_classification(paths: list[str], metadata: dict | None = None,
                     classified["packaging"].append(path)
                 if not packaging or affected & (app_packages | {"runtime-dylib"}):
                     classified["binary"].append(path)
-            elif path.startswith(("apps/", "crates/", "fs/", "shell/")):
+            elif path.startswith(("apps/", "crates/", "fs/")):
                 classified["binary"].append(path)
     return {kind: sorted(set(inputs)) for kind, inputs in classified.items()}
 
@@ -296,7 +296,7 @@ def apps_from_changes(
     }
     if metadata is not None:
         packages, by_dir = ci_select.package_maps(metadata, root)
-        if any(path.startswith(("apps/", "crates/", "fs/", "shell/"))
+        if any(path.startswith(("apps/", "crates/", "fs/"))
                and ci_select.owner_for(path, by_dir) is None for path in paths):
             return sorted(catalog)
         seeds = {
