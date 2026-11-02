@@ -53,6 +53,19 @@ use tilo_session::{Backend, Reach, SessionEnvironment};
 #[used]
 static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1";
 
+/// Byte string stamped into a session built with `--features dev-overrides` in
+/// a release profile: the dev image's session (os/Containerfile.dev, whose
+/// components carry `dev-overrides`, os/components.toml), which opens the
+/// test-control socket `tilo-vm` and the capture harnesses drive a desktop
+/// through. The marker above is a debug build's and a release build never
+/// carries it, so the dev image had nothing to prove that the session it ships
+/// is the one it built rather than the base image's.
+///
+/// `#[used]` keeps the linker from discarding a static nothing reads.
+#[cfg(all(feature = "dev-overrides", not(debug_assertions)))]
+#[used]
+static DEV_IMAGE_SESSION_BUILD_MARKER: [u8; 27] = *b"tilo-dev-image-session-v1--";
+
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
