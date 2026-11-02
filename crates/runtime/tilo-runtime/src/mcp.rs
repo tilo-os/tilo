@@ -99,6 +99,7 @@ pub struct McpServer<H> {
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
 }
 
+pub use agent::{PersonStep, literals_in};
 pub use agent::{TaskHosts, TaskProgram};
 
 /// The tools a session offers.

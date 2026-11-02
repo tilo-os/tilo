@@ -730,11 +730,12 @@ impl Live {
             loops: Vec::new(),
         };
         let prefix = (id != ROOT).then_some(key.as_str());
-        let rendered = core.render_boundary(
+        // A call that fails for want of a reading that has not arrived draws its waiting state
+        // and the rest of the tree stands: one place waiting causes no other place to fail.
+        let rendered = core.render_boundary_waiting(
             &target,
             &args,
             offer,
-            None,
             Some(Scoped {
                 prefix,
                 boundaries: Some(&mut builder),

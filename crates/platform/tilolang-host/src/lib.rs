@@ -225,9 +225,19 @@ impl TilolangHost {
         self.task.as_ref().map(task::Task::fd)
     }
 
-    /// Answer what the task's door sent; the task ends when the door closed it.
+    /// The task's further connections, to wait on: the person's lines in its run's
+    /// conversation, each a connection of its own into the same session.
+    pub fn task_guest_fds(&self) -> Vec<std::os::fd::OwnedFd> {
+        self.task
+            .as_ref()
+            .map(task::Task::guest_fds)
+            .unwrap_or_default()
+    }
+
+    /// Answer what the task's door sent, and every guest connection with something; the task
+    /// ends when the door closed it.
     pub fn serve_task(&mut self) {
-        if self.task.as_ref().is_some_and(|task| !task.serve()) {
+        if self.task.as_ref().is_some_and(|task| !task.serve_all()) {
             tracing::info!("task ended: the door closed it");
             self.task = None;
         }

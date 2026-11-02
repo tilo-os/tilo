@@ -93,7 +93,7 @@ view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bo
 /// the window has no title. A bar, a chip, a switcher row and a search row never disagree, and
 /// none of them ever falls back to an app id.
 fn place_title(p: ArrangementPlace) -> Text {
-    p.name
+    if p.name != "" { p.name } else if p.title != "" { p.title } else if p.shows != "" { p.shows } else { "Window" }
 }
 
 /// A frame's controls: the way to carry the place to another row, and close. Each is one

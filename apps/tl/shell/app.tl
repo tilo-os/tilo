@@ -336,7 +336,7 @@ view bar_part(d: Desk, part: BarPart) {
 /// device's workspaces. On a bar too narrow for its name beside the clock and the status (a
 /// phone with large text), it is the workspaces' icon, named for the workspace.
 view workspace_menu(d: Desk) {
-    ui.MenuButton(d.workspace, icon: if space.width < 18.0 { .layers }, icon_only: space.width < 18.0, role: .bar) {
+    ui.MenuButton(if d.workspace == "" { "Workspaces" } else { d.workspace }, icon: if space.width < 18.0 { .layers }, icon_only: space.width < 18.0, role: .bar) {
         for w in d.workspaces {
             ui.MenuItem(w.name, checked: .some(w.current)) {
                 on choose: device.switch_workspace(device.desk, workspace: w.key)

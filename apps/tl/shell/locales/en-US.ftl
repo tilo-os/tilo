@@ -841,6 +841,8 @@ d-6hsxbazg = Task line
 
 d-dz2lhlbc = Conversation
 
+d-cp25pggy = Conversation entry
+
 d-edxsethn = Said
 
 d-zhqh5ven = Said now

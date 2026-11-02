@@ -182,11 +182,24 @@ impl Line {
     }
 }
 
+/// One other connection into a task's session: the door's own, which started the host, or one
+/// the door opened later for the person's lines in the run's conversation (shell.md §8.1).
+struct Guest {
+    line: Rc<Line>,
+    door: Rc<Door>,
+    /// Its connection, watched by the host's wait: a line arriving wakes the host.
+    watched: OwnedFd,
+}
+
 /// A task this host runs the programs of.
 pub struct Task {
     line: Rc<Line>,
     /// The program connection, watched for what the door sends.
     watched: OwnedFd,
+    /// Further connections into the same session, each given when the host opened: the
+    /// person's lines in the run's conversation run here, beside the agent's own calls, so the
+    /// two share the session's `let`s. Every program still runs one at a time.
+    guests: RefCell<Vec<Guest>>,
     session: TaskSession,
     door: Rc<Door>,
 }
@@ -198,6 +211,20 @@ impl Task {
     /// # Errors
     /// The modules cannot be read or loaded, or the connection is unusable.
     pub fn open(request: &TaskRequest, fds: TaskFds) -> Result<Self, String> {
+        Self::open_with(request, fds, None)
+    }
+
+    /// [`Self::open`] for a task whose session another connection joins from the start,
+    /// `person`: the person's lines in its run's conversation run in the same session as the
+    /// agent's own calls, each on a connection of its own, so they share its `let`s.
+    ///
+    /// # Errors
+    /// The modules cannot be read or loaded, or a connection is unusable.
+    pub fn open_with(
+        request: &TaskRequest,
+        fds: TaskFds,
+        person: Option<UnixStream>,
+    ) -> Result<Self, String> {
         let bundles = bundles(&fds.modules, request.modules_len)?;
         let stream = UnixStream::from(fds.program);
         let writer = stream.try_clone().map_err(|error| error.to_string())?;
@@ -232,17 +259,69 @@ impl Task {
             apps = bundles.len(),
             "task host started"
         );
-        Ok(Self {
+        let task = Self {
             line,
             watched,
+            guests: RefCell::new(Vec::new()),
             session,
             door,
-        })
+        };
+        if let Some(person) = person {
+            task.join(person)?;
+        }
+        Ok(task)
+    }
+
+    /// Let `stream` join this session as a guest: what it sends runs in the same session, one
+    /// program at a time, and what the program reads or changes goes back on it.
+    ///
+    /// # Errors
+    /// The stream cannot be taken apart.
+    pub fn join(&self, stream: UnixStream) -> Result<(), String> {
+        stream
+            .set_nonblocking(false)
+            .map_err(|error| error.to_string())?;
+        let writer = stream.try_clone().map_err(|error| error.to_string())?;
+        let watched = OwnedFd::from(stream.try_clone().map_err(|error| error.to_string())?);
+        let line = Rc::new(Line {
+            reader: RefCell::new(BufReader::new(stream)),
+            writer: RefCell::new(writer),
+        });
+        let door = Rc::new(Door {
+            line: Rc::clone(&line),
+            reads: RecordReads::new(
+                &[],
+                std::collections::BTreeMap::new(),
+                None,
+                Rc::clone(&line) as Rc<dyn RecordSource>,
+            ),
+            caller: RefCell::new(tilolang_tilo::publish::Caller {
+                actor: String::new(),
+                agent: true,
+                on_behalf_of: None,
+            }),
+        });
+        self.guests.borrow_mut().push(Guest {
+            line,
+            door,
+            watched,
+        });
+        Ok(())
     }
 
     /// The program connection, to wait on.
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.watched.as_fd()
+    }
+
+    /// Copies of the guest connections' descriptors, to wait on: a line arriving on one wakes
+    /// the host as the door's own connection would.
+    pub fn guest_fds(&self) -> Vec<OwnedFd> {
+        self.guests
+            .borrow()
+            .iter()
+            .filter_map(|guest| guest.watched.try_clone().ok())
+            .collect()
     }
 
     /// Answer what the door sent: run each program and say how it went. `false` once the door
@@ -261,6 +340,145 @@ impl Task {
                 return true;
             }
         }
+    }
+
+    /// Answer every connection that has something: the door's own first, then the guests it
+    /// opened. Waits on all of them, so a person's line is served as soon as it arrives and
+    /// never waits on the agent's next call. `false` once the door's own connection closed.
+    pub fn serve_all(&self) -> bool {
+        loop {
+            let mut ready: Vec<usize> = Vec::new();
+            if !self.line.reader.borrow().buffer().is_empty() {
+                ready.push(0);
+            }
+            {
+                let guests = self.guests.borrow();
+                for (at, guest) in guests.iter().enumerate() {
+                    if !guest.line.reader.borrow().buffer().is_empty() {
+                        ready.push(at.saturating_add(1));
+                    }
+                }
+            }
+            if ready.is_empty() {
+                // Nothing is read off the streams yet: block until one of them has something,
+                // as a host serving one connection does, then serve it. The wait is on every
+                // stream, so a person's line never waits for the agent's next call.
+                match self.wait_ready() {
+                    None => return false,
+                    Some(found) => ready = found,
+                }
+            }
+            if ready.is_empty() {
+                continue;
+            }
+            for connection in ready {
+                if connection == 0 {
+                    if !self.serve_one() {
+                        return false;
+                    }
+                } else if !self.serve_guest_at(connection.saturating_sub(1)) {
+                    self.guests
+                        .borrow_mut()
+                        .remove(connection.saturating_sub(1));
+                }
+            }
+        }
+    }
+
+    /// Block until the door's connection or a guest's has something to read, saying which: `0`
+    /// for the door's own, `at + 1` for the guest at `at`. `None` once the door's connection
+    /// closed.
+    fn wait_ready(&self) -> Option<Vec<usize>> {
+        use std::os::fd::AsRawFd as _;
+        let door = self.watched.as_raw_fd();
+        let guests = self.guest_fds();
+        let mut fds = Vec::with_capacity(guests.len().saturating_add(1));
+        fds.push(libc::pollfd {
+            fd: door,
+            events: libc::POLLIN,
+            revents: 0,
+        });
+        for guest in &guests {
+            fds.push(libc::pollfd {
+                fd: guest.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
+        let count = libc::nfds_t::try_from(fds.len()).unwrap_or(libc::nfds_t::MAX);
+        loop {
+            // SAFETY: `fds` is a live array of initialized pollfds naming open descriptors.
+            let polled = unsafe { libc::poll(fds.as_mut_ptr(), count, -1) };
+            if polled < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return None;
+            }
+            // The door's own connection closing ends the task; a guest's closing is served as
+            // a line that ends, which drops it.
+            if fds.first().is_some_and(|fd| {
+                fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+                    && fd.revents & libc::POLLIN == 0
+            }) {
+                return None;
+            }
+            return Some(
+                fds.iter()
+                    .enumerate()
+                    .filter(|(_, fd)| fd.revents != 0)
+                    .map(|(at, _)| at)
+                    .collect(),
+            );
+        }
+    }
+
+    /// Serve one line of the guest at `at`: `false` once its connection closed. The guest's own
+    /// line and door are taken out of the list's borrow, so a program that serves the door's
+    /// connection too is never held under it.
+    fn serve_guest_at(&self, at: usize) -> bool {
+        let (line, door) = {
+            let guests = self.guests.borrow();
+            let Some(guest) = guests.get(at) else {
+                return false;
+            };
+            (Rc::clone(&guest.line), Rc::clone(&guest.door))
+        };
+        self.serve_guest(&line, &door)
+    }
+
+    /// Serve one line of a connection: `false` once it closed.
+    fn serve_guest(&self, guest: &Rc<Line>, door: &Rc<Door>) -> bool {
+        let Some(message) = guest.next() else {
+            return false;
+        };
+        if let Ok(message) = &message
+            && message.get("catalogue").is_some()
+        {
+            return match guest.send(&json!({ "catalogue": self.session.catalogue() })) {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!(%error, "the catalogue did not reach a guest");
+                    false
+                }
+            };
+        }
+        let answer = match message.and_then(|message| program(&message)) {
+            Ok((source, confirm, author)) => {
+                let principal = tilolang_tilo::runtime::Principal::new(author.actor.clone());
+                *door.caller.borrow_mut() = author;
+                self.session.run(&source, confirm, &principal)
+            }
+            Err(why) => {
+                tracing::warn!(why, "a guest sent the task something that is not a program");
+                json!({"kind": "program", "state": "failed", "detail": why})
+            }
+        };
+        if let Err(error) = guest.send(&json!({ "answer": answer })) {
+            tracing::warn!(%error, "a program's answer did not reach a guest");
+            return false;
+        }
+        true
     }
 
     fn serve_one(&self) -> bool {
@@ -382,6 +600,7 @@ mod tests {
         let task = Task {
             line,
             watched: OwnedFd::from(ours),
+            guests: RefCell::new(Vec::new()),
             session,
             door: reached,
         };

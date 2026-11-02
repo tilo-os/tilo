@@ -131,6 +131,11 @@ pub fn wait(
         fds.push(watch(task, libc::POLLIN));
         at
     });
+    // Held for the wait's lifetime: a guest's descriptor is polled, not owned by the wait.
+    let guests = host.task_guest_fds();
+    for guest in &guests {
+        fds.push(watch(guest.as_fd(), libc::POLLIN));
+    }
     let windows_at = fds.len();
     for window in host.windows() {
         fds.push(watch(window, libc::POLLIN));
