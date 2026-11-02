@@ -13,6 +13,9 @@
 //! guessing, so a machine whose person cannot be established never reaches a
 //! desktop under an identity that is not theirs.
 //!
+//! A verified identity is also kept alive: this device's expiring certificates
+//! are renewed in the background for as long as the session runs.
+//!
 //! The two headless commands run here as well: they settle the same identity
 //! in a login that starts no display, which is how an installer and a test
 //! provision and verify one.
@@ -205,6 +208,10 @@ pub fn identity() -> Identity {
                 if let Err(said) = reconcile(identity_dir) {
                     return Identity::Refused(said);
                 }
+                // Certificates that expire would take this device's identity
+                // with them: renewed on a thread of its own for as long as the
+                // session runs, so nobody has to remember to do it.
+                firstboot::keep_device_certificates_renewed(identity_dir);
                 return Identity::Desk;
             }
             Err(error) => match failure(&error) {
