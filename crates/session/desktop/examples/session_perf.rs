@@ -218,6 +218,11 @@ fn fixture(
         chat::definition(),
         notes::definition(),
     ];
+    // The host's catalogue holds each app once, as a session's does; a tab
+    // names it again without adding it.
+    for definition in &definitions {
+        catalog.register(definition).unwrap();
+    }
     let mut retained = vec![];
     let mut workspaces = vec![];
     let mut next_tab: u64 = 10;
@@ -231,7 +236,6 @@ fn fixture(
                 for (which, definition) in definitions.iter().take(tabs_per_window).enumerate() {
                     let id = next_tab;
                     next_tab += 1;
-                    catalog.register(definition).unwrap();
                     if profile == Profile::Apps {
                         let store = owners.open(definition.app_id(), "workspace").unwrap();
                         let checkout = tilo_desktop::records::component_record(
