@@ -395,10 +395,11 @@ impl Shell {
             }
         }
         if !fresh.is_empty() {
-            self.rounds += 1;
+            self.rounds = self.rounds.saturating_add(1);
         }
         for (id, ty) in fresh {
-            *self.reads.entry(id.clone()).or_default() += 1;
+            let reads = self.reads.entry(id.clone()).or_default();
+            *reads = reads.saturating_add(1);
             if let Some(reading) = services.read(&id) {
                 self.link.publish_reading(&id, &ty, reading);
             }
