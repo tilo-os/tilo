@@ -257,6 +257,34 @@ impl Registry {
         })
     }
 
+    /// Remove every package of the app `app` this runtime does not run (its records are that
+    /// app's): its types, actions, views and flows are declared here no more. Whether one was.
+    pub fn remove_foreign(&mut self, app: &str) -> bool {
+        let gone: Vec<ModuleHash> = self
+            .order
+            .iter()
+            .filter(|h| {
+                self.packages
+                    .get(*h)
+                    .is_some_and(|p| p.foreign && p.meta.app == app)
+            })
+            .cloned()
+            .collect();
+        for hash in &gone {
+            self.packages.remove(hash);
+            self.order.retain(|h| h != hash);
+            for map in [
+                &mut self.types,
+                &mut self.actions,
+                &mut self.views,
+                &mut self.flows,
+            ] {
+                map.retain(|_, owner| owner != hash);
+            }
+        }
+        !gone.is_empty()
+    }
+
     fn claim(
         map: &mut HashMap<String, ModuleHash>,
         id: &str,

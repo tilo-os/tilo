@@ -139,6 +139,8 @@ default view conversation for Thread
 
 default view mailboxes for Account
 
+default view inbox for Mailbox
+
 default view editor for Draft
 
 row view thread_row for Thread
@@ -630,37 +632,67 @@ view mailboxes(a: Account) {
             std.header(actions(a))
         }
         overview: {
-            if shown.is_empty() {
-                ui.EmptyState("Nothing here", icon: .inbox)
-            } else {
-                ui.VirtualList(selection_follows_focus: true, in_column: true) {
-                    on select(x: Thread): open(x, front: false).then(mark_read(x, false))
-                    on activate(x: Thread): open(x).then(mark_read(x, false))
-                    for x in shown {
-                        let offered = actions(x)
-                        ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
-                            menu: {
-                                for o in offered {
-                                    ui.MenuItem(o.label, icon: o.icon, destructive: o.destructive) {
-                                        on choose: o.run
-                                    }
-                                }
-                            }
-                            swipe: {
-                                if let o = offered.find(.destructive) {
-                                    ui.SwipeAction(o.label, icon: o.icon, destructive: true) {
-                                        on swipe: o.run
-                                    }
-                                }
-                            }
-                            thread_row(x)
-                        }
-                    }
-                }
-            }
+            thread_list(shown, fill)
         }
         content: {
             ui.EmptyState("No conversation selected", icon: .mail)
+        }
+    }
+}
+
+/// A mailbox on its own, as a place shows it: the conversations in it, newest first, as its
+/// account's window lists them under it. The inbox leaves out what is snoozed or muted, as
+/// its place in the window does.
+view inbox(b: Mailbox) {
+    let m = root Mail
+    if let a = m.accounts.find(x -> x.mailboxes.any(y -> y.id() == b.id())) {
+        thread_list(in_mailbox(a, b), fill)
+    } else {
+        ui.EmptyState("Nothing here", icon: .inbox)
+    }
+}
+
+/// The conversations `b`, a mailbox of `a`'s, holds: those its filter finds, as people type
+/// it in search (`is:inbox`), or those filed in it when no filter names it.
+fn in_mailbox(a: Account, b: Mailbox) -> List<Thread> {
+    let query = "is:{b.key}"
+    if filters(Thread).any(f -> f.query == query) {
+        a.threads.matching(query)
+    } else {
+        a.threads.filter(t -> t.boxes.any(x -> x == b.key))
+    }
+}
+
+/// Conversations as a list: each a row that opens the conversation beside it, read as it
+/// opens, its actions on its menu and the destructive one on its swipe; "Nothing here" when
+/// there are none.
+view thread_list(shown: List<Thread>) {
+    if shown.is_empty() {
+        ui.EmptyState("Nothing here", icon: .inbox)
+    } else {
+        ui.VirtualList(selection_follows_focus: true, in_column: true) {
+            on select(x: Thread): open(x, front: false).then(mark_read(x, false))
+            on activate(x: Thread): open(x).then(mark_read(x, false))
+            for x in shown {
+                let offered = actions(x)
+                ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
+                    menu: {
+                        for o in offered {
+                            ui.MenuItem(o.label, icon: o.icon, destructive: o.destructive) {
+                                on choose: o.run
+                            }
+                        }
+                    }
+                    swipe: {
+                        if let o = offered.find(.destructive) {
+                            ui.SwipeAction(o.label, icon: o.icon, destructive: true) {
+                                on swipe: o.run
+                            }
+                        }
+                    }
+                    thread_row(x)
+                }
+            }
         }
     }
 }

@@ -81,6 +81,13 @@ impl RemoteRows {
         }
     }
 
+    /// Whether the list shows a range the app is still to be asked for: the window owes the
+    /// app that ask ([`crate::AppWindow::owes`]).
+    #[must_use]
+    pub fn wants(&self) -> bool {
+        self.wanted.is_some()
+    }
+
     /// The range the list shows that the app is still to be asked for, taken.
     pub fn take_wanted(&mut self) -> Option<(Lane, String, Range<usize>)> {
         let range = self.wanted.take()?;
@@ -383,12 +390,14 @@ mod tests {
         let mut rows = rows();
         rows.rows(100, 0, vec!["v/0".into()], Vec::new());
         rows.request_range(0..20);
+        assert!(rows.wants(), "the window owes the app the ask");
         assert_eq!(
             rows.take_wanted(),
             Some((Lane::Root, "list".to_owned(), 0..20))
         );
         rows.request_range(0..20);
         assert_eq!(rows.take_wanted(), None, "asked once");
+        assert!(!rows.wants());
         assert_eq!(rows.key_at(5), None, "a row not named yet");
     }
 }

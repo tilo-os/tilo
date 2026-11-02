@@ -81,6 +81,20 @@ pub trait Service {
     /// Wait until every device call it started has landed, and take them
     /// in: what a headless run does before it reads.
     fn settle(&mut self) {}
+
+    /// The resources whose readings moved since the last call, by id: what
+    /// a reader following a few of them reads again, and only those. `None`
+    /// when it cannot say which, so any of its readings may have moved.
+    fn moved(&mut self) -> Option<Vec<String>> {
+        None
+    }
+
+    /// The compiled module of the app `app` whose records it publishes, its
+    /// description embedded: what a shell loads to draw those records
+    /// through the app's own views. `None` for an app it keeps nothing of.
+    fn module(&self, _app: &str) -> Option<std::sync::Arc<[u8]>> {
+        None
+    }
 }
 
 /// `resource` offering every action of the vocabulary `E`.
@@ -138,13 +152,50 @@ pub struct Services {
     /// added, an action ran, a reading landed. A reader of the catalogue
     /// reads it again only when this moved.
     revision: u64,
+    /// Per service, whether what it publishes may have changed since
+    /// [`Self::moved_among`] last asked: what a service that cannot say
+    /// which of its readings moved is read again for.
+    stirred: Vec<bool>,
 }
 
 impl Services {
     /// Host `service` too.
     pub fn add(&mut self, service: Box<dyn Service>) {
         self.services.push(service);
+        self.stirred.push(true);
         self.changed();
+    }
+
+    /// Of `followed`, the resources whose readings moved since the last
+    /// call: each service names those of its readings that moved, and one
+    /// that cannot say which names every followed resource it publishes,
+    /// once something of its moved.
+    pub fn moved_among(
+        &mut self,
+        followed: &std::collections::BTreeSet<String>,
+    ) -> std::collections::BTreeSet<String> {
+        let mut moved = std::collections::BTreeSet::new();
+        for (service, stirred) in self.services.iter_mut().zip(&mut self.stirred) {
+            let was_stirred = std::mem::take(stirred);
+            match service.moved() {
+                Some(ids) => moved.extend(ids.into_iter().filter(|id| followed.contains(id))),
+                None if was_stirred => moved.extend(
+                    followed
+                        .iter()
+                        .filter(|id| service.read(id).is_some())
+                        .cloned(),
+                ),
+                None => {}
+            }
+        }
+        moved
+    }
+
+    /// The compiled module of the app `app`, from the service keeping its
+    /// records; see [`Service::module`].
+    #[must_use]
+    pub fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
+        self.services.iter().find_map(|service| service.module(app))
     }
 
     /// Where what they publish stands: equal revisions publish the same.
@@ -212,19 +263,29 @@ impl Services {
         confirmed: bool,
     ) -> Option<Result<Started, DoorError>> {
         let address = ActionAddress::new(resource, action);
-        let (service, asks) = self.services.iter_mut().find_map(|service| {
-            let published = service.resources();
-            let spec = tilo_actions::door::resolve(&published, &address)?;
-            let asks = !matches!(
-                spec.confirmation_for_json(arguments),
-                tilo_actions::ConfirmationPolicy::None
-            );
-            Some((service, asks))
-        })?;
+        let (index, asks) = self
+            .services
+            .iter()
+            .enumerate()
+            .find_map(|(index, service)| {
+                let published = service.resources();
+                let spec = tilo_actions::door::resolve(&published, &address)?;
+                let asks = !matches!(
+                    spec.confirmation_for_json(arguments),
+                    tilo_actions::ConfirmationPolicy::None
+                );
+                Some((index, asks))
+            })?;
         if asks && !confirmed {
             return Some(Err(DoorError::ConfirmationRequired));
         }
-        let started = service.invoke(resource, action, arguments);
+        let started = self
+            .services
+            .get_mut(index)?
+            .invoke(resource, action, arguments);
+        if let Some(stirred) = self.stirred.get_mut(index) {
+            *stirred = true;
+        }
         self.changed();
         Some(started)
     }
@@ -232,8 +293,10 @@ impl Services {
     /// Take in what landed on every service. Whether a reading changed.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
-        for service in &mut self.services {
-            changed |= service.poll();
+        for (service, stirred) in self.services.iter_mut().zip(&mut self.stirred) {
+            let moved = service.poll();
+            *stirred |= moved;
+            changed |= moved;
         }
         if changed {
             self.changed();
@@ -246,6 +309,7 @@ impl Services {
         for service in &mut self.services {
             service.settle();
         }
+        self.stirred.fill(true);
         self.changed();
     }
 }
@@ -278,6 +342,10 @@ impl Service for Services {
 
     fn settle(&mut self) {
         Self::settle(self);
+    }
+
+    fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
+        Self::module(self, app)
     }
 }
 

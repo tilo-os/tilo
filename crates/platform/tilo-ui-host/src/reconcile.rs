@@ -127,6 +127,11 @@ pub struct Reconciler {
     /// component that does not build is never only a log line. Shared with every reconciler of
     /// the same view.
     broken: Rc<RefCell<Vec<String>>>,
+    /// The fragments that fill because the filled fragment they are the lone child of does,
+    /// by key, each with the weight it passes on: a view call's fragment holds the fragment
+    /// the view's body renders in, which holds the view's root, so a call's `fill` reaches
+    /// that root through each fragment between ([`fragment_fill`]).
+    filling: HashMap<String, f32>,
 }
 
 fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
@@ -301,7 +306,25 @@ fn fit_of(node: &UiNode) -> Fit {
 
 /// How `child` is sized in its container `parent`: the fit its own arguments ask for, the
 /// columns it spans, where it sits among layers.
+#[cfg(test)]
 fn placement(parent: &UiNode, child: &UiNode) -> Placement {
+    placement_in(parent, None, child)
+}
+
+/// The weight `child` fills its container `parent` with because `parent` is a fragment that
+/// fills, by its own `fill` or by `inherited` (the weight the fragment it is the lone child
+/// of passed on), and `child` is all it holds and asks nothing of its own: a call of a view
+/// stands for what the view draws.
+fn fragment_fill(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Option<f32> {
+    if parent.kind != "fragment" || parent.children.len() != 1 || number(child, "fill").is_some() {
+        return None;
+    }
+    number(parent, "fill").or(inherited)
+}
+
+/// [`placement`] of `child` in `parent`, which fills with `inherited` when the fragment it is
+/// the lone child of passed that on ([`fragment_fill`]).
+fn placement_in(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Placement {
     let mut fit = fit_of(child);
     // Beside siblings in a row, a container takes the room they leave rather than hugging
     // its content, so what it holds lays out in the width the row offers. A row that wraps
@@ -324,13 +347,11 @@ fn placement(parent: &UiNode, child: &UiNode) -> Placement {
         fit.width.max = length(child, "max");
     }
     // A call of a view stands for what the view draws: `show(r, fill)` or a filled call of
-    // another package's view asks the view itself to fill, so the lone root it draws (a
-    // window's NavShell) takes the fragment's room instead of hugging its content.
-    if parent.kind == "fragment"
-        && parent.children.len() == 1
-        && number(child, "fill").is_none()
-        && let Some(weight) = number(parent, "fill")
-    {
+    // a view asks the view itself to fill, so the lone root it draws (a window's NavShell, a
+    // list) takes the fragment's room instead of hugging its content. The view's body is a
+    // fragment of its own inside the call's, and a view whose root is a call of another view
+    // is one more: each passes the fill on.
+    if let Some(weight) = fragment_fill(parent, inherited, child) {
         let min = fit.width.min;
         let max = fit.width.max;
         fit = Fit::fill(weight);
@@ -473,6 +494,7 @@ impl Reconciler {
             adapter,
             rows: None,
             broken: Rc::default(),
+            filling: HashMap::new(),
         }
     }
 
@@ -491,6 +513,7 @@ impl Reconciler {
             adapter: other.adapter.clone(),
             rows: other.rows.clone(),
             broken: Rc::clone(&other.broken),
+            filling: HashMap::new(),
         }
     }
 
@@ -809,10 +832,26 @@ impl Reconciler {
             .collect()
     }
 
+    /// How `child` is sized in its container `parent` ([`placement_in`]), and, for a fragment
+    /// that fills because `parent` passes its fill on, the weight it passes on in turn: placed
+    /// before it is built, so what it holds is placed knowing it.
+    fn place(&mut self, parent: &UiNode, child: &UiNode) -> Placement {
+        let inherited = self.filling.get(&parent.key).copied();
+        match fragment_fill(parent, inherited, child) {
+            Some(weight) if child.kind == "fragment" => {
+                self.filling.insert(child.key.clone(), weight);
+            }
+            _ => {
+                self.filling.remove(&child.key);
+            }
+        }
+        placement_in(parent, inherited, child)
+    }
+
     /// `child`, built, as a slot of its container `parent`.
     fn slot(&mut self, parent: &UiNode, child: &UiNode) -> Slot {
+        let Placement { fit, span, at } = self.place(parent, child);
         let mut slot = Slot::new(self.build(child));
-        let Placement { fit, span, at } = placement(parent, child);
         slot.fit = fit;
         slot.span = span;
         slot.at = at;
@@ -1374,7 +1413,7 @@ impl Reconciler {
                         break;
                     };
                     let mut slot = Slot::new(widget);
-                    let Placement { fit, span, at } = placement(old_node, child);
+                    let Placement { fit, span, at } = self.place(old_node, child);
                     slot.fit = fit;
                     slot.span = span;
                     slot.at = at;
@@ -1427,13 +1466,14 @@ impl Reconciler {
             let Some(&old_child) = held.get(index) else {
                 continue;
             };
+            let placement = self.place(new_node, child);
             let replaced = host
                 .child_mut(index)
                 .and_then(|widget| self.update_in(widget, old_child, child));
             if let Some(replaced) = replaced {
                 host.replace(index, replaced);
             }
-            host.set_placement(index, placement(new_node, child));
+            host.set_placement(index, placement);
         }
     }
 }
@@ -1885,6 +1925,43 @@ mod tests {
         assert!(
             (root.height() - 600.0).abs() < 1.0,
             "the view's root fills the call: {root:?}"
+        );
+    }
+
+    /// A view's body renders in a fragment of its own inside its call's, and a view whose root
+    /// is a call of another view (a mailbox's view listing through its list's view) puts one
+    /// call inside the other: a filled call reaches the root the innermost view draws, as it
+    /// is built and once the view draws something else there.
+    #[test]
+    fn a_filled_calls_fill_reaches_the_root_of_the_view_it_calls_through_each_fragment() {
+        let body = |key: &str, child: UiNode| UiNode {
+            children: vec![child],
+            ..node("fragment", key)
+        };
+        let call = |key: &str, child: UiNode| body(key, body(&format!("{key}~body"), child));
+        let view = |root: UiNode| {
+            let mut outer = call("outer", call("inner", root));
+            outer.props.insert("fill".to_owned(), Value::Int(1));
+            stack("window", vec![outer])
+        };
+        let first = view(stack("root", vec![text("t", "one line")]));
+        let root = laid_out(&first, (400, 600), "root");
+        assert!(
+            (root.height() - 600.0).abs() < 1.0,
+            "the innermost view's root fills the outer call: {root:?}"
+        );
+
+        let mut reconciler = reconciler();
+        let built = reconciler.build(&view(text("empty", "Nothing here")));
+        let next = view(stack("root", vec![text("t", "one line")]));
+        let updated = reconciler.update(built, &view(text("empty", "Nothing here")), &next);
+        let harness = ui::headless::FrameHarness::new(ui::State::new(), updated, (400, 600));
+        let root = ui::widget::find_test_id(harness.root_widget(), "root")
+            .expect("the root is built")
+            .get_rect();
+        assert!(
+            (root.height() - 600.0).abs() < 1.0,
+            "what the view draws next fills the call too: {root:?}"
         );
     }
 

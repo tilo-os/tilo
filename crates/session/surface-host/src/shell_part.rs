@@ -52,9 +52,12 @@ pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";
 /// its views as `shell`.
 pub const SHELL_RECORD: &str = "shell";
 
-/// Every file of the shell's package (`apps/tl/shell`), by the name the package knows it by: a
-/// package is a directory of `.tl` files, in path order (the package's compiler reads them so),
-/// and each new one is listed here to ship.
+/// Every file of the shell's package (`apps/tl/shell`) the session runs, by the name the
+/// package knows it by: a package is a directory of `.tl` files, in path order (the package's
+/// compiler reads them so), and each new one is listed here to ship. Its scenarios
+/// (`scenarios.tl`), which stage the shell over other apps' records for its shots and tests,
+/// are fixtures: the session never runs them, so it compiles the shell without them and needs
+/// no other app's package to do so.
 const SHELL_FILES: &[(&str, &str)] = &[
     ("app.tl", include_str!("../../../../apps/tl/shell/app.tl")),
     (
@@ -119,10 +122,6 @@ const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/rooms.tl"),
     ),
     (
-        "scenarios.tl",
-        include_str!("../../../../apps/tl/shell/scenarios.tl"),
-    ),
-    (
         "session.tl",
         include_str!("../../../../apps/tl/shell/session.tl"),
     ),
@@ -141,26 +140,6 @@ const SHELL_FILES: &[(&str, &str)] = &[
 ];
 /// The shell package's ids lock.
 const SHELL_IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
-
-/// The packages the shell's views reach (`notes`, `tasks`, `chat`), each as its source and ids
-/// lock, in the order they compile: a package comes after those it imports.
-const SHELL_USES: &[(&str, &str, &str)] = &[
-    (
-        "chat",
-        include_str!("../../../../apps/tl/chat/app.tl"),
-        include_str!("../../../../apps/tl/chat/app.ids"),
-    ),
-    (
-        "notes",
-        include_str!("../../../../apps/tl/notes/app.tl"),
-        include_str!("../../../../apps/tl/notes/app.ids"),
-    ),
-    (
-        "tasks",
-        include_str!("../../../../apps/tl/tasks/app.tl"),
-        include_str!("../../../../apps/tl/tasks/app.ids"),
-    ),
-];
 
 /// The package id of the session's description.
 pub const SESSION_APP: &str = tilolang_tilo::platform_apps::SESSION_APP;
@@ -246,41 +225,24 @@ impl ShellLayer {
     }
 }
 
-/// The shell package and the packages it uses, compiled, the shell last: what a shell's instance
-/// loads, in order. `None` when a package does not compile, which every build of the shell is
-/// checked against, so a test that fails to compile here fails loudly.
+/// The shell package, compiled: what a shell's instance loads, over the session's and the
+/// platform's descriptions. No other app's package is the shell's: the package of each app a
+/// place shows comes from the session when a place shows it ([`SessionLink::publish_packages`]).
+/// `Err` when it does not compile, which every build of the shell is checked against, so a
+/// test that fails to compile here fails loudly.
 ///
 /// # Errors
-/// The packages' diagnostics, rendered with their file names.
+/// The package's diagnostics, rendered with their file names.
 pub fn compile_shell() -> Result<Vec<Compiled>, String> {
     let session = session_package()?;
     let mut out: Vec<Compiled> = Vec::new();
-    for (dir, source, ids) in SHELL_USES {
-        let lock = tilolang_tilo::tilolang::IdsLock::parse(ids).map_err(|e| e.to_string())?;
-        let imports: Vec<tilolang_tilo::tilolang::PackageMeta> =
-            out.iter().map(|c| c.meta.clone()).collect();
-        let compiled = tilolang_tilo::tilolang::compile_package(source, &lock, &imports).map_err(
-            |diagnostics| {
-                diagnostics
-                    .iter()
-                    .map(|d| d.render(&format!("apps/tl/{dir}/app.tl")))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            },
-        )?;
-        out.push(compiled);
-    }
     let lock = tilolang_tilo::tilolang::IdsLock::parse(SHELL_IDS).map_err(|e| e.to_string())?;
     let source = tilolang_tilo::tilolang::PackageSource::new(
         SHELL_FILES
             .iter()
             .map(|(path, text)| (format!("apps/tl/shell/{path}"), (*text).to_owned())),
     );
-    let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> = out
-        .iter()
-        .map(|c| c.meta.clone())
-        .chain([session])
-        .collect();
+    let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> = vec![session];
     imports.extend(platform_packages()?);
     let shell = tilolang_tilo::tilolang::compile_package_source(&source, &lock, &imports).map_err(
         |diagnostics| {
@@ -738,8 +700,16 @@ pub struct SessionLink {
     /// The readings of the resources the places name, by their session id: each with its type
     /// as the shell's runtime names another app's (`<app>#<Type>`) and its JSON.
     readings: RefCell<BTreeMap<String, (String, serde_json::Value)>>,
-    /// A reading arrived the origin has not handed the runtime yet.
-    readings_fresh: Cell<bool>,
+    /// The resources whose readings arrived and the origin has not handed the runtime yet.
+    readings_fresh: RefCell<BTreeSet<String>>,
+    /// The packages of the apps whose resources the places show, by app id: each its compiled
+    /// module, which the shell's runtime loads to draw those resources through their app's
+    /// own views, and unloads once no place shows that app.
+    packages: RefCell<BTreeMap<String, std::sync::Arc<[u8]>>>,
+    packages_fresh: Cell<bool>,
+    /// The resources a view composed in a place read before their readings came in, by id,
+    /// each with its type: what the session publishes next ([`SessionLink::take_wanted`]).
+    wanted: RefCell<BTreeMap<String, String>>,
     asked: RefCell<VecDeque<Ask>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
@@ -881,12 +851,16 @@ pub struct SessionOrigin {
     runs: BTreeMap<String, Kept<RunReading>>,
     run_entries: BTreeMap<String, Kept<RunEntryReading>>,
     entry_refs: BTreeMap<String, Kept<EntryRefReading>>,
+    /// The packages of other apps loaded into the shell's runtime, by app id: each the module
+    /// the session handed for it.
+    loaded: BTreeMap<String, std::sync::Arc<[u8]>>,
 }
 
 impl SessionOrigin {
     #[must_use]
     pub fn new(link: Rc<SessionLink>) -> Self {
         Self {
+            loaded: BTreeMap::new(),
             link,
             written: None,
             workspaces: BTreeMap::new(),
@@ -1698,7 +1672,10 @@ impl Origin for SessionOrigin {
     }
 
     fn due(&self) -> bool {
-        self.link.fresh.get() || self.link.arrangement_fresh.get() || self.link.readings_fresh.get()
+        self.link.fresh.get()
+            || self.link.arrangement_fresh.get()
+            || self.link.packages_fresh.get()
+            || !self.link.readings_fresh.borrow().is_empty()
     }
 
     fn poll(&mut self, cx: &OriginCx<'_>) -> Polled {
@@ -1708,6 +1685,9 @@ impl Origin for SessionOrigin {
         };
         let wrote_arrangement = self.poll_arrangement(cx);
         polled.wrote |= wrote_arrangement;
+        // The packages the places need first: a reading of a resource is read as its app's
+        // package declares it.
+        polled.wrote |= self.poll_packages(cx);
         polled.wrote |= self.poll_readings(cx);
         if !self.link.fresh.replace(false) {
             return polled;
@@ -1803,11 +1783,11 @@ impl Platform for ShellPlatform {
             }
             Err(why) => tracing::error!(why, "the platform's packages do not read"),
         }
-        // The packages the shell uses are other apps' here: their records are the ones their
-        // apps keep, read through the session ([`SessionLink::follow_places`]), and what their
-        // views change goes to those records' doors ([`PlaceInvoker`]). The shell's record
-        // holds the shell's own records only.
-        let Some((shell, uses)) = self.packages.split_last() else {
+        // Other apps' packages come as places show their resources ([`SessionOrigin`]): their
+        // records are the ones their apps keep, read through the session
+        // ([`SessionLink::follow_places`]), and what their views change goes to those records'
+        // doors ([`PlaceInvoker`]). The shell's record holds the shell's own records only.
+        let Some(shell) = self.packages.last() else {
             return 0;
         };
         // The session's own package is a description: its actions run at the session's door.
@@ -1818,11 +1798,6 @@ impl Platform for ShellPlatform {
                 }
             }
             Err(error) => tracing::error!(%error, "the session's description does not read"),
-        }
-        for compiled in uses {
-            if let Err(error) = host.load_foreign_package(&compiled.wasm, &compiled.meta) {
-                tracing::error!(app = compiled.meta.app, %error, "a package the shell uses did not load");
-            }
         }
         if let Err(error) = host.load_compiled(shell) {
             tracing::error!(app = shell.meta.app, %error, "the shell package did not load");
@@ -2255,6 +2230,37 @@ impl ShellPart {
             })
     }
 
+    /// Where the first node that says `text` (its name, description or value holds it) stands,
+    /// in the desktop's logical layout `(x, y, width, height)`.
+    pub fn text_bounds(&mut self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        let (ox, oy) = self.widgets.placement().origin;
+        self.widgets
+            .host_mut()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| {
+                [node.label(), node.description(), node.value()]
+                    .into_iter()
+                    .flatten()
+                    .any(|said| said.contains(text))
+            })
+            .find_map(|(_, node)| node.bounds())
+            .map(|rect| {
+                (
+                    f64::from(ox) + rect.x0,
+                    f64::from(oy) + rect.y0,
+                    rect.width(),
+                    rect.height(),
+                )
+            })
+    }
+
+    /// The apps whose packages the part's runtime holds loaded, because a place shows them.
+    #[must_use]
+    pub fn loaded_apps(&self) -> Vec<String> {
+        self.origin.borrow().loaded.keys().cloned().collect()
+    }
+
     /// Draw the shell with `theme`, the person's as their appearance settings make it: a
     /// change of mode (dark mode in the quick settings, a theme chosen in Settings) redraws
     /// the bar and every surface over the desk in it.
@@ -2502,6 +2508,14 @@ impl ShellPart {
                 self.work.laying_out = self.work.laying_out.saturating_add(at.elapsed());
             }
         }
+        // What the views composed in places read of other apps' resources before their
+        // readings came: the session is asked to publish those.
+        if let Some(host) = self.instance.host() {
+            let wanted = host.runtime().take_wanted();
+            if !wanted.is_empty() {
+                self.origin.borrow().link.want(wanted);
+            }
+        }
         // The exchanges ran until neither side had more to say, unless they ran out first:
         // then the next frame goes on.
         self.again = !quiet;
@@ -2743,6 +2757,11 @@ impl SurfaceHost for ShellPart {
         if self.owes() {
             return Some(std::time::Instant::now());
         }
+        // A reading the session published that the part has not taken, or one the views wait
+        // on that the session has not been asked for: the next frame takes it, or asks.
+        if self.origin.borrow().due() || self.origin.borrow().link.wants() {
+            return Some(std::time::Instant::now());
+        }
         self.widgets.next_deadline()
     }
 
@@ -2815,7 +2834,7 @@ impl ShellPart {
     }
 }
 
-mod readings;
+pub mod readings;
 use readings::PlaceInvoker;
 
 #[cfg(test)]
