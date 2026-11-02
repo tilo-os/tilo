@@ -207,7 +207,7 @@ impl Repl {
     }
 
     /// Send `method` with `params` and wait for its answer.
-    fn ask(&mut self, session: &mut Session, method: &str, params: Value) -> Value {
+    fn ask(&mut self, session: &mut Session, method: &str, params: &Value) -> Value {
         self.next = self.next.saturating_add(1);
         self.asks
             .send(json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params}))
@@ -216,11 +216,11 @@ impl Repl {
     }
 
     /// Call the door's tool `name`: its text, and whether it is an error.
-    fn call(&mut self, session: &mut Session, name: &str, arguments: Value) -> (String, bool) {
+    fn call(&mut self, session: &mut Session, name: &str, arguments: &Value) -> (String, bool) {
         let reply = self.ask(
             session,
             "tools/call",
-            json!({"name": name, "arguments": arguments}),
+            &json!({"name": name, "arguments": arguments}),
         );
         let result = reply
             .get("result")
@@ -244,7 +244,7 @@ impl Repl {
         self.asks
             .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
             .unwrap();
-        let listed = self.ask(session, "tools/list", json!({}));
+        let listed = self.ask(session, "tools/list", &json!({}));
         listed["result"]["tools"]
             .as_array()
             .into_iter()
@@ -310,7 +310,7 @@ fn press(session: &mut Session, name: &str) {
 }
 
 /// Press the portal sheet's `effect`, as its control does.
-fn press_sheet(session: &mut Session, effect: &str, args: Value) {
+fn press_sheet(session: &mut Session, effect: &str, args: &Value) {
     fn publisher(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
             if resource.actions.iter().any(|offered| offered.id == action) {
@@ -354,13 +354,13 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     );
 
     // `ls`: the apps, the session's own resources among them.
-    let (apps, failed) = repl.call(session, "tilo_ls", json!({}));
+    let (apps, failed) = repl.call(session, "tilo_ls", &json!({}));
     assert!(!failed, "{apps}");
     assert!(
         apps.lines().any(|line| line.starts_with("session")),
         "the session's own resources are listed: {apps}"
     );
-    let (desk, failed) = repl.call(session, "tilo_ls", json!({"path": "session"}));
+    let (desk, failed) = repl.call(session, "tilo_ls", &json!({"path": "session"}));
     assert!(!failed, "{desk}");
     assert!(
         desk.contains("shell:arrangement") || desk.contains("arrangement"),
@@ -380,7 +380,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     let (placed_it, failed) = repl.call(
         session,
         "tilo",
-        json!({"program": format!(
+        &json!({"program": format!(
             "session.place(workspace: .none, row: .none, strip: .none, place: .none, resource: \"{note}\", view: .none, x: .some(80), y: .some(60), width: .none, height: .none)"
         )}),
     );
@@ -402,7 +402,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     );
 
     // `undo` takes the step back.
-    let (undone, failed) = repl.call(session, "tilo", json!({"program": "undo"}));
+    let (undone, failed) = repl.call(session, "tilo", &json!({"program": "undo"}));
     assert!(!failed, "{undone}");
     until(session, "the note off the canvas", |session| {
         placed(session, note) == 0 && on_screen(session, NOTE_TITLE).is_none()
@@ -434,8 +434,8 @@ fn the_person_admits_the_repl_on_the_sheet_and_it_works_as_them() {
         "who asks: {}",
         shown.heading
     );
-    press_sheet(&mut session, PortalEffect::SELECT.id, json!({"index": 0}));
-    press_sheet(&mut session, PortalEffect::CONFIRM.id, json!({}));
+    press_sheet(&mut session, PortalEffect::SELECT.id, &json!({"index": 0}));
+    press_sheet(&mut session, PortalEffect::CONFIRM.id, &json!({}));
 
     the_repl_works_as_the_person(&mut session, &mut repl, &note);
 }
