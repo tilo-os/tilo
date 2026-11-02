@@ -272,7 +272,7 @@ struct Shared {
     wake: crate::wake::Waker,
     /// The name each app gives what its window shows (its bar's location:
     /// a note's title, a folder's path), by tab, as the bar last read it
-    /// ([`DesktopHandle::set_window_names`]). A window's name is what it
+    /// ([`DesktopHandle::window_name`]). A window's name is what it
     /// shows, so this stands in front of the window's own title everywhere
     /// the tab is named.
     window_names: std::collections::BTreeMap<TabId, String>,
