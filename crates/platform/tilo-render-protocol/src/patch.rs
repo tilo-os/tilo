@@ -159,6 +159,12 @@ pub enum Value {
     Opt(Option<Box<Value>>),
     /// A case of an enum, by name.
     Enum(String),
+    /// A case of an enum whose cases carry fields, by name, with its fields by name: a
+    /// drawing's `arc`.
+    Case {
+        case: String,
+        fields: Vec<(String, Value)>,
+    },
     Ref(ResourceRef),
     Principal(Principal),
     /// Rich text, with how each reference in it reads for the person reading it.

@@ -106,37 +106,37 @@ compiler checks it like any other prop. There is no paint callback and no new sy
 ```
 /// How full a disk is, as a ring.
 view usage_ring(used: Float) {
-    ui.Drawing(role: .progress(used), size: 4rem) {
-        shapes: [
-            .arc(center: (0.5, 0.5), radius: 0.42, from: 0.0, to: 1.0,
-                 stroke: .role(.track), width: .regular),
-            .arc(center: (0.5, 0.5), radius: 0.42, from: 0.0, to: used,
-                 stroke: .role(.accent), width: .regular, cap: .round),
-        ]
-        on press(shape): open_details()
+    ui.Drawing([
+        .arc(cx: 0.5, cy: 0.5, radius: 0.42, from: 0.0, to: 1.0, stroke: .track),
+        .arc(cx: 0.5, cy: 0.5, radius: 0.42, from: 0.0, to: used, stroke: .accent, weight: .strong),
+    ], meaning: .progress, value: .some(used), label: .some("Disk"), height: .some(64.0)) {
+        on press: open_details()
     }
 }
 ```
 
-- **Shapes:** `.rect` (with a corner role), `.ellipse`, `.arc`, `.line`, `.path(points:,
-  curve: .straight | .smooth, closed:)` and `.text(role:)`. Coordinates are fractions of the
-  drawing's box, so a drawing scales with its layout and never names pixels.
-- **Looks come from the theme only.** A fill or stroke is `.role(...)` (accent, track, positive,
-  danger, ink, and the rest of the theme's roles), optionally with `.wash` (a vertical gradient
-  of the role into transparency). A stroke width is a token (`.hairline`, `.regular`,
-  `.strong`), text is a text role, and a corner is a radius role. There are no raw colours,
-  sizes or fonts, so a drawing reads right in every theme.
-- **A semantic role is required:** `.progress(f)`, `.chart(summary)`, `.picture(label)`,
-  `.decoration` for purely visual ones. Screen readers and agents read the role, not the shapes.
-- **Motion:** when a shape's numbers change between two readings, the widget moves them with the
-  platform's motion curve (`motion` theme role), in Rust, at native refresh. A view never
+- **Shapes** are the toolkit's enum `ui.Shape`: `.rect(x, y, w, h, round)`, `.ellipse(cx, cy,
+  rx, ry)`, `.arc(cx, cy, radius, from, to)` (fractions of a turn from the top), `.line(x1, y1,
+  x2, y2)` and `.path(points, smooth, closed, wash)`. Coordinates are fractions of the
+  drawing's box, so a drawing scales with its layout and never names pixels. A field with a
+  default (`round`, `fill`, `weight`, the path's flags) may be left out, as a record's may.
+  Text in a drawing is not built yet.
+- **Looks come from the theme only.** A fill or stroke is an ink, `ui.Ink`: a role of the
+  theme (`.accent`, `.ink`, `.muted`, `.track`, `.success`, `.warning`, `.danger`, `.info`).
+  `wash` fades a path's fill out downward. A stroke's `weight` is a token (`.hairline`,
+  `.regular`, `.strong`) multiplied from the theme's border width, and strokes end round.
+  There are no raw colours, sizes or fonts, so a drawing reads right in every theme.
+- **What it means is required:** `meaning: .progress | .chart | .picture | .decoration`, with
+  `label` and, for progress, `value`. Screen readers and agents read that, not the shapes; a
+  decoration is not in the accessibility tree.
+- **Motion** (not built yet): when a shape's numbers change between two readings, the widget
+  is to move them with the platform's motion curve, in Rust, at native refresh. A view never
   animates.
-- **Retained and damage-limited:** the widget builds its scene from the shapes once per
-  change of its props, caches it like any part, and damages only its own box. An idle drawing
-  costs nothing.
-- **Events are data:** `press(shape)` gives the index of the topmost shape under the
-  pointer, and `hover(shape)` likewise, so a chart's bar or a map's region is pressable without
-  a closure.
+- **Retained and idle-free:** the shapes are props of a retained node, so a change of them is a
+  patch of that node, and the widget paints them when its frame is drawn, like any widget. It
+  asks for no frame of its own, so an idle drawing costs nothing.
+- **Events are data:** `press` carries the index of the topmost shape under the pointer, so a
+  chart's bar or a map's region is pressable without a closure. `hover` is not built yet.
 
 Underneath, `ui.Drawing` is a ui-core widget (`#[derive(Component)]`) that lowers shapes to the
 same `kurbo` paths, fills, strokes and gradients the toolkit's own `Chart` and `Sparkline`

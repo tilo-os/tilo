@@ -337,7 +337,9 @@ impl Checker<'_> {
                 }
             }
             Type::List(_) | Type::Set(_) | Type::Map { .. } => {
-                let v = self.expr(value, None);
+                // Cases are written `.arc(...)`: the elements are told their enum.
+                let want = names_cases(ty).then(|| lang_type(ty));
+                let v = self.expr(value, want.as_ref());
                 if v.ty.is_error() {
                     return;
                 }
@@ -959,6 +961,16 @@ fn offers_actions(ty: &Type) -> bool {
     }
 }
 
+/// Whether `ty` holds one of the toolkit's closed sets with fields.
+fn names_cases(ty: &Type) -> bool {
+    match ty {
+        Type::Cases { .. } => true,
+        Type::Option(inner) | Type::List(inner) | Type::Set(inner) => names_cases(inner),
+        Type::Map { value, .. } => names_cases(value),
+        _ => false,
+    }
+}
+
 /// The language's type of a description's scalar type, for checking literals against it.
 fn lang_type(ty: &Type) -> Ty {
     match ty {
@@ -975,7 +987,8 @@ fn lang_type(ty: &Type) -> Ty {
         Type::Map { value, .. } => Ty::Map(Box::new(lang_type(value))),
         Type::Action => super::platform::host_ty("Action"),
         // A `Cases` set is the `ui` package's enum of that name (components.md §4.1).
-        Type::Resource | Type::Icon | Type::Choice { .. } | Type::Cases { .. } => Ty::Error,
+        Type::Cases { name } => Ty::Enum(toolkit::key(name)),
+        Type::Resource | Type::Icon | Type::Choice { .. } => Ty::Error,
     }
 }
 
@@ -989,6 +1002,7 @@ fn fits(ty: &Type, found: &Ty) -> bool {
         // The language's maps are keyed by text.
         (Type::Map { key, value }, Ty::Map(held)) => **key == Type::Text && fits(value, held),
         (Type::Action, Ty::Record(key)) => key.app == crate::host::HOST_APP && key.name == "Action",
+        (Type::Cases { name }, Ty::Enum(key)) => *key == toolkit::key(name),
         _ => matches!(
             (ty, found),
             (_, Ty::Error)

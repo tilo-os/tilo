@@ -353,7 +353,21 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
         // A moment reaches the component as the instant it is, never as text read the
         // person's way: the component decides how to show it.
         (Type::Time, Value::Text(at)) => Prop::Text(at.clone()),
-        (Type::Choice { .. }, Value::Text(case)) => Prop::Choice(case.clone()),
+        (Type::Choice { .. }, Value::Text(case) | Value::Enum(case)) => Prop::Choice(case.clone()),
+        (Type::Cases { name }, Value::Case { case, fields }) => {
+            let described = catalogue().enums.iter().find(|set| &set.name == name)?;
+            let shape = described.cases.iter().find(|c| &c.name == case)?;
+            Prop::Case {
+                case: case.clone(),
+                fields: fields
+                    .iter()
+                    .map(|(field, held)| {
+                        let ty = &shape.fields.iter().find(|f| &f.name == field)?.ty;
+                        Some((field.clone(), convert(held, ty, reconciler)?))
+                    })
+                    .collect::<Option<Vec<_>>>()?,
+            }
+        }
         (Type::List(inner) | Type::Set(inner), Value::List(items)) => Prop::List(
             items
                 .iter()

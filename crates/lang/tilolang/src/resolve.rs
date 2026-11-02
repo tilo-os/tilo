@@ -469,6 +469,7 @@ impl Env {
             previously: Vec::new(),
         });
         self.toolkit = Some(crate::toolkit::catalogue());
+        self.enums.extend(crate::toolkit::enums());
     }
 
     /// The component `name` of the toolkit, when `path` names the toolkit's package.
