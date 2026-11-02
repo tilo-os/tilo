@@ -163,6 +163,13 @@ pub struct Options {
     /// over: `tilo-session --test-control PATH`, honoured by development
     /// builds only. `None`: there is none.
     pub test_control: Option<std::path::PathBuf>,
+    /// Where the device admin's control socket opens
+    /// ([`crate::test_control::admin_path`]), which `tilo-control` reaches
+    /// as the account whose desktop this is: `tilo-session --admin-control
+    /// PATH`, else the seat's own `admin-control.sock` for a session that
+    /// owns the machine, and `headless-owner-control.sock` for a headless
+    /// one. `None`: there is none.
+    pub admin_control: Option<std::path::PathBuf>,
     /// The runs of what people ask this session's agents to do. Without one
     /// the session keeps its own, which its broker delivers to the agents
     /// admitted here; one given is a run channel a test plays the agent's
@@ -349,6 +356,7 @@ impl Default for Options {
             agent_door: None,
             admit_repl: Vec::new(),
             test_control: None,
+            admin_control: None,
             agent_runs: None,
             launches: std::sync::Arc::default(),
             drives: None,

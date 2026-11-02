@@ -59,8 +59,8 @@ use serde::{Deserialize, Serialize};
 use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_action_policy::roles::AgentPreset;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
+    ConfirmedInvocation, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_clock::unix_now;
 use tilo_desktop::workspace_settings as domain;
@@ -268,6 +268,7 @@ impl Mounted {
 pub(crate) fn mount_named(
     options: &crate::Options,
     questions: Option<Questions>,
+    doors: Arc<SessionDoors>,
 ) -> Option<Mounted> {
     let path = options.agent_door.as_deref()?;
     match mount(
@@ -277,6 +278,7 @@ pub(crate) fn mount_named(
         options.wake.handle(),
         options.state.as_deref(),
         &options.admit_repl,
+        doors,
     ) {
         Ok(mounted) => Some(mounted),
         Err(error) => {
@@ -300,6 +302,7 @@ pub(crate) fn mount(
     wake: Wake,
     state: Option<&Path>,
     admits: &[PathBuf],
+    doors: Arc<SessionDoors>,
 ) -> io::Result<Mounted> {
     let listener = bind_private(path)?;
     listener.set_nonblocking(true)?;
@@ -328,10 +331,6 @@ pub(crate) fn mount(
             }
         })
         .collect();
-    let doors = Arc::new(SessionDoors {
-        asks: std::sync::Mutex::new(Vec::new()),
-        wake: Arc::clone(&wake),
-    });
     let door = Loop {
         questions,
         listener,
@@ -360,13 +359,7 @@ impl Loop {
     /// Take the connections waiting, ask the person about each, and settle
     /// those they answered: the agent becomes a member of the workspace in
     /// front, and the client is served as that agent.
-    pub(crate) fn follow(
-        &mut self,
-        handle: &DesktopHandle,
-        person: &str,
-        doors: &tilo_surface_host::Doors,
-    ) {
-        self.doors.answer(doors, person);
+    pub(crate) fn follow(&mut self, handle: &DesktopHandle, person: &str) {
         self.accept();
         while let Ok(request) = self.asked.try_recv() {
             self.request(handle, request, person);
@@ -794,7 +787,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// What the kernel says about the process on the other end.
-struct Peer {
+pub(crate) struct Peer {
     uid: libc::uid_t,
     /// Whether it shares this session's user and mount namespaces.
     shares_namespaces: bool,
@@ -802,7 +795,7 @@ struct Peer {
 
 /// Why a connection was refused before anyone was asked.
 #[derive(Debug, PartialEq, Eq)]
-enum PeerRefusal {
+pub(crate) enum PeerRefusal {
     Unidentified,
     OtherAccount,
     Sandboxed,
@@ -813,7 +806,7 @@ enum PeerRefusal {
 }
 
 impl PeerRefusal {
-    fn message(&self) -> &'static str {
+    pub(crate) fn message(&self) -> &'static str {
         match self {
             Self::Unidentified => "the agent door could not identify the connecting process",
             Self::OtherAccount => {
@@ -828,7 +821,7 @@ impl PeerRefusal {
 
 /// Decide one connection from its peer's facts: this session's account, in
 /// this session's namespaces.
-fn peer_decision(peer: &Peer) -> Result<(), PeerRefusal> {
+pub(crate) fn peer_decision(peer: &Peer) -> Result<(), PeerRefusal> {
     if peer.uid != rustix::process::geteuid().as_raw() {
         return Err(PeerRefusal::OtherAccount);
     }
@@ -840,7 +833,7 @@ fn peer_decision(peer: &Peer) -> Result<(), PeerRefusal> {
 
 /// The kernel's account of an accepted connection's peer: its process, and
 /// whether it is this login's own.
-fn identify(stream: &UnixStream) -> Result<(u32, Peer), PeerRefusal> {
+pub(crate) fn identify(stream: &UnixStream) -> Result<(u32, Peer), PeerRefusal> {
     use std::os::fd::AsRawFd as _;
     let mut credentials = libc::ucred {
         pid: 0,
@@ -982,6 +975,15 @@ pub(crate) struct SessionDoors {
 }
 
 impl SessionDoors {
+    /// The seam `wake` wakes the loop on, shared by every connection that
+    /// asks the session's own doors.
+    pub(crate) fn new(wake: Wake) -> Self {
+        Self {
+            asks: std::sync::Mutex::new(Vec::new()),
+            wake,
+        }
+    }
+
     fn ask(&self, ask: DoorAsk) {
         self.asks.lock_recover().push(ask);
         (self.wake)();
@@ -989,7 +991,7 @@ impl SessionDoors {
 
     /// Answer what the connections asked since the last pass, from `doors`;
     /// `person` is whose calls are their own, not someone's for them.
-    fn answer(&self, doors: &tilo_surface_host::Doors, person: &str) {
+    pub(crate) fn answer(&self, doors: &tilo_surface_host::Doors, person: &str) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
@@ -1034,13 +1036,25 @@ const ANSWERED_KEPT: usize = 256;
 /// The broker as an admitted client's door, with the session's own doors
 /// beside it: every call passes the gate as the agent or person and workspace the
 /// connection was admitted for.
-struct Host {
-    state: Arc<AppBrokerState>,
+#[derive(Clone)]
+pub(crate) struct Host {
+    /// The session's broker, once it starts one. Without it (a session in a
+    /// window of another desktop) the session's own doors are all it offers.
+    state: Option<Arc<AppBrokerState>>,
     session: Arc<SessionDoors>,
     answered: Arc<std::sync::Mutex<Answered>>,
 }
 
 impl Host {
+    /// The door over `state`, with `session` beside it.
+    pub(crate) fn new(state: Option<Arc<AppBrokerState>>, session: Arc<SessionDoors>) -> Self {
+        Self {
+            state,
+            session,
+            answered: Arc::default(),
+        }
+    }
+
     /// Who `caller` acts as at the session's doors, and whether it may only
     /// read there: an agent reads them; the person does all they offer, as
     /// their own input does.
@@ -1091,29 +1105,52 @@ impl ActionHost for Host {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         let workspace = caller.workspace().unwrap_or_default().to_owned();
+        let session_provider = CatalogueProvider {
+            provider: SESSION_PROVIDER.to_owned(),
+            app_id: SESSION_PROVIDER.to_owned(),
+            workspace,
+            record_id: String::new(),
+            browsable: true,
+        };
         match query.provider.as_deref() {
             Some(SESSION_PROVIDER) => self.session_page(caller, &query).map(Ok),
-            Some(_) => self.state.action_query(caller, &query),
+            Some(_) => match &self.state {
+                Some(state) => state.action_query(caller, &query),
+                None => Pending::ready(Err(ActionHostError::Unavailable {
+                    reason: "this desktop's actions are not running here".to_owned(),
+                })),
+            },
             None => {
+                let Some(state) = &self.state else {
+                    // A cursor this host never printed is nobody's page here.
+                    if !query.cursor.is_empty() || query.revision.is_some() {
+                        return Pending::ready(Err(ActionHostError::StaleRevision));
+                    }
+                    let session = self.session_page(caller, &query);
+                    return session.map(move |page| {
+                        Ok(CataloguePage {
+                            providers: vec![session_provider],
+                            ..page
+                        })
+                    });
+                };
+                // A page asked for by cursor is a page of the listing it was cut from, which
+                // the broker alone knows; the session's rows stand in its first page only.
+                if !query.cursor.is_empty() || query.revision.is_some() {
+                    return state.action_query(caller, &query);
+                }
                 // The broker's page, with the session's own first page beside
                 // it: a cursor of the broker's pages the broker alone.
                 let session = self.session_page(caller, &query).map(|page| page.rows);
                 let (done, merged) = tilo_actions::remote::pending();
-                self.state.action_query(caller, &query).then(move |page| {
+                state.action_query(caller, &query).then(move |page| {
                     let Some(page) = page else {
                         return;
                     };
                     session.then(move |rows| {
                         done.complete(page.map(|mut page| {
                             page.rows.extend(rows.unwrap_or_default());
-                            page.providers
-                                .push(tilo_actions::remote::CatalogueProvider {
-                                    provider: SESSION_PROVIDER.to_owned(),
-                                    app_id: SESSION_PROVIDER.to_owned(),
-                                    workspace,
-                                    record_id: String::new(),
-                                    browsable: true,
-                                });
+                            page.providers.push(session_provider);
                             page
                         }));
                     });
@@ -1129,7 +1166,12 @@ impl ActionHost for Host {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         if request.target.provider != SESSION_PROVIDER {
-            return self.state.action_invoke(caller, None, None, &request);
+            return match &self.state {
+                Some(state) => state.action_invoke(caller, None, None, &request),
+                None => Pending::ready(Err(ActionHostError::Unavailable {
+                    reason: "this desktop's apps are not running here".to_owned(),
+                })),
+            };
         }
         let (actor, reads_only) = Self::at_session(caller);
         let arguments = match request.argument {
@@ -1177,11 +1219,17 @@ impl ActionHost for Host {
             .rev()
             .find(|(invocation, _)| invocation == id)
             .map(|(_, update)| InvocationState::new(*id, update.clone()));
-        ours.or_else(|| self.state.action_observe(caller, id))
+        ours.or_else(|| {
+            self.state
+                .as_ref()
+                .and_then(|state| state.action_observe(caller, id))
+        })
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
-        self.state.action_next_change_after_now(caller, id)
+        self.state
+            .as_ref()
+            .and_then(|state| state.action_next_change_after_now(caller, id))
     }
 
     fn cancel(
@@ -1189,7 +1237,10 @@ impl ActionHost for Host {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Pending<Result<(), ActionHostError>> {
-        self.state.action_cancel(caller, id)
+        match &self.state {
+            Some(state) => state.action_cancel(caller, id),
+            None => Pending::ready(Err(ActionHostError::UnknownInvocation)),
+        }
     }
 
     fn confirm(
@@ -1197,11 +1248,16 @@ impl ActionHost for Host {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
-        self.state.request_witness(caller, None, request)
+        match &self.state {
+            Some(state) => state.request_witness(caller, None, request),
+            None => Pending::ready(Err(ActionHostError::ConfirmationRequired)),
+        }
     }
 
     fn content_puts(&self) -> Option<Arc<dyn ContentPuts>> {
-        self.state.content_puts()
+        self.state
+            .as_ref()
+            .and_then(tilo_action_broker::collab_app_broker::AppBrokerState::content_puts)
     }
 }
 
@@ -1287,13 +1343,7 @@ fn serve_connection(
     let ended = tilo_runtime::session_door::serve_after(
         stream,
         Some(first),
-        || {
-            Ok(Host {
-                state: broker,
-                session,
-                answered: Arc::default(),
-            })
-        },
+        || Ok(Host::new(Some(broker), session)),
         Some(tasks as Arc<dyn tilo_runtime::mcp::TaskHosts>),
         |hello, connected| {
             let consent = ask(requests, wake, facts, hello, connected);

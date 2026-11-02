@@ -35,7 +35,7 @@ mode=$(stat -c %a "$socket")
 # The compositor must not have been started with the dev control variable.
 # Its environment is unreadable when the process is not dumpable; then the
 # variable's effect is checked instead: no test-control socket is served.
-shell_pid=$(pgrep -u "$(id -u)" -x shell | head -n 1) || fail "no compositor process"
+shell_pid=$(pgrep -u "$(id -u)" -x tilo-session | head -n 1) || fail "no session process"
 if shell_env=$(tr '\0' '\n' 2>/dev/null <"/proc/$shell_pid/environ"); then
   ! grep -q '^TILO_TEST_CONTROL=' <<<"$shell_env" \
     || fail "the compositor runs with TILO_TEST_CONTROL; this check must not depend on it"
@@ -55,8 +55,9 @@ close_notes() {
   local open_tabs tab
   open_tabs=$(notes_tabs) || { echo "windows read failed" >&2; return 1; }
   for tab in $open_tabs; do
-    tilo-control actions invoke desktop-windows "tab.close:$tab" >/dev/null || {
-      echo "closing Notes tab $tab through desktop-windows:tab.close:$tab failed" >&2
+    window_close=$(printf 'desktop:tab:%s\037close-tab' "$tab")
+    tilo-control actions invoke so.tilo.session "$window_close" >/dev/null || {
+      echo "closing Notes tab $tab through so.tilo.session:$window_close failed" >&2
       return 1
     }
   done

@@ -3,7 +3,8 @@
 //! [--firstboot|--firstboot-only]
 //! [--provision-identity|--verify-collaboration-identity] [--no-x11]
 //! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
-//! [--admit-repl PATH]... [--test-control PATH] [--seed-apps]
+//! [--admit-repl PATH]... [--test-control PATH] [--admin-control PATH]
+//! [--headless-owner-control] [--seed-apps]
 //! [-- command args...]`. Listens on a fresh `wayland-N` socket, starts
 //! Xwayland for X11 clients (unless `--no-x11`), prints both displays and the
 //! agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl --door`
@@ -23,7 +24,14 @@
 //! `--test-control PATH`
 //! opens the development test-control socket there (`tilo-control
 //! snapshot`), in development builds only, and prints it
-//! (`TILO_TEST_CONTROL=`); `--seed-apps` publishes the tilolang notes,
+//! (`TILO_TEST_CONTROL=`). The owner's own control socket — what `tilo-control`
+//! drives the desktop with, and the actions it lists and invokes — is the
+//! seat's `admin-control.sock` in `$XDG_RUNTIME_DIR/tilo-session`, which this
+//! session serves as the account whose desktop it is; `--admin-control PATH`
+//! opens it elsewhere, and a headless session, which serves no seat, opens it
+//! only when asked to (`--headless-owner-control`, under
+//! `headless-owner-control.sock` there). Whichever it binds it prints
+//! (`TILO_ADMIN_CONTROL=`); `--seed-apps` publishes the tilolang notes,
 //! tasks, chat and mail apps filled with their seed data
 //! ([`tilo_session::seeded_apps`]), also in development builds only.
 //! SIGTERM, SIGINT and SIGHUP end the session as ending on its own does, so
@@ -170,6 +178,10 @@ struct CommandLine {
     /// Where the development test-control socket opens, when the command
     /// line named one and this build opens it.
     test_control: Option<std::path::PathBuf>,
+    /// Where the owner's control socket opens, when this session serves one:
+    /// the path the command line named, else the seat's own
+    /// (`--headless-owner-control` opts a headless session in).
+    admin_control: Option<std::path::PathBuf>,
     /// Whether the session publishes the seeded tilolang apps
     /// (`--seed-apps`, in a development build).
     seed_apps: bool,
@@ -228,6 +240,32 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
     if named.is_some() && test_control.is_none() {
         eprintln!("tilo-session: --test-control is honoured by development builds only");
     }
+    // The owner's door: the seat's own for a session that owns the machine, the
+    // headless session's own when it was asked to open one, and nothing for a
+    // session in another desktop's window.
+    let named_admin = ours
+        .iter()
+        .position(|arg| arg == "--admin-control")
+        .and_then(|index| ours.get(index.saturating_add(1)))
+        .map(std::path::PathBuf::from);
+    let named_admin = match named_admin {
+        Some(path) if !path.is_absolute() => {
+            eprintln!("tilo-session: --admin-control takes an absolute path");
+            None
+        }
+        named => named,
+    };
+    let headless_owner = ours.iter().any(|arg| arg == "--headless-owner-control");
+    if headless_owner && backend != Backend::Headless {
+        eprintln!("tilo-session: --headless-owner-control is for a headless session");
+    }
+    let owned = match backend {
+        Backend::Headless => headless_owner,
+        Backend::Nested => false,
+        Backend::Drm => true,
+    };
+    let admin_control =
+        tilo_session::test_control::admin_path(owned, backend == Backend::Headless, named_admin);
     let asked_seed = ours.iter().any(|arg| arg == "--seed-apps");
     let seed_apps = asked_seed && tilo_session::seeded_apps::SEEDED_BY_THIS_BUILD;
     if asked_seed && !seed_apps {
@@ -240,6 +278,7 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
         shell,
         admit_repl,
         test_control,
+        admin_control,
         seed_apps,
     })
 }
@@ -268,6 +307,7 @@ fn start(
         shell,
         admit_repl,
         test_control,
+        admin_control,
         seed_apps,
     } = line;
     let buses = reach.buses.clone();
@@ -341,6 +381,7 @@ fn start(
         shell,
         admit_repl,
         test_control,
+        admin_control,
         ..device_options(machine)
     };
     // A headless session has no input device: nothing the person does can
@@ -361,6 +402,7 @@ fn start(
     }
     let agent_door = options.agent_door.clone();
     let test_control = options.test_control.clone();
+    let admin_control = options.admin_control.clone();
     let mut session = match start_session(backend, options, size) {
         Ok(session) => session,
         Err(error) => {
@@ -384,6 +426,7 @@ fn start(
         &Doors {
             agent: agent_door.as_deref(),
             test_control: test_control.as_deref(),
+            admin: admin_control.as_deref(),
         },
     )
 }
@@ -395,6 +438,8 @@ struct Doors<'a> {
     agent: Option<&'a std::path::Path>,
     /// The development test-control socket (`TILO_TEST_CONTROL=`).
     test_control: Option<&'a std::path::Path>,
+    /// The owner's control socket (`TILO_ADMIN_CONTROL=`).
+    admin: Option<&'a std::path::Path>,
 }
 
 /// The session on `backend`'s displays, at `size` where the backend runs in
@@ -462,6 +507,14 @@ fn run(
     // Where `tilo-control` drives it, in a development build started with one.
     if let Some(control) = doors.test_control.filter(|control| control.exists()) {
         println!("{}={}", tilo_session::test_control::ENV, control.display());
+    }
+    // Where the owner's own programs drive this desktop, when it serves them.
+    if let Some(admin) = doors.admin.filter(|admin| admin.exists()) {
+        println!(
+            "{}={}",
+            tilo_session::test_control::ADMIN_ENV,
+            admin.display()
+        );
     }
     let x11_display = if ours.iter().any(|arg| arg == "--no-x11") {
         None

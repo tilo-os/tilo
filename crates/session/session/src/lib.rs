@@ -409,6 +409,9 @@ struct Shared {
     /// The agent door, when this session serves one: what a program of this
     /// login asks on, and the person's answers about it.
     agent_door: RefCell<Option<agent_door::Loop>>,
+    /// What a connection of any door asks of the session's own doors: answered
+    /// on the loop's pass, the only place that may touch them.
+    session_doors: std::sync::Arc<agent_door::SessionDoors>,
     /// The installed folder importer's side of this login, once the session
     /// serves it: what it asks on whether first use is over, and the review
     /// it saved to be opened when it is.
@@ -537,6 +540,7 @@ impl Shared {
 
     /// Carry out what the person chose in the sheets.
     fn follow_sheets(&self) {
+        self.session_doors.answer(&self.doors, &self.person);
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();
@@ -597,7 +601,7 @@ impl Shared {
         // of the person's: their answer admits it, and the client is served
         // from the next pass on.
         if let Some(door) = self.agent_door.borrow_mut().as_mut() {
-            door.follow(&self.handle, &self.person, &self.doors);
+            door.follow(&self.handle, &self.person);
         }
         self.asker.follow();
         self.shortcut_guide.follow();
@@ -665,9 +669,9 @@ pub struct Session {
     /// The plane the apps it runs read and invoke its services on, while it
     /// serves one.
     action_plane: Option<Plane>,
-    /// The development test-control socket `tilo-control` drives this
-    /// session over, when it was started with one.
-    test_control: Option<test_control::TestControl>,
+    /// The control sockets `tilo-control` drives this session over, when it
+    /// serves any: the development one, and the device admin's own.
+    control: Option<test_control::Control>,
     /// The shortcuts the person saved, started by their triggers.
     automation: automation::Automation,
     /// The runtime the shortcuts' runs execute on, which the apps' broker
@@ -1301,11 +1305,23 @@ impl Session {
                 .as_ref()
                 .map(|desktop| desktop.questions().clone())
         });
-        let door = agent_door::mount_named(&options, questions.clone());
-        // The development test-control socket `tilo-control` reaches, when
-        // the session was started with one.
-        let test_control =
-            test_control::open_named(options.test_control.as_deref(), options.wake.handle());
+        let session_doors =
+            std::sync::Arc::new(agent_door::SessionDoors::new(options.wake.handle()));
+        let door = agent_door::mount_named(
+            &options,
+            questions.clone(),
+            std::sync::Arc::clone(&session_doors),
+        );
+        // The control sockets `tilo-control` reaches, when the session was
+        // started with one: the development socket and the device admin's,
+        // both answered over the broker this session's plane starts.
+        let control = test_control::Control::open(
+            &options,
+            std::sync::Arc::new(agent_door::Host::new(
+                action_plane.as_ref().and_then(Plane::agent_broker),
+                std::sync::Arc::clone(&session_doors),
+            )),
+        );
         let agent_door = door.map(|door| {
             door.serve(
                 action_plane.as_ref().and_then(Plane::agent_broker),
@@ -1473,6 +1489,7 @@ impl Session {
             ))),
             asker,
             agent_door: RefCell::new(agent_door),
+            session_doors,
             folder_import: RefCell::new(None),
             sync,
             engine,
@@ -1581,7 +1598,7 @@ impl Session {
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
-            test_control,
+            control,
             automation,
             _automation_runtime: automation_runtime,
             screen_locked: false,
@@ -2685,7 +2702,7 @@ impl Session {
         // What `tilo-control` asks of the frame just drawn.
         let locked = self.compositor.locked();
         test_control::serve(
-            self.test_control.as_ref(),
+            self.control.as_ref(),
             &mut self.compositor,
             test_control::Desk {
                 doors: &self.shared.doors,

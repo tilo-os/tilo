@@ -1,9 +1,18 @@
-//! The development test-control socket: `tilo-control` drives a session it was started for
-//! (`tilo-session --test-control PATH`, or `$TILO_TEST_CONTROL`, honoured by development builds
-//! only, at `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` when neither names one) over the
-//! protocol it speaks to the shell's (`shell::shell::test_control`): one JSON
-//! request per line, tagged by `op`, and one answer per line, `{"ok": {"frame": N}}` or
-//! `{"err": {"code": .., "message": ..}}`.
+//! The control sockets: `tilo-control` drives a session it was started for, and the device
+//! admin drives their own desktop, over one protocol — one JSON request per line, tagged by
+//! `op`, and one answer per line: `{"ok": {..}}`, `{"answer": ..}`, `{"state": ..}`,
+//! `{"targets": ..}` or `{"err": {"code": .., "message": ..}}`.
+//!
+//! Two sockets serve it:
+//!
+//! - the development test-control socket (`tilo-session --test-control PATH`, or
+//!   `$TILO_TEST_CONTROL`, honoured by development builds only, at
+//!   `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` when neither names one), which binds
+//!   whatever the developer asked for;
+//! - the owner's own door, `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock` for a session
+//!   that owns the machine (a headless one serves `headless-owner-control.sock`), which
+//!   admits only programs of the account whose desktop this is, in its own namespaces, and
+//!   refuses every other connection before reading a byte ([`admin_path`]).
 //!
 //! What it answers, as the tools that drive a desktop need it:
 //!
@@ -20,30 +29,52 @@
 //!   `scroll`;
 //! - `drag`: a press at one place, interpolated motion, and the release at another, which is how
 //!   a tab moves into another group or onto another strip;
+//! - `swipe` and `pinch`: the gesture tracker a touchpad feeds the seat, on a shell gesture's
+//!   three fingers or more, so what the person would do with their hand is what runs;
 //! - the keyboard: `key`, `key_down`/`key_up` (a held modifier across a keystroke) and `key`'s
 //!   `modifiers` mask, and `type`, each character typed by the key the seat's layout puts it on,
 //!   or written as text where the layout has no key for it;
+//! - `actions_enumerate`, `actions_invoke`, `actions_status` and `actions_cancel`: the actions the
+//!   session publishes now, across its broker and its own doors ([`crate::agent_door::Host`]),
+//!   invoked and followed as any admitted program invokes them. Nothing here reimplements an
+//!   action: a listing is a catalogue page, and an invocation the action model's own request;
+//! - `watch`: the desk's state as it changes, streamed off the session's own change signal — no
+//!   polling, and nothing is dumped while nobody watches;
 //! - `state_dump` and `windows`: the desk as it is now, and one row per open window.
 //!
-//! Each connection is read on a thread of its own; what it asks is answered on the loop's pass,
-//! the only place that may touch the compositor, and the loop is woken for it.
+//! Each connection is read on a thread of its own. What a request asks of the compositor, the
+//! desk or the hosted surfaces is answered on the loop's pass, the only place that may touch
+//! them, and the loop is woken for it. What asks only of the actions and the change signal — the
+//! four action requests and `watch` — is answered where it was asked, so a listing that waits for
+//! an app to publish holds no frame.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
-use tilo_compositor::{Compositor, InputEvent};
+use tilo_actions::remote::{
+    ActionHost as _, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionTarget,
+    settle_with,
+};
+use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+use tilo_compositor::{Compositor, GestureEvent, InputEvent, gestures};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_surface::DesktopHandle;
+use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
 use tilo_surface_host::Doors;
 
+use crate::agent_door::{self, PeerRefusal};
 use crate::engine::Engine;
 
 /// The variable `tilo-control` reads the test-control socket's path from: what a development
@@ -51,13 +82,22 @@ use crate::engine::Engine;
 /// and what it prints with the path it opened.
 pub const ENV: &str = "TILO_TEST_CONTROL";
 
+/// The variable a session prints the owner's control socket's path with, as it prints
+/// [`ENV`]'s: the socket [`admin_path`] opened.
+pub const ADMIN_ENV: &str = "TILO_ADMIN_CONTROL";
+
 /// Whether this build opens the test-control socket it is given: development builds, and the
 /// dev image's, whose binaries are release ones built with `dev-overrides`. A production build
 /// leaves the flag without effect, so nothing it ships drives a session as the person through a
 /// socket.
 pub const OPENED_BY_THIS_BUILD: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
 
-/// Where the socket is opened, given whether this build opens one (`opens`,
+/// The owner's control socket's file name in a headless session's directory: a headless session
+/// serves no seat, so it never takes the seat's own `admin-control.sock`, which a login's session
+/// binds.
+pub const HEADLESS_OWNER_CONTROL_SOCKET_FILE: &str = "headless-owner-control.sock";
+
+/// Where the development socket is opened, given whether this build opens one (`opens`,
 /// [`OPENED_BY_THIS_BUILD`]) and the path the command line named: `None` in a build that opens
 /// none, whatever was named; the named path, else `$TILO_TEST_CONTROL`'s, else the default
 /// `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` the tools that drive a desktop go to —
@@ -92,17 +132,35 @@ fn path_in(
     })
 }
 
-/// The socket at `path`, when one is named, opened; `None`, saying why, when
-/// it does not open.
-pub(crate) fn open_named(path: Option<&Path>, wake: Wake) -> Option<TestControl> {
-    let path = path?;
-    match TestControl::open(path, wake) {
-        Ok(control) => Some(control),
-        Err(error) => {
-            tracing::warn!(%error, path = %path.display(), "the test-control socket does not open");
-            None
-        }
+/// Where the owner's control socket opens: the path named on the command line, else the seat's
+/// `admin-control.sock` in `$XDG_RUNTIME_DIR/tilo-session` for a session that owns the machine,
+/// else `headless-owner-control.sock` there for a headless one, whose machine this is but whose
+/// seat it is not. `None` for a session that owns no machine and named no path.
+#[must_use]
+pub fn admin_path(owned: bool, headless: bool, named: Option<PathBuf>) -> Option<PathBuf> {
+    admin_path_in(owned, headless, named, std::env::var_os("XDG_RUNTIME_DIR"))
+}
+
+/// [`admin_path`] for the values it reads, so what it decides can be checked without the
+/// environment.
+fn admin_path_in(
+    owned: bool,
+    headless: bool,
+    named: Option<PathBuf>,
+    runtime_dir: Option<OsString>,
+) -> Option<PathBuf> {
+    if let Some(named) = named.filter(|path| !path.as_os_str().is_empty()) {
+        return Some(named);
     }
+    if !owned {
+        return None;
+    }
+    let file = if headless {
+        HEADLESS_OWNER_CONTROL_SOCKET_FILE
+    } else {
+        tilo_paths::login::ADMIN_CONTROL_SOCKET_FILE
+    };
+    tilo_paths::login::session_dir(runtime_dir).map(|directory| directory.join(file))
 }
 
 /// What the session is, for the answers that read it: the doors every hosted surface's actions
@@ -117,152 +175,397 @@ pub(crate) struct Desk<'a> {
     pub(crate) locked: bool,
 }
 
-/// Answer what `control`, when there is one, was asked since the last pass.
-pub(crate) fn serve(control: Option<&TestControl>, compositor: &mut Compositor, desk: Desk<'_>) {
+/// Answer what `control`, when there is one, was asked since the last pass, and publish the
+/// state its watchers read.
+pub(crate) fn serve(control: Option<&Control>, compositor: &mut Compositor, desk: Desk<'_>) {
     if let Some(control) = control {
         control.serve(compositor, &desk);
     }
 }
 
-/// One request a connection sent, and where its answer goes.
+/// One request a connection sent the loop, and where its answer goes.
 struct Asked {
-    request: String,
-    answer: Sender<String>,
+    request: Json,
+    answer: Sender<Json>,
 }
 
-/// The socket, served on the loop's pass.
-pub(crate) struct TestControl {
-    listener: UnixListener,
-    path: PathBuf,
-    asks: Sender<Asked>,
+/// The sockets the session serves, and what they answer from.
+pub(crate) struct Control {
+    sockets: Vec<Socket>,
+    /// What every connection asks the actions and the change signal through.
+    door: Arc<Door>,
     asked: Receiver<Asked>,
-    wake: Wake,
     /// The keys a `key_down` holds, so `key_up` releases them and `modifiers` knows what to
     /// press and release to reach the mask it names.
     held: RefCell<BTreeSet<u32>>,
+    /// The desk state the loop last published, as its stamp.
+    published: std::cell::Cell<Option<u64>>,
+    changes: Arc<Changes>,
 }
 
-impl TestControl {
-    /// Open the socket at `path`, for this account alone; `wake` wakes the loop when a
-    /// connection asks something.
-    ///
-    /// # Errors
-    /// The path is not a socket, another session answers on it, or it cannot be bound.
-    pub(crate) fn open(path: &Path, wake: Wake) -> io::Result<Self> {
-        let listener = crate::agent_door::bind_private(path)?;
-        listener.set_nonblocking(true)?;
+/// One socket: where it listens, whose it is, and what its connections answer from.
+struct Socket {
+    listener: UnixListener,
+    path: PathBuf,
+    gate: Gate,
+    door: Arc<Door>,
+}
+
+/// Who a socket serves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Gate {
+    /// The developer's own socket: whoever the developer started it for.
+    Dev,
+    /// The owner's door: this account's own programs, and only theirs.
+    Owner,
+}
+
+/// What a connection asks on: the loop's queue and its wake, and the actions and change signal
+/// it may read without the loop.
+struct Door {
+    asks: Mutex<Sender<Asked>>,
+    wake: Wake,
+    actions: Arc<Actions>,
+    changes: Arc<Changes>,
+}
+
+impl Control {
+    /// The sockets `options` name, opened; `None`, saying why, when none opens.
+    pub(crate) fn open(options: &crate::Options, host: Arc<agent_door::Host>) -> Option<Self> {
         let (asks, asked) = channel();
-        Ok(Self {
-            listener,
-            path: path.to_path_buf(),
-            asks,
+        let changes = Arc::new(Changes::new(options.wake.handle()));
+        let actions = Arc::new(Actions {
+            host,
+            caller: Caller::local_person(options.person.clone()).in_new_execution(),
+            workspace: Mutex::new(String::new()),
+            ledger: Mutex::new(BTreeMap::new()),
+            next: AtomicU64::new(1),
+        });
+        let door = Arc::new(Door {
+            asks: Mutex::new(asks),
+            wake: options.wake.handle(),
+            actions,
+            changes: Arc::clone(&changes),
+        });
+        let mut sockets = Vec::new();
+        for (path, gate) in [
+            (options.test_control.as_deref(), Gate::Dev),
+            (options.admin_control.as_deref(), Gate::Owner),
+        ] {
+            let Some(path) = path else {
+                continue;
+            };
+            match Socket::open(path, gate, Arc::clone(&door)) {
+                Ok(socket) => {
+                    tracing::info!(path = %path.display(), "control: serving a socket");
+                    sockets.push(socket);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, path = %path.display(), "a control socket does not open");
+                }
+            }
+        }
+        (!sockets.is_empty()).then_some(Self {
+            sockets,
+            door,
             asked,
-            wake,
             held: RefCell::new(BTreeSet::new()),
+            published: std::cell::Cell::new(None),
+            changes,
         })
     }
 
-    /// Take the connections waiting and answer what was asked since the last pass.
-    pub(crate) fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
-        self.accept();
+    /// Take the connections waiting, publish the state its watchers read, and answer what was
+    /// asked of the loop since the last pass.
+    fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
+        self.door.actions.set_workspace(desk.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.room().to_string())
+        }));
+        self.publish(desk);
+        for socket in &self.sockets {
+            socket.accept();
+        }
         while let Ok(Asked { request, answer }) = self.asked.try_recv() {
-            let _ = answer.send(answered(&request, compositor, desk, &self.held).to_string());
+            let _ = answer.send(loop_answer(&request, compositor, desk, &self.held));
         }
     }
 
-    /// Accept every waiting connection, each read on its own thread.
+    /// Tell the watchers where the desk stands, when it moved since the last pass: the state
+    /// dump is only built when someone reads it.
+    fn publish(&self, desk: &Desk<'_>) {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::hash::DefaultHasher::new();
+        desk.handle.navigation_revision().hash(&mut hasher);
+        desk.locked.hash(&mut hasher);
+        for slot in Slot::ALL {
+            desk.overlays.is_open(slot).hash(&mut hasher);
+        }
+        let stamp = hasher.finish();
+        let moved = self.published.get() != Some(stamp);
+        if moved {
+            self.published.set(Some(stamp));
+        }
+        self.changes
+            .follow(moved, || desk.handle.read(|tree| state_dump(tree, desk)));
+    }
+}
+
+impl Socket {
+    /// Listen at `path` for this account alone; `gate` is who is served there.
+    fn open(path: &Path, gate: Gate, door: Arc<Door>) -> io::Result<Self> {
+        let listener = agent_door::bind_private(path)?;
+        listener.set_nonblocking(true)?;
+        Ok(Self {
+            listener,
+            path: path.to_path_buf(),
+            gate,
+            door,
+        })
+    }
+
+    /// Accept every waiting connection, each read on a thread of its own.
     fn accept(&self) {
         loop {
             let stream = match self.listener.accept() {
                 Ok((stream, _)) => stream,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
                 Err(error) => {
-                    tracing::warn!(%error, "test control: accepting a connection failed");
+                    tracing::warn!(%error, "control: accepting a connection failed");
                     return;
                 }
             };
-            let asks = self.asks.clone();
-            let wake = std::sync::Arc::clone(&self.wake);
+            if self.gate == Gate::Owner
+                && let Err(refusal) = agent_door::identify(&stream)
+                    .and_then(|(_, peer)| agent_door::peer_decision(&peer))
+            {
+                tracing::info!(?refusal, path = %self.path.display(), "control: a connection is refused");
+                refuse_owner(stream, &refusal);
+                continue;
+            }
+            let door = Arc::clone(&self.door);
             let spawned = std::thread::Builder::new()
-                .name("tilo-test-control".into())
-                .spawn(move || serve_connection(stream, &asks, &wake));
+                .name("tilo-control".into())
+                .spawn(move || serve_connection(stream, &door));
             if let Err(error) = spawned {
-                tracing::warn!(%error, "test control: a connection could not be served");
+                tracing::warn!(%error, "control: a connection could not be served");
             }
         }
     }
 }
 
-impl Drop for TestControl {
+impl Drop for Socket {
     fn drop(&mut self) {
         // Nothing answers there once the session is gone.
         let _ = std::fs::remove_file(&self.path);
     }
 }
 
-/// Read `stream`'s requests one line at a time, hand each to the loop and write its answer,
-/// until the client closes it or the session ends.
-fn serve_connection(stream: UnixStream, asks: &Sender<Asked>, wake: &Wake) {
-    if let Err(error) = stream.set_nonblocking(false) {
-        tracing::debug!(%error, "test control: a connection cannot block");
-        return;
-    }
-    let Ok(mut writer) = stream.try_clone() else {
-        return;
-    };
-    for line in BufReader::new(stream).lines() {
-        let Ok(request) = line else {
-            return;
-        };
-        if request.trim().is_empty() {
-            continue;
-        }
-        let (answer, answered) = channel();
-        if asks.send(Asked { request, answer }).is_err() {
-            return;
-        }
-        wake();
-        // The loop answers every request it takes; a session that ends drops it unanswered.
-        let Ok(reply) = answered.recv() else {
-            return;
-        };
-        if writer.write_all(format!("{reply}\n").as_bytes()).is_err() {
-            return;
-        }
+impl Drop for Control {
+    fn drop(&mut self) {
+        // A watcher waiting on a state that will never change answers.
+        self.changes.end();
     }
 }
 
-/// The answer to `request`, run against `compositor`.
-/// The answer to `request`, run against `compositor`.
-fn answered(
-    request: &str,
+/// Tell a connection of the owner's door it is not this desktop's owner, in the control
+/// protocol's own framing, then let it go.
+fn refuse_owner(mut stream: UnixStream, refusal: &PeerRefusal) {
+    let message = match refusal {
+        PeerRefusal::Unidentified => "this program couldn't be identified".to_owned(),
+        PeerRefusal::OtherAccount => {
+            "this works only for the account whose desktop this is; sign in as that account"
+                .to_owned()
+        }
+        PeerRefusal::Sandboxed => {
+            "programs inside a sandboxed app can't use tilo-control; the app acts with its own \
+             permissions"
+                .to_owned()
+        }
+        PeerRefusal::Unavailable | PeerRefusal::Busy => refusal.message().to_owned(),
+    };
+    let reply = refusal_json("not_permitted", &message);
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    let _ = stream.write_all(format!("{reply}\n").as_bytes());
+}
+
+/// A connection's writer: shared with the thread that streams the desk's state, so a state line
+/// and an answer never interleave.
+type Writer = Arc<Mutex<UnixStream>>;
+
+/// Read `stream`'s requests one line at a time, answer each, and write its answer, until the
+/// client closes it or the session ends.
+fn serve_connection(stream: UnixStream, door: &Door) {
+    if let Err(error) = stream.set_nonblocking(false) {
+        tracing::debug!(%error, "control: a connection cannot block");
+        return;
+    }
+    let Ok(writer) = stream.try_clone() else {
+        return;
+    };
+    let writer: Writer = Arc::new(Mutex::new(writer));
+    let mut watching: Option<Watching> = None;
+    for line in BufReader::new(stream).lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let answer = match serde_json::from_str::<Json>(&line) {
+            Err(error) => refusal("parse_error", &error.to_string()),
+            Ok(request) => match asked_here(&request, &writer, &mut watching, door) {
+                Some(answer) => answer,
+                // The loop answers every request it takes; a session that ends drops it
+                // unanswered.
+                None => match ask_loop(&request, door) {
+                    Some(answer) => answer,
+                    None => return,
+                },
+            },
+        };
+        if talk(&writer, &answer.to_string()).is_err() {
+            break;
+        }
+    }
+    if let Some(watching) = watching.take() {
+        watching.stop(&door.changes);
+    }
+}
+
+/// Hand `request` to the loop and wait for its answer; `None` when the session ended.
+fn ask_loop(request: &Json, door: &Door) -> Option<Json> {
+    let (answer, answered) = channel();
+    door.asks
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .send(Asked {
+            request: request.clone(),
+            answer,
+        })
+        .ok()?;
+    (door.wake)();
+    answered.recv().ok()
+}
+
+/// Write one answer line.
+fn talk(writer: &Writer, line: &str) -> io::Result<()> {
+    let mut stream = writer.lock().unwrap_or_else(PoisonError::into_inner);
+    stream.write_all(format!("{line}\n").as_bytes())
+}
+
+/// A watching connection's stop flag, and what it takes to end it.
+struct Watching {
+    stop: Arc<AtomicBool>,
+}
+
+impl Watching {
+    fn stop(&self, changes: &Arc<Changes>) {
+        self.stop.store(true, Ordering::Relaxed);
+        changes.poke();
+    }
+}
+
+/// Stream the desk's state to `writer` until it stops watching, off the change signal the loop
+/// publishes on: nothing here polls, and a change wakes the wait.
+fn stream_state(writer: &Writer, door: &Door) -> Watching {
+    let changes = Arc::clone(&door.changes);
+    // Read before attaching: the state attached for is published after this.
+    let mut seen = changes.generation();
+    changes.attach();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::clone(&stop);
+    let writer = Arc::clone(writer);
+    let watched = Arc::clone(&changes);
+    let spawned = std::thread::Builder::new()
+        .name("tilo-control-watch".into())
+        .spawn(move || {
+            while let Some((generation, dump)) = watched.wait(seen, Some(&stopped), None) {
+                seen = generation;
+                let Some(dump) = dump else {
+                    continue;
+                };
+                if talk(&writer, &dump.to_string()).is_err() {
+                    break;
+                }
+            }
+            watched.detach();
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "control: a state watcher could not be served");
+        stop.store(true, Ordering::Relaxed);
+        changes.detach();
+    }
+    Watching { stop }
+}
+
+/// The answer to what `op` asks only of the actions and the change signal, when it asks of
+/// them: answered where the connection asked, so a wait holds no frame.
+fn asked_here(
+    request: &Json,
+    writer: &Writer,
+    watching: &mut Option<Watching>,
+    door: &Door,
+) -> Option<Json> {
+    Some(match request.get("op").and_then(Json::as_str)? {
+        "actions_enumerate" => actions_enumerate(request, &door.actions, &door.changes),
+        "actions_invoke" => actions_invoke(request, &door.actions),
+        "actions_status" => actions_status(request, &door.actions),
+        "actions_cancel" => actions_cancel(request, &door.actions),
+        "watch" => watch(request, writer, watching, door),
+        _ => return None,
+    })
+}
+
+/// Start or stop streaming the desk's state to a connection (`watch`).
+fn watch(request: &Json, writer: &Writer, watching: &mut Option<Watching>, door: &Door) -> Json {
+    let wanted = request
+        .get("watching")
+        .and_then(Json::as_bool)
+        .unwrap_or(true);
+    if !wanted {
+        if let Some(watching) = watching.take() {
+            watching.stop(&door.changes);
+        }
+        return json!({"ok": {}});
+    }
+    if watching.is_none() {
+        *watching = Some(stream_state(writer, door));
+    }
+    json!({"ok": {}})
+}
+
+/// The answer to what `op` asks of the desk, the pointer, the gestures and the keyboard, on
+/// the loop's pass; a refusal for an `op` nobody answers.
+fn loop_answer(
+    request: &Json,
     compositor: &mut Compositor,
     desk: &Desk<'_>,
     held: &RefCell<BTreeSet<u32>>,
 ) -> Json {
-    let request: Json = match serde_json::from_str(request) {
-        Ok(request) => request,
-        Err(error) => return refusal("parse_error", &error.to_string()),
-    };
     let Some(op) = request.get("op").and_then(Json::as_str) else {
         return refusal("parse_error", "a request names its `op`");
     };
-    if let Some(answer) = asked_of_desk(op, &request, compositor, desk) {
+    if let Some(answer) = asked_of_desk(op, request, compositor, desk) {
         return answer;
     }
-    if let Some(answer) = asked_of_pointer(op, &request, compositor) {
+    if let Some(answer) = asked_of_pointer(op, request, compositor) {
         return answer;
     }
-    if let Some(answer) = asked_of_keys(op, &request, compositor, held) {
+    if let Some(answer) = asked_of_gestures(op, request, compositor) {
+        return answer;
+    }
+    if let Some(answer) = asked_of_keys(op, request, compositor, held) {
         return answer;
     }
     refusal(
         "unsupported",
         &format!(
-            "this session's test control answers `snapshot`, `click_at`, `click_named`, \
-             `drag`, `key`, `key_down`, `key_up`, `list_targets`, `modifiers`, \
-             `pointer_button`, `pointer_move`, `provision_test_identity`, `scroll`, \
-             `state_dump`, `type` and `windows`, not `{op}`"
+            "this session's control answers `actions_cancel`, `actions_enumerate`, \
+             `actions_invoke`, `actions_status`, `click_at`, `click_named`, `drag`, `key`, \
+             `key_down`, `key_up`, `list_targets`, `modifiers`, `pinch`, `pointer_button`, \
+             `pointer_move`, `provision_test_identity`, `scroll`, `snapshot`, `state_dump`, \
+             `swipe`, `type`, `watch` and `windows`, not `{op}`"
         ),
     )
 }
@@ -389,6 +692,116 @@ fn asked_of_pointer(op: &str, request: &Json, compositor: &mut Compositor) -> Op
     })
 }
 
+/// The answer to what `op` asks of the seat's gesture tracker, when it asks of it.
+fn asked_of_gestures(op: &str, request: &Json, compositor: &mut Compositor) -> Option<Json> {
+    let events = match op {
+        "swipe" => swipe_events(request),
+        "pinch" => pinch_events(request),
+        _ => return None,
+    };
+    Some(match events {
+        Err(answer) => answer,
+        Ok(events) => inject(compositor, &events),
+    })
+}
+
+/// How many updates a gesture is split into unless the request says: the tools' own default.
+const DEFAULT_GESTURE_STEPS: u32 = 10;
+
+/// The most updates one gesture is split into: what a touchpad reports over a long swipe.
+const MAX_GESTURE_STEPS: u32 = 288;
+
+/// The seat's own gesture is the shell's: fewer fingers are the focused client's, which the
+/// control door refuses rather than delivering where a person's hand could not reach.
+fn client_gesture(fingers: u32) -> Json {
+    refusal(
+        "client_gesture",
+        &format!(
+            "a {fingers}-finger gesture belongs to the focused client; the shell takes {} or \
+             more",
+            gestures::SHELL_FINGER_THRESHOLD
+        ),
+    )
+}
+
+/// A swipe of `fingers` fingers travelling `(dx, dy)` over `steps` updates: a begin, the
+/// updates, and the release at the end unless the request keeps the fingers down.
+fn swipe_events(request: &Json) -> Result<Vec<GestureEvent>, Json> {
+    let fingers = fingers_of(request)?;
+    if !gestures::claims(fingers) {
+        return Err(client_gesture(fingers));
+    }
+    let (dx, dy) = (
+        number(request, "dx").unwrap_or(0.0),
+        number(request, "dy").unwrap_or(0.0),
+    );
+    let steps = gesture_steps(request);
+    let release = request
+        .get("release")
+        .and_then(Json::as_bool)
+        .unwrap_or(true);
+    let n = f64::from(steps);
+    let mut events = vec![GestureEvent::SwipeBegin { fingers }];
+    events.extend((0..steps).map(|_| GestureEvent::SwipeUpdate {
+        dx: dx / n,
+        dy: dy / n,
+    }));
+    if release {
+        events.push(GestureEvent::SwipeEnd { cancelled: false });
+    }
+    Ok(events)
+}
+
+/// A pinch of `fingers` fingers to the absolute `scale` over `steps` updates.
+fn pinch_events(request: &Json) -> Result<Vec<GestureEvent>, Json> {
+    let fingers = fingers_of(request)?;
+    if !gestures::claims(fingers) {
+        return Err(client_gesture(fingers));
+    }
+    let scale = number(request, "scale").unwrap_or(1.0);
+    let steps = gesture_steps(request);
+    let n = f64::from(steps);
+    let mut events = vec![GestureEvent::PinchBegin { fingers }];
+    events.extend((1..=steps).map(|step| GestureEvent::PinchUpdate {
+        dx: 0.0,
+        dy: 0.0,
+        scale: 1.0 + (scale - 1.0) * f64::from(step) / n,
+        rotation: 0.0,
+    }));
+    events.push(GestureEvent::PinchEnd { cancelled: false });
+    Ok(events)
+}
+
+/// A request's `fingers`, which a gesture must name.
+fn fingers_of(request: &Json) -> Result<u32, Json> {
+    request
+        .get("fingers")
+        .and_then(Json::as_u64)
+        .and_then(|fingers| u32::try_from(fingers).ok())
+        .ok_or_else(|| refusal("parse_error", "a gesture takes `fingers`"))
+}
+
+/// A request's `steps`, by the tools' default and within what a touchpad reports.
+fn gesture_steps(request: &Json) -> u32 {
+    request
+        .get("steps")
+        .and_then(Json::as_u64)
+        .map_or(DEFAULT_GESTURE_STEPS, |steps| {
+            u32::try_from(steps).unwrap_or(u32::MAX)
+        })
+        .clamp(1, MAX_GESTURE_STEPS)
+}
+
+/// Feed `events` to the seat, in order.
+fn inject(compositor: &mut Compositor, events: &[GestureEvent]) -> Json {
+    for event in events {
+        if let Err(error) = compositor.input(InputEvent::Gesture(*event)) {
+            return refusal("input_failed", &error.to_string());
+        }
+    }
+    json!({"ok": {}})
+}
+
 /// The answer to what `op` asks of the keyboard, when it asks of it.
 fn asked_of_keys(
     op: &str,
@@ -478,6 +891,582 @@ fn asked_of_keys(
         }
         _ => return None,
     })
+}
+
+/// The actions the control sockets invoke, and how they are asked as.
+struct Actions {
+    /// The broker, with the session's own doors beside it ([`crate::agent_door::Host`]).
+    host: Arc<agent_door::Host>,
+    /// The person's own caller, made once and cloned: the broker remembers an invocation under
+    /// the caller that admitted it, so a status or a cancel reads it back as the same caller.
+    caller: Caller,
+    /// The workspace in front, as the loop last read it: what an invocation opens into.
+    workspace: Mutex<String>,
+    /// The number a tool was answered with, and the invocation it names.
+    ledger: Mutex<BTreeMap<u64, InvocationId>>,
+    next: AtomicU64,
+}
+
+/// How long a host may take to answer a request at all.
+const HOST_WAIT: Duration = Duration::from_secs(30);
+
+/// The longest a control request waits: what `tilo-control` says a desktop caps a wait at.
+const MAX_WAIT: Duration = Duration::from_secs(30);
+
+/// How long a settled wait stands by the host's own answer once it gave one.
+const SETTLE_WAIT: Duration = Duration::from_secs(35);
+
+impl Actions {
+    /// Who a request here is made as: the person at this desktop, in the workspace in front.
+    fn caller(&self) -> Caller {
+        let workspace = self.workspace.lock_recover().clone();
+        let caller = self.caller.clone();
+        if workspace.is_empty() {
+            caller
+        } else {
+            caller.in_workspace(workspace)
+        }
+    }
+
+    /// Whose workspace is in front, as the loop read it: without one, a request names none.
+    fn set_workspace(&self, workspace: Option<String>) {
+        let Some(workspace) = workspace else {
+            return;
+        };
+        let mut held = self.workspace.lock_recover();
+        if *held != workspace {
+            *held = workspace;
+        }
+    }
+
+    /// Remember `invocation` under a fresh number for the tools.
+    fn remember(&self, invocation: InvocationId) -> u64 {
+        let number = self.next.fetch_add(1, Ordering::Relaxed);
+        self.ledger.lock_recover().insert(number, invocation);
+        number
+    }
+
+    /// The invocation a tool's number names, while this session remembers it.
+    fn invocation(&self, number: u64) -> Option<InvocationId> {
+        self.ledger.lock_recover().get(&number).copied()
+    }
+}
+
+/// The answer to `actions_enumerate`: the rows the actions answer with now, in the shape the
+/// tools that drive a desktop read, held until they move past `after_revision` or the listing is
+/// complete.
+fn actions_enumerate(request: &Json, actions: &Actions, changes: &Arc<Changes>) -> Json {
+    let compact = request.get("detail").and_then(Json::as_str) == Some("compact");
+    let kinds: Vec<String> = request
+        .get("kinds")
+        .and_then(Json::as_array)
+        .map(|kinds| {
+            kinds
+                .iter()
+                .filter_map(Json::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let wait_ms = request.get("wait_ms").and_then(Json::as_u64);
+    let after = request
+        .get("after_revision")
+        .and_then(Json::as_str)
+        .map(str::to_owned);
+    // A query of several words is read as the tools read it: the host narrows to the first
+    // word, and the rest narrow what it answered ([`legacy_rows`]).
+    let words: Vec<String> = request
+        .get("query")
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect();
+    let paging = request
+        .get("cursor")
+        .and_then(Json::as_str)
+        .is_some_and(|cursor| !cursor.is_empty());
+    let files = request
+        .get("files")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
+    let deadline = wait_deadline(wait_ms);
+    let mut seen = changes.generation();
+    loop {
+        let page = match catalogue_page(request, actions, &words) {
+            Ok(page) => page,
+            Err(answer) => return answer,
+        };
+        if listing_settled(&page, after.as_deref(), paging, wait_ms.is_some()) {
+            return listing(&page, &words, compact, &kinds, files);
+        }
+        let Some((generation, _)) = changes.wait(seen, None, Some(deadline)) else {
+            return listing(&page, &words, compact, &kinds, files);
+        };
+        seen = generation;
+    }
+}
+
+/// Whether the listing `page` is the one to answer: the one after `after`, or, without one, a
+/// complete listing — the whole of it, or its first page when more pages follow.
+fn listing_settled(page: &CataloguePage, after: Option<&str>, paging: bool, waits: bool) -> bool {
+    if let Some(after) = after {
+        return page.revision != after;
+    }
+    !waits || paging || page.exhausted || !page.next_cursor.is_empty()
+}
+
+/// One page of what the caller is offered, as the broker and the session's own doors answer it.
+fn catalogue_page(
+    request: &Json,
+    actions: &Actions,
+    words: &[String],
+) -> Result<CataloguePage, Json> {
+    let limit = request.get("limit").and_then(Json::as_u64);
+    let mut query = CatalogueQuery {
+        needle: words.first().cloned().unwrap_or_default(),
+        max_results: limit.map_or(MAX_CATALOGUE_PAGE, |limit| {
+            u32::try_from(limit)
+                .unwrap_or(u32::MAX)
+                .clamp(1, MAX_CATALOGUE_PAGE)
+        }),
+        ..CatalogueQuery::default()
+    };
+    if let Some(token) = request
+        .get("cursor")
+        .and_then(Json::as_str)
+        .filter(|token| !token.is_empty())
+    {
+        let Some((revision, cursor)) = decode_cursor(token) else {
+            return Err(refusal(
+                "invalid_arguments",
+                "the cursor is not one this desktop printed",
+            ));
+        };
+        query.revision = Some(revision);
+        query.cursor = cursor;
+    }
+    let caller = actions.caller();
+    match actions.host.query(&caller, query).wait_timeout(HOST_WAIT) {
+        Ok(Some(Ok(page))) => Ok(page),
+        Ok(Some(Err(error))) => Err(action_refusal(&error)),
+        Ok(None) | Err(_) => Err(refusal("unavailable", "the listing did not answer")),
+    }
+}
+
+/// The answer to a page: its rows as the tools know them, and the cursor of the next one.
+fn listing(
+    page: &CataloguePage,
+    words: &[String],
+    compact: bool,
+    kinds: &[String],
+    files: bool,
+) -> Json {
+    if page.stale_cursor {
+        return refusal("stale_cursor", "the listing moved on; list it again");
+    }
+    // Files and folders are the resources behind actions, left out of a listing unless they were
+    // asked for — by `files`, or by a kind filter that may name them.
+    let resources = files || !kinds.is_empty();
+    let mut rows = legacy_rows(page, words, compact, resources);
+    if !kinds.is_empty() {
+        rows.retain(|row| {
+            row.get("kind")
+                .and_then(Json::as_str)
+                .is_some_and(|kind| kinds.iter().any(|wanted| kind_matches(kind, wanted)))
+        });
+    }
+    let truncated = !page.exhausted || page.budget_exhausted;
+    let mut answer = json!({
+        "count": rows.len(),
+        "actions": rows,
+        "revision": page.revision,
+        "complete": !truncated,
+        "truncated": truncated,
+        // This desktop holds a listing request until the listing settles or moves on.
+        "settled": true,
+    });
+    if !page.next_cursor.is_empty()
+        && let Some(fields) = answer.as_object_mut()
+    {
+        fields.insert(
+            "next_cursor".into(),
+            encode_cursor(&page.revision, &page.next_cursor).into(),
+        );
+    }
+    json!({"answer": answer})
+}
+
+/// Whether a row of `kind` answers a `--kind` filter: its kind, in any case, and the names the
+/// tools use for an app or an action.
+fn kind_matches(kind: &str, wanted: &str) -> bool {
+    let wanted = wanted.to_lowercase();
+    kind.eq_ignore_ascii_case(&wanted)
+        || (kind == KIND_APPS
+            && matches!(
+                wanted.as_str(),
+                "app" | "apps" | "application" | "applications"
+            ))
+        || (kind == KIND_ACTIONS && matches!(wanted.as_str(), "action" | "actions"))
+}
+
+/// The kind a row that opens an app is listed as, as the tools group and filter it.
+const KIND_APPS: &str = "Apps";
+/// The kind a row that runs an action is listed as.
+const KIND_ACTIONS: &str = "Actions";
+
+/// The page's rows as the tools that drive a desktop address them.
+///
+/// An app the workspace can open is `applications:<app id>`; an action an app publishes while it
+/// runs is `app-actions:<provider>␟<address>`; any other action is `<provider>:<address>`. The
+/// address is the action model's own — resource, then action ([`ActionAddress::encode`]) — which
+/// the tools print escaped and take back.
+fn legacy_rows(
+    page: &CataloguePage,
+    words: &[String],
+    compact: bool,
+    resources: bool,
+) -> Vec<Json> {
+    page.rows
+        .iter()
+        .filter(|row| resources || row.action.is_some())
+        .filter_map(legacy_row)
+        .filter(|row| row_mentions(row, words))
+        .map(|mut row| {
+            if compact && let Some(fields) = row.as_object_mut() {
+                fields.remove("contract");
+            }
+            row
+        })
+        .collect()
+}
+
+/// One row in the tools' shape, or `None` for a row that only holds more rows.
+fn legacy_row(row: &tilo_actions::remote::CatalogueRow) -> Option<Json> {
+    let action = row.action.as_ref();
+    let mut described = json!({
+        "provider": row.provider,
+        "kind": action.map_or_else(|| row.resource.kind.clone(), |_| KIND_ACTIONS.to_owned()),
+        "operation_kind": action.map(|action| {
+            serde_json::to_value(action.kind).unwrap_or(Json::Null)
+        }),
+        "title": action.map_or_else(
+            || row.resource.label.clone(),
+            |action| action.action_label.clone(),
+        ),
+        "subtitle": row.resource.label,
+        "params": action.map_or_else(Vec::new, |action| {
+            action.params.iter().map(param_row).collect()
+        }),
+        "contract": action.map(|action| {
+            serde_json::to_value(&action.contract).unwrap_or(Json::Null)
+        }),
+        "application": row.app_id,
+        "record": "",
+        "resource": row.resource.id,
+        "semantic_identity": action.map(|action| action.semantic_identity.clone()),
+        "operation": action.map(|action| action.address.action.clone()),
+    });
+    let fields = described.as_object_mut()?;
+    match action {
+        None => {
+            fields.insert("id".into(), row.resource.id.clone().into());
+        }
+        Some(action) => {
+            if opens_app(row, action) {
+                fields.insert("provider".into(), "applications".into());
+                fields.insert("id".into(), row.app_id.clone().into());
+                fields.insert("kind".into(), KIND_APPS.into());
+                fields.insert("title".into(), row.resource.label.clone().into());
+            } else if is_app_action(&row.provider) {
+                fields.insert("provider".into(), "app-actions".into());
+                fields.insert(
+                    "id".into(),
+                    format!("{}\u{1f}{}", row.provider, action.address.encode()).into(),
+                );
+            } else {
+                fields.insert("id".into(), action.address.encode().into());
+            }
+        }
+    }
+    Some(described)
+}
+
+/// One parameter, as the tools read it.
+fn param_row(param: &tilo_actions::ActionParam) -> Json {
+    json!({
+        "name": param.name,
+        "type": param.ty.label(),
+        "required": param.required,
+        "description": param.description,
+        "choices": param.choices,
+        "nullable": param.nullable,
+    })
+}
+
+/// Whether `row` is the workspace's open of an app: the action a person picks an app by.
+fn opens_app(
+    row: &tilo_actions::remote::CatalogueRow,
+    action: &tilo_actions::ActionDescriptor,
+) -> bool {
+    action.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+        && action
+            .address
+            .resource
+            .starts_with(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+        && tilo_actions::remote::provider_workspace(&row.provider).is_some()
+}
+
+/// Whether `provider` names an app's own actions: the instance an app runs in, or an app the
+/// desktop launches.
+fn is_app_action(provider: &str) -> bool {
+    provider.starts_with("application:") || provider.starts_with("launch:")
+}
+
+/// Whether `row` mentions every word the query asked for, over what the tools see of it.
+fn row_mentions(row: &Json, words: &[String]) -> bool {
+    if words.len() < 2 {
+        return true;
+    }
+    let mut fields = Vec::new();
+    for key in [
+        "id",
+        "title",
+        "subtitle",
+        "kind",
+        "application",
+        "operation",
+        "resource",
+    ] {
+        if let Some(text) = row.get(key).and_then(Json::as_str) {
+            fields.push(text.to_lowercase());
+        }
+    }
+    words
+        .iter()
+        .all(|word| word.is_empty() || fields.iter().any(|field| field.contains(word.as_str())))
+}
+
+/// A cursor as the tools carry it: the revision it was cut at and the actions' continuation
+/// after it, so the next page reads on in the listing it was taken from.
+fn encode_cursor(revision: &str, cursor: &[u8]) -> String {
+    format!("{revision}~{}", hex::encode(cursor))
+}
+
+/// [`encode_cursor`] undone, `None` for a token this desktop did not print.
+fn decode_cursor(token: &str) -> Option<(String, Vec<u8>)> {
+    let (revision, cursor) = token.rsplit_once('~')?;
+    Some((revision.to_owned(), hex::decode(cursor).ok()?))
+}
+
+/// The answer to `actions_invoke`: the receipt, by a number the tools follow it with.
+fn actions_invoke(request: &Json, actions: &Actions) -> Json {
+    let Some(provider) = request.get("provider").and_then(Json::as_str) else {
+        return refusal("parse_error", "`actions_invoke` takes `provider`");
+    };
+    let Some(id) = request.get("id").and_then(Json::as_str) else {
+        return refusal("parse_error", "`actions_invoke` takes `id`");
+    };
+    if request.get("device").and_then(Json::as_str).is_some() {
+        return refusal(
+            "unsupported",
+            "this desktop runs an action here; sending one to another device is not served at \
+             this door",
+        );
+    }
+    let workspace = actions.workspace.lock_recover().clone();
+    let target = match legacy_target(provider, id, &workspace) {
+        Ok(target) => target,
+        Err(answer) => return answer,
+    };
+    let argument = match request.get("args") {
+        None | Some(Json::Null) => InvokeArgument::None,
+        Some(Json::Object(object)) if object.is_empty() => InvokeArgument::None,
+        Some(Json::Object(object)) => InvokeArgument::Json(object.clone()),
+        Some(other) => {
+            return refusal(
+                "parse_error",
+                &format!("`args` is an object of arguments, not {other}"),
+            );
+        }
+    };
+    let invocation = InvocationId::new();
+    let caller = actions.caller();
+    let invoke = InvokeRequest {
+        invocation,
+        target,
+        argument,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let receipt = match actions.host.invoke(&caller, invoke).wait_timeout(HOST_WAIT) {
+        Ok(Some(Ok(receipt))) => receipt,
+        Ok(Some(Err(error))) => return action_refusal(&error),
+        Ok(None) | Err(_) => return refusal("unavailable", "the action did not start"),
+    };
+    receipt_answer(
+        actions,
+        &caller,
+        &receipt,
+        request.get("wait_ms").and_then(Json::as_u64),
+    )
+}
+
+/// The answer to `actions_status`: where an invocation a tool started stands now.
+fn actions_status(request: &Json, actions: &Actions) -> Json {
+    let Some(number) = request.get("invocation_id").and_then(Json::as_u64) else {
+        return refusal("parse_error", "`actions_status` takes `invocation_id`");
+    };
+    let Some(invocation) = actions.invocation(number) else {
+        return refusal(
+            "unknown_invocation",
+            &format!("no invocation {number} is known here"),
+        );
+    };
+    let caller = actions.caller();
+    let current = actions
+        .host
+        .observe(&caller, &invocation)
+        .map_or(InvocationUpdate::Accepted { invocation }, |state| {
+            state.update
+        });
+    let update = match request.get("wait_ms").and_then(Json::as_u64) {
+        Some(wait_ms) if wait_ms > 0 && !current.is_terminal() => {
+            settled(actions, &caller, invocation, current, wait_ms)
+        }
+        _ => current,
+    };
+    json!({"answer": {"receipt": {
+        "broker_invocation_id": number,
+        "invocation": invocation,
+        "update": update,
+    }}})
+}
+
+/// The answer to `actions_cancel`: the invocation asked to stop.
+fn actions_cancel(request: &Json, actions: &Actions) -> Json {
+    let Some(number) = request.get("invocation_id").and_then(Json::as_u64) else {
+        return refusal("parse_error", "`actions_cancel` takes `invocation_id`");
+    };
+    let Some(invocation) = actions.invocation(number) else {
+        return refusal(
+            "unknown_invocation",
+            &format!("no invocation {number} is known here"),
+        );
+    };
+    let caller = actions.caller();
+    match actions
+        .host
+        .cancel(&caller, &invocation)
+        .wait_timeout(HOST_WAIT)
+    {
+        Ok(Some(Ok(()))) => json!({"answer": {}}),
+        Ok(Some(Err(error))) => action_refusal(&error),
+        Ok(None) | Err(_) => refusal("unavailable", "the action did not answer the cancel"),
+    }
+}
+
+/// A receipt's answer, held while the invocation runs when the tool asked to wait for it.
+fn receipt_answer(
+    actions: &Actions,
+    caller: &Caller,
+    receipt: &InvocationReceipt,
+    wait_ms: Option<u64>,
+) -> Json {
+    if let ReceiptStatus::Rejected { error } = &receipt.status {
+        return action_refusal(error);
+    }
+    let invocation = receipt.invocation;
+    let number = actions.remember(invocation);
+    let mut update = crate::surfaces::outcome(invocation, &receipt.status)
+        .unwrap_or(InvocationUpdate::Accepted { invocation });
+    if let Some(wait_ms) = wait_ms.filter(|wait_ms| *wait_ms > 0)
+        && !update.is_terminal()
+    {
+        update = settled(actions, caller, invocation, update, wait_ms);
+    }
+    json!({"answer": {"receipt": {
+        "broker_invocation_id": number,
+        "invocation": invocation,
+        "update": update,
+    }}})
+}
+
+/// The invocation's state once it settles, or what it has got to by `wait_ms` from now.
+fn settled(
+    actions: &Actions,
+    caller: &Caller,
+    invocation: InvocationId,
+    current: InvocationUpdate,
+    wait_ms: u64,
+) -> InvocationUpdate {
+    let deadline = wait_deadline(Some(wait_ms));
+    match settle_with(actions.host.as_ref(), caller, invocation, None, deadline)
+        .wait_timeout(SETTLE_WAIT)
+    {
+        Ok(Some(Some(state))) => state.update,
+        _ => actions
+            .host
+            .observe(caller, &invocation)
+            .map_or(current, |state| state.update),
+    }
+}
+
+/// When a wait of `wait_ms` started now ends, capped at what a control request waits.
+fn wait_deadline(wait_ms: Option<u64>) -> Instant {
+    let wait = Duration::from_millis(wait_ms.unwrap_or(0)).min(MAX_WAIT);
+    Instant::now()
+        .checked_add(wait)
+        .unwrap_or_else(Instant::now)
+}
+
+/// The target a tool's `(provider, id)` names, in the action model's own addressing.
+fn legacy_target(provider: &str, id: &str, workspace: &str) -> Result<RemoteActionTarget, Json> {
+    if provider == "applications" {
+        if id.is_empty() {
+            return Err(refusal("unknown_action", "`id` is the app's id"));
+        }
+        return Ok(tilo_actions::remote::application_open_target(workspace, id));
+    }
+    let (provider, address) = if provider == "app-actions" {
+        let Some((provider, address)) = id.split_once('\u{1f}') else {
+            return Err(refusal(
+                "unknown_action",
+                "an app-actions id is `provider␟resource␟action`, as `tilo-control actions list` \
+                 printed it",
+            ));
+        };
+        (provider, address)
+    } else {
+        (provider, id)
+    };
+    let Some(address) = ActionAddress::parse(address) else {
+        return Err(refusal(
+            "unknown_action",
+            "an action's id is `resource␟action`, as `tilo-control actions list` printed it",
+        ));
+    };
+    Ok(RemoteActionTarget {
+        provider: provider.to_owned(),
+        address,
+    })
+}
+
+/// A host's refusal as the tools read it: the codes they know, and what they mean here.
+fn action_refusal(error: &ActionHostError) -> Json {
+    let code = match error {
+        // This door's own refusal is `not_permitted`, which a tool reads as the socket not
+        // serving it at all; an action the person may not run is another answer.
+        ActionHostError::NotPermitted => "not_allowed",
+        ActionHostError::StaleRevision => "stale_cursor",
+        ActionHostError::ConfirmationRequired => "needs_confirmation",
+        other => other.code(),
+    };
+    refusal(code, &error.to_string())
 }
 
 /// `request`'s `name` field, when it is a number.
@@ -632,7 +1621,7 @@ fn type_text(compositor: &mut Compositor, text: &str) -> Result<(), String> {
             .type_char(ch)
             .map_err(|error| error.to_string())?;
         if !typed {
-            compositor.insert_active_text(&ch.to_string());
+            let _ = compositor.insert_active_text(&ch.to_string());
         }
     }
     Ok(())
@@ -640,7 +1629,7 @@ fn type_text(compositor: &mut Compositor, text: &str) -> Result<(), String> {
 
 /// The desk as it is now: its tree without its history, the workspaces this computer holds, what
 /// stands over it, and whether the screen is locked — the shape the tools that drive a desktop
-/// read.
+/// read, and the line a `watch` streams as it changes.
 fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
     let held: BTreeSet<String> = desk
         .engine
@@ -776,7 +1765,150 @@ fn provision_test_identity() -> Json {
 }
 
 fn refusal(code: &str, message: &str) -> Json {
+    refusal_json(code, message)
+}
+
+fn refusal_json(code: &str, message: &str) -> Json {
     json!({"err": {"code": code, "message": message}})
+}
+
+/// The session's change signal, as its watchers and the held action requests read it: what the
+/// desk published, generation by generation, and a condvar that wakes everyone waiting on one.
+struct Changes {
+    state: Mutex<Changed>,
+    settled: Condvar,
+    wake: Option<Wake>,
+}
+
+/// What [`Changes`] keeps.
+struct Changed {
+    /// How many state dumps the desk published: a waiter has seen one of these.
+    generation: u64,
+    /// The latest dump, and the generation it was published at.
+    dump: Option<(u64, Json)>,
+    /// How many connections watch now: the state is only built while someone reads it.
+    watchers: usize,
+    /// A watcher asked for the state as it is now, which the next pass publishes.
+    refresh: bool,
+    /// The session ended: every wait answers.
+    ended: bool,
+}
+
+impl Changes {
+    fn new(wake: Wake) -> Self {
+        Self {
+            state: Mutex::new(Changed {
+                generation: 0,
+                dump: None,
+                watchers: 0,
+                refresh: false,
+                ended: false,
+            }),
+            settled: Condvar::new(),
+            wake: Some(wake),
+        }
+    }
+
+    /// Where the signal stands now, for a waiter that asks before it looks.
+    fn generation(&self) -> u64 {
+        self.state.lock_recover().generation
+    }
+
+    /// A connection started watching: it is sent the state as it is now, and on every change.
+    fn attach(&self) {
+        {
+            let mut state = self.state.lock_recover();
+            state.watchers = state.watchers.saturating_add(1);
+            state.refresh = true;
+        }
+        self.request_refresh();
+    }
+
+    /// A watcher stopped, or went away.
+    fn detach(&self) {
+        let mut state = self.state.lock_recover();
+        state.watchers = state.watchers.saturating_sub(1);
+    }
+
+    /// Wake the loop: the state as it is now is worth a pass.
+    fn request_refresh(&self) {
+        if let Some(wake) = &self.wake {
+            wake();
+        }
+    }
+
+    /// Publish a pass: `moved` says the desk's state changed, and the dump is only built when a
+    /// watcher reads it.
+    fn follow(&self, moved: bool, dump: impl FnOnce() -> Json) {
+        let mut state = self.state.lock_recover();
+        let refresh = std::mem::take(&mut state.refresh);
+        if !moved && !refresh {
+            return;
+        }
+        state.generation = state.generation.wrapping_add(1);
+        let generation = state.generation;
+        if state.watchers > 0 || refresh {
+            state.dump = Some((generation, dump()));
+        }
+        drop(state);
+        self.settled.notify_all();
+    }
+
+    /// The session ended: nothing follows what was published.
+    fn end(&self) {
+        self.state.lock_recover().ended = true;
+        self.settled.notify_all();
+    }
+
+    /// Wake every waiter without publishing: what a waiter's own stop asks.
+    fn poke(&self) {
+        self.settled.notify_all();
+    }
+
+    /// The signal after `seen`, and the state dumped then, or `None` when `stop` was set, the
+    /// session ended, or `until` passed.
+    fn wait(
+        &self,
+        seen: u64,
+        stop: Option<&AtomicBool>,
+        until: Option<Instant>,
+    ) -> Option<(u64, Option<Json>)> {
+        let mut state = self.state.lock_recover();
+        loop {
+            if state.ended || stop.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
+                return None;
+            }
+            if state.generation != seen {
+                let generation = state.generation;
+                let dump = state
+                    .dump
+                    .as_ref()
+                    .filter(|(dumped, _)| *dumped == generation)
+                    .map(|(_, dump)| dump.clone());
+                return Some((generation, dump));
+            }
+            state = match until {
+                None => self
+                    .settled
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
+                Some(until) => {
+                    let left = until.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return None;
+                    }
+                    let (waited, timeout) = self
+                        .settled
+                        .wait_timeout(state, left)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    if timeout.timed_out() && waited.generation == seen {
+                        return None;
+                    }
+                    waited
+                }
+            };
+        }
+    }
 }
 
 #[cfg(test)]
@@ -785,18 +1917,12 @@ mod tests {
 
     #[test]
     fn only_a_development_build_opens_the_socket_it_is_named() {
-        let runtime = Some(OsString::from("/run/user/1000"));
         assert_eq!(
             path_in(true, Some("/run/user/1000/control.sock"), None, None),
             Some(PathBuf::from("/run/user/1000/control.sock"))
         );
         assert_eq!(
-            path_in(
-                false,
-                Some("/run/user/1000/control.sock"),
-                None,
-                runtime.clone()
-            ),
+            path_in(false, Some("/run/user/1000/control.sock"), None, None),
             None
         );
         assert_eq!(
@@ -833,10 +1959,202 @@ mod tests {
     }
 
     #[test]
+    fn the_owners_door_is_the_seats_own_and_a_headless_session_keeps_its_own() {
+        let runtime = Some(OsString::from("/run/user/1000"));
+        assert_eq!(
+            admin_path_in(true, false, None, runtime.clone()),
+            Some(PathBuf::from(
+                "/run/user/1000/tilo-session/admin-control.sock"
+            ))
+        );
+        assert_eq!(
+            admin_path_in(true, true, None, runtime.clone()),
+            Some(PathBuf::from(
+                "/run/user/1000/tilo-session/headless-owner-control.sock"
+            ))
+        );
+        // A session in another desktop's window owns no machine, and serves no owner's door.
+        assert_eq!(admin_path_in(false, false, None, runtime.clone()), None);
+        // A path a developer named is theirs, and tells where it is.
+        assert_eq!(
+            admin_path_in(
+                false,
+                false,
+                Some(PathBuf::from("/run/somewhere.sock")),
+                runtime
+            ),
+            Some(PathBuf::from("/run/somewhere.sock"))
+        );
+        assert_eq!(admin_path_in(true, false, None, None), None);
+    }
+
+    #[test]
     fn a_named_key_and_a_character_are_told_apart() {
         assert_eq!(named_key("Enter"), Some(28));
         assert_eq!(named_key("Super"), Some(125));
         assert_eq!(named_key("enter"), None);
         assert_eq!(named_key("a"), None);
+    }
+
+    #[test]
+    fn a_tools_address_names_the_action_the_model_routes_to() {
+        let open = legacy_target("applications", "so.tilo.notes", "room-1")
+            .expect("an app the workspace can open");
+        assert_eq!(open.provider, "workspace:room-1");
+        assert_eq!(open.address.resource, "app.so.tilo.notes");
+        assert_eq!(
+            open.address.action,
+            tilo_actions::remote::APPLICATION_OPEN_ACTION
+        );
+
+        let app = legacy_target(
+            "app-actions",
+            "application:room-1:so.tilo.notes:abc\u{1f}notes.page:abc\u{1f}new-page",
+            "room-1",
+        )
+        .expect("an app's own action");
+        assert_eq!(app.provider, "application:room-1:so.tilo.notes:abc");
+        assert_eq!(app.address.resource, "notes.page:abc");
+        assert_eq!(app.address.action, "new-page");
+
+        let session = legacy_target("so.tilo.session", "desktop:tab:5\u{1f}close-tab", "room-1")
+            .expect("the session's own action");
+        assert_eq!(session.provider, "so.tilo.session");
+        assert_eq!(session.address.resource, "desktop:tab:5");
+        assert_eq!(session.address.action, "close-tab");
+
+        assert!(legacy_target("app-actions", "half-an-id", "room-1").is_err());
+        assert!(legacy_target("applications", "", "room-1").is_err());
+        assert!(legacy_target("so.tilo.session", "no-action", "room-1").is_err());
+    }
+
+    #[test]
+    fn a_cursor_carries_the_listing_it_was_cut_from() {
+        let cursor = encode_cursor("12.34", &[1, 2, 255]);
+        assert_eq!(cursor, "12.34~0102ff");
+        assert_eq!(
+            decode_cursor(&cursor),
+            Some(("12.34".to_owned(), vec![1, 2, 255]))
+        );
+        assert_eq!(decode_cursor("nonsense"), None);
+        assert_eq!(decode_cursor("12.34~zz"), None);
+    }
+
+    #[test]
+    fn a_client_keeps_its_own_gestures_and_the_shell_takes_three() {
+        let refused = swipe_events(&json!({"fingers": 2, "dx": 100.0, "dy": 0.0}))
+            .expect_err("two fingers are the client's");
+        assert_eq!(refused["err"]["code"], "client_gesture");
+        assert!(
+            refused["err"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("3 or more"))
+        );
+
+        let events = swipe_events(&json!({"fingers": 3, "dx": 300.0, "dy": 0.0, "steps": 3}))
+            .expect("three fingers are the shell's");
+        assert_eq!(events.len(), 5);
+        assert!(matches!(
+            events.first(),
+            Some(GestureEvent::SwipeBegin { fingers: 3 })
+        ));
+        assert!(matches!(events.last(), Some(GestureEvent::SwipeEnd { .. })));
+
+        let held = swipe_events(&json!({"fingers": 3, "dx": 10.0, "release": false}))
+            .expect("a swipe whose fingers stay down");
+        assert_eq!(
+            held.len(),
+            1 + usize::try_from(DEFAULT_GESTURE_STEPS).unwrap()
+        );
+
+        let events = pinch_events(&json!({"fingers": 3, "scale": 2.0, "steps": 2}))
+            .expect("a three-finger pinch");
+        assert_eq!(events.len(), 4);
+        assert!(matches!(
+            events.get(1),
+            Some(GestureEvent::PinchUpdate { scale, .. }) if (*scale - 1.5).abs() < f64::EPSILON
+        ));
+        assert!(matches!(
+            events.get(2),
+            Some(GestureEvent::PinchUpdate { scale, .. }) if (*scale - 2.0).abs() < f64::EPSILON
+        ));
+
+        let clamped = pinch_events(&json!({"fingers": 3, "scale": 2.0, "steps": 10_000}))
+            .expect("a pinch takes the most steps a touchpad reports");
+        assert_eq!(
+            clamped.len(),
+            2 + usize::try_from(MAX_GESTURE_STEPS).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_watcher_is_sent_the_state_and_nothing_is_built_while_none_is() {
+        let changes = Changes::new(Arc::new(|| ()));
+        changes.follow(true, || json!({"state": {"unwatched": true}}));
+        assert_eq!(changes.generation(), 1, "a change wakes a held request");
+        assert!(
+            changes.state.lock_recover().dump.is_none(),
+            "nobody watched; no state was built"
+        );
+
+        changes.attach();
+        assert!(
+            changes.state.lock_recover().refresh,
+            "the state as it is now is asked for"
+        );
+        changes.follow(false, || json!({"state": {"watched": true}}));
+        let (generation, dump) = changes.wait(1, None, None).expect("the published state");
+        assert_eq!(generation, 2);
+        assert_eq!(dump, Some(json!({"state": {"watched": true}})));
+
+        changes.detach();
+        changes.follow(true, || json!({"state": {"unwatched": true}}));
+        assert_eq!(changes.generation(), 3);
+        assert!(
+            changes
+                .state
+                .lock_recover()
+                .dump
+                .as_ref()
+                .is_some_and(|(dumped, _)| *dumped == 2),
+            "the dump a watcher read stays the last one built"
+        );
+    }
+
+    #[test]
+    fn a_wait_answers_when_the_state_changes_or_the_session_ends() {
+        let changes = Changes::new(Arc::new(|| ()));
+        changes.follow(true, Json::default);
+        assert_eq!(changes.generation(), 1);
+        assert_eq!(
+            changes.wait(1, None, Some(Instant::now())),
+            None,
+            "a wait past its deadline answers with what it has"
+        );
+
+        changes.end();
+        assert_eq!(changes.wait(0, None, None), None, "the session ended");
+    }
+
+    #[test]
+    fn an_action_the_person_may_not_run_is_not_a_refused_socket() {
+        assert_eq!(
+            action_refusal(&ActionHostError::NotPermitted)["err"]["code"],
+            "not_allowed"
+        );
+        assert_eq!(
+            action_refusal(&ActionHostError::StaleRevision)["err"]["code"],
+            "stale_cursor"
+        );
+        assert_eq!(
+            action_refusal(&ActionHostError::UnknownAction)["err"]["code"],
+            "unknown_action"
+        );
+        assert_eq!(
+            action_refusal(&ActionHostError::InvalidRequest {
+                reason: "bad".into()
+            })["err"]["code"],
+            "invalid_arguments"
+        );
     }
 }
