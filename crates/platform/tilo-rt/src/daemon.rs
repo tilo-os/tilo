@@ -114,7 +114,9 @@ impl Daemon {
     /// # Errors
     ///
     /// [`Error::InsideRuntime`] or [`Error::UiThread`] when the caller may
-    /// not block, [`Error::Start`] when the runtime cannot be built.
+    /// not block — on the UI thread, or in any runtime context, where the
+    /// thread cannot be handed to a second runtime and tokio would panic —
+    /// and [`Error::Start`] when the runtime cannot be built.
     pub fn run<F: Future>(&self, main: F) -> Result<F::Output, Error> {
         crate::check_may_block()?;
         let runtime = self.build()?;
@@ -236,7 +238,7 @@ mod tests {
 
     #[test]
     fn daemon_workers_refuse_to_block_or_nest() {
-        // phase: workers_refuse_to_block_but_blocking_threads_may
+        // phase: every_thread_of_the_runtime_refuses_to_build_a_second_one
         {
             let runtime = daemon("guard").workers(1).build().unwrap();
             let (on_worker, on_blocking) = runtime.block_on(async {
@@ -249,7 +251,19 @@ mod tests {
                 (on_worker, on_blocking)
             });
             assert!(matches!(on_worker, Err(Error::InsideRuntime)));
-            assert_eq!(on_blocking.unwrap(), 1);
+            assert!(
+                matches!(on_blocking, Err(Error::InsideRuntime)),
+                "a blocking-pool thread is already inside the runtime; it cannot start a second one"
+            );
+        }
+        // phase: run_refuses_inside_another_runtimes_context
+        {
+            let foreign = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let nested = foreign.block_on(async { daemon("nested").workers(1).run(async {}) });
+            assert!(matches!(nested, Err(Error::InsideRuntime)));
         }
         // phase: run_refuses_to_nest
         {

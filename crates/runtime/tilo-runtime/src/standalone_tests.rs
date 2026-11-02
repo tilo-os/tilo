@@ -786,11 +786,13 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     assert!(!grants.may_grant(&workspace_id, "stranger"));
     assert!(!grants.may_grant(&RoomId::new().to_string(), "owner"));
     let recorded = |person: &str| {
-        tilo_rt::app().handle().block_on(grants.record(
-            &consent(&workspace_id, person),
-            app_grant(&workspace_id),
-            AppActionConsent::Always,
-        ))
+        tilo_rt::app()
+            .block_on(grants.record(
+                &consent(&workspace_id, person),
+                app_grant(&workspace_id),
+                AppActionConsent::Always,
+            ))
+            .unwrap()
     };
     assert!(recorded("stranger").is_err());
 
