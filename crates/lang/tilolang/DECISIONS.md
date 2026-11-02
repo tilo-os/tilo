@@ -72,6 +72,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   resource: `@todo.Todo:<doc>/<field>:<item>`, exactly `ResourceRef::id_string`. Without it a
   block could not name a note or a draft, which live inside a collection. Ids still use only
   letters, digits, `_` and `-` between the separators.
+- **A program names any app's resource.** In a program, `@<app id>.<Type>:<id>` of an app it
+  neither holds nor reads is still a `host.Resource` (`foreign_ref`): a value it passes to an
+  action, as the reference a listing or an answer showed (`n2`) is written. Reading it fails as
+  a read of any app the program may not read does.
 - **`list(items) { x -> ... }`** is parsed as `column { for x in items { ... } }`.
 
 ## Language choices
@@ -253,6 +257,17 @@ convergence.md, "Actions".
   label (and icon) of an `if` is the branch a subject at rest takes, every Bool field at its
   default and every parameter at its default (`if done` with `done: Bool = not item.done` is
   the `then` branch); when that cannot be told, the `else` branch, as before.
+- **A `.none` default is left out wherever it stands.** `= .none` needs no parameter before
+  it, so an application that leaves such a parameter out before one it gives passes `.none`
+  there (no E028); the runtime computes a trailing one without code (`DefaultMeta::is_none`).
+  An app that publishes its actions without a module (a native app's surface, the session's)
+  is read with each parameter it may go without as `Option<T> = .none` (`DefaultMeta::none`,
+  no export), so `session.place(resource: n2, x: 80, y: 60)` leaves the rest out, `80` stands
+  for `.some(80)` as anywhere, and a `.none` reaches the app as no argument. A resource
+  parameter of such an action is `host.Resource` (of the kind it names, when it names one):
+  code passes the value it has, never the id's text; a view holding only an id writes
+  `resource(id, of: host.Resource)`. `Callable::signature` shows the defaults, so E022 says
+  what may be left out.
 - **E039.** A write of a register whose value is `not` of that same register, or that register
   plus or minus an amount, is refused: it is computed again wherever the change is applied.
   `let`s are followed (a variable reassigned anywhere is no longer followed). The message names

@@ -1479,6 +1479,11 @@ inputs = [
   "os/components.toml",
   # The registry both vaults decode, as builds that kept lifecycle records wrote it.
   "crates/session/fixtures/",
+  # The tilolang apps a development session seeds, and the notebook the shell's tests place.
+  "apps/tl/notes/",
+  "apps/tl/tasks/",
+  "apps/tl/chat/",
+  "apps/tl/mail/",
 ]
 readers = [
   "crates/session/session/tests/firstboot.rs",
@@ -1486,6 +1491,9 @@ readers = [
   "crates/session/session/tests/session_package.rs",
   "crates/session/session/tests/repl_door.rs",
   "crates/session/session/src/channels/vault.rs",
+  "crates/session/session/src/seeded_apps.rs",
+  "crates/session/session/tests/repl_door.rs",
+  "crates/session/session/tests/shell_screen.rs",
 ]
 
 [[cargo]]

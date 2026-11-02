@@ -137,12 +137,14 @@ fn application() -> ResourceSpec {
     ))
 }
 
-/// The type of a parameter as the description writes it. A resource's address is its id's
-/// text; an object or a list has no type tilolang code gives, so the action is left out.
-const fn field_type(ty: ParamType) -> FieldType {
-    match ty {
-        ParamType::Text | ParamType::Secret | ParamType::DateTime | ParamType::Resource => {
-            FieldType::Text
+/// The type of a parameter as the description writes it. A resource is a resource of the kind
+/// it names, or of any kind: code passes the value it has (a note it found), never its id's
+/// text. An object or a list has no type tilolang code gives, so the action is left out.
+fn field_type(param: &ActionParam) -> FieldType {
+    match param.ty {
+        ParamType::Text | ParamType::Secret | ParamType::DateTime => FieldType::Text,
+        ParamType::Resource => {
+            FieldType::Resource(param.resource_kind().unwrap_or_default().to_owned())
         }
         ParamType::Integer => FieldType::Int,
         ParamType::Number => FieldType::Float,
@@ -168,11 +170,7 @@ fn params(
         name: param.name.to_string(),
         required: param.required,
         schema: serde_json::Value::Null,
-        ty: if ty.is_any() {
-            field_type(param.ty)
-        } else {
-            ty
-        },
+        ty: if ty.is_any() { field_type(param) } else { ty },
         within: None,
     };
     let declared = decl.and_then(|decl| {

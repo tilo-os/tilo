@@ -179,3 +179,33 @@ pub(crate) fn network_status(readings: &crate::status::Shared) -> HostNetworkSta
         metered: None,
     }
 }
+
+impl crate::Session {
+    /// Tell every open app window the temperature of the workspace it is in
+    /// and the colour of the person at this machine, whenever that differs
+    /// from what that window was told: when it opens, when it moves to
+    /// another workspace, when that workspace's picture or temperature
+    /// changes, and when the person chooses another colour.
+    pub(crate) fn follow_window_warmth(&mut self) {
+        // A theme the person's settings changed to is what the desk and the shell draw in
+        // from this frame, as every window is told it below.
+        if let Some(theme) = self.warmth.follow_settings(&self.shared.person) {
+            self.shared.desktop.set_theme(theme.clone());
+            if let Some(shell) = self.shell.as_mut() {
+                shell.set_theme(&theme);
+            }
+        }
+        let Some(tabs) = &mut self.tabs else {
+            return;
+        };
+        let network = network_status(&self.shared.readings);
+        self.warmth.follow(
+            tabs,
+            &self.shared.handle,
+            &self.shared.wallpapers,
+            &self.shared.person,
+            network,
+            ui::time::now(),
+        );
+    }
+}

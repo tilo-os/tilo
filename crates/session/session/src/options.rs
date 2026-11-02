@@ -162,6 +162,11 @@ pub struct Options {
     /// a connection whose executable is one of these and that asks to act as
     /// the person is; any other is asked about as before.
     pub admit_repl: Vec<std::path::PathBuf>,
+    /// Where the development test-control socket opens
+    /// ([`crate::test_control`]), which `tilo-control` drives the session
+    /// over: `tilo-session --test-control PATH`, honoured by development
+    /// builds only. `None`: there is none.
+    pub test_control: Option<std::path::PathBuf>,
     /// The runs of what people ask this session's agents to do. Without one
     /// the session keeps its own, which its broker delivers to the agents
     /// admitted here; one given is a run channel a test plays the agent's
@@ -331,6 +336,7 @@ impl Default for Options {
             action_plane: ActionPlane::default(),
             agent_door: None,
             admit_repl: Vec::new(),
+            test_control: None,
             agent_runs: None,
             launches: std::sync::Arc::default(),
             drives: None,

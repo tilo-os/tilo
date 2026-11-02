@@ -19,7 +19,7 @@ view overview(d: Desk) {
             ui.Text(d.workspace, role: .caption, secondary: true)
             spacer
             ui.Button("New workspace", icon: .plus, size: .small) {
-                on press: session.new_workspace(workspace: .none, name: .none)
+                on press: session.new_workspace()
             }
             ui.Button("Join a workspace", icon: .users, size: .small) {
                 on press: session.join_workspace()

@@ -358,13 +358,28 @@ pub fn action_search_fields<'a>(
 /// [`rank_fields`] for an action.
 #[must_use]
 pub fn rank_action_fields(needle: &str, fields: &[RankField<'_>]) -> Option<i32> {
-    super::ListIndex::default()
-        .with_ranks(action_ranks)
-        .ranks(needle, [fields.iter().copied()])
+    rank_actions_fields(needle, [fields.iter().copied()])
         .into_iter()
         .next()
         .flatten()
-        .map(provider_score)
+}
+
+/// [`rank_action_fields`] for every action of a list at once, row for row: the list is
+/// indexed once, so ranking a session's hundreds of published actions costs one index, not
+/// one per action.
+pub fn rank_actions_fields<'a, R>(
+    needle: &str,
+    rows: impl IntoIterator<Item = R>,
+) -> Vec<Option<i32>>
+where
+    R: IntoIterator<Item = RankField<'a>>,
+{
+    super::ListIndex::default()
+        .with_ranks(action_ranks)
+        .ranks(needle, rows)
+        .into_iter()
+        .map(|rank| rank.map(provider_score))
+        .collect()
 }
 
 /// The actions of `actions` a search for `query` finds, best first, on

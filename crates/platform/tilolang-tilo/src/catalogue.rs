@@ -21,8 +21,8 @@ use tilo_actions::ActionKind;
 use tilo_actions::surface::{FieldType, NamedType, Surface, VerbSurface};
 use tilolang::meta::SearchMeta;
 use tilolang_runtime::meta::{
-    ActionMeta, EffectClass, EnumMeta, FieldMeta, MergeKind, PackageMeta, ParamMeta, TypeMeta,
-    VariantMeta,
+    ActionMeta, DefaultMeta, EffectClass, EnumMeta, FieldMeta, MergeKind, PackageMeta, ParamMeta,
+    TypeMeta, VariantMeta,
 };
 
 use crate::action::{CREATE_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
@@ -480,10 +480,13 @@ impl Reader<'_> {
                 }
                 continue;
             };
+            // A parameter the verb may go without is optional as a tilolang action's is:
+            // `x: Option<Int> = .none`, left out of a call wherever it stands, and given as
+            // `x: 80`. A `.none` reaches the app as no argument, so its own default holds.
             params.push(ParamMeta {
                 name: action_name(&param.name),
                 ty,
-                default: None,
+                default: (!param.required).then(DefaultMeta::none),
             });
         }
         self.meta.actions.push(ActionMeta {
@@ -587,8 +590,16 @@ impl Reader<'_> {
     }
 
     /// The type of a resource of `kind`: this app's by name, a tilolang package's qualified by
-    /// its app; `None` for any kind or another native app's.
+    /// its app, a resource of any kind (`kind` empty) the host's `Resource`, which a value of
+    /// every resource type is; `None` for another native app's.
     fn resource(&self, kind: &str) -> Option<String> {
+        if kind.is_empty() {
+            return Some(format!(
+                "{}.{}",
+                tilolang::HOST_APP,
+                tilolang::RESOURCE_TYPE_NAME
+            ));
+        }
         if let Some(name) = self.kinds.get(kind) {
             return Some(name.clone());
         }

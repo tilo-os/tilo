@@ -28,6 +28,7 @@ use tilo_actions::{ActionDescriptor, OperationKind};
 
 #[path = "mcp_tilo.rs"]
 mod tilo;
+use tilo::actions_note;
 pub(super) use tilo::{Programs, TaskLink};
 pub use tilo::{TaskHosts, TaskProgram};
 
@@ -868,9 +869,14 @@ fn risk_note(action: &ActionDescriptor) -> String {
     }
 }
 
-/// One action in a listing: `#rename(value)  Rename note`.
-fn action_line(action: &ActionDescriptor) -> String {
-    let mut line = format!("#{}{}", action.address.action, params_line(action));
+/// One action in a listing, as a program calls it (`session.show_overview()  Show the
+/// overview`), or as the door's own tools take it (`#rename(value)  Rename note`) where no
+/// program can.
+fn action_line(action: &ActionDescriptor, called: Option<&str>) -> String {
+    let mut line = called.map_or_else(
+        || format!("#{}{}", action.address.action, params_line(action)),
+        str::to_owned,
+    );
     let label = action.action_label.trim();
     if !label.is_empty() && !label.eq_ignore_ascii_case(&action.address.action.replace('-', " ")) {
         let _ = write!(line, "  {}", short(label, LABEL_CHARS));
@@ -879,9 +885,12 @@ fn action_line(action: &ActionDescriptor) -> String {
     line
 }
 
-/// The whole of one action: what it does and what it takes.
-fn action_page(path: &str, action: &ActionDescriptor) -> String {
+/// The whole of one action: what it does and what it takes, and how a program calls it.
+fn action_page(path: &str, action: &ActionDescriptor, called: Option<&str>) -> String {
     let mut page = format!("{path}#{}", action.address.action);
+    if let Some(call) = called {
+        let _ = write!(page, "\n{call}");
+    }
     let label = action.action_label.trim();
     if !label.is_empty() {
         let _ = write!(page, "  {label}");
@@ -2028,28 +2037,41 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(resolved) => resolved,
             Err(note) => return Ok(Reply::ok(note)),
         };
+        // How a program writes what this lists: the listing is the one a program reads.
+        let forms = self.program_forms().await.unwrap_or_default();
+        let called = |action: &ActionDescriptor| forms.called(action, &resolved.app_id);
         if let Some(action) = &parsed.action {
             let (named_at, found) = self.pick_action_in(action, &resolved).await?;
-            return Ok(Reply::ok(action_page(&named_at, &found)));
+            return Ok(Reply::ok(action_page(&named_at, &found, called(&found))));
         }
         let mut lines: Vec<String> = Vec::new();
         if want_resources {
             let mut named: Vec<Node> = resolved.children.clone();
             named.extend(resolved.node.clone());
             for child in &resolved.children {
-                let mut line = child.name(&named);
+                // A resource a program passes as a value goes by a reference, as an answer's.
+                let mut line = self
+                    .listed_reference(&child.kind, &child.id)
+                    .map(|reference| format!("{reference}  "))
+                    .unwrap_or_default();
+                line.push_str(&child.name(&named));
                 if child.container {
                     line.push('/');
                 }
-                let _ = write!(line, "  {}", child.kind);
+                let _ = write!(line, "  {}", forms.kind(&child.kind).unwrap_or(&child.kind));
                 if !child.actions.is_empty() {
-                    let _ = write!(line, "  [{} actions]", child.actions.len());
+                    let _ = write!(line, "  {}", actions_note(&child.actions, &called));
                 }
                 lines.push(line);
             }
         }
         if want_actions {
-            lines.extend(resolved.actions.iter().map(action_line));
+            lines.extend(
+                resolved
+                    .actions
+                    .iter()
+                    .map(|action| action_line(action, called(action))),
+            );
         }
         let total = lines.len();
         let mut text = resolved.path.clone();
@@ -2335,7 +2357,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             } => {
                 let mut reply = outcome(&value);
                 if reply.failed && reply.text.contains("invalid_arguments") {
-                    let _ = write!(reply.text, "\n{}", action_page(&path, &descriptor));
+                    let _ = write!(reply.text, "\n{}", action_page(&path, &descriptor, None));
                 }
                 Ok(reply)
             }
@@ -2780,7 +2802,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     ));
                     (
                         if named { 2 } else { 3 },
-                        format!("{path}{}", action_line(action)),
+                        format!("{path}{}", action_line(action, None)),
                     )
                 }
             };

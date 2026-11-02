@@ -3,7 +3,8 @@
 //! [--firstboot|--firstboot-only]
 //! [--provision-identity|--verify-collaboration-identity] [--no-x11]
 //! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
-//! [--admit-repl PATH]... [-- command args...]`. Listens on a fresh `wayland-N` socket, starts
+//! [--admit-repl PATH]... [--test-control PATH] [--seed-apps]
+//! [-- command args...]`. Listens on a fresh `wayland-N` socket, starts
 //! Xwayland for X11 clients (unless `--no-x11`), prints both displays and the
 //! agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl --door`
 //! takes) and starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set to
@@ -19,6 +20,14 @@
 //! notifications it reaches are the session's own. The two identity commands
 //! open no display: they establish the machine's identity or prove that the
 //! one it holds verifies, and the process stops with their answer.
+//! `--test-control PATH`
+//! opens the development test-control socket there (`tilo-control
+//! snapshot`), in development builds only, and prints it
+//! (`TILO_TEST_CONTROL=`); `--seed-apps` publishes the tilolang notes,
+//! tasks, chat and mail apps filled with their seed data
+//! ([`tilo_session::seeded_apps`]), also in development builds only.
+//! SIGTERM, SIGINT and SIGHUP end the session as ending on its own does, so
+//! what it mounted and bound goes with it.
 
 #[cfg(target_os = "linux")]
 use tilo_session::desktop_services::{Bus, Buses};
@@ -156,6 +165,12 @@ struct CommandLine {
     /// (`--admit-repl PATH`, as often as they name one): their decision,
     /// made as they start the session.
     admit_repl: Vec<std::path::PathBuf>,
+    /// Where the development test-control socket opens, when the command
+    /// line named one and this build opens it.
+    test_control: Option<std::path::PathBuf>,
+    /// Whether the session publishes the seeded tilolang apps
+    /// (`--seed-apps`, in a development build).
+    seed_apps: bool,
 }
 
 /// The command line `ours` parsed, or `None` when it names a backend there
@@ -205,12 +220,25 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
         .filter(|(flag, _)| *flag == "--admit-repl")
         .map(|(_, program)| std::path::PathBuf::from(program))
         .collect();
+    let named = value("--test-control").map(String::as_str);
+    let test_control =
+        tilo_session::test_control::path(tilo_session::test_control::OPENED_BY_THIS_BUILD, named);
+    if named.is_some() && test_control.is_none() {
+        eprintln!("tilo-session: --test-control is honoured by development builds only");
+    }
+    let asked_seed = ours.iter().any(|arg| arg == "--seed-apps");
+    let seed_apps = asked_seed && tilo_session::seeded_apps::SEEDED_BY_THIS_BUILD;
+    if asked_seed && !seed_apps {
+        eprintln!("tilo-session: --seed-apps is honoured by development builds only");
+    }
     Some(CommandLine {
         backend,
         size,
         reach,
         shell,
         admit_repl,
+        test_control,
+        seed_apps,
     })
 }
 
@@ -232,6 +260,8 @@ fn start(
         reach,
         shell,
         admit_repl,
+        test_control,
+        seed_apps,
     } = line;
     let buses = reach.buses.clone();
     record_panics(backend);
@@ -243,8 +273,11 @@ fn start(
     // part of them.
     let config = tilo_session::SessionConfig::load();
     // The machine's power: that policy, applied by the session's loop and
-    // acted on over logind by the service started beside the others.
-    let power = Some(tilo_session_power::PowerLink::new(config.power));
+    // acted on over logind by the service started beside the others. A
+    // headless session has no lid, keys or person at a seat: it would act on
+    // the battery and idle of a machine whose own session does that.
+    let power =
+        (backend != Backend::Headless).then(|| tilo_session_power::PowerLink::new(config.power));
     // A session in a window of another desktop runs on that desktop's
     // machine: its services stay off the host's daemons, its device stays
     // the host's, and no session action it takes reaches the host.
@@ -285,7 +318,7 @@ fn start(
     // eject the notice offers goes over the system bus the desktop services
     // already hold.
     let drives = drives(backend, desktop.as_ref());
-    let options = Options {
+    let mut options = Options {
         services,
         wake,
         setup: setup(host_desktop),
@@ -300,9 +333,27 @@ fn start(
         machine,
         shell,
         admit_repl,
+        test_control,
         ..device_options(machine)
     };
+    // A headless session has no input device: nothing the person does can
+    // ever reset its idle timers, so they would only blank and lock it.
+    if backend == Backend::Headless {
+        options.config.idle = tilo_compositor::IdleConfig::never();
+    }
+    if seed_apps {
+        match tilo_session::seeded_apps::seeded(&tilo_session::identity::seated_person(&options)) {
+            Ok(apps) => options.services.push(Box::new(apps)),
+            Err(error) => eprintln!("tilo-session: the seeded apps did not load: {error}"),
+        }
+    }
+    // A signal ends the loop rather than the process, so the session drops
+    // what it holds as it does when it ends on its own.
+    if let Err(error) = tilo_session::termination::install(options.wake.handle()) {
+        eprintln!("tilo-session: a signal ends this session without its cleanup: {error}");
+    }
     let agent_door = options.agent_door.clone();
+    let test_control = options.test_control.clone();
     let mut session = match start_session(backend, options, size) {
         Ok(session) => session,
         Err(error) => {
@@ -322,8 +373,20 @@ fn start(
         Some(&launch),
         session_bus,
         reach.export_displays,
-        agent_door.as_deref(),
+        Doors {
+            agent: agent_door.as_deref(),
+            test_control: test_control.as_deref(),
+        },
     )
+}
+
+/// The sockets the session bound as it started, printed for what drives it.
+#[cfg(target_os = "linux")]
+struct Doors<'a> {
+    /// The agent door (`TILO_AGENT_DOOR=`).
+    agent: Option<&'a std::path::Path>,
+    /// The development test-control socket (`TILO_TEST_CONTROL=`).
+    test_control: Option<&'a std::path::Path>,
 }
 
 /// The session on `backend`'s displays, at `size` where the backend runs in
@@ -364,7 +427,7 @@ fn run(
     launch: Option<&std::rc::Rc<tilo_session::mount::apps::Apps>>,
     session_bus: Option<&str>,
     export_displays: bool,
-    agent_door: Option<&std::path::Path>,
+    doors: Doors<'_>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
 
@@ -378,8 +441,12 @@ fn run(
     println!("WAYLAND_DISPLAY={socket}");
     // Where a program of this login asks to work here as an agent: what
     // `tilolang repl --door` connects to. The session bound it as it started.
-    if let Some(door) = agent_door.filter(|door| door.exists()) {
+    if let Some(door) = doors.agent.filter(|door| door.exists()) {
         println!("TILO_AGENT_DOOR={}", door.display());
+    }
+    // Where `tilo-control` drives it, in a development build started with one.
+    if let Some(control) = doors.test_control.filter(|control| control.exists()) {
+        println!("{}={}", tilo_session::test_control::ENV, control.display());
     }
     let x11_display = if ours.iter().any(|arg| arg == "--no-x11") {
         None
@@ -408,9 +475,10 @@ fn run(
         .split_first()
         .and_then(|(program, rest)| start_command(program, rest, &environment, session_bus));
     match session.run(|_| {
-        child
-            .as_mut()
-            .is_some_and(|child| child.try_wait().is_ok_and(|status| status.is_some()))
+        tilo_session::termination::asked()
+            || child
+                .as_mut()
+                .is_some_and(|child| child.try_wait().is_ok_and(|status| status.is_some()))
     }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

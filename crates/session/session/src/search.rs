@@ -159,10 +159,6 @@ pub(crate) struct SessionSearch {
     downloaded: RefCell<DownloadedRows>,
 }
 
-/// How many of the search's top results text typed on the canvas reads
-/// through: enough to find the one to place, no more work than that.
-const FIND: usize = 16;
-
 /// The resource of the section keeping search's history.
 pub(crate) const HISTORY: &str = "settings:settings.search_history";
 
@@ -297,9 +293,11 @@ impl SessionSearch {
         }
     }
 
-    /// The top `FIND` results of the one search the palette and an agent's
-    /// `tilo` tool run, over the sources the person has on, in the ranking's
-    /// order: what text typed on the canvas places (shell.md §8).
+    /// The results of the one search the palette and an agent's `tilo` tool
+    /// run, over the sources the person has on, in the ranking's order: what
+    /// text typed on the canvas places (shell.md §8). Every one, as ranked:
+    /// the best resource to place may stand below many actions the text names
+    /// ("Inbox" under each conversation's "Move to inbox").
     #[must_use]
     pub(crate) fn find(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
         let needle = needle.trim();
@@ -343,11 +341,7 @@ impl SessionSearch {
         // name gets (a sum, a web search): text typed on the canvas names a
         // resource to place, never a sentence to search the web for.
         let groups = tilo_desktop_search::search(needle, &refs, 0);
-        groups
-            .into_iter()
-            .flat_map(|group| group.results)
-            .take(FIND)
-            .collect()
+        groups.into_iter().flat_map(|group| group.results).collect()
     }
 
     /// A window was at `place`.
