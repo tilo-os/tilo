@@ -122,15 +122,11 @@ fn read_workspace<T>(
 fn identity_in(
     tree: &dyn WorkspaceMembership,
     workspace: &RoomId,
-) -> Result<crate::registry::IdentityProfile, Response> {
+) -> Result<crate::registry::IdentityProfile, String> {
     let profile = match crate::registry::identity_for_workspace(&workspace.to_string()) {
         Ok(Some(profile)) => profile,
-        Ok(None) => {
-            return Err(Response::Error(
-                "this device has no identity to sign in with".into(),
-            ));
-        }
-        Err(error) => return Err(Response::Error(error.to_string())),
+        Ok(None) => return Err("this device has no identity to sign in with".into()),
+        Err(error) => return Err(error.to_string()),
     };
     if collab_types::personal_cluster(&profile.user_public_key).to_string() == workspace.to_string()
     {
@@ -141,12 +137,12 @@ fn identity_in(
         workspace.policy.is_member(&principal)
     }) {
         Some(true) => Ok(profile),
-        Some(false) => Err(Response::Error(format!(
+        Some(false) => Err(format!(
             "the person this device signs as is not a member of workspace {workspace}"
-        ))),
-        None => Err(Response::Error(format!(
+        )),
+        None => Err(format!(
             "workspace {workspace} is not available on this device"
-        ))),
+        )),
     }
 }
 
@@ -369,7 +365,7 @@ fn metadata_response(
 ) -> Response {
     let profile = match identity_in(tree, workspace) {
         Ok(profile) => profile,
-        Err(refusal) => return refusal,
+        Err(reason) => return Response::Error(reason),
     };
     let record = match runtime_identity::load_metadata_from_path(&profile.record_path) {
         Ok(record) => record,
@@ -481,7 +477,7 @@ fn sign_collaboration_join(
     }
     let profile = match identity_in(tree, bound.workspace) {
         Ok(profile) => profile,
-        Err(refusal) => return refusal,
+        Err(reason) => return Response::Error(reason),
     };
     if foreign(&profile) {
         return Response::Denied("collaboration join requested for a different workspace".into());
@@ -546,7 +542,7 @@ fn sign_collaboration_op(
     }
     let profile = match identity_in(tree, bound_workspace) {
         Ok(profile) => profile,
-        Err(refusal) => return refusal,
+        Err(reason) => return Response::Error(reason),
     };
     if !launch_workspace && !bound.in_personal_cluster(&profile, workspace_id) {
         return Response::Denied(
@@ -666,7 +662,7 @@ fn channel_keys(
     let launch = bound.workspace.to_string();
     let profile = match identity_in(tree, bound.workspace) {
         Ok(profile) => profile,
-        Err(refusal) => return refusal,
+        Err(reason) => return Response::Error(reason),
     };
     if !launch_workspace && !bound.in_personal_cluster(&profile, route.workspace_id) {
         return Response::Denied("channel keys requested for a different launch route".into());
@@ -1953,7 +1949,7 @@ params = []
             collab_types::caps::Principal::Person(id) => id,
             other => panic!("a person id, not {other:?}"),
         };
-        elsewhere.set_owner(other_person);
+        elsewhere.set_owner(other_person.clone());
         tree.write().desktop.workspaces = vec![elsewhere];
         match sign(&tree) {
             Response::Error(message) => {
@@ -1961,6 +1957,18 @@ params = []
             }
             other => panic!("a person the roster lacks is answered as a fault: {other:?}"),
         }
+
+        // Two people in the workspace, the other one its owner, and this
+        // device's person a member beside them: the signature is theirs,
+        // again without anything chosen first.
+        let mut shared = Workspace::in_workspace(WorkspaceId(3), workspace, "Workspace");
+        shared.set_owner(other_person);
+        shared
+            .policy
+            .members
+            .insert(profile.principal_id(), collab_types::Role::Editor);
+        tree.write().desktop.workspaces = vec![shared];
+        assert!(matches!(sign(&tree), Response::Signature(_)));
     }
 
     #[cfg(target_os = "linux")]

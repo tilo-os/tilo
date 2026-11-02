@@ -76,7 +76,7 @@ fn person() -> Person {
     .expect("this computer's identity");
     let profile = tilo_identity_host::registry::identity_for_workspace(WORKSPACE)
         .expect("the identity registry")
-        .expect("the identity is selected for the workspace");
+        .expect("the workspace is answered by this device's person");
     let device = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
     let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");

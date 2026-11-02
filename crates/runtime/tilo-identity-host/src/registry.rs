@@ -403,7 +403,7 @@ impl IdentityRegistryStore {
         // A change made here is read back by the writer's next query, not one
         // refresh later.
         refresh_prompt_registry(&self.identity_dir);
-        // The identity a workspace selected decides whose fleet admits.
+        // The identity this device presents decides whose fleet admits.
         crate::policy_change::announce();
         written
     }
@@ -646,8 +646,9 @@ impl IdentityRegistryStore {
     }
 }
 
-/// Resolve the selected private record for a workspace. Registry failure is
-/// an error rather than a silent fallback to another person's identity.
+/// Resolve the private record this device presents in a workspace. Registry
+/// failure is an error rather than a silent fallback to another person's
+/// identity.
 pub fn selected_identity_path(workspace: &str) -> io::Result<Option<PathBuf>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
@@ -656,7 +657,7 @@ pub fn selected_identity_path(workspace: &str) -> io::Result<Option<PathBuf>> {
         .map(|profile| profile.record_path))
 }
 
-/// Resolve the selected person principal for a workspace.
+/// Resolve the person this device presents in a workspace.
 pub fn selected_principal_id(workspace: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
@@ -918,11 +919,11 @@ mod tests {
             assert_eq!(
                 registry
                     .for_workspace("workspace-a")
-                    .map(|profile| profile.id.clone()),
-                registry.default_identity.clone(),
+                    .map(|profile| profile.id),
+                registry.default_identity,
                 "a workspace is answered by the identity this device is"
             );
-            assert!(alice.id != bob.id);
+            assert_ne!(alice.id, bob.id);
             fs::remove_dir_all(dir).expect("cleanup");
         }
         {
