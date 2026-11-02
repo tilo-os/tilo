@@ -2791,11 +2791,12 @@ impl Widget for DesktopSurface {
             .min()
     }
 
-    /// A queued command is work to draw: it asks for the frame that
-    /// applies it, rather than waiting for an unrelated one, so a host
-    /// that only draws what asks needs no separate schedule.
+    /// A queued command or a request the host made is work to draw: it asks
+    /// for the frame that applies it rather than waiting for an unrelated
+    /// one, so a host that only draws what asks needs no separate schedule.
     fn needs_redraw(&self) -> bool {
-        !self.shared.borrow().queue.is_empty()
+        self.shared.borrow().search_request.is_some()
+            || !self.shared.borrow().queue.is_empty()
             || self.children().into_iter().any(Widget::needs_redraw)
     }
 

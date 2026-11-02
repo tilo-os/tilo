@@ -2059,13 +2059,15 @@ impl Session {
 
     /// Perform `action` on `target` of the surface whose window is the
     /// `place`-th the exporter publishes: what a client does over AT-SPI.
+    /// Answers whether that surface took the action.
+    #[must_use]
     pub fn a11y_perform(
         &mut self,
         place: usize,
         target: ui::accesskit::NodeId,
         action: &ui::a11y::Action,
-    ) {
-        a11y::Accessibility::perform(&self.shared.doors, place, target, action);
+    ) -> bool {
+        a11y::Accessibility::perform(&self.shared.doors, place, target, action)
     }
 
     /// Whether the person logged out, which ends the session's loop.

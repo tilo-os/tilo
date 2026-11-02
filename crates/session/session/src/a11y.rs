@@ -209,16 +209,17 @@ impl Accessibility {
     }
 
     /// Perform `action` on `target` of the surface at `place`, on the loop
-    /// that owns it: the one road a client's request takes.
+    /// that owns it: the one road a client's request takes. Answers whether
+    /// the surface took it.
     pub(crate) fn perform(
         doors: &Doors,
         place: usize,
         target: ui::accesskit::NodeId,
         action: &ui::a11y::Action,
-    ) {
-        if let Some(surface) = doors.surface(place) {
-            surface.borrow_mut().a11y_action(target, action);
-        }
+    ) -> bool {
+        doors
+            .surface(place)
+            .is_some_and(|surface| surface.borrow_mut().a11y_action(target, action))
     }
 
     /// The window the surface at `place` shows now, as an assistive client

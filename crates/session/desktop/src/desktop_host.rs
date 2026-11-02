@@ -157,13 +157,22 @@ impl Widget for EmptyWorkspace {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = self.launchpad.build_layout(taffy, theme, map);
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        // The launchpad keeps the node it is drawn in, so an action addressed
+        // to a control of it reaches the launchpad; this workspace is the
+        // node around it rather than a second claimant of the same one.
+        let launchpad = self.launchpad.build_layout(taffy, theme, map);
+        let style = Style {
+            display: taffy::Display::Flex,
+            size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[launchpad], map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.launchpad.apply_layout(taffy, node, origin);
+        if let Some(launchpad) = taffy.children(node).unwrap_or_default().first() {
+            self.launchpad.apply_layout(taffy, *launchpad, origin);
+        }
     }
 
     fn draw(
