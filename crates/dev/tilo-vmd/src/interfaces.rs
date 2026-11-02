@@ -2,15 +2,16 @@
 //! declaration it ends up with.
 //!
 //! `/usr/share/tilo/system-interfaces.toml` is read by every component of
-//! the matched session set ([`USERSPACE_COMPONENTS`]): the shell, the
+//! the matched session set ([`USERSPACE_COMPONENTS`]): the session, the
 //! launcher, `tilo-install`, the app host and the runtime services judge
-//! apps by it. The file a slot sees is the one its layers ship (only the
-//! shell does, `os/components.toml`), else the image's. A generation in
-//! which one of those components was built for another declaration than
-//! the one it reads is refused before anything is activated: on 2026-10-22
-//! a shell layer from main shipped a one-version-per-interface declaration
-//! over an image whose app host and `ush` read lists of versions, and the
-//! next session start left the app host unable to read it.
+//! apps by it. The file a slot sees is the one its layers ship (only
+//! `tilo-session` does, `os/components.toml`), else the image's. A
+//! generation in which one of those components was built for another
+//! declaration than the one it reads is refused before anything is
+//! activated: on 2026-10-22 a desktop layer from main shipped a
+//! one-version-per-interface declaration over an image whose app host and
+//! `ush` read lists of versions, and the next session start left the app
+//! host unable to read it.
 //!
 //! A component speaks the declaration of the tree it was built from
 //! ([`Provenance::interfaces`]); the image's own components speak the
@@ -308,16 +309,16 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_swap_over_an_image_whose_app_host_reads_another_declaration_is_refused() {
+    fn a_session_swap_over_an_image_whose_app_host_reads_another_declaration_is_refused() {
         let image = list_format_image();
         assert!(matches!(image, Declaration::Unreadable { .. }));
         let stack = [
-            member("shell", &current(), true),
+            member("tilo-session", &current(), true),
             member("launcher", &current(), false),
             member("install", &current(), false),
         ];
         let refused = conflict(Some(&image), &stack, &[]).expect("the swap is refused");
-        assert!(refused.contains("the shell layer's"), "{refused}");
+        assert!(refused.contains("the tilo-session layer's"), "{refused}");
         assert!(refused.contains("shell-ui 11"), "{refused}");
         for from_image in ["app-host", "ush"] {
             assert!(
@@ -333,7 +334,7 @@ mod tests {
         let image = list_format_image();
         let stack: Vec<Member> = USERSPACE_COMPONENTS
             .iter()
-            .map(|component| member(component, &current(), *component == "shell"))
+            .map(|component| member(component, &current(), *component == "tilo-session"))
             .collect();
         let fs = [member("fs", &current(), false)];
         assert_eq!(conflict(Some(&image), &stack, &fs), None);
@@ -366,7 +367,7 @@ mod tests {
 
     #[test]
     fn an_unrecorded_image_under_a_layer_s_declaration_cannot_be_vouched_for() {
-        let refused = conflict(None, &[member("shell", &current(), true)], &[])
+        let refused = conflict(None, &[member("tilo-session", &current(), true)], &[])
             .expect("the image's own readers are unknown");
         assert!(refused.contains("no boot has recorded"), "{refused}");
     }
@@ -377,7 +378,7 @@ mod tests {
         let refused = conflict(
             Some(&image),
             &[
-                member("shell", &current(), true),
+                member("tilo-session", &current(), true),
                 member("app-host", &current(), true),
             ],
             &[],
@@ -434,7 +435,7 @@ mod tests {
         // image's: fs is named among what to swap together.
         let stack: Vec<Member> = USERSPACE_COMPONENTS
             .iter()
-            .map(|component| member(component, &next_runtime, *component == "shell"))
+            .map(|component| member(component, &next_runtime, *component == "tilo-session"))
             .collect();
         let refused = conflict(Some(&image), &stack, &[]).expect("the image's fs serves runtime 2");
         assert!(refused.contains("the image's own fs"), "{refused}");

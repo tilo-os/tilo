@@ -426,7 +426,7 @@ mod tests {
                 "--bin",
                 "shell",
                 "--features",
-                "dev-overrides"
+                "shell/dev-overrides"
             ]
         );
         let manifest = Manifest::parse(
