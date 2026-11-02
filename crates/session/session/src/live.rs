@@ -197,6 +197,10 @@ struct Shared {
     /// The newest content-key epoch seen in each workspace: a grant that
     /// predates a rotation this device already applied is refused.
     epochs: Mutex<BTreeMap<RoomId, u64>>,
+    /// The devices each workspace admitted when this device last read it: a
+    /// member the workspace removed is a change the open sessions re-observe,
+    /// so its session is cut on the removal and not on its next request.
+    rosters: Mutex<BTreeMap<RoomId, BTreeSet<[u8; 32]>>>,
     /// Told when a workspace's membership or keys moved.
     changed: tokio::sync::watch::Sender<u64>,
     planes: Mutex<BTreeMap<RoomId, Joined>>,
@@ -269,6 +273,7 @@ impl Shared {
             return;
         };
         self.observe(workspace, keys.epoch());
+        self.observe_roster(workspace, &members);
         let roster = Roster::new(members.iter().map(|member| member.device));
         let scope = scope_of(workspace);
         let kept = {
@@ -359,8 +364,25 @@ impl Shared {
         self.bump();
     }
 
+    /// Note who `workspace` admits now, and tell the sessions open on this
+    /// relay when that moved.
+    fn observe_roster(&self, workspace: RoomId, members: &[Member]) {
+        let devices: BTreeSet<[u8; 32]> = members.iter().map(|member| member.device).collect();
+        let moved = {
+            let mut rosters = self.rosters.lock_recover();
+            match rosters.insert(workspace, devices.clone()) {
+                Some(before) => before != devices,
+                None => false,
+            }
+        };
+        if moved {
+            self.bump();
+        }
+    }
+
     /// Stop carrying `workspace`: the plane is closed and its sessions cut.
     fn withdraw(&self, workspace: RoomId) {
+        self.rosters.lock_recover().remove(&workspace);
         let gone = self.planes.lock_recover().remove(&workspace);
         if gone.is_some() {
             self.bump();
@@ -416,6 +438,7 @@ impl Live {
             engine,
             device,
             epochs: Mutex::new(BTreeMap::new()),
+            rosters: Mutex::new(BTreeMap::new()),
             changed,
             planes: Mutex::new(BTreeMap::new()),
             wake,
