@@ -99,6 +99,15 @@ impl Core {
         pred: &crate::store::Pred,
         order: Option<&crate::query::Order>,
     ) -> HResult<Value> {
+        // Another app's resources are read from their readings, each the field the filter
+        // asks of it: one whose reading has not come in reads as it would start until it does,
+        // and the view that asked runs again then.
+        if items
+            .iter()
+            .any(|item| matches!(item, Value::Ref(r) if crate::foreign::is_foreign(&r.target)))
+        {
+            return self.query_foreign(items, pred, order);
+        }
         let store = self.store.borrow();
         let mut kept = Vec::new();
         for item in items {
@@ -128,6 +137,59 @@ impl Core {
                     &Lit::Absent,
                 )
                 .map_err(|e| e.to_string())?,
+                _ => Lit::Absent,
+            };
+            keyed.push((key, item));
+        }
+        keyed.sort_by(|(a, _), (b, _)| order_cmp(a, b));
+        if order.descending {
+            keyed.reverse();
+        }
+        Ok(Value::List(
+            keyed.into_iter().map(|(_, item)| item).collect(),
+        ))
+    }
+
+    /// [`Self::query_list`] over resources of an app this runtime does not run: each field the
+    /// filter or the order asks is read from the resource's reading.
+    fn query_foreign(
+        &self,
+        items: Vec<Value>,
+        pred: &crate::store::Pred,
+        order: Option<&crate::query::Order>,
+    ) -> HResult<Value> {
+        let lit = |r: &RefValue, field: &str, absent: &Lit| -> Result<Lit, String> {
+            let (_, info) = self.type_of_ref(&r.target.ty)?;
+            let Some(f) = info.field(field) else {
+                return Err(format!("`{}` has no field `{field}`", info.name));
+            };
+            self.note_reading(crate::foreign::reading_key(&r.target))
+                .map_err(|e| format!("{e:?}"))?;
+            let value = self.read_value(&r.target, f, None)?;
+            Ok(match crate::foreign::lit_of_value(f.kind, &value) {
+                Some(Lit::Absent) | None => absent.clone(),
+                Some(held) => held,
+            })
+        };
+        let mut kept = Vec::new();
+        for item in items {
+            let Value::Ref(r) = &item else {
+                return trap("query: the list holds something other than resources");
+            };
+            let holds = pred.eval(&mut |read: &crate::store::FieldRead| {
+                lit(r, &read.spec.id, &read.absent).map_err(crate::store::StoreError::Invalid)
+            });
+            if holds.map_err(|e| e.to_string())? {
+                kept.push(item);
+            }
+        }
+        let Some(order) = order else {
+            return Ok(Value::List(kept));
+        };
+        let mut keyed = Vec::with_capacity(kept.len());
+        for item in kept {
+            let key = match &item {
+                Value::Ref(r) => lit(r, &order.field, &Lit::Absent)?,
                 _ => Lit::Absent,
             };
             keyed.push((key, item));

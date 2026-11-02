@@ -533,8 +533,17 @@ impl Core {
             // host sets as it follows the session's watch: the slot it moves is what marks the
             // views that read it.
             if crate::foreign::is_foreign(target) {
-                let value = self.read_value(target, f, Some(author))?;
-                (value, None, Some(crate::foreign::reading_key(target)))
+                // Marked whether or not the reading holds the field yet: a view that read a
+                // record before its reading came runs again when it does.
+                let key = crate::foreign::reading_key(target);
+                match self.read_value(target, f, Some(author)) {
+                    Ok(value) => (value, None, Some(key)),
+                    Err(why) => {
+                        drop(frames);
+                        self.note_reading(key)?;
+                        return trap(why);
+                    }
+                }
             } else if f.kind == FieldKind::Collection && matches!(top.kind, FrameKind::View(_)) {
                 // A collection of a union's types names no one item type: each item's is its own.
                 let item = match inner_ty(&f.ty) {
@@ -556,9 +565,7 @@ impl Core {
             }
         };
         if let Some(key) = reading {
-            let generation = self.view_states.borrow().generation(&key);
-            let seen = i64::try_from(generation).unwrap_or(i64::MAX);
-            self.note_state_read(key, generation, &Value::Int(seen))?;
+            self.note_reading(key)?;
         }
         if let Some(read) = read
             && let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind
@@ -566,6 +573,14 @@ impl Core {
             vs.reads.push(read);
         }
         Ok(value)
+    }
+
+    /// Mark the reading slot `key` of a resource of another app as read by the view running:
+    /// it runs again when the host sets a new reading of it.
+    pub(crate) fn note_reading(&self, key: crate::view_state::StateKey) -> HResult<()> {
+        let generation = self.view_states.borrow().generation(&key);
+        let seen = i64::try_from(generation).unwrap_or(i64::MAX);
+        self.note_state_read(key, generation, &Value::Int(seen))
     }
 
     fn mut_ctx(&self, rh: i32, fh: i32) -> HResult<MutCtx> {

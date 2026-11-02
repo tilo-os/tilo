@@ -75,6 +75,12 @@ pub(crate) struct Shell {
     seen: Option<crate::desk_resource::DeskKey>,
     /// The services' revision and the arrangement the places' readings were last followed at.
     followed: Option<(u64, ArrangementReading)>,
+    /// The resources whose readings the shell holds for its places, by id, each with its type
+    /// as the shell's runtime names another app's (`<app>#<Type>`): what a place names, and
+    /// what the views composed there read.
+    reading: std::collections::BTreeMap<String, String>,
+    /// How often each was read for the shell.
+    reads: std::collections::BTreeMap<String, u64>,
     /// The shell's record, shared by every part: the bar draws it and every other display's
     /// bar draws the same.
     record: Rc<RefCell<tilo_resource::Doc>>,
@@ -127,6 +133,8 @@ impl Shell {
             link,
             seen: None,
             followed: None,
+            reading: std::collections::BTreeMap::new(),
+            reads: std::collections::BTreeMap::new(),
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             parts: Vec::new(),
             packages,
@@ -304,17 +312,92 @@ impl Shell {
         }
     }
 
-    /// Hand the shell the reading of every resource a place of `arrangement` names, from what
-    /// `services` publish, whenever the arrangement or a reading moved: a place showing a note
-    /// draws the note's own view over the note the notes app shows.
-    pub(crate) fn follow_places(&mut self, arrangement: &ArrangementReading, services: &Services) {
+    /// Hand the shell what its places show, from what `services` publish: the package of each
+    /// app a place shows a resource of, so the place draws it through that app's own views
+    /// (and none of an app no place shows); the reading of each resource a place names; and
+    /// the reading of each resource those views read, as they read it (an item of a
+    /// collection a reading lists by id). Each reading is read again only when its service
+    /// says it moved, so a change costs the shell only the resources it touched.
+    pub(crate) fn follow_places(
+        &mut self,
+        arrangement: &ArrangementReading,
+        services: &mut Services,
+    ) {
+        let wanted = self.link.take_wanted();
         let key = (services.revision(), arrangement.clone());
-        if self.followed.as_ref() == Some(&key) {
+        let moved_on = self.followed.as_ref() != Some(&key);
+        if !moved_on && wanted.is_empty() {
             return;
         }
-        self.link
-            .follow_places(arrangement, &services.resources(), |id| services.read(id));
+        let mut fresh: Vec<(String, String)> = Vec::new();
+        if self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
+            let placed = tilo_surface_host::shell_part::readings::placed_records(
+                arrangement,
+                &services.resources(),
+            );
+            let mut packages = std::collections::BTreeMap::new();
+            for ty in placed.values() {
+                let Some(app) = tilo_surface_host::shell_part::readings::app_of(ty) else {
+                    continue;
+                };
+                if let Some(module) = services.module(app) {
+                    packages.insert(app.to_owned(), module);
+                }
+            }
+            // A resource of an app no place shows any more is followed no more.
+            self.reading.retain(|_, ty| {
+                tilo_surface_host::shell_part::readings::app_of(ty)
+                    .is_some_and(|app| packages.contains_key(app))
+            });
+            self.link.publish_packages(packages);
+            for (id, ty) in placed {
+                if !self.reading.contains_key(&id) {
+                    fresh.push((id.clone(), ty.clone()));
+                }
+                self.reading.insert(id, ty);
+            }
+        }
+        for (id, ty) in wanted {
+            let shown = tilo_surface_host::shell_part::readings::app_of(&ty)
+                .is_some_and(|app| self.link.package_apps().iter().any(|held| held == app));
+            if shown && !self.reading.contains_key(&id) {
+                self.reading.insert(id.clone(), ty.clone());
+                fresh.push((id, ty));
+            }
+        }
+        if moved_on {
+            let followed: std::collections::BTreeSet<String> =
+                self.reading.keys().cloned().collect();
+            for id in services.moved_among(&followed) {
+                if let Some(ty) = self.reading.get(&id)
+                    && !fresh.iter().any(|(was, _)| *was == id)
+                {
+                    fresh.push((id.clone(), ty.clone()));
+                }
+            }
+        }
+        for (id, ty) in fresh {
+            *self.reads.entry(id.clone()).or_default() += 1;
+            if let Some(reading) = services.read(&id) {
+                self.link.publish_reading(&id, &ty, reading);
+            }
+        }
         self.followed = Some(key);
+    }
+
+    /// How often the shell read each resource its places show, by id, since it started: what
+    /// a test proves a change re-reads only what it touched by.
+    pub(crate) fn reads(&self) -> std::collections::BTreeMap<String, u64> {
+        self.reads.clone()
+    }
+
+    /// The apps whose packages the shell's runtime holds loaded now, because a place shows
+    /// them: every display's part loads the same.
+    pub(crate) fn loaded_apps(&self) -> Vec<String> {
+        self.parts
+            .first()
+            .map(|(_, part)| part.borrow().loaded_apps())
+            .unwrap_or_default()
     }
 
     /// Hand the shell the person's arrangement, which its views draw, whenever it changed.
@@ -503,6 +586,14 @@ impl Shell {
             .any(|(_, part)| part.borrow_mut().says(text))
     }
 
+    /// Where a shown part lays out `text` for assistive technology.
+    pub(crate) fn text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.parts
+            .iter()
+            .filter(|(_, part)| part.borrow().placement().is_some())
+            .find_map(|(_, part)| part.borrow_mut().text_bounds(text))
+    }
+
     /// Where each display's bar stands now, by connector name: what a test reads to prove a
     /// bar on every display, and none on one a fullscreen window owns.
     pub(crate) fn parts(&self) -> Vec<BarPlace> {
@@ -660,7 +751,7 @@ impl crate::Session {
         shell.publish();
         let arrangement = self.shared.arrangement.borrow().reading();
         shell.publish_readings(&self.shared.services.borrow());
-        shell.follow_places(&arrangement, &self.shared.services.borrow());
+        shell.follow_places(&arrangement, &mut self.shared.services.borrow_mut());
         shell.publish_arrangement(arrangement);
         // What the screen says of its edges is what a bar or dock that shows only sometimes
         // follows; it moves without the desk, so it goes every turn. The part covers the bands
@@ -766,6 +857,29 @@ impl crate::Session {
     #[must_use]
     pub fn shell_says(&self, text: &str) -> bool {
         self.shell.as_ref().is_some_and(|shell| shell.says(text))
+    }
+
+    /// Where the shell lays out `text` for assistive technology, logical `(x, y, w, h)`: the
+    /// first node whose label, description or value holds it, on any shown part.
+    #[must_use]
+    pub fn shell_text_bounds(&self, text: &str) -> Option<(f64, f64, f64, f64)> {
+        self.shell.as_ref()?.text_bounds(text)
+    }
+
+    /// The apps whose packages the shell's runtime holds loaded, because a place shows them.
+    #[must_use]
+    pub fn shell_apps(&self) -> Vec<String> {
+        self.shell
+            .as_ref()
+            .map(Shell::loaded_apps)
+            .unwrap_or_default()
+    }
+
+    /// How often the session read each resource the shell's places show, by id, for the
+    /// shell: a reading is read again only when its service says it moved.
+    #[must_use]
+    pub fn shell_reads(&self) -> std::collections::BTreeMap<String, u64> {
+        self.shell.as_ref().map(Shell::reads).unwrap_or_default()
     }
 
     /// The shell's bars, one per display, as each stands now: the output it is on, where it

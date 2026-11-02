@@ -1,10 +1,14 @@
+use so.tilo.lang.chat as chat
+use so.tilo.lang.notes as notes
+
 /// Scenarios: the desk as people meet it, in the states the shell's views are for. Each fills
 /// the desk's own fields (the ones the session writes, which a scenario may set) and the
 /// resources the session's origin carries, so every surface is staged as a screenshot and laid
 /// out by `tilolang layout-check` with nothing running.
 ///
 /// They are seed data for shots, tests and benchmarks, never a person's: a real first launch
-/// starts empty.
+/// starts empty. They stage the places over notes and chat records, which is why only they use
+/// those apps: the shell itself draws any app's records through that app's own views.
 /// An afternoon at a desk: three workspaces, four strips of the one in front with windows in
 /// each, two people working alongside and a task running. The desk at rest.
 scenario "an afternoon at the desk" {

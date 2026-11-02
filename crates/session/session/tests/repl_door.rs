@@ -696,3 +696,255 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         "the mailbox placed is the inbox"
     );
 }
+
+/// A seeded conversation in the inbox, as its subject reads.
+const SUBJECT: &str = "Launch plan for the autumn release";
+const MAIL: &str = "so.tilo.lang.mail";
+
+/// The headless session with the shell as the screen and the seeded apps published, its
+/// agent door at `root` admitting this test's program, and its test-control socket there too;
+/// the framed canvas in front.
+fn seeded_session(root: &std::path::Path) -> Session {
+    let program = std::env::current_exe().expect("this test's program");
+    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: Some(ShellLayer::Screen),
+            collab: false,
+            services: vec![Box::new(apps)],
+            questions: Some(Questions::new()),
+            action_plane: ActionPlane::At(root.join("plane.sock")),
+            agent_door: Some(root.join("agent.sock")),
+            admit_repl: vec![program],
+            test_control: Some(root.join("test-control.sock")),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, "the preset switch", |session| {
+        on_screen(session, "Frames").is_some()
+    });
+    press(&mut session, "Frames");
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, "Typed").is_some()
+    });
+    session
+}
+
+/// Place what "Inbox" finds on the canvas through the door, as the REPL's program does, and
+/// wait until the place shows the seeded conversation.
+fn place_the_inbox(session: &mut Session, root: &std::path::Path) {
+    let mut repl = Repl::connect(&root.join("agent.sock"));
+    repl.opened(session);
+    let (answer, failed) = repl.call(
+        session,
+        "tilo",
+        json!({"program": "session.place_found(text: \"Inbox\", view: .none, x: .some(80), y: .some(60))"}),
+    );
+    assert!(!failed, "the program ran: {answer}");
+    until(
+        session,
+        "the inbox's conversation on the canvas",
+        |session| session.shell_says(SUBJECT),
+    );
+}
+
+/// Send `request` on the test-control socket at `socket` as `tilo-control` does, running the
+/// session until it answers.
+fn control(session: &mut Session, socket: &std::path::Path, request: &Value) -> Value {
+    let socket = socket.to_path_buf();
+    let request = request.to_string();
+    let (answer, answered) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut stream = UnixStream::connect(&socket).expect("the test-control socket");
+        stream
+            .write_all(format!("{request}\n").as_bytes())
+            .expect("the socket reads");
+        let mut line = String::new();
+        BufReader::new(stream)
+            .read_line(&mut line)
+            .expect("an answer");
+        answer
+            .send(serde_json::from_str::<Value>(&line).expect("a JSON answer"))
+            .unwrap();
+    });
+    for _ in 0..30_000 {
+        if let Ok(answer) = answered.try_recv() {
+            return answer;
+        }
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    panic!("the test-control socket never answered");
+}
+
+/// How many pixels of `shot` in the logical rectangle `(x, y, w, h)` (scale 1) differ from
+/// the colour most of it is: what is drawn there over its background, in either theme.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a rectangle on a 1280x800 screen"
+)]
+fn inked(shot: &image::RgbaImage, (x, y, w, h): (f64, f64, f64, f64)) -> usize {
+    let mut counts: std::collections::HashMap<[u8; 4], usize> = std::collections::HashMap::new();
+    let mut pixels = Vec::new();
+    for py in (y.max(0.0) as u32)..((y + h) as u32).min(shot.height()) {
+        for px in (x.max(0.0) as u32)..((x + w) as u32).min(shot.width()) {
+            let pixel = shot.get_pixel(px, py).0;
+            *counts.entry(pixel).or_default() += 1;
+            pixels.push(pixel);
+        }
+    }
+    let Some((ground, _)) = counts.iter().max_by_key(|(_, count)| **count) else {
+        return 0;
+    };
+    let far = |a: [u8; 4], b: [u8; 4]| {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| u32::from(x.abs_diff(y)))
+            .sum::<u32>()
+            > 96
+    };
+    pixels.iter().filter(|pixel| far(**pixel, *ground)).count()
+}
+
+/// The seeded inbox placed through the door stands on the canvas as the mail app's own view
+/// of it: a seeded conversation's subject is laid out in it, and drawn where it is laid out in
+/// the snapshot `tilo-control` takes. Mail's package is loaded because the place shows it.
+#[test]
+fn the_seeded_inbox_placed_through_the_door_is_drawn_as_mails_inbox() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    assert!(
+        session.shell_apps().is_empty(),
+        "no app's package is the shell's before a place shows it: {:?}",
+        session.shell_apps()
+    );
+    place_the_inbox(&mut session, root.path());
+    assert_eq!(session.shell_apps(), vec![MAIL.to_owned()]);
+    // As it stands once the frames after it settled, not only on the first.
+    for _ in 0..50 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let subject = session
+        .shell_text_bounds(SUBJECT)
+        .expect("the conversation's row is laid out");
+    assert!(
+        subject.2 > 0.0 && subject.3 > 0.0,
+        "the conversation's row has room: {subject:?}"
+    );
+    let png = root.path().join("shot.png");
+    let answer = control(
+        &mut session,
+        &root.path().join("test-control.sock"),
+        &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
+    );
+    assert_eq!(answer, json!({"ok": {"frame": 0}}), "the snapshot is taken");
+    let shot = image::open(&png).expect("a PNG").into_rgba8();
+    assert!(
+        inked(&shot, subject) > 20,
+        "the conversation's row is drawn where it is laid out, {subject:?}"
+    );
+}
+
+/// An app's package is the shell's only while a place shows one of its resources: closing the
+/// inbox's place unloads mail's package.
+#[test]
+fn an_app_no_place_shows_is_unloaded() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    place_the_inbox(&mut session, root.path());
+    assert_eq!(session.shell_apps(), vec![MAIL.to_owned()]);
+    let places: Vec<u64> = session
+        .arrangement()
+        .borrow()
+        .strips()
+        .places()
+        .map(|place| place.id)
+        .collect();
+    for place in places {
+        session
+            .invoke(
+                "shell:arrangement",
+                "close-place",
+                json!({"place": place}).as_object().unwrap(),
+            )
+            .expect("the place closes");
+    }
+    until(&mut session, "mail's package unloaded", |session| {
+        session.shell_apps().is_empty()
+    });
+    assert!(
+        !session.shell_says(SUBJECT),
+        "nothing shows the conversation any more"
+    );
+}
+
+/// The resource of the seeded mail of the type `ty` whose label is `label`.
+fn seeded(session: &Session, ty: &str, label: &str) -> tilo_actions::ResourceSpec {
+    fn find(
+        resources: &[tilo_actions::ResourceSpec],
+        kind: &str,
+        label: &str,
+    ) -> Option<tilo_actions::ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.kind == kind && resource.label == label {
+                Some(resource.clone())
+            } else {
+                find(&resource.children, kind, label)
+            }
+        })
+    }
+    find(&session.resources(), &format!("tl.{MAIL}.{ty}"), label)
+        .unwrap_or_else(|| panic!("the seeded {ty} {label:?}"))
+}
+
+/// A change to one conversation the inbox shows reads that conversation's reading again, and
+/// no other: not the mailbox, the mail's root, its account or the other conversations.
+#[test]
+fn a_change_to_one_thread_rereads_only_that_threads_reading() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    place_the_inbox(&mut session, root.path());
+    for _ in 0..50 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let before = session.shell_reads();
+    let thread = seeded(&session, "Thread", "Dinner on Friday?");
+    assert!(
+        before.contains_key(thread.id.as_str()),
+        "the inbox read the conversation: {before:?}"
+    );
+    let flag = thread
+        .actions
+        .iter()
+        .find(|action| action.label == "Flag")
+        .expect("a conversation can be flagged")
+        .id
+        .clone();
+    session
+        .invoke(thread.id.as_str(), &flag, &Map::new())
+        .expect("the conversation is flagged");
+    until(&mut session, "the conversation read again", |session| {
+        session.shell_reads().get(thread.id.as_str()) != before.get(thread.id.as_str())
+    });
+    for _ in 0..50 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let after = session.shell_reads();
+    let read_again: Vec<&String> = after
+        .iter()
+        .filter(|(id, count)| before.get(*id) != Some(*count))
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(
+        read_again,
+        vec![thread.id.as_str()],
+        "only the conversation that changed is read again"
+    );
+}

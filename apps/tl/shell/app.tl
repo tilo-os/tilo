@@ -1,8 +1,5 @@
 app so.tilo.shell "Shell" (icon: .monitor, category: .system, records: .own)
 
-use so.tilo.lang.chat as chat
-use so.tilo.lang.notes as notes
-use so.tilo.lang.tasks as tasks
 use so.tilo.session as session
 
 /// This device's desk as the session holds it: the time in the person's style, who they are,

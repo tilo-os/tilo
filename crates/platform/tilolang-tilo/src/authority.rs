@@ -97,6 +97,22 @@ impl TiloAuthority {
         }
     }
 
+    /// The code of the app `app` runs here no more: its modules are trusted no longer, until a
+    /// package of it is loaded again ([`Self::load`]).
+    pub fn forget_app(&self, app: &str) {
+        let mut state = self.state.borrow_mut();
+        let modules: Vec<ModuleHash> = state
+            .apps
+            .iter()
+            .filter(|(_, of)| *of == app)
+            .map(|(module, _)| module.clone())
+            .collect();
+        for module in &modules {
+            state.trusted.remove(module);
+            state.apps.remove(module);
+        }
+    }
+
     /// Trust the code of this exact module version.
     pub fn trust(&self, module: &ModuleHash) {
         self.state.borrow_mut().trusted.insert(module.clone());

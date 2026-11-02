@@ -147,13 +147,24 @@ fn showing(service: &RecordService, note: &str) -> (ShellPart, Rc<SessionLink>) 
     let arrangement = arrangement(note);
     link.publish_arrangement(arrangement.clone());
     assert!(
-        link.follow_places(&arrangement, &service.resources(), |id| service.read(id)),
+        follow(&link, &arrangement, service),
         "the place's record has a reading"
     );
     for _ in 0..4 {
         part.prepare_frame();
     }
     (part, link)
+}
+
+/// What the session hands the shell for `arrangement`'s places, as it does on its turn: the
+/// notes app's package, which the places show, and the readings of the records they name.
+/// Whether a reading changed.
+fn follow(link: &SessionLink, arrangement: &ArrangementReading, service: &RecordService) -> bool {
+    link.publish_packages(BTreeMap::from([(
+        NOTES_APP.to_owned(),
+        service.module(NOTES_APP).expect("the notes app's module"),
+    )]));
+    link.follow_places(arrangement, &service.resources(), |id| service.read(id))
 }
 
 /// Run what the shell asked against the note's door, as the session's turn does.
@@ -270,7 +281,7 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
     );
 
     // And the place draws the note as it is now.
-    assert!(link.follow_places(&arrangement, &service.resources(), |id| service.read(id)));
+    assert!(follow(&link, &arrangement, &service));
     for _ in 0..4 {
         part.prepare_frame();
     }
@@ -345,7 +356,7 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     let mut arrangement = arrangement(&note);
     arrangement.places[0].shown_as = String::new();
     link.publish_arrangement(arrangement.clone());
-    assert!(link.follow_places(&arrangement, &service.resources(), |id| service.read(id)));
+    assert!(follow(&link, &arrangement, &service));
     for _ in 0..6 {
         part.prepare_frame();
     }
