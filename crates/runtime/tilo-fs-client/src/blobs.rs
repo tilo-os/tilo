@@ -55,17 +55,17 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Who a connection acts for, fixed by the handoff frame before the first RPC.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlobPrincipal {
-    /// A sandboxed app in a room: the connection's bootstrap is that scope's
+    /// A sandboxed app in a workspace: the connection's bootstrap is that scope's
     /// `DocumentBlobs`.
     App(BlobScope),
     /// The desktop session: the bootstrap is `SessionBlobs`.
     Session,
 }
 
-/// One app's document media in one room.
+/// One app's document media in one workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlobScope {
-    room: String,
+    workspace: String,
     app: String,
 }
 
@@ -77,18 +77,18 @@ impl BlobScope {
     /// # Errors
     ///
     /// Returns [`BlobError::InvalidScope`] for anything else.
-    pub fn new(room: impl Into<String>, app: impl Into<String>) -> Result<Self, BlobError> {
-        let room = room.into();
+    pub fn new(workspace: impl Into<String>, app: impl Into<String>) -> Result<Self, BlobError> {
+        let workspace = workspace.into();
         let app = app.into();
-        if valid_scope_component(&room) && valid_scope_component(&app) {
-            Ok(Self { room, app })
+        if valid_scope_component(&workspace) && valid_scope_component(&app) {
+            Ok(Self { workspace, app })
         } else {
             Err(BlobError::InvalidScope)
         }
     }
 
-    pub fn room(&self) -> &str {
-        &self.room
+    pub fn workspace(&self) -> &str {
+        &self.workspace
     }
 
     pub fn app(&self) -> &str {
@@ -156,7 +156,7 @@ impl std::fmt::Display for BlobError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidHash => f.write_str("blob hash must be 64 lowercase hex characters"),
-            Self::InvalidScope => f.write_str("blob scope names an invalid room or app"),
+            Self::InvalidScope => f.write_str("blob scope names an invalid workspace or app"),
             Self::TooLarge { len, limit } => {
                 write!(f, "blob is {len} bytes; the limit is {limit} bytes")
             }
@@ -183,15 +183,17 @@ impl From<capnp::Error> for BlobError {
 struct HandoffFrame {
     protocol: u16,
     principal: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    room: Option<String>,
+    /// The launcher sends `workspace`; a frame written before it did said
+    /// `room`, which is still read.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "room")]
+    workspace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     app_id: Option<String>,
 }
 
 /// Write the handoff that fixes a new connection's principal: the magic, a
 /// little-endian `u32` length and a JSON object
-/// `{"protocol":1,"principal":"app","room":…,"app_id":…}` or
+/// `{"protocol":1,"principal":"app","workspace":…,"app_id":…}` or
 /// `{"protocol":1,"principal":"session"}`. The launcher writes the same bytes.
 ///
 /// # Errors
@@ -202,13 +204,13 @@ pub fn write_handoff(stream: &mut impl io::Write, principal: &BlobPrincipal) -> 
         BlobPrincipal::App(scope) => HandoffFrame {
             protocol: BLOB_HANDOFF_PROTOCOL,
             principal: "app".into(),
-            room: Some(scope.room.clone()),
+            workspace: Some(scope.workspace.clone()),
             app_id: Some(scope.app.clone()),
         },
         BlobPrincipal::Session => HandoffFrame {
             protocol: BLOB_HANDOFF_PROTOCOL,
             principal: "session".into(),
-            room: None,
+            workspace: None,
             app_id: None,
         },
     };
@@ -242,8 +244,8 @@ where
     if frame.protocol != BLOB_HANDOFF_PROTOCOL {
         return Err(invalid("unsupported document-media handoff protocol"));
     }
-    match (frame.principal.as_str(), frame.room, frame.app_id) {
-        ("app", Some(room), Some(app)) => BlobScope::new(room, app)
+    match (frame.principal.as_str(), frame.workspace, frame.app_id) {
+        ("app", Some(workspace), Some(app)) => BlobScope::new(workspace, app)
             .map(BlobPrincipal::App)
             .map_err(|_| invalid("document-media handoff names an invalid scope")),
         ("session", None, None) => Ok(BlobPrincipal::Session),
@@ -459,17 +461,17 @@ impl BlobClient {
         Self::start(stream.into_raw_fd(), true)
     }
 
-    /// For a session client: the capability of one app in one room.
+    /// For a session client: the capability of one app in one workspace.
     ///
     /// # Errors
     ///
     /// Returns [`BlobError::InvalidScope`] for an invalid scope or a client
     /// that is not a session root, or a connection error.
-    pub fn scope(&self, room: &str, app: &str) -> Result<Self, BlobError> {
+    pub fn scope(&self, workspace: &str, app: &str) -> Result<Self, BlobError> {
         if !self.worker.session || self.target != ROOT {
             return Err(BlobError::InvalidScope);
         }
-        let scope = BlobScope::new(room, app)?;
+        let scope = BlobScope::new(workspace, app)?;
         let target = self.call(|reply| Job::Scope { scope, reply })?;
         Ok(Self {
             worker: Arc::clone(&self.worker),
@@ -1277,7 +1279,9 @@ async fn run_job(job: Job, connection: &Connection) {
                 let mut request = root.scope_request();
                 {
                     let mut params = request.get();
-                    params.set_room(scope.room());
+                    // The schema field keeps `room`: it is wire that the
+                    // one-wire replacement removes.
+                    params.set_room(scope.workspace());
                     params.set_app(scope.app());
                 }
                 let answer = request.send().promise.await?;

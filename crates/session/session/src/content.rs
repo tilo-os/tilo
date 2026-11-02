@@ -383,7 +383,7 @@ struct Media(Arc<Shelf>);
 /// content in.
 fn scoped(scope: &BlobScope) -> ContentScope {
     ContentScope {
-        workspace: scope.room().to_owned(),
+        workspace: scope.workspace().to_owned(),
         app: scope.app().to_owned(),
     }
 }

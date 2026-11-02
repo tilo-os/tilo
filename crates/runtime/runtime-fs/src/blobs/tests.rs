@@ -31,7 +31,7 @@ impl MemoryBackend {
         self.refs
             .lock()
             .unwrap()
-            .insert((scope.room().to_owned(), hash.clone()));
+            .insert((scope.workspace().to_owned(), hash.clone()));
         BlobRef { hash, len, mime }
     }
 }
@@ -84,7 +84,7 @@ impl BlobBackend for MemoryBackend {
                 .refs
                 .lock()
                 .unwrap()
-                .contains(&(scope.room().to_owned(), hash.clone()))
+                .contains(&(scope.workspace().to_owned(), hash.clone()))
             {
                 return ReadOutcome::Unavailable;
             }
@@ -108,7 +108,7 @@ impl BlobBackend for MemoryBackend {
             self.refs
                 .lock()
                 .unwrap()
-                .contains(&(scope.room().to_owned(), hash))
+                .contains(&(scope.workspace().to_owned(), hash))
         })
     }
 
@@ -118,7 +118,7 @@ impl BlobBackend for MemoryBackend {
                 .refs
                 .lock()
                 .unwrap()
-                .contains(&(scope.room().to_owned(), hash.clone()))
+                .contains(&(scope.workspace().to_owned(), hash.clone()))
             {
                 return None;
             }
