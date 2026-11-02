@@ -125,6 +125,23 @@ impl Notice {
         notifications.push(self.into_notification(notifications));
     }
 
+    /// Show it on the desk this session draws, for a session with no
+    /// notifications service: what the session raises is kept there rather
+    /// than lost, and it stays until the person lets it go.
+    pub(crate) fn tell_desk(self, desk: &DesktopNotifications) {
+        let severity = match self.urgency {
+            0 => NotificationSeverity::Info,
+            1 => NotificationSeverity::Warning,
+            _ => NotificationSeverity::Error,
+        };
+        desk.post(
+            DeskNotification::new(self.title, self.body)
+                .with_app_name(self.app)
+                .with_severity(severity)
+                .with_dismiss_after(PERSISTENT_DISMISS),
+        );
+    }
+
     /// Show it to the person, and say which notification went out: a producer
     /// whose notice the person acts on needs its id to know what they meant.
     fn tell_as(self, notifications: &Notifications) -> u32 {
@@ -273,6 +290,79 @@ pub(crate) fn tell_desk_not_opened(notices: &DesktopNotifications, refusal: &Sta
             .with_severity(NotificationSeverity::Error)
             .with_dismiss_after(PERSISTENT_DISMISS),
     );
+}
+
+/// What a paste of files has to tell the person, or `None` when it went
+/// through: the files it could not paste and why, what stopped it before it
+/// began, or that a paste the last session was in the middle of was taken
+/// back.
+pub(crate) fn paste_notice(outcome: &crate::mount::clipboard_files::Outcome) -> Option<Notice> {
+    use crate::mount::clipboard_files::Refused;
+    // A paste a stopped session was in the middle of is answered for on its
+    // own: what it kept is right, and what it could not put back is said
+    // plainly, because the next session tries again.
+    if outcome.undone {
+        let body = match &outcome.refusal {
+            Some(Refused::Stopped(reason)) => t_args(
+                "paste-undone-trouble",
+                &[
+                    ("landed", outcome.landed.to_string().into()),
+                    ("total", outcome.total.to_string().into()),
+                    ("reason", reason.as_str().into()),
+                ],
+            ),
+            _ => t_args(
+                "paste-undone-body",
+                &[
+                    ("landed", outcome.landed.to_string().into()),
+                    ("total", outcome.total.to_string().into()),
+                ],
+            ),
+        };
+        return Some(Notice::new(
+            t("paste-app-name"),
+            0,
+            t("paste-undone-title"),
+            body,
+        ));
+    }
+    if let Some(refusal) = &outcome.refusal {
+        let body = match refusal {
+            Refused::Nothing => t("paste-nothing-to-paste"),
+            Refused::NotAFolder(path) => t_args(
+                "paste-not-a-folder",
+                &[("path", path.display().to_string().into())],
+            ),
+            Refused::Stopped(reason) => {
+                t_args("paste-stopped", &[("reason", reason.as_str().into())])
+            }
+        };
+        return Some(Notice::new(
+            t("paste-app-name"),
+            1,
+            t("paste-refused-title"),
+            body,
+        ));
+    }
+    if !outcome.failed.is_empty() {
+        let (name, reason) = outcome.failed.first()?;
+        let body = t_args(
+            "paste-failed-body",
+            &[
+                ("failed", outcome.failed.len().to_string().into()),
+                ("total", outcome.total.to_string().into()),
+                ("name", name.as_str().into()),
+                ("reason", reason.as_str().into()),
+            ],
+        );
+        return Some(Notice::new(
+            t("paste-app-name"),
+            1,
+            t("paste-failed-title"),
+            body,
+        ));
+    }
+    None
 }
 
 /// Room `path`'s filesystem has left, when the path exists.

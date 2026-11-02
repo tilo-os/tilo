@@ -156,3 +156,15 @@ identity-clock-wait-expired = Your Tilo identity is safe. Its certificate ran un
 
 ## what the readout calls the keyboard, whose backlight it just changed.
 osd-keyboard-name = Keyboard
+
+## What a paste of copied files into a folder did.
+paste-app-name = Files
+paste-refused-title = Nothing was pasted
+paste-nothing-to-paste = Every name was taken, or the files are already in that folder.
+paste-not-a-folder = { $path } is not a folder.
+paste-stopped = { $reason }
+paste-failed-title = Some files were not pasted
+paste-failed-body = { $failed } of { $total } did not land. { $name }: { $reason }
+paste-undone-title = The last paste did not finish
+paste-undone-body = { $landed } of { $total } had already landed. Those are kept; the rest is where it was.
+paste-undone-trouble = { $landed } of { $total } had already landed. Those are kept; the rest could not be put back yet: { $reason }

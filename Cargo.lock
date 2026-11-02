@@ -21261,6 +21261,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hex",
+ "host-fs",
  "image",
  "iroh",
  "launcher",

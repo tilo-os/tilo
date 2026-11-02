@@ -1,5 +1,4 @@
-//! This device's clipboard history, and any file paste it was in the middle
-//! of.
+//! This device's clipboard history.
 //!
 //! Copies are kept so they survive the session and a restart: the history
 //! the person can paste from again, with what they pinned. A copy is one
@@ -7,21 +6,11 @@
 //! reach this section (the compositor drops them), so nothing here needs to
 //! decide what may be kept.
 //!
-//! A paste of files is a journal, not a wish: every item is written down
-//! before it is touched and marked done after, so a session that dies in the
-//! middle of one finishes it when it starts again instead of leaving half a
-//! folder behind unexplained.
-//!
 //! ```json
 //! "clipboard": {
 //!   "history": { "copies": [{ "mime": "text/plain;charset=utf-8",
 //!                             "bytes": "aGVsbG8=", "created_ms": 1761900000000,
-//!                             "pinned": true, "from": null }] },
-//!   "paste": { "moving": true, "destination": "/home/Documents",
-//!              "started_ms": 1761900000000,
-//!              "items": [{ "source": "/home/a.txt",
-//!                          "target": "/home/Documents/a.txt",
-//!                          "state": "pending" }] }
+//!                             "pinned": true, "from": null }] }
 //! }
 //! ```
 
@@ -40,10 +29,6 @@ pub const MAX_COPIES: usize = 50;
 pub const MAX_COPY_BYTES: usize = 256 * 1024;
 /// The largest payload the whole history keeps, in bytes.
 pub const MAX_HISTORY_BYTES: usize = 4 * 1024 * 1024;
-/// The most files one paste carries.
-pub const MAX_PASTE_ITEMS: usize = 4096;
-/// The longest path one paste names.
-pub const MAX_PATH_BYTES: usize = 4096;
 
 /// One copy in the history: one format's bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,76 +103,8 @@ impl StoredHistory {
     }
 }
 
-/// Whether one item of a paste has been carried out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ItemState {
-    /// Written down, not yet copied.
-    Pending,
-    /// Copied to its target; for a move, not yet taken from its source.
-    Copied,
-    /// A move's source is gone.
-    Moved,
-}
-
-impl ItemState {
-    /// Whether the item's target has its bytes.
-    #[must_use]
-    pub const fn copied(self) -> bool {
-        matches!(self, Self::Copied | Self::Moved)
-    }
-}
-
-/// One file of a paste.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StoredItem {
-    pub source: String,
-    pub target: String,
-    pub state: ItemState,
-}
-
-/// A paste of files, as far as it got: written before its first item is
-/// touched and after each one.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StoredPaste {
-    /// Whether the sources go away once they are copied.
-    pub moving: bool,
-    /// The folder the items land in.
-    pub destination: String,
-    pub items: Vec<StoredItem>,
-    /// When it started, in Unix milliseconds.
-    pub started_ms: u64,
-}
-
-impl StoredPaste {
-    /// Whether any item is still to do.
-    #[must_use]
-    pub fn unfinished(&self) -> bool {
-        self.items.iter().any(|item| match item.state {
-            ItemState::Pending => true,
-            ItemState::Copied => self.moving,
-            ItemState::Moved => false,
-        })
-    }
-
-    /// The paste with `item` (by its place) in `state`.
-    #[must_use]
-    pub fn with(&self, index: usize, state: ItemState) -> Self {
-        let mut paste = self.clone();
-        if let Some(item) = paste.items.get_mut(index) {
-            item.state = state;
-        }
-        paste
-    }
-}
-
 /// The history, newest first.
 pub const HISTORY: Key<StoredHistory> = Key::new(SECTION, "history", StoredHistory::default);
-
-/// The paste in flight, if one is.
-pub const PASTE: Key<Option<StoredPaste>> = Key::new(SECTION, "paste", || None);
 
 #[cfg(test)]
 mod tests {
@@ -247,38 +164,8 @@ mod tests {
     }
 
     #[test]
-    fn a_paste_is_unfinished_exactly_while_it_has_something_left() {
-        let item = |state| StoredItem {
-            source: "/home/a.txt".into(),
-            target: "/home/Documents/a.txt".into(),
-            state,
-        };
-        let paste = |moving, state| StoredPaste {
-            moving,
-            destination: "/home/Documents".into(),
-            items: vec![item(state)],
-            started_ms: 1_761_900_000_000,
-        };
-        assert!(paste(false, ItemState::Pending).unfinished());
-        assert!(!paste(false, ItemState::Copied).unfinished());
-        assert!(paste(true, ItemState::Copied).unfinished());
-        assert!(!paste(true, ItemState::Moved).unfinished());
-        assert_eq!(
-            paste(true, ItemState::Copied).with(0, ItemState::Moved),
-            paste(true, ItemState::Moved)
-        );
-        let document = serde_json::to_value(paste(true, ItemState::Pending)).expect("stored");
-        assert_eq!(
-            serde_json::from_value::<StoredPaste>(document).expect("read"),
-            paste(true, ItemState::Pending)
-        );
-    }
-
-    #[test]
-    fn the_journal_and_the_history_are_this_devices() {
+    fn the_history_is_this_devices() {
         assert_eq!(HISTORY.section(), SECTION);
-        assert_eq!(PASTE.section(), SECTION);
         assert!(HISTORY.default_value().copies.is_empty());
-        assert_eq!(PASTE.default_value(), None);
     }
 }

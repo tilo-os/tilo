@@ -584,8 +584,12 @@ impl SessionNotifications {
     /// Tell the person `notice`, which the session itself raised rather than
     /// one of their apps.
     pub(crate) fn tell(&self, notice: crate::notices::Notice) {
-        if let Some(daemon) = &self.daemon {
-            notice.tell(daemon);
+        match &self.daemon {
+            Some(daemon) => notice.tell(daemon),
+            // A session without a notifications service still draws its
+            // desk: what it raises is kept there, so nothing it says is
+            // lost.
+            None => notice.tell_desk(&self.desktop),
         }
     }
 
