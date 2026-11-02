@@ -185,8 +185,9 @@ fn greetd_login(
 
 /// The process name `tilo-session` runs under (its script's file name).
 const LOGIN_WRAPPER: &str = "tilo-session";
-/// The compositor's process name.
-const COMPOSITOR: &str = "shell";
+/// The desktop's process names: the native session, and the old shell a login
+/// can still name with `--shell`.
+const COMPOSITORS: [&str; 2] = ["tilo-session", "shell"];
 
 fn parent_of(pid: u32) -> Option<u32> {
     proc_field(pid, "PPid:")?.parse().ok()
@@ -222,7 +223,7 @@ fn compositor_of(wrapper: u32) -> Option<u32> {
         .ok()?
         .split_whitespace()
         .filter_map(|c| c.parse::<u32>().ok())
-        .find(|c| comm(*c).as_deref() == Some(COMPOSITOR) && !zombie(*c))
+        .find(|c| comm(*c).is_some_and(|name| COMPOSITORS.contains(&name.as_str())) && !zombie(*c))
 }
 
 fn zombie(pid: u32) -> bool {
@@ -2093,7 +2094,12 @@ mod tests {
                 wrapper.display()
             );
             assert!(script.contains("readonly SHELL_BIN=/usr/bin/shell"));
-            assert_eq!(Path::new("/usr/bin/shell").file_name().unwrap(), COMPOSITOR);
+            for binary in ["/usr/bin/tilo-session", "/usr/bin/shell"] {
+                assert!(
+                    COMPOSITORS.contains(&Path::new(binary).file_name().unwrap().to_str().unwrap()),
+                    "{binary} is a desktop this wrapper starts"
+                );
+            }
             assert!(script.contains(
                 r#"export TILO_TEST_CONTROL="$runtime_dir/tilo-session/test-control.sock""#
             ));
