@@ -226,7 +226,7 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
         ],
         ..World::default()
     };
-    let view = "view left() {\n    column { for c in (root board.Board).cards { row(c) } }\n}";
+    let view = "view left() {\n    stack { for c in (root board.Board).cards { row(c) } }\n}";
     let mut f = fixture(
         "what's left for the release?",
         world,

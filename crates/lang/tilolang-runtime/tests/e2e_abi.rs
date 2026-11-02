@@ -23,10 +23,10 @@ action size(b: Bag) -> Int {\n    return b.n\n}\n\
 flow bump_flag(b: Bag) -> Int {\n    let ok = try bump(b)\n    match ok {\n        .ok => 1,\n        .err(_) => 0,\n    }\n}\n\
 flow size_or(b: Bag) -> Int {\n    match try size(b) {\n        .ok(n) => n,\n        .err(_) => -1,\n    }\n}\n\
 flow why(b: Bag) -> Text {\n    match try bump(b) {\n        .ok => \"fine\",\n        .err(reason) => reason,\n    }\n}\n\
-view scores(b: Bag) {\n    column {\n        for k in b.scores.keys() {\n            text(k)\n        }\n        text(match b.scores.get(\"x\") {\n            .some(v) => v,\n            .none => 0.5,\n        })\n        text(match b.counts.get(\"y\") {\n            .some(v) => v,\n            .none => -1,\n        })\n    }\n}\n\
-view by_title(b: Bag) {\n    column {\n        for i in b.items.sort_by(t -> t.title) {\n            text(i.title)\n        }\n    }\n}\n\
-view by_rank(b: Bag) {\n    column {\n        for i in b.items.sort_by(t -> t.rank) {\n            text(i.title)\n        }\n    }\n}\n\
-view nums(b: Bag) {\n    column {\n        for x in b.nums {\n            text(x)\n        }\n    }\n}";
+view scores(b: Bag) {\n    stack {\n        for k in b.scores.keys() {\n            text(k)\n        }\n        let score = match b.scores.get(\"x\") {\n            .some(v) => v,\n            .none => 0.5,\n        }\n        let count = match b.counts.get(\"y\") {\n            .some(v) => v,\n            .none => -1,\n        }\n        text(\"{score}\")\n        text(\"{count}\")\n    }\n}\n\
+view by_title(b: Bag) {\n    stack {\n        for i in b.items.sort_by(t -> t.title) {\n            text(i.title)\n        }\n    }\n}\n\
+view by_rank(b: Bag) {\n    stack {\n        for i in b.items.sort_by(t -> t.rank) {\n            text(i.title)\n        }\n    }\n}\n\
+view nums(b: Bag) {\n    stack {\n        for x in b.nums {\n            text(\"{x}\")\n        }\n    }\n}";
 
     struct Gaps {
         rt: Runtime,
@@ -85,10 +85,10 @@ view nums(b: Bag) {\n    column {\n        for x in b.nums {\n            text(x
         }
         assert_eq!(
             g.texts("nums"),
-            [Value::Int(1), Value::Int(2), Value::Int(3)]
+            [Value::text("1"), Value::text("2"), Value::text("3")]
         );
         g.call("drop_num", vec![Value::Int(2)]);
-        assert_eq!(g.texts("nums"), [Value::Int(1), Value::Int(3)]);
+        assert_eq!(g.texts("nums"), [Value::text("1"), Value::text("3")]);
     }
 
     #[test]
@@ -96,7 +96,7 @@ view nums(b: Bag) {\n    column {\n        for x in b.nums {\n            text(x
         let g = gaps();
         assert_eq!(
             g.texts("scores"),
-            [Value::Float(0.5), Value::Int(-1)],
+            [Value::text("0.5"), Value::text("-1")],
             "an absent key reads as none"
         );
         g.call("put_score", vec![Value::text("x"), Value::Float(2.5)]);
@@ -107,12 +107,12 @@ view nums(b: Bag) {\n    column {\n        for x in b.nums {\n            text(x
             [
                 Value::text("a"),
                 Value::text("x"),
-                Value::Float(2.5),
-                Value::Int(7)
+                Value::text("2.5"),
+                Value::text("7")
             ]
         );
         g.call("drop_count", vec![Value::text("y")]);
-        assert_eq!(g.texts("scores").last(), Some(&Value::Int(-1)));
+        assert_eq!(g.texts("scores").last(), Some(&Value::text("-1")));
     }
 
     #[test]

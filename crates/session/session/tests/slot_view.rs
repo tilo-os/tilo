@@ -57,7 +57,7 @@ const MENU_VIEW: &str = r#"app so.tilo.slotprobe "Window menu probe"
 use desktop as desktop
 
 view menu(m: desktop.WindowMenu) {
-  column {
+  stack {
     text(if m.tab != .none { "A window's menu" } else { "No window's menu" })
     button("Move the menu", on: desktop.open(m, tab: .none, anchor: .some("40,50"))) as moved
     button("Close the menu", on: desktop.close(m)) as close
@@ -73,7 +73,7 @@ const ROWS_VIEW: &str = r#"app so.tilo.slotrows "Window menu rows"
 use desktop as desktop
 
 view menu(m: desktop.WindowMenu) {
-  column {
+  stack {
     for item in m.rows {
       button(item.label, on: desktop.choose(m, row: item.id))
     }

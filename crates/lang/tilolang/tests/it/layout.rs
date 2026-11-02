@@ -3,7 +3,7 @@
 use crate::common::{codes, compile_body, validate};
 
 const LIBRARY: &str = "type Album {\n    title: Text\n    artist: Text\n}\ntype Library {\n    albums: Collection<Album>\n}\n\
-view album_card(a: Album) {\n    layers {\n        image(a.title, aspect: 16/9)\n        text(a.artist, at: .bottom_trailing)\n    }\n    text(a.title, lines: 1, truncate)\n    if not space.compact {\n        text(a.artist)\n    }\n}\n\
+view album_card(a: Album) {\n    layers {\n        image(a.title, alt: \"The cover\", aspect: 16/9)\n        text(a.artist, at: .bottom_trailing)\n    }\n    text(a.title, lines: 1, truncate)\n    if not space.compact {\n        text(a.artist)\n    }\n}\n\
 view library(l: Library) {\n    page {\n        text(\"Albums\", role: .title)\n        grid(min: 11rem) {\n            for a in l.albums {\n                album_card(a, fill(2))\n            }\n        }\n    }\n}\n\
 view detail(a: Album) {\n    page(full) {\n        split(side: .leading, collapse: .drawer) {\n            primary(min: 18rem) {\n                text(a.title)\n            }\n            secondary(min: 22rem) {\n                scroll {\n                    text(a.artist, min: 4dp, max: 1.5rem)\n                }\n            }\n        }\n    }\n}\n\
 view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) { text(a.title); spacer }\n    } else {\n        row(gap: .section) {\n            text(a.title)\n            spacer\n            text(a.artist, fill)\n        }\n    }\n    if space.width_class == .wide and space.orientation != .portrait {\n        text(\"{space.width}\")\n    }\n}";
@@ -100,12 +100,12 @@ fn options_are_dot_literals_of_the_primitives_enums() {
     );
 }
 
-/// A text's role reaches the host as the toolkit's `Text` role it names: `.numeric` is a title
+/// A text's role reaches the host as the toolkit's `Text` role it names, and `numeric` sets it
 /// in tabular figures.
 #[test]
 fn a_chosen_option_reaches_the_host_as_its_name() {
     let c = compile_body(
-        "view v(b: Bool) {\n    text(\"x\", role: if b { .numeric } else { .caption })\n}",
+        "view v(b: Bool) {\n    text(\"x\", role: if b { .title } else { .caption }, numeric: true)\n}",
     );
     validate(&c.wasm);
     for want in ["numeric", "caption", "title", "ui.Text"] {

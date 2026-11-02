@@ -215,6 +215,27 @@ fn a_binding_binds_a_field_of_its_type() {
     assert_eq!(code, "E062");
 }
 
+/// `bind:` names whatever the component's description declares its binding to be, so it is one
+/// path for every component: `TextInput`'s `value`, `ListRow`'s `checkbox`; a component with
+/// none says so, and a shorthand is held to its component.
+#[test]
+fn a_binding_binds_the_binding_the_description_declares() {
+    let c = compile_body(&with_note(
+        "view v(n: Note) {\n    checkbox(bind: n.done)\n    ui.TextInput(bind: n.title)\n    ui.ListRow(title: n.title, bind: n.done)\n}",
+    ));
+    validate(&c.wasm);
+    let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+    for want in ["ui.Checkbox", "ui.TextInput", "bind", "value"] {
+        assert!(strings.contains(want), "{want} reaches the host");
+    }
+    let (code, message) = one_error("view v() {\n    ui.Section(\"About\", bind: \"x\")\n}");
+    assert_eq!(code, "E063");
+    assert!(message.contains("binds nothing"), "{message}");
+    let (code, message) = one_error("view v() {\n    checkbox(3)\n}");
+    assert_eq!(code, "E020");
+    assert!(message.contains("Text"), "{message}");
+}
+
 #[test]
 fn a_row_view_may_be_the_toolkits_row_itself() {
     let c = compile_body(&with_note(

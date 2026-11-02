@@ -12,7 +12,7 @@ use crate::common::fixture;
 const HEAD: &str = "app so.tilo.counter \"Counter\"\n\n/// A counter that several people can bump at once.\ntype Counter {\n    /// The current value.\n    value: Int merge counter\n}\n";
 const ACTIONS: &str =
     "/// Add one to the counter.\naction increment(c: Counter) {\n    c.value += 1\n}\n";
-const VIEWS: &str = "view counter(c: Counter) {\n    column {\n        text(c.value)\n        button(\"+1\", on: increment(c)) as plus\n    }\n}\n";
+const VIEWS: &str = "view counter(c: Counter) {\n    stack {\n        text(\"{c.value}\")\n        button(\"+1\", on: increment(c)) as plus\n    }\n}\n";
 
 fn files(list: &[(&str, &str)]) -> PackageSource {
     PackageSource::new(
@@ -113,7 +113,7 @@ fn the_app_header_comes_first_in_its_file() {
 
 #[test]
 fn diagnostics_carry_the_file_and_the_line_within_it() {
-    let broken = "view counter(c: Counter) {\n    column {\n        text(c.missing)\n    }\n}\n";
+    let broken = "view counter(c: Counter) {\n    stack {\n        text(c.missing)\n    }\n}\n";
     let source = files(&[("a.tl", HEAD), ("b.tl", ACTIONS), ("c.tl", broken)]);
     let diags = compile(&source).unwrap_err();
     let d = diags.first().unwrap();

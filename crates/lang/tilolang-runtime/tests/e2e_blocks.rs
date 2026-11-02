@@ -86,7 +86,7 @@ mod cases {
     fn a_blocks_own_button_asks_because_the_agent_wrote_it() {
         let w = world();
         let src = format!(
-            "column {{\n    text(\"Clean up\")\n    button(\"Add\", on: todo.add({}, \"x\"))\n}}",
+            "stack {{\n    text(\"Clean up\")\n    button(\"Add\", on: todo.add({}, \"x\"))\n}}",
             w.list_ref()
         );
         let BlockOutput::View(view) = w.rt.run_block(&me(), &w.block(&src)).unwrap() else {

@@ -443,11 +443,13 @@ fn rows_of_derived_values_and_resources() {
     ));
     expect("E027", &with_t("fn f(x: T) -> Int {\n    x.t.last()\n}"));
     ok(&with_t(
-        "view v(x: T) {\n    card(x, count: x.items.len()) {\n        text(x.t)\n    }\n}",
+        "view v(x: T) {\n    ui.Card(item: x, title: meta(x).title, count: x.items.len()) {\n        text(x.t)\n    }\n}",
     ));
     expect(
         "E020",
-        &with_t("view v(x: T) {\n    card(x, count: x.t) {\n        text(x.t)\n    }\n}"),
+        &with_t(
+            "view v(x: T) {\n    ui.Card(item: x, title: meta(x).title, count: x.t) {\n        text(x.t)\n    }\n}",
+        ),
     );
     expect(
         "E020",
@@ -619,6 +621,10 @@ fn e096_removed_vocabulary_names_its_replacement() {
         "view v() {\n    text(\"a\", style: .caption)\n}",
         "view v() {\n    button(\"a\", style: .primary)\n}",
         "view v() {\n    button(\"a\", size: .small)\n}",
+        "view v() {\n    column {\n        text(\"a\")\n    }\n}",
+        "view v() {\n    card(1)\n}",
+        "view v() {\n    date(\"x\")\n}",
+        "view v() {\n    image(\"a.png\", alt: \"a\", width: 4rem)\n}",
     ] {
         assert_eq!(codes(body), vec!["E096"], "{body}");
     }
@@ -682,20 +688,21 @@ fn e098_controls_and_facts_misused() {
     ));
 }
 
-// A `date` control picks a Date, like `toggle` a Bool: it needs what it binds.
+// A date field picks a Date, like a toggle a Bool: any control that binds a value checks it
+// against what it binds.
 #[test]
-fn date_binds_a_date() {
+fn a_date_field_binds_a_date() {
     let head = "type Task {\n    due: Option<Date> = .none\n    on: Date = Date(\"2026-10-24\")\n    t: Text\n}\n";
     ok(&format!(
-        "{head}view v(x: Task) {{\n    window d: Date = Date(\"2026-01-01\")\n    lens o: Option<Date> = .none\n    stack {{\n        date(bind: x.due)\n        date(bind: x.on)\n        date(bind: d)\n        date(bind: o)\n    }}\n}}"
+        "{head}view v(x: Task) {{\n    window d: Date = Date(\"2026-01-01\")\n    lens o: Option<Date> = .none\n    stack {{\n        ui.DateField(bind: x.due, optional: true)\n        ui.DateField(bind: x.on)\n        ui.DateField(bind: d)\n        ui.DateField(bind: o, optional: true)\n    }}\n}}"
     ));
     expect(
         "E062",
-        &format!("{head}view v(x: Task) {{\n    date(bind: x.t)\n}}"),
+        &format!("{head}view v(x: Task) {{\n    ui.DateField(bind: x.t)\n}}"),
     );
     expect(
         "E022",
-        &format!("{head}view v(x: Task) {{\n    date(\"x\")\n}}"),
+        &format!("{head}view v(x: Task) {{\n    ui.DateField(\"x\")\n}}"),
     );
 }
 

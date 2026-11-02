@@ -56,7 +56,7 @@ mod cases {
     fn titles(tree: &UiNode) -> Vec<String> {
         rows(tree)
             .iter()
-            .map(|r| text_prop(of_kind(r, "checkbox")[0], "label"))
+            .map(|r| text_prop(of_kind(r, "ui.Checkbox")[0], "label"))
             .collect()
     }
 
@@ -196,7 +196,7 @@ mod cases {
         let t = Todo::new();
         let milk = t.add("milk");
         let mut view = t.view();
-        let checkbox = of_kind(view.tree(), "checkbox")[0].key.clone();
+        let checkbox = of_kind(view.tree(), "ui.Checkbox")[0].key.clone();
         view.edit(&checkbox, &Value::Bool(true)).unwrap();
         assert_eq!(t.rt.read(&milk, "done").unwrap(), Value::Bool(true));
         view.poll_patches().unwrap();

@@ -39,6 +39,11 @@ view contact_row(c: Contact) {
 - A new ui-core widget is usable from tilolang as soon as it lands.
 - One generic adapter turns descriptions into widgets and patches. There's no per-widget
   mapping, and Rust apps can use the same descriptions.
+- Bindings are the description's, so `bind:` works on any component that declares one
+  (`ui.TextInput(bind: t.title)`, `ui.Checkbox(bind: t.done)`, `ui.DatePicker(bind: t.due)`,
+  `ui.RichInput(bind: t.notes)`), with the type and the merge it declares; no widget has binding
+  code of its own. A primitive that is a component (`text`, `input`, `checkbox`, ...) is its
+  shorter name and nothing else.
 
 Some components *attach*: `ui.ContextMenu`, `ui.HoverToolbar` and `ui.Swipe` draw nothing where
 a view puts them and give the view they stand in a menu, a toolbar shown on hover and focus, or

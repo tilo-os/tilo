@@ -454,7 +454,7 @@ view task_page(t: Task) {
             input(bind: t.title, placeholder: "Title", fill)
         }
         field("Due") {
-            date(bind: t.due)
+            ui.DateField(bind: t.due, optional: true)
         }
         field("Project") {
             ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {

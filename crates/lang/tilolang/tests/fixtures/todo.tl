@@ -37,7 +37,7 @@ fn open_count(list: TodoList) -> Int {
 }
 
 view todo_list(list: TodoList) {
-    column {
+    stack {
         text("{list.name} ({open_count(list)} open)", role: .title)
         for item in list.items {
             row {

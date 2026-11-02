@@ -130,5 +130,5 @@ view view_page(v: WrittenView) {
 
 /// An agent's answer to "what's left for the release?", over the workspace's tasks.
 scenario "a release answer" -> WrittenView {
-    views.items.insert(WrittenView(title: "Left for the release", question: "What's left for the release?", definition: "view left_for_the_release() \{\n    card(tasks.tasks, count: tasks.tasks.items.count(t -> not t.done)) \{\n        list(tasks.tasks.items.filter(t -> not t.done)) \{ t ->\n            row(t)\n        \}\n    \}\n\}", author: invoker))
+    views.items.insert(WrittenView(title: "Left for the release", question: "What's left for the release?", definition: "view left_for_the_release() \{\n    ui.Card(item: tasks.tasks, title: meta(tasks.tasks).title, count: tasks.tasks.items.count(t -> not t.done)) \{\n        list(tasks.tasks.items.filter(t -> not t.done)) \{ t ->\n            row(t)\n        \}\n    \}\n\}", author: invoker))
 }

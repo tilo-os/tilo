@@ -833,7 +833,8 @@
           "doc": "What it is for, beside the box: the whole row chooses it.",
           "type": {
             "option": "text"
-          }
+          },
+          "positional": true
         },
         {
           "name": "indeterminate",
@@ -4412,7 +4413,8 @@
           "doc": "The setting's name, read beside its state by assistive technology.",
           "type": {
             "option": "text"
-          }
+          },
+          "positional": true
         },
         {
           "name": "enabled",
