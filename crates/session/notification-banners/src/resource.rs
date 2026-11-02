@@ -87,7 +87,7 @@ pub enum BannerEffect {
 
 /// The screenshot scenarios ([`crate::fixture`]).
 pub(crate) const SCENARIOS: &[&str] = &[
-    "banners", "choices", "call", "more", "locked", "focused", "machine", "bars", "empty",
+    "single", "banners", "choices", "call", "more", "locked", "focused", "machine", "bars", "empty",
 ];
 
 /// The banners app: the banner surface over [`Banners`].

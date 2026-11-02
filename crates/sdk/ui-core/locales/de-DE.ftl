@@ -1077,3 +1077,5 @@ completion-results = { $count ->
 }
 emoji-picker-add-reaction = Reaktion hinzufügen
 quote-dismiss = Nicht mehr antworten
+
+toast-reply-placeholder = Antworten…

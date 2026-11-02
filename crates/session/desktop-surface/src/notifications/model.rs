@@ -143,6 +143,12 @@ fn next_id() -> u64 {
 /// A person a notification is from: the name their initials come from and
 /// the stable identity (a peer id, a contact handle) that picks their
 /// presence colour, the same one they wear everywhere else.
+/// The freedesktop action key a sender offers to take an inline reply.
+pub const INLINE_REPLY: &str = "inline-reply";
+
+/// A person a notification is from: the name their initials come from and
+/// the stable identity (a peer id, a contact handle) that picks their
+/// presence colour, the same one they wear everywhere else.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotificationPerson {
     pub name: String,
@@ -317,6 +323,14 @@ impl Notification {
             name: name.into(),
             identity: identity.into(),
         });
+        self
+    }
+
+    /// The sending app's package id, which its banner leads with when no
+    /// person and no severity glyph leads instead.
+    #[must_use]
+    pub fn with_app_id(mut self, app: impl Into<String>) -> Self {
+        self.app_id = Some(app.into());
         self
     }
 

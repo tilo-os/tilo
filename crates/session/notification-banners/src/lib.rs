@@ -24,8 +24,7 @@ pub use surface::BannerSurface;
 /// The banners' package id.
 pub const APP_ID: &str = "so.tilo.notification-banners";
 
-/// The freedesktop action key a sender offers to take an inline reply.
-pub const INLINE_REPLY: &str = "inline-reply";
+pub use tilo_desktop::notifications::INLINE_REPLY;
 
 /// Whether `key` is one the banners act on while they hold the keyboard:
 /// any other goes back to the person's window, and takes focus with it.

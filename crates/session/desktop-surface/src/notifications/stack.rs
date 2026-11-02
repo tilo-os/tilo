@@ -22,11 +22,14 @@ use ui::widget::toast::ToastCard;
 use ui::widget::top_edge_reveal::AIM_HOLD;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::NotificationHost;
-use super::model::{Addressed, Notification, NotificationSeverity, lock_suppressed_label};
+use super::history::relative_time;
+use super::model::{
+    Addressed, INLINE_REPLY, Notification, NotificationSeverity, lock_suppressed_label,
+};
 use crate::i18n::{t, t_args};
 use ui::TextRole;
 use ui::widget::toast::Dwell;
@@ -53,6 +56,15 @@ pub(super) const TOAST_HEIGHT: f64 = 64.0;
 const TOAST_GAP: f64 = 8.0;
 /// A banner's slot is in place within a quarter of a pixel.
 const SLOT_TOLERANCE: f64 = 0.25;
+
+/// How far the pointer travels sideways on a banner before it is a swipe
+/// rather than a press.
+const SWIPE_SLOP: f64 = 8.0;
+
+/// How far a banner must be carried (a fraction of its width), or how fast
+/// it must be thrown (logical px per second), to be dismissed.
+const SWIPE_DISMISS: f64 = 0.35;
+const SWIPE_VELOCITY: f64 = 700.0;
 /// The margin a panel pinned to a display's top-right corner keeps from its
 /// edge: one number for the banner stack, the notification centre and quick
 /// settings, so the corner reads as one place rather than three panels that
@@ -171,6 +183,8 @@ pub enum BannerAsk {
     Dismiss(u64),
     /// The person chose one of banner `id`'s host-owned choices.
     Invoke(u64, String),
+    /// The person answered banner `id`'s inline reply with `text`.
+    Reply { id: u64, text: String },
 }
 
 impl BannerAsk {
@@ -186,6 +200,7 @@ impl BannerAsk {
             Self::Activate(id) => host.activate(id),
             Self::Dismiss(id) => host.dismiss(id),
             Self::Invoke(id, key) => host.invoke_action(id, &key),
+            Self::Reply { id, text } => host.reply(id, &text),
         }
     }
 }
@@ -209,6 +224,8 @@ enum BannerTarget {
     Open(u64),
     Dismiss(u64),
     Action(u64, String),
+    /// The inline reply field of banner `id`.
+    Reply(u64),
     /// The card standing in for the banners that did not fit: opens the
     /// notification centre.
     More,
@@ -220,13 +237,14 @@ impl BannerTarget {
             Self::Open(id) => format!("notification:{id}:open"),
             Self::Dismiss(id) => format!("notification:{id}:dismiss"),
             Self::Action(id, key) => format!("notification:{id}:action:{key}"),
+            Self::Reply(id) => format!("notification:{id}:reply"),
             Self::More => "notification:more".to_owned(),
         }
     }
 
     fn banner(&self) -> Option<u64> {
         match self {
-            Self::Open(id) | Self::Dismiss(id) | Self::Action(id, _) => Some(*id),
+            Self::Open(id) | Self::Dismiss(id) | Self::Action(id, _) | Self::Reply(id) => Some(*id),
             Self::More => None,
         }
     }
@@ -294,6 +312,50 @@ pub struct NotificationStack {
     /// The windows' bars on screen: a banner never covers one, the stack
     /// shifts below it instead ([`transient_slot`]).
     window_bars: Vec<Rect>,
+    /// The banner under the pointer, while a sideways drag on it is in
+    /// progress.
+    swipe: Option<SwipeDrag>,
+    /// Banners sliding under their own motion: out of the corner after a
+    /// swipe dismissed them, or back to rest after one fell short.
+    slides: Vec<Slide>,
+    /// Whether this stack's host carries an inline reply to its sender. The
+    /// banners app does; a stack painted by its own host offers none, so the
+    /// field never sends an answer nowhere.
+    replies: bool,
+    /// The reply the person is typing, on one banner at a time.
+    reply: Option<ReplyDraft>,
+    /// The reply field of each painted banner, by id.
+    reply_rects: Vec<(u64, Rect)>,
+}
+
+/// What the person typed so far in one banner's inline reply.
+#[derive(Clone, Debug)]
+struct ReplyDraft {
+    id: u64,
+    text: String,
+}
+
+/// A sideways drag on one banner: where it started, how far it has come,
+/// how fast, and whether it has passed the slop (a swipe, not a press).
+#[derive(Clone, Copy, Debug)]
+struct SwipeDrag {
+    id: u64,
+    start_x: f64,
+    dx: f64,
+    last_dx: f64,
+    last_at: Instant,
+    velocity: f64,
+    dragging: bool,
+}
+
+/// A banner following a swipe's throw: its horizontal offset from rest,
+/// and whether it is leaving (the host is asked to dismiss it once it is
+/// gone) or returning.
+#[derive(Debug)]
+struct Slide {
+    id: u64,
+    x: ui::motion::MotionValue<f64>,
+    leaving: bool,
 }
 
 /// The least a banner is tall, for where the first one may start.
@@ -332,10 +394,28 @@ impl NotificationStack {
         Self::default()
     }
 
+    /// Carry inline replies to the host ([`BannerAsk::Reply`]). Set by a
+    /// stack whose host can deliver one; a stack that cannot offers no
+    /// reply field.
+    pub fn set_replies(&mut self, replies: bool) {
+        self.replies = replies;
+    }
+
     /// Show `feed`: the host's live banners now.
     pub fn set_feed(&mut self, feed: BannerFeed) {
         if feed.locked {
             self.targets.cancel_pointer_press();
+            self.swipe = None;
+            self.slides.clear();
+            self.reply = None;
+        }
+        if let Some(draft) = &self.reply
+            && !feed
+                .banners
+                .iter()
+                .any(|banner| banner.notification.id == draft.id)
+        {
+            self.reply = None;
         }
         self.feed = feed;
     }
@@ -403,7 +483,9 @@ impl NotificationStack {
     }
 
     fn held_at(&self, now: Instant) -> bool {
-        self.focus.is_some() || self.pointer_holds(now)
+        // A reply being typed holds its banner: it must not expire under the
+        // person's hands.
+        self.focus.is_some() || self.reply.is_some() || self.pointer_holds(now)
     }
 
     /// Whether the pointer holds the banners at `now`, by the toolkit's
@@ -448,9 +530,240 @@ impl NotificationStack {
         self.targets.cancel_pointer_press();
     }
 
-    /// Whether an armed or cancelled banner gesture owns the next release.
+    /// Whether an armed or cancelled banner gesture owns the next release:
+    /// an armed click, or a swipe past its slop.
     pub fn wants_pointer_capture(&self) -> bool {
-        self.targets.wants_pointer_capture()
+        self.targets.wants_pointer_capture() || self.swipe.is_some_and(|drag| drag.dragging)
+    }
+
+    /// Follow a sideways drag on a banner: a press inside a card starts
+    /// one, motion past [`SWIPE_SLOP`] makes it a swipe (the press no
+    /// longer activates the card), and the release either throws the card
+    /// out of the corner or springs it back. All of it under the toolkit's
+    /// motion, interruptible by the next press.
+    fn track_swipe(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.begin_swipe();
+                false
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if self.swipe.is_none() {
+                    return false;
+                }
+                self.drag_to(
+                    Point::new(position.x / scale_factor, position.y / scale_factor),
+                    ui::time::now(),
+                )
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.end_swipe(ui::time::now()),
+            WindowEvent::CursorLeft { .. } => {
+                let dragging = self.swipe.is_some_and(|drag| drag.dragging);
+                if dragging {
+                    self.spring_back(ui::time::now());
+                } else {
+                    self.swipe = None;
+                }
+                dragging
+            }
+            WindowEvent::Focused(false) => {
+                let dragging = self.swipe.is_some_and(|drag| drag.dragging);
+                if dragging {
+                    self.spring_back(ui::time::now());
+                } else {
+                    self.swipe = None;
+                }
+                dragging
+            }
+            _ => false,
+        }
+    }
+
+    /// Start following a press inside a banner's card, unless it landed on
+    /// one of its controls: those keep the toolkit's completed-click
+    /// routing.
+    fn begin_swipe(&mut self) {
+        self.swipe = None;
+        if self.feed.locked {
+            return;
+        }
+        let Some(p) = self.pointer else {
+            return;
+        };
+        if self
+            .action_rects
+            .iter()
+            .any(|(_, _, rect)| rect.contains(p))
+            || self.reply_rects.iter().any(|(_, rect)| rect.contains(p))
+        {
+            return;
+        }
+        let Some(&(id, _, close)) = self.hit_rects.iter().find(|(_, card, _)| card.contains(p))
+        else {
+            return;
+        };
+        if close.contains(p) {
+            return;
+        }
+        self.swipe = Some(SwipeDrag {
+            id,
+            start_x: p.x,
+            dx: 0.0,
+            last_dx: 0.0,
+            last_at: ui::time::now(),
+            velocity: 0.0,
+            dragging: false,
+        });
+    }
+
+    /// Carry the dragged banner by the pointer. Past the slop the press
+    /// stops being a click, so a card carried aside does not also open.
+    fn drag_to(&mut self, p: Point, now: Instant) -> bool {
+        let Some(mut drag) = self.swipe else {
+            return false;
+        };
+        let dx = p.x - drag.start_x;
+        if !drag.dragging && dx.abs() <= SWIPE_SLOP {
+            return false;
+        }
+        if !drag.dragging {
+            drag.dragging = true;
+            self.targets.cancel_pointer_press();
+        }
+        let elapsed = now.saturating_duration_since(drag.last_at).as_secs_f64();
+        if elapsed > 0.0 {
+            drag.velocity = (dx - drag.last_dx) / elapsed;
+        }
+        drag.last_dx = dx;
+        drag.last_at = now;
+        drag.dx = dx;
+        self.swipe = Some(drag);
+        true
+    }
+
+    /// Let go: past [`SWIPE_DISMISS`] of the card's width, or thrown faster
+    /// than [`SWIPE_VELOCITY`], the card leaves and the host is asked to
+    /// dismiss it once it is out of sight; otherwise it springs back.
+    fn end_swipe(&mut self, now: Instant) -> bool {
+        let Some(drag) = self.swipe.take() else {
+            return false;
+        };
+        if !drag.dragging {
+            return false;
+        }
+        let width = self.toast_width();
+        let thrown = drag.dx.abs() > width * SWIPE_DISMISS
+            || (drag.velocity * drag.dx.signum() > SWIPE_VELOCITY && drag.dx.abs() > SWIPE_SLOP);
+        if !thrown {
+            self.spring_back_to(drag, now);
+            return true;
+        }
+        if self.reduce_motion {
+            // Nothing travels: the card is simply gone.
+            self.asks.push(BannerAsk::Dismiss(drag.id));
+            return true;
+        }
+        let direction = if drag.dx < 0.0 { -1.0 } else { 1.0 };
+        let (_, motion) = banner_motion(self.reduce_motion);
+        let timing = BANNER.timing(
+            ui::motion::Direction::Exit,
+            motion,
+            ui::tokens::MotionSource::Pointer,
+        );
+        let mut x = ui::motion::MotionValue::new(drag.dx);
+        x.release(
+            direction * (width + CORNER_INSET),
+            drag.velocity,
+            timing,
+            now,
+        );
+        self.slides.retain(|slide| slide.id != drag.id);
+        self.slides.push(Slide {
+            id: drag.id,
+            x,
+            leaving: true,
+        });
+        true
+    }
+
+    /// A drag that fell short returns to rest on the list-change spring.
+    fn spring_back(&mut self, now: Instant) {
+        if let Some(drag) = self.swipe.take()
+            && drag.dragging
+        {
+            self.spring_back_to(drag, now);
+        }
+    }
+
+    fn spring_back_to(&mut self, drag: SwipeDrag, now: Instant) {
+        if self.reduce_motion {
+            return;
+        }
+        let (_, motion) = banner_motion(self.reduce_motion);
+        let timing = ui::motion::ListChange::MOVE.timing(
+            ui::motion::Direction::Enter,
+            motion,
+            ui::tokens::MotionSource::Pointer,
+        );
+        let mut x = ui::motion::MotionValue::new(drag.dx);
+        x.release(0.0, drag.velocity, timing, now);
+        self.slides.retain(|slide| slide.id != drag.id);
+        self.slides.push(Slide {
+            id: drag.id,
+            x,
+            leaving: false,
+        });
+    }
+
+    /// How far banner `id` is drawn from its rest slot at `now`, and how
+    /// transparent its swipe has left it.
+    fn swipe_offset(&self, id: u64, now: Instant) -> f64 {
+        if let Some(drag) = self.swipe
+            && drag.id == id
+            && drag.dragging
+        {
+            return drag.dx;
+        }
+        self.slides
+            .iter()
+            .find(|slide| slide.id == id)
+            .map_or(0.0, |slide| slide.x.get(now))
+    }
+
+    /// Retire finished slides: a card thrown out is dismissed once it is
+    /// gone; one that came back is simply at rest again.
+    fn advance_slides(&mut self, now: Instant) {
+        let mut done = Vec::new();
+        for slide in &self.slides {
+            if slide.x.is_moving(now) {
+                continue;
+            }
+            done.push(slide.id);
+            if slide.leaving {
+                self.asks.push(BannerAsk::Dismiss(slide.id));
+            }
+        }
+        self.slides.retain(|slide| !done.contains(&slide.id));
+        let shown: Vec<u64> = self
+            .feed
+            .banners
+            .iter()
+            .map(|banner| banner.notification.id)
+            .collect();
+        self.slides.retain(|slide| shown.contains(&slide.id));
+        if let Some(drag) = self.swipe
+            && !shown.contains(&drag.id)
+        {
+            self.swipe = None;
+        }
     }
 
     fn dispatch_target(&mut self, target: &BannerTarget) {
@@ -474,6 +787,10 @@ impl NotificationStack {
             BannerTarget::Open(id) => BannerAsk::Activate(*id),
             BannerTarget::Dismiss(id) => BannerAsk::Dismiss(*id),
             BannerTarget::Action(id, key) => BannerAsk::Invoke(*id, key.clone()),
+            BannerTarget::Reply(id) => {
+                self.begin_reply(*id);
+                return;
+            }
             BannerTarget::More => return,
         });
     }
@@ -516,6 +833,7 @@ impl NotificationStack {
             WindowEvent::CursorLeft { .. } => self.note_pointer(None),
             _ => false,
         };
+        changed |= self.track_swipe(event, scale_factor);
         changed |= self
             .targets
             .handle_pointer_event(event, scale_factor, handled);
@@ -583,20 +901,87 @@ impl NotificationStack {
     /// Return, Space and Escape. Any other key goes back to the person's
     /// window, and takes focus with it ([`Self::release_keyboard`]).
     pub fn owns_key(&self, key: &Key) -> bool {
-        self.focus.is_some()
-            && matches!(
-                key,
-                Key::Named(
-                    NamedKey::ArrowUp
-                        | NamedKey::ArrowDown
-                        | NamedKey::ArrowLeft
-                        | NamedKey::ArrowRight
-                        | NamedKey::Tab
-                        | NamedKey::Enter
-                        | NamedKey::Space
-                        | NamedKey::Escape
-                )
+        if self.focus.is_none() {
+            return false;
+        }
+        if self.reply.is_some() {
+            // Typing in a reply takes every key: letters are the answer.
+            return true;
+        }
+        matches!(
+            key,
+            Key::Named(
+                NamedKey::ArrowUp
+                    | NamedKey::ArrowDown
+                    | NamedKey::ArrowLeft
+                    | NamedKey::ArrowRight
+                    | NamedKey::Tab
+                    | NamedKey::Enter
+                    | NamedKey::Space
+                    | NamedKey::Escape
             )
+        )
+    }
+
+    /// Whether the person is typing a reply, so a host that hands keys back
+    /// on any other key waits instead ([`Self::owns_key`]).
+    #[must_use]
+    pub fn wants_typing(&self) -> bool {
+        self.reply.is_some()
+    }
+
+    /// Start a reply on banner `id`: focus its field and hold the banner
+    /// while the person types.
+    fn begin_reply(&mut self, id: u64) {
+        if !self.replies || self.feed.locked {
+            return;
+        }
+        self.reply = Some(ReplyDraft {
+            id,
+            text: String::new(),
+        });
+        self.focus = Some(BannerTarget::Reply(id));
+        self.present();
+    }
+
+    /// Type into the open reply: Backspace deletes, Return sends it (when
+    /// there is something to send), Escape gives up, and every other key is
+    /// text or space. Returns whether it was taken.
+    fn type_reply(&mut self, key: &Key) -> bool {
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.reply = None;
+                self.focus = None;
+                self.present();
+            }
+            Key::Named(NamedKey::Enter) => {
+                if let Some(draft) = self.reply.take() {
+                    let text = draft.text.trim().to_owned();
+                    self.focus = None;
+                    if !text.is_empty() {
+                        self.asks.push(BannerAsk::Reply { id: draft.id, text });
+                    }
+                }
+                self.present();
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(draft) = self.reply.as_mut() {
+                    draft.text.pop();
+                }
+            }
+            Key::Named(NamedKey::Space) => {
+                if let Some(draft) = self.reply.as_mut() {
+                    draft.text.push(' ');
+                }
+            }
+            Key::Character(text) => {
+                if let Some(draft) = self.reply.as_mut() {
+                    draft.text.extend(text.chars().filter(|c| !c.is_control()));
+                }
+            }
+            _ => {}
+        }
+        true
     }
 
     /// Give keyboard focus back to the person's window. Returns whether the
@@ -617,6 +1002,9 @@ impl NotificationStack {
     pub fn handle_key(&mut self, key: &Key, shift: bool) -> bool {
         if !self.owns_key(key) {
             return false;
+        }
+        if self.reply.is_some() {
+            return self.type_reply(key);
         }
         let Some((row, column)) = self.focus_position() else {
             // The focused banner left (it was answered elsewhere): focus
@@ -840,18 +1228,29 @@ impl NotificationStack {
     }
 
     /// The shared card for banner `n`, with its interaction state.
-    fn banner_card<'n>(
+    fn banner_card<'a>(
         &self,
-        n: &'n Notification,
-        actions: &'n [(String, String)],
-    ) -> ToastCard<'n> {
+        n: &'a Notification,
+        actions: &'a [(String, String)],
+        time: &'a str,
+        reply: &'a str,
+        reply_focused: bool,
+    ) -> ToastCard<'a> {
         // The stack owns what to show and click routing; the toast
         // widget owns the card's look and hands back the close rect.
+        // Plain information leads with what sent it: the person when one is
+        // named, else the app's own glyph. A severity glyph wins over both,
+        // so an alert never loses its state colour.
+        let app_glyph = n
+            .app_id
+            .as_deref()
+            .map(|app| ui::icons::app_glyph(app, None));
         let mut card = ToastCard::new(&n.title, n.severity.toast_kind())
-            .icon(n.icon_kind.icon())
+            .icon(n.icon_kind.icon().or(app_glyph))
             .app_image(n.app_image.as_ref())
             .body(if n.show_preview { &n.body } else { "" })
             .caption(n.app_name.as_deref().unwrap_or(""))
+            .time(time)
             // A card that offers its own way out ("Not now", "Dismiss")
             // needs no second one in its corner.
             .closable(
@@ -860,6 +1259,13 @@ impl NotificationStack {
                     .any(|(key, _)| key == super::model::NOT_NOW_ACTION || key == "dismiss"),
             )
             .actionable(!n.actions.is_empty());
+        // A sender that takes an inline reply gets the field, when this
+        // stack's host can carry the answer back. The one being typed in
+        // holds what the person has written so far.
+        if self.replies && !self.feed.locked && n.actions.iter().any(|(key, _)| key == INLINE_REPLY)
+        {
+            card = card.reply(reply, reply_focused);
+        }
         // A person's notification leads with them; the app stays the
         // small source line above the title.
         if let Some(person) = &n.from {
@@ -909,7 +1315,10 @@ impl NotificationStack {
         for (index, banner) in banners.iter().enumerate() {
             let n = &banner.notification;
             let actions = &banner.actions;
-            let card = self.banner_card(n, actions);
+            let time = relative_time(n, now);
+            let draft = self.reply.as_ref().filter(|draft| draft.id == n.id);
+            let reply_text = draft.map_or(String::new(), |draft| draft.text.clone());
+            let card = self.banner_card(n, actions, &time, &reply_text, draft.is_some());
             let height = ui::widget::toast::card_height(ctx.text_renderer, ctx.theme, &card, width)
                 .max(TOAST_HEIGHT);
             // The rest fold into the "more" card; a banner that is not the
@@ -933,7 +1342,11 @@ impl NotificationStack {
             self.on_screen.push(n.id);
             let (alpha, slide_dx) =
                 Self::animation_state(n, now, (self.reduce_motion, held), width);
-            let card_x0 = x0_rest + slide_dx;
+            // A card the person is carrying follows the pointer, fading as
+            // it leaves the corner; one thrown leaves under its own motion.
+            let drag = self.swipe_offset(n.id, now);
+            let alpha = alpha * f32_of_f64((1.0 - drag.abs() / width.max(1.0)).clamp(0.0, 1.0));
+            let card_x0 = x0_rest + slide_dx + drag;
             let top = self.slot_top(n.id, y, now, held);
             let card_rect = Rect::new(card_x0, top, card_x0 + width, top + height);
             bounds.expand(card_rect.y0, card_rect.y1);
@@ -963,45 +1376,70 @@ impl NotificationStack {
                 card_rect,
                 &card,
             );
-            let mut row = FocusRow {
-                controls: vec![(BannerTarget::Open(n.id), card_rect, card_radius)],
-            };
-            self.register_target(BannerTarget::Open(n.id), card_rect, &n.title);
-            self.action_buttons
-                .push((card_rect, n.title.clone(), BannerTarget::Open(n.id).key()));
-            // Painted left to right: the secondary choice, then the primary.
-            let mut choices = Vec::new();
-            if let Some((key, label)) = actions.first() {
-                let rect = if actions.len() >= 2 {
-                    hit.secondary_action_rect
-                } else {
-                    hit.primary_action_rect
-                };
-                choices.push((key, label, rect));
-            }
-            if let Some((key, label)) = actions.get(1) {
-                choices.push((key, label, hit.primary_action_rect));
-            }
-            for (key, label, rect) in choices {
-                let target = BannerTarget::Action(n.id, key.clone());
-                self.register_target(target.clone(), rect, label);
-                self.action_rects.push((n.id, key.clone(), rect));
-                self.action_buttons
-                    .push((rect, label.clone(), target.key()));
-                row.controls.push((target, rect, control_radius));
-            }
-            if card.closable {
-                let target = BannerTarget::Dismiss(n.id);
-                let label = t("notification-center-dismiss");
-                self.register_target(target.clone(), hit.close_rect, &label);
-                self.action_buttons
-                    .push((hit.close_rect, label, target.key()));
-                row.controls.push((target, hit.close_rect, control_radius));
-            }
+            let radii = (card_radius, control_radius);
+            let row = self.record_card_hits(n, actions, &hit, card_rect, radii, card.closable);
             self.focus_rows.push(row);
             self.hit_rects.push((n.id, card_rect, hit.close_rect));
             y += height + TOAST_GAP;
         }
+    }
+
+    /// Record a painted card's targets, so the pointer, the keyboard and
+    /// tests reach its choices, its reply field and its close box. Returns
+    /// the row of controls keyboard focus walks.
+    fn record_card_hits(
+        &mut self,
+        n: &Notification,
+        actions: &[(String, String)],
+        hit: &ui::widget::toast::ToastCardHit,
+        card_rect: Rect,
+        (card_radius, control_radius): (f64, f64),
+        closable: bool,
+    ) -> FocusRow {
+        let opened = BannerTarget::Open(n.id);
+        let mut row = FocusRow {
+            controls: vec![(opened.clone(), card_rect, card_radius)],
+        };
+        self.register_target(opened.clone(), card_rect, &n.title);
+        self.action_buttons
+            .push((card_rect, n.title.clone(), opened.key()));
+        // Painted left to right: the secondary choice, then the primary.
+        let mut choices = Vec::new();
+        if let Some((key, label)) = actions.first() {
+            let rect = if actions.len() >= 2 {
+                hit.secondary_action_rect
+            } else {
+                hit.primary_action_rect
+            };
+            choices.push((key, label, rect));
+        }
+        if let Some((key, label)) = actions.get(1) {
+            choices.push((key, label, hit.primary_action_rect));
+        }
+        for (key, label, rect) in choices {
+            let target = BannerTarget::Action(n.id, key.clone());
+            self.register_target(target.clone(), rect, label);
+            self.action_rects.push((n.id, key.clone(), rect));
+            self.action_buttons
+                .push((rect, label.clone(), target.key()));
+            row.controls.push((target, rect, control_radius));
+        }
+        if !hit.reply_rect.is_zero_area() {
+            let target = BannerTarget::Reply(n.id);
+            let label = t("notification-reply");
+            self.register_target(target.clone(), hit.reply_rect, &label);
+            self.reply_rects.push((n.id, hit.reply_rect));
+            row.controls.push((target, hit.reply_rect, control_radius));
+        }
+        if closable {
+            let target = BannerTarget::Dismiss(n.id);
+            let label = t("notification-center-dismiss");
+            self.register_target(target.clone(), hit.close_rect, &label);
+            self.action_buttons
+                .push((hit.close_rect, label, target.key()));
+            row.controls.push((target, hit.close_rect, control_radius));
+        }
+        row
     }
 
     /// The keyboard focus ring, on the control focus is on.
@@ -1030,6 +1468,7 @@ impl NotificationStack {
     ) {
         self.hit_rects.clear();
         self.action_rects.clear();
+        self.reply_rects.clear();
         self.action_buttons.clear();
         self.targets.begin_frame();
         self.target_actions.clear();
@@ -1096,14 +1535,9 @@ impl NotificationStack {
             min_y: f64::INFINITY,
             max_y: f64::NEG_INFINITY,
         };
-        self.draw_toast_cards(
-            &mut ctx,
-            &banners,
-            ui::time::now(),
-            (x0_rest, width),
-            y,
-            &mut bounds,
-        );
+        let now = ui::time::now();
+        self.draw_toast_cards(&mut ctx, &banners, now, (x0_rest, width), y, &mut bounds);
+        self.advance_slides(now);
         // Slots of banners no longer on screen are forgotten: one that comes
         // back starts in its slot.
         let on_screen = &self.on_screen;
@@ -1237,7 +1671,10 @@ impl NotificationStack {
     /// Whether a banner on screen is mid-entry or mid-exit.
     pub fn needs_animation_frame(&self) -> bool {
         let now = ui::time::now();
-        if self.slots.iter().any(|(_, slot)| slot.is_moving(now)) {
+        if self.slots.iter().any(|(_, slot)| slot.is_moving(now))
+            || self.slides.iter().any(|slide| slide.x.is_moving(now))
+            || self.swipe.is_some_and(|drag| drag.dragging)
+        {
             return true;
         }
         let (spec, motion) = banner_motion(self.reduce_motion);
@@ -1283,6 +1720,12 @@ impl NotificationStack {
             .aimed_at
             .and_then(|at| at.checked_add(AIM_HOLD))
             .filter(|at| *at > now);
+        let slides = self
+            .slides
+            .iter()
+            .filter_map(|slide| slide.x.settles_at())
+            .filter(|at| *at > now)
+            .min();
         let banners = self
             .feed
             .banners
@@ -1296,7 +1739,10 @@ impl NotificationStack {
                 Some(if exit_start > now { exit_start } else { expiry })
             })
             .min();
-        [banners, resting, aim_lapses].into_iter().flatten().min()
+        [banners, resting, aim_lapses, slides]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// A live region, so a screen reader announces a freshly-posted banner.
@@ -1372,910 +1818,5 @@ impl NotificationStack {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
-    use super::super::{HistoryActivation, NotificationLog};
-    use super::*;
-    use std::cell::{Cell, RefCell};
-    use ui::time::Duration;
-
-    /// A host with no senders: dismissing retains, activating retains.
-    #[derive(Default)]
-    pub(crate) struct TestHost {
-        pub log: RefCell<NotificationLog>,
-        pub locked: Cell<bool>,
-        pub quiet: RefCell<Option<String>>,
-        pub actions: RefCell<Vec<(String, String)>>,
-        pub invoked: RefCell<Vec<(u64, String)>>,
-        pub centre_opened: Cell<usize>,
-    }
-
-    impl TestHost {
-        pub fn push(&self, notification: Notification) -> u64 {
-            let id = notification.id;
-            let evicted = self.log.borrow_mut().show(notification);
-            for n in evicted {
-                self.log.borrow_mut().retain(n);
-            }
-            id
-        }
-    }
-
-    /// Run `f` on `stack` over what `host` shows now, and carry out what
-    /// it asked, as a host does.
-    fn act<T>(
-        stack: &mut NotificationStack,
-        host: &TestHost,
-        f: impl FnOnce(&mut NotificationStack) -> T,
-    ) -> T {
-        stack.set_feed(BannerFeed::of(host));
-        let out = f(stack);
-        for ask in stack.take_asks() {
-            ask.answer(host);
-        }
-        out
-    }
-
-    fn paint(
-        stack: &mut NotificationStack,
-        host: &TestHost,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        act(stack, host, |stack| {
-            stack.draw(scene, transform, text, theme);
-        });
-    }
-
-    impl NotificationHost for TestHost {
-        fn actions_for(&self, _notice: &Notification) -> Vec<(String, String)> {
-            self.actions.borrow().clone()
-        }
-        fn invoke_action(&self, id: u64, key: &str) {
-            self.invoked.borrow_mut().push((id, key.to_owned()));
-        }
-        fn log(&self) -> std::cell::Ref<'_, NotificationLog> {
-            self.log.borrow()
-        }
-        fn session_locked(&self) -> bool {
-            self.locked.get()
-        }
-        fn quiet_status(&self) -> Option<String> {
-            self.quiet.borrow().clone()
-        }
-        fn present(&self, now: Instant, on_screen: &[u64], held: bool) {
-            self.log.borrow_mut().present(now, on_screen, held);
-        }
-        fn open_center(&self) {
-            self.centre_opened
-                .set(self.centre_opened.get().saturating_add(1));
-        }
-        fn dismiss(&self, id: u64) {
-            let taken = self.log.borrow_mut().take_active(id);
-            if let Some(n) = taken {
-                self.log.borrow_mut().retain(n);
-            }
-        }
-        fn activate(&self, id: u64) {
-            self.dismiss(id);
-        }
-        fn activate_history(&self, id: u64) -> HistoryActivation {
-            let Some(n) = self.log.borrow().history_entry(id).cloned() else {
-                return HistoryActivation::Missing;
-            };
-            let Some(app_id) = n.app_id.clone() else {
-                return HistoryActivation::Unavailable;
-            };
-            self.log.borrow_mut().take_history(id);
-            HistoryActivation::OpenApp {
-                app_id,
-                label: super::super::group_label(&n),
-            }
-        }
-        fn dismiss_history(&self, id: u64) {
-            self.log.borrow_mut().take_history(id);
-        }
-        fn clear_history(&self) {
-            self.log.borrow_mut().clear_history(ui::time::now());
-        }
-        fn undo_clear(&self) {
-            self.log.borrow_mut().undo_clear();
-        }
-    }
-
-    #[test]
-    fn clicking_a_painted_close_rect_dismisses_only_that_notification() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        let host = TestHost::default();
-        let first = host.push(Notification::new("First", ""));
-        let second = host.push(Notification::new("Second", ""));
-        let mut stack = NotificationStack::new();
-        // The paint records this exact geometry; seeding it keeps the routing
-        // test independent of a GPU while exercising the production hit test.
-        stack.hit_rects.push((
-            first,
-            Rect::new(100.0, 100.0, 460.0, 164.0),
-            Rect::new(430.0, 106.0, 452.0, 128.0),
-        ));
-        stack.hit_rects.push((
-            second,
-            Rect::new(100.0, 172.0, 460.0, 236.0),
-            Rect::new(430.0, 178.0, 452.0, 200.0),
-        ));
-        assert!(act(&mut stack, &host, |s| s.click_at(Point::new(441.0, 189.0))));
-        let remaining: Vec<_> = host
-            .log()
-            .active()
-            .iter()
-            .map(|n| n.title.clone())
-            .collect();
-        assert_eq!(remaining, vec!["First".to_string()]);
-        assert_eq!(
-            host.log().history().len(),
-            1,
-            "a dismissed banner is retained"
-        );
-        stack.hit_rects.clear();
-        assert!(!act(&mut stack, &host, |s| s.click_at(Point::new(441.0, 189.0))));
-    }
-
-    #[test]
-    fn shared_choice_buttons_route_their_keys_and_retire_stale_geometry() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
-            let theme = theme.with_reduce_motion(true).with_text_scale(2.0);
-            let host = TestHost::default();
-            host.actions.replace(vec![
-                ("dismiss".into(), "Dismiss".into()),
-                ("snooze".into(), "Snooze".into()),
-            ]);
-            let id = host.push(Notification::new("Alarm", "Synthetic alarm"));
-            let mut stack = NotificationStack::new();
-            stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 600.0));
-            let mut text = TextRenderer::new();
-            paint(
-                &mut stack,
-                &host,
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-            );
-            assert_eq!(
-                stack.action_rects.len(),
-                2,
-                "both real painted controls must exist"
-            );
-            let actions = stack.action_rects.clone();
-            let buttons = act(&mut stack, &host, |s| s.accessibility())
-                .expect("a live region")
-                .children;
-            let mut named: Vec<_> = buttons
-                .iter()
-                .map(|button| (button.role, button.name.clone().unwrap_or_default()))
-                .collect();
-            named.sort_by(|a, b| a.1.cmp(&b.1));
-            assert_eq!(
-                named,
-                [
-                    (ui::a11y::Role::Button, "Alarm".to_owned()),
-                    (ui::a11y::Role::Button, "Dismiss".to_owned()),
-                    (ui::a11y::Role::Button, "Snooze".to_owned())
-                ],
-                "the painted choices are buttons a reader can press"
-            );
-            // Assistive technology presses them by their targets, as a
-            // click does: each choice reaches the host with its key.
-            for (_, key, _) in &actions {
-                let label = if key == "dismiss" {
-                    "Dismiss"
-                } else {
-                    "Snooze"
-                };
-                let target = buttons
-                    .iter()
-                    .find(|button| button.name.as_deref() == Some(label))
-                    .and_then(|button| button.action_target.clone())
-                    .expect("a choice a reader can press carries its target");
-                assert!(act(&mut stack, &host, |s| s
-                    .perform_semantic(&target, &ui::a11y::Action::Activate)));
-                assert_eq!(host.invoked.borrow().last(), Some(&(id, key.clone())));
-            }
-            assert!(!act(&mut stack, &host, |s| s.perform_semantic(
-                "notification:none",
-                &ui::a11y::Action::Activate
-            )));
-            let card = stack.hit_rects[0].1;
-            for (actual, _, rect) in &actions {
-                assert_eq!(*actual, id);
-                assert!(rect.width() > 0.0 && rect.height() >= 28.0);
-                assert!(card.contains(rect.origin()) && card.x1 >= rect.x1 && card.y1 >= rect.y1);
-            }
-            assert!(actions[0].2.intersect(actions[1].2).area() <= 0.0);
-            for (_, key, rect) in &actions {
-                assert!(act(&mut stack, &host, |s| s.click_at(rect.center())));
-                assert_eq!(host.invoked.borrow().last(), Some(&(id, key.clone())));
-            }
-            assert_eq!(
-                host.log().active().len(),
-                1,
-                "host owns durable completion, not the painter"
-            );
-            host.log.borrow_mut().take_active(id);
-            paint(
-                &mut stack,
-                &host,
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-            );
-            assert!(stack.action_rects.is_empty());
-            assert!(!act(&mut stack, &host, |s| s.click_at(actions[1].2.center())));
-        }
-    }
-
-    #[test]
-    fn the_frame_a_banner_arrives_differs_from_the_one_before() {
-        // The running clock: an arriving banner's fade is at its start.
-        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
-            for theme in [theme.clone().with_reduce_motion(true), theme] {
-                let host = TestHost::default();
-                let mut stack = NotificationStack::new();
-                stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-                let mut text = TextRenderer::new();
-                let mut before = Scene::new();
-                paint(
-                    &mut stack,
-                    &host,
-                    &mut before,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                );
-                host.push(Notification::new("Build finished", "it passed its tests"));
-                let mut arriving = Scene::new();
-                paint(
-                    &mut stack,
-                    &host,
-                    &mut arriving,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                );
-                assert_ne!(
-                    arriving.encoding().n_paths,
-                    before.encoding().n_paths,
-                    "the frame a banner arrives records it, though unseen"
-                );
-                assert!(!stack.rect().is_zero_area(), "it covers where it arrives");
-            }
-        }
-    }
-
-    #[test]
-    fn scaled_attributed_banner_reserves_text_above_real_action_controls() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
-            let theme = theme.with_reduce_motion(true).with_text_scale(2.0);
-            let host = TestHost::default();
-            host.actions.replace(vec![
-                ("dismiss".into(), "Dismiss".into()),
-                ("snooze".into(), "Snooze".into()),
-            ]);
-            host.push(
-                Notification::new("Meeting begins", "Join your workspace")
-                    .with_app_name("Calendar"),
-            );
-            let mut stack = NotificationStack::new();
-            stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 600.0));
-            let mut text = TextRenderer::new();
-            paint(
-                &mut stack,
-                &host,
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-            );
-            let card = stack.hit_rects[0].1;
-            let actions_top = stack
-                .action_rects
-                .iter()
-                .map(|(_, _, rect)| rect.y0)
-                .reduce(f64::min)
-                .expect("real shared actions");
-            let content_height: f64 = [
-                ("Calendar", theme.text(TextRole::Caption)),
-                ("Meeting begins", theme.text(TextRole::Label).strong()),
-                ("Join your workspace", theme.text(TextRole::Caption)),
-            ]
-            .into_iter()
-            .map(|(label, style)| f64::from(text.measure_style(label, None, &style).1))
-            .sum();
-            assert!(
-                actions_top - card.y0 >= content_height + 2.0 * f64::from(theme.tokens.spacing.s2),
-                "painted text requires {content_height}px plus padding before actions at {}px",
-                actions_top - card.y0
-            );
-        }
-    }
-
-    #[test]
-    fn persistent_alarm_choices_fit_the_viewport_and_keep_the_newest_alarm_visible() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
-            let theme = theme.with_reduce_motion(true).with_text_scale(2.0);
-            let host = TestHost::default();
-            host.actions.replace(vec![
-                ("dismiss".into(), "Dismiss".into()),
-                ("snooze".into(), "Snooze".into()),
-            ]);
-            let mut newest = 0;
-            for index in 0..super::super::MAX_NOTIFICATIONS {
-                newest = host.push(
-                    Notification::new(format!("Alarm {index}"), "Fixture")
-                        .with_dismiss_after(super::super::PERSISTENT_DISMISS),
-                );
-            }
-            let viewport = Rect::new(0.0, 0.0, 320.0, 600.0);
-            let mut stack = NotificationStack::new();
-            stack.set_viewport(viewport);
-            paint(
-                &mut stack,
-                &host,
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-            );
-            assert!(
-                !stack.hit_rects.is_empty(),
-                "the newest alarm must actually paint"
-            );
-            assert!(
-                stack.hit_rects.len() < host.log().active().len(),
-                "fixture must exercise capacity"
-            );
-            assert_eq!(stack.hit_rects[0].0, newest);
-            for (_, card, _) in &stack.hit_rects {
-                assert!(
-                    card.y0 >= viewport.y0 && card.y1 <= viewport.y1,
-                    "a painted card escaped the viewport"
-                );
-            }
-            for (_, _, control) in &stack.action_rects {
-                assert!(
-                    control.y0 >= viewport.y0 && control.y1 <= viewport.y1,
-                    "a real alarm choice is unreachable below the viewport"
-                );
-            }
-            assert_eq!(
-                host.log().active().len(),
-                super::super::MAX_NOTIFICATIONS,
-                "fitting banners must not discard alarm data"
-            );
-        }
-    }
-
-    #[test]
-    fn compact_viewport_keeps_notification_inside_both_edges() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        let mut stack = NotificationStack::new();
-        stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 480.0));
-        let width = stack.toast_width();
-        let x0 = stack.viewport.x1 - CORNER_INSET - width;
-        assert_eq!(width, 272.0);
-        assert_eq!(x0, CORNER_INSET);
-    }
-
-    fn draw(stack: &mut NotificationStack, host: &TestHost, theme: &Theme) {
-        paint(
-            stack,
-            host,
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            theme,
-        );
-    }
-
-    /// A transient's slot shifts below any window bar it would cover, and
-    /// stays where nothing is under it.
-    #[test]
-    fn a_window_bar_wins_and_the_transient_shifts() {
-        let viewport = Rect::new(0.0, 40.0, 1600.0, 900.0);
-        let free = transient_slot(viewport, 0.0, (360.0, 60.0), &[]);
-        assert_eq!(free.y0, 40.0 + CORNER_INSET);
-        assert_eq!(free.x1, 1600.0 - CORNER_INSET);
-        let bars = [
-            Rect::new(900.0, 48.0, 1590.0, 92.0),
-            Rect::new(0.0, 48.0, 880.0, 400.0),
-        ];
-        let slot = transient_slot(viewport, 0.0, (360.0, 60.0), &bars);
-        assert!(bars.iter().all(|bar| bar.intersect(slot).area() <= 0.0));
-        assert_eq!(slot.y0, 92.0 + TOAST_GAP, "just below the bar it met");
-    }
-
-    /// Banners start below the window bars the host keeps clear, so a
-    /// window's maximise and close under the corner keep their clicks.
-    #[test]
-    fn banners_start_below_the_window_bars() {
-        // Motion reads at its end: this checks where the banner rests.
-        let _settled = ui::motion::testing::settled();
-        let host = TestHost::default();
-        host.push(Notification::new("Keep your name and work?", "A passkey"));
-        let mut stack = NotificationStack::new();
-        stack.set_viewport(Rect::new(0.0, 32.0, 1440.0, 900.0));
-        assert!((stack.first_top() - (32.0 + CORNER_INSET)).abs() < f64::EPSILON);
-        // The windows' content starts at 76: their bars run from 32 to 76.
-        stack.set_clear_top(76.0);
-        draw(&mut stack, &host, &Theme::dark());
-        let (_, card, _) = stack
-            .hit_rects
-            .first()
-            .copied()
-            .expect("the banner is painted");
-        assert!(
-            (card.y0 - (76.0 + TOAST_GAP)).abs() < 0.5,
-            "{card:?} rests just below the window bars"
-        );
-        assert!(
-            stack.rect().y0 >= 76.0,
-            "{:?} covers a window bar",
-            stack.rect()
-        );
-    }
-
-    /// The stack keeps clear of the window bars under its column at the
-    /// top, and only of those: a bar beside the column or a window further
-    /// down leaves the banners at the corner.
-    #[test]
-    fn banners_keep_clear_of_the_window_bars_under_the_corner() {
-        let _settled = ui::motion::testing::settled();
-        let host = TestHost::default();
-        host.push(Notification::new("Jonas is calling", "Video call"));
-        let viewport = Rect::new(0.0, 32.0, 1440.0, 900.0);
-        let corner = 32.0 + CORNER_INSET;
-        let mut stack = NotificationStack::new();
-        stack.set_viewport(viewport);
-
-        // A window on the left half: its bar is not under the banners.
-        stack.set_window_bars(vec![Rect::new(0.0, 36.0, 700.0, 80.0)]);
-        assert!((stack.first_top() - corner).abs() < f64::EPSILON);
-        // A window lower down, under the first slot: no bar to clear.
-        stack.set_window_bars(vec![Rect::new(0.0, 400.0, 1440.0, 444.0)]);
-        assert!((stack.first_top() - corner).abs() < f64::EPSILON);
-
-        // A window reaching the right edge, its bar with a toolbar row: the
-        // banner starts below it.
-        let bar = Rect::new(720.0, 36.0, 1428.0, 120.0);
-        stack.set_window_bars(vec![Rect::new(0.0, 36.0, 700.0, 80.0), bar]);
-        draw(&mut stack, &host, &Theme::dark());
-        let (_, card, _) = stack
-            .hit_rects
-            .first()
-            .copied()
-            .expect("the banner is painted");
-        assert!(
-            (card.y0 - (bar.y1 + TOAST_GAP)).abs() < 0.5,
-            "{card:?} rests just below the window bar {bar:?}"
-        );
-        assert!(
-            stack.rect().intersect(bar).area() <= 0.0,
-            "{:?} covers the window bar {bar:?}",
-            stack.rect()
-        );
-
-        // The window goes: the banners go back to the corner.
-        stack.set_window_bars(Vec::new());
-        assert!((stack.first_top() - corner).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn live_notification_requests_entry_frames_and_a_future_exit_wake() {
-        let host = TestHost::default();
-        host.push(Notification::new("Saved", "Ready"));
-        let mut stack = NotificationStack::new();
-        assert_eq!(
-            act(&mut stack, &host, |s| s.next_wake_deadline()),
-            None,
-            "a banner not yet on screen has no time running"
-        );
-        stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        draw(&mut stack, &host, &Theme::dark());
-        assert!(act(&mut stack, &host, |s| s.needs_animation_frame()));
-        assert!(act(&mut stack, &host, |s| s.next_wake_deadline()).is_some());
-    }
-
-    /// Reduced motion is a designed experience, not "off": a banner fades
-    /// in where it rests at `fast` (a change of what is shown still reads),
-    /// nothing slides, and it fades out so it is gone at expiry.
-    #[test]
-    fn under_reduced_motion_a_banner_fades_in_place() {
-        let host = TestHost::default();
-        host.push(Notification::new("Saved", "Ready"));
-        let mut stack = NotificationStack::new();
-        stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        draw(&mut stack, &host, &Theme::dark().with_reduce_motion(true));
-        assert!(
-            act(&mut stack, &host, |s| s.needs_animation_frame()),
-            "it fades in"
-        );
-        assert!(act(&mut stack, &host, |s| s.next_wake_deadline()).is_some());
-        let n = host.log().active()[0].clone();
-        let shown = n.dwell.first_shown().unwrap();
-        let (alpha, dx) = NotificationStack::animation_state(
-            &n,
-            shown + Duration::from_millis(40),
-            (true, false),
-            272.0,
-        );
-        assert!(alpha > 0.0 && alpha < 1.0, "mid-fade: {alpha}");
-        assert!(dx.abs() < f64::EPSILON, "nothing slides");
-        assert_eq!(
-            NotificationStack::animation_state(
-                &n,
-                shown + Duration::from_secs(1),
-                (true, false),
-                272.0
-            ),
-            (1.0, 0.0),
-            "then it stands"
-        );
-    }
-
-    /// A banner below one that leaves springs up to its new slot instead of
-    /// jumping (`motion::ListChange`), and lands there; while the person
-    /// holds the stack, a slot closing upward waits, so nothing moves under
-    /// the pointer.
-    #[test]
-    fn a_banner_springs_to_its_slot_and_waits_while_held() {
-        let mut stack = NotificationStack::new();
-        let t0 = ui::time::now();
-        let at = |ms: u64| t0 + Duration::from_millis(ms);
-        assert!(
-            (stack.slot_top(7, 100.0, t0, false) - 100.0).abs() < 1e-9,
-            "a new banner starts in its slot"
-        );
-        // The banner above it left: its slot is higher now.
-        assert!(
-            (stack.slot_top(7, 20.0, t0, false) - 100.0).abs() < 1e-9,
-            "no jump"
-        );
-        let mid = stack.slot_top(7, 20.0, at(60), false);
-        assert!(mid < 100.0 && mid > 20.0, "on its way up: {mid}");
-        assert!(stack.slots.iter().any(|(_, slot)| slot.is_moving(at(60))));
-        let landed = stack.slot_top(7, 20.0, at(600), false);
-        assert!((landed - 20.0).abs() < 0.5, "it lands in the freed slot");
-
-        stack.slot_top(8, 200.0, t0, false);
-        let held = stack.slot_top(8, 120.0, at(10), true);
-        assert!((held - 200.0).abs() < 1e-9, "held: it waits");
-        stack.slot_top(8, 120.0, at(20), false);
-        let released = stack.slot_top(8, 120.0, at(80), false);
-        assert!(released < 200.0, "let go: it closes up");
-    }
-
-    /// Banners that do not fit fold into one "N more" card that opens the
-    /// centre; they stand still until they come on screen, and only the
-    /// banners on screen age.
-    #[test]
-    fn banners_that_do_not_fit_fold_into_a_more_card_and_do_not_age() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
-            let theme = theme.with_reduce_motion(true);
-            let host = TestHost::default();
-            let ids: Vec<u64> = (0..super::super::MAX_NOTIFICATIONS)
-                .map(|i| host.push(Notification::new(format!("Banner {i}"), "Body")))
-                .collect();
-            let viewport = Rect::new(0.0, 0.0, 800.0, 300.0);
-            let mut stack = NotificationStack::new();
-            stack.set_viewport(viewport);
-            draw(&mut stack, &host, &theme);
-            let shown = stack.on_screen.clone();
-            assert!(!shown.is_empty() && shown.len() < ids.len());
-            assert_eq!(shown[0], *ids.last().unwrap(), "the newest leads");
-            let more = stack.more_rect;
-            assert!(more.area() > 0.0, "the rest fold into one card");
-            assert!(more.y1 <= viewport.y1 - CORNER_INSET);
-            let hidden = ids.len() - shown.len();
-            let label = t_args("notification-more", &[("count", hidden.into())]);
-            assert!(
-                stack
-                    .action_buttons
-                    .iter()
-                    .any(|(rect, name, _)| *rect == more && *name == label),
-                "the card names how many more: {label}"
-            );
-            let log = host.log();
-            for n in log.active() {
-                assert_eq!(
-                    n.dwell.is_running(),
-                    shown.contains(&n.id),
-                    "only a banner on screen ages"
-                );
-            }
-            drop(log);
-            assert!(act(&mut stack, &host, |s| s.click_at(more.center())));
-            assert_eq!(host.centre_opened.get(), 1, "the card opens the centre");
-        }
-    }
-
-    /// Resting the pointer on the stack holds every banner on it: none
-    /// fades or expires under the pointer, and letting go starts them
-    /// again.
-    #[test]
-    fn the_pointer_resting_on_the_stack_holds_the_banners() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        let host = TestHost::default();
-        host.push(Notification::new("Ada", "Can you look?"));
-        let mut stack = NotificationStack::new();
-        stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        draw(&mut stack, &host, &Theme::dark().with_reduce_motion(true));
-        let device_id = winit::event::DeviceId::dummy();
-        let at = |point: Point| WindowEvent::CursorMoved {
-            device_id,
-            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-        };
-        let mut handled = false;
-        let centre = stack.rect().center();
-        assert!(act(&mut stack, &host, |s| s.handle_pointer_event(
-            &at(centre),
-            1.0,
-            &mut handled
-        )));
-        assert!(stack.held());
-        assert!(host.log().held());
-        assert!(!host.log().active()[0].dwell.is_running());
-        assert_eq!(act(&mut stack, &host, |s| s.next_wake_deadline()), None);
-        let n = host.log().active()[0].clone();
-        assert_eq!(
-            NotificationStack::animation_state(
-                &n,
-                ui::time::now() + Duration::from_secs(60),
-                (false, true),
-                272.0
-            )
-            .0,
-            1.0,
-            "a held banner does not fade"
-        );
-        assert!(act(&mut stack, &host, |s| s.handle_pointer_event(
-            &at(Point::new(5.0, 590.0)),
-            1.0,
-            &mut handled
-        )));
-        assert!(!stack.held());
-        assert!(host.log().active()[0].dwell.is_running());
-    }
-
-    /// Passing over the stack on the way elsewhere is transit and holds
-    /// nothing; heading for it and slowing to a stop there holds it, and a
-    /// hand that stops short lets go after the aim lapses.
-    #[test]
-    fn only_a_pointer_reaching_for_the_stack_holds_it() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        let host = TestHost::default();
-        host.push(Notification::new("Ada", "Can you look?"));
-        let mut stack = NotificationStack::new();
-        stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        draw(&mut stack, &host, &Theme::dark().with_reduce_motion(true));
-        let card = stack.rect();
-        let y = card.center().y;
-        let t0 = ui::time::now();
-        let at = |ms: u64| t0 + Duration::from_millis(ms);
-
-        // A fast sweep down the screen across the stack, 40 px every 8 ms.
-        let x = card.center().x;
-        let mut ms = 0;
-        for step in 0..16_u32 {
-            let py = card.y0 - 120.0 + 40.0 * f64::from(step);
-            act(&mut stack, &host, |s| {
-                s.note_pointer_at(Some(Point::new(x, py)), at(ms))
-            });
-            if card.contains(Point::new(x, py)) {
-                assert!(!stack.pointer_holds(at(ms)), "in transit at {py}");
-            }
-            ms += 8;
-        }
-        assert!(!host.log().held());
-        act(&mut stack, &host, |s| s.note_pointer_at(None, at(ms)));
-
-        // Reaching for the stack from the left: slowing to a stop on it.
-        let t1 = ms + 500;
-        let path = [
-            (card.x0 - 200.0, 0),
-            (card.x0 - 100.0, 16),
-            (card.x0 - 40.0, 32),
-            (card.x0 - 10.0, 48),
-            (card.x0 + 2.0, 64),
-        ];
-        for (px, dt) in path {
-            act(&mut stack, &host, |s| {
-                s.note_pointer_at(Some(Point::new(px, y)), at(t1 + dt))
-            });
-        }
-        assert!(
-            stack.pointer_holds(at(t1 + 64)),
-            "heading there and coming to rest"
-        );
-        assert!(host.log().held());
-        assert!(
-            stack.pointer_holds(at(t1 + 64 + 200)),
-            "resting on the stack keeps holding it"
-        );
-
-        // Heading for it but stopping short: the aim lapses.
-        act(&mut stack, &host, |s| {
-            s.note_pointer_at(None, at(t1 + 1000))
-        });
-        let t2 = t1 + 2000;
-        for (px, dt) in [
-            (card.x0 - 300.0, 0),
-            (card.x0 - 150.0, 16),
-            (card.x0 - 60.0, 32),
-        ] {
-            act(&mut stack, &host, |s| {
-                s.note_pointer_at(Some(Point::new(px, y)), at(t2 + dt))
-            });
-        }
-        let lapse = at(t2 + 32) + AIM_HOLD;
-        assert!(
-            !stack.pointer_holds(lapse),
-            "a hand that stops short lets go"
-        );
-    }
-
-    /// The Notifications chord moves focus into the newest banner: arrows
-    /// walk its controls and the banners, Return runs the focused control,
-    /// Escape dismisses the banner; either gives focus back.
-    #[test]
-    fn keyboard_focus_reaches_banner_actions_and_escape_dismisses() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        let host = TestHost::default();
-        host.actions.replace(vec![
-            ("dismiss".into(), "Dismiss".into()),
-            ("snooze".into(), "Snooze".into()),
-        ]);
-        let older = host.push(Notification::new("Alarm", "Tea"));
-        let newest = host.push(Notification::new("Alarm", "Meeting"));
-        let mut stack = NotificationStack::new();
-        stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 900.0));
-        let theme = Theme::dark().with_reduce_motion(true);
-        draw(&mut stack, &host, &theme);
-        assert!(!stack.owns_key(&Key::Named(NamedKey::Enter)));
-        assert!(act(&mut stack, &host, NotificationStack::focus_newest));
-        assert!(host.log().held(), "a focused banner does not age");
-        assert_eq!(
-            stack.focus,
-            Some(BannerTarget::Action(newest, "dismiss".into())),
-            "focus lands on the first choice, as painted"
-        );
-        assert!(!stack.owns_key(&Key::Character("a".into())));
-        assert!(act(&mut stack, &host, |s| s
-            .handle_key(&Key::Named(NamedKey::ArrowRight), false)));
-        assert_eq!(
-            stack.focus,
-            Some(BannerTarget::Action(newest, "snooze".into()))
-        );
-        assert!(act(&mut stack, &host, |s| s
-            .handle_key(&Key::Named(NamedKey::ArrowDown), false)));
-        assert_eq!(stack.focus, Some(BannerTarget::Open(older)));
-        assert!(act(&mut stack, &host, |s| s
-            .handle_key(&Key::Named(NamedKey::ArrowUp), false)));
-        assert_eq!(stack.focus, Some(BannerTarget::Open(newest)));
-        assert!(act(&mut stack, &host, |s| s
-            .handle_key(&Key::Named(NamedKey::Tab), false)));
-        assert!(act(&mut stack, &host, |s| s
-            .handle_key(&Key::Named(NamedKey::Tab), false)));
-        assert!(act(&mut stack, &host, |s| s
-            .handle_key(&Key::Named(NamedKey::Enter), false)));
-        assert_eq!(
-            host.invoked.borrow().last(),
-            Some(&(newest, "snooze".to_owned()))
-        );
-        assert!(!stack.has_keyboard_focus(), "acting gives focus back");
-        assert!(!host.log().held());
-
-        draw(&mut stack, &host, &theme);
-        assert!(act(&mut stack, &host, NotificationStack::focus_newest));
-        assert!(act(&mut stack, &host, |s| s
-            .handle_key(&Key::Named(NamedKey::Escape), false)));
-        assert!(!stack.has_keyboard_focus());
-        assert!(
-            host.log().active().iter().all(|n| n.id != newest),
-            "Escape dismisses the focused banner"
-        );
-    }
-
-    /// Do Not Disturb puts no card on screen: with no banner, the stack
-    /// paints nothing.
-    #[test]
-    fn quiet_mode_paints_no_card_of_its_own() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        let host = TestHost::default();
-        host.quiet.replace(Some("Do Not Disturb".into()));
-        host.log.borrow_mut().retain(Notification::new("Held", ""));
-        let mut stack = NotificationStack::new();
-        stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        draw(&mut stack, &host, &Theme::dark());
-        assert!(stack.rect().is_zero_area());
-        assert!(
-            act(&mut stack, &host, |s| s.accessibility())
-                .unwrap()
-                .children
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn accessibility_exposes_a_named_live_region_with_latest_notification() {
-        use ui::a11y::{Politeness, Role};
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = ui::motion::testing::settled();
-        let host = TestHost::default();
-        let mut stack = NotificationStack::new();
-        let node =
-            act(&mut stack, &host, |s| s.accessibility()).expect("the stack is a live region");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Notifications"));
-        assert_eq!(node.live, Some(Politeness::Polite));
-        assert_eq!(
-            node.value.as_deref(),
-            Some(""),
-            "an empty stack announces nothing"
-        );
-        host.push(Notification::new("New mail", "secret subject"));
-        let node = act(&mut stack, &host, |s| s.accessibility()).unwrap();
-        assert_eq!(node.value.as_deref(), Some("New mail. secret subject"));
-        assert_eq!(
-            node.live,
-            Some(Politeness::Polite),
-            "an ordinary arrival waits its turn"
-        );
-        host.push(
-            Notification::new("Backup failed", "").with_severity(NotificationSeverity::Error),
-        );
-        let node = act(&mut stack, &host, |s| s.accessibility()).unwrap();
-        assert_eq!(node.value.as_deref(), Some("Backup failed"));
-        assert_eq!(node.live, Some(Politeness::Assertive), "an error cuts in");
-        // Locked: no title/body/app reaches the a11y tree.
-        host.locked.set(true);
-        let node = act(&mut stack, &host, |s| s.accessibility()).unwrap();
-        assert_eq!(node.value.as_deref(), Some("2 notifications"));
-        assert_eq!(node.live, Some(Politeness::Polite));
-    }
-
-    /// A notification the person keeps off the lock screen does not lend
-    /// its count to it.
-    #[test]
-    fn the_locked_live_region_counts_only_what_is_allowed_there() {
-        let host = TestHost::default();
-        host.locked.set(true);
-        let mut kept_off = Notification::new("Private", "secret");
-        kept_off.show_on_lock_screen = false;
-        host.push(kept_off);
-        let mut stack = NotificationStack::new();
-        assert!(
-            act(&mut stack, &host, |s| s.accessibility()).is_none(),
-            "nothing the person keeps off the lock screen is counted"
-        );
-        let mut allowed = Notification::new("New mail", "secret");
-        allowed.show_on_lock_screen = true;
-        host.push(allowed);
-        let node = act(&mut stack, &host, |s| s.accessibility()).unwrap();
-        assert_eq!(node.value.as_deref(), Some("1 notification"));
-    }
-}
+#[path = "stack_tests.rs"]
+pub(super) mod tests;

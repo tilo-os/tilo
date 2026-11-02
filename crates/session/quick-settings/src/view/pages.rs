@@ -155,11 +155,28 @@ fn notification_list(
     page.into_widget()
 }
 
+/// The glyph a notification's row leads with: the app whose group key it
+/// carries (`app-id\x1fcaption`), or the bell for the desktop's own. A
+/// notification by a person is in their app's group, so the app still
+/// names it here; the banner already shows the sender's avatar.
+fn app_icon(row: &NotificationRow) -> Icon {
+    let app = row.group.split('\u{1f}').next().unwrap_or_default();
+    if app.is_empty() || app.starts_with("notification-") {
+        Icon::Bell
+    } else {
+        ui::icons::app_glyph(app, None)
+    }
+}
+
 /// One notification: opened when chosen (read in full when nothing can
 /// open it), with its actions, Dismiss and, where an agent is live, Hand to.
 fn notification_row(cx: &ViewCx<QuickSettings>, row: &NotificationRow) -> Element {
     let actions = cx.actions();
+    // The row leads with what sent it: its app's glyph, so a column of
+    // notifications reads by source before it is read. A notification with
+    // no app (the desktop's own) leads with the bell.
     let mut item = ListRow::new(format!("qs-notification-{}", row.id), &row.title)
+        .icon(app_icon(row))
         .secondary(&row.body)
         .secondary_lines(2)
         .value(&row.age);

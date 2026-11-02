@@ -203,8 +203,9 @@ fn a_lone_action_moves_under_text_it_would_squeeze() {
         "{under:?} ends the card {rect:?}"
     );
     assert!(rect.height() > minimum_card_height(&mut tr, &large, &card));
-    // Every letter of the caption, title, body and button is painted:
-    // an elided line would drop most of them.
+    // The caption, title and button are painted whole; the body is the one
+    // field that clamps (two lines, the rest elided) so a card never grows
+    // without bound around its actions.
     let mut scene = Scene::new();
     paint_card(&mut scene, Affine::IDENTITY, &mut tr, &large, rect, &card);
     let glyphs: usize = scene
@@ -214,14 +215,14 @@ fn a_lone_action_moves_under_text_it_would_squeeze() {
         .iter()
         .map(|run| run.glyphs.len())
         .sum();
-    let letters = [card.caption, card.title, card.body, card.primary_action]
+    let must_paint = [card.caption, card.title, card.primary_action]
         .concat()
         .chars()
         .filter(|c| !c.is_whitespace())
         .count();
     assert!(
-        glyphs >= letters,
-        "{glyphs} glyphs for {letters} letters: a line was elided"
+        glyphs >= must_paint,
+        "{glyphs} glyphs for {must_paint} letters: a line was elided"
     );
 }
 
@@ -459,4 +460,114 @@ fn toast_card_paints_text_close_and_actions_inside_the_card() {
         assert!(!single_line_text("Couldn't open\nNotes").contains('\n'));
         assert!(!single_line_text("The app stopped\nbefore opening").contains('\n'));
     }
+}
+
+/// A notification's body takes two lines and no more: a line of context
+/// reads, and a body longer than twice the column is clamped (elided on
+/// its second line) instead of growing the card without bound.
+#[test]
+fn a_notifications_body_clamps_to_two_lines() {
+    let mut tr = TextRenderer::new();
+    let theme = Theme::dark();
+    let width = 360.0;
+    let mut height = |body: &str| {
+        let card = ToastCard::new("Ana", ToastKind::Info)
+            .caption("Messages")
+            .time("2 min ago")
+            .body(body);
+        card_height(&mut tr, &theme, &card, width)
+    };
+    let one = height("Lunch at noon?");
+    let two = height(
+        "A line of context long enough to wrap onto a second line when the card measures it",
+    );
+    assert!(
+        two > one,
+        "a wrapping body takes a second line: {one} then {two}"
+    );
+    let clamped = height(&"context ".repeat(80));
+    assert_eq!(
+        clamped, two,
+        "a longer body stops at the same two lines instead of growing the card"
+    );
+}
+
+/// The attribution line carries the app and how long ago it arrived on
+/// one line, and takes its own height only once there is something to say.
+#[test]
+fn the_attribution_line_holds_the_app_and_the_time() {
+    let mut tr = TextRenderer::new();
+    let theme = Theme::light();
+    let width = 360.0;
+    let bare = ToastCard::new("Build finished", ToastKind::Info);
+    let attributed = bare.caption("Terminal").time("2 min ago");
+    assert!(
+        card_height(&mut tr, &theme, &attributed, width)
+            > card_height(&mut tr, &theme, &bare, width),
+        "an attribution line adds its own line"
+    );
+    let time_only = bare.time("2 min ago");
+    assert!(
+        card_height(&mut tr, &theme, &time_only, width)
+            > card_height(&mut tr, &theme, &bare, width),
+        "a time alone still needs its line"
+    );
+}
+
+/// A card whose sender takes a reply offers a field under its text: its own
+/// row, below the body and inside the card, holding what the person typed.
+#[test]
+fn a_reply_is_a_field_under_the_text() {
+    let mut tr = TextRenderer::new();
+    let theme = Theme::dark();
+    let rect = Rect::new(0.0, 0.0, 360.0, 200.0);
+    let without = ToastCard::new("Ada", ToastKind::Info)
+        .caption("Messages")
+        .time("2 min ago")
+        .body("Can you look at the review?");
+    let with = without.reply("", false);
+    let bare_h = card_height(&mut tr, &theme, &without, rect.width());
+    let reply_h = card_height(&mut tr, &theme, &with, rect.width());
+    assert!(
+        reply_h >= bare_h + f64::from(theme.tokens.metrics.bar_control_height),
+        "the field takes its own row: {bare_h} then {reply_h}"
+    );
+    let mut scene = Scene::new();
+    let hit = paint_card(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        Rect::new(rect.x0, rect.y0, rect.x1, reply_h),
+        &with,
+    );
+    assert!(hit.reply_rect.area() > 0.0, "the card hands back its field");
+    assert!(
+        rect.contains(hit.reply_rect.center()) && hit.reply_rect.y0 > hit.card_rect.y0,
+        "the field sits inside the card, under the text"
+    );
+    let typed = without.reply("On my way", true);
+    let mut typed_scene = Scene::new();
+    let typed_hit = paint_card(
+        &mut typed_scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        Rect::new(rect.x0, rect.y0, rect.x1, reply_h),
+        &typed,
+    );
+    assert_eq!(typed_hit.reply_rect, hit.reply_rect);
+    let painted = |scene: &Scene| {
+        scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .iter()
+            .map(|run| run.glyphs.len())
+            .sum::<usize>()
+    };
+    assert!(
+        painted(&typed_scene) > painted(&scene),
+        "the typed reply paints over the placeholder"
+    );
 }

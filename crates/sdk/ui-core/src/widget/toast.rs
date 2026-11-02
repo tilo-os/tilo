@@ -20,7 +20,8 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::ButtonRole;
-use crate::widget::{Button, ButtonFace};
+use crate::widget::text_input::FieldFace;
+use crate::widget::{Button, ButtonFace, ControlSize};
 
 /// Toast cards have a fixed height and therefore paint each text field on a
 /// single baseline. Collapse all Unicode whitespace before measuring or
@@ -520,6 +521,19 @@ pub struct ToastCard<'a> {
     /// Optional attribution caption above the title (e.g. the sending app's
     /// name), a dim `Caption` in sentence case. Empty = no caption.
     pub caption: &'a str,
+    /// How long ago it arrived ("2 m ago"), on the attribution line at the
+    /// trailing edge, a dim `Caption` level with the caption. Empty = no
+    /// time.
+    pub time: &'a str,
+    /// Offer an inline reply field under the text (the sender takes one,
+    /// `inline-reply`).
+    pub reply: bool,
+    /// What the person typed so far in the reply field.
+    pub reply_text: &'a str,
+    /// Whether the reply field has the keyboard.
+    pub reply_focused: bool,
+    /// Hover state for the reply field.
+    pub reply_hovered: bool,
     /// Severity — drives the leading icon and its colour.
     pub kind: ToastKind,
     /// What plain information leads with instead of a severity glyph,
@@ -572,6 +586,11 @@ impl<'a> ToastCard<'a> {
             title,
             body: "",
             caption: "",
+            time: "",
+            reply: false,
+            reply_text: "",
+            reply_focused: false,
+            reply_hovered: false,
             kind,
             icon: None,
             person: None,
@@ -624,6 +643,20 @@ impl<'a> ToastCard<'a> {
     #[must_use]
     pub fn caption(mut self, caption: &'a str) -> Self {
         self.caption = caption;
+        self
+    }
+    /// How long ago it arrived, at the attribution line's trailing edge.
+    #[must_use]
+    pub fn time(mut self, time: &'a str) -> Self {
+        self.time = time;
+        self
+    }
+    /// Offer an inline reply field under the text, holding `text` so far.
+    #[must_use]
+    pub fn reply(mut self, text: &'a str, focused: bool) -> Self {
+        self.reply = true;
+        self.reply_text = text;
+        self.reply_focused = focused;
         self
     }
     #[must_use]
@@ -709,6 +742,17 @@ pub struct ToastCardHit {
     pub secondary_action_rect: Rect,
     /// Right/primary action rect. `Rect::ZERO` when the card has no actions.
     pub primary_action_rect: Rect,
+    /// The inline reply field. `Rect::ZERO` when the card offers no reply.
+    pub reply_rect: Rect,
+}
+
+/// The room an inline reply field takes at the card's foot: the row's lead,
+/// the field, and the card's foot. Zero without a reply.
+fn reply_row_height(theme: &Theme, card: &ToastCard<'_>) -> f64 {
+    if !card.reply {
+        return 0.0;
+    }
+    choice_lead(theme) + FieldFace::height(ControlSize::Small, theme) + choice_foot(theme)
 }
 
 /// Minimum height for a compact card with one elided line per text field.
@@ -721,8 +765,11 @@ pub fn minimum_card_height(
     card: &ToastCard<'_>,
 ) -> f64 {
     let (_, pad_y) = card_pad(theme);
+    let caption = single_line_text(card.caption);
+    let time = single_line_text(card.time);
+    let header = if caption.is_empty() { time } else { caption };
     let text_height: f64 = [
-        (card.caption, theme.text(TextRole::Caption)),
+        (header.as_str(), theme.text(TextRole::Caption)),
         (card.title, theme.text(TextRole::Label).strong()),
         (card.body, theme.text(TextRole::Caption)),
     ]
@@ -748,12 +795,49 @@ pub fn minimum_card_height(
     if !card.secondary_action.is_empty() && !card.primary_action.is_empty() {
         height += control_height + pad_y + choice_lead(theme);
     }
+    height += reply_row_height(theme, card);
     height.ceil()
 }
 
-/// Height of a card `width` wide whose body may wrap to a second line, as
-/// a notification's line of context often needs to. A body longer than
-/// that keeps the compact height and is elided to one line.
+/// A card's body never takes more lines than this: a notification says
+/// enough to choose, and a title that ran on would bury its actions.
+const BODY_LINES: usize = 2;
+
+/// A card's text, normalised to the single lines (or wrapped body lines)
+/// it paints. The attribution line is the app's name and how long ago it
+/// arrived, sharing one line.
+struct CardText {
+    caption: String,
+    time: String,
+    title: String,
+    body: String,
+}
+
+impl CardText {
+    fn of(card: &ToastCard<'_>) -> Self {
+        Self {
+            caption: single_line_text(card.caption),
+            time: single_line_text(card.time),
+            title: single_line_text(card.title),
+            body: single_line_text(card.body),
+        }
+    }
+
+    fn has_header(&self) -> bool {
+        !self.caption.is_empty() || !self.time.is_empty()
+    }
+}
+
+/// One line box's height in `style`, for stacking measured lines rather
+/// than deriving them from the font size.
+fn line_height(text_renderer: &mut TextRenderer, style: &TextStyle) -> f64 {
+    f64::from(text_renderer.measure_style("Ag", None, style).1)
+}
+
+/// Height of a card `width` wide: the attribution line (the app, and how
+/// long ago it arrived), the title, the body clamped to two lines, the
+/// actions and the padding. A card never reserves less room than
+/// [`paint_card`] paints into it.
 pub fn card_height(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
@@ -761,80 +845,64 @@ pub fn card_height(
     width: f64,
 ) -> f64 {
     let compact = minimum_card_height(text_renderer, theme, card);
-    let body = single_line_text(card.body);
-    if body.is_empty() {
+    let text = CardText::of(card);
+    if text.title.is_empty() && text.body.is_empty() {
         return compact;
     }
-    let (pad_x, _) = card_pad(theme);
+    let (pad_x, pad_y) = card_pad(theme);
+    let control_height = ButtonFace::height(crate::widget::ControlSize::Small, theme);
+    let choices = !card.secondary_action.is_empty() && !card.primary_action.is_empty();
+    let inline_action =
+        card.single_action() && single_action_inline(text_renderer, theme, card, width);
+    // Everything at the card's trailing edge shrinks the text column: the
+    // dismiss button, and an action that sits beside the text.
     let trailing = if card.closable {
-        f64::from(theme.tokens.spacing.s2)
-            + ButtonFace::height(crate::widget::ControlSize::Small, theme)
-            + f64::from(theme.tokens.spacing.s1)
+        f64::from(theme.tokens.spacing.s2) + control_height + f64::from(theme.tokens.spacing.s1)
     } else {
         pad_x
+    } + if inline_action {
+        single_action_width(text_renderer, theme, card.primary_action)
+            + f64::from(theme.tokens.spacing.s3)
+    } else {
+        0.0
     };
-    let choices = !card.secondary_action.is_empty() && !card.primary_action.is_empty();
-    if card.single_action() && single_action_inline(text_renderer, theme, card, width) {
-        return compact;
-    }
-    if card.single_action() || choices {
-        // The actions end the card, so the text has the card's width and
-        // wraps there whole rather than eliding: a card that asks the
-        // person to choose must say all of what they choose between.
-        let control_height = ButtonFace::height(crate::widget::ControlSize::Small, theme);
-        let (_, pad_y) = card_pad(theme);
-        let text_width =
-            f32_of_f64((width - leading_column(theme, card) - 2.0 * pad_x - trailing).max(1.0));
-        let block: f64 = [
-            (card.caption, theme.text(TextRole::Caption)),
-            (card.title, theme.text(TextRole::Label).strong()),
-            (card.body, theme.text(TextRole::Caption)),
-        ]
-        .into_iter()
-        .map(|(text, style)| {
-            let text = single_line_text(text);
-            if text.is_empty() {
-                0.0
-            } else {
-                f64::from(
-                    text_renderer
-                        .measure_style(&text, Some(text_width), &style)
-                        .1,
-                )
-            }
-        })
-        .sum();
-        let wrapped = block
-            .max(leading_side(theme, card).unwrap_or(0.0))
-            .max(if card.closable { control_height } else { 0.0 })
-            + 2.0 * pad_y
-            + choice_lead(theme)
-            + choice_height(theme)
-            + choice_foot(theme);
-        // `compact` already holds a pair of choices; a single action that
-        // moved under the text adds its row.
-        let least = if choices {
-            compact
+    let text_width =
+        f32_of_f64((width - leading_column(theme, card) - 2.0 * pad_x - trailing).max(1.0));
+    let caption_style = theme.text(TextRole::Caption);
+    let title_style = theme.text(TextRole::Label).strong();
+    let body_style = theme.text(TextRole::Caption);
+    let header_h = if text.has_header() {
+        line_height(text_renderer, &caption_style)
+    } else {
+        0.0
+    };
+    let title_h = if text.title.is_empty() {
+        0.0
+    } else {
+        line_height(text_renderer, &title_style)
+    };
+    let body_h = if text.body.is_empty() {
+        0.0
+    } else {
+        let lines = text_renderer
+            .clamp_to_lines(&text.body, &body_style, text_width, BODY_LINES)
+            .len()
+            .max(1);
+        lines as f64 * line_height(text_renderer, &body_style)
+    };
+    let mut height = (header_h + title_h + body_h)
+        .max(leading_side(theme, card).unwrap_or(f64::from(theme.tokens.metrics.icon_md)))
+        .max(if card.closable || inline_action {
+            control_height
         } else {
-            compact + control_height + pad_y + choice_lead(theme)
-        };
-        return wrapped.max(least).ceil();
+            0.0
+        })
+        + 2.0 * pad_y;
+    if choices || (card.single_action() && !inline_action) {
+        height += choice_lead(theme) + control_height + choice_foot(theme);
     }
-    let text_width = width - leading_column(theme, card) - pad_x - trailing;
-    if text_width <= 0.0 {
-        return compact;
-    }
-    let style = theme.text(TextRole::Caption);
-    let one = f64::from(text_renderer.measure_style(&body, None, &style).1);
-    let wrapped = f64::from(
-        text_renderer
-            .measure_style(&body, Some(f32_of_f64(text_width)), &style)
-            .1,
-    );
-    if wrapped <= one * 1.5 || wrapped > one * 2.5 {
-        return compact;
-    }
-    (compact + wrapped - one).ceil()
+    height += reply_row_height(theme, card);
+    height.max(compact).ceil()
 }
 
 /// Paint a toast / notification card into `rect` and return the geometry a
@@ -876,40 +944,58 @@ pub fn paint_card(
         rect.x1 - pad_x
     };
     let mut action_top = None;
-    if card.single_action() {
-        if single_action_inline(text_renderer, theme, card, rect.width()) {
-            let action = paint_single_action(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                Rect::new(rect.x0, rect.y0, text_right, rect.y1),
-                card,
-                a,
-            );
-            hit.primary_action_rect = action;
-            text_right = action.x0 - f64::from(theme.tokens.spacing.s3);
+    if card.single_action() && single_action_inline(text_renderer, theme, card, rect.width()) {
+        let action = paint_single_action(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(rect.x0, rect.y0, text_right, rect.y1),
+            card,
+            a,
+        );
+        hit.primary_action_rect = action;
+        text_right = action.x0 - f64::from(theme.tokens.spacing.s3);
+    }
+    // Above the row of choices, an offered reply is the card's last line:
+    // the person answers where the message is.
+    let mut bottom = rect.y1;
+    if card.reply {
+        let height = FieldFace::height(ControlSize::Small, theme);
+        let y1 = bottom - choice_foot(theme);
+        let y0 = y1 - height;
+        hit.reply_rect = Rect::new(text_x0, y0, text_right, y1);
+        paint_reply_field(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            hit.reply_rect,
+            card,
+            a,
+        );
+        bottom = y0 - choice_lead(theme);
+    }
+    if card.single_action() && !single_action_inline(text_renderer, theme, card, rect.width()) {
+        // Beside the text it would squeeze the text to nothing: it ends
+        // the card instead, where a pair of choices would.
+        let y1 = bottom - choice_foot(theme);
+        let y0 = y1 - choice_height(theme);
+        let x1 = if card.closable {
+            rect.x1 - pad_x
         } else {
-            // Beside the text it would squeeze the text to nothing: it
-            // ends the card instead, where a pair of choices would.
-            let y1 = rect.y1 - choice_foot(theme);
-            let y0 = y1 - choice_height(theme);
-            let x1 = if card.closable {
-                rect.x1 - pad_x
-            } else {
-                rect.x1
-            };
-            hit.primary_action_rect = paint_single_action(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                Rect::new(rect.x0, y0, x1, y1),
-                card,
-                a,
-            );
-            action_top = Some(y0 - choice_lead(theme));
-        }
+            rect.x1
+        };
+        hit.primary_action_rect = paint_single_action(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(rect.x0, y0, x1, y1),
+            card,
+            a,
+        );
+        action_top = Some(y0 - choice_lead(theme));
     }
 
     // Text column: optional attribution caption, then the title, then the
@@ -919,12 +1005,12 @@ pub fn paint_card(
         transform,
         text_renderer,
         theme,
-        rect,
+        Rect::new(rect.x0, rect.y0, rect.x1, bottom),
         card,
         a,
         &mut hit,
     ));
-    let text_bottom = action_top.unwrap_or(rect.y1) - progress_reserve(theme, card);
+    let text_bottom = action_top.unwrap_or(bottom) - progress_reserve(theme, card);
     let block = paint_card_text(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
         Rect::new(text_x0, rect.y0, text_right, text_bottom),
@@ -987,6 +1073,57 @@ pub fn paint_card(
     }
 
     hit
+}
+
+/// The offered reply: the shared field face (its frame, its hover and
+/// focus edge, its placeholder), with the caret where the person is typing.
+fn paint_reply_field(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    card: &ToastCard<'_>,
+    alpha: f32,
+) {
+    let faded = alpha < 0.999;
+    if faded {
+        scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, transform, &rect);
+    }
+    let placeholder = crate::i18n!("toast-reply-placeholder");
+    let face = FieldFace::new(rect, card.reply_text)
+        .placeholder(&placeholder)
+        .text_role(TextRole::Caption)
+        .hovered(card.reply_hovered)
+        .focused(card.reply_focused);
+    face.paint(scene, transform, text_renderer, theme);
+    if card.reply_focused {
+        let style = theme.text(TextRole::Caption);
+        let room = face.text_rect(theme);
+        let (x, line_h) = if card.reply_text.is_empty() {
+            let (_, h) = text_renderer.measure_style("Ag", None, &style);
+            (room.x0, f64::from(h))
+        } else {
+            let width = f32_of_f64(room.width().max(1.0));
+            let line = text_renderer.elide_to_width_style(card.reply_text, width, &style);
+            let (w, h) = text_renderer.measure_style(&line, None, &style);
+            (
+                (room.x0 + f64::from(w) + 1.0).min(room.x1 - 1.0),
+                f64::from(h),
+            )
+        };
+        let y0 = room.y0 + (room.height() - line_h) / 2.0;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.text_primary,
+            None,
+            &Rect::new(x, y0, x + 1.5, y0 + line_h),
+        );
+    }
+    if faded {
+        scene.pop_layer();
+    }
 }
 
 /// The card's leading mark at `left`: a severity glyph for anything that
@@ -1427,159 +1564,100 @@ fn paint_card_text(
     let theme = ctx.theme;
     let (pad_x, pad_y) = card_pad(theme);
     let text_x = column.x0 + pad_x;
-    let width_avail = f32_of_f64((column.x1 - text_x).max(0.0));
-    // A card sized for its text wraps it; one that is
-    // shorter than its wrapped text keeps each field to one elided line.
-    if let Some(block) = paint_wrapped_card_text(ctx, column, card, alpha, text_x, width_avail) {
-        return block;
-    }
-    let text_renderer = &mut *ctx.text;
-    let width_avail = f32_of_f64((column.x1 - text_x).max(0.0));
+    let width = f32_of_f64((column.x1 - text_x).max(0.0));
     let caption_style = theme.text(TextRole::Caption);
     let title_style = theme.text(TextRole::Label).strong();
     let body_style = theme.text(TextRole::Caption);
+    let text = CardText::of(card);
 
-    // A desktop notification may carry arbitrary localized or application
-    // text. Keep every field one-line before deriving heights and widths;
-    // otherwise `draw_text` interprets an embedded newline as a second line
-    // even though this card's geometry is intentionally fixed-height.
-    let caption_text = single_line_text(card.caption);
-    let title_text = single_line_text(card.title);
-    let body_text = single_line_text(card.body);
-    let has_caption = !caption_text.is_empty();
-    let has_body = !body_text.is_empty();
-    // Stack the measured line boxes, not the font sizes: a face's line
-    // height is ~1.3× its size, so size-derived heights under-reserved
-    // every line and the block sat high in the card. The roles' own
-    // leading is the space between lines.
-    let line_gap = 0.0;
-    let line_h = |text_renderer: &mut TextRenderer, text: &str, style: &TextStyle| {
-        f64::from(text_renderer.measure_style(text, None, style).1)
-    };
-    let cap_h = if has_caption {
-        line_h(text_renderer, &caption_text, &caption_style) + line_gap
+    // The block is the attribution line (app and time), the title on one
+    // semibold line, then the body clamped to two lines. A card laid out
+    // shorter than that (a compact in-app card, the lock screen's alert)
+    // keeps the body on one line.
+    let body_line_h = line_height(ctx.text, &body_style);
+    let header_h = if text.has_header() {
+        line_height(ctx.text, &caption_style)
     } else {
         0.0
     };
-    let title_h =
-        line_h(text_renderer, &title_text, &title_style) + if has_body { line_gap } else { 0.0 };
-    let body_h = if has_body {
-        line_h(text_renderer, &body_text, &body_style)
-    } else {
+    let title_h = if text.title.is_empty() {
         0.0
+    } else {
+        line_height(ctx.text, &title_style)
     };
-    let block_h = cap_h + title_h + body_h;
-    let text_height = column.height().max(0.0);
-    let mut ty = column.y0 + ((text_height - block_h) / 2.0).max(pad_y);
+    let room = column.height() - 2.0 * pad_y - header_h - title_h;
+    let body_cap = if body_line_h > 0.0 {
+        (room / body_line_h).floor().clamp(1.0, BODY_LINES as f64) as usize
+    } else {
+        1
+    };
+    let body_lines = if text.body.is_empty() {
+        Vec::new()
+    } else {
+        ctx.text
+            .clamp_to_lines(&text.body, &body_style, width, body_cap)
+    };
+    let body_h = body_lines.len() as f64 * body_line_h;
+    let block_h = header_h + title_h + body_h;
+    let mut ty = column.y0 + ((column.height() - block_h) / 2.0).max(pad_y);
     let top = ty;
-
-    // `paint_card` deliberately owns a fixed-height notification surface.
-    // Wrapping an untrusted summary/body into that surface makes the title
-    // paint over the body (and can push the close affordance into the text).
-    // Elide each line against the *actual* width left by the close button;
-    // long diagnostics belong in the structured log, not in chrome.
-    let caption = has_caption
-        .then(|| text_renderer.elide_to_width_style(&caption_text, width_avail, &caption_style));
-    let title = text_renderer.elide_to_width_style(&title_text, width_avail, &title_style);
-    let body =
-        has_body.then(|| text_renderer.elide_to_width_style(&body_text, width_avail, &body_style));
 
     let dim = theme.tokens.colors.text_dim.with_alpha(alpha);
     let primary = theme.tokens.colors.text_primary.with_alpha(alpha);
 
-    if has_caption {
-        ctx.text(
-            caption.as_deref().unwrap_or_default(),
-            &caption_style,
-            dim,
-            Point::new(text_x, ty),
-            Some(width_avail),
-        );
-        ty += cap_h;
+    if text.has_header() {
+        let mut label_width = width;
+        if !text.time.is_empty() {
+            let (time_width, _) = ctx.text.measure_style(&text.time, None, &caption_style);
+            let time_width = time_width.min(width);
+            let time_x = text_x + f64::from(width - time_width);
+            ctx.text(
+                &text.time,
+                &caption_style,
+                dim,
+                Point::new(time_x, ty),
+                Some(time_width),
+            );
+            label_width =
+                (width - time_width - f32_of_f64(f64::from(theme.tokens.spacing.s2))).max(0.0);
+        }
+        if !text.caption.is_empty() && label_width > 0.0 {
+            let caption = ctx
+                .text
+                .elide_to_width_style(&text.caption, label_width, &caption_style);
+            ctx.text(
+                &caption,
+                &caption_style,
+                dim,
+                Point::new(text_x, ty),
+                Some(label_width),
+            );
+        }
+        ty += header_h;
     }
-    ctx.text(
-        &title,
-        &title_style,
-        primary,
-        Point::new(text_x, ty),
-        Some(width_avail),
-    );
-    let title_centre = ty + (title_h - line_gap) / 2.0;
-    ty += title_h;
-    if has_body {
+    if !text.title.is_empty() {
+        let title = ctx
+            .text
+            .elide_to_width_style(&text.title, width, &title_style);
         ctx.text(
-            body.as_deref().unwrap_or_default(),
-            &body_style,
-            dim,
+            &title,
+            &title_style,
+            primary,
             Point::new(text_x, ty),
-            Some(width_avail),
+            Some(width),
         );
+    }
+    let title_centre = ty + title_h / 2.0;
+    ty += title_h;
+    for line in &body_lines {
+        ctx.text(line, &body_style, dim, Point::new(text_x, ty), Some(width));
+        ty += body_line_h;
     }
     TextBlock {
         title_centre,
         top,
         bottom: top + block_h,
     }
-}
-
-/// Paint the card's text wrapped at `width`, centred in `column`, when it
-/// fits there whole. Returns whether it painted.
-fn paint_wrapped_card_text(
-    ctx: &mut PaintCtx<'_>,
-    column: Rect,
-    card: &ToastCard<'_>,
-    alpha: f32,
-    text_x: f64,
-    width: f32,
-) -> Option<TextBlock> {
-    let theme = ctx.theme;
-    let (_, pad_y) = card_pad(theme);
-    let caption_style = theme.text(TextRole::Caption);
-    let title_style = theme.text(TextRole::Label).strong();
-    let body_style = theme.text(TextRole::Caption);
-    let caption = single_line_text(card.caption);
-    let title = single_line_text(card.title);
-    let body = single_line_text(card.body);
-    let mut measure = |text: &str, style: &TextStyle| {
-        if text.is_empty() {
-            0.0
-        } else {
-            f64::from(ctx.text.measure_style(text, Some(width), style).1)
-        }
-    };
-    let caption_h = measure(&caption, &caption_style);
-    let title_h = measure(&title, &title_style);
-    let body_h = measure(&body, &body_style);
-    let single = f64::from(ctx.text.measure_style("Ag", None, &title_style).1);
-    let block = caption_h + title_h + body_h;
-    // Only take over when the text actually wraps and the card holds it.
-    if title_h <= single * 1.2 && body_h <= single * 1.2 {
-        return None;
-    }
-    if block > column.height() - 2.0 * pad_y {
-        return None;
-    }
-    let mut y = column.y0 + (column.height() - block) / 2.0;
-    let extent = TextBlock {
-        // The first line of the title, however many it wraps to.
-        title_centre: y + caption_h + single.min(title_h) / 2.0,
-        top: y,
-        bottom: y + block,
-    };
-    let dim = theme.tokens.colors.text_dim.with_alpha(alpha);
-    let primary = theme.tokens.colors.text_primary.with_alpha(alpha);
-    for (text, style, ink, h) in [
-        (&caption, &caption_style, dim, caption_h),
-        (&title, &title_style, primary, title_h),
-        (&body, &body_style, dim, body_h),
-    ] {
-        if text.is_empty() {
-            continue;
-        }
-        ctx.text(text, style, ink, Point::new(text_x, y), Some(width));
-        y += h;
-    }
-    Some(extent)
 }
 
 #[cfg(test)]

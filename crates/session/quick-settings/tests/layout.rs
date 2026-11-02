@@ -387,6 +387,21 @@ fn the_notifications_page_groups_by_app_and_says_why_banners_are_held() {
     assert!(has(&mut app, "qs-notifications-clear"));
 }
 
+/// A kept notification offers the sender's own choices as buttons under
+/// its row, so it can be dealt with without opening it.
+#[test]
+fn a_notification_offers_its_senders_choices_inline() {
+    let (mut app, host) = hosted("notifications");
+    click(&mut app, "qs-notification-3-dismiss");
+    assert_eq!(
+        host.ran(),
+        [QsEffect::RunNotificationAction {
+            notification: 3,
+            action: "dismiss".into(),
+        }]
+    );
+}
+
 #[test]
 fn a_notification_nothing_can_open_is_read_in_full_and_back_returns_to_the_list() {
     let (mut app, host) = hosted("notifications");

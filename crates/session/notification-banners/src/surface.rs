@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_desktop::notifications::{Banner, BannerFeed, NotificationStack};
+use tilo_desktop::notifications::{Banner, BannerAsk, BannerFeed, NotificationStack};
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ResourceSurface, SurfaceCx};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -116,8 +116,11 @@ impl State {
             Some(link) => (link, false),
             None => (Link::new(), true),
         };
+        let mut stack = NotificationStack::new();
+        // The link carries a reply to the desktop, which answers its sender.
+        stack.set_replies(true);
         let mut surface = Self {
-            stack: NotificationStack::new(),
+            stack,
             link,
             own,
             scenario: None,
@@ -205,7 +208,10 @@ impl State {
     fn hand_over(&mut self) {
         let asks = self.stack.take_asks();
         for ask in asks {
-            self.link.ask(Ask::Banner(ask));
+            self.link.ask(match ask {
+                BannerAsk::Reply { id, text } => Ask::Reply { id, text },
+                ask => Ask::Banner(ask),
+            });
         }
         if self.own {
             // The fixed desktop keeps what it is asked and shows no change.

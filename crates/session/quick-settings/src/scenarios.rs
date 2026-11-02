@@ -27,6 +27,7 @@ pub const NAMES: &[&str] = &[
     "clipboard",
     "paste",
     "notifications",
+    "notifications-empty",
     "notification",
     "accessory",
     "edit",
@@ -47,7 +48,9 @@ pub fn actions(name: Option<&str>) -> Vec<Invoke<QuickSettings>> {
         Some("devices") => open(QsSection::Devices),
         Some("clipboard") => open(QsSection::Clipboard),
         Some("paste") => vec![QuickSettings::PASTE.invoke()],
-        Some("notifications") => vec![QuickSettings::SHOW_NOTIFICATIONS.invoke()],
+        Some("notifications" | "notifications-empty") => {
+            vec![QuickSettings::SHOW_NOTIFICATIONS.invoke()]
+        }
         Some("notification") => vec![
             QuickSettings::SHOW_NOTIFICATIONS.invoke(),
             QuickSettings::READ_NOTIFICATION.with(3_u64),
@@ -288,6 +291,7 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
             state.do_not_disturb = true;
             state.notifications.quiet = Some("Do Not Disturb is on".into());
         }
+        Some("notifications-empty") => state.notifications = NotificationsView::default(),
         Some("now-playing") => state.now_playing = Some(crate::NowPlaying::fixture()),
         Some("short") => {
             state.displays = vec![

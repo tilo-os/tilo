@@ -48,6 +48,7 @@ fn alarm_choices() -> Vec<(String, String)> {
 /// A message from a person, with an inline reply.
 fn message() -> Banner {
     let mut notification = Notification::new("Ada Lovelace", "Can you look at the review?")
+        .with_app_id("so.tilo.chat")
         .with_app_name("Messages")
         .with_from("Ada Lovelace", "ada@example.org");
     notification.actions = vec![
@@ -61,6 +62,7 @@ fn message() -> Banner {
 fn alarm() -> Banner {
     let mut banner = banner(
         Notification::new("Design review", "Starts in 5 minutes")
+            .with_app_id("so.tilo.calendar")
             .with_app_name("Calendar")
             .with_addressed(Addressed::Reminder)
             .with_dismiss_after(PERSISTENT_DISMISS),
@@ -70,7 +72,11 @@ fn alarm() -> Banner {
 }
 
 fn build() -> Banner {
-    banner(Notification::new("Build finished", "All 412 tests passed").with_app_name("Terminal"))
+    banner(
+        Notification::new("Build finished", "All 412 tests passed")
+            .with_app_id("so.tilo.terminal")
+            .with_app_name("Terminal"),
+    )
 }
 
 fn call() -> Banner {
@@ -101,6 +107,7 @@ fn battery() -> Banner {
 pub fn feed(scenario: Option<&str>) -> BannerFeed {
     let banners = match scenario {
         Some("empty") => Vec::new(),
+        Some("single") => vec![message()],
         Some("choices") => vec![alarm()],
         Some("call") => vec![build(), call()],
         Some("machine") => vec![build(), battery(), call()],

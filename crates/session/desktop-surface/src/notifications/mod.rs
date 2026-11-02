@@ -29,6 +29,7 @@ pub use lazy::{
     CentreApi, MakeNotificationCentre, NOTIFICATION_CENTRE, builtin_notification_centre,
 };
 pub use log::{CLEAR_UNDO_WINDOW, NotificationLog, RELEASE_GRACE};
+pub use model::INLINE_REPLY;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use model::ScheduledNotificationTarget;
 pub use model::{
@@ -85,6 +86,11 @@ pub trait NotificationHost {
 
     /// The person selected live banner `id` (not its close button).
     fn activate(&self, id: u64);
+
+    /// The person answered live banner `id`'s inline reply with `text`. The
+    /// banners app carries this to its link; a host that paints banners
+    /// itself takes no reply, and its stack offers none.
+    fn reply(&self, _id: u64, _text: &str) {}
 
     /// The person opened retained notification `id` from the centre.
     fn activate_history(&self, id: u64) -> HistoryActivation;
