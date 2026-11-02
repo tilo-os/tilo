@@ -139,11 +139,28 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
         distinct.len()
     );
 
+    // A click through the socket presses the screen's own control there: the preset switch
+    // shows the framed canvas, whose entry stands where the strips stood.
+    let (x, y, w, h) = session.shell_control("Frames").expect("the preset switch");
+    let clicked = ask(
+        &mut session,
+        &socket,
+        &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0}),
+    );
+    assert_eq!(clicked, json!({"ok": {}}), "the click is taken");
+    assert!(
+        reached(&mut session, |session| session
+            .shell_control("Typed")
+            .is_some_and(|(_, _, w, h)| w > 0.0 && h > 0.0)),
+        "the canvas: {:?}",
+        session.accessible_labels()
+    );
+
     // What the socket does not answer, it says so.
     let refused = ask(
         &mut session,
         &socket,
-        &json!({"op": "click_at", "x": 1, "y": 1}),
+        &json!({"op": "drag", "x1": 1, "y1": 1, "x2": 2, "y2": 2}),
     );
     assert_eq!(refused["err"]["code"], "unsupported", "{refused}");
 }
@@ -256,4 +273,111 @@ fn a_session_ended_by_sigterm_unmounts_what_it_mounted() {
         "the files people choose for apps are unmounted"
     );
     assert!(!control.exists(), "the test-control socket is removed");
+}
+
+/// How many pixels of `shot` in `rect` (logical, at scale 1) are as light as text on the
+/// dark theme's ground: what is written there.
+fn written(shot: &image::RgbaImage, (x, y, w, h): (f64, f64, f64, f64)) -> usize {
+    let mut light = 0;
+    for py in (y as u32)..((y + h) as u32).min(shot.height()) {
+        for px in (x as u32)..((x + w) as u32).min(shot.width()) {
+            let [r, g, b, _] = shot.get_pixel(px, py).0;
+            if u32::from(r) + u32::from(g) + u32::from(b) > 3 * 128 {
+                light += 1;
+            }
+        }
+    }
+    light
+}
+
+/// A note of the seeded notes app placed on the framed canvas is seen in the snapshot: its
+/// frame's title is drawn where the shell lays it out, not cut off by a canvas with no room.
+#[test]
+fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let note = apps
+        .resources()
+        .iter()
+        .flat_map(|resource| resource.children.clone())
+        .find(|resource| resource.label == "Groceries")
+        .expect("the seeded note")
+        .id
+        .as_str()
+        .to_owned();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: Some(ShellLayer::Screen),
+            collab: false,
+            services: vec![Box::new(apps)],
+            test_control: Some(socket.clone()),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    assert!(reached(&mut session, |session| session
+        .shell_control("Frames")
+        .is_some()));
+    let (x, y, w, h) = session.shell_control("Frames").unwrap();
+    ask(
+        &mut session,
+        &socket,
+        &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0}),
+    );
+    assert!(reached(&mut session, |session| session
+        .shell_control("Typed")
+        .is_some()));
+
+    let (workspace, row) = {
+        let tree = session.handle().read(Clone::clone);
+        let workspace = tree.active_workspace().expect("a workspace is in front");
+        (
+            workspace.id.0.to_string(),
+            workspace.strips.first().expect("a row").id.0,
+        )
+    };
+    let arguments = json!({
+        "workspace": workspace,
+        "row": row,
+        "strip": session.handle().mint_id(),
+        "place": session.handle().mint_id(),
+        "resource": note,
+        "x": 80,
+        "y": 60,
+        "width": 480,
+        "height": 360,
+    });
+    session
+        .invoke("shell:arrangement", "place", arguments.as_object().unwrap())
+        .expect("the note is placed");
+    assert!(
+        reached(&mut session, |session| session.shell_says("Oat milk")),
+        "the note's editor: {:?}",
+        session.accessible_labels()
+    );
+    // As it stands once the frames after it settled, not only on the first.
+    for _ in 0..50 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let title = session
+        .shell_control("Groceries")
+        .expect("the frame's title");
+
+    let png = root.path().join("shot.png");
+    let answer = ask(
+        &mut session,
+        &socket,
+        &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
+    );
+    assert_eq!(answer, json!({"ok": {"frame": 0}}), "the snapshot is taken");
+    let shot = image::open(&png).expect("a PNG").into_rgba8();
+    assert!(
+        written(&shot, title) > 20,
+        "the frame's title is drawn where it is laid out, {title:?}"
+    );
 }

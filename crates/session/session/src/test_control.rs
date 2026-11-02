@@ -9,7 +9,9 @@
 //! ([`crate::capture::picture`]); and `provision_test_identity`
 //! (`tilo-control raw '{"op":"provision_test_identity"}'`), which mints the throwaway identity a
 //! development session opens its desk with instead of first-use setup, as the shell's does for a
-//! dev image. Every other request is answered `unsupported`.
+//! dev image; and `click_at` (`tilo-control click-at X Y`), a click of the primary button there,
+//! which a development run presses the screen's own controls with (the shell's preset switch).
+//! Every other request is answered `unsupported`.
 //!
 //! Each connection is read on a thread of its own; what it asks is answered on the loop's pass,
 //! the only place that may touch the compositor, and the loop is woken for it.
@@ -182,15 +184,44 @@ fn answered(request: &str, compositor: &mut Compositor) -> Json {
             }
         }
         Some("provision_test_identity") => provision_test_identity(),
+        Some("click_at") => {
+            let at = |name: &str| request.get(name).and_then(Json::as_f64);
+            match (at("x"), at("y")) {
+                (Some(x), Some(y)) => match click_at(compositor, x, y) {
+                    Ok(()) => json!({"ok": {}}),
+                    Err(error) => refusal("input_failed", &error),
+                },
+                _ => refusal("parse_error", "`click_at` takes `x` and `y`"),
+            }
+        }
         Some(op) => refusal(
             "unsupported",
             &format!(
-                "this session's test control answers `snapshot` and `provision_test_identity`, \
-                 not `{op}`"
+                "this session's test control answers `snapshot`, `click_at` and \
+                 `provision_test_identity`, not `{op}`"
             ),
         ),
         None => refusal("parse_error", "a request names its `op`"),
     }
+}
+
+/// A press and release of the primary button at `(x, y)`, logical pixels of the layout, as the
+/// person clicks there: what a development run drives the screen's own controls with.
+fn click_at(compositor: &mut Compositor, x: f64, y: f64) -> Result<(), String> {
+    use tilo_compositor::InputEvent;
+    const BTN_LEFT: u32 = 0x110;
+    compositor
+        .input(InputEvent::PointerMotion { x, y })
+        .map_err(|error| error.to_string())?;
+    for pressed in [true, false] {
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed,
+            })
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// Write a PNG of every display, each at its place in the layout, to `path`.

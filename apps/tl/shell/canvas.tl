@@ -12,10 +12,12 @@
 /// Panning and zooming is the map's camera (a middle drag, Ctrl and a wheel, the arrow keys, two
 /// fingers); it moves the lens and nothing in the arrangement, so a place stays where it was
 /// while the person looks around, and the places keep their canvas points.
+/// The map fills the desk under the entry: it cuts off what it holds at its edge, so a map only
+/// as tall as its content would show none of it.
 view framed_canvas(a: Arrangement) {
-    stack(gap: .related) {
+    stack(gap: .related, fill) {
         canvas_entry(a)
-        ui.Map(name: .some("Canvas")) {
+        ui.Map(name: .some("Canvas"), fill) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
@@ -32,9 +34,9 @@ view framed_canvas(a: Arrangement) {
 /// The frameless canvas: every place at its point, drawn as its own view standing as content,
 /// with no frame around it — nearness groups it into the strip's space.
 view spaces_canvas(a: Arrangement) {
-    stack(gap: .related) {
+    stack(gap: .related, fill) {
         canvas_entry(a)
-        ui.Map(name: .some("Spaces")) {
+        ui.Map(name: .some("Spaces"), fill) {
             for s in a.strips {
                 if s.placed {
                     for p in places_of(a, s.key) {
