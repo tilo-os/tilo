@@ -263,6 +263,7 @@ mod tests {
             inputs: vec![([3; 32], 1_000)],
             input_bytes: 1_000,
             local_wall_ms: Some(10_000),
+            offload: None,
         }
     }
 

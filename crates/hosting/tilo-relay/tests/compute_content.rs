@@ -14,7 +14,6 @@ use launcher::capture::{CaptureCancellation, CapturedRunOutput, CapturedTerminat
 use tilo_clock::unix_now_ms;
 use tilo_relay::compute::MAX_COMPUTE_JOB_LIFETIME_MS;
 use tilo_relay::compute_transport::MAX_COMPUTE_ADVERTISEMENT_LIFETIME_MS;
-use tilo_relay::offload::WorkspaceContent;
 use tilo_relay::{
     ComputeClient, ComputeContentStore, ComputeEnvelope, ComputeJobBinding, ComputeJobPhase,
     ComputeJobSpec, ComputeOutputSource, ComputeResourceLimits, ComputeResultUpdate,
@@ -26,7 +25,9 @@ use tilo_relay::{
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::compute::{FixtureCatalogue, installed_package, worker_advertisement};
+use crate::common::compute::{
+    FixtureCatalogue, WorkspaceVersions, installed_package, worker_advertisement,
+};
 use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 const WORKSPACE: u64 = 99;
@@ -790,7 +791,7 @@ async fn a_batch_of_small_inputs_a_home_server_replica_holds_moves_no_bytes() {
         .collect();
     let laptop_store = Arc::new(fs::store::ContentStore::memory());
     let laptop =
-        WorkspaceContent::new(Arc::clone(&laptop_store), tokio::runtime::Handle::current());
+        WorkspaceVersions::new(Arc::clone(&laptop_store), tokio::runtime::Handle::current());
     let mut digests = Vec::new();
     for bytes in &files {
         let manifest = *laptop_store

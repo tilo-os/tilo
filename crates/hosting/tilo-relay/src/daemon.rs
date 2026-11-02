@@ -482,15 +482,12 @@ impl Relay {
         };
         // A certified host governs the rooms it creates, unless its embedder
         // serves workspace joining itself. It answers their governance as
-        // actions itself, beside whatever apps its embedder serves; and it
-        // routes its owner's compute jobs around both, answering which of
-        // the owner's devices a job should run on. It serves no apps by
-        // doing so.
+        // actions itself, beside whatever apps its embedder serves, and it
+        // runs the app transforms its embedder gives it a job runner for.
         let governs_rooms = !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
             && !additional_protocols.iter().any(|(alpn, _)| {
                 alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
             });
-        let owner = identity.user_public_key;
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
                 state_root: cfg.state_root.clone(),
@@ -505,13 +502,7 @@ impl Relay {
             endpoint.clone(),
             governs_rooms,
             None,
-            |workspaces, rest| {
-                Some(Arc::new(crate::compute_actions::ComputePlane {
-                    compute: crate::compute_actions::ComputeActions::new(owner, workspaces.clone()),
-                    rest,
-                })
-                    as Arc<dyn crate::app_serving::AppServingPlane>)
-            },
+            |_workspaces, rest| rest,
         )
         .await?;
         let rooms = governed.map(|governed| governed.rooms);

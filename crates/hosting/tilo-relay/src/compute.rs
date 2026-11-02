@@ -19,6 +19,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -387,6 +388,40 @@ pub trait ComputeSandbox: Send + Sync {
     /// Returns an error when the sandbox cannot launch or supervise the worker.
     fn launch(&self, invocation: ComputeSandboxInvocation<'_>)
     -> Result<CapturedRunOutput, String>;
+}
+
+/// A host shares one store, catalogue and sandbox with every job it runs.
+impl<T: ComputeContentStore + ?Sized> ComputeContentStore for Arc<T> {
+    fn get(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        (**self).get(digest)
+    }
+
+    fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String> {
+        (**self).put(digest, bytes)
+    }
+
+    fn locator(&self, digest: [u8; 32]) -> Option<[u8; 32]> {
+        (**self).locator(digest)
+    }
+}
+
+impl<T: ComputePackageCatalogue + ?Sized> ComputePackageCatalogue for Arc<T> {
+    fn resolve(&self, app_id: &str) -> Result<Option<InstalledPackage>, String> {
+        (**self).resolve(app_id)
+    }
+}
+
+impl<T: ComputeSandbox + ?Sized> ComputeSandbox for Arc<T> {
+    fn gpu_available(&self) -> bool {
+        (**self).gpu_available()
+    }
+
+    fn launch(
+        &self,
+        invocation: ComputeSandboxInvocation<'_>,
+    ) -> Result<CapturedRunOutput, String> {
+        (**self).launch(invocation)
+    }
 }
 
 /// Production adapter. The render-node path is selected by trusted local

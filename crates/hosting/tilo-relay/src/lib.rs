@@ -70,8 +70,6 @@ pub mod certification;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
-mod compute_actions;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod compute_content;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute_session;
@@ -92,6 +90,8 @@ pub mod environment_routing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod environment_tools;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod host_jobs;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;
 #[cfg(target_os = "linux")]
 pub mod legacy_route;
@@ -104,15 +104,7 @@ pub mod offload;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_content;
 #[cfg(not(target_arch = "wasm32"))]
-mod offload_device;
-#[cfg(not(target_arch = "wasm32"))]
 mod offload_media;
-#[cfg(not(target_arch = "wasm32"))]
-mod offload_placement;
-#[cfg(not(target_arch = "wasm32"))]
-mod offload_rooms;
-#[cfg(not(target_arch = "wasm32"))]
-mod offload_route;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod public_avatars;
 #[cfg(not(target_arch = "wasm32"))]

@@ -17,6 +17,7 @@
 //! inputs is weighed against running it where it was asked.
 
 use serde::{Deserialize, Serialize};
+use tilo_actions::Offload;
 use uuid::Uuid;
 
 /// How a device is powered, best first.
@@ -234,6 +235,12 @@ pub struct Work {
     /// inputs like these, which offloading has to beat; `None` before it
     /// has run it.
     pub local_wall_ms: Option<u64>,
+    /// The transform the route's action declares, when it declares one: what
+    /// a device that takes the work runs over these inputs, as a signed
+    /// package's entrypoint. A device without it has no work it could run,
+    /// and answers so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offload: Option<Offload>,
 }
 
 impl Work {
@@ -317,6 +324,14 @@ mod tests {
                 inputs: vec![([3; 32], 4_000)],
                 input_bytes: 9_000,
                 local_wall_ms: Some(1_200),
+                offload: Some(tilo_actions::Offload {
+                    app: "so.tilo.thumbnails".into(),
+                    entrypoint: "thumbnail-batch".into(),
+                    gpu: false,
+                    cpu_time_ms: 60_000,
+                    memory_bytes: 512 * 1024 * 1024,
+                    output_bytes: 8 * 1024 * 1024,
+                }),
             },
         };
         let bytes = postcard::to_allocvec(&query).unwrap();
