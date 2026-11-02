@@ -907,7 +907,7 @@ fn access_key(capability: &str) -> &str {
     match capability {
         "screenshot" | "screencast" | "remote-desktop" | "camera" | "microphone" | "speaker"
         | "location" | "print" | "usb" | "input-capture" | "global-shortcuts" | "notification"
-        | "secret" => capability,
+        | "secret" | "host-shell" => capability,
         _ => "generic",
     }
 }

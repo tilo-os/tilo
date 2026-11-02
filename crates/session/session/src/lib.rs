@@ -2234,13 +2234,7 @@ impl Session {
             self.shared.follow_restore();
             // What the apps asked of their own tabs, and of what a capture
             // may show of them, as the desk commands they are.
-            if let Some(tabs) = &mut self.tabs {
-                tabs.follow(
-                    &self.shared.desktop,
-                    self.shared.launch.as_deref(),
-                    &mut self.compositor,
-                );
-            }
+            self.follow_app_asks();
             self.shared.follow_gestures();
             self.shared.follow_tab_menus();
             let ran = self.shared.run_invocations(self.compositor.locked());
@@ -2258,6 +2252,20 @@ impl Session {
             self.shared.desktop.with_widgets(WidgetHost::relayout);
         }
         Ok(())
+    }
+
+    /// Answer what the apps asked of their own tabs, and of what a capture
+    /// may show of them, as the desk commands they are.
+    fn follow_app_asks(&mut self) {
+        if let Some(tabs) = &mut self.tabs {
+            tabs.follow(
+                &self.shared.desktop,
+                self.shared.launch.as_deref(),
+                &mut self.compositor,
+                self.desktop.as_deref(),
+                self.capture_studio.as_ref(),
+            );
+        }
     }
 
     /// Carry out everything asked since the last look: the desktop's asks,

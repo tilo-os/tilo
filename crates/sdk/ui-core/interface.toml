@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 20
+version = 21
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -296,6 +296,9 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceHostMessage::toolbar_event" = "struct"
 "FloatingSurfaceHostMessage::toolbar_event.after_input" = "Option<u32> optional"
 "FloatingSurfaceHostMessage::toolbar_event.event" = "ToolbarEvent"
+"FloatingSurfaceHostMessage::unanswered" = "struct"
+"FloatingSurfaceHostMessage::unanswered.message" = "String"
+"FloatingSurfaceHostMessage::unanswered.reason" = "String"
 "FloatingSurfaceHostMessage::version_mismatch" = "struct"
 "FloatingSurfaceHostMessage::version_mismatch.shell" = "u16"
 "FloatingSurfaceHostMessage::window_share_ask" = "struct"

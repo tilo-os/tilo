@@ -264,6 +264,10 @@ struct Shared {
     /// tile as it arrives.
     #[cfg(not(target_arch = "wasm32"))]
     peers: Rc<RefCell<peer_view::PeerSurfaces>>,
+    /// What the session's apps asked of their windows' bars since the last
+    /// pass, and what the person did there, for the apps' connections
+    /// ([`DesktopHandle::declare_bar`] and its siblings).
+    bars: window_bars::Bars,
 }
 
 impl Shared {
@@ -879,6 +883,7 @@ impl DesktopSurface {
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
             #[cfg(not(target_arch = "wasm32"))]
             peers: Rc::new(RefCell::new(peer_view::PeerSurfaces::default())),
+            bars: window_bars::Bars::default(),
         }));
         let acknowledger = shared.borrow().acknowledger.clone();
         #[cfg(not(target_arch = "wasm32"))]

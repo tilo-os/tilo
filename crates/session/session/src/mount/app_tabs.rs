@@ -56,7 +56,10 @@ use ui::theme::ThemeDocument;
 use ui::workspace_sync::WorkspaceSync;
 
 use crate::Launches;
+use crate::capture_studio::CaptureStudio;
+use crate::desktop_services::DesktopServices;
 use crate::mount::apps::Apps;
+use crate::mount::host_shell::HostShellAsks;
 
 /// The longest frame an app may send: a paint stream and a marker
 /// inventory both fit, and nothing else comes close.
@@ -168,6 +171,8 @@ pub struct AppTabs {
     /// The open connections, by the app each vouches for and what it was
     /// last told of its window's appearance.
     links: BTreeMap<u64, Link>,
+    /// The questions the person is answering for Terminal's own shell.
+    host_shell: HostShellAsks,
     /// The listener the apps connect to, taken off on the session's own pass,
     /// and the socket's path, which goes when the session ends.
     socket: Socket,
@@ -245,32 +250,43 @@ impl AppTabs {
             requests: answers,
             withheld: BTreeMap::new(),
             links: BTreeMap::new(),
+            host_shell: HostShellAsks::default(),
             socket,
         })
     }
 
     /// Answer what the apps asked since the last pass: each ask is a desk
     /// command, so the desk is read and changed on this thread alone.
-    pub fn follow(
+    pub(crate) fn follow(
         &mut self,
         desktop: &DesktopHost,
         apps: Option<&Apps>,
         compositor: &mut Compositor,
+        services: Option<&DesktopServices>,
+        studio: Option<&CaptureStudio>,
     ) {
         // The windows that connected since the last pass join here, so an ask
         // they write is answered on this pass and no thread of the session's
         // waits on a client.
         self.socket.take();
+        let mut answered = Answers {
+            desktop,
+            apps,
+            compositor,
+            services,
+            studio,
+            withheld: &mut self.withheld,
+            links: &mut self.links,
+        };
         for request in self.requests.try_iter() {
-            answer(
-                desktop,
-                apps,
-                compositor,
-                &mut self.withheld,
-                &mut self.links,
-                request,
-            );
+            answered.answer(&mut self.host_shell, request);
         }
+        // What the person did in the windows' bars goes back to the app whose
+        // connection declared the slots there.
+        answered.deliver_bar_events();
+        // The person may have answered a question about the device's own
+        // shell since the last pass.
+        self.host_shell.settle(services);
     }
 
     /// Give every open window the appearance of the desk it stands on: the
@@ -329,112 +345,356 @@ impl AppTabs {
     }
 }
 
-/// Answer one ask of the app it came from, or nothing when it cannot be
-/// answered: an ask never changes another app's tab.
-fn answer(
-    desktop: &DesktopHost,
-    apps: Option<&Apps>,
-    compositor: &mut Compositor,
-    withheld: &mut BTreeMap<u64, String>,
-    links: &mut BTreeMap<u64, Link>,
-    request: Request,
-) {
-    let Request {
-        app,
-        workspace,
-        connection,
-        reply,
-        ask,
-    } = request;
-    let message = match ask {
-        Ask::Closed => {
-            withhold(withheld, desktop, compositor, connection, &app, false);
-            links.remove(&connection);
-            return;
+/// What one pass of answers reaches: the desk, the services the person
+/// answers through, and the connections the answers go back on.
+struct Answers<'a> {
+    desktop: &'a DesktopHost,
+    apps: Option<&'a Apps>,
+    compositor: &'a mut Compositor,
+    services: Option<&'a DesktopServices>,
+    studio: Option<&'a CaptureStudio>,
+    withheld: &'a mut BTreeMap<u64, String>,
+    links: &'a mut BTreeMap<u64, Link>,
+}
+
+impl Answers<'_> {
+    /// Answer one ask of the app it came from: an ask never changes another
+    /// app's tab, and an app whose ask this session cannot answer is told so
+    /// rather than left waiting.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per message, so every one of them is answered here"
+    )]
+    fn answer(&mut self, host_shell: &mut HostShellAsks, request: Request) {
+        let Request {
+            app,
+            workspace,
+            connection,
+            reply,
+            ask,
+        } = request;
+        let message = match ask {
+            Ask::Closed => {
+                withhold(
+                    self.withheld,
+                    self.desktop,
+                    self.compositor,
+                    connection,
+                    &app,
+                    false,
+                );
+                self.links.remove(&connection);
+                // What this connection declared for its window's bar goes
+                // with it, as does the question it waits on.
+                self.desktop
+                    .with_policy(|policy| policy.handle().bar_connection_closed(connection));
+                host_shell.closed(connection);
+                return;
+            }
+            Ask::Connected { network_allowed } => {
+                self.links.insert(
+                    connection,
+                    Link {
+                        app,
+                        network_allowed,
+                        writer: reply,
+                        told: None,
+                    },
+                );
+                return;
+            }
+            Ask::Message(message) => *message,
+        };
+        let anchor = self
+            .desktop
+            .with_policy(|policy| policy.anchor_for(&app).map(|(tab, ..)| tab));
+        let name = name_of(&message);
+        match message {
+            FloatingSurfaceClientMessage::OpenTabBeside {
+                target, background, ..
+            } => self.answer_open_beside(&app, &workspace, target, background, anchor),
+            FloatingSurfaceClientMessage::CloseTab { .. } => {
+                self.desktop.with_policy(|policy| policy.close_tab_of(&app));
+            }
+            FloatingSurfaceClientMessage::ReopenClosedTab => {
+                self.desktop.with_policy(DesktopPolicy::reopen_closed);
+            }
+            FloatingSurfaceClientMessage::CycleTab { forward, .. } => {
+                self.desktop
+                    .with_policy(|policy| policy.cycle_tab(&app, forward));
+            }
+            FloatingSurfaceClientMessage::PlaceNextWindowBeside { background, .. } => {
+                self.desktop
+                    .with_policy(|policy| policy.place_next_beside(&app, anchor, background));
+            }
+            FloatingSurfaceClientMessage::SetCaptureProtection {
+                protected,
+                generation,
+            } => self.answer_protection(connection, &app, &reply, protected, generation),
+            FloatingSurfaceClientMessage::Toolbar { toolbar, .. } => {
+                // The slots this app shows in its window's bar, where its
+                // window is a tab of the desktop's.
+                match anchor {
+                    Some(tab) => self.desktop.with_policy(|policy| {
+                        policy.handle().declare_bar(tab, connection, toolbar);
+                    }),
+                    None => refuse(&reply, &app, &name, NO_WINDOW),
+                }
+            }
+            FloatingSurfaceClientMessage::EditLocation { .. } => match anchor {
+                Some(tab) => self
+                    .desktop
+                    .with_policy(|policy| policy.handle().edit_bar_location(tab)),
+                None => refuse(&reply, &app, &name, NO_WINDOW),
+            },
+            FloatingSurfaceClientMessage::WindowOffer { offer, .. } => match anchor {
+                Some(tab) => self.desktop.with_policy(|policy| {
+                    policy.handle().offer_bar(tab, connection, offer);
+                }),
+                None => refuse(&reply, &app, &name, NO_WINDOW),
+            },
+            FloatingSurfaceClientMessage::OpenSearch { opening, .. } => match anchor {
+                Some(tab) => self
+                    .desktop
+                    .with_policy(|policy| policy.handle().open_bar_search(tab, opening)),
+                None => refuse(&reply, &app, &name, NO_WINDOW),
+            },
+            FloatingSurfaceClientMessage::OpenAppSearch { request, .. } => match anchor {
+                Some(tab) => self
+                    .desktop
+                    .with_policy(|policy| policy.handle().search_app(tab, request)),
+                None => refuse(&reply, &app, &name, NO_WINDOW),
+            },
+            FloatingSurfaceClientMessage::AllowHostShell => {
+                // The person allows the device's own shell, and the runtime
+                // (`ush`) records their answer; the app hears it here.
+                host_shell.ask(self.services, &app, connection, Arc::clone(&reply));
+            }
+            FloatingSurfaceClientMessage::OpenCaptureStudio { mode } => match self.studio {
+                Some(studio) => studio.open_asked(mode),
+                None => refuse(&reply, &app, &name, NO_CAPTURE),
+            },
+            // A picture in a picture, an app's second surface of its own and
+            // the markers a presented frame carries belong to a shell that
+            // floats surfaces over the desktop. This session places every
+            // window of an app in a tab, and has no layer to float one in.
+            FloatingSurfaceClientMessage::Present { .. }
+            | FloatingSurfaceClientMessage::UpdateRegion { .. }
+            | FloatingSurfaceClientMessage::SurfaceGeometry { .. }
+            | FloatingSurfaceClientMessage::SourceCleared { .. }
+            | FloatingSurfaceClientMessage::DestinationPresented { .. }
+            | FloatingSurfaceClientMessage::Suspend { .. }
+            | FloatingSurfaceClientMessage::Dismiss { .. }
+            | FloatingSurfaceClientMessage::ActionMarkers { .. } => {
+                refuse(&reply, &app, &name, NO_FLOATING);
+            }
+            // What a window shares live, the embeds it draws of other apps'
+            // resources, and the selection an agent works from: the session
+            // serves none of them over this connection yet.
+            FloatingSurfaceClientMessage::WindowRecord { .. }
+            | FloatingSurfaceClientMessage::Embeds { .. }
+            | FloatingSurfaceClientMessage::SharedWindows { .. } => {
+                refuse(&reply, &app, &name, NO_WINDOW_SHARE);
+            }
+            // The resource a window shows is what the composer asks the
+            // agent about it, so it goes with the selection it seeds.
+            FloatingSurfaceClientMessage::SelectionCapable
+            | FloatingSurfaceClientMessage::WindowResource { .. }
+            | FloatingSurfaceClientMessage::AskAgent { .. }
+            | FloatingSurfaceClientMessage::Pointed { .. }
+            | FloatingSurfaceClientMessage::PickAnswered { .. } => {
+                refuse(&reply, &app, &name, NO_AGENT);
+            }
+            // What an app's page may be shared as, instead of video streamed
+            // from it: the session asks no window to paint its page.
+            FloatingSurfaceClientMessage::PaintCapable
+            | FloatingSurfaceClientMessage::PaintStream { .. } => {
+                refuse(&reply, &app, &name, NO_PAINT);
+            }
+            // The device's displays are placed in Settings, and its own shell
+            // is what a window of Terminal asks about: neither is asked here.
+            FloatingSurfaceClientMessage::MoveDeviceDisplay { .. }
+            | FloatingSurfaceClientMessage::DeviceShellOutcome { .. } => {
+                refuse(&reply, &app, &name, NO_DEVICE);
+            }
+            // What is kept of a window's changes, in the person's words: the
+            // session keeps no model to describe them with.
+            FloatingSurfaceClientMessage::DescribeHistory { .. } => {
+                refuse(&reply, &app, &name, NO_HISTORY);
+            }
+            // The connection said its version when it opened; a second one
+            // is answered with the one this session speaks.
+            FloatingSurfaceClientMessage::Hello { .. } => refuse(&reply, &app, &name, SAID),
         }
-        Ask::Connected { network_allowed } => {
-            links.insert(
-                connection,
-                Link {
-                    app,
-                    network_allowed,
-                    writer: reply,
-                    told: None,
-                },
-            );
+    }
+
+    /// Open the place a window of `app` asked for: beside the one that
+    /// asked, and a launch that starts nothing takes the place back.
+    fn answer_open_beside(
+        &self,
+        app: &str,
+        workspace: &str,
+        target: Option<String>,
+        background: bool,
+        anchor: Option<u64>,
+    ) {
+        let Some(apps) = self.apps else {
             return;
-        }
-        Ask::Message(message) => *message,
-    };
-    let anchor = desktop.with_policy(|policy| policy.anchor_for(&app).map(|(tab, ..)| tab));
-    match message {
-        FloatingSurfaceClientMessage::OpenTabBeside {
-            target, background, ..
-        } => {
-            let Some(apps) = apps else {
+        };
+        let open = if let Some(target) = target {
+            let Some(open) = target_open(app, &target) else {
+                tracing::info!(%app, "an app asked to open an address it does not claim");
                 return;
             };
-            let open = if let Some(target) = target {
-                let Some(open) = target_open(&app, &target) else {
-                    tracing::info!(%app, "an app asked to open an address it does not claim");
-                    return;
-                };
-                Some(open)
-            } else {
-                None
-            };
-            let launch = Launch::Package {
-                app: app.clone(),
-                open,
-            };
-            // The place it opens into is there from this frame; a launch
-            // that starts nothing takes it back.
-            let held = desktop.with_policy(|policy| policy.hold_beside(&app, anchor, background));
-            if let Err(error) = apps.start_beside(&launch, &apps.workspace_named(&workspace)) {
-                if held {
-                    desktop.with_policy(|policy| policy.release_held(&app));
-                }
-                tracing::warn!(%error, %app, "a window the app asked for did not start");
+            Some(open)
+        } else {
+            None
+        };
+        let launch = Launch::Package {
+            app: app.to_owned(),
+            open,
+        };
+        // The place it opens into is there from this frame; a launch that
+        // starts nothing takes it back.
+        let held = self
+            .desktop
+            .with_policy(|policy| policy.hold_beside(app, anchor, background));
+        if let Err(error) = apps.start_beside(&launch, &apps.workspace_named(workspace)) {
+            if held {
+                self.desktop.with_policy(|policy| policy.release_held(app));
             }
+            tracing::warn!(%error, %app, "a window the app asked for did not start");
         }
-        FloatingSurfaceClientMessage::CloseTab { .. } => {
-            desktop.with_policy(|policy| policy.close_tab_of(&app));
-        }
-        FloatingSurfaceClientMessage::ReopenClosedTab => {
-            desktop.with_policy(DesktopPolicy::reopen_closed);
-        }
-        FloatingSurfaceClientMessage::CycleTab { forward, .. } => {
-            desktop.with_policy(|policy| policy.cycle_tab(&app, forward));
-        }
-        FloatingSurfaceClientMessage::PlaceNextWindowBeside { background, .. } => {
-            desktop.with_policy(|policy| policy.place_next_beside(&app, anchor, background));
-        }
-        FloatingSurfaceClientMessage::SetCaptureProtection {
+    }
+
+    /// Withhold `app`'s windows from captures, as its own ask narrows what
+    /// leaves the display and never widens it, and confirm the change.
+    fn answer_protection(
+        &mut self,
+        connection: u64,
+        app: &str,
+        reply: &Arc<Mutex<UnixStream>>,
+        protected: bool,
+        generation: Option<u64>,
+    ) {
+        withhold(
+            self.withheld,
+            self.desktop,
+            self.compositor,
+            connection,
+            app,
             protected,
-            generation,
-        } => {
-            // The app id is the one the launcher vouched for, so an ask can
-            // only ever withhold the asking app's own windows: it narrows
-            // what leaves the display, never widens it.
-            withhold(withheld, desktop, compositor, connection, &app, protected);
-            if let Some(generation) = generation {
-                let applied = FloatingSurfaceHostMessage::CaptureProtectionApplied {
+        );
+        if let Some(generation) = generation {
+            tell(
+                reply,
+                &FloatingSurfaceHostMessage::CaptureProtectionApplied {
                     generation,
                     protected,
-                };
-                let written = reply
-                    .lock()
-                    .map_err(|_| "the connection's writer is gone".to_string())
-                    .and_then(|mut stream| {
-                        write_message(&mut stream, &applied).map_err(|error| error.to_string())
-                    });
-                if let Err(error) = written {
-                    tracing::warn!(%error, %app, "a capture protection answer was not written");
-                }
-            }
-            tracing::debug!(connection, %app, protected, "capture protection asked");
+                },
+                app,
+            );
         }
-        _ => {}
+        tracing::debug!(connection, %app, protected, "capture protection asked");
+    }
+
+    /// Write what the person did in the windows' bars to the app whose
+    /// connection declared the slots there.
+    fn deliver_bar_events(&self) {
+        let events = self
+            .desktop
+            .with_policy(|policy| policy.handle().take_bar_events());
+        for (connection, event) in events {
+            let Some(link) = self.links.get(&connection) else {
+                continue;
+            };
+            // The app had been sent no input of this session's when the
+            // person used its bar: it runs the event with the next input it
+            // reads.
+            tell(
+                &link.writer,
+                &FloatingSurfaceHostMessage::ToolbarEvent {
+                    event,
+                    after_input: None,
+                },
+                &link.app,
+            );
+        }
+    }
+}
+
+/// An app asked of a window this session shows in no tab: it has none open,
+/// or it is not the app of the tab that asked.
+const NO_WINDOW: &str = "this session shows no window of that app";
+
+/// An app asked for the capture studio where the session has none.
+const NO_CAPTURE: &str = "this session has no capture studio";
+
+/// An app asked to float a surface over the desktop, which this session has
+/// no layer for.
+const NO_FLOATING: &str = "this session floats no surface over its windows";
+
+/// An app asked to share a window live or embed another's resource.
+const NO_WINDOW_SHARE: &str = "this session shares no window live";
+
+/// An app asked about what a person selected, and for an agent to work from
+/// it.
+const NO_AGENT: &str = "this session asks no window about a selection";
+
+/// An app offered its page as a paint stream.
+const NO_PAINT: &str = "this session asks no window to paint its page";
+
+/// An app asked to move a device's display, or answered a device-shell
+/// operation.
+const NO_DEVICE: &str = "this session moves no device display here";
+
+/// An app asked for its changes described.
+const NO_HISTORY: &str = "this session describes no history";
+
+/// A second greeting on a connection whose version was read when it opened.
+const SAID: &str = "this connection said its version when it opened";
+
+/// The name `message` is sent under, as an app reads it in
+/// [`FloatingSurfaceHostMessage::Unanswered`].
+fn name_of(message: &FloatingSurfaceClientMessage) -> String {
+    match serde_json::to_value(message) {
+        Ok(serde_json::Value::Object(fields)) => fields
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        _ => String::new(),
+    }
+}
+
+/// Tell the app on `reply` that this session does not answer `name`, and
+/// why, so nothing of the app's waits on an answer that will not come.
+fn refuse(reply: &Arc<Mutex<UnixStream>>, app: &str, name: &str, reason: &str) {
+    tell(
+        reply,
+        &FloatingSurfaceHostMessage::Unanswered {
+            message: name.to_owned(),
+            reason: reason.to_owned(),
+        },
+        app,
+    );
+}
+
+/// Write `message` to the app on its connection, saying so when it cannot be
+/// written.
+fn tell(reply: &Arc<Mutex<UnixStream>>, message: &FloatingSurfaceHostMessage, app: &str) -> bool {
+    let written = reply
+        .lock()
+        .map_err(|_| "the connection's writer is gone".to_string())
+        .and_then(|mut stream| {
+            write_message(&mut stream, message).map_err(|error| error.to_string())
+        });
+    match written {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::debug!(%error, %app, "a shell-ui answer was not written");
+            false
+        }
     }
 }
 
@@ -684,11 +944,9 @@ fn serve_connection(
             tracing::warn!(%app, "a shell-ui message was refused");
             break;
         };
-        if !answered_here(&message) {
-            // Vision, markers and the window's own lifecycle are not this
-            // service's; the rest of the connection keeps being read.
-            continue;
-        }
+        // Every message is answered: what this session acts on it acts on,
+        // and what it cannot is told to the app
+        // ([`FloatingSurfaceHostMessage::Unanswered`]), never left waiting.
         if requests
             .send(Request {
                 app: app.clone(),
@@ -751,19 +1009,6 @@ fn launched_workspace(launches: &Launches, peer: Option<u32>, app: &str) -> Opti
         peer => peer?,
     };
     launches.workspace_of(pid, app)
-}
-
-/// Whether `message` is one this service answers.
-fn answered_here(message: &FloatingSurfaceClientMessage) -> bool {
-    matches!(
-        message,
-        FloatingSurfaceClientMessage::OpenTabBeside { .. }
-            | FloatingSurfaceClientMessage::CloseTab { .. }
-            | FloatingSurfaceClientMessage::ReopenClosedTab
-            | FloatingSurfaceClientMessage::CycleTab { .. }
-            | FloatingSurfaceClientMessage::PlaceNextWindowBeside { .. }
-            | FloatingSurfaceClientMessage::SetCaptureProtection { .. }
-    )
 }
 
 /// Tell an app speaking another shell-ui version which one this session
@@ -885,24 +1130,52 @@ mod tests {
         );
     }
 
+    /// What the session cannot do of an ask is written back on the app's
+    /// own connection, naming the message it sent, so nothing of the app's
+    /// waits on an answer that never comes.
     #[test]
-    fn only_the_asks_this_service_answers_are_taken() {
-        assert!(answered_here(
-            &FloatingSurfaceClientMessage::ReopenClosedTab
-        ));
-        assert!(answered_here(&FloatingSurfaceClientMessage::CloseTab {
-            instance: None
-        }));
-        assert!(answered_here(
-            &FloatingSurfaceClientMessage::SetCaptureProtection {
-                protected: true,
-                generation: Some(1)
+    fn an_ask_the_session_does_not_answer_is_told_so() {
+        use std::io::BufRead as _;
+
+        let (app, session) = UnixStream::pair().unwrap();
+        app.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let message = FloatingSurfaceClientMessage::PaintCapable;
+        refuse(
+            &Arc::new(Mutex::new(session)),
+            "so.tilo.notes",
+            &name_of(&message),
+            NO_PAINT,
+        );
+        let mut line = String::new();
+        std::io::BufReader::new(&app).read_line(&mut line).unwrap();
+        assert_eq!(
+            serde_json::from_str::<FloatingSurfaceHostMessage>(line.trim()).unwrap(),
+            FloatingSurfaceHostMessage::Unanswered {
+                message: "paint_capable".to_owned(),
+                reason: NO_PAINT.to_owned(),
             }
-        ));
-        assert!(!answered_here(&FloatingSurfaceClientMessage::Hello {
-            version: 1
-        }));
-        assert!(!answered_here(&FloatingSurfaceClientMessage::PaintCapable));
+        );
+    }
+
+    /// An ask is named to the app the way the app sent it, so the reply says
+    /// which of its messages this session could not answer.
+    #[test]
+    fn an_ask_is_named_as_the_app_sent_it() {
+        assert_eq!(
+            name_of(&FloatingSurfaceClientMessage::Hello { version: 21 }),
+            "hello"
+        );
+        assert_eq!(
+            name_of(&FloatingSurfaceClientMessage::AllowHostShell),
+            "allow_host_shell"
+        );
+        assert_eq!(
+            name_of(&FloatingSurfaceClientMessage::OpenCaptureStudio {
+                mode: ui::floating_surface::CaptureStudioProtocolMode::PictureInPicture,
+            }),
+            "open_capture_studio"
+        );
     }
 
     #[test]
