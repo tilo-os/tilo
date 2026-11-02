@@ -106,6 +106,11 @@ pub const STRIP_EDGE_GUTTER_PX: f64 = crate::tokens::Spacing::BASE.s8 as f64;
 /// border and rounded corners stand clear of the screen's bottom edge. A
 /// maximized or fullscreen window takes the band.
 pub const STRIP_BOTTOM_GUTTER_PX: f64 = crate::tokens::Spacing::BASE.s3 as f64;
+/// Wallpaper between the bar's band and the top of a strip: a window's own
+/// top edge and rounded corners stand on it rather than against the bar, and
+/// the step is small enough that the two still read as one stack under the
+/// screen's edge. A maximized or fullscreen window takes the band.
+pub const STRIP_TOP_GAP_PX: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 /// Maximum *additional* visual give while a three-finger pan pulls beyond a
 /// legal end. The shared rubber-band curve approaches this asymptotically.
 const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
@@ -2225,9 +2230,10 @@ impl GroupRow {
         } else {
             HANDLE_SLOT_PX
         };
-        // The run pans past its leading gutter, so a pair can be seen whole
-        // across that too.
-        let screen = usable + self.pan_of_lane(lane.unwrap_or(0)).inset;
+        // The display the strip stands on: the gutters either side are
+        // chrome the windows stay clear of, and are what decides whether
+        // there is room for two windows rather than for one.
+        let screen = usable + 2.0 * STRIP_EDGE_GUTTER_PX;
         let Some((neighbour_width, opened_width)) = tilo_desktop_model::width::share_beside(
             next_to.width(),
             opened.width(),

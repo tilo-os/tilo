@@ -3,7 +3,7 @@
 use super::*;
 use crate::navigation::{ChromeEffect, DeskEffect, Route};
 use ui::search::Scope;
-use ui::widget::TileContent;
+use ui::widget::{STRIP_BOTTOM_GUTTER_PX, STRIP_TOP_GAP_PX, TileContent};
 use ui::winit::dpi::PhysicalPosition;
 
 struct Notices;
@@ -847,11 +847,13 @@ fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
     }
 }
 
-/// A maximized window gives up the wallpaper band under the strip: it
-/// runs to the desktop's bottom edge, and the band comes back when it is
-/// restored.
+/// A tiled strip keeps wallpaper above and below its windows — a step under
+/// the bar, so their own top edge and corners stand clear of it, and a band
+/// at the bottom edge — and a maximized window takes both bands: it runs
+/// from the bar's band to the desktop's bottom edge, and they come back
+/// when it is restored.
 #[test]
-fn a_maximized_window_takes_the_bottom_band_and_gives_it_back() {
+fn the_strip_keeps_the_bands_above_and_below_it_and_a_maximized_window_takes_both() {
     let (width, height) = (1440_u32, 900_u32);
     let (surface, handle) = desktop(2);
     handle.set_viewport_width(f64::from(width));
@@ -864,14 +866,25 @@ fn a_maximized_window_takes_the_bottom_band_and_gives_it_back() {
     for _ in 0..4 {
         frame.relayout();
     }
-    let bottom = |frame: &ui::headless::FrameHarness| {
-        let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
-        row.groups.first().unwrap().get_rect().y1
+    let bands = |frame: &ui::headless::FrameHarness| {
+        let rect = frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .unwrap()
+            .groups
+            .first()
+            .unwrap()
+            .get_rect();
+        (rect.y0, rect.y1)
     };
-    let tiled = bottom(&frame);
+    let (tiled_top, tiled_end) = bands(&frame);
     assert!(
-        f64::from(height) - tiled >= STRIP_BOTTOM_GUTTER_PX - 0.5,
-        "a tiled window keeps the band: it ends at {tiled}"
+        (tiled_top - STRIP_TOP_GAP_PX).abs() < 0.5,
+        "a tiled window starts a step under the bar's band: it starts at {tiled_top}"
+    );
+    assert!(
+        (f64::from(height) - tiled_end - STRIP_BOTTOM_GUTTER_PX).abs() < 0.5,
+        "and keeps the band under it: it ends at {tiled_end}"
     );
     let route = handle.snapshot("g", vec![]).entries[0].route.clone();
     for maximized in [true, false] {
@@ -884,16 +897,21 @@ fn a_maximized_window_takes_the_bottom_band_and_gives_it_back() {
         for _ in 0..40 {
             frame.relayout();
         }
-        let end = bottom(&frame);
+        let (top, end) = bands(&frame);
         if maximized {
             assert!(
+                top.abs() < 0.5,
+                "maximized, the window starts where the bar's band ends: it starts at {top}"
+            );
+            assert!(
                 (f64::from(height) - end).abs() < 0.5,
-                "maximized, the window runs to the bottom edge: it ends at {end}"
+                "and runs to the bottom edge: it ends at {end}"
             );
         } else {
             assert!(
-                (end - tiled).abs() < 0.5,
-                "restored, the band is back: it ends at {end}, was {tiled}"
+                (top - tiled_top).abs() < 0.5 && (end - tiled_end).abs() < 0.5,
+                "restored, both bands are back: {} to {end}, were {tiled_top} to {tiled_end}",
+                top
             );
         }
     }

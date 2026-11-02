@@ -100,7 +100,7 @@ fn invoke_with_at(
 }
 
 /// A session drawing the desk in the light theme.
-fn light_session() -> Session {
+pub(super) fn light_session() -> Session {
     fn light() -> ui::application::ComponentRunnerInputs {
         let mut inputs = ui::headless::fixture_runner_inputs();
         inputs.theme = ui::theme::Theme::light();
@@ -573,7 +573,7 @@ fn desk_shots_dir() -> std::path::PathBuf {
 }
 
 /// Write the screen as `<dir>/<name>.png`.
-fn capture_to(session: &mut Session, dir: &std::path::Path, name: &str) {
+pub(super) fn capture_to(session: &mut Session, dir: &std::path::Path, name: &str) {
     std::fs::create_dir_all(dir).expect("create the shots directory");
     let shot = session
         .compositor()
