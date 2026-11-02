@@ -1099,7 +1099,8 @@ impl MainPanel {
         // that changed in the body is the editor's own redraw.
         let quiet = self.scroll_moved
             && !self.dirty
-            && !(self.editor.needs_redraw() || self.editor.needs_animation_frame())
+            && !self.editor.needs_redraw()
+            && !self.editor.needs_animation_frame()
             && !self.has_editor_popup()
             && self
                 .header
