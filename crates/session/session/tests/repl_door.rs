@@ -838,28 +838,45 @@ fn a_change_to_one_thread_rereads_only_that_threads_reading() {
     );
 }
 
+/// The start of the minute the test runs in, as the session's clock reads it: what a test
+/// watching a session at rest holds the wall clock at, so the bar's time cannot turn over
+/// inside the window it watches.
+fn this_minute() -> ui::time::SystemTime {
+    ui::time::wall()
+        .checked_sub(Duration::from_secs(
+            u64::try_from(ui::clock::local_now().timestamp().rem_euclid(60))
+                .expect("a second of the minute"),
+        ))
+        .expect("the minute the test runs in")
+}
+
 /// A placed inbox settles: once its conversations are drawn, a session left alone runs the
 /// shell's views no more and draws no frame. A list's rows asked of the shell's own runtime go
 /// out on the turn they are asked, rather than the list taking frames until they would.
 #[test]
 fn a_placed_inbox_settles_and_draws_nothing_while_idle() {
     let _settled = ui::motion::testing::settled();
-    let root = private_home();
-    let mut session = seeded_session(root.path());
-    place_the_inbox(&mut session, root.path());
-    for _ in 0..200 {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    let settled = session.shell_work().expect("the shell runs");
-    for _ in 0..200 {
-        session.step(Duration::from_millis(5)).expect("step");
-    }
-    let idle = session.shell_work().expect("the shell runs");
-    assert_eq!(
-        (idle.turns, idle.drawn),
-        (settled.turns, settled.drawn),
-        "an idle session runs and draws nothing"
-    );
+    // The bar draws the time, and a minute turning over is a change, not idle work: the test
+    // holds the clock at the minute it runs in, as a capture does, so what it watches at rest
+    // is the shell and nothing else.
+    ui::time::testing::with_wall(this_minute(), || {
+        let root = private_home();
+        let mut session = seeded_session(root.path());
+        place_the_inbox(&mut session, root.path());
+        for _ in 0..200 {
+            session.step(Duration::from_millis(1)).expect("step");
+        }
+        let settled = session.shell_work().expect("the shell runs");
+        for _ in 0..200 {
+            session.step(Duration::from_millis(5)).expect("step");
+        }
+        let idle = session.shell_work().expect("the shell runs");
+        assert_eq!(
+            (idle.turns, idle.drawn),
+            (settled.turns, settled.drawn),
+            "an idle session runs and draws nothing"
+        );
+    });
 }
 
 /// The inbox's conversations come in together: the session reads what one run of the views
