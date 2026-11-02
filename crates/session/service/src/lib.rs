@@ -147,7 +147,7 @@ pub fn reading<T: serde::Serialize>(state: &T) -> Value {
 /// Every service the session started: one catalogue, reader and door.
 #[derive(Default)]
 pub struct Services {
-    services: Vec<Box<dyn Service>>,
+    started: Vec<Box<dyn Service>>,
     /// Moves whenever what they publish may have changed: a service was
     /// added, an action ran, a reading landed. A reader of the catalogue
     /// reads it again only when this moved.
@@ -161,7 +161,7 @@ pub struct Services {
 impl Services {
     /// Host `service` too.
     pub fn add(&mut self, service: Box<dyn Service>) {
-        self.services.push(service);
+        self.started.push(service);
         self.stirred.push(true);
         self.changed();
     }
@@ -175,7 +175,7 @@ impl Services {
         followed: &std::collections::BTreeSet<String>,
     ) -> std::collections::BTreeSet<String> {
         let mut moved = std::collections::BTreeSet::new();
-        for (service, stirred) in self.services.iter_mut().zip(&mut self.stirred) {
+        for (service, stirred) in self.started.iter_mut().zip(&mut self.stirred) {
             let was_stirred = std::mem::take(stirred);
             match service.moved() {
                 Some(ids) => moved.extend(ids.into_iter().filter(|id| followed.contains(id))),
@@ -195,7 +195,7 @@ impl Services {
     /// records; see [`Service::module`].
     #[must_use]
     pub fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
-        self.services.iter().find_map(|service| service.module(app))
+        self.started.iter().find_map(|service| service.module(app))
     }
 
     /// Where what they publish stands: equal revisions publish the same.
@@ -211,13 +211,13 @@ impl Services {
     /// Whether it hosts none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.services.is_empty()
+        self.started.is_empty()
     }
 
     /// Everything the services publish now.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
-        self.services
+        self.started
             .iter()
             .flat_map(|service| service.resources())
             .collect()
@@ -226,7 +226,7 @@ impl Services {
     /// The reading of `resource`, from the service publishing it.
     #[must_use]
     pub fn read(&self, resource: &str) -> Option<Value> {
-        self.services
+        self.started
             .iter()
             .find_map(|service| service.read(resource))
     }
@@ -264,7 +264,7 @@ impl Services {
     ) -> Option<Result<Started, DoorError>> {
         let address = ActionAddress::new(resource, action);
         let (index, asks) = self
-            .services
+            .started
             .iter()
             .enumerate()
             .find_map(|(index, service)| {
@@ -280,7 +280,7 @@ impl Services {
             return Some(Err(DoorError::ConfirmationRequired));
         }
         let started = self
-            .services
+            .started
             .get_mut(index)?
             .invoke(resource, action, arguments);
         if let Some(stirred) = self.stirred.get_mut(index) {
@@ -293,7 +293,7 @@ impl Services {
     /// Take in what landed on every service. Whether a reading changed.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
-        for (service, stirred) in self.services.iter_mut().zip(&mut self.stirred) {
+        for (service, stirred) in self.started.iter_mut().zip(&mut self.stirred) {
             let moved = service.poll();
             *stirred |= moved;
             changed |= moved;
@@ -306,7 +306,7 @@ impl Services {
 
     /// Wait for every service's device calls to land.
     pub fn settle(&mut self) {
-        for service in &mut self.services {
+        for service in &mut self.started {
             service.settle();
         }
         self.stirred.fill(true);

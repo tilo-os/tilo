@@ -399,24 +399,21 @@ fn published_roots(meta: &Meta) -> Meta {
     let mut meta = meta.clone();
     for ty in meta.roots.clone() {
         let published = crate::publish::resource_id(&meta.app, &format!("root-{ty}"));
-        match meta.named_roots.iter_mut().find(|root| root.ty == ty) {
-            Some(named) => {
-                named.published.get_or_insert(published);
-            }
-            None => {
-                // An unnamed root (`root Mail`) is reached by its type alone; its name here
-                // is its type's, which no `alias.name` of another package's code reaches.
-                let name = meta
-                    .types
-                    .iter()
-                    .find(|declared| declared.id == ty)
-                    .map_or_else(|| ty.clone(), |declared| declared.name.clone());
-                meta.named_roots.push(tilolang::meta::NamedRootMeta {
-                    name,
-                    ty,
-                    published: Some(published),
-                });
-            }
+        if let Some(named) = meta.named_roots.iter_mut().find(|root| root.ty == ty) {
+            named.published.get_or_insert(published);
+        } else {
+            // An unnamed root (`root Mail`) is reached by its type alone; its name here
+            // is its type's, which no `alias.name` of another package's code reaches.
+            let name = meta
+                .types
+                .iter()
+                .find(|declared| declared.id == ty)
+                .map_or_else(|| ty.clone(), |declared| declared.name.clone());
+            meta.named_roots.push(tilolang::meta::NamedRootMeta {
+                name,
+                ty,
+                published: Some(published),
+            });
         }
     }
     meta

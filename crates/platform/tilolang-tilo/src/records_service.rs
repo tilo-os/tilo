@@ -103,7 +103,7 @@ impl RecordService {
     fn watched(&mut self) -> bool {
         use tilolang_runtime::store::Store as _;
         let changes = self.watch.take();
-        let changed = changes.everything || !changes.whole.is_empty() || !changes.docs.is_empty();
+        let any = changes.everything || !changes.whole.is_empty() || !changes.docs.is_empty();
         self.moved_unsaid |= changes.everything || !changes.whole.is_empty();
         // A resource that is gone has no app to name it by: what listed it moved too, and
         // names it no more.
@@ -116,7 +116,7 @@ impl RecordService {
                 self.moved.insert(resource_id(&app, &key.resource));
             }
         }
-        changed
+        any
     }
 
     /// The reading of the record or item `path` of `app`.

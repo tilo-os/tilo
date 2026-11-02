@@ -75,6 +75,9 @@ tilo-window-share = { version = "0.1.0", path = "../window-share", default-featu
 postcard.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The window-group tests reach a group's tab bar, which the toolkit offers
+# tests in every profile through `test-support`.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
 # The tests encode their own frames with the crate's encoder, as a sharing
 # device does, and read the input events back off the wire.
 tilo-callstream = { path = "../../collab/tilo-callstream", features = ["surface-decoder"] }

@@ -10,14 +10,12 @@ use crate::unlock;
 use crate::{LOCK_SCREEN_TRIES, SessionAction};
 
 impl crate::Session {
-    /// Follow the session's lock: put the lock screen up when it locks and
-    /// down when it unlocks, start it again when it is gone, keep what it
-    /// shows current, carry out what it asks, check the passwords it was
-    /// given off the loop, and lift the lock for one that unlocks. A suspend
-    /// the idle timers asked for goes to the system.
-    pub(crate) fn follow_lock(&mut self) -> Result<(), Error> {
+    /// Carry out what the compositor's session did since the last pass: a
+    /// lock puts the screen up and tells the person's other devices of a lock
+    /// they took here, an unlock takes it down, and the idle timers' suspend
+    /// goes to the system.
+    fn follow_session_transitions(&mut self, lock: &lock_service::Lock) {
         use tilo_compositor::SessionTransition;
-        let lock = self.shared.lock.clone();
         for event in self.compositor.take_session_events() {
             match event {
                 SessionTransition::Locked => {
@@ -65,6 +63,16 @@ impl crate::Session {
                 _ => {}
             }
         }
+    }
+
+    /// Follow the session's lock: put the lock screen up when it locks and
+    /// down when it unlocks, start it again when it is gone, keep what it
+    /// shows current, carry out what it asks, check the passwords it was
+    /// given off the loop, and lift the lock for one that unlocks. A suspend
+    /// the idle timers asked for goes to the system.
+    pub(crate) fn follow_lock(&mut self) -> Result<(), Error> {
+        let lock = self.shared.lock.clone();
+        self.follow_session_transitions(&lock);
         // What the screen asked of the session besides unlocking.
         for asked in lock.take_asked() {
             self.answer_lock(&asked);
