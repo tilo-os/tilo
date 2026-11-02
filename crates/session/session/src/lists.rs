@@ -59,21 +59,7 @@ impl AppLists {
             .iter()
             .filter_map(|app| Some((app.package_id.clone(), app.icon_path()?)))
             .collect();
-        // Each app's declared reach of the action door, from its signed
-        // manifest: the ceiling the broker admits its calls against.
-        let declared = installed
-            .iter()
-            .map(|app| {
-                let declared = app.declared_actions();
-                (
-                    app.package_id.clone(),
-                    tilo_action_broker::app_actions::AppActionAccess {
-                        query: declared.query,
-                        invoke: declared.invoke,
-                    },
-                )
-            })
-            .collect();
+        let declared = declared(&installed);
         // The machine's entries through the memoised scan, whose watch this
         // first read starts: what later asks for an entry's icon or name on
         // the loop (`crate::app_icons::entry_icon`) finds it read already.
@@ -169,6 +155,26 @@ impl AppLists {
         directories.dedup();
         directories
     }
+}
+
+/// Each app's declared reach of the action door, from its signed manifest:
+/// the ceiling the broker admits its calls against.
+fn declared(
+    installed: &[tilo_installed_apps::InstalledApp],
+) -> BTreeMap<String, tilo_action_broker::app_actions::AppActionAccess> {
+    installed
+        .iter()
+        .map(|app| {
+            let declared = app.declared_actions();
+            (
+                app.package_id.clone(),
+                tilo_action_broker::app_actions::AppActionAccess {
+                    query: declared.query,
+                    invoke: declared.invoke,
+                },
+            )
+        })
+        .collect()
 }
 
 /// Where search takes the app lists from: lists fixed up front, or lists

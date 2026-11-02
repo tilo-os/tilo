@@ -638,12 +638,25 @@ fn host_services(
     certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
     memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>>,
 ) -> HostServices {
-    seams(link, launches, fabric, hosted, certificates, memberships).into_host_services()
+    let decided = seams(link, launches, fabric, hosted, certificates, memberships);
+    // What this session serves nothing of, and why: a session start leaves
+    // every decision in its log, so a seam an app found missing can be found
+    // here with the reason it was left out.
+    for (seam, why) in decided.decisions() {
+        if let Some(why) = why {
+            tracing::debug!(seam, why, "this session serves nothing of this seam");
+        }
+    }
+    decided.into_host_services()
 }
 
 /// This session's decision for every seam of the broker's [`HostServices`]:
-/// what it serves, and for what it serves nothing, the reason an app's call
-/// is refused with (see [`crate::seams`]).
+/// what it serves, and for what it serves nothing, the reason it was left
+/// out (see [`crate::seams`]).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one seam per line, in the broker's order: a reviewer reads every decision at once"
+)]
 fn seams(
     link: std::sync::Arc<Link>,
     launches: std::sync::Arc<Launches>,
@@ -682,7 +695,7 @@ fn seams(
         settings.as_ref().map(|source| {
             std::sync::Arc::new(crate::display_control::DisplayControl::native(
                 std::sync::Arc::clone(source),
-                std::sync::Arc::clone(&desk),
+                &desk,
             )) as std::sync::Arc<dyn DisplayControlServices>
         });
     // What each installed app's signed manifest declares it may do on the
@@ -1216,9 +1229,9 @@ mod tests {
     }
 
     /// Every seam the broker offers is decided here: served, served where
-    /// this run has what it carries, or not served with the reason an app's
-    /// call is refused with. No shipped app calls a seam this session serves
-    /// nothing of.
+    /// this run has what it carries, or not served with the reason it was
+    /// left out. No shipped app calls a seam this session serves nothing
+    /// of.
     #[test]
     fn every_seam_is_decided_and_no_shipped_app_asks_for_what_is_not_served() {
         let decided = seams(
@@ -1245,8 +1258,7 @@ mod tests {
             decisions
                 .iter()
                 .find(|(seam, _)| *seam == name)
-                .map(|(_, why)| why.is_none())
-                .unwrap_or_else(|| panic!("`{name}` is decided"))
+                .map_or_else(|| panic!("`{name}` is decided"), |(_, why)| why.is_none())
         };
         for name in crate::seams::EVERY_APP {
             assert!(served(name), "every app calls `{name}` on its connection");

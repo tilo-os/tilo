@@ -40,9 +40,9 @@ impl DisplayControl {
     /// is, and what the desk says the person may do in the workspace.
     pub(crate) fn native(
         source: Arc<dyn SettingsSource>,
-        desk: Arc<crate::plane::DeskAuthority>,
+        desk: &Arc<crate::plane::DeskAuthority>,
     ) -> Self {
-        let governing = Arc::clone(&desk);
+        let governing = Arc::clone(desk);
         Self {
             source,
             certificate: Arc::new(tilo_identity_authority::device_certificate),
@@ -185,6 +185,7 @@ mod tests {
     }
 
     /// This device and the workspace's policy, as the host answers them.
+    #[derive(Clone, Copy)]
     struct Device {
         /// Whether this device's certificate names the worker's keys.
         enrolled: bool,
@@ -236,9 +237,9 @@ mod tests {
         control: &DisplayControl,
         root: [u8; 32],
         device: [u8; 32],
-        command: DisplayCommand,
+        command: &DisplayCommand,
     ) -> Result<Vec<u8>, String> {
-        let bytes = serde_json::to_vec(&command).expect("a display request");
+        let bytes = serde_json::to_vec(command).expect("a display request");
         control.answer("the-workspace", root, device, &bytes)
     }
 
@@ -255,7 +256,7 @@ mod tests {
                 }),
                 ROOT,
                 DEVICE,
-                DisplayCommand::Inspect,
+                &DisplayCommand::Inspect,
             )
             .expect("the reply"),
         )
@@ -277,12 +278,12 @@ mod tests {
             governs: true,
         });
         assert_eq!(
-            asked(&allowed, ROOT, [9; 32], larger_mode())
+            asked(&allowed, ROOT, [9; 32], &larger_mode())
                 .expect_err("another device changes nothing"),
             "The Settings worker is not on this accepted owner device."
         );
         assert_eq!(
-            asked(&allowed, [4; 32], DEVICE, larger_mode())
+            asked(&allowed, [4; 32], DEVICE, &larger_mode())
                 .expect_err("another person changes nothing"),
             "The Settings worker is not on this accepted owner device."
         );
@@ -292,11 +293,11 @@ mod tests {
             governs: false,
         });
         assert_eq!(
-            asked(&editor, ROOT, DEVICE, larger_mode()).expect_err("an editor changes nothing"),
+            asked(&editor, ROOT, DEVICE, &larger_mode()).expect_err("an editor changes nothing"),
             "The current workspace policy does not permit display changes."
         );
         assert!(
-            asked(&editor, ROOT, DEVICE, DisplayCommand::Inspect).is_ok(),
+            asked(&editor, ROOT, DEVICE, &DisplayCommand::Inspect).is_ok(),
             "reading the displays is open to every admitted Settings worker"
         );
     }
@@ -321,7 +322,7 @@ mod tests {
                     "the-workspace",
                     ROOT,
                     DEVICE,
-                    &[b' '; MAX_DISPLAY_CONTROL_BYTES + 1],
+                    &vec![b' '; MAX_DISPLAY_CONTROL_BYTES + 1],
                 )
                 .expect_err("oversized intent"),
             "The display request exceeds its wire bound."
@@ -334,7 +335,7 @@ mod tests {
             })
         };
         assert_eq!(
-            asked(&unavailable, ROOT, DEVICE, DisplayCommand::Inspect)
+            asked(&unavailable, ROOT, DEVICE, &DisplayCommand::Inspect)
                 .expect_err("no compositor state to answer from"),
             "The current compositor display state is unavailable."
         );
@@ -354,7 +355,7 @@ mod tests {
             })
         };
         let reply: Value = serde_json::from_slice(
-            &asked(&displays, ROOT, DEVICE, larger_mode()).expect("the change is applied"),
+            &asked(&displays, ROOT, DEVICE, &larger_mode()).expect("the change is applied"),
         )
         .expect("a display reply");
         let id = reply["transaction"]["id"]
@@ -374,7 +375,7 @@ mod tests {
             &displays,
             ROOT,
             DEVICE,
-            DisplayCommand::Revert { transaction: id },
+            &DisplayCommand::Revert { transaction: id },
         )
         .expect("the change is reverted");
         assert_eq!(

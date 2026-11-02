@@ -37,7 +37,8 @@ pub(crate) enum Seam<T> {
     /// fabric carries no speaker groups, and one that keeps no state keeps no
     /// shortcuts on disk.
     When(Option<T>),
-    /// Not served, and why: what an app asking for it is told.
+    /// Not served, and why: said at session start, so a seam an app found
+    /// missing can be found here with its reason.
     NotServed(&'static str),
 }
 
@@ -72,7 +73,7 @@ impl<T> Seam<T> {
 }
 
 /// This session's decision for each of the broker's seams: what it serves,
-/// and for what it serves nothing, the reason an app's call is refused with.
+/// and for what it serves nothing, the reason it was left out.
 pub(crate) struct Seams {
     pub(crate) approved_checks:
         Seam<Arc<dyn tilo_action_broker::collab_app_broker::ApprovedCheckServices>>,
@@ -247,9 +248,11 @@ pub(crate) fn declared_access(
 /// resources it reads and invokes, the settings it keeps, and the launch its
 /// connection is admitted by. Serving none of these refuses every app at its
 /// first call.
+#[cfg(test)]
 pub(crate) const EVERY_APP: &[&str] = &["published", "settings", "launcher"];
 
 /// What a shipped app calls beyond [`EVERY_APP`], by package id.
+#[cfg(test)]
 pub(crate) const SHIPPED: &[(&str, &[&str])] = &[
     // Its Display pane reads and changes the displays.
     ("so.tilo.settings", &["display_control"]),
