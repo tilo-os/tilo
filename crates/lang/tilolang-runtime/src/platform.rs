@@ -24,7 +24,6 @@ pub const LENS_WINDOW: &str = "$lenses";
 /// Where the runtime keeps how each resource's outside effects stand (`delivery(r)`).
 pub const DELIVERY_WINDOW: &str = "$delivery";
 
-
 /// A name in sentence case: `new_note` and `NewNote` read "New note".
 #[must_use]
 pub fn sentence(name: &str) -> String {
@@ -1302,10 +1301,11 @@ impl Core {
     /// `None` while a requirement of it on the subject does not hold: it is not offered.
     fn action_value(&self, shown: &Offered<'_>, subject: &RefValue) -> HResult<Option<Value>> {
         let action = shown.action;
-        let mut label =
-            self.words
-                .borrow()
-                .word(&tilolang::messages::key_of(&action.id), &[], &label_of(action));
+        let mut label = self.words.borrow().word(
+            &tilolang::messages::key_of(&action.id),
+            &[],
+            &label_of(action),
+        );
         let mut icon = action.icon.clone();
         let mut on: Option<bool> = None;
         if shown.present
