@@ -411,10 +411,13 @@ def run_render(ctx: RunContext) -> list[record.Record]:
          ctx.dir / "bench.log", ctx.repo)
     opening = ctx.dir / "framework-open.log"
     call([ctx.bins["framework-scaling"], "5000,50000", "open"], opening, ctx.repo)
+    scrolling = ctx.dir / "framework-scroll.log"
+    call([ctx.bins["framework-scaling"], "5000", "scroll"], scrolling, ctx.repo)
     focusing = ctx.dir / "framework-focus.log"
     call([ctx.bins["framework-scaling"], "500,1000,2500", "focus"], focusing, ctx.repo)
     measured = (record.read(records)
                 + adapters.framework_open([opening.read_text(encoding="utf-8", errors="replace")], ctx.env)
+                + adapters.framework_scroll([scrolling.read_text(encoding="utf-8", errors="replace")], ctx.env)
                 + adapters.framework_focus([focusing.read_text(encoding="utf-8", errors="replace")], ctx.env))
     if "notes-latency" in ctx.bins:
         notes = ctx.dir / "notes-latency.log"
