@@ -187,10 +187,13 @@ impl crate::Session {
     /// another workspace, when that workspace's picture or temperature
     /// changes, and when the person chooses another colour.
     pub(crate) fn follow_window_warmth(&mut self) {
-        // A theme the person's settings changed to is what the desk and the shell draw in
-        // from this frame, as every window is told it below.
+        // A theme the person's settings changed to is what the desk, the chrome above the
+        // windows (the search palette among it) and the shell draw in from this frame, as
+        // every window is told it below.
         if let Some(theme) = self.warmth.follow_settings(&self.shared.person) {
             self.shared.desktop.set_theme(theme.clone());
+            self.shared.chrome.borrow_mut().set_theme(theme.clone());
+            self.shared.people.borrow().set_theme(theme.clone());
             self.readout.borrow_mut().set_theme(theme.clone());
             if let Some(shell) = self.shell.as_mut() {
                 shell.set_theme(&theme);
