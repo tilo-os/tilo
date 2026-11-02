@@ -44,18 +44,20 @@ pub(crate) fn follow_dictation(shared: &Shared) {
 /// Settings itself too when no action host runs an app's actions.
 pub(crate) fn open_settings(shared: &Shared, link: &str) {
     close(shared);
-    let room = shared.active_room();
+    let workspace = shared.active_workspace_id();
     let anchor = match link.strip_prefix("settings://") {
         Some(slug) => Some(format!("settings.section:{slug}")),
         None => (!link.is_empty()).then(|| link.to_owned()),
     };
     if let Some(anchor) = anchor {
         let target = tilo_desktop_search::Target::Invoke(Box::new(
-            tilo_desktop_search::InvokeTarget::open(SETTINGS_APP, room.clone(), anchor),
+            tilo_desktop_search::InvokeTarget::open(SETTINGS_APP, workspace.clone(), anchor),
         ));
-        let opened = shared.search.perform_checked(&room, target, &mut |own| {
-            shared.doors.invoke(&own.address, &own.arguments).map(drop)
-        });
+        let opened = shared
+            .search
+            .perform_checked(&workspace, target, &mut |own| {
+                shared.doors.invoke(&own.address, &own.arguments).map(drop)
+            });
         if opened.is_ok() {
             return;
         }

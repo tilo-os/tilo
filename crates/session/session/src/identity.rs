@@ -1,4 +1,4 @@
-//! Who sits at this device and which identity each room presents, kept
+//! Who sits at this device and which identity each workspace presents, kept
 //! current by workers: the session's loop never waits on the disk to learn
 //! either.
 //!
@@ -10,9 +10,9 @@
 //!   for; and
 //! - the identity registry
 //!   ([`tilo_identity_host::registry::IdentityRegistryStore::load_reconciled_prompt`]),
-//!   which every publish and frame asks which identity a room presents. A
-//!   reconcile lists and parses every identity record, so it runs on the
-//!   worker and the loop is handed the registry it produced.
+//!   which every publish and frame asks which identity a workspace
+//!   presents. A reconcile lists and parses every identity record, so it runs
+//!   on the worker and the loop is handed the registry it produced.
 //!
 //! An offer about the person themselves is put to them here
 //! ([`offer`]): asked from their own avatar, and performed when they answer
@@ -77,8 +77,8 @@ pub(crate) struct Seat {
     /// from then is still theirs.
     pub(crate) earlier: Vec<String>,
     /// The salt this device's ids are minted under, from its own key: what
-    /// the room's governance derives to tell which device a window of the
-    /// room runs on. `None` on a computer that has no identity yet.
+    /// the workspace's governance derives to tell which device a window of
+    /// the workspace runs on. `None` on a computer that has no identity yet.
     pub(crate) salt: Option<u16>,
 }
 
@@ -131,10 +131,10 @@ pub fn install() {
     }
 }
 
-/// Who this device acts for in `room`: the identity its registry presents
+/// Who this device acts for in `workspace`: the identity its registry presents
 /// there, else the person sitting at it.
-pub(crate) fn person_in(room: &str, person: &str) -> String {
-    tilo_identity_host::registry::selected_principal_id_prompt(room)
+pub(crate) fn person_in(workspace: &str, person: &str) -> String {
+    tilo_identity_host::registry::selected_principal_id_prompt(workspace)
         .ok()
         .flatten()
         .unwrap_or_else(|| person.to_owned())

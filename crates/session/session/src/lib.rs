@@ -251,11 +251,11 @@ struct Shared {
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
     services: Rc<RefCell<Services>>,
-    /// The windows this session shares with its rooms, and the streams it
-    /// receives from them.
+    /// The windows this session shares with its workspaces, and the streams
+    /// it receives from them.
     window_shares: Rc<RefCell<window_share::WindowShares>>,
     /// The runs of what people ask this session's agents to do, fed every
-    /// pass who sits here and what the room in front admits.
+    /// pass who sits here and what the workspace in front admits.
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
     /// It runs in a window of a desktop it did not start (see
     /// [`Options::machine`]).
@@ -294,7 +294,7 @@ struct Shared {
     /// rebuilt when the desk changed under it.
     ws_settings_fed: Cell<Option<u64>>,
     /// The workspace's emoji, which workspace settings shows and changes
-    /// through Chat's record of the room.
+    /// through Chat's record of the workspace.
     workspace_emoji: workspace_settings::EmojiTab,
     portal: Option<PortalSeat>,
     file_picker: Option<FilePickerSeat>,
@@ -342,17 +342,18 @@ struct Shared {
     notice_fed: RefCell<Option<tilo_quick_settings::hosted::NotificationCentre>>,
     /// What the services ask the person, on the sheets.
     asker: questions::Asker,
-    /// Who is here: this session's membership of each workspace's room,
-    /// when it takes part in the collaboration plane.
+    /// Who is here: this session's membership of each workspace, when it
+    /// takes part in the collaboration plane.
     sync: Option<Rc<sync::Client>>,
-    /// This device's workspaces: what every workspace of the desk shows, and what a join takes in.
+    /// This device's workspaces: what the desk shows of them, and what a
+    /// join takes in.
     engine: Option<std::sync::Arc<engine::Engine>>,
     /// The engine revision the desk's copy of each workspace's people was
     /// last taken from: what nothing new of a workspace's governance has
     /// passed since.
     membership_fed: Cell<Option<u64>>,
-    /// This device's channels of those rooms' sealed records, and the devices
-    /// each room admits: kept for as long as the session runs.
+    /// This device's channels of those workspaces' sealed records, and the
+    /// devices each one admits: kept for as long as the session runs.
     _channels: Option<channels::Channels>,
     /// The person's own workspaces, as all their devices hold the list of
     /// them: `None` when this computer has no identity to keep it for.
@@ -504,13 +505,13 @@ impl Shared {
         if choices.is_empty() {
             return;
         }
-        let room = self.handle.read(|tree| {
+        let workspace = self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.room().to_string())
+                .map(|held| held.room().to_string())
                 .unwrap_or_default()
         });
         for choice in choices {
-            self.search.perform(&room, choice, &mut |own| {
+            self.search.perform(&workspace, choice, &mut |own| {
                 self.doors.invoke(&own.address, &own.arguments).map(drop)
             });
         }
@@ -593,12 +594,12 @@ impl Shared {
         device.update(|state| state.clipboard = view);
     }
 
-    /// The workspace in front, as its room: where a chosen notification's
-    /// app opens.
-    fn active_room(&self) -> String {
+    /// The workspace in front, as its id: where a chosen notification's app
+    /// opens.
+    fn active_workspace_id(&self) -> String {
         self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.room().to_string())
+                .map(|held| held.room().to_string())
                 .unwrap_or_default()
         })
     }
@@ -725,8 +726,8 @@ impl Shared {
         if let Some(tree) = self.activity.take_restored() {
             self.handle.replace_tree(tree);
         }
-        for (room, target) in self.activity.take_openings() {
-            self.open_from_history(&room, &target);
+        for (workspace, target) in self.activity.take_openings() {
+            self.open_from_history(&workspace, &target);
         }
         self.activity.tell_followers();
         if self.activity.take_woken() {
@@ -740,7 +741,7 @@ impl Shared {
     /// showing it.
     fn open_from_history(
         &self,
-        room: &tilo_desktop_model::RoomId,
+        workspace_id: &tilo_desktop_model::RoomId,
         target: &ui::HistoryResourceTarget,
     ) {
         let Some(apps) = &self.launch else {
@@ -760,8 +761,8 @@ impl Shared {
             app: app.to_owned(),
             open,
         };
-        let room = apps.workspace_named(&room.to_string());
-        if let Err(error) = apps.start(&launch, &room) {
+        let workspace = apps.workspace_named(&workspace_id.to_string());
+        if let Err(error) = apps.start(&launch, &workspace) {
             tracing::debug!(%error, %app, "an app is not opened from the history");
         }
     }
@@ -1061,9 +1062,9 @@ impl Session {
         // own, what the desk records, what the sheets change — is theirs.
         let seat = identity::seat(&options);
         options.person = seat.person;
-        // The ids this device mints are its own, as every room derives them
-        // from its key: a computer with an identity mints under that rather
-        // than the seed the caller passed.
+        // The ids this device mints are its own, as every workspace derives
+        // them from its key: a computer with an identity mints under that
+        // rather than the seed the caller passed.
         if let Some(salt) = seat.salt {
             options.salt = salt;
         }
@@ -1244,12 +1245,12 @@ impl Session {
                 .map(|workspace| workspace.id.0.to_string())
         }));
         wallpapers.start(&settings_store::load());
-        // The apps the person opens read their room from this desktop and
-        // leave their notice in it.
+        // The apps the person opens read their workspace from this desktop
+        // and leave their notice in it.
         if let Some(launch) = &options.launch {
             launch.attach(desktop.clone());
         }
-        // One process per app per room: its later windows open in the
+        // One process per app per workspace: its later windows open in the
         // process the session started, with connections of their own. A
         // window mapping settles what its app's door serves, so an app built
         // before the door keeps a process per window from then on.
@@ -1287,8 +1288,8 @@ impl Session {
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
         let engine = open_engine(&options, &handle);
-        // This device's channels of its rooms' sealed records: its keys, and
-        // the devices each room admits, which its window streams carry
+        // This device's channels of its workspaces' sealed records: its keys,
+        // and the devices each one admits, which its window streams carry
         // between. The broker the apps reach is the one the channel service
         // gates, so a sealed record opens before any of it reaches an app.
         let channels_broker = std::sync::Arc::new(std::sync::Mutex::new(
@@ -1366,8 +1367,9 @@ impl Session {
         // The displays a fullscreen window owns, which the loop takes from
         // the compositor every pass: the bar there steps aside for it.
         let fullscreen: Rc<RefCell<Vec<String>>> = Rc::default();
-        // The windows this session shares with its rooms: a share's encoder
-        // wakes the loop when it has a frame, and the bar reads them. A
+        // The windows this session shares with its workspaces: a share's
+        // encoder wakes the loop when it has a frame, and the bar reads them.
+        // A
         // window another device shares is decoded on the same waker, so a
         // picture that comes out late lands without waiting for the next
         // frame the desk draws for something else.
@@ -1546,9 +1548,9 @@ impl Session {
             .build()?;
         let (shortcut_library, saved_shortcuts) =
             plane::ShortcutLibrary::new(automation_runtime.handle().clone());
-        // What each of this device's rooms revokes, read from the rooms the
-        // engine holds: the broker's decisions and the automation's arming
-        // both refuse a device its room revoked.
+        // What each of this device's workspaces revokes, read from the
+        // workspaces the engine holds: the broker's decisions and the
+        // automation's arming both refuse a device its workspace revoked.
         let revocations = engine::revocations_of(engine.as_ref());
         let action_plane = start_action_plane(
             &options,
@@ -1611,7 +1613,7 @@ impl Session {
                 // them are online: each schedule runs on one of them.
                 fabric: sync.as_ref().and_then(|sync| sync.fabric()),
                 // The apps this session starts, the person's focus modes,
-                // and what its rooms revoke: each is a trigger a shortcut
+                // and what its workspaces revoke: each is a trigger a shortcut
                 // can answer.
                 launches: std::sync::Arc::clone(&options.launches),
                 policy: std::sync::Arc::clone(&notification_policy),
@@ -1662,7 +1664,8 @@ impl Session {
         services
             .borrow_mut()
             .add(Box::new(lock_service::LockService::new(lock.clone())));
-        // A window shared with a room, and the windows its members share.
+        // A window shared with a workspace, and the windows its members
+        // share.
         services
             .borrow_mut()
             .add(Box::new(window_share::WindowShareService::new(Rc::clone(
@@ -1789,7 +1792,8 @@ impl Session {
         };
         shared.start_search();
         // What the person copied is personal: the clipboard publishes the
-        // copies itself, as a reading only a caller the room grants reads.
+        // copies itself, as a reading only a caller the workspace grants
+        // reads.
         shared
             .services
             .borrow_mut()
@@ -1823,7 +1827,7 @@ impl Session {
         // The broker decides a granted reading when the app asks, which is
         // before this loop's first pass: what the services declare is read
         // here, with every service mounted, so a connection that arrives as
-        // the session starts meets the room's grants and not an empty
+        // the session starts meets the workspace's grants and not an empty
         // declaration.
         if let Some(plane) = &action_plane {
             plane.link.declare(&shared.services.borrow());
@@ -1959,9 +1963,9 @@ impl Session {
             if surface.lock || surface.name == keyboard::SURFACE {
                 continue;
             }
-            let room = self.shared.active_room();
+            let workspace = self.shared.active_workspace_id();
             self.surfaces
-                .start_or_log(&mut self.compositor, surface, &room);
+                .start_or_log(&mut self.compositor, surface, &workspace);
         }
         Ok(())
     }
@@ -2050,8 +2054,9 @@ impl Session {
         &mut self,
         surface: &surfaces::Surface,
     ) -> Result<(), surfaces::StartError> {
-        let room = self.shared.active_room();
-        self.surfaces.start(&mut self.compositor, surface, &room)
+        let workspace = self.shared.active_workspace_id();
+        self.surfaces
+            .start(&mut self.compositor, surface, &workspace)
     }
 
     /// Stop the surface app `name`, if it runs.
@@ -2539,17 +2544,17 @@ impl Session {
         Ok(())
     }
 
-    /// Keep the rooms this session takes part in current with the desktop's
-    /// workspaces, and hand the desktop who is here.
+    /// Keep the workspaces this session takes part in current with the
+    /// desktop's, and hand the desktop who is here.
     fn follow_collaboration(&self) {
         let Some(sync) = &self.shared.sync else {
             return;
         };
         self.shared.handle.read(|tree| sync.follow_desktop(tree));
         sync.follow();
-        // This device's call, as everyone in the room reads it, and theirs as
-        // this session's apps show them: a join or leave reaches a channel's
-        // roster on the pass it happened on.
+        // This device's call, as everyone in the workspace reads it, and
+        // theirs as this session's apps show them: a join or leave reaches a
+        // channel's roster on the pass it happened on.
         if let Some(plane) = &self.action_plane {
             plane.follow_calls(sync);
         }
@@ -2893,8 +2898,8 @@ impl Session {
         // their devices did, so a panel is sent the reading of this pass.
         self.surfaces.poll();
         self.surfaces.serve(&mut self.shared.doors);
-        // The windows shared with the rooms: what the person asked, what the
-        // plane brought, and the frames of the ones on screen.
+        // The windows shared with the workspaces: what the person asked,
+        // what the plane brought, and the frames of the ones on screen.
         {
             let sync = self.shared.sync.clone();
             let displays = &self.displays_service;

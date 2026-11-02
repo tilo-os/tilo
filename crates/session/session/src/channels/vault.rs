@@ -3,8 +3,8 @@
 //!
 //! The vault hands the channel encryption service ([`super::Channels`]) one
 //! key derived from the master key and the directory where sealed channel
-//! state lives. MLS group membership follows the room's access policy through
-//! that service's participants; nothing here writes membership.
+//! state lives. MLS group membership follows the workspace's access policy
+//! through that service's participants; nothing here writes membership.
 //!
 //! The layout is the one earlier sessions wrote, byte for byte: a device that
 //! kept its sealed channel state has it opened here, never replaced.

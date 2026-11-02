@@ -1,14 +1,14 @@
 //! The Emoji tab: the workspace's own emoji, which every app of the
 //! workspace draws for `:name:`.
 //!
-//! They are one record of the room, kept by Chat
+//! They are one record of the workspace, kept by Chat
 //! ([`tilo_app::tilo_workspace_emoji::OWNER`]) and opened here the way every
-//! app of the room opens it ([`WorkspaceRecord`]): in the store this device's
-//! apps keep, as the person sitting here. Adding and removing are the
-//! record's own actions, decided by the room's grants on Chat's node — the
-//! decision the app windows and the action broker take — so the tab, the
-//! apps and the person's other devices hold the one record, and the tab
-//! decides nothing of its own.
+//! app of the workspace opens it ([`WorkspaceRecord`]): in the store this
+//! device's apps keep, as the person sitting here. Adding and removing are
+//! the record's own actions, decided by the workspace's grants on Chat's
+//! node — the decision the app windows and the action broker take — so the
+//! tab, the apps and the person's other devices hold the one record, and the
+//! tab decides nothing of its own.
 //!
 //! The picture is chosen in the session's own file chooser
 //! ([`FilePickerSeat`]) and added from what it answers, as a window's emoji
@@ -55,7 +55,7 @@ const PICTURES: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 /// The workspace's emoji as the Emoji tab holds them.
 pub(crate) struct Emoji {
     /// Where this device keeps its apps' records: the one store Chat keeps
-    /// the record in too, which every app of the room opens.
+    /// the record in too, which every app of the workspace opens.
     owners: RecordOwners,
     /// Wakes the session's loop when another replica's change arrives, and
     /// when the image tools a chosen picture waits for are in.
@@ -81,7 +81,7 @@ pub(crate) struct Emoji {
 
 /// The record as the tab opened it.
 struct Open {
-    room: String,
+    workspace: String,
     person: ui::permissions::UserId,
     /// The grants it was opened with: they decide its actions, so a
     /// workspace whose grants changed opens the record again.
@@ -223,7 +223,7 @@ impl Emoji {
         let held = self.open.borrow();
         let Some(open) = held
             .as_ref()
-            .filter(|open| open.room == workspace.room().to_string())
+            .filter(|open| open.workspace == workspace.room().to_string())
             .filter(|open| open.person.0 == *person)
         else {
             return false;
@@ -245,23 +245,28 @@ impl Emoji {
         person: &UserId,
     ) -> Option<WorkspaceRecord<Record>> {
         let workspace = workspace?;
-        let room = workspace.room().to_string();
+        let workspace_id = workspace.room().to_string();
         let author = ui::permissions::UserId(person.clone());
         let held = self.open.borrow();
         let current = held.as_ref().filter(|open| {
-            open.room == room && open.person == author && open.policy == workspace.policy
+            open.workspace == workspace_id
+                && open.person == author
+                && open.policy == workspace.policy
         });
         if let Some(open) = current {
             return open.record.clone();
         }
         drop(held);
         let context = PermissionContext::from_standing(
-            &room,
+            &workspace_id,
             Standing::person(workspace.policy.clone(), person.clone()),
         )
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-        let records =
-            WorkspaceRecords::in_workspace(self.owners.clone(), room.clone(), author.clone());
+        let records = WorkspaceRecords::in_workspace(
+            self.owners.clone(),
+            workspace_id.clone(),
+            author.clone(),
+        );
         let record = WorkspaceRecord::<Record>::open(
             &records,
             OWNER,
@@ -270,7 +275,7 @@ impl Emoji {
             Some(self.wake.handle()),
         );
         *self.open.borrow_mut() = Some(Open {
-            room,
+            workspace: workspace_id,
             person: author,
             policy: workspace.policy.clone(),
             record: record.clone(),
@@ -312,7 +317,8 @@ impl Emoji {
         }
     }
 
-    /// Open the chooser for a picture to add, when the room's grants let the
+    /// Open the chooser for a picture to add, when the workspace's grants let
+    /// the
     /// person add one and no other sheet is asking for a file.
     fn choose(
         &self,
@@ -358,7 +364,7 @@ impl Emoji {
         self.bump();
     }
 
-    /// Remove the emoji `name` as the room's grants let the person: their
+    /// Remove the emoji `name` as the workspace's grants let the person: their
     /// own by the plain removal, anyone's as a moderator.
     fn remove(&self, workspace: Option<&Workspace>, person: &UserId, name: &str) {
         let Some(record) = self.record(workspace, person) else {

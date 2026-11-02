@@ -1188,7 +1188,7 @@ mod tests {
             &mut table,
             vec![settings_store::hardware::ActionChord {
                 chord: chord.clone(),
-                target: tilo_action_broker::automation::chord_target("room", "tidy"),
+                target: tilo_action_broker::automation::chord_target("workspace", "tidy"),
                 label: "Run Tidy".into(),
             }],
         ));
