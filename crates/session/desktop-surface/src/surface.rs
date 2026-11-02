@@ -316,6 +316,13 @@ impl DesktopHandle {
         self.shared.borrow().shown_tabs.content()
     }
 
+    /// The top of the shown windows' content, in the surface's coordinates,
+    /// as of the last layout: where the transients pinned into the display's
+    /// top-right corner start, below the windows' bars. Zero with no window.
+    pub fn content_top(&self) -> f64 {
+        self.shared.borrow().shown_tabs.content_top()
+    }
+
     /// Where the whole window of `tab` stands — its bar, and the tab's
     /// content in it — in the surface's coordinates, as of the last layout:
     /// where a menu for it hangs from.

@@ -1450,7 +1450,7 @@ impl Session {
         // where everyone else's pointer is.
         let people = people::mount(&mut compositor, &mut doors, &options, &handle, sync.clone());
 
-        let banners = mount_banners(&mut compositor, &mut doors, &notices, &options);
+        let banners = mount_banners(&mut compositor, &mut doors, &notices, &handle, &options);
 
         let (device, quick_settings) =
             mount_device(&mut compositor, &mut doors, &mut options, &overlays);

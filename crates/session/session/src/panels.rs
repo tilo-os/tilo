@@ -186,18 +186,77 @@ impl SurfaceHost for Popover {
 }
 
 /// The notification banners over the first output, under the bar: the
-/// stack pins itself into its top-right corner.
+/// stack pins itself into its top-right corner, clear of the windows' bars.
 pub(crate) struct Banners {
     host: AppHost,
     link: tilo_notification_banners::Link,
+    /// The desk whose windows the stack keeps clear of.
+    desk: tilo_desktop_surface::DesktopHandle,
+    /// The outputs the compositor last said it has: the first is the one in
+    /// use, the rest repeat what is about the whole machine.
+    outputs: Vec<(i32, i32, i32, i32)>,
 }
 
 impl Banners {
-    pub(crate) fn new(app: ui::App, link: tilo_notification_banners::Link, scale: f64) -> Self {
+    pub(crate) fn new(
+        app: ui::App,
+        link: tilo_notification_banners::Link,
+        desk: tilo_desktop_surface::DesktopHandle,
+        scale: f64,
+    ) -> Self {
         Self {
             host: AppHost::new(app, placement(0, 0, 1, 1, scale)),
             link,
+            desk,
+            outputs: Vec::new(),
         }
+    }
+
+    /// Put the stack on the first output, under the bar, starting where the
+    /// windows' content does; the outputs besides the one in use repeat what
+    /// is about the whole machine. Placed every frame, as the popover is: the
+    /// banners are mounted before any output is lit, and they move with the
+    /// layout from then on.
+    fn place(&mut self) {
+        let Some(&(x, y, width, height)) = self.outputs.first() else {
+            return;
+        };
+        let scale = self.host.placement().scale;
+        let place = placement(x, y, width, height, scale);
+        if self.host.placement() != place {
+            self.host.set_placement(place);
+        }
+        // The banners' own coordinates start at the display's corner.
+        let local = |(x0, y0, w, h): (i32, i32, i32, i32)| {
+            Rect::new(
+                f64::from(x0 - x),
+                f64::from(y0 - y),
+                f64::from(x0 - x + w),
+                f64::from(y0 - y + h),
+            )
+        };
+        let under_bar = |output: (i32, i32, i32, i32)| {
+            let mut display = local(output);
+            display.y0 += f64::from(bar_height());
+            display
+        };
+        // Banners start where the windows' content does, below their bars,
+        // as the desk's own notification centre does.
+        let clear_top = (self.desk.content_top() - f64::from(y)).max(0.0);
+        self.link.place(tilo_notification_banners::Placement {
+            viewport: under_bar((x, y, width, height)),
+            clear_top,
+            others: self
+                .outputs
+                .iter()
+                .skip(1)
+                .map(|&output| tilo_notification_banners::OtherDisplay {
+                    display: local(output),
+                    viewport: under_bar(output),
+                })
+                .collect(),
+            ..tilo_notification_banners::Placement::default()
+        });
     }
 }
 
@@ -257,6 +316,7 @@ impl SurfaceHost for Banners {
     }
 
     fn prepare_frame(&mut self) -> bool {
+        self.place();
         self.host.prepare_frame()
     }
 
@@ -277,15 +337,8 @@ impl SurfaceHost for Banners {
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
-        let Some((x, y, w, h)) = first(outputs) else {
-            return;
-        };
-        let scale = self.host.placement().scale;
-        self.host.set_placement(placement(x, y, w, h, scale));
-        self.link.place(tilo_notification_banners::Placement {
-            viewport: Rect::new(0.0, f64::from(bar_height()), f64::from(w), f64::from(h)),
-            ..tilo_notification_banners::Placement::default()
-        });
+        outputs.clone_into(&mut self.outputs);
+        self.place();
     }
 }
 

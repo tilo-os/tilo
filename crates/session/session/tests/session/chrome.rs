@@ -6,7 +6,12 @@ use super::*;
 /// Send one notification over the freedesktop interface on `address`, as an
 /// app of the session would, and name the id the daemon gave it. The
 /// connection is the app's: it stays open until the caller drops it.
-async fn notify(address: &str, summary: &str, body: &str, timeout: i32) -> (zbus::Connection, u32) {
+pub(super) async fn notify(
+    address: &str,
+    summary: &str,
+    body: &str,
+    timeout: i32,
+) -> (zbus::Connection, u32) {
     let app = zbus::connection::Builder::address(address)
         .unwrap()
         .build()

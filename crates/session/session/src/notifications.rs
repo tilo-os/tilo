@@ -45,6 +45,7 @@ pub(crate) fn mount_banners(
     compositor: &mut tilo_compositor::Compositor,
     doors: &mut tilo_surface_host::Doors,
     notices: &DesktopNotifications,
+    desk: &tilo_desktop_surface::DesktopHandle,
     options: &crate::Options,
 ) -> Link {
     let banners = Link::new();
@@ -55,6 +56,7 @@ pub(crate) fn mount_banners(
             let surface = Rc::new(RefCell::new(crate::panels::Banners::new(
                 app,
                 banners.clone(),
+                desk.clone(),
                 options.scale,
             )));
             compositor.add_host(Box::new(crate::panels::Held(Rc::clone(&surface))));

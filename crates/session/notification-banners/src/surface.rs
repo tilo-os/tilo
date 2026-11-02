@@ -46,7 +46,18 @@ struct State {
     call_edges: Vec<Rect>,
     /// Focus was asked for before the stack was first laid out.
     focus_pending: bool,
+    /// What is drawn differs from what the last frame showed: the next frame
+    /// draws, and says where.
     dirty: bool,
+    /// The next frame draws again once what was just drawn is on screen (a
+    /// focus ring that lands after the stack is laid out).
+    again: bool,
+    /// What the last frame painted, shadows and all, and what the frame
+    /// before it did: between them they say what of the screen the next
+    /// frame changes, so a banner that left is cleared as well as one that
+    /// arrived.
+    painted: Rect,
+    painted_before: Rect,
 }
 
 impl BannerSurface {
@@ -107,6 +118,9 @@ impl State {
             call_edges: Vec::new(),
             focus_pending: false,
             dirty: true,
+            again: false,
+            painted: Rect::ZERO,
+            painted_before: Rect::ZERO,
         };
         if own {
             surface.stage_scenario(None);
@@ -387,8 +401,50 @@ impl State {
                 );
             }
         }
-        self.dirty = again;
+        self.dirty = true;
+        self.again = again;
+        self.painted_before = self.painted;
+        self.painted = self.painted_bounds(theme);
         self.hand_over();
+    }
+
+    /// Where this frame paints, for the host to repaint: the stack and the
+    /// banners on the other displays, with the shadow they float on. Zero
+    /// when the frame paints nothing.
+    fn painted_bounds(&self, theme: &Theme) -> Rect {
+        let mut bounds = self.stack.rect();
+        for rect in self.machine.iter().chain(&self.call_edges) {
+            bounds = bounds.union(*rect);
+        }
+        if bounds.is_zero_area() {
+            return Rect::ZERO;
+        }
+        let shadow = &theme.tokens.elevation.floating;
+        let reach = f64::from(shadow.blur) * 2.0 + f64::from(shadow.offset_y).abs();
+        bounds.inflate(reach, reach)
+    }
+
+    /// The part of the surface the next frame changes: everything this frame
+    /// and the one before it painted, inside the surface. Nothing when
+    /// nothing is owed a frame.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if !self.dirty {
+            return;
+        }
+        let bounds = self.painted.union(self.painted_before);
+        if bounds.is_zero_area() {
+            return;
+        }
+        let clipped = bounds.intersect(self.rect);
+        if !clipped.is_zero_area() {
+            regions.push(clipped);
+        }
+    }
+
+    /// The frame is on screen: what it changed is no longer owed, but a frame
+    /// it asked for next still is.
+    fn mark_drawn(&mut self) {
+        self.dirty = std::mem::take(&mut self.again);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -507,6 +563,14 @@ impl Widget for BannerSurface {
 
     fn needs_redraw(&self) -> bool {
         self.state.borrow().needs_redraw()
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.state.borrow().collect_damage(regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        self.state.borrow_mut().mark_drawn();
     }
 
     fn needs_animation_frame(&self) -> bool {
