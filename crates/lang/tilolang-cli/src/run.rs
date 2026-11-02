@@ -88,10 +88,11 @@ fn session_command(
     command
 }
 
-/// Have the session script stopped as an interrupt stops it when this process ends in a way
-/// that runs none of its own code (a signal, a kill): the kernel sends it SIGTERM then, and its
-/// cleanup stops what it started.
-fn end_with_this_process(command: &mut Command) {
+/// Have the process `command` starts stop as an interrupt stops it when this process ends in a
+/// way that runs none of its own code (a signal, a kill): the kernel sends it SIGTERM then. The
+/// session script's cleanup stops what it started; the app the tool runs itself flushes its
+/// store on the way out ([`crate::dev`]).
+pub(crate) fn end_with_this_process(command: &mut Command) {
     use std::os::unix::process::CommandExt as _;
     let parent = rustix::process::getpid();
     // SAFETY: runs in the forked child before exec, and calls only async-signal-safe system

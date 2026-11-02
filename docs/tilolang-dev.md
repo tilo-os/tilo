@@ -223,6 +223,21 @@ headless on lavapipe, laptop load average around 12:
 | Runtime, of which the build | 63.6 s | 35.1, 95.6, 81.9, 63.6, 57.0 s |
 | Runtime, after the build: bake, install, restart | 3.1 s | |
 
+On this desktop, saving `apps/tl/tasks/app.tl` in `tilolang dev apps/tl/tasks
+--search apps/tl`, measured in the same session from the file's write to the app's
+`draws build N at <ms>` line:
+
+| Desktop loop | Save to the app's frame | Of which: build | Of which: read to draw |
+|---|---|---|---|
+| First save (cold) | 462 ms | 241 ms | 166 ms |
+| Second save | 200 ms | 137 ms | 60 ms |
+
+The tool reported each as `built in 241 ms, published in 243 ms; the running app takes
+it with its state`, and the app logged `draws build 1 at <ms>, 166 ms after it
+arrived`. Both processes were cargo debug builds rendering on lavapipe under a headless
+compositor, so this is the slowest case; there is no install here, only a published
+generation.
+
 In the app loop, compiling and packing take 1 to 2 ms. `tilo-install` takes
 140 to 170 ms, but the app takes the build as soon as the install commits its
 registry row, before the installer has finished. The one slow run was an install

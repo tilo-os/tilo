@@ -262,6 +262,9 @@ impl Local {
             .env("TILO_RUNTIME_STANDALONE", "1")
             .stdin(Stdio::null());
         bounded_command::without_console_window(&mut command);
+        // The window ends with the loop: a signal to the tool must not leave it running, on the
+        // store the next run opens.
+        crate::run::end_with_this_process(&mut command);
         let child = command
             .spawn()
             .map_err(|error| format!("running {}: {error}", runtime.display()))?;
