@@ -541,10 +541,13 @@ mod data_usage {
                     offset: before.offset,
                 });
             }
+            // What is on the counters when this session starts was used
+            // before it asked, and the count that follows carries it forward:
+            // only a change, or a quarter hour of counting, is due.
             let due = !count.is_empty()
                 || self
                     .counted_at
-                    .is_none_or(|at| now.at.saturating_sub(at) >= COUNT_EVERY);
+                    .is_some_and(|at| now.at.saturating_sub(at) >= COUNT_EVERY);
             if due && !now.readings.is_empty() {
                 self.counted_at = Some(now.at);
                 count.push(Due {
@@ -553,6 +556,7 @@ mod data_usage {
                     offset: now.offset,
                 });
             } else {
+                self.counted_at.get_or_insert(now.at);
                 self.held = Some(now);
             }
             count
@@ -665,11 +669,14 @@ mod data_usage {
 
         /// Readings wait a quarter hour to be counted, but one before a
         /// change of connection is counted at once, ahead of the one after
-        /// it.
+        /// it. The first reading is where the session starts counting from.
         #[test]
         fn readings_are_counted_on_their_own_connection() {
             let mut counter = Counter::default();
-            assert_eq!(counter.take(taken(vec![on("wifi:a", 1)], NOON)).len(), 1);
+            assert!(
+                counter.take(taken(vec![on("wifi:a", 1)], NOON)).is_empty(),
+                "the first reading is the baseline"
+            );
             assert!(
                 counter
                     .take(taken(vec![on("wifi:a", 2)], NOON + 60))
