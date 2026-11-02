@@ -635,6 +635,9 @@ impl WebViewEngine for PaintEngine {
     fn frames(&self) -> FrameSlot {
         self.inner.frames()
     }
+    fn paint_seq(&self) -> u64 {
+        self.lock().source.frame().map_or(0, |frame| frame.seq)
+    }
     fn drain_events(&self) -> Vec<WebViewEvent> {
         let events = self.inner.drain_events();
         let mut state = self.lock();

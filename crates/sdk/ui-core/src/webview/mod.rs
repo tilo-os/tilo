@@ -1352,6 +1352,15 @@ pub trait WebViewEngine: Send + Sync {
 
     fn frames(&self) -> FrameSlot;
 
+    /// The sequence number of the display list this engine paints
+    /// ([`Self::paint_frame`]'s [`Frame::seq`](tilo_paint_stream::model::Frame::seq)):
+    /// moves on with every change to what the page draws, so a widget
+    /// repaints exactly when the page did. `0` for an engine that paints
+    /// pixels rather than a display list.
+    fn paint_seq(&self) -> u64 {
+        0
+    }
+
     /// Take all pending events, oldest first.
     fn drain_events(&self) -> Vec<WebViewEvent>;
 
