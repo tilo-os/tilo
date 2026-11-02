@@ -498,5 +498,5 @@ agent-door-not-administrator = You do not administer this workspace, so { $agent
 agent-door-withdrawn = The request was withdrawn before anyone answered it.
 agent-door-declined = You didn’t let this program work here as an agent.
 agent-door-admission-person = Act as you in “{ $workspace }”
-agent-door-admission-person-detail = Everything it does is yours: it runs what you type as you, attributed to you, with everything you may do here. Allow only a program you started yourself, such as a REPL.
+agent-door-admission-person-detail = Everything it does is yours: it runs what you type as you, attributed to you, with everything you may do here. Allow only a program you started yourself, such as a terminal.
 agent-door-session-reads-only = An agent reads the desktop’s own resources here; ask the person to do this.

@@ -381,3 +381,11 @@ search.md, "What a type declares" and "Types, references and paths".
   (`boxes.contains("inbox")`), the index's run of that value.
 - **`outside` capabilities are a checked list** (`crate::origin::CAPABILITIES`: `post`,
   `smtp.send`), in the compiler and the runtime alike.
+- **A type is called by its name; nothing is declared to be "the one".** A type's noun is its
+  name in words and its plural derived (`TypeMeta::noun`, `::plural`, what `meta(r).noun` and
+  `.plural` say); what other languages call it is the package's translations' job, not a search
+  line. A query naming an app means its root (`ResourceType::root`), and what the person then
+  sees is the app's default view of its root: Mail's is the inbox, so "my mails" is the inbox with
+  no further declaration. `noun "…" "…"` and `primary <test>` were search lines for this and are
+  removed: `noun` was used by no app, and `primary` repeated the word `primary action` already
+  means for something else, to say what the root's default view already says.

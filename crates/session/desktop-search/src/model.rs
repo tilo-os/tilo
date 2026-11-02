@@ -225,6 +225,12 @@ pub trait Source {
     fn intent(&self, _hit: &Hit) -> f32 {
         0.0
     }
+    /// Whether it is asked what was typed, word for word: a sum, a web
+    /// search. Every other source is asked it without the words a query
+    /// is never required to match ([`system::without_filler`]).
+    fn verbatim(&self) -> bool {
+        false
+    }
 }
 
 /// A source a host keeps between searches (its index built once) is
@@ -244,6 +250,9 @@ impl<S: Source + ?Sized> Source for std::rc::Rc<S> {
     }
     fn intent(&self, hit: &Hit) -> f32 {
         (**self).intent(hit)
+    }
+    fn verbatim(&self) -> bool {
+        (**self).verbatim()
     }
 }
 
@@ -266,18 +275,30 @@ pub fn search_with(
     }
     let mut merged: Vec<(Hit, f32)> = Vec::new();
     let mut rows: HashMap<(String, String), usize> = HashMap::new();
+    // "my mails" asks for mails: possessives and filler never have to match.
+    let asked = system::without_filler(needle);
     for source in sources {
         let top = source.max_score().max(1);
-        for hit in source.query(needle) {
-            let strength = system::merged_strength(
-                needle,
-                &hit.kind,
-                &hit.title,
-                hit.subtitle.as_deref(),
-                hit.score.min(top),
-                top,
-                source.intent(&hit) + used(&hit),
-            );
+        let query = if source.verbatim() { needle } else { &asked };
+        for hit in source.query(query) {
+            let strength = |needle: &str| {
+                system::merged_strength(
+                    needle,
+                    &hit.kind,
+                    &hit.title,
+                    hit.subtitle.as_deref(),
+                    hit.score.min(top),
+                    top,
+                    source.intent(&hit) + used(&hit),
+                )
+            };
+            // A title is matched as typed too: "The Beatles" is still the
+            // band's whole name with its "the".
+            let strength = if query == needle {
+                strength(needle)
+            } else {
+                strength(query).max(strength(needle))
+            };
             let key = (hit.provider.clone(), hit.id.clone());
             if let Some(index) = rows.get(&key).copied() {
                 if let Some(slot) = merged.get_mut(index)

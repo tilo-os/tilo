@@ -489,6 +489,58 @@ pub struct FnMeta {
     pub result: String,
 }
 
+impl TypeMeta {
+    /// What one is called in a sentence: its name in words, lower case (`TodoList` is a
+    /// `todo list`).
+    #[must_use]
+    pub fn noun(&self) -> String {
+        let mut words: Vec<String> = Vec::new();
+        let mut word = String::new();
+        for ch in self.name.chars() {
+            if ch == '_' || ch == ' ' {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            } else if ch.is_uppercase() && !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+                word.extend(ch.to_lowercase());
+            } else {
+                word.extend(ch.to_lowercase());
+            }
+        }
+        if !word.is_empty() {
+            words.push(word);
+        }
+        words.join(" ")
+    }
+
+    /// What several are called in a sentence: [`plural`] of its [`noun`](Self::noun).
+    #[must_use]
+    pub fn plural(&self) -> String {
+        plural(&self.noun())
+    }
+}
+
+/// What several of a noun are called, as English writes most: `notes`, `entries`, `boxes`.
+#[must_use]
+pub fn plural(noun: &str) -> String {
+    let consonant_y = noun.strip_suffix('y').is_some_and(|stem| {
+        stem.chars()
+            .last()
+            .is_some_and(|c| !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
+    });
+    if consonant_y {
+        format!("{}ies", noun.strip_suffix('y').unwrap_or(noun))
+    } else if ["s", "x", "z", "ch", "sh"]
+        .iter()
+        .any(|end| noun.ends_with(end))
+    {
+        format!("{noun}es")
+    } else {
+        format!("{noun}s")
+    }
+}
+
 impl PackageMeta {
     /// The id of the default view of the type `ty` (an id), when the package declares one.
     pub fn default_view(&self, ty: &str) -> Option<&str> {

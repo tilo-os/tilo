@@ -209,6 +209,52 @@ type Person {
     assert_eq!(keys, ["n"]);
 }
 
+/// What a type is called is its name in words, its plural as English writes most; a search
+/// block says nothing about it, and no resource is singled out by a declaration: a query naming
+/// an app means its root, drawn as its app's default view.
+#[test]
+fn a_type_is_called_by_its_name() {
+    let src = r#"/// A mailbox.
+type Mailbox {
+    name: Text (title)
+}
+
+/// A list of things to do.
+type TodoList {
+    name: Text (title)
+}
+
+/// A box of entries.
+type Entry {
+    text: Text (title)
+}"#;
+    let meta = compile_body(src).meta;
+    let nouns = |name: &str| {
+        let ty = type_meta(&meta, name);
+        (ty.noun(), ty.plural())
+    };
+    assert_eq!(nouns("Mailbox"), ("mailbox".into(), "mailboxes".into()));
+    assert_eq!(nouns("TodoList"), ("todo list".into(), "todo lists".into()));
+    assert_eq!(nouns("Entry"), ("entry".into(), "entries".into()));
+    for line in ["noun \"person\" \"people\"", "primary name == \"Inbox\""] {
+        let body = format!(
+            "type Box {{\n    name: Text (title)\n\n    search {{\n        {line}\n    }}\n}}"
+        );
+        let err = match compile_with(&format!("app t.x \"X\"\n{body}\n"), &[]) {
+            Ok(_) => String::new(),
+            Err(diags) => diags
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+        assert!(
+            err.contains("a search block holds `filter`, `sort`, `hide` and `mark` lines"),
+            "`{line}` is not a search line: {err}"
+        );
+    }
+}
+
 fn first_message(body: &str) -> String {
     let src = format!("app t.x \"X\"\n{body}\n");
     match compile_with(&src, &[]) {

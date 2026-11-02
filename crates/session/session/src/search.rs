@@ -144,6 +144,9 @@ pub(crate) struct SessionSearch {
     /// What the session itself publishes, as of the last frame: the desk
     /// cannot read its own tree while it opens search.
     own: RefCell<Vec<tilo_actions::ActionDescriptor>>,
+    /// What the resources the session publishes are, by id, as of the last
+    /// frame: what a query naming a type ("my mails") finds them by.
+    own_types: RefCell<std::collections::BTreeMap<String, tilo_actions::ResourceType>>,
     /// The windows open, as of the last frame.
     open_tabs: RefCell<Vec<u64>>,
     /// The live notifications the session publishes, as of the last frame.
@@ -205,6 +208,7 @@ impl SessionSearch {
             apps,
             records,
             own: RefCell::default(),
+            own_types: RefCell::default(),
             open_tabs: RefCell::default(),
             notifications: RefCell::default(),
             workspaces: RefCell::default(),
@@ -241,6 +245,7 @@ impl SessionSearch {
             !searching && !opening
         });
         *self.own.borrow_mut() = published;
+        *self.own_types.borrow_mut() = tilo_desktop_search::providers::types_of(own);
         *self.open_tabs.borrow_mut() = open_tabs;
         if let Some(reading) = downloaded {
             let published = self
@@ -328,6 +333,7 @@ impl SessionSearch {
             app: DESKTOP_APP.into(),
             workspace: String::new(),
             actions: self.own.borrow().clone(),
+            types: self.own_types.borrow().clone(),
         }];
         if let Some(apps) = &self.apps {
             sources.push(Box::new(Jobs(apps.jobs())));
@@ -652,6 +658,7 @@ impl SearchHost for SessionSearch {
             app: DESKTOP_APP.into(),
             workspace: workspace.to_owned(),
             actions: self.own.borrow().clone(),
+            types: self.own_types.borrow().clone(),
         }];
         if let Some(apps) = &self.apps {
             sources.push(Box::new(Jobs(apps.jobs())));
