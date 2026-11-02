@@ -263,10 +263,18 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
         signature: [0; 64],
     };
     sign_device_cert(&mut cert, &person).expect("the person's signature");
-    persist::install_device_cert(&machine.paths, &cert, now).expect("the node's enrollment");
-    if machine.paths.user_privkey.exists() {
-        std::fs::remove_file(&machine.paths.user_privkey).expect("no root beside an enrollment");
+    // The node was enrolled from the factory, never set up here: no root and
+    // no key of an identity of its own beside the device key the imager left.
+    for path in [
+        &machine.paths.user_privkey,
+        &machine.paths.user_pubkey,
+        &machine.paths.device_cert,
+    ] {
+        if path.exists() {
+            std::fs::remove_file(path).expect("the node holds no identity of its own yet");
+        }
     }
+    persist::install_device_cert(&machine.paths, &cert, now).expect("the node's enrollment");
     let personal = machine.config.join("tilo").join("identity");
     std::fs::remove_dir_all(&personal).expect("the node holds no record of its person yet");
 
