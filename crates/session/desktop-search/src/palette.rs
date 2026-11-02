@@ -508,6 +508,12 @@ impl DesktopSearch {
         let mut rows = Vec::new();
         let mut more_rows = Vec::new();
         let entries = self.fitted(groups, browsing, &mut rows, &mut more_rows);
+        // What is selected on screen is named by the rows of the frame the
+        // person sees, before this frame replaces them.
+        let on_screen = self
+            .palette
+            .selected_id()
+            .and_then(|id| self.chosen_row(id));
         self.more_rows = more_rows;
         // A source answering late re-ranks the rows of the same query: the
         // row the person moved to stays chosen, so Enter does not open
@@ -517,10 +523,9 @@ impl DesktopSearch {
         if self.shown_query.as_deref() != Some(query) {
             self.kept_choice = None;
         } else if self.palette.selected_id() != self.auto_selected.as_deref() {
-            self.kept_choice = self
-                .palette
-                .selected_id()
-                .and_then(|id| self.chosen_row(id));
+            if let Some(chosen) = on_screen {
+                self.kept_choice = Some(chosen);
+            }
         }
         let chosen = self.kept_choice.clone();
         let kept = chosen.and_then(|chosen| match chosen {
@@ -590,6 +595,9 @@ impl DesktopSearch {
             // would not need, so its own rows are trimmed to the room left
             // instead. Every group keeps at least its first row.
             let lone = groups.len() == 1;
+            // A lone group the person asked to see whole stays whole and
+            // the card scrolls it: it is not offered itself again.
+            let whole = lone && self.expanded.contains(&groups[0].kind);
             let floor = usize::from(!lone);
             let mut allowed = cap;
             let mut last: Option<Vec<CommandEntry>>;
@@ -598,7 +606,9 @@ impl DesktopSearch {
                     groups.clone()
                 } else if lone {
                     let mut alone = groups.clone();
-                    alone[0].results.truncate(allowed);
+                    if !whole {
+                        alone[0].results.truncate(allowed);
+                    }
                     alone
                 } else {
                     // Rows and the row offering a cut group's rest both
@@ -612,7 +622,7 @@ impl DesktopSearch {
                 if dropped {
                     entries.push(all_results_entry(total.saturating_sub(shown)));
                 }
-                if self.everything || self.palette.entries_fit(&entries, trimmed.len()) {
+                if whole || self.everything || self.palette.entries_fit(&entries, trimmed.len()) {
                     return entries;
                 }
                 last = Some(entries);
@@ -645,7 +655,7 @@ impl DesktopSearch {
             return;
         };
         if !self.expanded.contains(&kind) {
-            self.expanded.push(kind);
+            self.expanded.push(kind.clone());
         }
         let cursor = self.palette.cursor();
         let query = self.palette.query().to_owned();
@@ -2022,8 +2032,14 @@ mod tests {
                 .palette()
                 .selected_id()
                 .is_some_and(|id| id.starts_with(MORE_PREFIX)),
-            "{:?}",
-            search.palette().selected_id()
+            "{:?} among {:?}",
+            search.palette().selected_id(),
+            search
+                .palette()
+                .visible_entries()
+                .iter()
+                .map(|entry| (entry.id.clone(), entry.group.clone()))
+                .collect::<Vec<_>>()
         );
         assert_eq!(group(&search).as_deref(), Some(chosen.as_str()));
     }
@@ -2070,8 +2086,8 @@ mod tests {
             "a name said twice says nothing under it"
         );
         assert!(
-            !stands_tall(&row(None, vec!["Tilo/Home".into()])),
-            "a fact rides the one line the row has"
+            stands_tall(&row(None, vec!["Tilo/Home".into()])),
+            "a fact is drawn under the name, on the row's second line"
         );
     }
 
