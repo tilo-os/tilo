@@ -75,19 +75,19 @@ struct Machine {
 }
 
 impl Machine {
-    /// The record the session resolves for this account: what it reads before
-    /// it decides whether the desk opens.
-    fn record(&self) -> PathBuf {
-        tilo_onboarding_host::identity_provisioning::DiskIdentityStore::from_env()
-            .expect("the identity store")
-            .path()
-            .to_path_buf()
-    }
-
     /// This device's certificate as it is on disk.
     fn certificate(&self) -> Vec<u8> {
         std::fs::read(&self.paths.device_cert).expect("this device's certificate")
     }
+}
+
+/// The record the session resolves for this account: what it reads before it
+/// decides whether the desk opens.
+fn record() -> PathBuf {
+    tilo_onboarding_host::identity_provisioning::DiskIdentityStore::from_env()
+        .expect("the identity store")
+        .path()
+        .to_path_buf()
 }
 
 /// A machine whose person enrolled this device: an identity provisioned the
@@ -139,7 +139,7 @@ fn a_certificate_the_clock_reads_as_not_yet_valid_keeps_the_desk_off_until_it_pa
     cert.issued_at_ns = issued_at_ns;
     // The person's own key dates the certificate, as the identity's root does
     // when it issues one: this machine's clock is the only thing that is off.
-    let person = runtime_identity::load_from_path(machine.record()).expect("the person's root key");
+    let person = runtime_identity::load_from_path(record()).expect("the person's root key");
     cert.signature = person
         .sign(
             &tilo_user_identity::device_cert_signing_digest(&cert)
@@ -178,8 +178,13 @@ fn a_certificate_the_clock_reads_as_not_yet_valid_keeps_the_desk_off_until_it_pa
 #[test]
 fn a_chain_that_does_not_verify_opens_trusted_recovery_and_is_never_replaced() {
     let machine = machine();
-    let record = machine.record();
-    let record_before = std::fs::read(&record).expect("the identity record");
+    let record_path = record();
+    let record_before = std::fs::read(&record_path).expect("the identity record");
+    // The markers this leaves in the environment are this test's alone.
+    let mut markers = tilo_test_env::ScopedEnv::new();
+    markers
+        .remove(IDENTITY_RECOVERY_ENV)
+        .remove(IdentityProblem::RECOVERY_ENV);
     // A certificate whose signature does not hold: the record and every key
     // are this person's, and the copy of the identity is what is damaged.
     let mut cert =
@@ -202,7 +207,7 @@ fn a_chain_that_does_not_verify_opens_trusted_recovery_and_is_never_replaced() {
         "recovery offers the step that repairs a damaged chain"
     );
     assert_eq!(
-        std::fs::read(&record).expect("the identity record"),
+        std::fs::read(&record_path).expect("the identity record"),
         record_before,
         "recovery replaced the identity record"
     );
@@ -212,21 +217,16 @@ fn a_chain_that_does_not_verify_opens_trusted_recovery_and_is_never_replaced() {
         "recovery reissued the certificate instead of leaving it to its person"
     );
 
-    // Nothing below runs in the person's session with these set.
-    // SAFETY: this test's own process, and no thread of it reads them after.
-    unsafe {
-        std::env::remove_var(IDENTITY_RECOVERY_ENV);
-        std::env::remove_var(IdentityProblem::RECOVERY_ENV);
-    }
+    drop(markers);
     assert_eq!(IdentityProblem::from_recovery_env(), None);
 }
 
 #[test]
 fn a_record_that_does_not_even_parse_starts_setup_without_replacing_it() {
-    let machine = machine();
-    let record = machine.record();
+    let _machine = machine();
+    let record_path = record();
     let damaged = b"{ not an identity".to_vec();
-    std::fs::write(&record, &damaged).expect("the damaged record");
+    std::fs::write(&record_path, &damaged).expect("the damaged record");
 
     assert_eq!(
         startup::identity(),
@@ -234,7 +234,7 @@ fn a_record_that_does_not_even_parse_starts_setup_without_replacing_it() {
         "setup validates what is there and asks its person, and is not what starts a session"
     );
     assert_eq!(
-        std::fs::read(&record).expect("the identity record"),
+        std::fs::read(&record_path).expect("the identity record"),
         damaged,
         "setup replaced the record it could not read"
     );
@@ -274,8 +274,8 @@ fn the_session_binary_provisions_and_verifies_the_machines_identity() {
         "provisioning said: {}",
         String::from_utf8_lossy(&provisioned.stdout)
     );
-    let record = machine.record();
-    assert!(record.is_file(), "provisioning wrote no record");
+    let record_path = record();
+    assert!(record_path.is_file(), "provisioning wrote no record");
 
     let verified = run_session(
         &machine,
@@ -293,7 +293,7 @@ fn the_session_binary_provisions_and_verifies_the_machines_identity() {
 
     // A second provisioning proves the identity that is there, and leaves it
     // as it is: nobody is minted a second identity onto a used machine.
-    let record_before = std::fs::read(&record).expect("the identity record");
+    let record_before = std::fs::read(&record_path).expect("the identity record");
     let certificate_before = machine.certificate();
     let again = run_session(&machine, &["--host-desktop", "--provision-identity"]);
     assert!(
@@ -302,7 +302,7 @@ fn the_session_binary_provisions_and_verifies_the_machines_identity() {
         String::from_utf8_lossy(&again.stderr)
     );
     assert_eq!(
-        std::fs::read(&record).expect("the identity record"),
+        std::fs::read(&record_path).expect("the identity record"),
         record_before,
         "a second provisioning replaced the identity record"
     );

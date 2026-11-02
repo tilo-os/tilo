@@ -321,6 +321,10 @@ fn reconcile(identity_dir: &Path) -> Result<(), String> {
 
 /// Point setup at trusted recovery for `problem`, which this session's view
 /// reads from its own environment.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the marker is how the session's own setup learns which recovery to open, and it is set before any thread that reads the environment is started"
+)]
 fn open_recovery(problem: Option<IdentityProblem>) {
     // SAFETY: called before the session starts any thread of its own; the
     // walk to this point reads the identity on this thread only, and the
