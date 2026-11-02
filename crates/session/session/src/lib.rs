@@ -50,6 +50,7 @@ mod content;
 pub mod controller_nav;
 pub mod controllers;
 mod controls;
+pub mod conversation;
 mod desk;
 mod desk_doc;
 mod desk_migration;
@@ -100,6 +101,7 @@ pub mod quick_settings;
 mod records;
 mod rotation;
 pub mod run;
+mod run_programs;
 mod search;
 pub mod seeded_apps;
 pub mod session_package;
@@ -267,6 +269,12 @@ struct Shared {
     /// The runs of what people ask this session's agents to do, fed every
     /// pass who sits here and what the workspace in front admits.
     agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
+    /// Each run's program host, reached by the agent's calls and by the
+    /// person's lines in its conversation alike (shell.md §8.1).
+    run_programs: run_programs::Shared,
+    /// The runs' conversations (shell.md §8.1): a line typed in one is a
+    /// program run as the person, or a sentence to the run.
+    conversation: std::sync::Arc<conversation::Conversation>,
     /// It runs in a window of a desktop it did not start (see
     /// [`Options::machine`]).
     hosted: bool,
@@ -432,6 +440,29 @@ fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
 }
 
 impl Shared {
+    /// The door that decides what a person's line in a run's conversation reads and changes
+    /// (shell.md §8.1): each line runs as the person there, in the run's own program host.
+    pub(crate) fn lend_conversations(&self, plane: Option<&Plane>, front: &str) {
+        // The starter a run's host begins with, as the agent's own `tilo` call uses it: the
+        // person's line starts the host itself when it is the run's first program.
+        self.conversation
+            .lend_starter(std::sync::Arc::new(agent_door::TaskHosts::new(
+                &self.person,
+                std::sync::Arc::clone(&self.run_programs),
+            )));
+        // The door's host, over the broker when this session runs one and the session's own
+        // doors alone otherwise: a line that reads nothing still runs, and one that reads an app
+        // says it cannot here, as the agent's own call would.
+        let broker = plane.and_then(Plane::agent_broker);
+        self.conversation.lend(
+            front,
+            std::sync::Arc::new(agent_door::Host::new(
+                broker,
+                std::sync::Arc::clone(&self.session_doors),
+            )),
+        );
+    }
+
     /// Keep the person's arrangement in step with their desk: what the desk
     /// did on its own is taken in, and what waited for the person to finish
     /// their gesture or their typing runs once they have.
@@ -927,6 +958,17 @@ impl Session {
         // record, and from then on the record the desk places its windows
         // from. It is kept beside the desk on this device, and is the
         // person's own ([`arrangement::record_id`]) on every device theirs.
+        // The runs people ask this session's agents for, and each run's program host: the
+        // conversation over them (shell.md §8.1) is the shell's, and its lines reach here.
+        let the_runs = options.agent_runs.take().unwrap_or_else(|| {
+            std::sync::Arc::new(tilo_agent_runs::AgentRuns::new(Some(options.wake.handle())))
+        });
+        let the_programs = std::sync::Arc::new(run_programs::Programs::new());
+        let conversation = std::sync::Arc::new(conversation::Conversation::new(
+            std::sync::Arc::clone(&the_runs),
+            std::sync::Arc::clone(&the_programs),
+            &options.person,
+        ));
         let mut record = ui::automerge::AutoCommit::new();
         if let Some(text) = options.state.as_deref().and_then(arrangement::load_at) {
             match ui::automerge::AutoCommit::load(&text) {
@@ -963,11 +1005,14 @@ impl Session {
                     .unwrap_or_default()
             })
         };
-        doors.add(Rc::new(RefCell::new(arrangement::ArrangementDoor::new(
-            Rc::clone(&arrangement),
-            Rc::new(move || underway.get()),
-            find.clone(),
-        ))));
+        doors.add(Rc::new(RefCell::new(
+            arrangement::ArrangementDoor::new(
+                Rc::clone(&arrangement),
+                Rc::new(move || underway.get()),
+                find.clone(),
+            )
+            .with_conversation(std::sync::Arc::clone(&conversation)),
+        )));
         arrangement.borrow_mut().place_now();
         workspaces::publish_host_actions(&handle);
         // What the person's settings say the desk shows: a device that kept
@@ -1157,9 +1202,8 @@ impl Session {
         // its own, or plays the run channel a test handed it. Its broker
         // delivers them, it is one of the session's services, and the desk
         // shows each run's conversation.
-        let agent_runs = options.agent_runs.take().unwrap_or_else(|| {
-            std::sync::Arc::new(tilo_agent_runs::AgentRuns::new(Some(options.wake.handle())))
-        });
+        let agent_runs = std::sync::Arc::clone(&the_runs);
+        let run_programs = std::sync::Arc::clone(&the_programs);
         let desk = || desk_resource::Desk {
             runs: std::sync::Arc::clone(&agent_runs),
             handle: handle.clone(),
@@ -1332,8 +1376,11 @@ impl Session {
                 .as_ref()
                 .map(|desktop| desktop.questions().clone())
         });
-        let session_doors =
-            std::sync::Arc::new(agent_door::SessionDoors::new(options.wake.handle()));
+        let session_doors = std::sync::Arc::new(agent_door::SessionDoors::new(
+            options.wake.handle(),
+            std::sync::Arc::clone(&run_programs),
+            &options.person,
+        ));
         let door = agent_door::mount_named(
             &options,
             questions.clone(),
@@ -1475,6 +1522,8 @@ impl Session {
             services,
             window_shares,
             agent_runs,
+            run_programs,
+            conversation,
             hosted: !options.machine.is_owned(),
             fabric,
             vpn,
@@ -2731,6 +2780,17 @@ impl Session {
         self.follow_setup();
         {
             self.shared.feed_agent_runs();
+            // The door that decides what a person's line in a run's conversation reads and
+            // changes, once this pass's runs know where they are (shell.md §8.1).
+            {
+                let front = self.shared.handle.read(|tree| {
+                    tree.active_workspace()
+                        .map(|held| held.room().to_string())
+                        .unwrap_or_default()
+                });
+                self.shared
+                    .lend_conversations(self.action_plane.as_ref(), &front);
+            }
             let mut services = self.shared.services.borrow_mut();
             services.poll();
             if let Some(plane) = &self.action_plane {

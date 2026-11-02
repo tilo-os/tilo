@@ -972,15 +972,23 @@ impl Offered {
 pub(crate) struct SessionDoors {
     asks: std::sync::Mutex<Vec<DoorAsk>>,
     wake: Wake,
+    /// The runs' program hosts and their person connections: what a line typed in a run's
+    /// conversation runs on (shell.md §8.1), behind the same door.
+    runs: crate::run_programs::Shared,
+    /// Who sits here: the person a program typed in a conversation runs as.
+    person: String,
 }
 
 impl SessionDoors {
     /// The seam `wake` wakes the loop on, shared by every connection that
-    /// asks the session's own doors.
-    pub(crate) fn new(wake: Wake) -> Self {
+    /// asks the session's own doors, and the runs' program hosts (`runs`)
+    /// whose person is `person`.
+    pub(crate) fn new(wake: Wake, runs: crate::run_programs::Shared, person: &str) -> Self {
         Self {
             asks: std::sync::Mutex::new(Vec::new()),
             wake,
+            runs,
+            person: person.to_owned(),
         }
     }
 
@@ -1271,15 +1279,29 @@ impl ActionHost for Host {
 /// nothing and writes no record, and everything its programs read or change
 /// comes back over the connection to the door, which does it as the
 /// program's author, through the same gate as every other call.
-#[derive(Default)]
-struct TaskHosts {
+pub(crate) struct TaskHosts {
     /// The person the connection was admitted for: `me` in its programs.
     person: std::sync::Mutex<Option<String>>,
+    /// Where each run's host connections are kept, for the person's lines in its conversation.
+    runs: crate::run_programs::Shared,
+}
+
+impl TaskHosts {
+    /// The hosts of the task connections `person` asks about, whose programs run as `person`.
+    pub(crate) fn new(person: &str, runs: crate::run_programs::Shared) -> Self {
+        Self {
+            person: std::sync::Mutex::new(Some(person.to_owned())),
+            runs,
+        }
+    }
 }
 
 impl tilo_runtime::mcp::TaskHosts for TaskHosts {
     fn start(&self, workspace: &str, task: &str) -> io::Result<std::os::fd::OwnedFd> {
         let (door_end, host_end) = UnixStream::pair()?;
+        // The person's own connection into the same session, for the lines they type in the
+        // run's conversation: it runs there, where the `let`s the agent's programs bound are.
+        let (person_ours, person_host) = UnixStream::pair()?;
         // The session runs no installed tilolang app's package yet: the task's programs name
         // the platform's own (the device and its arrangement, Settings).
         let encoded = runtime_portal::tilolang_host::encode_modules(&[]);
@@ -1291,6 +1313,8 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
             modules_len: encoded.len() as u64,
             records_under: std::collections::BTreeMap::new(),
         };
+        self.runs
+            .keep(task, door_end.try_clone()?, person_ours.try_clone()?);
         std::thread::Builder::new()
             .name("tilo-task-host".into())
             .spawn(move || {
@@ -1298,7 +1322,8 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
                     program: host_end.into(),
                     modules,
                 };
-                let opened = tilolang_host::task::Task::open(&request, fds);
+                let opened =
+                    tilolang_host::task::Task::open_with(&request, fds, Some(person_host));
                 let task = match opened {
                     Ok(task) => task,
                     Err(error) => {
@@ -1306,9 +1331,9 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
                         return;
                     }
                 };
-                // Every line the door sends is answered; the host ends when the door closes
-                // the connection, with the client that started it.
-                while task.serve() {}
+                // Every line the door or the person sends is answered; the host ends when the
+                // door closes the connection, with the client that started it.
+                while task.serve_all() {}
                 tracing::debug!(task = request.task, "agent door: a task's host ended");
             })?;
         Ok(door_end.into())
@@ -1342,7 +1367,8 @@ fn serve_connection(
         return;
     }
     let facts = facts_of(pid, launches);
-    let tasks = Arc::new(TaskHosts::default());
+    let runs = std::sync::Arc::clone(&session.runs);
+    let tasks = Arc::new(TaskHosts::new(&session.person, runs));
     let admitted = Arc::clone(&tasks);
     let ended = tilo_runtime::session_door::serve_after(
         stream,
