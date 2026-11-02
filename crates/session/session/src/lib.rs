@@ -1480,6 +1480,9 @@ impl Session {
         // the reading says where each display stands.
         let displays_service =
             displays::Displays::mount(&services, options.backlights.take(), Rc::clone(&commands));
+        // A brightness key or slider anywhere wakes the loop, so a display
+        // dimmed in software follows at once.
+        displays_service.watch(&options.wake.handle());
         services
             .borrow_mut()
             .add(Box::new(keyboard::KeyboardService::new(keyboard.clone())));
@@ -1802,6 +1805,9 @@ impl Session {
         // shows: which ones there are, and which one the person works on.
         self.displays_service
             .land(&self.shared.handle, &self.compositor.outputs());
+        // A display with neither a backlight nor DDC/CI keeps its brightness
+        // control: the compositor darkens what it shows to it.
+        self.displays_service.dim(&mut self.compositor)?;
         self.displays
             .follow(&mut self.compositor, night_light, turned)
     }

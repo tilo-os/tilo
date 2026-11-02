@@ -767,6 +767,11 @@ impl tilo_session::displays::Backlights for Dials {
     }
 
     fn show_only(&self, _connectors: &[String]) {}
+
+    fn software_levels(&self) -> Vec<(String, f32)> {
+        // Every display here dims its own light.
+        Vec::new()
+    }
 }
 
 /// The connectivity service as the session reaches it: a device with a Wi-Fi

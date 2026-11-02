@@ -901,6 +901,23 @@ impl Compositor {
         Ok(())
     }
 
+    /// Show `light` of their linear light on the displays without a
+    /// backlight or DDC/CI, by connector (`1.0` or absent: not dimmed), on
+    /// top of the tint they already have. A monitor whose brightness is its
+    /// own hardware is not among them: its brightness is set there.
+    pub fn set_software_dim(&mut self, dims: &[(String, f32)]) -> Result<(), Error> {
+        self.data.state.gamma.set_software_dim(dims);
+        self.sync_power();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// How much of its linear light each display is dimmed to in software,
+    /// by connector, for the displays that are.
+    pub fn software_dim(&self) -> Vec<(String, f32)> {
+        self.data.state.gamma.software_dim()
+    }
+
     /// Draw the window `id` with `effect` (moved, scaled about its centre,
     /// faded) from the next frame on, or as it stands again (`None`). The
     /// desktop animates windows by setting this every frame; input still
