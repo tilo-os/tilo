@@ -41,7 +41,7 @@ needed and how much is free.
 
 | What changed | Loop |
 |---|---|
-| a component `os/components.toml` lists (shell, fs, an app, ...) | `tilo-vm swap <component>`: seconds, no reboot (`tilo-vm guide swapping`) |
+| a component `os/components.toml` lists (tilo-session, fs, an app, ...) | `tilo-vm swap <component>`: seconds, no reboot (`tilo-vm guide swapping`) |
 | anything else, on main | `tilo-vm vm upgrade --from sha:<commit>` |
 | anything else, on a branch | `tilo-vm vm upgrade --from local`, or build on another machine (below) and `vm upgrade --image target/tilo-vm/image` |
 

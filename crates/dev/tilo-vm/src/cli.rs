@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
     name = "tilo-vm",
     version,
     about = "Test Tilo builds in a shared dev VM: your own slot, one-command component swaps, rollback.",
-    after_help = "Examples:\n  tilo-vm                     # current VM, slot, generation, session, next steps\n  tilo-vm swap shell          # build shell from this worktree into your slot\n  tilo-vm guide quickstart    # built-in docs\n\nWith no command, tilo-vm shows `status`."
+    after_help = "Examples:\n  tilo-vm                     # current VM, slot, generation, session, next steps\n  tilo-vm swap tilo-session          # build the session from this worktree into your slot\n  tilo-vm guide quickstart    # built-in docs\n\nWith no command, tilo-vm shows `status`."
 )]
 pub struct Cli {
     /// Print one JSON object instead of text (errors too: {"error","hint","see"}).
@@ -125,7 +125,7 @@ pub enum Command {
     Slot(SlotCommand),
     /// Import an exact same-run layer artifact without invoking Cargo or a builder.
     #[command(
-        after_help = "Examples:\n  tilo-vm swap-artifact shell --slot review-a --receipt layers/manifest.json --source <commit> --builder-image <immutable-image> --run-id <workflow-api-id> --run-attempt 1 --receipt-sha256 <upstream-manifest-sha256>\n\nSupply expected identities from the authenticated producer job. The daemon retains normal signed cohort validation; artifact failures never fall back to a build."
+        after_help = "Examples:\n  tilo-vm swap-artifact tilo-session --slot review-a --receipt layers/manifest.json --source <commit> --builder-image <immutable-image> --run-id <workflow-api-id> --run-attempt 1 --receipt-sha256 <upstream-manifest-sha256>\n\nSupply expected identities from the authenticated producer job. The daemon retains normal signed cohort validation; artifact failures never fall back to a build."
     )]
     SwapArtifact(ArtifactSwap),
     /// Import a prebuilt local component without building, waking or swapping a slot.
@@ -135,7 +135,7 @@ pub enum Command {
     ImportLayer(LocalLayerImport),
     /// Put a build of a component (or an app) into a slot and restart what it needs.
     #[command(
-        after_help = "Examples:\n  tilo-vm swap shell                      # your slot, built in the VM from this worktree\n  tilo-vm swap shell --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap shell --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --slot vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
+        after_help = "Examples:\n  tilo-vm swap tilo-session                      # your slot, built in the VM from this worktree\n  tilo-vm swap tilo-session --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap tilo-session --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap tilo-session --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap tilo-session --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --slot vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
     )]
     Swap {
         /// A component from os/components.toml, `userspace` for its matched session cohort (remote worktree build, one refresh), or `app:<dir>` for an app under apps/.
@@ -253,7 +253,7 @@ pub enum Command {
     /// as framed lines (what `swap --builder remote` runs on the builder).
     #[command(
         hide = true,
-        after_help = "Examples:\n  tilo-vm layer-pack --component shell --profile release   # on the builder, through its cargo drop-in's run"
+        after_help = "Examples:\n  tilo-vm layer-pack --component tilo-session --profile release   # on the builder, through its cargo drop-in's run"
     )]
     LayerPack {
         /// A component from os/components.toml.
@@ -867,7 +867,7 @@ pub enum VmCommand {
     Create(CreateArgs),
     /// Register a real machine that already runs a Tilo dev image (a board or a laptop), reached over SSH, after checking what tilo-vm needs there.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm add opi --ssh root@10.0.0.108                       # root with its own key; prints the key install\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519   # the owner's account; root through sudo -n\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --grant-sudo           # sudo asks for me's password once, here\n  tilo-vm vm use yoga\n  tilo-vm swap --slot device shell --from sha:1a2b3c4             # a board's own session\n\nEvery remote command runs as root: as root@ with the device's own key\n(keys/<name>_ed25519 beside vms.toml, installed once with the command vm add\nprints), or as another account through sudo -n, for a device whose SSH lets\nonly its owner in (the installer's dev SSH setup). vm add checks SSH, root,\ntilo-vmd and its protocol, the toolchain and bootc, names each fix, and\nregisters the device only once SSH, root and tilo-vmd work; rerun it after a\nfix. Nothing is installed on the device but what --grant-sudo writes\n(/etc/sudoers.d/tilo-vm-<user>). tilo-vm cannot power a device on, so vm\nrestart reboots it over SSH. Details: tilo-vm guide devices."
+        after_help = "Examples:\n  tilo-vm vm add opi --ssh root@10.0.0.108                       # root with its own key; prints the key install\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519   # the owner's account; root through sudo -n\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --grant-sudo           # sudo asks for me's password once, here\n  tilo-vm vm use yoga\n  tilo-vm swap --slot device tilo-session --from sha:1a2b3c4      # a board's own session\n\nEvery remote command runs as root: as root@ with the device's own key\n(keys/<name>_ed25519 beside vms.toml, installed once with the command vm add\nprints), or as another account through sudo -n, for a device whose SSH lets\nonly its owner in (the installer's dev SSH setup). vm add checks SSH, root,\ntilo-vmd and its protocol, the toolchain and bootc, names each fix, and\nregisters the device only once SSH, root and tilo-vmd work; rerun it after a\nfix. Nothing is installed on the device but what --grant-sudo writes\n(/etc/sudoers.d/tilo-vm-<user>). tilo-vm cannot power a device on, so vm\nrestart reboots it over SSH. Details: tilo-vm guide devices."
     )]
     Add(AddArgs),
     /// Wake a sleeping device with its Wake-on-LAN magic packet (a libvirt VM through the hypervisor), then wait until tilo-vmd answers.
@@ -1284,7 +1284,7 @@ pub enum SlotCommand {
     List,
     /// Show a slot's generations and every file its layers add, with SHA-256 and source layer.
     #[command(
-        after_help = "Examples:\n  tilo-vm slot show\n  tilo-vm slot show --slot review-a\n  tilo-vm slot show --json | jq '.files[] | select(.path == \"/usr/bin/shell\")'"
+        after_help = "Examples:\n  tilo-vm slot show\n  tilo-vm slot show --slot review-a\n  tilo-vm slot show --json | jq '.files[] | select(.path == \"/usr/bin/tilo-session\")'"
     )]
     Show {
         /// The slot (default: your slot).
@@ -1295,7 +1295,7 @@ pub enum SlotCommand {
     },
     /// Run a command as the slot sees the system: its layers over /usr, as its user.
     #[command(
-        after_help = "Examples:\n  tilo-vm slot exec -- sha256sum /usr/bin/shell\n  tilo-vm slot exec --slot review-a -- shell --version\n  tilo-vm slot exec -- sh -c 'ls -l /usr/lib/tilo | head'\n\nThe command runs in the mount namespace of the slot's running session, as\ntds-<slot>, so it sees exactly what the session sees. Output streams; the\ncommand is stopped after --timeout seconds (exit 124) or 1 MiB of output\n(exit 125). Its exit status is passed on."
+        after_help = "Examples:\n  tilo-vm slot exec -- sha256sum /usr/bin/tilo-session\n  tilo-vm slot exec --slot review-a -- ls -l /usr/bin/tilo-session\n  tilo-vm slot exec -- sh -c 'ls -l /usr/lib/tilo | head'\n\nThe command runs in the mount namespace of the slot's running session, as\ntds-<slot>, so it sees exactly what the session sees. Output streams; the\ncommand is stopped after --timeout seconds (exit 124) or 1 MiB of output\n(exit 125). Its exit status is passed on."
     )]
     Exec {
         /// The slot (default: your slot).
@@ -1421,8 +1421,8 @@ mod tests {
     fn target_flag_works_before_and_after_swap() {
         use clap::Parser as _;
         for args in [
-            vec!["tilo-vm", "--target", "review", "swap", "shell"],
-            vec!["tilo-vm", "swap", "shell", "--target", "review"],
+            vec!["tilo-vm", "--target", "review", "swap", "tilo-session"],
+            vec!["tilo-vm", "swap", "tilo-session", "--target", "review"],
         ] {
             let cli = super::Cli::try_parse_from(args).unwrap();
             assert_eq!(cli.target.as_deref(), Some("review"));
@@ -1545,7 +1545,7 @@ mod tests {
             assert!(Cli::try_parse_from(["tilo-vm", "rollback", "a", "--slot", "b"]).is_err());
             assert!(Cli::try_parse_from(["tilo-vm", "slot", "rm", "a", "--slot", "b"]).is_err());
             for args in [
-                &["tilo-vm", "swap", "--slot", "a", "shell"][..],
+                &["tilo-vm", "swap", "--slot", "a", "tilo-session"][..],
                 &["tilo-vm", "input", "--slot", "a", "key", "super"],
                 &["tilo-vm", "control", "--slot", "a", "actions", "list"],
                 &["tilo-vm", "status", "--slot", "a"],
@@ -1649,7 +1649,7 @@ mod tests {
                 parse(&["vm", "ssh", "--raw", "--", "podman", "login"]).as_ref()
             ));
             for loud in [
-                &["swap", "shell"][..],
+                &["swap", "tilo-session"][..],
                 &["vm", "create", "dev"],
                 &["vm", "start"],
                 &["slot", "create"],
@@ -1719,9 +1719,9 @@ mod tests {
 
         // Phase: swap_takes_an_optional_slot.
         {
-            let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
+            let cli = Cli::try_parse_from(["tilo-vm", "swap", "tilo-session"]).unwrap();
             assert!(
-                matches!(cli.command, Some(Command::Swap { ref component, slot: None, .. }) if component == "shell")
+                matches!(cli.command, Some(Command::Swap { ref component, slot: None, .. }) if component == "tilo-session")
             );
             let cli = Cli::try_parse_from([
                 "tilo-vm", "--json", "swap", "--slot", "vm", "fs", "--from", "layer:ab",
@@ -1732,8 +1732,8 @@ mod tests {
                 matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None, frame_cpu_trace: false }) if component == "fs" && slot == "vm" && from == "layer:ab")
             );
             assert!(Cli::try_parse_from(["tilo-vm", "swap", "vm", "fs"]).is_err());
-            let cli =
-                Cli::try_parse_from(["tilo-vm", "swap", "shell", "--profile", "dev"]).unwrap();
+            let cli = Cli::try_parse_from(["tilo-vm", "swap", "tilo-session", "--profile", "dev"])
+                .unwrap();
             assert!(
                 matches!(cli.command, Some(Command::Swap { profile: Some(ref p), .. }) if p == "dev")
             );

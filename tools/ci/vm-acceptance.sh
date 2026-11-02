@@ -8,7 +8,7 @@
 #
 #   vm-acceptance.sh           what vm-acceptance runs
 #   vm-acceptance.sh cohort    what vm-acceptance-cohort runs: the launcher,
-#                              install, shell and apps+runtime layers vm-cohort.sh
+#                              install, tilo-session and apps+runtime layers vm-cohort.sh
 #                              produced from this commit enter through verified
 #                              swap-artifact, verified by the tilo-vm it built
 #                              from main

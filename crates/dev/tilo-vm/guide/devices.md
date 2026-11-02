@@ -74,13 +74,13 @@ logging them out:
 
 ```sh
 tilo-vm status --slot device                          # whose login it is, generation, components
-tilo-vm swap --slot device shell --from sha:1a2b3c4   # CI's build of a main commit (or build it, below)
-tilo-vm slot exec --slot device -- sha256sum /usr/bin/shell   # the binary the desktop runs now
+tilo-vm swap --slot device tilo-session --from sha:1a2b3c4   # CI's build of a main commit (or build it, below)
+tilo-vm slot exec --slot device -- sha256sum /usr/bin/tilo-session   # the binary the desktop runs now
 tilo-vm slot show device                              # every file and its sha256 and layer
 tilo-vm logs device
 tilo-vm control --slot device state-dump --pretty     # dev images: the owner's compositor
 tilo-vm rollback --slot device                        # the generation before
-tilo-vm rollback --slot device --to 0                 # the image's own shell again
+tilo-vm rollback --slot device --to 0                 # the image's own session again
 ```
 
 What the person at the machine sees on a swap or a rollback: the screen goes
@@ -96,7 +96,7 @@ greetd runs the login in the machine's own mount namespace, so the slot's
 layers merge into the machine's `/usr` with `systemd-sysext`, together with
 the `vm` slot's: every process that starts afterwards sees them, the greeter
 and other accounts included, and they stay merged across reboots until a
-rollback removes them. `vm ssh -- sha256sum /usr/bin/shell` shows the same
+rollback removes them. `vm ssh -- sha256sum /usr/bin/tilo-session` shows the same
 file as `slot exec`.
 
 If the new desktop does not come back, the swap fails with the journal and
@@ -113,7 +113,7 @@ the owner's session, for a throwaway desktop the owner never sees:
 
 ```sh
 tilo-vm slot create --headless --identity   # your session beside the owner's, with a throwaway identity
-tilo-vm swap shell                          # your layers reach only your slot
+tilo-vm swap tilo-session                          # your layers reach only your slot
 tilo-vm shot -o target/yoga.png             # your compositor's own frame
 tilo-vm seat claim                          # your session takes the built-in display (ends the owner's login)
 tilo-vm seat release                        # greetd's login screen comes back
@@ -148,15 +148,15 @@ A board image runs its account's session without a greeter
 once one is connected. That session is the **`device` slot**:
 
 ```sh
-tilo-vm swap --slot device shell --from sha:1a2b3c4   # CI's aarch64 build of a main commit; only the layer travels
-tilo-vm swap --slot device shell                      # your worktree (see Builds below)
+tilo-vm swap --slot device tilo-session --from sha:1a2b3c4   # CI's aarch64 build of a main commit; only the layer travels
+tilo-vm swap --slot device tilo-session                      # your worktree (see Builds below)
 tilo-vm status --slot device                          # generation, session, components
 tilo-vm slot show device                              # every file and its sha256 and layer
-tilo-vm slot exec --slot device -- sha256sum /usr/bin/shell
+tilo-vm slot exec --slot device -- sha256sum /usr/bin/tilo-session
 tilo-vm logs device
 tilo-vm control --slot device state-dump --pretty
 tilo-vm rollback --slot device                        # the generation before
-tilo-vm rollback --slot device --to 0                 # the image's own shell again
+tilo-vm rollback --slot device --to 0                 # the image's own session again
 ```
 
 A swap mounts the layers over the image as one readonly view and binds it
@@ -201,21 +201,23 @@ work on a device too, beside the device's session.
   ```
 
   ```sh
-  tilo-vm swap --slot device shell                    # builds on the aarch64 builder, streams to the device
+  tilo-vm swap --slot device tilo-session                    # builds on the aarch64 builder, streams to the device
   tilo-vm swap --slot device apps+runtime             # the whole app collection and runtime, the same way
-  tilo-vm swap --slot device shell --builder remote   # the same, said explicitly
+  tilo-vm swap --slot device tilo-session --builder remote   # the same, said explicitly
   ```
 
   Do not build for a device with `--builder host` and a `TILO_VM_CARGO`
   drop-in that brings the binaries back: every swap copies them (a release
-  shell is about 165 MB) into `target/`, and that has filled this host's disk
+  session binary is large) into `target/`, and that has filled this host's disk
   before. The layer's target and rustc are read from the binary on the
   builder, and the device refuses any other architecture.
 - **Your worktree on the device** (`--builder vm`, the default when the
   device's image can build): the slot's `release` profile with the
-  manifest's features and `dev-overrides`, so `control` and `shot` work. A
+  manifest's features, so the build is the real one. `control` and `shot`
+  drive the old shell's dev socket; a session swap cannot be driven that way
+  yet. A
   board with little memory (the Orange Pi) builds only small components or
-  `--profile dev` there: build the shell on a remote builder (above), or take
+  `--profile dev` there: build the session on a remote builder (above), or take
   CI's.
 
 Each layer records its provenance (`authority = "ci"` for CI builds, `local`

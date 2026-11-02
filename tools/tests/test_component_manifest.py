@@ -423,10 +423,8 @@ class InstallerTests(unittest.TestCase):
             production = {c.name for c in installer.select_components(manifest, [], True)}
             dev = {c.name for c in installer.select_components(manifest, [], False, True)}
             self.assertIn("vmd", dev)
+            self.assertIn("shell", dev)
             self.assertIn("native-runtime-host", dev)
-            # Nothing rebuilds the shell for dev images any more: the dev image
-            # keeps the base image's shell, and iteration happens on the session.
-            self.assertNotIn("shell", dev)
             # The control CLI is a plain client every image ships.
             self.assertIn("control", production)
             self.assertNotIn("control", dev)
@@ -457,8 +455,8 @@ class InstallerTests(unittest.TestCase):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             dev = installer.select_components(manifest, [], False, True)
             packages, bins, features = installer.cargo_plan(dev, True)
-            self.assertTrue({"tilo-runtime/dev-overrides"} <= set(features))
-            self.assertEqual(set(bins), {"tilo-runtime-mcp", "tilo-vmd", "tilo-device-admin", "tilo-vm",
+            self.assertTrue({"shell/dev-overrides", "tilo-runtime/dev-overrides"} <= set(features))
+            self.assertEqual(set(bins), {"shell", "tilo-runtime-mcp", "tilo-vmd", "tilo-device-admin", "tilo-vm",
                                          "tilo-test-registry"})
             _, _, production_features = installer.cargo_plan(dev, False)
             self.assertFalse([feature for feature in production_features

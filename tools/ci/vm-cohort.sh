@@ -3,7 +3,7 @@
 # swap-artifact, as two checks:
 #
 #   vm-cohort.sh produce   vm-cohort-x86_64: this commit's launcher, install,
-#                          shell and apps+runtime as full signed layer streams,
+#                          tilo-session and apps+runtime as full signed layer streams,
 #                          packed by this tree's tilo-vm (tilo-vm-binary-x86_64)
 #                          through scripts/vm-acceptance/layer_artifacts.py, into
 #                          /target/vm-cohort/cohort with the handoff's identity in
@@ -23,7 +23,7 @@ mode=${1:?usage: vm-cohort.sh produce|verify}
 arch=x86_64
 cohort=/target/vm-cohort
 verifier=/target/vm-cohort-verifier
-# The cohort's components: apps+runtime brings launcher, install and shell with it.
+# The cohort's components: apps+runtime brings launcher, install and tilo-session with it.
 components=apps+runtime
 forge=https://code.tilo.so/tilo/tilo.git
 

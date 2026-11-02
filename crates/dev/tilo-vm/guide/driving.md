@@ -66,6 +66,10 @@ key|type|click` there. While a slot holds seat0, its input goes to seat0.
 
 ## Opening apps: a throwaway identity
 
+Everything in this guide drives the desktop over its control socket. Only the
+old shell serves one; a slot whose session is `tilo-session` cannot be driven
+this way yet, and says so instead of accepting the command.
+
 A control-socket session skips the first-login flow, so a new slot's user
 has no identity and every app refuses to start. `--identity` gives it one:
 

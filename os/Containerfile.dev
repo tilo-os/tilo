@@ -14,9 +14,9 @@
 # production code everywhere except for the pieces below:
 #
 #   * The components that declare `dev_features` in os/components.toml (the
-#     runtime host today) are rebuilt as release builds with those features.
-#     The dev-only components (`dev-*` layers), such as tilo-vmd, are built
-#     alongside them. The cargo arguments and the install both come from
+#     compositor and the runtime host today) are rebuilt as release builds with
+#     those features. The dev-only components (`dev-*` layers), such as
+#     tilo-vmd, are built alongside them. The cargo arguments and the install both come from
 #     os/scripts/install-components.py --dev, so this file names no binary.
 #   * A build toolchain, installed into the image. The binaries above are
 #     compiled with it, and so are in-VM builds. The Rust compiler is the
@@ -290,6 +290,7 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
        tilo-device-admin.service \
     && test -x /usr/libexec/tilo/tilo-control && test -x /usr/libexec/tilo/tilo-vmd \
     && /usr/libexec/tilo/tilo-vmd --version && /usr/libexec/tilo/tilo-device-admin --version \
+    && grep -aq 'dev-overrides build: developer environment overrides' /usr/bin/shell \
     && systemd-sysext --version >/dev/null \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \
     && /usr/sbin/sshd -t -h /run/tilo-dev-hostkey \

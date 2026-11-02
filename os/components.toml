@@ -110,6 +110,10 @@ kind = "userspace"
 scope = "session"
 packages = ["shell"]
 bins = ["shell"]
+# The only desktop a developer can drive today: the shell serves the dev
+# test-control socket, which the session does not yet. Dropping this drops
+# `tilo-vm shot`, `input`, `control` and `--identity` from every dev image.
+dev_features = ["shell/dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "shell", to = "/usr/bin/shell", mode = "0755" },
