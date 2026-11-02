@@ -2,7 +2,10 @@
 //! `LiveLeave`, `Live`), presence, voice calls and record content handed
 //! to one device. Presence is every device's own, browser pages included.
 
-use super::{Arc, AuthenticatedPeer, Envelope, PeerError, SessionCtx, room_access, unix_now_ns};
+use super::{
+    Arc, AuthenticatedPeer, Decision, Envelope, PeerError, RoomOperation, SessionCtx, room_access,
+    unix_now_ns,
+};
 
 /// Handle `LiveJoin`: add a subscribed device to the workspace's live plane
 /// and send it one `LiveMember` per member already present.
@@ -20,7 +23,10 @@ pub(super) async fn handle_live_join(
         }))
     };
     if !subscribed.contains(&workspace_id) {
-        return refused(UNSUBSCRIBED);
+        match subscription_refusal(session, peer, workspace_id).await? {
+            Some(reason) => return refused(reason),
+            None => return refused(UNSUBSCRIBED),
+        }
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return refused(UNSUBSCRIBED);
@@ -46,6 +52,28 @@ pub(super) async fn handle_live_join(
         });
     }
     Ok(None)
+}
+
+/// Why the subscription a live join needs was refused, when the host refused
+/// one. A page asks for the live plane right behind its subscription, so a
+/// refused subscription leaves this device unsubscribed too: it must hear the
+/// reason the subscription failed, not that a join needs a subscription it
+/// was never given.
+async fn subscription_refusal(
+    session: &SessionCtx<'_>,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+) -> Result<Option<&'static str>, PeerError> {
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return Ok(None);
+    };
+    let runtime = crate::workspace_io::fresh_membership(&ws).await?;
+    Ok(
+        match session.decide(&runtime, peer, RoomOperation::Subscribe) {
+            Decision::Deny(reason) => Some(reason.reason()),
+            Decision::Admit | Decision::AdmitAndEnrol => None,
+        },
+    )
 }
 
 /// Where `peer`'s calls in `workspace_id` are held: by this relay's room
