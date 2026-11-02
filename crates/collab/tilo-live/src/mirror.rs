@@ -12,16 +12,16 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use crate::Task;
-use crate::carrier::{OriginTask, origin_config};
+use crate::carrier::{self, OriginTask, origin_config};
 use crate::voice;
 use tilo_lock::MutexRecover as _;
 
 /// The voice relay's downlink to one session: every voice datagram stream
 /// the session is served is re-bundled ([`voice::Rebundler`]) with the
-/// redundancy that the loss on this session's own QUIC connection calls for.
+/// redundancy that the loss on this session's own connection calls for.
 #[derive(Default)]
 pub(crate) struct Downlink {
-    connection: OnceLock<quinn::Connection>,
+    wire: OnceLock<carrier::Wire>,
     state: Mutex<DownlinkState>,
 }
 
@@ -32,9 +32,9 @@ struct DownlinkState {
 }
 
 impl Downlink {
-    /// Measure loss on `connection` from now on.
-    pub(crate) fn attach(&self, connection: quinn::Connection) {
-        let _ = self.connection.set(connection);
+    /// Measure loss on the carrier `wire` belongs to from now on.
+    pub(crate) fn attach(&self, wire: carrier::Wire) {
+        let _ = self.wire.set(wire);
     }
 
     /// Earlier objects to add to each bundle, sampling the connection's loss
@@ -44,12 +44,12 @@ impl Downlink {
         let due = state
             .sampled
             .is_none_or(|at| now.saturating_duration_since(at) >= voice::LOSS_WINDOW);
-        if let (true, Some(connection)) = (due, self.connection.get()) {
+        if let (true, Some(wire)) = (due, self.wire.get()) {
             state.sampled = Some(now);
-            let path = connection.stats().path;
+            let counters = wire();
             return state
                 .redundancy
-                .observe(now, path.sent_packets, path.lost_packets);
+                .observe(now, counters.sent_packets, counters.lost_packets);
         }
         state.redundancy.level()
     }

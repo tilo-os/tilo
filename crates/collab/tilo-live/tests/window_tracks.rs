@@ -69,8 +69,8 @@ impl ClientAuthority for Owner {
 
 fn start(relay: &LoopbackRelay, proof: &[u8], own: char) -> Client {
     Client::start(
-        Connection {
-            scope: ConnectionScope {
+        Connection::webtransport(
+            ConnectionScope {
                 endpoint: relay.endpoint.clone(),
                 fingerprints: relay.fingerprints.clone(),
                 owner_epoch: [1; 32],
@@ -78,8 +78,9 @@ fn start(relay: &LoopbackRelay, proof: &[u8], own: char) -> Client {
                 publication: Some(name(own)),
                 subscription_prefix: Some(call()),
             },
-            authorization: proof.to_vec(),
-        },
+            proof.to_vec(),
+        )
+        .unwrap(),
         Arc::new(Owner),
     )
     .unwrap()

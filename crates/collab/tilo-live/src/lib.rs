@@ -13,6 +13,11 @@ pub mod tls;
 #[cfg(feature = "relay")]
 pub mod carrier;
 
+/// The carrier over a direct iroh connection, beside the browser's
+/// WebTransport one.
+#[cfg(feature = "native")]
+pub mod native;
+
 #[cfg(feature = "relay")]
 pub mod live;
 

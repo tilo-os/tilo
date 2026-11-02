@@ -11,6 +11,8 @@ default = []
 # The HTTPS server identity alone (`tls`): rustls, without the relay stack.
 tls = ["dep:rustls"]
 relay = ["tls", "dep:moq-net", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:hex", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
+# The same carrier over a direct iroh connection, beside WebTransport.
+native = ["relay", "dep:iroh"]
 
 [dependencies]
 # The scope of a track is a channel of an app's record.
@@ -30,6 +32,7 @@ rustls = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+iroh = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -44,6 +47,8 @@ tilo-test-env = { path = "../../dev/test-env" }
 # `tls` tests load a generated PEM pair from a temporary directory.
 rcgen.workspace = true
 tempfile.workspace = true
+# The native carrier test seals a track as a call's keys seal it.
+tilo-seal = { path = "../../system/tilo-seal" }
 
 [[bin]]
 name = "moq-proof"
@@ -73,6 +78,10 @@ required-features = ["relay"]
 [[test]]
 name = "window_tracks"
 required-features = ["relay"]
+
+[[test]]
+name = "live_native"
+required-features = ["relay", "native"]
 
 [lints]
 workspace = true

@@ -66,8 +66,8 @@ fn start(relay: &LoopbackRelay, proof: &[u8]) -> Client {
         (Some(name('c')), Some(call()))
     };
     Client::start(
-        Connection {
-            scope: ConnectionScope {
+        Connection::webtransport(
+            ConnectionScope {
                 endpoint: relay.endpoint.clone(),
                 fingerprints: relay.fingerprints.clone(),
                 owner_epoch: [1; 32],
@@ -75,8 +75,9 @@ fn start(relay: &LoopbackRelay, proof: &[u8]) -> Client {
                 publication,
                 subscription_prefix,
             },
-            authorization: proof.to_vec(),
-        },
+            proof.to_vec(),
+        )
+        .unwrap(),
         Arc::new(Owner),
     )
     .unwrap()

@@ -21,6 +21,9 @@ const TICK: Duration = Duration::from_millis(10);
 /// Transport + WebTransport + admission preface + SETUP budget. High-RTT links
 /// (satellite, ~600 ms) need several round trips plus a loss recovery.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest carrier endpoint a scope may name: a WebTransport route, or an
+/// iroh endpoint id.
+const MAX_ENDPOINT_BYTES: usize = 2048;
 /// Bytes either local origin may cache.
 const ORIGIN_BYTES: u64 = 64 * 1024;
 const RECEIVE_FRAMES: usize = 10;
@@ -55,6 +58,31 @@ pub struct ConnectionScope {
 pub struct Connection {
     pub scope: ConnectionScope,
     pub authorization: Vec<u8>,
+    /// The transport this participation runs on: WebTransport to the scope's
+    /// route ([`carrier::WebTransport`]) or a direct iroh connection
+    /// (`crate::native::Iroh`, behind `native`).
+    pub dial: Arc<dyn carrier::Dial>,
+}
+impl Connection {
+    /// The WebTransport carrier for `scope`, trusting the fingerprints it
+    /// names.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::Invalid`] unless the scope's endpoint is an exact carrier
+    /// route and its fingerprints are SHA-256 digests.
+    pub fn webtransport(
+        scope: ConnectionScope,
+        authorization: Vec<u8>,
+    ) -> Result<Self, ClientError> {
+        let dial = carrier::WebTransport::new(&scope.endpoint, &scope.fingerprints)
+            .map_err(|_| ClientError::Invalid)?;
+        Ok(Self {
+            scope,
+            authorization,
+            dial: Arc::new(dial),
+        })
+    }
 }
 /// Installed only by the privileged native device owner, never by app input.
 /// Implementations bind every scope field to retained authenticated custody,
@@ -403,7 +431,8 @@ impl Client {
         connection: Connection,
         authority: Arc<dyn ClientAuthority>,
     ) -> Result<Self, ClientError> {
-        let url = validate(&connection)?;
+        validate(&connection)?;
+        let dial = connection.dial;
         let runtime =
             tokio::runtime::Handle::try_current().map_err(|_| ClientError::Unavailable)?;
         let (outgoing, outgoing_task) =
@@ -438,11 +467,6 @@ impl Client {
             }),
         });
         shared.check()?;
-        let trust = if shared.scope.fingerprints.is_empty() {
-            carrier::Trust::System
-        } else {
-            carrier::Trust::Fingerprints(shared.scope.fingerprints.clone())
-        };
         let mut picture_requests = None;
         let publish = if let Some(name) = &shared.scope.publication {
             let broadcast = shared
@@ -496,7 +520,7 @@ impl Client {
             picture_requests,
         };
         let task = runtime.spawn(async move {
-            run(run_shared, url, trust, grant, origins).await;
+            run(run_shared, dial, grant, origins).await;
         });
         Ok(Self {
             shared,
@@ -880,42 +904,16 @@ fn valid_namespace(name: &str) -> bool {
             .split_once('/')
             .is_some_and(|(owner, track)| hex_part(owner) && hex_part(track))
 }
-fn validate(connection: &Connection) -> Result<url::Url, ClientError> {
+fn validate(connection: &Connection) -> Result<(), ClientError> {
     let scope = &connection.scope;
     if connection.authorization.is_empty()
         || connection.authorization.len() > crate::relay::MAX_AUTHORIZATION_BYTES
         || scope.owner_epoch == [0; 32]
         || scope.carrier_generation == 0
-        || scope.endpoint.len() > 2048
+        || scope.endpoint.len() > MAX_ENDPOINT_BYTES
         || scope.fingerprints.len() > 2
         || (scope.publication.is_none() && scope.subscription_prefix.is_none())
     {
-        return Err(ClientError::Invalid);
-    }
-    let url = url::Url::parse(&scope.endpoint).map_err(|_| ClientError::Invalid)?;
-    if url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.host_str().is_none()
-        || url.path() != crate::relay::VOICE_PATH
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || url.as_str() != scope.endpoint
-        || scope.endpoint
-            != format!(
-                "{}{path}",
-                url.origin().ascii_serialization(),
-                path = crate::relay::VOICE_PATH
-            )
-    {
-        return Err(ClientError::Invalid);
-    }
-    if scope.fingerprints.iter().any(|value| {
-        value.len() != 64
-            || !value
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    }) {
         return Err(ClientError::Invalid);
     }
     if scope
@@ -935,7 +933,7 @@ fn validate(connection: &Connection) -> Result<url::Url, ClientError> {
     {
         return Err(ClientError::Invalid);
     }
-    Ok(url)
+    Ok(())
 }
 /// What a carrier serves and reads.
 struct Origins {
@@ -945,13 +943,7 @@ struct Origins {
     picture_requests: Option<moq_net::broadcast::Dynamic>,
 }
 
-async fn run(
-    shared: Arc<Shared>,
-    url: url::Url,
-    trust: carrier::Trust,
-    grant: Vec<u8>,
-    origins: Origins,
-) {
+async fn run(shared: Arc<Shared>, dial: Arc<dyn carrier::Dial>, grant: Vec<u8>, origins: Origins) {
     let Origins {
         publish,
         subscribe,
@@ -959,8 +951,7 @@ async fn run(
     } = origins;
     // The relay answers the admission preface only after host admission;
     // until then the transport is merely open, not live.
-    let connected =
-        carrier::connect(&url, &trust, &grant, publish, subscribe, CONNECT_TIMEOUT).await;
+    let connected = dial.dial(&grant, publish, subscribe, CONNECT_TIMEOUT).await;
     drop(grant);
     let Ok(connected) = connected else {
         shared.state.lock_recover().end(Status::Failed);

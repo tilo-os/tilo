@@ -1,6 +1,11 @@
 //! The Tilo `MoQ` carrier: `moq-lite` over WebTransport, opened by a host
 //! admission preface.
 //!
+//! The carrier is generic over its transport ([`Carrier`], `moq-lite`'s poll
+//! session interface). WebTransport ([`WebTransport`]) is the browser's;
+//! `native` adds one over a direct iroh connection. The admission preface, the
+//! `moq-lite` session and its SETUP are the same code on both.
+//!
 //! # Session layout
 //!
 //! 1. The client sends an HTTP/3 extended CONNECT for an exact route (for
@@ -49,8 +54,12 @@
 //! CONNECT. The grant therefore travels only inside the encrypted session, on
 //! a stream the host reads once and never logs.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use moq_net::transport::poll::RecvStream as _;
+use moq_net::web_transport_trait::poll::SendStream as _;
+use moq_net::web_transport_trait::{Error as _, Stats as _, poll as wt};
 use rustls::pki_types::CertificateDer;
 
 /// The WebTransport subprotocol and `moq-lite` draft every Tilo `MoQ` route
@@ -75,6 +84,11 @@ pub const CLOSE_DENIED: u32 = 0x7401;
 /// How long a refused session stays open for its client to read the
 /// refusal and close it.
 const DENIED_GRACE: Duration = Duration::from_secs(1);
+/// How long a refused client waits for the host's close reason after the
+/// refusal byte itself was lost. Longer than [`DENIED_GRACE`], so a host that
+/// is still holding the session open for the client is not read as a lost
+/// connection.
+const DENIED_REPORT: Duration = Duration::from_secs(2);
 /// WebTransport close code for a session whose authority lapsed.
 pub const CLOSE_REVOKED: u32 = 0x7402;
 
@@ -96,6 +110,85 @@ pub fn version() -> Option<moq_net::Version> {
     moq_net::Version::from_alpn(PROTOCOL)
 }
 
+/// A carrier transport: [`moq_net`]'s poll session interface, clonable (each
+/// clone makes its own progress), thread-safe, and `'static` so its driver
+/// runs on a task of its own. WebTransport and iroh both qualify; nothing in
+/// this module names either.
+pub trait Carrier: moq_net::transport::poll::Session + Send + Sync + 'static {}
+
+impl<T> Carrier for T where T: moq_net::transport::poll::Session + Send + Sync + 'static {}
+
+/// Where one carrier's wire counters come from: sampled on demand, from
+/// anywhere (the session's own task, the relay's downlink).
+pub type Wire = Arc<dyn Fn() -> WireStats + Send + Sync>;
+
+/// The counters of `session`, sampled through [`wt::Stats`].
+pub fn wire<S: Carrier>(session: &S) -> Wire {
+    let session = session.clone();
+    Arc::new(move || {
+        let stats = session.stats();
+        WireStats {
+            tx_bytes: stats.bytes_sent().unwrap_or(0),
+            tx_datagrams: stats.packets_sent().unwrap_or(0),
+            rx_bytes: stats.bytes_received().unwrap_or(0),
+            rx_datagrams: stats.packets_received().unwrap_or(0),
+            sent_packets: stats.packets_sent().unwrap_or(0),
+            lost_packets: stats.packets_lost().unwrap_or(0),
+        }
+    })
+}
+
+/// Close `session` at once (idempotent).
+pub(crate) fn close<S: Carrier>(session: &S, code: u32, reason: &str) {
+    let mut session = session.clone();
+    wt::Session::close(&mut session, code, reason);
+}
+
+/// Write every byte of `buf`; `false` if the stream failed or stopped taking
+/// bytes.
+async fn write_all<S>(stream: &mut S, mut buf: &[u8]) -> bool
+where
+    S: moq_net::transport::poll::SendStream,
+{
+    while !buf.is_empty() {
+        match stream.write(buf).await {
+            Ok(written) if written > 0 => {
+                let Some(rest) = buf.get(written..) else {
+                    return false;
+                };
+                buf = rest;
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Read exactly `dst.len()` bytes; `false` at the end of the stream or on an
+/// error.
+async fn read_exact<S>(stream: &mut S, dst: &mut [u8]) -> bool
+where
+    S: moq_net::transport::poll::RecvStream,
+{
+    let mut filled = 0;
+    while filled < dst.len() {
+        let Some(rest) = dst.get_mut(filled..).filter(|rest| !rest.is_empty()) else {
+            return false;
+        };
+        match stream.read(rest).await {
+            Ok(Some(read)) if read > 0 => filled = filled.saturating_add(read),
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Wait until `session` closes, yielding the transport's error.
+async fn closed<S: Carrier>(session: &S) -> S::Error {
+    let mut session = session.clone();
+    std::future::poll_fn(|cx| session.poll_closed(cx)).await
+}
+
 /// Why a preface was not accepted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PrefaceError {
@@ -108,9 +201,9 @@ pub enum PrefaceError {
 }
 
 /// Host side of an admission stream, held for the session's lifetime.
-pub struct Admission {
-    send: web_transport_quinn::SendStream,
-    _recv: web_transport_quinn::RecvStream,
+pub struct Admission<S: Carrier> {
+    send: S::SendStream,
+    _recv: S::RecvStream,
 }
 
 /// Read the admission preface from a freshly opened session.
@@ -123,27 +216,28 @@ pub struct Admission {
 ///
 /// Returns [`PrefaceError`] when the preface is late, malformed or the session
 /// closed. The caller must then close the session with [`refuse`].
-pub async fn read_preface(
-    session: &web_transport_quinn::Session,
-) -> Result<(Vec<u8>, Admission), PrefaceError> {
+pub async fn read_preface<S: Carrier>(
+    session: &S,
+) -> Result<(Vec<u8>, Admission<S>), PrefaceError> {
+    let mut session = session.clone();
     tokio::time::timeout(PREFACE_BUDGET, async {
         let (send, mut recv) = session
             .accept_bi()
             .await
             .map_err(|_| PrefaceError::Closed)?;
         let mut header = [0u8; 3];
-        recv.read_exact(&mut header)
-            .await
-            .map_err(|_| PrefaceError::Malformed)?;
+        if !read_exact(&mut recv, &mut header).await {
+            return Err(PrefaceError::Malformed);
+        }
         let [version, high, low] = header;
         let length = usize::from(u16::from_be_bytes([high, low]));
         if version != PREFACE_VERSION || length == 0 || length > MAX_GRANT_BYTES {
             return Err(PrefaceError::Malformed);
         }
         let mut grant = vec![0u8; length];
-        recv.read_exact(&mut grant)
-            .await
-            .map_err(|_| PrefaceError::Malformed)?;
+        if !read_exact(&mut recv, &mut grant).await {
+            return Err(PrefaceError::Malformed);
+        }
         Ok((grant, Admission { send, _recv: recv }))
     })
     .await
@@ -152,23 +246,23 @@ pub async fn read_preface(
 
 /// Close a session whose preface was missing, malformed or late, telling the
 /// client which in the close reason.
-pub fn refuse(session: &web_transport_quinn::Session, error: PrefaceError) {
-    session.close(CLOSE_PREFACE, error.to_string().as_bytes());
+pub fn refuse<S: Carrier>(session: &S, error: PrefaceError) {
+    close(session, CLOSE_PREFACE, &error.to_string());
 }
 
-impl Admission {
+impl<S: Carrier> Admission<S> {
     /// Tell the client it is admitted. Call only after origins are attached.
     pub async fn admit(&mut self) -> Result<(), PrefaceError> {
-        self.send
-            .write_all(&[STATUS_ADMITTED])
+        write_all(&mut self.send, &[STATUS_ADMITTED])
             .await
-            .map_err(|_| PrefaceError::Closed)
+            .then_some(())
+            .ok_or(PrefaceError::Closed)
     }
 
     /// Refuse the grant and close the session.
-    pub async fn deny(mut self, session: &web_transport_quinn::Session) {
+    pub async fn deny(mut self, session: &S) {
         let _ = tokio::time::timeout(Duration::from_millis(100), async {
-            let _ = self.send.write_all(&[STATUS_DENIED]).await;
+            let _ = write_all(&mut self.send, &[STATUS_DENIED]).await;
             let _ = self.send.finish();
         })
         .await;
@@ -176,15 +270,15 @@ impl Admission {
         // session closes under it, and report no close code either: the
         // client closes the session once it read the refusal, or the host
         // after a moment.
-        let _ = tokio::time::timeout(DENIED_GRACE, session.closed()).await;
-        session.close(CLOSE_DENIED, b"admission denied");
+        let _ = tokio::time::timeout(DENIED_GRACE, closed(session)).await;
+        close(session, CLOSE_DENIED, "admission denied");
     }
 
     /// Tell an admitted client that its authority lapsed. Never blocks for
     /// more than a moment; the caller closes the session after its grace.
     pub async fn revoke(&mut self) {
         let _ = tokio::time::timeout(Duration::from_millis(100), async {
-            let _ = self.send.write_all(&[STATUS_REVOKED]).await;
+            let _ = write_all(&mut self.send, &[STATUS_REVOKED]).await;
             let _ = self.send.finish();
         })
         .await;
@@ -203,12 +297,12 @@ pub enum AdmissionError {
 }
 
 /// Client side of an admitted session's control stream.
-pub struct Admitted {
-    recv: web_transport_quinn::RecvStream,
-    _send: web_transport_quinn::SendStream,
+pub struct Admitted<S: Carrier> {
+    recv: S::RecvStream,
+    _send: S::SendStream,
 }
 
-impl Admitted {
+impl<S: Carrier> Admitted<S> {
     /// Resolves when the host revokes the session or the control stream ends.
     pub async fn revoked(&mut self) {
         let mut byte = [0u8; 1];
@@ -223,14 +317,12 @@ impl Admitted {
 ///
 /// Returns [`AdmissionError::Denied`] when the host refuses the grant and
 /// [`AdmissionError::Unavailable`] when the session fails first.
-pub async fn present(
-    session: &web_transport_quinn::Session,
-    grant: &[u8],
-) -> Result<Admitted, AdmissionError> {
+pub async fn present<S: Carrier>(session: &S, grant: &[u8]) -> Result<Admitted<S>, AdmissionError> {
     let length = u16::try_from(grant.len())
         .ok()
         .filter(|length| *length > 0 && usize::from(*length) <= MAX_GRANT_BYTES)
         .ok_or(AdmissionError::Invalid)?;
+    let mut session = session.clone();
     let (mut send, mut recv) = session
         .open_bi()
         .await
@@ -239,32 +331,38 @@ pub async fn present(
     let mut preface = Vec::with_capacity(grant.len().saturating_add(3));
     preface.extend_from_slice(&[PREFACE_VERSION, high, low]);
     preface.extend_from_slice(grant);
-    send.write_all(&preface)
-        .await
-        .map_err(|_| AdmissionError::Unavailable)?;
+    if !write_all(&mut send, &preface).await {
+        return Err(AdmissionError::Unavailable);
+    }
     let mut status = [0u8; 1];
-    match recv.read_exact(&mut status).await {
-        Ok(()) if status == [STATUS_ADMITTED] => Ok(Admitted { recv, _send: send }),
-        Ok(()) => Err(AdmissionError::Denied),
-        Err(_) => match session.close_reason() {
-            Some(web_transport_quinn::SessionError::WebTransportError(
-                web_transport_quinn::WebTransportError::Closed(CLOSE_DENIED, _),
-            )) => Err(AdmissionError::Denied),
-            _ => Err(AdmissionError::Unavailable),
-        },
+    if read_exact(&mut recv, &mut status).await {
+        return if status == [STATUS_ADMITTED] {
+            Ok(Admitted { recv, _send: send })
+        } else {
+            Err(AdmissionError::Denied)
+        };
+    }
+    // The refusal byte is lost when the host closed the session under it: the
+    // close code then carries the refusal.
+    match tokio::time::timeout(DENIED_REPORT, closed(&session)).await {
+        Ok(error) if error.session_error().map(|(code, _)| code) == Some(CLOSE_DENIED) => {
+            Err(AdmissionError::Denied)
+        }
+        _ => Err(AdmissionError::Unavailable),
     }
 }
 
 /// An admitted native `MoQ` session. Dropping it closes the session.
 pub struct Connected {
     pub session: moq_net::Session,
-    connection: quinn::Connection,
+    wire: Wire,
     task: tokio::task::JoinHandle<()>,
 }
 
 /// Content-free cumulative counters of one carrier's QUIC connection: what it
 /// costs on the wire (UDP payload bytes and datagrams) and the packet loss it
-/// measured.
+/// measured. `sent_packets` counts UDP datagrams, which is what the transport
+/// statistics report as sent packets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WireStats {
     pub tx_bytes: u64,
@@ -283,15 +381,7 @@ impl Connected {
 
     /// This carrier's wire counters so far.
     pub fn wire(&self) -> WireStats {
-        let stats = self.connection.stats();
-        WireStats {
-            tx_bytes: stats.udp_tx.bytes,
-            tx_datagrams: stats.udp_tx.datagrams,
-            rx_bytes: stats.udp_rx.bytes,
-            rx_datagrams: stats.udp_rx.datagrams,
-            sent_packets: stats.path.sent_packets,
-            lost_packets: stats.path.lost_packets,
-        }
+        (self.wire)()
     }
 }
 
@@ -301,19 +391,24 @@ impl Drop for Connected {
     }
 }
 
-/// Admit an already open WebTransport session and start `moq-lite` on it.
+/// Admit an already open session and start `moq-lite` on it.
 ///
 /// `publish` is announced and served to the host; broadcasts the host
 /// announces land in `subscribe`. The session's driver runs on the current
 /// Tokio runtime until the session closes; a revocation closes it.
-pub async fn start(
-    transport: web_transport_quinn::Session,
+pub async fn start<S>(
+    transport: S,
     grant: &[u8],
     publish: Option<moq_net::origin::Consumer>,
     subscribe: Option<moq_net::origin::Producer>,
-) -> Result<Connected, AdmissionError> {
+) -> Result<Connected, AdmissionError>
+where
+    S: Carrier,
+    S::SendStream: Send,
+    S::RecvStream: Send,
+{
     if transport.protocol() != Some(PROTOCOL) {
-        transport.close(CLOSE_PREFACE, b"unsupported protocol");
+        close(&transport, CLOSE_PREFACE, "unsupported protocol");
         return Err(AdmissionError::Unavailable);
     }
     let mut admitted = present(&transport, grant).await?;
@@ -332,8 +427,8 @@ pub async fn start(
     .await
     .map_err(|_| AdmissionError::Unavailable)?
     .map_err(|_| AdmissionError::Unavailable)?;
+    let wire = wire(&transport);
     let watched = session.clone();
-    let connection = (*transport).clone();
     let task = tokio::spawn(async move {
         let run = moq_net::time::run(driver);
         tokio::pin!(run);
@@ -345,11 +440,11 @@ pub async fn start(
                 let _ = tokio::time::timeout(Duration::from_secs(1), &mut run).await;
             }
         }
-        transport.close(0, b"");
+        close(&transport, 0, "");
     });
     Ok(Connected {
         session,
-        connection,
+        wire,
         task,
     })
 }
@@ -363,6 +458,109 @@ pub enum Trust {
     Fingerprints(Vec<String>),
     /// Exact certificates.
     Certificates(Vec<CertificateDer<'static>>),
+}
+
+/// How a client reaches a carrier: the one transport-specific step of
+/// connecting. Everything after the transport opens — the admission preface,
+/// `moq-lite` and its SETUP — is shared by every carrier.
+pub trait Dial: Send + Sync + 'static {
+    /// Open a session, admit `grant` on it, and start `moq-lite`. `timeout`
+    /// bounds the transport and the admission together.
+    #[allow(
+        clippy::type_complexity,
+        reason = "one boxed future per attempt: the transport differs, the steps after it do not"
+    )]
+    fn dial<'a>(
+        &'a self,
+        grant: &'a [u8],
+        publish: Option<moq_net::origin::Consumer>,
+        subscribe: Option<moq_net::origin::Producer>,
+        timeout: Duration,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Connected, AdmissionError>> + Send + 'a>,
+    >;
+}
+
+/// The WebTransport carrier: one exact HTTPS route, dialled over QUIC.
+#[derive(Clone, Debug)]
+pub struct WebTransport {
+    pub url: url::Url,
+    pub trust: Trust,
+}
+
+impl WebTransport {
+    /// The carrier for the exact route `endpoint` with `fingerprints` as the
+    /// trust (`None` for the platform roots).
+    ///
+    /// # Errors
+    ///
+    /// [`AdmissionError::Invalid`] unless `endpoint` is an origin followed by
+    /// [`VOICE_PATH`](crate::relay::VOICE_PATH), spelled exactly as
+    /// [`url::Url`] serializes it, and every fingerprint is a SHA-256 digest in
+    /// lowercase hex.
+    pub fn new(endpoint: &str, fingerprints: &[String]) -> Result<Self, AdmissionError> {
+        let url = route(endpoint).ok_or(AdmissionError::Invalid)?;
+        let trust = if fingerprints.is_empty() {
+            Trust::System
+        } else {
+            if fingerprints.iter().any(|value| !is_fingerprint(value)) {
+                return Err(AdmissionError::Invalid);
+            }
+            Trust::Fingerprints(fingerprints.to_vec())
+        };
+        Ok(Self { url, trust })
+    }
+}
+
+impl Dial for WebTransport {
+    fn dial<'a>(
+        &'a self,
+        grant: &'a [u8],
+        publish: Option<moq_net::origin::Consumer>,
+        subscribe: Option<moq_net::origin::Producer>,
+        timeout: Duration,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Connected, AdmissionError>> + Send + 'a>,
+    > {
+        Box::pin(connect(
+            &self.url,
+            &self.trust,
+            grant,
+            publish,
+            subscribe,
+            timeout,
+        ))
+    }
+}
+
+/// The exact route `endpoint` names: an HTTPS origin plus
+/// [`VOICE_PATH`](crate::relay::VOICE_PATH), with no credentials, query or
+/// fragment, spelled the one way [`url::Url`] serializes it.
+pub fn route(endpoint: &str) -> Option<url::Url> {
+    let url = url::Url::parse(endpoint).ok()?;
+    (url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str().is_some()
+        && url.path() == crate::relay::VOICE_PATH
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.as_str() == endpoint
+        && endpoint
+            == format!(
+                "{}{path}",
+                url.origin().ascii_serialization(),
+                path = crate::relay::VOICE_PATH
+            ))
+    .then_some(url)
+}
+
+/// A SHA-256 digest in lowercase hex, as [`Trust::Fingerprints`] takes them.
+fn is_fingerprint(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Dial `url` (an exact route), admit with `grant`, and start `moq-lite`.
@@ -408,21 +606,22 @@ pub async fn connect(
 }
 
 /// Host side of one admitted `moq-lite` session.
-pub(crate) struct Accepted {
+pub(crate) struct Accepted<S: Carrier> {
     pub session: moq_net::Session,
-    pub driver: moq_net::Driver<web_transport_quinn::Session>,
-    pub admission: Admission,
-    pub transport: web_transport_quinn::Session,
+    pub driver: moq_net::Driver<S>,
+    pub admission: Admission<S>,
+    pub transport: S,
 }
 
 /// Admit `transport` with `admit`, which returns the configured server and the
 /// caller's admission state (or `None` to refuse), then run the `moq-lite` SETUP. The client reaches `MoQ`
 /// only after `admit` succeeded.
-pub(crate) async fn accept<F, Fut, T>(
-    transport: web_transport_quinn::Session,
+pub(crate) async fn accept<S, F, Fut, T>(
+    transport: S,
     admit: F,
-) -> Result<(Accepted, T), PrefaceError>
+) -> Result<(Accepted<S>, T), PrefaceError>
 where
+    S: Carrier,
     F: FnOnce(Vec<u8>) -> Fut,
     Fut: std::future::Future<Output = Option<(moq_net::Server, T)>>,
 {
@@ -446,7 +645,7 @@ where
         return Err(PrefaceError::Closed);
     };
     if admission.admit().await.is_err() {
-        transport.close(CLOSE_PREFACE, b"admission stream closed");
+        close(&transport, CLOSE_PREFACE, "admission stream closed");
         return Err(PrefaceError::Closed);
     }
     let accepted = tokio::time::timeout(
@@ -457,7 +656,7 @@ where
     )
     .await;
     let Ok(Ok((session, driver))) = accepted else {
-        transport.close(CLOSE_PREFACE, b"setup failed");
+        close(&transport, CLOSE_PREFACE, "setup failed");
         return Err(PrefaceError::Closed);
     };
     Ok((

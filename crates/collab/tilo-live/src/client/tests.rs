@@ -1,18 +1,20 @@
 use super::*;
 
-fn connection() -> Connection {
-    Connection {
-        scope: ConnectionScope {
-            endpoint: "https://example.test/moq/voice".into(),
-            fingerprints: vec![],
-            owner_epoch: [1; 32],
-            carrier_generation: 1,
-            publication: Some(format!("{}/{}", "01".repeat(32), "02".repeat(32))),
-            subscription_prefix: None,
-        },
-        authorization: vec![1],
+fn scope() -> ConnectionScope {
+    ConnectionScope {
+        endpoint: "https://example.test/moq/voice".into(),
+        fingerprints: vec![],
+        owner_epoch: [1; 32],
+        carrier_generation: 1,
+        publication: Some(format!("{}/{}", "01".repeat(32), "02".repeat(32))),
+        subscription_prefix: None,
     }
 }
+
+fn connection() -> Connection {
+    Connection::webtransport(scope(), vec![1]).unwrap()
+}
+
 #[test]
 fn inert_connection_validates_raw_endpoint_and_closed_voice_scope_only() {
     assert!(validate(&connection()).is_ok()); // Structural validity confers no readiness.
@@ -28,9 +30,17 @@ fn inert_connection_validates_raw_endpoint_and_closed_voice_scope_only() {
         "https://example.test/moq/voice?q=1",
         "https://example.test/moq/voice#x",
     ] {
-        let mut connection = connection();
-        connection.scope.endpoint = endpoint.into();
-        assert!(validate(&connection).is_err(), "{endpoint}");
+        let mut changed = scope();
+        changed.endpoint = endpoint.into();
+        assert!(
+            Connection::webtransport(changed, vec![1]).is_err(),
+            "{endpoint}"
+        );
+    }
+    for fingerprints in [vec!["not-a-digest".to_owned()], vec!["A".repeat(64)]] {
+        let mut changed = scope();
+        changed.fingerprints = fingerprints;
+        assert!(Connection::webtransport(changed, vec![1]).is_err());
     }
     for name in ["audio", "call/publisher", "", "01/02"] {
         let mut connection = connection();

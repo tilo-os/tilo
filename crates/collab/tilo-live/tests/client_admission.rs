@@ -74,8 +74,8 @@ impl ClientAuthority for Owner {
 async fn observe(admit: bool) -> Vec<Status> {
     let relay = LoopbackRelay::start(Arc::new(Relayed { admit })).unwrap();
     let client = Client::start(
-        Connection {
-            scope: ConnectionScope {
+        Connection::webtransport(
+            ConnectionScope {
                 endpoint: relay.endpoint.clone(),
                 fingerprints: relay.fingerprints.clone(),
                 owner_epoch: [1; 32],
@@ -83,8 +83,9 @@ async fn observe(admit: bool) -> Vec<Status> {
                 publication: Some(name('b')),
                 subscription_prefix: Some(call()),
             },
-            authorization: b"proof".to_vec(),
-        },
+            b"proof".to_vec(),
+        )
+        .unwrap(),
         Arc::new(Owner),
     )
     .unwrap();
@@ -139,8 +140,8 @@ fn start(relay: &LoopbackRelay, proof: &[u8], generation: u64) -> Client {
         (Some(name('c')), Some(call()))
     };
     Client::start(
-        Connection {
-            scope: ConnectionScope {
+        Connection::webtransport(
+            ConnectionScope {
                 endpoint: relay.endpoint.clone(),
                 fingerprints: relay.fingerprints.clone(),
                 owner_epoch: [1; 32],
@@ -148,8 +149,9 @@ fn start(relay: &LoopbackRelay, proof: &[u8], generation: u64) -> Client {
                 publication,
                 subscription_prefix,
             },
-            authorization: proof.to_vec(),
-        },
+            proof.to_vec(),
+        )
+        .unwrap(),
         Arc::new(Owner),
     )
     .unwrap()
