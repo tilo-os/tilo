@@ -502,7 +502,7 @@ impl DesktopSearch {
         // counted in short rows runs past the card.
         let two_lines = groups
             .iter()
-            .any(|group| group.results.iter().any(|hit| stands_tall(hit)));
+            .any(|group| group.results.iter().any(stands_tall));
         let capacity = self.palette.entry_row_capacity_for(0, two_lines);
         let browsing = query.trim().is_empty();
         let mut rows = Vec::new();
@@ -522,10 +522,10 @@ impl DesktopSearch {
         // yet keeps it for the frame that does.
         if self.shown_query.as_deref() != Some(query) {
             self.kept_choice = None;
-        } else if self.palette.selected_id() != self.auto_selected.as_deref() {
-            if let Some(chosen) = on_screen {
-                self.kept_choice = Some(chosen);
-            }
+        } else if self.palette.selected_id() != self.auto_selected.as_deref()
+            && let Some(chosen) = on_screen
+        {
+            self.kept_choice = Some(chosen);
         }
         let chosen = self.kept_choice.clone();
         let kept = chosen.and_then(|chosen| match chosen {
@@ -597,7 +597,10 @@ impl DesktopSearch {
             let lone = groups.len() == 1;
             // A lone group the person asked to see whole stays whole and
             // the card scrolls it: it is not offered itself again.
-            let whole = lone && self.expanded.contains(&groups[0].kind);
+            let whole = lone
+                && groups
+                    .first()
+                    .is_some_and(|group| self.expanded.contains(&group.kind));
             let floor = usize::from(!lone);
             let mut allowed = cap;
             let mut last: Option<Vec<CommandEntry>>;
@@ -606,8 +609,8 @@ impl DesktopSearch {
                     groups.clone()
                 } else if lone {
                     let mut alone = groups.clone();
-                    if !whole {
-                        alone[0].results.truncate(allowed);
+                    if !whole && let Some(only) = alone.first_mut() {
+                        only.results.truncate(allowed);
                     }
                     alone
                 } else {
@@ -629,7 +632,7 @@ impl DesktopSearch {
                 if allowed <= floor {
                     break;
                 }
-                allowed -= 1;
+                allowed = allowed.saturating_sub(1);
             }
             let last = last.unwrap_or_default();
             if dropped {
@@ -658,7 +661,7 @@ impl DesktopSearch {
             return;
         };
         if !self.expanded.contains(&kind) {
-            self.expanded.push(kind.clone());
+            self.expanded.push(kind);
         }
         let cursor = self.palette.cursor();
         let query = self.palette.query().to_owned();
@@ -2190,7 +2193,7 @@ mod tests {
         let at = entries
             .iter()
             .position(|entry| entry.id == ALL_RESULTS_ID)
-            .unwrap_or_else(|| panic!("a crowded card offers the rest: {:?}", entries));
+            .unwrap_or_else(|| panic!("a crowded card offers the rest: {entries:?}"));
         search.palette_mut().set_cursor(at);
         search.palette_mut().activate_selected();
         assert!(!search.observe(), "listing the rest keeps search open");
@@ -2333,10 +2336,12 @@ mod tests {
             .iter()
             .enumerate()
             .find_map(|(at, entry)| {
+                if !entry.id.starts_with(MORE_PREFIX) {
+                    return None;
+                }
                 Some((at, entry.group.clone()?, entry.group_total?))
-                    .filter(|_| entry.id.starts_with(MORE_PREFIX))
             })
-            .unwrap_or_else(|| panic!("a cramped card offers the rest: {:?}", entries));
+            .unwrap_or_else(|| panic!("a cramped card offers the rest: {entries:?}"));
         search.palette_mut().set_cursor(at);
         search.palette_mut().activate_selected();
         assert!(!search.observe(), "showing all keeps search open");
