@@ -60,7 +60,7 @@ use tilo_agent_participant::{
     AgentIdentity, AgentParticipant, AgentSupervisor, DirectPlanner, ParticipantConfig, Replica,
     Seed, SupervisorHost,
 };
-use tilo_browser_peer::{Host, LiveState, PeerEvent, PeerHandle, certify};
+use tilo_browser_peer::{Host, PeerEvent, PeerHandle, certify};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
@@ -72,7 +72,6 @@ use tilo_relay_protocol::agents::{
     agent_resource,
 };
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
-use tilo_relay_protocol::live::{LiveFrame, LiveParticipant, LiveRecord, ParticipantKind};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
     issue_device_cert,
@@ -152,7 +151,11 @@ async fn start_host(
         })
         .await
         .unwrap();
-    TestHost { relay, web }
+    TestHost {
+        relay,
+        web,
+        lookup: iroh::address_lookup::memory::MemoryLookup::new(),
+    }
 }
 
 /// The laptop approves the one pending request as an agent device: a
@@ -309,34 +312,6 @@ async fn receive_until(
 
 fn body(app: &impl common::Body) -> String {
     app.body()
-}
-
-/// Open a sealed live frame with `peer`'s channel keys.
-async fn open_live(peer: &PeerHandle, frame: Vec<u8>) -> Option<LiveFrame> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    peer.open_live_then(
-        workspace(),
-        frame,
-        Box::new(move |opened| {
-            let _ = tx.send(opened);
-        }),
-    )
-    .ok()?;
-    LiveFrame::decode(&rx.await.ok()??).ok()
-}
-
-/// Seal a clear live frame with `peer`'s channel keys for wire publish.
-async fn seal_live(peer: &PeerHandle, frame: Vec<u8>) -> Vec<u8> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    peer.seal_live_then(
-        workspace(),
-        frame,
-        Box::new(move |sealed| {
-            let _ = tx.send(sealed);
-        }),
-    )
-    .unwrap();
-    rx.await.unwrap().expect("the page holds the record's keys")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -526,108 +501,76 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let carried = Delegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
     assert_eq!(carried.verify(&user, tilo_clock::unix_now_ns()), Ok(()));
 
-    // 5. The browser's live session over WebTransport sees the agent:
-    // presence of kind agent, focused on the record.
-    let (grant_tx, grant_rx) = tokio::sync::oneshot::channel();
-    browser
-        .live_grant_then(
-            workspace(),
-            Box::new(move |grant| {
-                let _ = grant_tx.send(grant);
-            }),
-        )
-        .unwrap();
-    let grant = grant_rx.await.unwrap().unwrap();
-    let url: url::Url = format!("https://127.0.0.1:{}/moq/live", host.web.addr.port())
-        .parse()
-        .unwrap();
-    let trust =
-        tilo_moq::carrier::Trust::Fingerprints(vec![host.web.certificate_sha256.clone().unwrap()]);
-    let own_namespace = tilo_moq::live::namespace_path(&grant.room, &grant.publisher).unwrap();
-    let mut live =
-        tilo_moq::live::peer::Peer::connect(&url, &trust, &grant.token, Some(&own_namespace))
-            .await
-            .unwrap();
-    let agent_namespace =
-        tilo_moq::live::namespace_path(&grant.room, &hex::encode(agent_cert.device_public_key))
-            .unwrap();
+    // 5. The browser's session sees the agent: the view of itself an agent
+    // says on the workspace, focused on the record it works in.
+    let record = tilo_relay_protocol::live::LiveRecord {
+        app: SCRATCHPAD.to_owned(),
+        record: route.record.clone(),
+    }
+    .short_digest();
     let deadline = tilo_test_env::hang_deadline();
-    let mut agent_presence = tilo_moq::live::peer::MemberPresence::follow(&live, &agent_namespace);
+    let mut shells = Vec::new();
     let presence = loop {
         assert!(
             Instant::now() < deadline,
             "the agent's presence never reached the browser"
         );
         agent.pump();
-        if let Some(datagram) = agent_presence.next(Duration::from_millis(200)).await {
-            let Some(frame) = open_live(&browser, datagram.to_vec()).await else {
+        for event in browser_events.drain() {
+            let PeerEvent::Presence { from, body, .. } = event else {
                 continue;
             };
-            match frame {
-                LiveFrame::Presence(presence) => break presence,
-                LiveFrame::Ops(_) => {}
+            if from == agent_cert.device_public_key
+                && let Some(collab_types::PeerPresencePayload::Shell(shell)) =
+                    support::presence(&body)
+            {
+                shells.push(*shell);
             }
         }
+        if let Some(shell) = shells.iter().rev().find(|shell| {
+            shell
+                .windows
+                .iter()
+                .any(|window| window.app == SCRATCHPAD && window.record == record)
+        }) {
+            break shell.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    let participant = presence.participant.expect("the agent says what it is");
-    assert_eq!(participant.kind, ParticipantKind::Agent);
-    assert_eq!(participant.label, "Writer helper");
-    assert_eq!(participant.color, [0x7c, 0x3a, 0xed]);
-    assert_eq!(
-        presence.focus.map(|focus| (focus.app, focus.record)),
-        Some((SCRATCHPAD.to_owned(), route.record.clone()))
-    );
+    assert!(presence.agent);
+    assert_eq!(presence.label, "Writer helper");
+    assert_eq!(presence.colour, "#7c3aed");
 
-    // 6. The browser's cursor, published over WebTransport, reaches the
-    // agent (an iroh peer) through the host's bridge.
+    // 6. The browser's own presence, published on its session, reaches the
+    // agent (an iroh peer): one presence path for the page and the agent.
     let browser_key = browser_device.cert.device_public_key;
-    let mut page_live = LiveState::starting_now();
     let deadline = tilo_test_env::hang_deadline();
     let seen = loop {
         assert!(
             Instant::now() < deadline,
-            "the browser's cursor never reached the agent"
+            "the browser's presence never reached the agent"
         );
-        let frame = page_live
-            .publish_presence(tilo_clock::unix_now_ms(), |presence| {
-                presence.focus = Some(LiveRecord {
-                    app: SCRATCHPAD.into(),
-                    record: route.record.clone(),
-                });
-                presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
-                    strip: 1,
-                    at: [12.0, 34.0],
-                });
-                presence.participant = Some(LiveParticipant {
-                    kind: ParticipantKind::Person,
-                    label: "Ada".into(),
-                    color: [0x0e, 0xa5, 0xe9],
-                    activity: None,
-                });
-            })
+        browser
+            .publish_presence(
+                workspace(),
+                vec![
+                    support::pointer_body(&browser_key, 12.0, 34.0),
+                    support::shell_body(&browser_key, "Ada"),
+                ],
+            )
             .unwrap();
-        live.publish_presence(&seal_live(&browser, frame).await);
         agent.pump();
         if let Some(member) = agent
             .remote_members()
             .into_iter()
-            .find(|member| member.publisher == browser_key && member.presence.is_some())
+            .find(|member| member.publisher == browser_key)
         {
             break member;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    let seen = seen.presence.unwrap();
-    assert_eq!(
-        seen.pointer
-            .as_ref()
-            .map(tilo_relay_protocol::live::LivePointer::at),
-        Some([12.0, 34.0])
-    );
-    assert_eq!(
-        seen.participant.map(|participant| participant.kind),
-        Some(ParticipantKind::Person)
-    );
+    assert_eq!(seen.shell.label, "Ada");
+    assert!(!seen.shell.agent);
 
     // 7. The host keeps the agent to its delegated workspaces.
     agent
@@ -985,7 +928,6 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     assert!(sealed > 0);
 
-    drop(live);
     agent.close();
     browser.close();
     host.relay.shutdown().await;

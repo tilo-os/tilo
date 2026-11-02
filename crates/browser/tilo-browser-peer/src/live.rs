@@ -1,23 +1,17 @@
-//! The live layer: what this device publishes and what it believes about
-//! every other live member — the Rust half of PR 541's `LIVE_V1` receiver.
+//! The page's live layer: the preview operations another member publishes
+//! for a record, and who is live now.
 //!
-//! Presence is latest-value: a frame older than the newest one from the
-//! same publisher is dropped. Previews are ordered per publisher and record
-//! and are an overlay: they are dropped when the publisher ends them, when
-//! the record's durable change lands ([`LiveState::durable_changed`]), or
-//! when the publisher leaves. A released drag stays until the durable change
-//! lands or [`ENDED_DRAG_TIMEOUT_MS`] passes. Nothing here is authority;
-//! interpolation of remote pointers belongs to the renderer
-//! (`web/live-presence.mjs`).
+//! Presence is not here: a page's cursors, its shell's view, chat, reactions
+//! and waves ride the workspace's presence
+//! ([`crate::session::PeerEvent::Presence`]), the way every device's do.
+//! This module keeps what the live plane still carries for the page —
+//! ephemeral previews of a record's edits — and follows membership so a
+//! preview overlay is dropped when its publisher leaves.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tilo_relay_protocol::live::{
-    DragPhase, LiveFrame, LiveRecord, LiveWireError, OpsFrame, PresenceFrame, PreviewOp,
-};
+use tilo_relay_protocol::live::{LiveFrame, LiveRecord, OpsFrame, PreviewOp};
 
-/// A released drag is shown at most this long without its durable change.
-pub const ENDED_DRAG_TIMEOUT_MS: u64 = 5_000;
 /// A publisher with no frame for this long is reported stale.
 pub const STALE_AFTER_MS: u64 = 10_000;
 
@@ -26,13 +20,8 @@ pub const STALE_AFTER_MS: u64 = 10_000;
 pub struct RemoteMember {
     /// The member's device key.
     pub publisher: [u8; 32],
-    /// Its newest presence, if any arrived.
-    pub presence: Option<PresenceFrame>,
-    /// Local receive time of that presence (ms since the epoch).
+    /// Local receive time of the member's last frame (ms since the epoch).
     pub received_at_ms: u64,
-    /// Released drag kept until its durable change lands, with its release
-    /// time.
-    pub ended_drag: Option<(PresenceFrame, u64)>,
     /// Pending preview operations per record, in arrival order.
     pub previews: BTreeMap<LiveRecord, Vec<PreviewOp>>,
     /// No frame for [`STALE_AFTER_MS`].
@@ -42,37 +31,23 @@ pub struct RemoteMember {
 /// What an inbound frame changed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LiveChange {
-    /// A member's presence moved.
-    Presence([u8; 32]),
     /// A member's previews for a record changed.
     Preview([u8; 32], LiveRecord),
     /// Membership changed.
     Member([u8; 32], bool),
 }
 
-/// Local and remote live state of one workspace.
+/// Live membership and the previews of one workspace.
 #[derive(Default)]
 pub struct LiveState {
     members: BTreeSet<[u8; 32]>,
     remote: BTreeMap<[u8; 32], RemoteMember>,
-    local_presence: Option<PresenceFrame>,
-    presence_seq: u64,
 }
 
 impl LiveState {
-    /// State for a publisher starting at `now_ms`. Receivers keep only
-    /// strictly newer presence, so the sequence starts from the wall clock
-    /// (microseconds) to stay ahead of this page's previous incarnation.
-    pub fn new(now_ms: u64) -> Self {
-        Self {
-            presence_seq: now_ms.saturating_mul(1000),
-            ..Self::default()
-        }
-    }
-
-    /// [`Self::new`] at the current wall-clock time.
+    /// [`Self::default`] for a page starting now.
     pub fn starting_now() -> Self {
-        Self::new(tilo_clock::unix_now_ms())
+        Self::default()
     }
 
     /// A member joined or left the workspace's live plane.
@@ -92,7 +67,8 @@ impl LiveState {
     }
 
     /// Apply one frame the host relayed from `from`, received at `now_ms`.
-    /// Returns what changed, or `None` for a stale or undecodable frame.
+    /// Returns what changed, or `None` for an undecodable frame or one that
+    /// is not a preview.
     pub fn receive(&mut self, from: [u8; 32], frame: &[u8], now_ms: u64) -> Option<LiveChange> {
         let frame = LiveFrame::decode(frame).ok()?;
         // Semantic work requires a separately authenticated consumer. It must
@@ -100,117 +76,54 @@ impl LiveState {
         if matches!(frame, LiveFrame::Ops(OpsFrame::Semantic { .. })) {
             return None;
         }
+        let (record, ops) = match frame {
+            LiveFrame::Ops(OpsFrame::Preview { record, ops, .. }) => (record, Some(ops)),
+            LiveFrame::Ops(OpsFrame::End { record }) => (record, None),
+            LiveFrame::Presence(_) | LiveFrame::Ops(OpsFrame::Semantic { .. }) => return None,
+        };
         self.members.insert(from);
         let member = self.remote.entry(from).or_insert_with(|| RemoteMember {
             publisher: from,
-            presence: None,
             received_at_ms: now_ms,
-            ended_drag: None,
             previews: BTreeMap::new(),
             stale: false,
         });
-        match frame {
-            LiveFrame::Presence(presence) => {
-                if member
-                    .presence
-                    .as_ref()
-                    .is_some_and(|newest| newest.seq >= presence.seq)
-                {
-                    return None;
-                }
-                if let Some((_, DragPhase::End, _, _)) = &presence.drag {
-                    member.ended_drag = Some((presence.clone(), now_ms));
-                }
-                member.presence = Some(presence);
-                member.received_at_ms = now_ms;
-                member.stale = false;
-                Some(LiveChange::Presence(from))
-            }
-            LiveFrame::Ops(OpsFrame::Preview { record, ops, .. }) => {
+        match ops {
+            Some(ops) => {
                 member
                     .previews
                     .entry(record.clone())
                     .or_default()
                     .extend(ops);
-                member.received_at_ms = now_ms;
-                Some(LiveChange::Preview(from, record))
             }
-            LiveFrame::Ops(OpsFrame::End { record }) => {
+            None => {
                 member.previews.remove(&record);
-                Some(LiveChange::Preview(from, record))
             }
-            LiveFrame::Ops(OpsFrame::Semantic { .. }) => None,
         }
+        member.received_at_ms = now_ms;
+        Some(LiveChange::Preview(from, record))
     }
 
-    /// A durable change for `record` landed: previews for it are superseded
-    /// and a released drag on it snaps to the durable position.
+    /// A durable change for `record` landed: previews for it are superseded.
     pub fn durable_changed(&mut self, record: &LiveRecord) {
         for member in self.remote.values_mut() {
             member.previews.remove(record);
-            if member.ended_drag.as_ref().is_some_and(|(presence, _)| {
-                presence
-                    .drag
-                    .as_ref()
-                    .is_some_and(|(object, ..)| object.record.as_ref() == Some(record))
-            }) {
-                member.ended_drag = None;
-            }
         }
     }
 
-    /// Every remote member at `now_ms`, with stale flags and expired
-    /// released drags applied.
+    /// Every remote member at `now_ms`, with stale flags applied.
     pub fn remote(&mut self, now_ms: u64) -> Vec<RemoteMember> {
         for member in self.remote.values_mut() {
             member.stale = now_ms.saturating_sub(member.received_at_ms) >= STALE_AFTER_MS;
-            if member
-                .ended_drag
-                .as_ref()
-                .is_some_and(|(_, at)| now_ms.saturating_sub(*at) >= ENDED_DRAG_TIMEOUT_MS)
-            {
-                member.ended_drag = None;
-            }
         }
         self.remote.values().cloned().collect()
-    }
-
-    /// Merge a local presence update and encode the frame to publish.
-    /// `update` receives the current presence to modify.
-    pub fn publish_presence(
-        &mut self,
-        now_ms: u64,
-        update: impl FnOnce(&mut PresenceFrame),
-    ) -> Result<Vec<u8>, LiveWireError> {
-        let mut presence = self.local_presence.clone().unwrap_or(PresenceFrame {
-            place: None,
-            chat: None,
-            reaction: None,
-            wave: None,
-            layout: None,
-            following: None,
-            seq: 0,
-            sent_at_ms: 0,
-            focus: None,
-            pointer: None,
-            selection: None,
-            drag: None,
-            participant: None,
-        });
-        update(&mut presence);
-        self.presence_seq = self.presence_seq.saturating_add(1);
-        presence.seq = self.presence_seq;
-        presence.sent_at_ms = now_ms;
-        let encoded = LiveFrame::Presence(presence.clone()).encode()?;
-        self.local_presence = Some(presence);
-        Ok(encoded)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::live::{LiveAnchor, LiveObject};
+    use tilo_relay_protocol::live::LiveAnchor;
 
     fn record() -> LiveRecord {
         LiveRecord {
@@ -219,8 +132,21 @@ mod tests {
         }
     }
 
+    fn preview(seq: u64) -> Vec<u8> {
+        LiveFrame::Ops(OpsFrame::Preview {
+            seq,
+            record: record(),
+            ops: vec![PreviewOp::Insert {
+                at: LiveAnchor { cursor: vec![1] },
+                text: "x".into(),
+            }],
+        })
+        .encode()
+        .unwrap()
+    }
+
     #[test]
-    fn semantic_events_cannot_create_or_refresh_pointer_presence() {
+    fn semantic_events_refresh_no_member() {
         let from = [4; 32];
         let semantic = LiveFrame::Ops(OpsFrame::Semantic {
             record: record(),
@@ -239,91 +165,45 @@ mod tests {
         assert_eq!(receiver.receive(from, &semantic, 1), None);
         assert_eq!(receiver.members().count(), 0);
         assert!(receiver.remote(1).is_empty());
-        let pointer = LiveState::default()
-            .publish_presence(1, |presence| {
-                presence.focus = Some(record());
-                presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
-                    strip: 1,
-                    at: [10.0, 20.0],
-                });
-            })
-            .unwrap();
-        receiver.receive(from, &pointer, 1);
+        receiver.receive(from, &preview(1), 1);
+        assert!(!receiver.remote(STALE_AFTER_MS)[0].stale);
         receiver.receive(from, &semantic, STALE_AFTER_MS);
         assert!(receiver.remote(STALE_AFTER_MS + 1)[0].stale);
     }
 
     #[test]
-    fn older_presence_is_dropped_and_previews_yield_to_durable_changes() {
-        let mut sender = LiveState::default();
+    fn previews_yield_to_durable_changes_and_leaving_members() {
         let mut receiver = LiveState::default();
-        let first = sender
-            .publish_presence(1, |p| {
-                p.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
-                    strip: 1,
-                    at: [1.0, 1.0],
-                });
-            })
-            .unwrap();
-        let second = sender
-            .publish_presence(2, |p| {
-                p.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
-                    strip: 1,
-                    at: [2.0, 2.0],
-                });
-            })
-            .unwrap();
         let from = [4; 32];
-        assert!(receiver.receive(from, &second, 10).is_some());
-        assert!(receiver.receive(from, &first, 11).is_none(), "older frame");
-        assert_eq!(
-            receiver.remote(12)[0].presence.as_ref().and_then(|p| p
-                .pointer
-                .as_ref()
-                .map(tilo_relay_protocol::live::LivePointer::at)),
-            Some([2.0, 2.0])
-        );
-
-        let preview = LiveFrame::Ops(OpsFrame::Preview {
-            seq: 1,
-            record: record(),
-            ops: vec![PreviewOp::Insert {
-                at: LiveAnchor { cursor: vec![1] },
-                text: "x".into(),
-            }],
-        })
-        .encode()
-        .unwrap();
-        receiver.receive(from, &preview, 13);
+        assert!(receiver.receive(from, &preview(1), 10).is_some());
         assert_eq!(receiver.remote(14)[0].previews.len(), 1);
         receiver.durable_changed(&record());
         assert!(receiver.remote(15)[0].previews.is_empty());
         assert!(receiver.remote(13 + STALE_AFTER_MS)[0].stale);
+        receiver.member(from, false);
+        assert!(receiver.remote(301).is_empty());
     }
 
     #[test]
-    fn released_drag_waits_for_the_durable_change() {
-        let mut sender = LiveState::default();
+    fn a_presence_frame_is_not_the_live_plane_any_more() {
         let mut receiver = LiveState::default();
-        let end = sender
-            .publish_presence(1, |p| {
-                p.drag = Some((
-                    LiveObject {
-                        record: Some(record()),
-                        id: vec![7],
-                    },
-                    DragPhase::End,
-                    [5.0, 5.0],
-                    None,
-                ));
-            })
-            .unwrap();
-        receiver.receive([4; 32], &end, 100);
-        assert!(receiver.remote(200)[0].ended_drag.is_some());
-        receiver.durable_changed(&record());
-        assert!(receiver.remote(201)[0].ended_drag.is_none());
-        receiver.receive([4; 32], &end, 300);
-        receiver.member([4; 32], false);
-        assert!(receiver.remote(301).is_empty());
+        let frame = LiveFrame::Presence(tilo_relay_protocol::live::PresenceFrame {
+            place: None,
+            chat: None,
+            reaction: None,
+            wave: None,
+            layout: None,
+            following: None,
+            seq: 1,
+            sent_at_ms: 1,
+            focus: None,
+            pointer: None,
+            selection: None,
+            drag: None,
+            participant: None,
+        })
+        .encode()
+        .unwrap();
+        assert_eq!(receiver.receive([4; 32], &frame, 1), None);
     }
 }

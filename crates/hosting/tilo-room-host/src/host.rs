@@ -238,7 +238,7 @@ impl HostSessions {
             metrics: metrics.clone(),
             autobind,
             app_serving: wrap(&workspaces, own_plane.clone()),
-            live_bridge: Arc::default(),
+            carried_calls: Arc::default(),
             agents: Arc::default(),
             compactor: crate::compaction::Compactor::new(
                 identity.device_signing_key.clone(),
@@ -965,8 +965,9 @@ pub struct RelayProtocol {
     pub metrics: Arc<Metrics>,
     pub autobind: Option<WorkspaceAutobind>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
-    /// Set once when the host starts serving browsers.
-    pub live_bridge: Arc<std::sync::OnceLock<crate::peer::LiveBridge>>,
+    /// Set once when the host starts serving browsers: the rooms whose
+    /// voice carrier it serves.
+    pub carried_calls: Arc<std::sync::OnceLock<crate::rooms::WeakRooms>>,
     pub agents: crate::peer::AgentRegistry,
     pub compactor: crate::compaction::Compactor,
     pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
@@ -999,7 +1000,7 @@ impl RelayProtocol {
             metrics: self.metrics.clone(),
             own_device_public_key: self.identity.cert.device_public_key,
             app_serving: self.app_serving.clone(),
-            live_bridge: self.live_bridge.get().cloned(),
+            carried_calls: self.carried_calls.get().cloned(),
             agents: self.agents.clone(),
             positions: Some(crate::position::PositionIssuer::new(
                 &self.identity.signing_key.to_bytes(),

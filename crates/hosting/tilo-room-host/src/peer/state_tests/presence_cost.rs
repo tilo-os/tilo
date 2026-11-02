@@ -59,7 +59,7 @@ async fn cost(fixture: &Fixture) -> (usize, u64, u64) {
         disconnect: &fixture.recipient_disconnect,
         presence: Some(&mailbox),
         revocations: &fixture.source.revocations,
-        live_bridge: None,
+        carried_calls: None,
         agents: &agents,
         positions: None,
         compactor: None,
@@ -70,6 +70,7 @@ async fn cost(fixture: &Fixture) -> (usize, u64, u64) {
     let source = SessionCtx {
         outbound: &fixture.source.tx,
         disconnect: &fixture.source.disconnect,
+        carried_calls: None,
         ..session
     };
     let mut bytes = Vec::new();

@@ -1,11 +1,8 @@
 //! Ephemeral traffic the relay never keeps: the live plane (`LiveJoin`,
 //! `LiveLeave`, `Live`), presence, voice calls and record content handed
-//! to one device.
+//! to one device. Presence is every device's own, browser pages included.
 
-use super::{
-    Arc, AuthenticatedPeer, Envelope, PeerError, SessionCtx, room_access, session_peer_authorized,
-    unix_now_ns,
-};
+use super::{Arc, AuthenticatedPeer, Envelope, PeerError, SessionCtx, room_access, unix_now_ns};
 
 /// Handle `LiveJoin`: add a subscribed device to the workspace's live plane
 /// and send it one `LiveMember` per member already present.
@@ -85,7 +82,7 @@ async fn call_host(
     match authority {
         Some(authority) => Some((authority.rooms()?, authority.room().to_owned())),
         None => Some((
-            session.live_bridge?.calls()?,
+            session.carried_calls.as_ref()?.upgrade()?,
             crate::rooms::carried_call_room(workspace_id),
         )),
     }
@@ -237,11 +234,6 @@ pub(super) async fn handle_live(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(None);
     };
-    if let Some(bridge) = session.live_bridge
-        && ws.lock().await.is_live_member(&peer.device_public_key)
-    {
-        bridge.live(workspace_id, peer.device_public_key, &frame);
-    }
     let stamped = Envelope::Live {
         workspace_id,
         from_device_public_key: peer.device_public_key,
@@ -300,28 +292,7 @@ pub(super) async fn handle_presence(
             .encode()
             .map_err(|error| PeerError::Protocol(error.to_string()))?;
     }
-    let mut legacy_writer = false;
     if let Some(ws) = ws {
-        if session.live_bridge.is_some() {
-            let authority = {
-                let runtime = ws.lock().await;
-                if runtime.has_subscriber(&peer.device_public_key)
-                    && session_peer_authorized(peer, session)
-                {
-                    legacy_writer = true;
-                }
-                runtime.room_authority.clone()
-            };
-            if let Some(authority) = authority {
-                legacy_writer &= match authority.rooms() {
-                    Some(rooms) => rooms
-                        .legacy_writer_role(authority.room(), peer.device_public_key)
-                        .await
-                        .is_some_and(room_access::role_writes),
-                    None => false,
-                };
-            }
-        }
         let mut wr = ws.lock().await;
         // A device sends presence only to say hello, to ask for a baseline
         // (`SyncReq`) or after rejecting a checkpoint — each means it needs the
@@ -360,17 +331,6 @@ pub(super) async fn handle_presence(
                 body,
             );
         }
-    }
-    if legacy_writer
-        && !attached
-        && let (Some(bridge), Envelope::Presence { payload, .. }) = (session.live_bridge, &env)
-    {
-        bridge.presence(
-            workspace_id,
-            peer.device_public_key,
-            peer.user_public_key,
-            payload,
-        );
     }
     Ok(None)
 }

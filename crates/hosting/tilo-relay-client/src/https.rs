@@ -295,63 +295,6 @@ pub async fn channel_keys(
     .await
 }
 
-/// Send a member's input for a legacy window
-/// ([`tilo_relay_protocol::legacy_window`]); with no events, ask whether
-/// this device may drive it. `Ok(false)`: it may not.
-pub async fn legacy_input(
-    client: &dyn HttpClient,
-    session: &str,
-    request: &tilo_relay_protocol::legacy_window::InputRequest,
-) -> Result<bool, LinkError> {
-    let (status, bytes) = client
-        .post(
-            &path(tilo_relay_protocol::legacy_window::INPUT_ROUTE),
-            Some(session),
-            encode(request)?,
-        )
-        .await
-        .map_err(LinkError::Unavailable)?;
-    match status {
-        204 => Ok(true),
-        403 => Ok(false),
-        401 => Err(LinkError::Refused(
-            String::from_utf8_lossy(&bytes).into_owned(),
-        )),
-        _ => Err(LinkError::Unavailable(format!(
-            "status {status}: {}",
-            String::from_utf8_lossy(&bytes)
-        ))),
-    }
-}
-
-/// Tell the host which video codecs this page decodes
-/// ([`tilo_relay_protocol::legacy_window::CodecsRequest`]), so sessions
-/// stream legacy windows in one of them. `Ok(true)` once the host took it.
-pub async fn legacy_codecs(
-    client: &dyn HttpClient,
-    session: &str,
-    request: &tilo_relay_protocol::legacy_window::CodecsRequest,
-) -> Result<bool, LinkError> {
-    let (status, bytes) = client
-        .post(
-            &path(tilo_relay_protocol::legacy_window::CODECS_ROUTE),
-            Some(session),
-            encode(request)?,
-        )
-        .await
-        .map_err(LinkError::Unavailable)?;
-    match status {
-        204 => Ok(true),
-        401 => Err(LinkError::Refused(
-            String::from_utf8_lossy(&bytes).into_owned(),
-        )),
-        _ => Err(LinkError::Unavailable(format!(
-            "status {status}: {}",
-            String::from_utf8_lossy(&bytes)
-        ))),
-    }
-}
-
 /// Administer the host's rooms as this session's device (`/rooms`).
 pub async fn rooms(
     client: &dyn HttpClient,

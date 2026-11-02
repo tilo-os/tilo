@@ -86,7 +86,7 @@ async fn keystroke_presence_and_position_share_the_production_delta_write() {
         disconnect: &fixture.recipient_disconnect,
         presence: Some(&mailbox),
         revocations: &fixture.source.revocations,
-        live_bridge: None,
+        carried_calls: None,
         agents: &agents,
         positions: None,
         compactor: None,
@@ -97,6 +97,7 @@ async fn keystroke_presence_and_position_share_the_production_delta_write() {
     let source_session = SessionCtx {
         outbound: &fixture.source.tx,
         disconnect: &fixture.source.disconnect,
+        carried_calls: None,
         ..session
     };
     let mut coding = SessionCoding::default();

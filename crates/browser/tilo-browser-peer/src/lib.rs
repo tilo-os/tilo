@@ -34,7 +34,6 @@ pub mod health;
 mod held_live;
 pub mod invite;
 pub mod live;
-pub mod remote_page;
 mod replica;
 pub mod session;
 #[cfg(feature = "toolkit")]

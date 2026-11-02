@@ -1,9 +1,9 @@
 //! A simulated browser — the page's session code built natively, its device
 //! key behind the `DeviceSigner` seam — reaches the user's host only over the
 //! browser carriers: HTTPS to a local host with a development certificate
-//! (pinned by SHA-256, as the page pins it) for certification and documents,
-//! WebTransport `moq-lite` for live presence. The root-holding laptop is an
-//! iroh peer of the same host.
+//! (pinned by SHA-256, as the page pins it) for certification and documents.
+//! Its presence rides that same session, the way the laptop's does. The
+//! root-holding laptop is an iroh peer of the same host.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -27,50 +27,22 @@ use std::time::Duration;
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_browser_peer::{Host, LiveState, PeerEvent, PeerSnapshot, TransportPhase, certify};
-use tilo_relay_protocol::live::{LiveFrame, LiveRecord, SealedLiveFrame};
+use tilo_browser_peer::{Host, PeerEvent, PeerSnapshot, TransportPhase, certify};
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, UserIdentity, sign_revocation_entry,
 };
 
 use support::{
-    approve_one, enrol, next_document, ready, route, start_host, start_peer, wait_for, workspace,
+    approve_one, enrol, next_document, pointer_body, presence, ready, route, shell_body,
+    start_host, start_peer, wait_for, workspace,
 };
-
-/// Seal canonical live `frame` with `peer`'s keys for the record it names.
-async fn sealed(peer: &tilo_browser_peer::PeerHandle, frame: Vec<u8>) -> Vec<u8> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    peer.seal_live_then(
-        workspace(),
-        frame,
-        Box::new(move |sealed| {
-            let _ = tx.send(sealed);
-        }),
-    )
-    .unwrap();
-    rx.await.unwrap().expect("the page holds the record's keys")
-}
-
-/// Open sealed live `frame` with `peer`'s keys.
-async fn opened(peer: &tilo_browser_peer::PeerHandle, frame: Vec<u8>) -> LiveFrame {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    peer.open_live_then(
-        workspace(),
-        frame,
-        Box::new(move |opened| {
-            let _ = tx.send(opened);
-        }),
-    )
-    .unwrap();
-    LiveFrame::decode(&rx.await.unwrap().expect("the frame opens")).unwrap()
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario from certification to revocation, in order"
 )]
-async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked() {
+async fn browser_over_https_is_certified_syncs_and_is_revoked() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
@@ -155,220 +127,59 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
         "acknowledged"
     );
 
-    // 4. Live over WebTransport: the host grants the browser session, the
-    // browser's moq-lite participant publishes presence, and a laptop frame
-    // sent over iroh is bridged into the browser's live workspace.
-    let (grant_tx, grant_rx) = tokio::sync::oneshot::channel();
-    browser
-        .live_grant_then(
-            workspace(),
-            Box::new(move |grant| {
-                let _ = grant_tx.send(grant);
-            }),
-        )
-        .unwrap();
-    let grant = grant_rx.await.unwrap().unwrap();
-    assert_eq!(grant.publisher, hex::encode(browser_cert.device_public_key));
-    let namespace = tilo_moq::live::namespace_path(&grant.room, &grant.publisher).unwrap();
-    let url: url::Url = format!("https://127.0.0.1:{}/moq/live", host.web.addr.port())
-        .parse()
-        .unwrap();
-    let trust =
-        tilo_moq::carrier::Trust::Fingerprints(vec![host.web.certificate_sha256.clone().unwrap()]);
-    let mut live =
-        tilo_moq::live::peer::Peer::connect(&url, &trust, &grant.token, Some(&namespace))
-            .await
-            .expect("the live grant admits the WebTransport session");
-    let mut browser_live = LiveState::starting_now();
-    let frame = browser_live
-        .publish_presence(1, |presence| {
-            presence.focus = Some(LiveRecord {
-                app: "so.tilo.notes".into(),
-                record: "note-1".into(),
-            });
-            presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
-                strip: 1,
-                at: [12.0, 34.0],
-            });
-        })
-        .unwrap();
-    // A live frame leaves only sealed with its record's channel keys.
-    let cleartext = frame.clone();
-    let frame = sealed(&browser, frame).await;
-    assert!(
-        !frame
-            .windows(cleartext.len())
-            .any(|window| window == cleartext),
-        "nothing of the frame is in the clear"
-    );
-    assert!(
-        live.publish_presence(&frame),
-        "sealed presence is accepted locally"
-    );
-
-    // A second browser device (a tablet, also over HTTPS) receives it over
-    // its own WebTransport session.
-    let tablet = enrol(&root, "tablet", DeviceCapabilities::member());
-    let tablet_peer = start_peer(
-        https.clone(),
-        tablet.cert.clone(),
-        host_device.cert.clone(),
-        tablet.key.clone(),
-    );
-    tablet_peer
-        .join_placed(support::WORKSPACE, "Workspace")
-        .unwrap();
-    ready(&[&tablet_peer]).await;
-    let (grant_tx, grant_rx) = tokio::sync::oneshot::channel();
-    tablet_peer
-        .live_grant_then(
-            workspace(),
-            Box::new(move |grant| {
-                let _ = grant_tx.send(grant);
-            }),
-        )
-        .unwrap();
-    let tablet_grant = grant_rx.await.unwrap().unwrap();
-    let tablet_live = tilo_moq::live::peer::Peer::connect(&url, &trust, &tablet_grant.token, None)
-        .await
-        .expect("the tablet's grant admits it");
-    let from_browser = tilo_test_env::within(
-        "browser presence reaches the tablet over WebTransport",
-        async {
-            let broadcast = tablet_live
-                .member(&namespace)
-                .await
-                .expect("browser announced");
-            let mut track = broadcast
-                .track(tilo_moq::live::PRESENCE_TRACK)
-                .unwrap()
-                .subscribe(None)
-                .await
-                .unwrap();
-            let mut seq = 2;
-            loop {
-                let frame = browser_live
-                    .publish_presence(seq, |presence| {
-                        presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
-                            strip: 1,
-                            at: [12.0, 34.0],
-                        });
-                    })
-                    .unwrap();
-                seq += 1;
-                live.publish_presence(&sealed(&browser, frame).await);
-                if let Ok(Ok(Some(datagram))) =
-                    tokio::time::timeout(Duration::from_millis(50), track.recv_datagram()).await
-                {
-                    return datagram.payload.to_vec();
-                }
-            }
-        },
-    )
-    .await;
-    // The host relays the sealed frame; only a holder of the record's keys
-    // reads it.
-    assert!(SealedLiveFrame::decode(&from_browser).is_ok());
-    assert!(LiveFrame::decode(&from_browser).is_err());
-    assert!(matches!(
-        opened(&browser, from_browser).await,
-        LiveFrame::Presence(presence) if presence.pointer.as_ref().map(tilo_relay_protocol::live::LivePointer::at) == Some([12.0, 34.0])
-    ));
-    drop(tablet_live);
-    tablet_peer.close();
-
-    // The laptop, a live member over iroh, receives the browser's
-    // WebTransport presence through the host's bridge.
-    laptop_peer.live_join(workspace()).unwrap();
-    let laptop_events = laptop_peer.events();
-    let bridged = tilo_test_env::within("browser presence reaches an iroh live member", async {
-        let mut seq = 1000;
+    // 4. Presence rides the session: the page is one member device beside the
+    // laptop, and what each says of itself reaches the other through the host
+    // with no second channel.
+    let workspace_id = workspace();
+    let browser_device = browser_cert.device_public_key;
+    let laptop_device = laptop.cert.device_public_key;
+    let mut laptop_events = laptop_peer.events();
+    let seen_by_laptop = tilo_test_env::within("the page's cursor reaches the laptop", async {
         loop {
-            let frame = browser_live
-                .publish_presence(seq, |presence| {
-                    presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
-                        strip: 1,
-                        at: [21.0, 43.0],
-                    });
-                })
+            browser
+                .publish_presence(
+                    workspace_id,
+                    vec![pointer_body(&browser_device, 12.0, 34.0)],
+                )
                 .unwrap();
-            seq += 1;
-            live.publish_presence(&sealed(&browser, frame).await);
             tokio::time::sleep(Duration::from_millis(50)).await;
             for event in laptop_events.drain() {
-                if let PeerEvent::Live { from, frame, .. } = event
-                    && from == browser_cert.device_public_key
+                let PeerEvent::Presence { from, body, .. } = event else {
+                    continue;
+                };
+                if from == browser_device
+                    && let Some(collab_types::PeerPresencePayload::Pointer { x, y }) =
+                        presence(&body)
                 {
-                    return frame;
+                    return (x, y);
                 }
             }
         }
     })
     .await;
-    assert!(matches!(
-        LiveFrame::decode(&bridged),
-        Ok(LiveFrame::Presence(presence)) if presence.pointer.is_some()
-    ));
+    assert_eq!(seen_by_laptop, (12.0, 34.0));
 
-    let laptop_namespace =
-        tilo_moq::live::namespace_path(&grant.room, &hex::encode(laptop.cert.device_public_key))
-            .unwrap();
-    let mut laptop_state = LiveState::starting_now();
-    let focus = |presence: &mut tilo_relay_protocol::live::PresenceFrame, pointer| {
-        presence.focus = Some(LiveRecord {
-            app: "so.tilo.notes".into(),
-            record: "note-1".into(),
-        });
-        presence.pointer = Some(tilo_relay_protocol::live::LivePointer::Strip {
-            strip: 1,
-            at: pointer,
-        });
-    };
-    let received =
-        tilo_test_env::within("a laptop frame reaches the browser's live session", async {
-            loop {
-                let frame = laptop_state
-                    .publish_presence(2, |presence| focus(presence, [5.0, 6.0]))
-                    .unwrap();
-                laptop_peer.publish_live(workspace(), frame).unwrap();
-                let Ok(Some(broadcast)) = tokio::time::timeout(
-                    Duration::from_millis(200),
-                    live.member(&laptop_namespace),
-                )
-                .await
-                else {
+    let browser_events = browser.events();
+    let seen_by_page = tilo_test_env::within("the laptop's view reaches the page", async {
+        loop {
+            laptop_peer
+                .publish_presence(workspace_id, vec![shell_body(&laptop_device, "Laptop")])
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            for event in browser_events.drain() {
+                let PeerEvent::Presence { from, body, .. } = event else {
                     continue;
                 };
-                let Ok(mut track) = broadcast
-                    .track(tilo_moq::live::PRESENCE_TRACK)
-                    .unwrap()
-                    .subscribe(None)
-                    .await
-                else {
-                    continue;
-                };
-                for _ in 0..20 {
-                    let frame = laptop_state
-                        .publish_presence(3, |presence| focus(presence, [7.0, 8.0]))
-                        .unwrap();
-                    laptop_peer.publish_live(workspace(), frame).unwrap();
-                    if let Ok(Ok(Some(datagram))) =
-                        tokio::time::timeout(Duration::from_millis(100), track.recv_datagram())
-                            .await
-                    {
-                        return datagram.payload.to_vec();
-                    }
+                if from == laptop_device
+                    && let Some(collab_types::PeerPresencePayload::Shell(shell)) = presence(&body)
+                {
+                    return shell.label;
                 }
             }
-        })
-        .await;
-    assert!(LiveFrame::decode(&received).is_err(), "relayed sealed");
-    assert!(matches!(
-        opened(&browser, received).await,
-        LiveFrame::Presence(presence)
-            if presence.pointer.as_ref().map(tilo_relay_protocol::live::LivePointer::at) == Some([5.0, 6.0]) || presence.pointer.as_ref().map(tilo_relay_protocol::live::LivePointer::at) == Some([7.0, 8.0])
-    ));
-    drop(live);
+        }
+    })
+    .await;
+    assert_eq!(seen_by_page, "Laptop");
 
     // 5. Revocation: the host ends the HTTPS session, refuses the handshake
     // from then on, and the browser stops in `failed`.

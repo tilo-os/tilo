@@ -73,13 +73,6 @@ const MAX_GROUPS_IN_FLIGHT: usize = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceRoute(());
 
-impl VoiceRoute {
-    /// The route of a session this crate's own listener matched exactly.
-    pub(crate) const fn routed() -> Self {
-        Self(())
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Publish,
@@ -364,7 +357,6 @@ impl Relay {
                     subscribe.clone(),
                     VIEW_BYTES,
                     PICTURE_RETAIN,
-                    crate::mirror::Start::Requested,
                     Some(scopes.downlink.clone()),
                 );
                 server = server.with_publisher(view.consume());

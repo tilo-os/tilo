@@ -15,7 +15,7 @@ use tilo_browser_peer::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::delegation::Delegation;
-use tilo_relay_protocol::live::{LiveParticipant, LiveRecord, ParticipantKind};
+use tilo_relay_protocol::live::LiveRecord;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::apps::{AppCatalogue, ReplicaActor, Seed};
@@ -62,6 +62,8 @@ pub struct BotParticipant {
     /// Records of watched apps not held yet, each merged as it changes.
     pending: Unopened,
     live: LiveState,
+    /// This bot's view count, so members order its views.
+    presence_seq: u32,
     /// The host admitted the workspace; everything it replayed has arrived.
     ready: bool,
 }
@@ -110,6 +112,7 @@ impl BotParticipant {
             actor,
             replicas: BTreeMap::new(),
             live: LiveState::starting_now(),
+            presence_seq: 0,
             ready: false,
         })
     }
@@ -320,25 +323,27 @@ impl BotParticipant {
     /// Show the bot in the workspace, at `focus` when it acts there.
     pub fn publish_presence(&mut self, focus: Option<&DocumentRoute>, activity: Option<String>) {
         let now = tilo_clock::unix_now_ms();
-        let participant = LiveParticipant {
-            kind: ParticipantKind::Agent,
-            label: self.identity.delegation.label.clone(),
-            color: self.identity.delegation.color,
-            activity: activity.map(|activity| bounded(&activity)),
-        };
+        self.presence_seq = self.presence_seq.wrapping_add(1);
         let focus = focus.map(|route| LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
-        match self.live.publish_presence(now, |presence| {
-            presence.focus = focus;
-            presence.participant = Some(participant);
-        }) {
-            Ok(frame) => {
-                let _ = self.peer.publish_live(self.workspace_id, frame);
-            }
-            Err(error) => tracing::warn!(%error, "bot: presence out of bounds"),
-        }
+        let view = crate::presence::shell(
+            self.presence_seq,
+            now,
+            &self.identity.delegation.label,
+            self.identity.delegation.color,
+            activity.map(|activity| bounded(&activity)),
+            focus.as_ref(),
+            None,
+        );
+        crate::presence::say(
+            &self.peer,
+            &self.identity.cert.device_public_key,
+            &self.workspace,
+            self.workspace_id,
+            view,
+        );
     }
 
     /// The bot's device key.

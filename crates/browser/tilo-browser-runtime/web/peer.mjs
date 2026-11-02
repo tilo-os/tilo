@@ -8,9 +8,9 @@
  *   replayed after every reconnect (`tilo-browser-peer` in wasm);
  * - device certification over HTTPS: the page shows the pairing code while
  *   a root-holding device of the user approves;
- * - the live plane (`peer.live`) over WebTransport `moq-lite`
- *   (`live-transport.mjs`), or its HTTPS stream fallback (`live-fallback.mjs`),
- *   admitted by a host grant for this session. Never authority;
+ * - the live plane (`peer.live`): this page as one member device of the
+ *   workspace beside every other, its presence, pointers, previews and shell
+ *   on the same session link they use. Never authority;
  * - the workspace's calls (`peer.voice`, `voice-peer.mjs`): the session holds
  *   the participation and seals the page's frames, which reach the call as
  *   turns on its host's call lane (`voice.mjs`).
@@ -28,15 +28,12 @@ import {openChannelVault} from './channel-vault.mjs';
 import {createMembership, createWorkspaces} from './membership.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 import {backoffDelay} from './reconnect.mjs';
-import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
-import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 import {memberText, objectText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {decodableCodecs} from './legacy-windows.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
 /** Where a leaving page ends its host session, the token its body (tilo-relay-protocol's `SESSION_END_PATH`). */
@@ -55,13 +52,6 @@ const CERTIFICATE = 'certificate';
  * frame reads and drops them, so this only bounds a page that stopped
  * drawing while a peer kept typing. */
 const MAX_PENDING_PREVIEWS = 256;
-/** How many records a layer remembers the ops track of: a page shows a
- * handful, and the digest of one it has left is cheap to ask for again. */
-const MAX_REMEMBERED_TRACKS = 256;
-/** What this page's WebCodecs decodes, probed once. */
-let probed;
-const probedCodecs = () => (probed ??= decodableCodecs());
-
 /**
  * The stored `{cert, hostCert}` JSON with the peer's start fields (the
  * person's name, whether it only watches) added, edited as text: certificate
@@ -235,313 +225,169 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
   };
 }
 
-/** How long WebTransport to a host's separate direct origin may take to get ready. */
-const DIRECT_WEBTRANSPORT_BUDGET_MS = 2000;
-
-/**
- * Where a workspace's live plane is reached from `origin`: its `/moq/live`, both
- * for WebTransport and the HTTPS stream fallback. A workspace on a loopback
- * `http:` origin (local review) serves WebTransport only on its TLS port
- * (`host.webtransportPort`, pinned by `certificateSha256`); its fallback
- * stays on the plain origin. A host behind a proxy that passes HTTP only
- * names the origin QUIC reaches it at directly (`host.webtransportOrigin`):
- * WebTransport goes there, the fallback stays on the page origin.
- */
-export function liveEndpoints(origin, host = {}) {
-  const base = new URL(origin);
-  const fallback = new URL(LIVE_PATH, base).href;
-  if (host.webtransportOrigin) return {endpoint: new URL(LIVE_PATH, host.webtransportOrigin).href, fallback};
-  if (!isLoopbackHttp(base) || !host.webtransportPort) return {endpoint: fallback, fallback};
-  // The local relay's TLS port listens on IPv4 loopback, and a browser
-  // resolves `localhost` to `::1` first without falling back for QUIC.
-  const hostname = base.hostname === 'localhost' ? '127.0.0.1' : base.hostname;
-  return {endpoint: new URL(LIVE_PATH, `https://${hostname}:${host.webtransportPort}`).href, fallback};
-}
+/** The most presence frames this page publishes a second: input arrives at
+ * display rate, and the members' interpolation only needs a steady stream. */
+export const PRESENCE_SEND_INTERVAL_MS = 50;
 
 /**
  * The live layer of one workspace — the interface the desktop mount consumes.
- * `peer` is the wasm `WasmPeer`, `runtime` the wasm module (live codec).
- * `participant` (`{label, color}`) is published with this device's
- * presence. With `agent`, the layer publishes as that agent of this device,
- * under its own namespace (`tilo_relay_protocol::web::agent_publisher`),
- * with an agent participant. The grant is asked for once `ready` resolves:
- * the workspace refuses it until it admitted the device.
+ * `peer` is the wasm `WasmPeer`. `participant` (`{kind, label, color,
+ * activity}`) is published with this device's presence.
  *
- * With each grant the person's layer tells the host which video codecs the
- * page decodes (`decodable`, `peer.legacyCodecs`), so the workspace's sessions
- * stream legacy windows in one this page plays.
+ * Presence rides the workspace's session: this page is one member device
+ * beside every other, and what it says of itself — its face, its pointer, its
+ * wave, who it follows, its shell — travels as the presence every device's
+ * does (`peer.announcePresence`, `peer.publishPresence`). What the members
+ * published since the last frame is taken on [`pump`]
+ * (`peer.takeLiveEvents`), and previews leave as live frames of the same
+ * session (`peer.publishPreview`).
  */
 export function createLiveLayer(peer, runtime, workspace, {
-  origin, endpoint = new URL(LIVE_PATH, origin).href, carriers, participant, agent, ready = Promise.resolve(),
-  watching = false,
-  decodable = probedCodecs,
+  participant, ready = Promise.resolve(), watching = false,
   now = () => performance.now(), wallNow = () => Date.now(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
-  random = Math.random,
 } = {}) {
   const remotes = new Map();
   const participants = new Map();
   const previews = new Map();
+  /** What each member last said of itself, merged: the presence frame its
+   * messages add up to. */
+  const said = new Map();
   const members = new Set();
-  const memberEpochs = new Map();
-  const watched = new Map(); // record key -> record
-  const subscriptions = new Map(); // `${publisher}\u0000${track}` -> cleanup
   const listeners = {presence: new Set(), preview: new Set(), member: new Set(), durable: new Set(), state: new Set(), publish: new Set(), agentActivity: new Set()};
   const emit = (kind, value) => { for (const listener of [...listeners[kind]]) { try { listener(value); } catch {} } };
   const on = kind => listener => { listeners[kind].add(listener); return () => listeners[kind].delete(listener); };
-  let session;
+  const encoder = new TextEncoder();
+  let publisherId = peer.deviceKey?.();
   let state = 'connecting';
-  let publisherId;
   let stopped = false;
-  let retry = 0;
-  let renewTimer;
   const previewSeq = new Map();
-  // A record's ops track is its digest, so the same record always names the
-  // same track. Previews ask per keystroke; remembering it keeps validation
-  // and the wasm call off that path.
-  const tracks = new Map();
-  const trackOf = record => {
-    const key = recordKey(record);
-    let track = tracks.get(key);
-    if (track === undefined) {
-      track = runtime.liveRecordTrack(JSON.stringify(record));
-      if (tracks.size >= MAX_REMEMBERED_TRACKS) tracks.delete(tracks.keys().next().value);
-      tracks.set(key, track);
-    }
-    return track;
-  };
 
-  const setState = next => { if (state !== next) { state = next; emit('state', {state}); } };
-  // A live frame leaves only sealed with the channel keys of the record it
-  // names; one this device cannot seal is dropped, never sent in the clear.
-  // Sealing and opening run in the session's order, so frames keep theirs.
-  const sealed = bytes => peer.sealLive(workspace, bytes).then(frame => frame ?? null, () => null);
-  const opened = (from, payload, handle) => {
-    const epoch = memberEpochs.get(from), current = session;
-    if (!epoch || !current || stopped) return;
-    peer.openLive(workspace, payload).then(frame => {
-      if (frame && !stopped && session === current && memberEpochs.get(from) === epoch) handle(frame);
-    }, () => {});
-  };
-  // A page that only watches receives the members' presence and previews
-  // and publishes none: the host grants it the live plane to receive only.
-  const publishSealed = (bytes, publish) => {
-    if (!session || watching) return false;
-    const current = session;
-    void sealed(bytes).then(frame => { if (frame && session === current) publish(current, frame); });
-    return true;
-  };
   const publisher = createPresencePublisher({
-    encode: value => runtime.encodeLivePresence(JSON.stringify(value)),
-    send: bytes => publishSealed(bytes, (current, frame) => current.publishPresence(frame)),
+    encode: value => encoder.encode(JSON.stringify(value)),
+    send: (bytes, value) => {
+      if (stopped || watching) return false;
+      try { peer.publishPresence(workspace, JSON.stringify(value)); } catch { return false; }
+      return true;
+    },
     now,
     wallNow,
+    setTimer,
+    clearTimer,
     onPublish: value => emit('publish', value),
+    minIntervalMs: PRESENCE_SEND_INTERVAL_MS,
   });
 
-  function onPresence(from, payload, receivedAtMs) {
-    opened(from, payload, frame => presenceOpened(from, frame, receivedAtMs));
-  }
-  function presenceOpened(from, payload, receivedAtMs) {
-    let decoded;
-    try { decoded = JSON.parse(runtime.decodeLiveFrame(payload)); } catch { return; }
-    if (decoded.kind !== 'presence') return;
-    let remote = remotes.get(from);
-    if (!remote) { remote = createRemotePresence(); remotes.set(from, remote); }
-    if (!remote.accept(decoded.frame, receivedAtMs)) return;
-    const {participant: named} = decoded.frame;
-    const renamed = named && participants.get(from)?.label !== named.label;
-    if (named) participants.set(from, named);
-    if (decoded.frame.focus) watchRecord(decoded.frame.focus);
-    emit('presence', {publisher: from, frame: decoded.frame, receivedAtMs});
+  const setState = next => { if (state !== next) { state = next; emit('state', {state}); } };
+
+  /** One message of `publisher`, merged into what it has said: a frame with a
+   * sequence of its own, so the receiver orders them. */
+  function heard(publisher, patch, receivedAtMs) {
+    let frame = said.get(publisher);
+    if (!frame) { frame = {seq: 0, sentAtMs: 0}; said.set(publisher, frame); }
+    frame.seq += 1;
+    frame.sentAtMs = patch.sentAtMs && patch.sentAtMs > 0 ? patch.sentAtMs : Math.round(wallNow());
+    delete patch.sentAtMs;
+    Object.assign(frame, patch);
+    let remote = remotes.get(publisher);
+    if (!remote) { remote = createRemotePresence(); remotes.set(publisher, remote); }
+    if (!remote.accept({...frame}, receivedAtMs)) return;
+    const named = frame.participant;
+    const renamed = named && participants.get(publisher)?.label !== named.label;
+    if (named) participants.set(publisher, named);
+    if (frame.focus) watchRecord(frame.focus);
+    emit('presence', {publisher, frame: {...frame}, receivedAtMs});
     // A member's name arrives with its presence, after the member itself.
-    if (renamed) emit('member', {publisher: from, active: true});
+    if (renamed) emit('member', {publisher, active: true});
     if (renamed && named.kind === 'agent') {
-      emit('agentActivity', {publisher: from, agentId: named.label, name: named.label, expired: false});
+      emit('agentActivity', {publisher, agentId: named.label, name: named.label, expired: false});
     }
   }
-  function onOps(publisherId, payload) {
-    opened(publisherId, payload, frame => opsOpened(publisherId, frame));
+  function member(publisher, active) {
+    if (active) {
+      if (members.has(publisher)) return;
+      members.add(publisher);
+    } else {
+      if (!members.delete(publisher)) return;
+      said.delete(publisher);
+      participants.delete(publisher);
+      remotes.delete(publisher);
+      previews.delete(publisher);
+    }
+    emit('member', {publisher, active});
   }
-  function opsOpened(publisherId, payload) {
-    let decoded;
-    try { decoded = JSON.parse(runtime.decodeLiveFrame(payload)); } catch { return; }
-    const perRecord = previews.get(publisherId) ?? new Map();
-    previews.set(publisherId, perRecord);
-    const key = recordKey(decoded.record);
-    if (decoded.kind === 'preview') {
+  const watched = new Map();
+  function watchRecord(record) {
+    watched.set(`${record.app}\u0000${record.record}`, record);
+  }
+  function preview(publisher, record, seq, ops) {
+    const perRecord = previews.get(publisher) ?? new Map();
+    previews.set(publisher, perRecord);
+    const key = `${record.app}\u0000${record.record}`;
+    if (ops) {
       // A keystroke arrives as its own preview op, so a record's list grows
       // in place; each frame reads its tail and drops what it applied
       // (`appliedPreview`). Copying the whole list per op was quadratic, and
-      // a peer that typed without stopping grew it without bound.
+      // a member that typed without stopping grew it without bound.
       const pending = perRecord.get(key) ?? [];
       if (!perRecord.has(key)) perRecord.set(key, pending);
-      for (const op of decoded.ops) pending.push(op);
+      for (const op of ops) pending.push(op);
       if (pending.length > MAX_PENDING_PREVIEWS) pending.splice(0, pending.length - MAX_PENDING_PREVIEWS);
-      emit('preview', {publisher: publisherId, record: decoded.record, seq: decoded.seq, ops: decoded.ops});
-    } else if (decoded.kind === 'previewEnd') {
-      perRecord.delete(key);
-      emit('preview', {publisher: publisherId, record: decoded.record, seq: null, ops: []});
-    }
-  }
-  // Keep `key` subscribed while its member is present: an ended
-  // subscription (the track not announced yet, a relay hiccup) is retried
-  // with backoff until the member leaves or the session changes.
-  function keepSubscribed(publisherId, key, open, attempt = 0, wanted = () => true) {
-    const current = session;
-    const epoch = memberEpochs.get(publisherId);
-    if (stopped || !current || subscriptions.has(key) || !members.has(publisherId) || !wanted()) return;
-    const cleanup = open(current, () => {
-      if (subscriptions.get(key) !== cleanup) return;
-      subscriptions.delete(key);
-      if (stopped || session !== current || memberEpochs.get(publisherId) !== epoch) return;
-      const delay = SUBSCRIBE_RETRY_MS[Math.min(attempt, SUBSCRIBE_RETRY_MS.length - 1)];
-      setTimer(() => {
-        if (session === current && memberEpochs.get(publisherId) === epoch) keepSubscribed(publisherId, key, open, attempt + 1, wanted);
-      }, delay);
-    });
-    subscriptions.set(key, cleanup);
-  }
-  function subscribeRecord(publisherId, record) {
-    const track = trackOf(record);
-    const epoch = memberEpochs.get(publisherId);
-    keepSubscribed(publisherId, `${publisherId}\u0000${track}`,
-      (current, ended) => current.subscribeOps(publisherId, track, payload => {
-        if (memberEpochs.get(publisherId) === epoch) onOps(publisherId, payload);
-      }, ended));
-  }
-  function onMember(publisherId, active) {
-    if (active) {
-      if (!members.has(publisherId)) memberEpochs.set(publisherId, Symbol());
-      const epoch = memberEpochs.get(publisherId);
-      members.add(publisherId);
-      keepSubscribed(publisherId, `${publisherId}\u0000presence`,
-        (current, ended) => current.subscribePresence(publisherId, (payload, at) => {
-          if (memberEpochs.get(publisherId) === epoch) onPresence(publisherId, payload, at);
-        }, ended));
-      for (const record of watched.values()) subscribeRecord(publisherId, record);
-      for (const track of rawWatched.keys()) subscribeFrames(publisherId, track);
-      for (const key of memberFrames.keys()) {
-        const [member, track] = key.split('\u0000');
-        if (member === publisherId) subscribeFrames(publisherId, track);
-      }
+      emit('preview', {publisher, record, seq, ops});
     } else {
-      members.delete(publisherId);
-      memberEpochs.delete(publisherId);
-      participants.delete(publisherId);
-      remotes.delete(publisherId);
-      previews.delete(publisherId);
-      for (const [key, cleanup] of subscriptions) {
-        if (key.startsWith(`${publisherId}\u0000`)) { try { cleanup(); } catch {} subscriptions.delete(key); }
-      }
+      perRecord.delete(key);
+      if (!perRecord.size) previews.delete(publisher);
+      emit('preview', {publisher, record, seq: null, ops: []});
     }
-    emit('member', {publisher: publisherId, active});
-  }
-  function watchRecord(record) {
-    const key = recordKey(record);
-    if (watched.has(key)) return;
-    watched.set(key, {app: record.app, record: record.record});
-    for (const publisherId of members) subscribeRecord(publisherId, record);
-  }
-  // Raw frames of a record (not live codec frames: the host's own tracks,
-  // such as legacy windows), from every member or from one.
-  const rawWatched = new Map(); // track -> Set of onFrame(publisher, bytes)
-  const memberFrames = new Map(); // `${publisher}\u0000${track}` -> Set of onFrame(bytes)
-  function deliverFrames(publisherId, track, payload) {
-    for (const onFrame of [...(rawWatched.get(track) ?? [])]) { try { onFrame(publisherId, payload); } catch {} }
-    for (const onFrame of [...(memberFrames.get(`${publisherId}\u0000${track}`) ?? [])]) { try { onFrame(payload); } catch {} }
-  }
-  function subscribeFrames(publisherId, track) {
-    keepSubscribed(publisherId, `${publisherId}\u0000raw\u0000${track}`,
-      (current, ended) => current.subscribeOps(publisherId, track, payload => deliverFrames(publisherId, track, payload), ended),
-      0, () => Boolean(rawWatched.get(track)?.size || memberFrames.get(`${publisherId}\u0000${track}`)?.size));
-  }
-  function releaseFrames(publisherId, track) {
-    if (rawWatched.get(track)?.size || memberFrames.get(`${publisherId}\u0000${track}`)?.size) return;
-    const key = `${publisherId}\u0000raw\u0000${track}`;
-    const cleanup = subscriptions.get(key);
-    subscriptions.delete(key);
-    try { cleanup?.(); } catch {}
-  }
-
-  async function connect() {
-    if (stopped) return;
-    setState(retry === 0 ? 'connecting' : 'reconnecting');
-    try {
-      const grant = JSON.parse(agent === undefined ? await peer.liveGrant(workspace) : await peer.liveGrant(workspace, agent));
-      const opened = await carriers.connect({
-        endpoint,
-        authorization: unhex(grant.token),
-        namespace: [LIVE_ROOT, grant.workspace, grant.publisher],
-        directions: {publish: !watching, subscribe: true},
-      });
-      if (stopped) { opened.close(); return; }
-      session = opened;
-      publisherId = grant.publisher;
-      retry = 0;
-      setState('live');
-      advertiseCodecs();
-      session.watchMembers({onMember: (from, active) => {
-        if (!stopped && session === opened) onMember(from, active);
-      }});
-      if (!watching) {
-        if (participant) publisher.update({participant: {kind: agent === undefined ? 'person' : 'agent', activity: null, ...participant}});
-        publisher.start();
-      }
-      const renewIn = Math.max(1000, grant.expiresAtNs / 1e6 - wallNow() - GRANT_RENEW_MS);
-      renewTimer = setTimer(() => rotate(), renewIn);
-      Promise.resolve(session.closed).then(() => { if (session === opened) lost(); }, () => { if (session === opened) lost(); });
-    } catch (error) {
-      if (stopped) return;
-      setState('unavailable');
-      const delay = backoffDelay(retry, random, LIVE_RETRY);
-      retry += 1;
-      renewTimer = setTimer(() => connect(), delay);
-    }
-  }
-  /** Tell the host what this page decodes; while it is unreachable it
-   * counts the page as H.264 only. */
-  function advertiseCodecs() {
-    if (agent !== undefined) return;
-    Promise.resolve().then(decodable)
-      .then(codecs => stopped ? false : peer.legacyCodecs(workspace, JSON.stringify(codecs)))
-      .catch(() => {});
-  }
-  function dropSession() {
-    publisher.pause();
-    for (const cleanup of subscriptions.values()) { try { cleanup(); } catch {} }
-    subscriptions.clear();
-    for (const publisherId of [...members]) onMember(publisherId, false);
-    const previous = session;
-    session = undefined;
-    try { previous?.close(); } catch {}
-  }
-  function lost() {
-    if (stopped) return;
-    if (renewTimer !== undefined) clearTimer(renewTimer);
-    dropSession();
-    retry = Math.max(retry, 1);
-    renewTimer = setTimer(() => connect(), backoffDelay(0, random, LIVE_RETRY));
-  }
-  function rotate() {
-    if (stopped) return;
-    dropSession();
-    connect();
   }
 
   function durableChanged(record) {
-    for (const [publisherId, perRecord] of previews) {
-      perRecord.delete(recordKey(record));
-      if (!perRecord.size) previews.delete(publisherId);
+    for (const [publisher, perRecord] of previews) {
+      perRecord.delete(`${record.app}\u0000${record.record}`);
+      if (!perRecord.size) previews.delete(publisher);
     }
     for (const remote of remotes.values()) remote.snap();
     emit('durable', {record});
   }
 
-  ready.then(() => connect(), () => { if (!stopped) setState('unavailable'); });
+  /** Take what the workspace said since the last call: the members'
+   * presence and their ephemeral previews. */
+  function pump(events = JSON.parse(peer.takeLiveEvents())) {
+    const nowMs = Math.round(wallNow());
+    for (const event of events) {
+      switch (event.kind) {
+        case 'durable': durableChanged(event.record); break;
+        case 'arrived': member(event.publisher, true); break;
+        case 'left': member(event.publisher, false); break;
+        case 'shell': member(event.publisher, true); heard(event.publisher, {...event.frame}, nowMs); break;
+        case 'pointer': member(event.publisher, true); heard(event.publisher, {pointer: {tile: {tab: event.tab}, at: event.at}, sentAtMs: event.sentAtMs}, nowMs); break;
+        case 'pointerLeft': heard(event.publisher, {pointer: null}, nowMs); break;
+        case 'wave': heard(event.publisher, {wave: event.wave}, nowMs); break;
+        case 'following': heard(event.publisher, {following: event.following}, nowMs); break;
+        case 'preview': member(event.publisher, true); preview(event.publisher, event.record, event.seq, event.ops); break;
+        case 'previewEnd': preview(event.publisher, event.record, null, null); break;
+        default: break;
+      }
+    }
+  }
 
-  const isAgent = from => participants.get(from)?.kind === 'agent';
+  const isAgent = publisher => participants.get(publisher)?.kind === 'agent';
+
+  function start() {
+    if (stopped) return;
+    publisherId = peer.deviceKey?.() ?? publisherId;
+    if (watching) {
+      setState('live');
+      return;
+    }
+    if (participant) publisher.update({participant: {kind: 'person', activity: null, ...participant}});
+    try { peer.announcePresence(workspace, true); } catch {}
+    publisher.start();
+    setState('live');
+  }
+
+  ready.then(() => start(), () => { if (!stopped) setState('unavailable'); });
 
   return {
     workspace,
@@ -550,80 +396,49 @@ export function createLiveLayer(peer, runtime, workspace, {
     /** This layer's publisher in the workspace (the device, or its agent), once live. */
     get publisherId() { return publisherId; },
     get memberCount() { return members.size; },
-    /** The agent this layer publishes as, or `undefined` for the device. */
-    agent,
     /** Merge presence fields (`null` clears): focus, pointer, selection, drag. */
-    publishPresence: partial => {
-      // Who the layer publishes as from now on: a renewed or reconnected
-      // session announces the participant as it is, not as it started.
+    publishPresence(partial) {
+      // Who the layer publishes as from now on: the participant is announced
+      // as it is, not as it started.
       if (partial.participant) participant = partial.participant;
+      if (partial.pointer === null) {
+        // The pointer left the workspace's tiles: the members take it off
+        // their screens rather than wait for it to age out.
+        publisher.update({pointer: null});
+        if (!watching && !stopped) { try { peer.pointerLeft(workspace); } catch {} }
+        return;
+      }
       publisher.update(partial);
     },
     /** Ephemeral text preview operations for a record. */
     publishPreview(record, ops) {
-      if (!session) return false;
-      const key = recordKey(record);
+      if (stopped || watching) return false;
+      const key = `${record.app}\u0000${record.record}`;
       const seq = (previewSeq.get(key) ?? 0) + 1;
       previewSeq.set(key, seq);
-      const track = trackOf(record);
-      return publishSealed(runtime.encodeLivePreview(JSON.stringify(record), BigInt(seq), JSON.stringify(ops)),
-        (current, frame) => current.publishOps(track, frame));
+      peer.publishPreview(workspace, JSON.stringify(record), BigInt(seq), JSON.stringify(ops)).catch(() => {});
+      return true;
     },
     endPreview(record) {
-      if (!session || watching) return;
-      const track = trackOf(record);
-      const current = session;
-      void sealed(runtime.encodeLivePreviewEnd(JSON.stringify(record))).then(frame => {
-        if (session !== current) return;
-        if (frame) current.publishOps(track, frame);
-        current.closeOps(track);
-      });
-      previewSeq.delete(recordKey(record));
+      if (stopped || watching) return;
+      previewSeq.delete(`${record.app}\u0000${record.record}`);
+      peer.endPreview(workspace, JSON.stringify(record)).catch(() => {});
     },
     /** Receive previews for a record from every member (also once a
-     * member's presence focuses it). */
+     * member's presence focuses it). Every preview of the workspace reaches
+     * the layer already, so this only names the record watched. */
     watchRecord(record) {
       watchRecord(record);
-      return () => watched.delete(recordKey(record));
-    },
-    /** Raw frames of `record` from every member, now and joining:
-     * `onFrame(publisher, bytes)`. For the host's own record tracks (legacy
-     * windows), which are not live codec frames. Returns a stop function. */
-    watchRecordFrames(record, onFrame) {
-      const track = trackOf(record);
-      const handlers = rawWatched.get(track) ?? new Set();
-      rawWatched.set(track, handlers);
-      handlers.add(onFrame);
-      for (const publisherId of members) subscribeFrames(publisherId, track);
-      return () => {
-        handlers.delete(onFrame);
-        if (!handlers.size) rawWatched.delete(track);
-        for (const publisherId of members) releaseFrames(publisherId, track);
-      };
-    },
-    /** Raw frames of `record` from the member `publisher` only, while it is
-     * present: `onFrame(bytes)`. Returns a stop function. */
-    subscribeMemberRecord(publisher, record, onFrame) {
-      const track = trackOf(record);
-      const key = `${publisher}\u0000${track}`;
-      const handlers = memberFrames.get(key) ?? new Set();
-      memberFrames.set(key, handlers);
-      handlers.add(onFrame);
-      if (members.has(publisher)) subscribeFrames(publisher, track);
-      return () => {
-        handlers.delete(onFrame);
-        if (!handlers.size) memberFrames.delete(key);
-        releaseFrames(publisher, track);
-      };
+      return () => watched.delete(`${record.app}\u0000${record.record}`);
     },
     /** A durable change for the record landed: drop previews and snap drags. */
     durableChanged,
     /** Per-frame interpolated remote state on the `performance.now()` timeline. */
     remoteState(nowMs = now()) {
-      return [...remotes].map(([publisherId, remote]) => ({
-        publisher: publisherId,
+      return [...remotes].map(([publisher, remote]) => ({
+        publisher,
         ...remote.sample(nowMs),
-        previews: Object.fromEntries(previews.get(publisherId) ?? []),
+        previews: Object.fromEntries(previews.get(publisher) ?? []),
         interpolationDelayMs: remote.interpolationDelayMs(),
       })).filter(value => value.seq !== undefined);
     },
@@ -648,21 +463,16 @@ export function createLiveLayer(peer, runtime, workspace, {
     onPublish: on('publish'),
     /** An agent member named itself (`{publisher, agentId, name, expired}`). */
     onAgentActivity: on('agentActivity'),
-    stats: () => ({state, members: members.size, agent: agent ?? null, carrier: carriers.state?.().last ?? null}),
-    /** Apply durable events from the session (called on every peer change);
-     * pass `events` when several layers share one peer. */
-    pump(events = JSON.parse(peer.takeDurableEvents())) {
-      for (const event of events) {
-        if (event.kind === 'durable') durableChanged(event.record);
-      }
-    },
+    stats: () => ({state, members: members.size}),
+    /** Apply the session's live and durable events (called on every peer
+     * change); pass `events` when several layers share one peer. */
+    pump,
     stop() {
       stopped = true;
-      if (renewTimer !== undefined) clearTimer(renewTimer);
       publisher.stop();
-      dropSession();
-      rawWatched.clear();
-      memberFrames.clear();
+      if (!watching) { try { peer.announcePresence(workspace, false); } catch {} }
+      for (const publisher of [...members]) member(publisher, false);
+      said.clear();
       setState('closed');
     },
   };
@@ -689,7 +499,6 @@ export function createLiveLayer(peer, runtime, workspace, {
  * @param options.runtime        the wasm module (`certifyDevice`, `WasmPeer`, live codec);
  *                               defaults to the page host's (`desktop`'s)
  * @param options.fetch          defaults to `globalThis.fetch`
- * @param options.liveCarriers   defaults to WebTransport with HTTPS fallback
  * @param options.desktop        `{mountDesktop(target, options)}`; defaults to `host.mjs`
  * @param options.live           `false`: join no live plane
  * @param options.onPairingCode  shown while an approver decides
@@ -753,7 +562,7 @@ export async function withCustody(custody, connecting, signal) {
 async function connect({
   origin, userPublicKey, label = 'Browser', workspace, custody, store, runtime, identity, deviceCertificate,
   profile, device, displayName = '', vaultStorage,
-  fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
+  fetch: fetcher, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
   watching = false, background = false, workspaceName,
 }) {
@@ -798,29 +607,7 @@ async function connect({
   // desktop settles everyone here over the whole workspace instead, so people
   // here together never share one.
   const ownColor = () => runtime.presenceColor(userPublicKey);
-  const carriersFor = info => {
-    if (liveCarriers) return liveCarriers;
-    const fallbackEndpoint = liveEndpoints(origin, info).fallback;
-    const fallback = createFallbackTransport({fetch: fetcher});
-    return createLiveCarriers({
-      fetch: fetcher,
-      // A host behind an HTTPS-only proxy without a direct origin announces
-      // no WebTransport: go straight to the HTTPS stream rather than fail a
-      // handshake first.
-      ...(info.webtransportPort || info.webtransportOrigin ? {} : {hasWebTransport: () => false}),
-      // A separate direct origin is the one most likely blocked (UDP
-      // filtered on the visitor's network): give up on it sooner.
-      budgetMs: info.webtransportOrigin ? DIRECT_WEBTRANSPORT_BUDGET_MS : undefined,
-      webtransport: createLiveTransport({
-        serverCertificateHashes: info.certificateSha256
-          ? [{algorithm: 'sha-256', value: unhex(info.certificateSha256)}]
-          : undefined,
-      }),
-      fallback: {connect: options => fallback.connect({...options, endpoint: fallbackEndpoint})},
-    });
-  };
   let host = JSON.parse(await runtime.hostInfo(post));
-  let carriers = carriersFor(host);
   const listeners = new Set();
   /** Called after each published status, so a surface follows the session
    * (the transport, the admission, the store) and not only its mount. */
@@ -828,9 +615,6 @@ async function connect({
   const pendingRecordWaits = new Set();
   let peer;
   let live;
-  // Agents this page runs publish under their own namespaces: one layer each.
-  const agentLayers = new Map();
-  const layers = () => [...(live ? [live] : []), ...agentLayers.values()];
   let admitted;
   let ready;
   const resetReady = () => { ready = new Promise(resolve => { admitted = resolve; }); };
@@ -869,8 +653,10 @@ async function connect({
     snapshot = JSON.parse(peer.snapshot());
     if (snapshot.phase === 'ready') admitted();
     if (live) {
-      const events = JSON.parse(peer.takeDurableEvents());
-      for (const layer of layers()) layer.pump(events);
+      // The session's next frame carries both: the durable changes this page
+      // reads, and what the members said (presence, pointers, previews).
+      live.pump(JSON.parse(peer.takeDurableEvents()));
+      live.pump(JSON.parse(peer.takeLiveEvents()));
     }
     voice?.pump(peer.takeVoiceEvents?.() ?? '[]');
     remoteEvents = peer.takeRemoteActionEvents();
@@ -1057,7 +843,7 @@ async function connect({
       // there under the workspace's name.
       peer.joinWorkspace(workspace, workspaceName);
       if (liveEnabled) {
-        live = createLiveLayer(peer, runtime, workspace, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, watching, participant: {
+        live = createLiveLayer(peer, runtime, workspace, {ready, watching, participant: {
           kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity,
         }});
       }
@@ -1074,28 +860,15 @@ async function connect({
     }
     publish();
   }
-  /** The live layer of agent `agent` this page runs, created on first use. */
-  function agentLive(agent) {
-    let layer = agentLayers.get(agent);
-    if (!layer && live) {
-      layer = createLiveLayer(peer, runtime, workspace, {
-        origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, agent, watching,
-        participant: {label: agent.slice(0, 32), color: runtime.presenceColor(`agent:${agent}`)},
-      });
-      agentLayers.set(agent, layer);
-    }
-    return layer;
-  }
   function stopLive() {
-    for (const layer of layers()) layer.stop();
-    agentLayers.clear();
+    live?.stop();
   }
   // Every mount publishes through its own view of a layer, so the mount
   // acted in last speaks for the person (or the agent), never an idle one.
   const speakers = createSpeakers();
   function mountLive(target, options) {
     const speaker = speakers.mount();
-    const layer = () => (typeof options.agent === 'string' && options.agent ? agentLive(options.agent) : live);
+    const layer = () => live;
     const input = new AbortController();
     for (const type of ['pointerdown', 'keydown', 'focusin']) {
       target?.addEventListener?.(type, () => { const current = layer(); if (current) speaker.claim(current); },
@@ -1209,13 +982,6 @@ async function connect({
     get live() { return live; },
     /** The workspace's agents (`agents.mjs`), or `undefined` without a workspace. */
     get agents() { return agents; },
-    /** Send input `events` for the legacy window `surface` (16 hex) that
-     * `publisher` (64 hex) streams in the workspace; resolves whether the host
-     * took them. With no events: whether this device may drive it. */
-    legacyInput(publisher, surface, events) {
-      if (!workspace || !peer) return Promise.resolve(false);
-      return peer.legacyInput(workspace, publisher, surface, JSON.stringify(events));
-    },
     /** This person as their presence names them: `{label, color}`. */
     get participant() {
       return {label: (displayName || label).slice(0, 32), color: ownColor()};
@@ -1405,10 +1171,6 @@ async function connect({
         signal?.addEventListener('abort', abort, {once: true});
       });
     },
-    /** The live layer of agent `agent` this page runs (created on first use;
-     * a mount with `agent` publishes through it), or `undefined` without a
-     * live plane. */
-    agentLive,
     /** Resolves once every published change is durable on the host and the
      * peer's own state is durable in the profile. */
     flush: async () => { await peer.flush(); await storage?.flush(); },
@@ -1448,7 +1210,6 @@ async function connect({
         resetReady();
         await store.delete(CERTIFICATE);
         host = answering;
-        carriers = carriersFor(host);
         await start();
         return {operationId: 'reauthenticate'};
       }

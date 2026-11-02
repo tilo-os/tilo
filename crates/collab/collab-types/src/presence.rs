@@ -8,6 +8,7 @@
 mod hue;
 mod key;
 mod payload;
+mod shell;
 
 pub use hue::{
     PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PresenceHue, assign_peer_colors, identity_rgb,
@@ -18,3 +19,4 @@ pub use key::{
     ViewRect, ViewSubset,
 };
 pub use payload::{Availability, Collaborator, IDLE_AFTER, PresencePayload};
+pub use shell::{ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow};

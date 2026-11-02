@@ -392,61 +392,9 @@ pub(crate) struct Shared {
     /// An application finished loading (or failed to) since the mount last
     /// looked: its waiting tabs are built again.
     arrived: Rc<Cell<bool>>,
-    /// The windows showing another member's legacy windows, by tab: the
-    /// layout's tab a stream names, or a window of its own.
-    peer_windows: Rc<RefCell<HashMap<TabId, PeerWindow>>>,
-    /// The legacy windows other members stream, as the page last listed
-    /// them: shown again whenever the layout changes, so a stream whose tab
-    /// arrives after it moves into that tab.
-    wanted_peer_windows: Rc<RefCell<Vec<PeerWindow>>>,
-    /// The layout changed since the streams were last placed in it.
-    peer_windows_due: Rc<Cell<bool>>,
-    /// Legacy windows asked for and not opened yet, by key.
-    pending_peer_windows: Rc<RefCell<HashMap<String, PeerWindow>>>,
-    /// Legacy windows the person closed while they still streamed: not
-    /// opened again, and reported once so the page closes them at their
-    /// source.
-    dismissed_peer_windows: Rc<RefCell<std::collections::HashSet<String>>>,
-    /// Of those, the ones not reported yet.
-    newly_dismissed: Rc<RefCell<Vec<String>>>,
-    /// The applications the node beside the host runs that this desktop
-    /// does not (legacy ones, Tilo apps that need a host), which the person
-    /// can open there and see here as legacy windows.
-    node_apps: Rc<RefCell<Vec<NodeApp>>>,
-    /// Node applications the person asked to open, by id, for the page to
-    /// ask the node.
-    node_app_requests: Rc<RefCell<Vec<String>>>,
     /// Actions of apps the person chose in the desktop's own chrome (a
     /// launchpad card), for the desktop's session to deliver as theirs.
     app_actions: Rc<RefCell<Vec<tilo_desktop::launchpad::LaunchpadAppAction>>>,
-    /// Pages a host streams as display lists (`tilo-paint`), by window key:
-    /// drawn here by the toolkit instead of decoded as video.
-    paint_pages: Rc<RefCell<HashMap<String, Arc<tilo_browser_peer::remote_page::RemotePage>>>>,
-}
-
-/// Launch name of an application the node runs.
-pub(crate) const NODE_APP_LAUNCH: &str = "tilo.node-app:";
-
-/// What search says of an application the node runs.
-const NODE_APP_DESCRIPTION: &str = "Runs on the node";
-
-/// An application on the node: its launch id there, its name, and for a
-/// Tilo application its package id.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
-pub(crate) struct NodeApp {
-    pub id: String,
-    pub title: String,
-    #[serde(default)]
-    pub app: Option<String>,
-}
-
-pub(crate) use crate::peer_windows::{PEER_WINDOW_LAUNCH, PeerWindow, PeerWindowChanges};
-
-impl PeerWindow {
-    /// A page this desktop draws itself rather than a video it is shown.
-    fn is_paint(&self) -> bool {
-        self.codec == tilo_relay_protocol::legacy_window::PAINT
-    }
 }
 
 impl Shared {
@@ -607,158 +555,6 @@ impl Shared {
         std::mem::take(&mut *self.wakers.lock_recover())
     }
 
-    /// The page behind a painted window, created on first use.
-    pub fn paint_page(&self, key: &str) -> Arc<tilo_browser_peer::remote_page::RemotePage> {
-        Arc::clone(
-            self.paint_pages
-                .borrow_mut()
-                .entry(key.to_owned())
-                .or_insert_with(tilo_browser_peer::remote_page::RemotePage::new),
-        )
-    }
-
-    /// Input on painted windows since the last call, by window key.
-    pub fn take_paint_input(
-        &self,
-    ) -> Vec<(String, Vec<tilo_relay_protocol::legacy_window::InputEvent>)> {
-        self.paint_pages
-            .borrow()
-            .iter()
-            .map(|(key, page)| (key.clone(), page.take_input()))
-            .filter(|(_, events)| !events.is_empty())
-            .collect()
-    }
-
-    /// The legacy window `tab` shows, if it shows one.
-    pub fn peer_window_of(&self, tab: TabId) -> Option<String> {
-        self.peer_windows
-            .borrow()
-            .get(&tab)
-            .map(|window| window.key.clone())
-    }
-
-    /// The tab showing the legacy window `key`, if one does.
-    pub fn peer_window_tab(&self, key: &str) -> Option<TabId> {
-        self.peer_windows
-            .borrow()
-            .iter()
-            .find_map(|(tab, window)| (window.key == key).then_some(*tab))
-    }
-
-    /// Show the legacy windows the page lists, once they are placed
-    /// ([`Self::reconcile_peer_windows`]).
-    pub fn want_peer_windows(&self, wanted: Vec<PeerWindow>) {
-        *self.wanted_peer_windows.borrow_mut() = wanted;
-        self.peer_windows_due.set(true);
-    }
-
-    /// Whether the streams are to be placed again since the last call.
-    pub fn take_peer_windows_due(&self) -> bool {
-        self.peer_windows_due.replace(false)
-    }
-
-    /// The tabs of windows that show a stream on their own, outside the
-    /// layout: this desktop's alone.
-    pub fn own_peer_window_tabs(&self) -> Vec<TabId> {
-        self.peer_windows
-            .borrow()
-            .iter()
-            .filter(|(_, window)| !window.placed)
-            .map(|(tab, _)| *tab)
-            .collect()
-    }
-
-    /// Reconcile the windows showing legacy windows with the ones the page
-    /// lists ([`Self::want_peer_windows`]) and the person has not closed
-    /// ([`crate::peer_windows::place`]). Windows no longer wanted close (or,
-    /// restored from a saved desktop that streamed them before, were never
-    /// this page's).
-    pub fn reconcile_peer_windows(
-        &self,
-        tree: &tilo_desktop_model::DesktopTree,
-    ) -> PeerWindowChanges {
-        let live: std::collections::HashSet<_> = tree
-            .workspaces
-            .iter()
-            .flat_map(|w| &w.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| tab.id)
-            .collect();
-        let mut open = self.peer_windows.borrow_mut();
-        self.note_dismissed(&mut open, &live);
-        let wanted = self.wanted_peer_windows.borrow().clone();
-        let mut dismissed = self.dismissed_peer_windows.borrow_mut();
-        dismissed.retain(|key| wanted.iter().any(|window| window.key == *key));
-        // A desktop that keeps its own layout has none of the workspace's tabs:
-        // each window it is streamed shows on its own.
-        let own_layout = self.own_layout.get();
-        let wanted: Vec<PeerWindow> = wanted
-            .into_iter()
-            .filter(|window| !dismissed.contains(&window.key))
-            .map(|mut window| {
-                if own_layout {
-                    window.tab.clear();
-                }
-                window
-            })
-            .collect();
-        drop(dismissed);
-        // A page no longer shared stops being kept.
-        self.paint_pages.borrow_mut().retain(|key, _| {
-            wanted
-                .iter()
-                .any(|window| window.key == *key && window.is_paint())
-        });
-        let (changes, pending) = crate::peer_windows::place(tree, &mut open, wanted);
-        *self.pending_peer_windows.borrow_mut() = pending
-            .into_iter()
-            .map(|window| (window.key.clone(), window))
-            .collect();
-        changes
-    }
-
-    /// The applications the node runs, as the page listed them, but for
-    /// the Tilo applications this desktop opens itself.
-    pub fn set_node_apps(&self, mut apps: Vec<NodeApp>) {
-        apps.retain(|node| {
-            node.app
-                .as_deref()
-                .is_none_or(|package| known_application(package).is_none())
-        });
-        *self.node_apps.borrow_mut() = apps;
-    }
-
-    /// The search entries of the applications the node runs. An app neither
-    /// this page nor the node can run is not offered at all.
-    fn node_search_entries(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
-        self.node_apps
-            .borrow()
-            .iter()
-            .map(|node| tilo_desktop_search::providers::AppEntry {
-                id: format!("{NODE_APP_LAUNCH}{}", node.id),
-                title: node.title.clone(),
-                category: node
-                    .app
-                    .as_deref()
-                    .and_then(tilo_desktop_search::availability::category_for)
-                    .map(str::to_owned),
-                description: Some(NODE_APP_DESCRIPTION.into()),
-            })
-            .collect()
-    }
-
-    /// The node applications the person asked to open since the last call.
-    pub fn take_node_app_requests(&self) -> Vec<String> {
-        std::mem::take(&mut *self.node_app_requests.borrow_mut())
-    }
-
-    /// Whether [`Self::take_node_app_requests`] has anything to hand out: the
-    /// page asks before it drains, so an idle desktop costs no call.
-    pub fn node_app_requests_pending(&self) -> bool {
-        !self.node_app_requests.borrow().is_empty()
-    }
-
     /// Have the desktop's session deliver `action` to its app as the
     /// person's, opening the app first, on the next frame.
     pub fn ask_app_action(&self, action: tilo_desktop::launchpad::LaunchpadAppAction) {
@@ -771,25 +567,17 @@ impl Shared {
         std::mem::take(&mut *self.app_actions.borrow_mut())
     }
 
-    /// The applications this desktop opens: the bundle's, then the node's.
+    /// The applications this desktop opens: the bundle's.
     pub fn catalogue(&self) -> Vec<Application> {
         catalogue()
-            .into_iter()
-            .chain(self.node_apps.borrow().iter().map(|app| Application {
-                id: format!("{NODE_APP_LAUNCH}{}", app.id),
-                label: app.title.clone(),
-            }))
-            .collect()
     }
 
     /// Who holds each window of `tree` this desktop's person `me` may not
     /// close or move, named as `person` (by user root) names people here:
     /// the windows the desktop's policy keeps for whoever opened them
     /// ([`tilo_desktop_model::commands::policy::may_rearrange_window`]),
-    /// everyone's but their own unless they moderate the workspace. Another
-    /// member's legacy windows that only this page shows, in windows of
-    /// their own, are its own to close. A window nobody opened is the
-    /// workspace's, named `workspace`.
+    /// everyone's but their own unless they moderate the workspace. A
+    /// window nobody opened is the workspace's, named `workspace`.
     pub fn holders(
         &self,
         tree: &DesktopTree,
@@ -803,13 +591,11 @@ impl Shared {
         let members = self.members.borrow();
         let standing = self.standing_of(me, members.as_ref());
         let authors = self.authors.borrow();
-        let local = self.peer_windows.borrow();
         tree.workspaces
             .iter()
             .flat_map(|w| &w.strips)
             .flat_map(|s| &s.window_groups)
             .flat_map(|g| &g.tabs)
-            .filter(|tab| local.get(&tab.id).is_none_or(|window| window.placed))
             .filter(|tab| {
                 tilo_desktop_model::commands::policy::may_rearrange_window(
                     &standing, &authors, tab.id,
@@ -824,64 +610,6 @@ impl Shared {
                 (tab.id, ui::widget::TabHolder { name, rgb })
             })
             .collect()
-    }
-
-    /// The layout was replaced by the workspace's (`before` and `after` its
-    /// tabs): a layout tab showing a stream that another device closed or
-    /// moved away stops showing it, which is not this person closing the
-    /// window. The streams are placed again in the new layout.
-    pub fn layout_replaced(
-        &self,
-        before: &std::collections::HashSet<TabId>,
-        after: &std::collections::HashSet<TabId>,
-    ) {
-        self.peer_windows
-            .borrow_mut()
-            .retain(|tab, window| !window.placed || !before.contains(tab) || after.contains(tab));
-        self.peer_windows_due.set(true);
-    }
-
-    /// Forget the legacy window `tab` showed.
-    pub fn closed_peer_window(&self, tab: TabId) {
-        self.peer_windows.borrow_mut().remove(&tab);
-    }
-
-    /// Move the windows whose tabs are gone from `live` (the person closed
-    /// them) to the dismissed ones.
-    fn note_dismissed(
-        &self,
-        open: &mut HashMap<TabId, PeerWindow>,
-        live: &std::collections::HashSet<TabId>,
-    ) {
-        let mut dismissed = self.dismissed_peer_windows.borrow_mut();
-        let mut newly = self.newly_dismissed.borrow_mut();
-        open.retain(|tab, window| {
-            if live.contains(tab) {
-                return true;
-            }
-            if dismissed.insert(window.key.clone()) {
-                newly.push(window.key.clone());
-            }
-            false
-        });
-    }
-
-    /// The legacy windows the person closed since the last call, by key:
-    /// the page asks their sources to close them.
-    pub fn take_dismissed_peer_windows(
-        &self,
-        tree: &tilo_desktop_model::DesktopTree,
-    ) -> Vec<String> {
-        let live: std::collections::HashSet<_> = tree
-            .workspaces
-            .iter()
-            .flat_map(|w| &w.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| tab.id)
-            .collect();
-        self.note_dismissed(&mut self.peer_windows.borrow_mut(), &live);
-        std::mem::take(&mut *self.newly_dismissed.borrow_mut())
     }
 
     pub fn bound_records(&self) -> Vec<(TabId, RecordCheckout)> {
@@ -1080,17 +808,11 @@ impl Tiles {
         if let TileContent::PeerWindow { label, .. } | TileContent::HostedWindow { label, .. } =
             &tab.tile
         {
-            // The page draws the stream over this window's content.
+            // Another device's window: drawn there, not in a browser.
             let label = if label.is_empty() { &tab.title } else { label };
-            return Err(Unready::Notice(
-                if self.shared.peer_windows.borrow().contains_key(&tab.id) {
-                    format!("Connecting to {label}…")
-                } else if matches!(tab.tile, TileContent::HostedWindow { .. }) {
-                    format!("{label} is not shared with this browser")
-                } else {
-                    format!("{label} is no longer shared")
-                },
-            ));
+            return Err(Unready::Notice(format!(
+                "{label} is not shown in a browser"
+            )));
         }
         let TileContent::LocalApp { app_id, .. } = &tab.tile else {
             return Err(Unready::Notice(
@@ -1438,20 +1160,6 @@ impl TileSource for Tiles {
         {
             return TileHost::new(notice);
         }
-        // A painted page is a window this desktop draws, like its own apps.
-        let painted = self
-            .shared
-            .peer_windows
-            .borrow()
-            .get(&tab.id)
-            .filter(|window| window.is_paint())
-            .map(|window| window.key.clone());
-        if let Some(key) = painted {
-            let view = ui::widget::WebView::new(self.shared.paint_page(&key))
-                .with_test_id("peer-page")
-                .with_accessible_name(tab.title.clone());
-            return TileHost::new(ui::widget::TileContent::App(Box::new(view)));
-        }
         match self.component(tab) {
             Ok(component) => {
                 self.shared.waiting.borrow_mut().remove(&tab.id);
@@ -1493,39 +1201,6 @@ impl TileSource for Tiles {
     }
 
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
-        if let Some(node_app) = app.strip_prefix(NODE_APP_LAUNCH) {
-            // Opened on the node; its window arrives as a legacy window.
-            if self
-                .shared
-                .node_apps
-                .borrow()
-                .iter()
-                .any(|known| known.id == node_app)
-            {
-                self.shared
-                    .node_app_requests
-                    .borrow_mut()
-                    .push(node_app.to_owned());
-                self.shared.wake();
-            }
-            return None;
-        }
-        if let Some(key) = app.strip_prefix(PEER_WINDOW_LAUNCH) {
-            let window = self.shared.pending_peer_windows.borrow_mut().remove(key)?;
-            let tab = Tab {
-                id,
-                title: window.title.clone(),
-                tile: TileContent::PeerWindow {
-                    app_id: window.app.clone(),
-                    label: window.title.clone(),
-                    note: String::new(),
-                    missing: None,
-                },
-                app_title: None,
-            };
-            self.shared.peer_windows.borrow_mut().insert(id, window);
-            return Some(tab);
-        }
         let (app, record, content) = if let Some((app, hash)) =
             tilo_desktop_surface::session::launched_content(app)
         {
@@ -1589,9 +1264,7 @@ impl TileSource for Tiles {
     }
 
     fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
-        web_applications()
-            .chain(self.shared.node_search_entries())
-            .collect()
+        web_applications().collect()
     }
 }
 
@@ -1902,22 +1575,9 @@ pub(crate) fn apply_shared(
             }
         }
     }
-    let before = handle.read(tab_ids);
-    handle.replace_shared_tree(desktop.tree, &shared.own_peer_window_tabs());
-    shared.layout_replaced(&before, &handle.read(tab_ids));
+    handle.replace_shared_tree(desktop.tree, &[]);
     shared.wake();
     Ok(())
-}
-
-/// Every tab `tree` holds.
-fn tab_ids(tree: &DesktopTree) -> std::collections::HashSet<TabId> {
-    tree.workspaces
-        .iter()
-        .flat_map(|w| &w.strips)
-        .flat_map(|s| &s.window_groups)
-        .flat_map(|g| &g.tabs)
-        .map(|tab| tab.id)
-        .collect()
 }
 
 /// Put the workspace's desktop `value` back over a local change its person may

@@ -89,6 +89,38 @@ pub fn peer_handle(device_public_key: &[u8; 32]) -> PeerId {
 /// Wayland surface identifier — local handle used for streaming/input routing.
 pub type SurfaceId = u64;
 
+/// The app id a desktop's own presence rides under in every workspace: a
+/// browser, a native shell and an agent all say theirs under it, and every
+/// device reading a workspace looks for it.
+pub const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
+
+/// The key a desktop's whole-view presence travels under in `room`.
+pub fn workspace_key(room: &str) -> Vec<u8> {
+    postcard::to_stdvec(&collab_types::presence::PresenceKey::Workspace {
+        id: room.to_owned(),
+    })
+    .unwrap_or_default()
+}
+
+/// One presence message of a device's desktop in `room`: `key` names what the
+/// message is about (the workspace itself, a pointer's tile) and `payload` is
+/// what it says there.
+#[must_use]
+pub fn desktop_presence(
+    peer: PeerId,
+    room: &str,
+    key: Vec<u8>,
+    payload: collab_types::PeerPresencePayload,
+) -> NeighbourMsg {
+    NeighbourMsg::AppPresenceV2 {
+        peer,
+        app_id: DESKTOP_PRESENCE_APP.to_owned(),
+        cluster_id: room.to_owned(),
+        presence: collab_types::PeerPresence { key, payload },
+        colour: None,
+    }
+}
+
 /// How many windows one [`NeighbourMsg::SurfaceViewRequest`] names at most.
 pub const MAX_SURFACE_VIEWS: usize = 64;
 /// How many decode limits one [`NeighbourMsg::SurfaceViewRequest`] carries

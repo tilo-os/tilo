@@ -112,8 +112,6 @@ mod feedback_review;
 // Which peer carries a desktop's reports: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod feedback_route;
-#[cfg(any(target_arch = "wasm32", test))]
-mod peer_windows;
 #[cfg(all(target_arch = "wasm32", feature = "deferred-feedback-composer"))]
 pub use feedback_composer::install_feedback_composer;
 #[cfg(target_arch = "wasm32")]

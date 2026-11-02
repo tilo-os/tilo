@@ -1,4 +1,4 @@
-//! Native `MoQ` adapters for Tilo calls and live presence: the tilo-voice/1
+//! Native `MoQ` adapters for Tilo calls: the tilo-voice/1
 //! and tilo-video/1 object profiles and, behind `relay`, `moq-lite` relays and clients over
 //! WebTransport (see [`carrier`] for the session layout).
 
@@ -16,9 +16,6 @@ mod mirror;
 
 #[cfg(feature = "relay")]
 pub mod relay;
-
-#[cfg(feature = "relay")]
-pub mod live;
 
 #[cfg(feature = "relay")]
 mod session_authority;
@@ -41,10 +38,6 @@ pub(crate) struct Task(Option<tokio::task::JoinHandle<()>>);
 impl Task {
     pub(crate) fn spawn(future: impl std::future::Future<Output = ()> + Send + 'static) -> Self {
         Self(Some(tokio::spawn(future)))
-    }
-    /// Release without aborting: used by a task that is finishing itself.
-    pub(crate) fn detach(mut self) {
-        self.0.take();
     }
     pub(crate) fn is_finished(&self) -> bool {
         self.0

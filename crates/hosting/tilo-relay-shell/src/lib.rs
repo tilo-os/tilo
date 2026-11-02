@@ -12,8 +12,6 @@
 //! [`NeighbourPayloads`] answers them for the desktop's peer-sync messages
 //! (`NeighbourMsg`); it is the only place compaction, surface admission,
 //! retained-checkpoint replacement and the live checkpoint gate decode one.
-//! With the `web` feature, `legacy` is the browser legacy-window bridge,
-//! which decodes and originates those messages on the browser live plane.
 //!
 //! [`selection`] is native shell replay selection: with a desktop
 //! [`RetentionAuthority`](retained_proof::RetentionAuthority)
@@ -39,8 +37,6 @@
 
 use std::collections::BTreeSet;
 
-#[cfg(feature = "web")]
-pub mod legacy;
 mod neighbour;
 pub mod retained_proof;
 pub mod selection;

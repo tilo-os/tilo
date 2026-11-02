@@ -387,6 +387,19 @@ pub enum PeerEvent {
         /// Why.
         reason: String,
     },
+    /// A member's presence, as it published it to the workspace: a
+    /// postcard-encoded `NeighbourMsg`, stamped by the host with the device
+    /// that published it. Cursors, a shell's view, chat, reactions, waves
+    /// and following arrive this way; a request for content arrives as
+    /// [`PeerEvent::ContentWanted`] instead.
+    Presence {
+        /// The workspace id.
+        workspace_id: u64,
+        /// Host-stamped publishing device.
+        from: [u8; 32],
+        /// A postcard-encoded `NeighbourMsg`.
+        body: Vec<u8>,
+    },
     /// Live membership changed.
     LiveMember {
         /// The workspace id.
@@ -497,7 +510,8 @@ enum Command {
     WantContent(u64, Vec<u8>),
     SendContent(u64, [u8; 32], Vec<u8>),
     Barrier(Completion),
-    LiveGrant(u64, Option<String>, GrantCompletion),
+    /// Presence bodies (`NeighbourMsg` postcards) for a workspace's members.
+    Presence(u64, Vec<Vec<u8>>),
     VoiceCalls(u64),
     VoiceCall(u64, [u8; 16], tilo_relay_protocol::voice::CallOperation),
     VoiceJoin(u64, [u8; 32]),
@@ -510,14 +524,6 @@ enum Command {
     CallLaneAnswer(Page, Result<Down, LinkError>, LaneCompletion),
     /// The page left the call of the workspace named.
     CallLaneEnd(String),
-    LegacyInput(
-        tilo_relay_protocol::legacy_window::InputRequest,
-        InputCompletion,
-    ),
-    LegacyCodecs(
-        tilo_relay_protocol::legacy_window::CodecsRequest,
-        InputCompletion,
-    ),
     Administer(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
     Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
     Private(
@@ -561,16 +567,10 @@ enum Opening {
 }
 /// Called once with the outcome of a [`PeerHandle::barrier_then`].
 pub type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
-/// Called once with a live grant, see [`PeerHandle::live_grant_then`].
-pub type GrantCompletion =
-    Box<dyn FnOnce(Result<tilo_relay_protocol::web::LiveGrant, String>) + Send>;
 /// Called once with a live frame sealed or opened with its record's channel
 /// keys, or `None` when this device holds none; see
 /// [`PeerHandle::seal_live_then`] and [`PeerHandle::open_live_then`].
 pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
-/// Called once with whether the host took a legacy window's input, see
-/// [`PeerHandle::legacy_input_then`].
-pub type InputCompletion = Box<dyn FnOnce(Result<bool, String>) + Send>;
 /// Called once with the session device the node runs beside the host (or
 /// `None`), see [`PeerHandle::node_session_then`].
 pub type NodeCompletion = Box<dyn FnOnce(Result<Option<[u8; 32]>, String>) + Send>;
@@ -948,6 +948,14 @@ impl PeerHandle {
         self.send(Command::SendContent(workspace_id, to, frame))
     }
 
+    /// Publish presence to `workspace_id`'s members: one postcard-encoded
+    /// `NeighbourMsg` per body, the way every other device publishes its
+    /// presence. Dropped while disconnected: presence is ephemeral, and the
+    /// next change says where its sender is.
+    pub fn publish_presence(&self, workspace_id: u64, bodies: Vec<Vec<u8>>) -> Result<(), String> {
+        self.send(Command::Presence(workspace_id, bodies))
+    }
+
     /// A receipt that completes once every document published before this
     /// call is durable on the host.
     pub fn barrier(&self) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
@@ -962,45 +970,6 @@ impl PeerHandle {
     /// durable on the host, or with the refusal that prevents it.
     pub fn barrier_then(&self, done: Completion) -> Result<(), String> {
         self.send(Command::Barrier(done))
-    }
-
-    /// Ask the host for a live-plane grant for `workspace_id` over the
-    /// current HTTPS session; `done` receives it.
-    pub fn live_grant_then(&self, workspace_id: u64, done: GrantCompletion) -> Result<(), String> {
-        self.send(Command::LiveGrant(workspace_id, None, done))
-    }
-
-    /// [`Self::live_grant_then`] for agent `agent_id` this device runs: the
-    /// grant publishes under the agent's namespace
-    /// ([`tilo_relay_protocol::web::agent_publisher`]).
-    pub fn agent_live_grant_then(
-        &self,
-        workspace_id: u64,
-        agent_id: String,
-        done: GrantCompletion,
-    ) -> Result<(), String> {
-        self.send(Command::LiveGrant(workspace_id, Some(agent_id), done))
-    }
-
-    /// Send input for a legacy window a member streams
-    /// ([`tilo_relay_client::https::legacy_input`]) over the current HTTPS session.
-    pub fn legacy_input_then(
-        &self,
-        request: tilo_relay_protocol::legacy_window::InputRequest,
-        done: InputCompletion,
-    ) -> Result<(), String> {
-        self.send(Command::LegacyInput(request, done))
-    }
-
-    /// Tell the host which video codecs this page decodes
-    /// ([`tilo_relay_client::https::legacy_codecs`]) over the current HTTPS session;
-    /// `done` receives whether the host took the advert.
-    pub fn legacy_codecs_then(
-        &self,
-        request: tilo_relay_protocol::legacy_window::CodecsRequest,
-        done: InputCompletion,
-    ) -> Result<(), String> {
-        self.send(Command::LegacyCodecs(request, done))
     }
 
     /// Post this person's own recent actions ([`tilo_relay_client::https::here`]) over
@@ -1873,6 +1842,26 @@ impl Task {
         }
     }
 
+    /// Publish presence bodies to `workspace_id`'s members, stamped as this
+    /// device's: the same envelope every device's presence rides.
+    fn publish_presence(&self, workspace_id: u64, bodies: Vec<Vec<u8>>, client: Option<&Link>) {
+        let Some(client) = client else {
+            return;
+        };
+        for body in bodies {
+            let presence = tilo_relay_client::coedit::AttributedPresence {
+                author: self.config.cert.device_public_key,
+                body,
+            };
+            if let Ok(payload) = presence.encode() {
+                let _ = client.send(Envelope::Presence {
+                    workspace_id,
+                    payload,
+                });
+            }
+        }
+    }
+
     /// Apply one command; `client` is the live session, if any. Returns
     /// `false` when the session could not take a durable envelope.
     #[allow(
@@ -1956,15 +1945,9 @@ impl Task {
                 }
                 true
             }
-            Command::LiveGrant(workspace_id, agent, done) => {
-                Self::request_live_grant(workspace_id, agent, done, client);
+            Command::Presence(workspace_id, bodies) => {
+                self.publish_presence(workspace_id, bodies, client);
                 true
-            }
-            Command::LegacyInput(request, done) => {
-                Self::request_legacy_input(request, done, client)
-            }
-            Command::LegacyCodecs(request, done) => {
-                Self::request_legacy_codecs(request, done, client)
             }
             Command::Here(request, done) => Self::request_here(request, done, client),
             Command::Private(request, done) => Self::request_private(request, done, client),
@@ -2017,7 +2000,12 @@ impl Task {
             status.rooms.entry(workspace_id).or_insert(false);
         });
         self.received.clear();
-        client.is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
+        client.is_none_or(|client| {
+            client.send(self.subscribe(client, workspace_id)).is_ok()
+                && (self.config.watching
+                    || self.live.insert(workspace_id)
+                        && client.send(Envelope::LiveJoin { workspace_id }).is_ok())
+        })
     }
 
     /// Join `workspace` once the host governs it ([`PeerHandle::join_placed`]).
@@ -2102,6 +2090,7 @@ impl Task {
             // workspace none of its own.
             Command::LiveJoin(_)
             | Command::Live(..)
+            | Command::Presence(..)
             | Command::Publish(..)
             | Command::Compact(..)
             | Command::SendContent(..)
@@ -2195,51 +2184,6 @@ impl Task {
         }
     }
 
-    fn request_live_grant(
-        workspace_id: u64,
-        agent: Option<String>,
-        done: GrantCompletion,
-        client: Option<&Link>,
-    ) {
-        match client {
-            Some(Link::Https(link)) => {
-                let http = link.client().clone();
-                let session = link.session().to_owned();
-                n0_future::task::spawn(async move {
-                    let grant = live_grant(http.as_ref(), &session, workspace_id, agent).await;
-                    done(grant.map_err(|error| error.to_string()));
-                });
-            }
-            #[cfg(feature = "iroh")]
-            Some(Link::Iroh(_)) => done(Err("live grants are served over HTTPS".into())),
-            None => done(Err("not connected to the host".into())),
-        }
-    }
-
-    /// Always `true`: the session takes it whatever the answer.
-    fn request_legacy_input(
-        request: tilo_relay_protocol::legacy_window::InputRequest,
-        done: InputCompletion,
-        client: Option<&Link>,
-    ) -> bool {
-        match client {
-            Some(Link::Https(link)) => {
-                let http = link.client().clone();
-                let session = link.session().to_owned();
-                n0_future::task::spawn(async move {
-                    let sent =
-                        tilo_relay_client::https::legacy_input(http.as_ref(), &session, &request)
-                            .await;
-                    done(sent.map_err(|error| error.to_string()));
-                });
-            }
-            #[cfg(feature = "iroh")]
-            Some(Link::Iroh(_)) => done(Err("legacy input is sent over HTTPS".into())),
-            None => done(Err("not connected to the host".into())),
-        }
-        true
-    }
-
     /// Ask the workspace's node for the keys of every record this watching
     /// page waits on and is not asking for already; each answer comes back
     /// as [`Command::WatchedKeys`].
@@ -2276,30 +2220,6 @@ impl Task {
                 }
             });
         }
-    }
-
-    /// Always `true`: the session takes it whatever the answer.
-    fn request_legacy_codecs(
-        request: tilo_relay_protocol::legacy_window::CodecsRequest,
-        done: InputCompletion,
-        client: Option<&Link>,
-    ) -> bool {
-        match client {
-            Some(Link::Https(link)) => {
-                let http = link.client().clone();
-                let session = link.session().to_owned();
-                n0_future::task::spawn(async move {
-                    let taken =
-                        tilo_relay_client::https::legacy_codecs(http.as_ref(), &session, &request)
-                            .await;
-                    done(taken.map_err(|error| error.to_string()));
-                });
-            }
-            #[cfg(feature = "iroh")]
-            Some(Link::Iroh(_)) => done(Err("codec adverts are sent over HTTPS".into())),
-            None => done(Err("not connected to the host".into())),
-        }
-        true
     }
 
     /// Always `true`: the session takes it whatever the answer.
@@ -2813,9 +2733,10 @@ impl Task {
         }
     }
 
-    /// A member's presence the host fanned out: only a request for content
-    /// concerns the page here; pointers and carets reach it on the live
-    /// plane.
+    /// A member's presence the host fanned out: its cursors, its shell's
+    /// view, chat, a wave, a follow. A request for content is separated
+    /// here, because a page answers those (or asks them) rather than draws
+    /// them.
     fn presence(&self, workspace_id: u64, payload: &[u8]) {
         let Some(presence) = tilo_relay_client::coedit::AttributedPresence::decode(payload) else {
             return;
@@ -2831,7 +2752,13 @@ impl Task {
                 from: presence.author,
                 request: presence.body,
             });
+            return;
         }
+        self.emit(&PeerEvent::Presence {
+            workspace_id,
+            from: presence.author,
+            body: presence.body,
+        });
     }
 
     /// Take this device into `route`'s channel, with the participants its
@@ -3712,21 +3639,6 @@ fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
         // next frame read.
         error @ (ClientError::Auth(_) | ClientError::Io(_)) => {
             LinkError::Refused(error.to_string())
-        }
-    }
-}
-
-/// A live grant for this device, or for agent `agent` it runs.
-async fn live_grant(
-    http: &dyn crate::HttpClient,
-    session: &str,
-    workspace_id: u64,
-    agent: Option<String>,
-) -> Result<tilo_relay_protocol::web::LiveGrant, tilo_relay_client::https::LinkError> {
-    match agent {
-        None => tilo_relay_client::https::live_grant(http, session, workspace_id).await,
-        Some(agent) => {
-            tilo_relay_client::https::agent_live_grant(http, session, workspace_id, agent).await
         }
     }
 }

@@ -502,18 +502,11 @@ inputs = [
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
   "tools/web/chrome.mjs",
-  # ... and the native stream qualification's Safari run drives Safari through
-  # tools/web/webdriver.mjs.
-  "tools/web/webdriver.mjs",
-  # scripts/perf/native_stream_qualification.mjs reads the frame numbers its
-  # session example draws.
-  "crates/hosting/tilo-relay/examples/legacy_stream_source.rs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
   # default collection.
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
-  "tools/web/webdriver.test.mjs",
   "tools/perf/test_image_size.py",
   "tools/perf/test_record.py",
   "tools/perf/test_runtime_size_ratchet.py",
@@ -611,15 +604,11 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/host-core-status.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-screen.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
   "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
   "crates/browser/tilo-browser-runtime/web/native-catalogue.test.mjs",
   "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
   "crates/browser/tilo-browser-runtime/web/qr.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/live-fake-relay.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/live-transport.test.mjs",
   "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantics.test.mjs",

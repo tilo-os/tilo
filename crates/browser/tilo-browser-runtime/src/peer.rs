@@ -16,10 +16,10 @@
 //! (`ui::local_identity`), so mounts attribute edits to that person.
 //!
 //! HTTP goes through the page's `post(path, session, body)` (its `fetch`).
-//! The live plane runs in JavaScript over WebTransport (`web/live-transport.mjs`,
-//! with the HTTPS fallback); this module issues its grant
-//! ([`WasmPeer::live_grant`]) and encodes and validates its frames with the
-//! host's canonical codec. Documents reach the desktop's
+//! Presence — who is here, their pointer, what their shell shows — rides the
+//! workspace's session like every other device's: this module encodes it as
+//! the pages' `web/live-presence.mjs` values and reads the members' answers
+//! back ([`WasmPeer::take_live_events`]). Documents reach the desktop's
 //! `CollaborationManager` through [`WasmPeer::collab_transport`].
 
 use std::cell::RefCell;
@@ -33,11 +33,7 @@ use tilo_browser_peer::{
     PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError, SignFuture,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay_protocol::live::{
-    CursorChat, DragPhase, LiveAnchor, LiveFrame, LiveLayout, LiveObject, LiveParticipant,
-    LiveReaction, LiveRecord, LiveWave, LiveWindow, OpsFrame, ParticipantKind, PresenceFrame,
-    PreviewOp,
-};
+use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -739,7 +735,7 @@ pub async fn answer_pairing(
         .transpose()
 }
 
-// ---- Live frames as the JavaScript shape of `web/live-presence.mjs` -------
+// ---- Presence, as `web/live-presence.mjs` publishes and reads it ---------
 
 #[derive(Serialize, Deserialize)]
 struct JsRecord {
@@ -753,20 +749,6 @@ struct JsSelection {
     head: String,
 }
 
-#[derive(Serialize, Deserialize)]
-struct JsObject {
-    record: Option<JsRecord>,
-    id: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsDrag {
-    object: JsObject,
-    phase: String,
-    position: [f32; 2],
-    size: Option<[f32; 2]>,
-}
-
 /// `{kind: 'person' | 'agent', label, color: '#rrggbb', activity}`.
 #[derive(Serialize, Deserialize)]
 struct JsParticipant {
@@ -775,91 +757,6 @@ struct JsParticipant {
     color: String,
     #[serde(default)]
     activity: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct JsPresence {
-    seq: u64,
-    sent_at_ms: u64,
-    focus: Option<JsRecord>,
-    /// Relative to what it is over: `{window: {app, record}, at}` or
-    /// `{strip, at}` ([`crate::browser::pointers::JsPointer`]).
-    pointer: Option<crate::browser::pointers::JsPointer>,
-    selection: Option<JsSelection>,
-    drag: Option<JsDrag>,
-    #[serde(default)]
-    participant: Option<JsParticipant>,
-    #[serde(default)]
-    place: Option<String>,
-    /// Cursor chat: `{text, sent}`, beside the pointer.
-    #[serde(default)]
-    chat: Option<JsChat>,
-    /// The latest reaction: `{seq, emoji}`.
-    #[serde(default)]
-    reaction: Option<JsReaction>,
-    /// The latest wave: `{seq, target}`, `target` the waved-at member's
-    /// publisher.
-    #[serde(default)]
-    wave: Option<JsWave>,
-    /// Where the windows are: `{size, windows: [{app, record, rect,
-    /// focused}]}`, `record` the 16-hex short digest of its live record.
-    #[serde(default)]
-    layout: Option<JsLayout>,
-    /// Whose view this member follows: their publisher.
-    #[serde(default)]
-    following: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsLayout {
-    size: [u16; 2],
-    windows: Vec<JsWindow>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsWindow {
-    app: String,
-    record: String,
-    rect: [u16; 4],
-    focused: bool,
-}
-
-fn layout_from_js(layout: JsLayout) -> Result<LiveLayout, JsError> {
-    let windows = layout
-        .windows
-        .into_iter()
-        .map(|window| {
-            let record = <[u8; 8]>::try_from(hex::decode(&window.record).map_err(js_error)?)
-                .map_err(|_| js_error("a layout window's record is 8 bytes"))?;
-            Ok(LiveWindow {
-                app: window.app,
-                record,
-                rect: window.rect,
-                focused: window.focused,
-            })
-        })
-        .collect::<Result<_, JsError>>()?;
-    Ok(LiveLayout {
-        size: layout.size,
-        windows,
-    })
-}
-
-fn layout_to_js(layout: LiveLayout) -> JsLayout {
-    JsLayout {
-        size: layout.size,
-        windows: layout
-            .windows
-            .into_iter()
-            .map(|window| JsWindow {
-                app: window.app,
-                record: hex::encode(window.record),
-                rect: window.rect,
-                focused: window.focused,
-            })
-            .collect(),
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -880,68 +777,69 @@ struct JsReaction {
     emoji: String,
 }
 
-fn participant_from_js(value: JsParticipant) -> Result<LiveParticipant, JsError> {
-    let kind = match value.kind.as_str() {
-        "person" => ParticipantKind::Person,
-        "agent" => ParticipantKind::Agent,
-        _ => return Err(js_error("participant kind")),
-    };
-    let color: [u8; 3] = value
-        .color
-        .strip_prefix('#')
-        .and_then(|hex| hex::decode(hex).ok())
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| js_error("participant colour must be #rrggbb"))?;
-    Ok(LiveParticipant {
-        kind,
-        label: value.label,
-        color,
-        activity: value.activity,
-    })
+#[derive(Serialize, Deserialize)]
+struct JsLayout {
+    size: [u16; 2],
+    windows: Vec<JsWindow>,
 }
 
-fn participant_to_js(value: LiveParticipant) -> JsParticipant {
-    JsParticipant {
-        kind: match value.kind {
-            ParticipantKind::Person => "person",
-            ParticipantKind::Agent => "agent",
-        }
-        .into(),
-        label: value.label,
-        color: tilo_relay_protocol::agents::color_hex(value.color),
-        activity: value.activity,
-    }
+#[derive(Serialize, Deserialize, Clone)]
+struct JsWindow {
+    app: String,
+    record: String,
+    rect: [u16; 4],
+    focused: bool,
 }
+
+/// One presence value of `web/live-presence.mjs`: what one layer of this
+/// page (the person, or one of its agents) shows, where its pointer is, and
+/// what it says. The publisher sends it whole with each change; the
+/// receiver reads the parts each message of the wire carries.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsPresence {
+    seq: u64,
+    sent_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    focus: Option<JsRecord>,
+    /// Over a tab of the workspace: `{tile: {tab}, at: [x, y]}`, the way
+    /// every device's pointer travels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pointer: Option<crate::browser::pointers::JsPointer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection: Option<JsSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    participant: Option<JsParticipant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    place: Option<String>,
+    /// Cursor chat: `{text, sent}`, beside the pointer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat: Option<JsChat>,
+    /// The latest reaction: `{seq, emoji}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reaction: Option<JsReaction>,
+    /// The latest wave: `{seq, target}`, `target` the waved-at member's
+    /// publisher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wave: Option<JsWave>,
+    /// Where the windows are: `{size, windows: [{app, record, rect,
+    /// focused}]}`, `record` its 16-byte digest, hex.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    layout: Option<JsLayout>,
+    /// Whose view this member follows: their publisher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    following: Option<String>,
+}
+
+/// The app every shell's presence is published under: the desktop's own,
+/// the one its members name themselves and their screens by.
+const SHELL_APP: &str = neighbour_wire::DESKTOP_PRESENCE_APP;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum JsPreviewOp {
     Insert { at: String, text: String },
     Delete { at: String, len: u32 },
-}
-
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum JsDecoded {
-    // Boxed: a presence frame (pointer layout and all) is several times the
-    // size of the other variants.
-    Presence {
-        frame: Box<JsPresence>,
-    },
-    Preview {
-        record: JsRecord,
-        seq: u64,
-        ops: Vec<JsPreviewOp>,
-    },
-    PreviewEnd {
-        record: JsRecord,
-    },
-}
-
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum JsDurable {
-    Durable { record: JsRecord },
 }
 
 fn record_to_js(record: LiveRecord) -> JsRecord {
@@ -964,113 +862,239 @@ fn anchor(text: &str) -> Result<LiveAnchor, JsError> {
     })
 }
 
-fn phase_from_js(text: &str) -> Result<DragPhase, JsError> {
-    Ok(match text {
-        "start" => DragPhase::Start,
-        "move" => DragPhase::Move,
-        "end" => DragPhase::End,
-        "cancel" => DragPhase::Cancel,
-        _ => return Err(js_error("drag phase")),
+/// One window of a sender's layout, as its wire names it: an app id and the
+/// short digest of its record.
+fn shell_window(window: JsWindow) -> Result<collab_types::presence::ShellWindow, JsError> {
+    let record = <[u8; 8]>::try_from(hex::decode(&window.record).map_err(js_error)?)
+        .map_err(|_| js_error("a layout window's record is a 16-hex digest"))?;
+    Ok(collab_types::presence::ShellWindow {
+        app: window.app,
+        record,
+        rect: window.rect,
+        focused: window.focused,
     })
 }
 
-fn phase_to_js(phase: DragPhase) -> String {
-    match phase {
-        DragPhase::Start => "start",
-        DragPhase::Move => "move",
-        DragPhase::End => "end",
-        DragPhase::Cancel => "cancel",
-    }
-    .into()
-}
-
-fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
-    Ok(PresenceFrame {
-        seq: value.seq,
-        sent_at_ms: value.sent_at_ms,
-        focus: value.focus.map(record_from_js),
-        pointer: value
-            .pointer
-            .map(crate::browser::pointers::JsPointer::into_live)
-            .transpose()
-            .map_err(js_error)?,
-        selection: value
-            .selection
-            .map(|selection| {
-                Ok::<_, JsError>((anchor(&selection.anchor)?, anchor(&selection.head)?))
-            })
-            .transpose()?,
-        drag: value
-            .drag
-            .map(|drag| {
-                Ok::<_, JsError>((
-                    LiveObject {
-                        record: drag.object.record.map(record_from_js),
-                        id: hex::decode(drag.object.id).map_err(js_error)?,
-                    },
-                    phase_from_js(&drag.phase)?,
-                    drag.position,
-                    drag.size,
-                ))
-            })
-            .transpose()?,
-        participant: value.participant.map(participant_from_js).transpose()?,
-        place: value.place,
-        chat: value.chat.map(|chat| CursorChat {
-            text: chat.text,
-            sent: chat.sent,
-        }),
-        reaction: value.reaction.map(|reaction| LiveReaction {
-            seq: reaction.seq,
-            emoji: reaction.emoji,
-        }),
-        wave: value.wave.map(|wave| LiveWave {
-            seq: wave.seq,
-            target: wave.target,
-        }),
-        layout: value.layout.map(layout_from_js).transpose()?,
-        following: value.following,
-    })
-}
-
-fn presence_to_js(frame: PresenceFrame) -> JsPresence {
+fn shell_to_js(shell: collab_types::presence::ShellPresence) -> JsPresence {
+    let participant = JsParticipant {
+        kind: if shell.agent { "agent" } else { "person" }.into(),
+        label: shell.label,
+        color: shell.colour,
+        activity: shell.activity,
+    };
+    let windows: Vec<JsWindow> = shell
+        .windows
+        .into_iter()
+        .map(|window| JsWindow {
+            app: window.app,
+            record: hex::encode(window.record),
+            rect: window.rect,
+            focused: window.focused,
+        })
+        .collect();
+    let focus = windows
+        .iter()
+        .find(|window| window.focused)
+        .map(|window| JsRecord {
+            app: window.app.clone(),
+            record: window.record.clone(),
+        });
     JsPresence {
-        seq: frame.seq,
-        sent_at_ms: frame.sent_at_ms,
-        focus: frame.focus.map(record_to_js),
-        pointer: frame
-            .pointer
-            .map(crate::browser::pointers::JsPointer::from_live),
-        selection: frame.selection.map(|(anchor, head)| JsSelection {
-            anchor: hex::encode(anchor.cursor),
-            head: hex::encode(head.cursor),
+        seq: u64::from(shell.seq),
+        sent_at_ms: shell.sent_at_ms,
+        focus,
+        pointer: None,
+        selection: shell.selection.map(|selection| JsSelection {
+            anchor: selection.anchor,
+            head: selection.head,
         }),
-        drag: frame.drag.map(|(object, phase, position, size)| JsDrag {
-            object: JsObject {
-                record: object.record.map(record_to_js),
-                id: hex::encode(object.id),
-            },
-            phase: phase_to_js(phase),
-            position,
-            size,
-        }),
-        participant: frame.participant.map(participant_to_js),
-        place: frame.place,
-        chat: frame.chat.map(|chat| JsChat {
+        participant: Some(participant),
+        place: shell.place,
+        chat: shell.chat.map(|chat| JsChat {
             text: chat.text,
             sent: chat.sent,
         }),
-        reaction: frame.reaction.map(|reaction| JsReaction {
+        reaction: shell.reaction.map(|reaction| JsReaction {
             seq: reaction.seq,
             emoji: reaction.emoji,
         }),
-        wave: frame.wave.map(|wave| JsWave {
-            seq: wave.seq,
-            target: wave.target,
+        wave: None,
+        layout: Some(JsLayout {
+            size: [
+                u16::try_from(shell.size[0]).unwrap_or(u16::MAX),
+                u16::try_from(shell.size[1]).unwrap_or(u16::MAX),
+            ],
+            windows,
         }),
-        layout: frame.layout.map(layout_to_js),
-        following: frame.following,
+        following: None,
     }
+}
+
+/// This layer's shell, as its presence value names it: who it is, its
+/// screen, the window the person works in and their caret there. `None`
+/// while the value names neither a screen nor who it is.
+fn shell_from_js(
+    value: &JsPresence,
+) -> Result<Option<collab_types::presence::ShellPresence>, JsError> {
+    let Some(participant) = &value.participant else {
+        return Ok(None);
+    };
+    if !value
+        .participant
+        .as_ref()
+        .is_some_and(|p| matches!(p.kind.as_str(), "person" | "agent"))
+    {
+        return Err(js_error("participant kind"));
+    }
+    let colour = participant.color.clone();
+    let hex = colour
+        .strip_prefix('#')
+        .ok_or_else(|| js_error("participant colour must be #rrggbb"))?;
+    if hex.len() != 6 || hex::decode(hex).is_err() {
+        return Err(js_error("participant colour must be #rrggbb"));
+    }
+    let (size, mut windows) = match &value.layout {
+        Some(layout) => (
+            [u32::from(layout.size[0]), u32::from(layout.size[1])],
+            layout
+                .windows
+                .iter()
+                .cloned()
+                .map(shell_window)
+                .collect::<Result<Vec<_>, JsError>>()?,
+        ),
+        None => ([0, 0], Vec::new()),
+    };
+    // The window the person works in is the one their caret is in, whatever
+    // the layout said: the value names it on its own.
+    if let Some(focus) = &value.focus {
+        let mut found = false;
+        for window in &mut windows {
+            window.focused = window.app == focus.app && hex::encode(window.record) == focus.record;
+            found |= window.focused;
+        }
+        if !found {
+            windows.push(collab_types::presence::ShellWindow {
+                app: focus.app.clone(),
+                record: <[u8; 8]>::try_from(hex::decode(&focus.record).map_err(js_error)?)
+                    .map_err(|_| js_error("a focused window's record is a 16-hex digest"))?,
+                rect: [0, 0, 0, 0],
+                focused: true,
+            });
+        }
+    }
+    Ok(Some(collab_types::presence::ShellPresence {
+        seq: u32::try_from(value.seq).unwrap_or(u32::MAX),
+        sent_at_ms: value.sent_at_ms,
+        label: participant.label.clone(),
+        agent: participant.kind == "agent",
+        colour,
+        activity: participant.activity.clone(),
+        place: value.place.clone(),
+        size,
+        windows,
+        selection: value.selection.as_ref().map(|selection| {
+            collab_types::presence::ShellSelection {
+                anchor: selection.anchor.clone(),
+                head: selection.head.clone(),
+            }
+        }),
+        chat: value
+            .chat
+            .as_ref()
+            .map(|chat| collab_types::presence::ShellChat {
+                text: chat.text.clone(),
+                sent: chat.sent,
+            }),
+        reaction: value
+            .reaction
+            .as_ref()
+            .map(|reaction| collab_types::presence::ShellReaction {
+                seq: reaction.seq,
+                emoji: reaction.emoji.clone(),
+            }),
+    }))
+}
+
+/// The workspace's presence key, as every device of it names it.
+fn workspace_key(room: &str) -> Vec<u8> {
+    neighbour_wire::workspace_key(room)
+}
+
+/// One presence message of this page's person in `room`, postcard-encoded:
+/// the body a presence envelope carries.
+fn presence_message(
+    peer: u64,
+    room: &str,
+    key: Vec<u8>,
+    payload: collab_types::PeerPresencePayload,
+) -> Result<Vec<u8>, JsError> {
+    postcard::to_stdvec(&neighbour_wire::desktop_presence(peer, room, key, payload))
+        .map_err(js_error)
+}
+
+/// Everything one presence value says, as the messages the workspace's other
+/// devices read it from: the shell's view, its pointer, and its wave and
+/// following (which a native shell reads as its own).
+fn presence_bodies(value: &JsPresence, peer: u64, room: &str) -> Result<Vec<Vec<u8>>, JsError> {
+    use collab_types::PeerPresencePayload;
+    let mut bodies = Vec::new();
+    if let Some(shell) = shell_from_js(value)? {
+        bodies.push(presence_message(
+            peer,
+            room,
+            workspace_key(room),
+            PeerPresencePayload::Shell(Box::new(shell)),
+        )?);
+    }
+    match &value.pointer {
+        Some(crate::browser::pointers::JsPointer::Tile { tile, at }) => {
+            let key = postcard::to_stdvec(&collab_types::presence::PresenceKey::Pointer {
+                space: collab_types::presence::PointerSpace::Tile {
+                    room: room.to_owned(),
+                    tab: tile.tab,
+                },
+            })
+            .map_err(js_error)?;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "the presence wire carries tile offsets as f32"
+            )]
+            let payload = PeerPresencePayload::Pointer {
+                x: at[0] as f32,
+                y: at[1] as f32,
+            };
+            bodies.push(presence_message(peer, room, key, payload)?);
+        }
+        Some(_) => {
+            return Err(js_error(
+                "a pointer travels over a tab of the workspace: {tile: {tab}, at}",
+            ));
+        }
+        None => {}
+    }
+    if let Some(wave) = &value.wave {
+        bodies.push(presence_message(
+            peer,
+            room,
+            workspace_key(room),
+            PeerPresencePayload::Wave {
+                seq: wave.seq,
+                target: wave.target.clone(),
+            },
+        )?);
+    }
+    if let Some(following) = &value.following {
+        bodies.push(presence_message(
+            peer,
+            room,
+            workspace_key(room),
+            PeerPresencePayload::Following {
+                target: Some(following.clone()),
+            },
+        )?);
+    }
+    Ok(bodies)
 }
 
 fn ops_to_js(ops: Vec<PreviewOp>) -> Vec<JsPreviewOp> {
@@ -1109,16 +1133,159 @@ fn workspace_number(text: &str) -> Result<u64, JsError> {
     tilo_relay_protocol::room_workspace_id(text).map_err(|_| js_error("not a workspace uuid"))
 }
 
-/// Encode one presence value from `live-presence.mjs` (JSON, with its own
-/// `seq`) as the canonical live frame the host relays.
-///
-/// # Errors
-///
-/// Throws for a value outside the wire bounds.
-#[wasm_bindgen(js_name = encodeLivePresence)]
-pub fn encode_live_presence(value_json: &str) -> Result<Vec<u8>, JsError> {
-    let frame = presence_from_js(serde_json::from_str(value_json).map_err(js_error)?)?;
-    LiveFrame::Presence(frame).encode().map_err(js_error)
+/// Where the person's pointer is no longer: the message that takes it off
+/// the workspace's other devices.
+fn pointer_cleared(peer: u64, room: &str) -> Result<Vec<u8>, JsError> {
+    let key = serde_json::to_string(&collab_types::presence::PresenceKey::Pointer {
+        space: collab_types::presence::PointerSpace::Tile {
+            room: room.to_owned(),
+            tab: 0,
+        },
+    })
+    .map_err(js_error)?;
+    postcard::to_stdvec(&neighbour_wire::NeighbourMsg::PresenceCleared { peer, key })
+        .map_err(js_error)
+}
+
+/// One presence message another member published, as the live layer reads
+/// it: what changed, and of whom. `publisher` is the publishing device's
+/// key, hex.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum JsPresenceEvent {
+    /// One member's shell view.
+    Shell {
+        publisher: String,
+        frame: Box<JsPresence>,
+    },
+    /// A member is here (`Arrived`) or left (`Left`).
+    Arrived {
+        publisher: String,
+    },
+    Left {
+        publisher: String,
+    },
+    /// A member's wave at `target`.
+    Wave {
+        publisher: String,
+        wave: JsWave,
+    },
+    /// A member now follows `following`, or nobody (`null`).
+    Following {
+        publisher: String,
+        following: Option<String>,
+    },
+    /// A member's pointer over tab `tab` of the workspace, at `at` (its
+    /// tile's logical pixels), sent at their `sentAtMs`.
+    Pointer {
+        publisher: String,
+        tab: u64,
+        at: [f64; 2],
+        #[serde(rename = "sentAtMs")]
+        sent_at_ms: u64,
+        colour: Option<String>,
+    },
+    /// A member's pointer left the workspace's tiles.
+    PointerLeft {
+        publisher: String,
+    },
+}
+
+/// One live (non-presence) message another member published.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum JsLiveEvent {
+    Preview {
+        publisher: String,
+        record: JsRecord,
+        seq: u64,
+        ops: Vec<JsPreviewOp>,
+    },
+    PreviewEnd {
+        publisher: String,
+        record: JsRecord,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum JsDurable {
+    Durable { record: JsRecord },
+}
+
+fn presence_event(from: [u8; 32], body: &[u8], now_ms: u64) -> Option<JsPresenceEvent> {
+    use collab_types::PeerPresencePayload;
+    let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(body).ok()?;
+    let publisher = hex::encode(from);
+    match message {
+        neighbour_wire::NeighbourMsg::AppPresenceV2 {
+            app_id,
+            cluster_id: _,
+            presence,
+            ..
+        } if app_id == SHELL_APP => {
+            let key: collab_types::presence::PresenceKey =
+                postcard::from_bytes(&presence.key).ok()?;
+            match (key, presence.payload) {
+                (
+                    collab_types::presence::PresenceKey::Workspace { .. },
+                    PeerPresencePayload::Shell(shell),
+                ) => Some(JsPresenceEvent::Shell {
+                    publisher,
+                    frame: Box::new(shell_to_js(*shell)),
+                }),
+                (_, PeerPresencePayload::Arrived) => Some(JsPresenceEvent::Arrived { publisher }),
+                (_, PeerPresencePayload::Left) => Some(JsPresenceEvent::Left { publisher }),
+                (_, PeerPresencePayload::Wave { seq, target }) => Some(JsPresenceEvent::Wave {
+                    publisher,
+                    wave: JsWave { seq, target },
+                }),
+                (_, PeerPresencePayload::Following { target }) => {
+                    Some(JsPresenceEvent::Following {
+                        publisher,
+                        following: target,
+                    })
+                }
+                // A device's pointer travels as its own payload under the
+                // tile's key; no send time goes with it.
+                (
+                    collab_types::presence::PresenceKey::Pointer {
+                        space: collab_types::presence::PointerSpace::Tile { tab, .. },
+                    },
+                    PeerPresencePayload::Pointer { x, y },
+                ) => Some(JsPresenceEvent::Pointer {
+                    publisher,
+                    tab,
+                    at: [f64::from(x), f64::from(y)],
+                    sent_at_ms: now_ms,
+                    colour: None,
+                }),
+                _ => None,
+            }
+        }
+        neighbour_wire::NeighbourMsg::PresenceMoved {
+            key,
+            point,
+            ts,
+            colour,
+            ..
+        } => match serde_json::from_str(&key).ok()? {
+            collab_types::presence::PresenceKey::Pointer {
+                space: collab_types::presence::PointerSpace::Tile { tab, .. },
+            } => Some(JsPresenceEvent::Pointer {
+                publisher,
+                tab,
+                at: [point.0, point.1],
+                sent_at_ms: ts,
+                colour,
+            }),
+            _ => None,
+        },
+        neighbour_wire::NeighbourMsg::PresenceCleared { .. } => {
+            Some(JsPresenceEvent::PointerLeft { publisher })
+        }
+        _ => None,
+    }
 }
 
 /// Encode preview operations (JSON array) for a record (JSON).
@@ -1150,31 +1317,6 @@ pub fn encode_live_preview_end(record_json: &str) -> Result<Vec<u8>, JsError> {
     LiveFrame::Ops(OpsFrame::End { record })
         .encode()
         .map_err(js_error)
-}
-
-/// Decode and validate one relayed live frame to JSON
-/// (`{kind: 'presence'|'preview'|'previewEnd', …}`).
-#[wasm_bindgen(js_name = decodeLiveFrame)]
-pub fn decode_live_frame(frame: &[u8]) -> Result<String, JsError> {
-    let decoded = match LiveFrame::decode(frame).map_err(js_error)? {
-        LiveFrame::Presence(presence) => JsDecoded::Presence {
-            frame: Box::new(presence_to_js(presence)),
-        },
-        LiveFrame::Ops(OpsFrame::Preview { seq, record, ops }) => JsDecoded::Preview {
-            record: record_to_js(record),
-            seq,
-            ops: ops_to_js(ops),
-        },
-        LiveFrame::Ops(OpsFrame::End { record }) => JsDecoded::PreviewEnd {
-            record: record_to_js(record),
-        },
-        LiveFrame::Ops(OpsFrame::Semantic { .. }) => {
-            return Err(JsError::new(
-                "semantic activity requires an authenticated record consumer",
-            ));
-        }
-    };
-    serde_json::to_string(&decoded).map_err(js_error)
 }
 
 /// The `ops/<record digest>` track name of a record (JSON).
@@ -1214,15 +1356,6 @@ struct JsHerePerson {
     generated: bool,
     updated_ms: u64,
     profile_ms: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct JsGrant {
-    token: String,
-    workspace: String,
-    publisher: String,
-    expires_at_ns: u64,
 }
 
 fn hex32(text: &str, what: &str) -> Result<[u8; 32], JsError> {
@@ -1613,6 +1746,7 @@ pub struct WasmPeer {
     owner_cert: DeviceCert,
     handle: PeerHandle,
     durable_events: PeerEvents,
+    live_events: PeerEvents,
     remote_events: PeerEvents,
     voice_events: PeerEvents,
     /// Joined workspaces by workspace, to name them in call events.
@@ -1769,6 +1903,7 @@ impl WasmPeer {
             reporter_cert,
             owner_cert,
             durable_events: handle.events(),
+            live_events: handle.events(),
             remote_events: handle.events(),
             voice_events: handle.events(),
             voice_workspaces: RefCell::default(),
@@ -1872,14 +2007,6 @@ impl WasmPeer {
         self.id
     }
 
-    /// A live-plane grant for `workspace` over the current HTTPS session, as
-    /// `{token (hex), workspace, publisher, expiresAtNs}` JSON. With `agent`, the
-    /// grant is for that agent of this device: it publishes under the
-    /// agent's own namespace, never as the device.
-    ///
-    /// # Errors
-    ///
-    /// Rejects when not connected or not admitted to the workspace.
     /// Administer the host's workspaces as this device: `request` is a
     /// `RoomsRequest` as JSON (serde's external tagging, byte arrays as
     /// arrays of numbers); resolves to the `RoomsReply` as JSON.
@@ -1993,33 +2120,118 @@ impl WasmPeer {
         .await
     }
 
-    #[wasm_bindgen(js_name = liveGrant)]
-    pub async fn live_grant(
-        &self,
-        workspace: String,
-        agent: Option<String>,
-    ) -> Result<String, JsError> {
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        let done: tilo_browser_peer::session::GrantCompletion = Box::new(move |grant| {
-            let _ = reply.send(grant);
-        });
-        let workspace_id = workspace_number(&workspace)?;
-        match agent {
-            None => self.handle.live_grant_then(workspace_id, done),
-            Some(agent) => self.handle.agent_live_grant_then(workspace_id, agent, done),
+    /// Who this page's person is, and whether they are here, in
+    /// `workspace`: the message that says a member arrived (`arrived`) or
+    /// left. A page's presence is its face and its pointer, the way every
+    /// device's is.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace.
+    #[wasm_bindgen(js_name = announcePresence)]
+    pub fn announce_presence(&self, workspace: &str, arrived: bool) -> Result<(), JsError> {
+        let workspace_id = workspace_number(workspace)?;
+        let payload = if arrived {
+            collab_types::PeerPresencePayload::Arrived
+        } else {
+            collab_types::PeerPresencePayload::Left
+        };
+        let body = presence_message(
+            neighbour_wire::peer_handle(&self.device_key),
+            workspace,
+            workspace_key(workspace),
+            payload,
+        )?;
+        self.handle
+            .publish_presence(workspace_id, vec![body])
+            .map_err(js_error)
+    }
+
+    /// Publish this page's presence `value` (the live layer's value, JSON:
+    /// `{seq, sentAtMs, participant, place, layout, focus, selection,
+    /// pointer, chat, reaction, wave, following}`) in `workspace`: its shell
+    /// view, its pointer over the tab it is over, its wave and who it
+    /// follows, as the members of the workspace read them.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace, or a value outside the wire.
+    #[wasm_bindgen(js_name = publishPresence)]
+    pub fn publish_presence(&self, workspace: &str, value: &str) -> Result<(), JsError> {
+        let value: JsPresence = serde_json::from_str(value).map_err(js_error)?;
+        let workspace_id = workspace_number(workspace)?;
+        let bodies = presence_bodies(
+            &value,
+            neighbour_wire::peer_handle(&self.device_key),
+            workspace,
+        )?;
+        if bodies.is_empty() {
+            return Ok(());
         }
-        .map_err(js_error)?;
-        let grant = receipt
-            .await
-            .map_err(|_| js_error("peer session closed"))?
+        self.handle
+            .publish_presence(workspace_id, bodies)
+            .map_err(js_error)
+    }
+
+    /// The person's pointer is no longer over any window of `workspace`: the
+    /// members take it off their screens (nothing while it never was there).
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace.
+    #[wasm_bindgen(js_name = pointerLeft)]
+    pub fn pointer_left(&self, workspace: &str) -> Result<(), JsError> {
+        let workspace_id = workspace_number(workspace)?;
+        let body = pointer_cleared(neighbour_wire::peer_handle(&self.device_key), workspace)?;
+        self.handle
+            .publish_presence(workspace_id, vec![body])
+            .map_err(js_error)
+    }
+
+    /// Publish ephemeral `ops` (JSON array of `{kind: 'insert'|'delete', at,
+    /// text|len}`) for `record` (JSON) in `workspace`: the keystroke preview
+    /// the members' editors show before the change lands, sealed with the
+    /// record's channel keys. Resolves `false` when this device holds none.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace, record or operation, or a closed
+    /// session.
+    #[wasm_bindgen(js_name = publishPreview)]
+    pub async fn publish_preview(
+        &self,
+        workspace: &str,
+        record: &str,
+        seq: u64,
+        ops: &str,
+    ) -> Result<bool, JsError> {
+        let workspace_id = workspace_number(workspace)?;
+        let frame = encode_live_preview(record, seq, ops)?;
+        let Some(sealed) = self.seal_live(workspace.to_owned(), frame).await? else {
+            return Ok(false);
+        };
+        self.handle
+            .publish_live(workspace_id, sealed)
             .map_err(js_error)?;
-        serde_json::to_string(&JsGrant {
-            token: hex::encode(grant.token),
-            workspace: grant.room,
-            publisher: grant.publisher,
-            expires_at_ns: grant.expires_at_ns,
-        })
-        .map_err(js_error)
+        Ok(true)
+    }
+
+    /// End this device's previews of `record` in `workspace`: the members
+    /// drop the ops they have not seen land.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace or record, or a closed session.
+    #[wasm_bindgen(js_name = endPreview)]
+    pub async fn end_preview(&self, workspace: &str, record: &str) -> Result<(), JsError> {
+        let workspace_id = workspace_number(workspace)?;
+        let frame = encode_live_preview_end(record)?;
+        if let Some(sealed) = self.seal_live(workspace.to_owned(), frame).await? {
+            self.handle
+                .publish_live(workspace_id, sealed)
+                .map_err(js_error)?;
+        }
+        Ok(())
     }
 
     /// Seal one encoded live frame of `workspace` (from [`encode_live_presence`]
@@ -2309,74 +2521,11 @@ impl WasmPeer {
         serde_json::to_string(&people).map_err(js_error)
     }
 
-    /// Send `events` (JSON array of `legacy_window::InputEvent`s, externally
-    /// tagged: `{"PointerMotion": {"x": 1, "y": 2}}`) for the legacy window
-    /// `surface` (16 hex) that `publisher` (64 hex) streams in `workspace`. With
-    /// no events it only asks whether this device may drive the window.
-    /// Resolves `false` when it may not.
-    #[wasm_bindgen(js_name = legacyInput)]
-    pub async fn legacy_input(
-        &self,
-        workspace: String,
-        publisher: String,
-        surface: String,
-        events: String,
-    ) -> Result<bool, JsError> {
-        let publisher: [u8; 32] = hex::decode(&publisher)
-            .ok()
-            .and_then(|key| key.try_into().ok())
-            .ok_or_else(|| js_error("publisher is not a device key"))?;
-        let surface = u64::from_str_radix(&surface, 16).map_err(js_error)?;
-        let request = tilo_relay_protocol::legacy_window::InputRequest {
-            workspace_id: workspace_number(&workspace)?,
-            publisher,
-            surface,
-            events: serde_json::from_str(&events).map_err(js_error)?,
-        };
-        if !request.valid() {
-            return Err(js_error("input out of bounds"));
-        }
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        self.handle
-            .legacy_input_then(
-                request,
-                Box::new(move |sent| {
-                    let _ = reply.send(sent);
-                }),
-            )
-            .map_err(js_error)?;
-        receipt
-            .await
-            .map_err(|_| js_error("peer session closed"))?
-            .map_err(js_error)
-    }
-
-    /// Tell the host which video codecs this page decodes (`codecs`, a JSON
-    /// array of `SurfaceStreamStart` labels such as `["h264","vp9"]`), so
-    /// sessions stream their legacy windows in `workspace` in one every member
-    /// plays. Resolves `false` when the host predates codec adverts.
-    #[wasm_bindgen(js_name = legacyCodecs)]
-    pub async fn legacy_codecs(&self, workspace: String, codecs: String) -> Result<bool, JsError> {
-        let request = tilo_relay_protocol::legacy_window::CodecsRequest {
-            workspace_id: workspace_number(&workspace)?,
-            decode: serde_json::from_str(&codecs).map_err(js_error)?,
-        };
-        if !request.valid() {
-            return Err(js_error("codecs out of bounds"));
-        }
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        self.handle
-            .legacy_codecs_then(
-                request,
-                Box::new(move |taken| {
-                    let _ = reply.send(taken);
-                }),
-            )
-            .map_err(js_error)?;
-        receipt
-            .await
-            .map_err(|_| js_error("peer session closed"))?
-            .map_err(js_error)
+    /// This page's device key, hex: how the workspace names it in presence
+    /// and in the members' lists.
+    #[wasm_bindgen(js_name = deviceKey)]
+    pub fn device_key(&self) -> String {
+        hex::encode(self.device_key)
     }
 
     /// How many changes this page made to its workspace: records it sent, and
@@ -2389,6 +2538,55 @@ impl WasmPeer {
         )]
         let count = crate::replication::authored(self.id) as f64;
         count
+    }
+
+    /// What the workspace's members published for this page since the last
+    /// call, as a JSON array: their presence (`{kind: 'shell', publisher,
+    /// frame}`, `{kind: 'pointer', publisher, tab, at, sentAtMs, colour}`,
+    /// `{kind: 'pointerLeft', publisher}`, `{kind: 'wave', publisher, wave}`
+    /// and `{kind: 'following', publisher, following}`, `publisher` the
+    /// publishing device's key in hex) and their ephemeral previews
+    /// (`{kind: 'preview'|'previewEnd', publisher, record, seq?, ops?}`).
+    /// This page's own messages are left out.
+    #[wasm_bindgen(js_name = takeLiveEvents)]
+    pub fn take_live_events(&self) -> String {
+        let now_ms = ui::time::unix_now_ns() / 1_000_000;
+        let events: Vec<serde_json::Value> = self
+            .live_events
+            .drain()
+            .into_iter()
+            .filter_map(|event| match event {
+                PeerEvent::Presence { from, body, .. } if from != self.device_key => {
+                    let event = presence_event(from, &body, now_ms)?;
+                    serde_json::to_value(event).ok()
+                }
+                PeerEvent::Live { from, frame, .. } if from != self.device_key => {
+                    let publisher = hex::encode(from);
+                    let event = match LiveFrame::decode(&frame).ok()? {
+                        LiveFrame::Ops(OpsFrame::Preview { seq, record, ops }) => {
+                            JsLiveEvent::Preview {
+                                publisher,
+                                record: record_to_js(record),
+                                seq,
+                                ops: ops_to_js(ops),
+                            }
+                        }
+                        LiveFrame::Ops(OpsFrame::End { record }) => JsLiveEvent::PreviewEnd {
+                            publisher,
+                            record: record_to_js(record),
+                        },
+                        // Semantic work requires an authenticated record
+                        // consumer, and presence no longer comes this way.
+                        LiveFrame::Ops(OpsFrame::Semantic { .. }) | LiveFrame::Presence(_) => {
+                            return None;
+                        }
+                    };
+                    serde_json::to_value(event).ok()
+                }
+                _ => None,
+            })
+            .collect();
+        serde_json::to_string(&events).unwrap_or_else(|_| "[]".into())
     }
 
     /// Records whose durable change landed since the last call, as a JSON

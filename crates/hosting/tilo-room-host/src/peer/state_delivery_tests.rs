@@ -115,7 +115,7 @@ async fn writer_boundary(
         disconnect: &disconnect,
         presence: None,
         revocations: &revocations,
-        live_bridge: None,
+        carried_calls: None,
         agents: Box::leak(Box::default()),
         positions: None,
         compactor: None,
@@ -127,6 +127,7 @@ async fn writer_boundary(
         outbound: &source_tx,
         disconnect: &source_disconnect,
         connection_live: Some(&source_live),
+        carried_calls: None,
         ..session
     };
     let source = StateSource::new(&source_peer, &source_session);
@@ -405,7 +406,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         disconnect: &disconnect,
         presence: None,
         revocations: &revocations,
-        live_bridge: None,
+        carried_calls: None,
         agents: Box::leak(Box::default()),
         positions: None,
         compactor: None,
@@ -417,6 +418,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         outbound: &source_tx,
         disconnect: &source_disconnect,
         connection_live: Some(&source_live),
+        carried_calls: None,
         ..session
     };
     let source = StateSource::new(&source_peer, &source_session);
@@ -648,7 +650,7 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
         disconnect: &disconnect,
         presence: None,
         revocations: &revocations,
-        live_bridge: None,
+        carried_calls: None,
         agents: Box::leak(Box::default()),
         positions: None,
         compactor: None,

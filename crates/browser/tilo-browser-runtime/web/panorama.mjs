@@ -83,10 +83,11 @@ export function createPresentedSource({audience,app,canvas,layer,valid,now=()=>p
         const current=layer();watch(current);
         const at=state.observedPresentedAtMs??now();
         if((current?.members().length??0)>MAX_PRESENCES)throw Error('presence capacity exceeded');
-        // An agent's pointer over this record's window is a point in the
-        // record's own surface, which this pane shows. An agent's presence
-        // always names its colour.
-        const pointers=(current?.remoteState(at)??[]).filter(p=>epochs.has(p.publisher)&&!p.stale&&p.participant?.kind==='agent'&&p.pointer?.window?.app===app&&p.pointer.window.record===state.record&&finite(p.pointer.at)&&p.pointer.at.length===2&&p.pointer.at[0]>=0&&p.pointer.at[1]>=0&&p.pointer.at[0]<size[0]&&p.pointer.at[1]<size[1]).map(p=>({publisher:p.publisher,seq:p.seq,receivedAtMs:p.receivedAtMs,pointer:[...p.pointer.at],participant:structuredClone(p.participant),epoch:epochs.get(p.publisher)}));
+        // An agent's pointer over this tab is a point in the record's own
+        // surface, which this pane shows. An agent's presence always names
+        // its colour.
+        const tab=/^[0-9a-f]+$/.test(String(state.tab??''))?Number.parseInt(state.tab,16):null;
+        const pointers=(current?.remoteState(at)??[]).filter(p=>epochs.has(p.publisher)&&!p.stale&&p.participant?.kind==='agent'&&tab!==null&&p.pointer?.tile?.tab===tab&&finite(p.pointer.at)&&p.pointer.at.length===2&&p.pointer.at[0]>=0&&p.pointer.at[1]>=0&&p.pointer.at[0]<size[0]&&p.pointer.at[1]<size[1]).map(p=>({publisher:p.publisher,seq:p.seq,receivedAtMs:p.receivedAtMs,pointer:[...p.pointer.at],participant:structuredClone(p.participant),epoch:epochs.get(p.publisher)}));
         if(pointers.length>MAX_PRESENCES)throw Error('presence capacity exceeded');
         copy??=makeCanvas(canvas.width,canvas.height);
         if(copy.width!==canvas.width)copy.width=canvas.width;

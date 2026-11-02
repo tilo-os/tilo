@@ -2173,18 +2173,6 @@ impl Mount {
         // eagerly relayouting here and then polling animated widgets runs
         // the same frame pipeline twice before one presentation.
         let mut host_changed = held;
-        // The layout changed under the streamed legacy windows: each moves
-        // into the tab it names once that tab is there.
-        if let Some(desktop) = self
-            .desktop
-            .as_ref()
-            .filter(|d| d.shared.take_peer_windows_due())
-            && let Err(error) = desktop.show_peer_windows()
-        {
-            web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
-                "a streamed window could not be shown: {error}"
-            )));
-        }
         if let Some(desktop) = self.desktop.as_ref().filter(|d| d.shared.take_wake()) {
             let wakers = desktop.shared.take_wakers();
             if let Some(reasons) = &mut reasons {
@@ -2649,6 +2637,8 @@ impl Mount {
         let value = serde_json::json!({
             "phase": if self.error.is_some() { "failed" } else { "presented" },
             "id": id,
+            // The tab this mount shows, hex: what its pointers are over.
+            "tab": format!("{id:x}"),
             "error": self.error,
             "frames": self.frames,
             "captureProtected": self.presented_capture_protected,

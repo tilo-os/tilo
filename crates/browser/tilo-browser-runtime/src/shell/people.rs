@@ -979,6 +979,8 @@ mod tests {
                 size: (1600.0, 1000.0),
                 windows: vec![window("plans", true), window("diary", false)],
             }),
+            availability: ui::Availability::Available,
+            call: None,
         };
         let records = [(tab_id, "so.tilo.notes".to_owned(), "plans".to_owned())];
         let screens = screens(&Frame {

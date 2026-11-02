@@ -820,13 +820,10 @@ impl AgentParticipant {
     }
 
     /// The name the member on `device` shows in its presence.
-    pub(super) fn member_name(&mut self, device: [u8; 32]) -> Option<String> {
-        self.live
-            .remote(tilo_clock::unix_now_ms())
-            .into_iter()
-            .find(|member| member.publisher == device)
-            .and_then(|member| member.presence?.participant)
-            .map(|participant| participant.label)
+    pub(super) fn member_name(&self, device: [u8; 32]) -> Option<String> {
+        self.members
+            .get(&device)
+            .map(|(shell, _)| shell.label.clone())
             .filter(|label| !label.is_empty())
     }
 }

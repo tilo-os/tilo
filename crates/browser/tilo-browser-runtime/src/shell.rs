@@ -875,7 +875,7 @@ impl BrowserShell {
                 background: None,
             });
         } else {
-            self.handle.open_search(None);
+            self.handle.open_search(ui::search::Scope::Workspace, None);
         }
     }
 

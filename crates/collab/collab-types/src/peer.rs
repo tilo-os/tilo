@@ -130,6 +130,15 @@ pub enum PeerPresencePayload {
         channel: String,
         services: Vec<String>,
     },
+    /// Who the sender's desktop shell shows itself as and what its screen
+    /// looks like now: its windows, the one it works in, and the caret
+    /// there. Desktop presence: shells draw the sender's face and a mini view
+    /// of its screen, apps never receive it. The sender's pointer is not
+    /// here; it travels as a tile-space pointer like every device's.
+    ///
+    /// Appended so new decoders continue to read every older postcard frame;
+    /// older peers reject only what they cannot draw of a shell's screen.
+    Shell(Box<crate::presence::ShellPresence>),
 }
 
 #[cfg(test)]
@@ -187,6 +196,34 @@ mod tests {
                 channel: "c_standup".into(),
                 services: Vec::new(),
             },
+            PeerPresencePayload::Shell(Box::new(crate::presence::ShellPresence {
+                seq: 7,
+                sent_at_ms: 1_700_000_000_000,
+                label: "Ada".into(),
+                agent: false,
+                colour: "#44aaff".into(),
+                activity: None,
+                place: Some("2".into()),
+                size: [1440, 852],
+                windows: vec![crate::presence::ShellWindow {
+                    app: "so.tilo.notes".into(),
+                    record: [7; 8],
+                    rect: [0, 0, 10000, 10000],
+                    focused: true,
+                }],
+                selection: Some(crate::presence::ShellSelection {
+                    anchor: "0102".into(),
+                    head: "0304".into(),
+                }),
+                chat: Some(crate::presence::ShellChat {
+                    text: "here".into(),
+                    sent: true,
+                }),
+                reaction: Some(crate::presence::ShellReaction {
+                    seq: 3,
+                    emoji: "🎉".into(),
+                }),
+            })),
         ]
     }
 

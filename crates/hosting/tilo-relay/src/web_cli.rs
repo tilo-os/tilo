@@ -473,8 +473,6 @@ fn web_limits() -> tilo_relay::web::WebLimits {
     tilo_relay::web::WebLimits {
         max_sessions: env_count("TILO_RELAY_MAX_WEB_SESSIONS").unwrap_or(defaults.max_sessions),
         max_handshakes: env_count("TILO_RELAY_MAX_HANDSHAKES").unwrap_or(defaults.max_handshakes),
-        max_live_grants: env_count("TILO_RELAY_MAX_LIVE_GRANTS")
-            .unwrap_or(defaults.max_live_grants),
     }
 }
 

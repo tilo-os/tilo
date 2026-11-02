@@ -59,16 +59,8 @@ impl Downlink {
 /// oldest instead of queueing behind it.
 const MAX_GROUPS_IN_FLIGHT: usize = 8;
 
-/// How a session's copy of a track reads the source.
-#[derive(Clone, Copy)]
-pub(crate) enum Start {
-    /// What the subscription asks for, as the source keeps it.
-    Requested,
-    /// As the relay reads its egress for a subscriber
-    /// ([`crate::live::egress_subscription`]): from the live edge, with the
-    /// relay's reorder budget.
-    Egress,
-}
+/// An output track without subscribers for this long is withdrawn.
+const UNUSED_GRACE: Duration = Duration::from_secs(2);
 
 /// A session-owned copy of `source`. Drop it to cut the session off.
 pub(crate) struct Mirror {
@@ -79,18 +71,16 @@ pub(crate) struct Mirror {
 
 impl Mirror {
     /// Mirror every broadcast `source` announces, with the given cache bound
-    /// and retention for the session's copy, each track from `start`. With a
-    /// `downlink`, datagrams of the voice track are re-bundled for that
-    /// downlink's measured loss.
+    /// and retention for the session's copy. With a `downlink`, datagrams of
+    /// the voice track are re-bundled for that downlink's measured loss.
     pub(crate) fn start(
         source: moq_net::origin::Consumer,
         bytes: u64,
         retain: Duration,
-        start: Start,
         downlink: Option<Arc<Downlink>>,
     ) -> Self {
         let (origin, task) = OriginTask::produce(origin_config(bytes, retain));
-        let watch = Task::spawn(watch(source, origin.clone(), start, downlink));
+        let watch = Task::spawn(watch(source, origin.clone(), downlink));
         Self {
             origin,
             _watch: watch,
@@ -107,7 +97,6 @@ impl Mirror {
 async fn watch(
     source: moq_net::origin::Consumer,
     target: moq_net::origin::Producer,
-    start: Start,
     downlink: Option<Arc<Downlink>>,
 ) {
     let mut announced = source.announced();
@@ -123,7 +112,7 @@ async fn watch(
         let task = Task::spawn({
             let (source, target, downlink) = (source.clone(), target.clone(), downlink.clone());
             async move {
-                if broadcast(source, target, path.clone(), start, downlink).await {
+                if broadcast(source, target, path.clone(), downlink).await {
                     let _ = ended.send((path, copy));
                 }
             }
@@ -163,7 +152,6 @@ async fn broadcast(
     source: moq_net::origin::Consumer,
     target: moq_net::origin::Producer,
     path: String,
-    start: Start,
     downlink: Option<Arc<Downlink>>,
 ) -> bool {
     let Ok(input) = source.routed_broadcast(path.as_str()).await else {
@@ -186,7 +174,7 @@ async fn broadcast(
                 let voice = downlink
                     .clone()
                     .filter(|_| request.name() == crate::relay::VOICE_TRACK);
-                tracks.push(Task::spawn(track(input.clone(), request, start, voice)));
+                tracks.push(Task::spawn(track(input.clone(), request, voice)));
             }
             _ = input.closed() => break,
         }
@@ -199,18 +187,11 @@ async fn broadcast(
 async fn track(
     input: moq_net::broadcast::Consumer,
     request: moq_net::track::Request,
-    start: Start,
     downlink: Option<Arc<Downlink>>,
 ) {
     let subscription = request.subscription().unwrap_or_default();
     let attempt = match input.track(request.name()) {
-        Ok(track) => {
-            let subscription = match start {
-                Start::Requested => subscription,
-                Start::Egress => crate::live::egress_subscription(&track, subscription),
-            };
-            track.subscribe(subscription).await
-        }
+        Ok(track) => track.subscribe(subscription).await,
         Err(error) => Err(error),
     };
     let mut reader = match attempt {
@@ -220,11 +201,8 @@ async fn track(
             return;
         }
     };
-    // An ordered stream (`ops/<hex record>`): a change is never optional, so
-    // its groups are copied one after another rather than concurrently.
-    let ordered = crate::live::ops_record(request.name()).is_some();
     let output = request.accept(reader.info().clone());
-    copy(&mut reader, output, downlink, ordered).await;
+    copy(&mut reader, output, downlink).await;
 }
 
 enum Next {
@@ -264,7 +242,7 @@ pub(crate) async fn unused(output: &moq_net::track::Producer) {
         if output.unused().await.is_err() {
             return;
         }
-        tokio::time::sleep(crate::live::UNUSED_GRACE).await;
+        tokio::time::sleep(UNUSED_GRACE).await;
         if !output.is_used() {
             return;
         }
@@ -275,7 +253,6 @@ async fn copy(
     input: &mut moq_net::track::Subscriber,
     mut output: moq_net::track::Producer,
     downlink: Option<Arc<Downlink>>,
-    ordered: bool,
 ) {
     let mut groups: VecDeque<Task> = VecDeque::new();
     let mut rebundler = voice::Rebundler::default();
@@ -304,25 +281,6 @@ async fn copy(
                 let _ = output.insert_datagram(datagram.sequence, datagram.timestamp, payload);
             }
             Next::Group(group) => {
-                if ordered {
-                    match copy_ordered(*group, &output, idle.as_mut()).await {
-                        Ordered::Copied | Ordered::Skipped => continue,
-                        Ordered::Failed => {
-                            let _ = output.abort(moq_net::Error::Cancel);
-                            return;
-                        }
-                        Ordered::Unused => {
-                            match output.abort_unused(moq_net::Error::Cancel) {
-                                Ok(()) => return,
-                                Err(active) => {
-                                    output = active;
-                                    idle.set(unused(&watched));
-                                }
-                            }
-                            continue;
-                        }
-                    }
-                }
                 groups.retain(|task| !task.is_finished());
                 if groups.len() >= MAX_GROUPS_IN_FLIGHT {
                     groups.pop_front();
@@ -375,47 +333,6 @@ async fn copy(
     let _ = output.finish();
 }
 
-/// What serving one group of an ordered stream did.
-enum Ordered {
-    /// The group reached the view whole.
-    Copied,
-    /// The view will not carry this sequence (its track ended, or already
-    /// holds it); the copy moves on.
-    Skipped,
-    /// The group could not be copied whole, so the view cannot continue.
-    Failed,
-    /// Nobody reads the view any more.
-    Unused,
-}
-
-/// Serve one group of an ordered stream to `output`, whole, before the copy
-/// takes the next: a session's view holds every group the source served it, in
-/// order, exactly once. Copying groups concurrently would let a newer group
-/// displace an older one still in flight — its frames never written, its
-/// sequence left published but unfinished, and free to be created again — which
-/// is a lost change or a re-delivered one for the session reading the view.
-async fn copy_ordered<I>(
-    group: moq_net::group::Consumer,
-    output: &moq_net::track::Producer,
-    mut idle: std::pin::Pin<&mut I>,
-) -> Ordered
-where
-    I: std::future::Future<Output = ()>,
-{
-    let Ok(out) = output.create_group(moq_net::group::Info::from(group.sequence)) else {
-        return Ordered::Skipped;
-    };
-    let mut input = group;
-    let copying = copy_group(&mut input, out);
-    tokio::pin!(copying);
-    tokio::select! {
-        copied = &mut copying => {
-            if copied { Ordered::Copied } else { Ordered::Failed }
-        }
-        () = &mut idle => Ordered::Unused,
-    }
-}
-
 /// Copy `input`'s frames into `output`, finishing it at the end of the group.
 /// False when the group could not be copied whole, so the copy is abandoned.
 async fn copy_group(
@@ -455,14 +372,14 @@ mod tests {
             let mut reader = input.consume().subscribe(None).await?;
             let output = broadcast.create_track("copy", None)?;
             let access = output.clone();
-            let copying = copy(&mut reader, output, None, false);
+            let copying = copy(&mut reader, output, None);
             tokio::pin!(copying);
             let pending = std::future::poll_fn(|cx| {
                 Poll::Ready(std::future::Future::poll(copying.as_mut(), cx).is_pending())
             })
             .await;
             assert!(pending, "the existing unused grace must cover handoff");
-            tokio::time::advance(crate::live::UNUSED_GRACE / 2).await;
+            tokio::time::advance(UNUSED_GRACE / 2).await;
             let mut group = input.append_group()?;
             group.write_frame(
                 moq_net::Timestamp::ZERO,
@@ -474,83 +391,13 @@ mod tests {
             })
             .await;
             assert!(pending);
-            tokio::time::advance(crate::live::UNUSED_GRACE / 2).await;
+            tokio::time::advance(UNUSED_GRACE / 2).await;
             let ended = std::future::poll_fn(|cx| {
                 Poll::Ready(std::future::Future::poll(copying.as_mut(), cx).is_ready())
             })
             .await;
             assert!(ended, "source traffic must not renew unused demand");
             assert!(matches!(access.closed().await, moq_net::Error::Cancel));
-            Ok(())
-        }
-        .await;
-        assert!(result.is_ok(), "{result:?}");
-    }
-
-    /// A backlog on an ordered stream's source reaches the session's view
-    /// whole and in order: a newer group never displaces one still being
-    /// copied, so nothing is dropped and no sequence is left half-published
-    /// for the reader (which would lose it or see it again).
-    #[tokio::test]
-    async fn an_ordered_tracks_backlog_reaches_the_view_group_by_group() {
-        const GROUPS: u64 = 12;
-        let result: Result<(), Box<dyn std::error::Error>> = async {
-            let (origin, _origin_task) =
-                OriginTask::produce(origin_config(1024 * 1024, Duration::from_secs(2)));
-            let path = "tilo-live/room/member/ops";
-            let name = format!("ops/{}", "a".repeat(64));
-            let broadcast = origin.create_broadcast(path)?;
-            let track = broadcast.create_track(name.as_str(), None)?;
-            broadcast.announce(moq_net::origin::Route::default())?;
-            let view = Mirror::start(
-                origin.consume(),
-                1024 * 1024,
-                Duration::from_secs(2),
-                Start::Egress,
-                None,
-            );
-            let subscription =
-                moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
-            let mut viewer = view
-                .consume()
-                .routed_broadcast(path)
-                .await?
-                .track(name.as_str())?
-                .subscribe(subscription)
-                .await?;
-            // Every group is finished before the session's copy takes one.
-            for sequence in 0..GROUPS {
-                let mut group = track.append_group()?;
-                group.write_frame(
-                    moq_net::Timestamp::from_millis(sequence)?,
-                    bytes::Bytes::from(format!("change-{sequence}")),
-                )?;
-                group.finish()?;
-            }
-            let read = tilo_test_env::within("the mirrored backlog", async {
-                let mut read = Vec::new();
-                while (read.len() as u64) < GROUPS {
-                    let mut group = viewer.recv_group().await?.expect("a mirrored group");
-                    let mut frames = Vec::new();
-                    while let Some(frame) = group.read_frame().await? {
-                        frames.push((
-                            group.sequence,
-                            String::from_utf8(frame.payload.to_vec()).unwrap(),
-                        ));
-                    }
-                    read.push(frames);
-                }
-                Ok::<_, moq_net::Error>(read)
-            })
-            .await?;
-            for (index, frames) in read.iter().enumerate() {
-                let expected = format!("change-{index}");
-                assert_eq!(
-                    frames,
-                    &[(index as u64, expected.clone())],
-                    "group {index} arrived as {frames:?}"
-                );
-            }
             Ok(())
         }
         .await;
@@ -568,7 +415,7 @@ mod tests {
             let output = broadcast.create_track("copy", None)?;
             let mut viewer = output.consume().subscribe(None).await?;
             input.abort(moq_net::Error::ProtocolViolation)?;
-            let task = tokio::spawn(async move { copy(&mut reader, output, None, false).await });
+            let task = tokio::spawn(async move { copy(&mut reader, output, None).await });
             let result =
                 tilo_test_env::within("the mirrored upstream failure", viewer.recv_group()).await;
             assert!(
@@ -596,7 +443,7 @@ mod tests {
         // while the replacement subscriber has not yet attached.
         let previous = output.consume();
         drop(previous);
-        let copying = copy(&mut reader, output, None, false);
+        let copying = copy(&mut reader, output, None);
         tokio::pin!(copying);
         let pending = std::future::poll_fn(|cx| {
             Poll::Ready(std::future::Future::poll(copying.as_mut(), cx).is_pending())
@@ -649,13 +496,7 @@ mod tests {
             let first = source.create_broadcast("member")?;
             let _first_presence = first.create_track("presence", None)?;
             first.announce(moq_net::origin::Route::default().with_hops(first_hop(7)?))?;
-            let mirror = Mirror::start(
-                source.consume(),
-                1024 * 1024,
-                Duration::from_secs(2),
-                Start::Requested,
-                None,
-            );
+            let mirror = Mirror::start(source.consume(), 1024 * 1024, Duration::from_secs(2), None);
             let view = mirror.consume();
             let mirrored =
                 tilo_test_env::within("the mirrored broadcast", view.routed_broadcast("member"))
@@ -716,7 +557,7 @@ mod tests {
             let mut reader = input.consume().subscribe(None).await?;
             let output = broadcast.create_track("copy", None)?;
             let mut viewer = output.consume().subscribe(None).await?;
-            let task = tokio::spawn(async move { copy(&mut reader, output, None, false).await });
+            let task = tokio::spawn(async move { copy(&mut reader, output, None).await });
             let group =
                 tilo_test_env::within("the cached mirrored group", viewer.recv_group()).await?;
             let Some(mut group) = group else {

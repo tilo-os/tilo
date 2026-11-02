@@ -60,12 +60,12 @@ function mount({clock = () => 0, ...options} = {}) {
   return {surface, layer, f, t, drawn, cursors, last: () => drawn.at(-1) ?? []};
 }
 
-test('publishes the local pointer relative to what it is over, and clears it on leave', () => {
-  // The runtime names what is under a surface point (`pointer_anchor`).
+test('publishes the local pointer over the tab it is over, and clears it on leave', () => {
+  // The runtime names the tab under a surface point (`pointer_tile`).
   const asked = [];
   const anchor = (x, y) => {
     asked.push([x, y]);
-    return x < 200 ? {strip: '7', at: [x + 300, y - 40]} : {window: {app: 'so.tilo.notes', record: 'note-1'}, at: [x - 200, y - 100]};
+    return x < 200 ? {tile: {tab: 7}, at: [x + 300, y - 40]} : {tile: {tab: 9}, at: [x - 200, y - 100]};
   };
   const {surface, layer, cursors} = mount({anchor});
   surface.dispatch('pointermove', {clientX: 110, clientY: 70});
@@ -73,8 +73,8 @@ test('publishes the local pointer relative to what it is over, and clears it on 
   surface.dispatch('pointerleave', {});
   assert.deepEqual(asked, [[100, 50], [250, 130]], 'in surface pixels');
   assert.deepEqual(layer.published, [
-    {pointer: {strip: '7', at: [400, 10]}},
-    {pointer: {window: {app: 'so.tilo.notes', record: 'note-1'}, at: [50, 30]}},
+    {pointer: {tile: {tab: 7}, at: [400, 10]}},
+    {pointer: {tile: {tab: 9}, at: [50, 30]}},
     {pointer: null},
   ]);
   cursors.close();

@@ -531,25 +531,6 @@ impl WorkspaceRuntime {
         self.live_members.contains_key(device)
     }
 
-    /// Relay a live envelope that arrived from outside this workspace's
-    /// iroh live plane (a browser's WebTransport session, already validated
-    /// and rate-limited by the live relay) to every iroh live member other
-    /// than its author. Returns how many members received it.
-    pub fn relay_bridged_live(&self, author: &[u8; 32], envelope: &Envelope) -> usize {
-        let mut delivered = 0usize;
-        for member in self.live_members.keys() {
-            if member == author {
-                continue;
-            }
-            if let Some(sub) = self.subscribers.get(member)
-                && sub.tx.try_send(envelope.clone()).is_ok()
-            {
-                delivered = delivered.saturating_add(1);
-            }
-        }
-        delivered
-    }
-
     /// Relay one validated live envelope from `author` to every other live
     /// member, within the author's rate budget. Live traffic is lossy: a
     /// member whose queue is full misses the frame rather than being

@@ -1,6 +1,5 @@
 //! The one session-authority lifecycle shared by every media carrier: the
-//! voice relay ([`crate::relay`]), the live relay ([`crate::live`]) and its
-//! HTTPS fallback ([`crate::live::fallback`]).
+//! voice relay ([`crate::relay`]).
 //!
 //! Admission is the host authority accepting the grant *and* a first
 //! observation that reports [`AuthorizationStatus::Current`]: only then does an

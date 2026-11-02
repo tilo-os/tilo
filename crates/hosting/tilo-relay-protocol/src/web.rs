@@ -1,6 +1,5 @@
-//! The browser carriers of the relay: HTTPS for the durable plane and device
-//! certification, WebTransport (`moq-lite`, with an HTTPS fallback) for the
-//! live plane. PR 541's carrier model, served by the host itself.
+//! The browser carriers of the relay: HTTPS for the durable plane, presence
+//! and calls, and WebTransport for voice. Served by the host itself.
 //!
 //! HTTPS carries the *same* values as the `tilo-relay/1` stream: the
 //! [`auth`](crate::auth) handshake, then [`Envelope`]s both ways. A browser
@@ -22,8 +21,6 @@
 //! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
 //! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
 //! | `/live/grant/agent` | [`AgentLiveGrantRequest`] | [`LiveGrant`] for [`agent_publisher`] |
-//! | `/live/legacy-input` | [`InputRequest`](crate::legacy_window::InputRequest) | `204`, `403` when the member may not drive the window |
-//! | `/live/legacy-codecs` | [`CodecsRequest`](crate::legacy_window::CodecsRequest) | `204`, `403` when not admitted |
 //! | `/live/fallback/{open,send,resume}` | live fallback frames | frame stream |
 //! | `/rooms` | [`RoomsRequest`](crate::rooms::RoomsRequest) | [`RoomsReply`](crate::rooms::RoomsReply) |
 //! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |

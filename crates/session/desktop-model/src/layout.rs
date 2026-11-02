@@ -41,19 +41,17 @@ pub enum TileContent {
     },
     /// A window a peer has open, before this machine has bound a local
     /// instance to the tab. The peer's `surface_id` only resolves on
-    /// their compositor so it is dropped, keeping only the app id. A
-    /// waypoint: `shell::peer_windows` binds a local instance and the
-    /// tile becomes `Foreign`. Never projected into a workspace document,
-    /// since a `PeerWindow` is by construction somebody else's.
+    /// their compositor so it is dropped, keeping only the app id. Never
+    /// projected into a workspace document, since a `PeerWindow` is by
+    /// construction somebody else's.
     PeerWindow {
         /// The wayland app-id the peer's window announces.
         app_id: String,
         /// The peer's own resolved tab title.
         label: String,
         /// What this machine is doing about it, for the card. Empty means
-        /// nobody has looked yet; writing the note is how
-        /// `shell::peer_windows` records that the decision was made, so a
-        /// refusal or launch only ever starts once.
+        /// nobody has looked yet; writing the note records that the
+        /// decision was made, so a refusal or launch only ever starts once.
         #[serde(default)]
         note: String,
         /// Set when this machine has no copy of the app to open: whether

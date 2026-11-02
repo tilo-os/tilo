@@ -18,7 +18,7 @@ test-support = ["tilo-relay-store/test-support"]
 # records' channel keys to pages.
 agents = ["web", "dep:tilo-agent-participant", "dep:tilo-secrets", "dep:ui", "dep:chat"]
 # Pages reach the host: the live plane's voice relay.
-web = ["tilo-relay-shell/web", "dep:tilo-moq"]
+web = ["dep:tilo-moq"]
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }

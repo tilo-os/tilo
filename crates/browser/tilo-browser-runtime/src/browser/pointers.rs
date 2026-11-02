@@ -1,6 +1,6 @@
 //! Workspace members' pointers over a mount: where this person's pointer is,
-//! said relative to what it is over, and where everyone else's lands in
-//! this page's own layout. Both go through
+//! said as the tile of a tab of the workspace it is over, and where everyone
+//! else's lands in this page's own layout. Both go through
 //! [`tilo_relay_protocol::live::PointerLayout`], the mapping native shells
 //! use too, so a pointer over a window or a strip's empty desktop lands on
 //! the same spot of it whatever size each member's window is or wherever
@@ -12,14 +12,20 @@ use wasm_bindgen::prelude::*;
 
 use super::{Mount, error, with_mount_quietly};
 
-/// A pointer as the page's live layer carries it: `{window: {app, record},
-/// at: [x, y]}` over a window, `{beside: {app, record}, edge: [fx, fy], at:
-/// [dx, dy]}` over the empty desktop beside the nearest window, or `{strip:
-/// "<id>", at: [x, y]}` on a desk showing none (the id a decimal string: it
-/// can pass 2^53).
+/// A pointer as the page's live layer carries it: `{tile: {tab}, at: [x, y]}`
+/// over the tile of a tab of the workspace — the way every device's pointer
+/// travels, in the tile's logical pixels — or, within this page's own
+/// layout, `{window: {app, record}, at}` over a window, `{beside: {app,
+/// record}, edge: [fx, fy], at}` over the empty desktop beside the nearest
+/// window, or `{strip: "<id>", at}` on a desk showing none (the id a decimal
+/// string: it can pass 2^53).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub(crate) enum JsPointer {
+    Tile {
+        tile: JsTile,
+        at: [f32; 2],
+    },
     Window {
         window: JsWindow,
         at: [f32; 2],
@@ -35,6 +41,12 @@ pub(crate) enum JsPointer {
     },
 }
 
+/// The tab of the workspace a tile shows.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct JsTile {
+    pub(crate) tab: u64,
+}
+
 /// The record a window shows, as the live layer names it.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct JsWindow {
@@ -45,6 +57,9 @@ pub(crate) struct JsWindow {
 impl JsPointer {
     pub(crate) fn into_live(self) -> Result<LivePointer, String> {
         Ok(match self {
+            // A tile's place depends on the layout that shows it: the caller
+            // resolves it first ([`Mount::place_remote_pointers`]).
+            Self::Tile { .. } => return Err("a tile pointer is placed in a layout".into()),
             Self::Window { window, at } => LivePointer::Window {
                 record: LiveRecord {
                     app: window.app,
@@ -161,22 +176,42 @@ fn layout(m: &Mount) -> PointerLayout {
 }
 
 /// This person's pointer at `(x, y)` on the surface (CSS pixels), as the
-/// workspace's live layer carries it ([`JsPointer`] JSON): relative to the
-/// window it is over, else to the shown strip. `None` over nothing either
-/// names, which publishes no pointer.
+/// workspace's live layer carries it ([`JsPointer`] JSON): over the tile of
+/// the tab it is over, in that tile's logical pixels. `None` over no tab,
+/// which publishes no pointer.
 ///
 /// # Errors
 ///
 /// Rejects a closed mount.
 #[wasm_bindgen]
-pub fn pointer_anchor(id: u64, x: f32, y: f32) -> Result<Option<String>, JsValue> {
+pub fn pointer_tile(id: u64, x: f32, y: f32) -> Result<Option<String>, JsValue> {
     // A read: it changes nothing a semantics tree shows.
     with_mount_quietly(id, |m| {
-        layout(m)
-            .anchor([x, y])
-            .map(|pointer| serde_json::to_string(&JsPointer::from_live(pointer)).map_err(error))
-            .transpose()
+        let point = ui::kurbo::Point::new(f64::from(x), f64::from(y));
+        let found = tiles(m).into_iter().find(|(_, area)| area.contains(point));
+        let Some((tab, area)) = found else {
+            return Ok(None);
+        };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "surface coordinates are a few thousand logical pixels"
+        )]
+        let at = [(x - area.x0 as f32), (y - area.y0 as f32)];
+        serde_json::to_string(&JsPointer::Tile {
+            tile: JsTile { tab },
+            at,
+        })
+        .map(Some)
+        .map_err(error)
     })
+}
+
+/// The tabs this mount shows, in the workspace's own tab ids: where a
+/// member's pointer over one of them lands here.
+fn tiles(m: &Mount) -> Vec<(u64, ui::kurbo::Rect)> {
+    m.desktop
+        .as_ref()
+        .map_or_else(Vec::new, |desktop| desktop.handle.shown_tabs())
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -222,11 +257,24 @@ impl Mount {
         }
         let layout = layout(self);
         let presence = self.frame.presence();
+        let tabs = tiles(self);
         let cursors = self
             .remote_pointers
             .iter()
             .filter_map(|p| {
-                let pointer = p.pointer.clone().into_live().ok()?;
+                let pointer = match p.pointer.clone() {
+                    JsPointer::Tile { tile, at } => {
+                        let (_, area) = tabs.iter().find(|(tab, _)| *tab == tile.tab)?;
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "surface coordinates are a few thousand logical pixels"
+                        )]
+                        let point = [area.x0 as f32 + at[0], area.y0 as f32 + at[1]];
+                        JsPointer::from_live(layout.anchor(point)?)
+                    }
+                    pointer => pointer,
+                };
+                let pointer = pointer.into_live().ok()?;
                 let [x, y] = layout.place(&pointer)?;
                 Some(presence.placed_cursor(ui::presence::PlacedPointer {
                     user: UserId(p.publisher.clone()),

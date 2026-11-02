@@ -20,8 +20,6 @@ tilo-relay-client = { version = "0.1.0", path = "../../hosting/tilo-relay-client
 tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
 # The iroh session client native peers reach the host with.
 tilo-relay-session = { version = "0.1.0", path = "../../hosting/tilo-relay-session", optional = true }
-# A host's browser tab, drawn here from its paint stream (`remote_page`).
-tilo-paint-stream = { version = "0.1.0", path = "../paint-stream" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 # Signed document envelopes, exactly as native peers exchange them.
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }

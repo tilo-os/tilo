@@ -6,13 +6,13 @@
 //! browser's envelopes into that stream; a pump reads the host's envelopes
 //! out into an event log that `/events` serves from a host-MAC'd cursor and
 //! trims on acknowledgement. Subscribe, commit ordering, store-and-forward,
-//! the live plane and the revocation audit are therefore the relay's own
-//! code paths, and browser and iroh peers share one host order.
+//! presence and the revocation audit are therefore the relay's own code
+//! paths, and browser and iroh peers share one host order.
 //!
 //! Nothing here blocks a runtime thread: handlers await the log's `Notify`,
 //! and the only periodic work is the idle janitor.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -23,6 +23,7 @@ use tokio::sync::{Notify, watch};
 use crate::auth::{AuthenticatedPeer, Hello, HelloAck2, PendingServer};
 use crate::daemon::WebContext;
 use crate::handshake::EndpointTrust;
+use crate::room_access::{self, RoomOperation};
 use crate::transport::Envelope;
 use crate::web::protocol::{
     Cursor, EventsPage, MAX_PAGE_BYTES, MAX_PAGE_ENVELOPES, SessionChallenge, SessionGrant,
@@ -37,6 +38,8 @@ const SESSION_TTL: Duration = Duration::from_secs(15 * 60);
 /// A session nobody polled for this long ends; its peer unsubscribes and the
 /// host queues for the device instead.
 const IDLE_TTL: Duration = Duration::from_secs(45);
+/// How often [`Sessions::janitor`] looks for sessions to end.
+const SWEEP: Duration = Duration::from_secs(5);
 /// Event bytes the host holds for a session until the device acknowledges
 /// them. Past it the session stops taking envelopes from its peer loop, whose
 /// live deliveries then stay on disk until the device reads and its room
@@ -93,8 +96,9 @@ pub(crate) struct Session {
     /// Signalled when acknowledged events leave the log.
     drained: Notify,
     end: watch::Sender<bool>,
-    /// [`Sessions::ended`], shared by every session of the host.
-    ended: Arc<Notify>,
+    /// The workspaces whose presence plane this page joined: who `/here`
+    /// pairs with before anyone says anything.
+    workspaces: Mutex<BTreeSet<u64>>,
 }
 
 impl Session {
@@ -107,7 +111,6 @@ impl Session {
         self.log().closed = true;
         self.changed.notify_waiters();
         self.drained.notify_one();
-        self.ended.notify_one();
     }
 
     /// Log `envelope` for the device unless that would exceed
@@ -126,10 +129,6 @@ impl Session {
         Admit::Logged
     }
 
-    pub(crate) fn token(&self) -> [u8; 32] {
-        self.token
-    }
-
     pub(crate) fn is_open(&self) -> bool {
         !*self.end.borrow() && Instant::now() < self.expires
     }
@@ -141,8 +140,6 @@ pub(crate) struct Sessions {
     mac_key: [u8; 32],
     handshakes: Mutex<HashMap<[u8; 16], Handshake>>,
     live: Mutex<HashMap<[u8; 32], Arc<Session>>>,
-    /// Signalled when any session ends, for the live authority's observer.
-    ended: Arc<Notify>,
     /// Concurrent sessions and handshakes.
     limits: super::WebLimits,
 }
@@ -163,7 +160,6 @@ impl Sessions {
             mac_key: rand::random(),
             handshakes: Mutex::default(),
             live: Mutex::default(),
-            ended: Arc::default(),
             limits,
         })
     }
@@ -254,7 +250,7 @@ impl Sessions {
             changed: Notify::new(),
             drained: Notify::new(),
             end,
-            ended: Arc::clone(&self.ended),
+            workspaces: Mutex::default(),
         });
         let context = self.web.relay.peer_context();
         let pumped = session.clone();
@@ -331,6 +327,9 @@ impl Sessions {
     ) -> Result<(), SessionError> {
         let mut bytes = Vec::new();
         for envelope in &envelopes {
+            if let Envelope::LiveJoin { workspace_id } = envelope {
+                lock(&session.workspaces).insert(*workspace_id);
+            }
             bytes.extend(
                 tilo_delivery_protocol::transport_v2::encode_state(envelope)
                     .map_err(|error| SessionError::Refused(error.to_string()))?,
@@ -420,8 +419,20 @@ impl Sessions {
         }
     }
 
+    /// End idle and expired sessions every [`SWEEP`] until the host stops: a
+    /// page that vanished stops counting as here and its device's deliveries
+    /// return to the room.
+    pub(crate) async fn janitor(self: Arc<Self>) {
+        let mut sweep = tokio::time::interval(SWEEP);
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            sweep.tick().await;
+            self.sweep();
+        }
+    }
+
     /// End idle and expired sessions and forget stale handshakes.
-    pub(crate) fn sweep(&self) {
+    fn sweep(&self) {
         let ended: Vec<Arc<Session>> = {
             let mut live = lock(&self.live);
             let ended = live
@@ -458,29 +469,36 @@ impl Sessions {
         online
     }
 
-    /// Device and user of every open session, for the live authority.
-    pub(crate) fn open_devices(&self) -> Vec<([u8; 32], AuthenticatedPeer)> {
-        lock(&self.live)
-            .iter()
-            .filter(|(_, session)| session.is_open())
-            .map(|(token, session)| (*token, session.peer.clone()))
-            .collect()
-    }
-
-    /// Resolves after a session ended (closed or swept) since the last call
-    /// returned; an end before the first wait is not lost.
-    pub(crate) async fn ended(&self) {
-        self.ended.notified().await;
-    }
-
-    /// When the soonest open session's lifetime runs out: it stops being
-    /// open then without anything announcing it.
-    pub(crate) fn next_expiry(&self) -> Option<Instant> {
-        lock(&self.live)
+    /// The devices whose page joined `workspace_id`'s presence plane now,
+    /// each with the person it is certified as: who a page there pairs with
+    /// before anyone says anything.
+    pub(crate) fn persons_in(&self, workspace_id: u64) -> Vec<([u8; 32], [u8; 32])> {
+        let mut persons: Vec<([u8; 32], [u8; 32])> = lock(&self.live)
             .values()
-            .filter(|session| session.is_open())
-            .map(|session| session.expires)
-            .min()
+            .filter(|session| {
+                session.is_open() && lock(&session.workspaces).contains(&workspace_id)
+            })
+            .map(|session| (session.peer.device_public_key, session.peer.user_public_key))
+            .collect();
+        persons.sort_unstable();
+        persons.dedup();
+        persons
+    }
+
+    /// Whether `peer` may take part in `workspace_id` now: its certificate
+    /// current relay-wide and admitted by the room.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard only lives for the lookup; the value kept is a clone"
+    )]
+    pub(crate) async fn admits(&self, peer: &AuthenticatedPeer, workspace_id: u64) -> bool {
+        let relay = &self.context().relay;
+        let workspace = relay.workspaces.lock().await.get(&workspace_id).cloned();
+        let Some(workspace) = workspace else {
+            return false;
+        };
+        let workspace = workspace.lock().await;
+        room_access::decide(&workspace, &relay.trust(), peer, RoomOperation::Live).admitted()
     }
 
     pub(crate) fn context(&self) -> &WebContext {

@@ -222,35 +222,6 @@ case $group in
     python3 tools/perf/adapters.py browser-qualification --env-json "$out/env.json" "$out/browser.json" \
       > "$out/browser.jsonl"
     ;;
-  stream)
-    commit_checkout
-    bundle=$(desktop_bundle)
-    cargo build --locked --release -p tilo-relay --features web,stream-source \
-      --bin tilo-relay --example legacy_stream_source
-    cargo test --locked --release -p tilo-relay --features stream-source --example legacy_stream_source
-    chrome
-    env_json release swiftshader kvm > "$out/env.json"
-    # H.264, then software VP9 (vp9enc), which a session with no H.264 encoder
-    # (a stock device) streams and every browser decodes: its own series
-    # (stream.vp9.*), so neither codec's numbers judge the other's. Both run
-    # whatever the other's verdict.
-    status=0
-    for codec in h264 vp9; do
-      # The H.264 window opens after another closed (--reopen): the desktop
-      # must rest under a window that is not the page's first.
-      name=stream codec_args=(--reopen)
-      [[ $codec == vp9 ]] && name=stream-vp9 codec_args=(--codec vp9)
-      if node scripts/perf/native_stream_qualification.mjs "$bundle" --out "$out/$name.json" \
-        --relay "$target/release/tilo-relay" --source "$target/release/examples/legacy_stream_source" \
-        --renderer swiftshader --viewport 960x540 --warm-up 30 --expect-revision "$(git rev-parse HEAD)" \
-        "${codec_args[@]}" | tee "$out/$name-summary.txt"; then
-        python3 tools/perf/adapters.py native-stream --env-json "$out/env.json" "$out/$name.json" > "$out/$name.jsonl"
-      else
-        status=1
-      fi
-    done
-    exit "$status"
-    ;;
   *)
     echo "unknown KPI group: $group" >&2
     exit 2

@@ -185,9 +185,6 @@ pub struct PeerContext {
     /// Answers remote-action frames addressed to this relay. `None` unless
     /// the host supplied one and advertises `app_serving`.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
-    /// Also hands validated live frames and devices' presence to the
-    /// browser plane, when the host serves browsers.
-    pub live_bridge: Option<LiveBridge>,
     /// Agent devices this host was told about, see [`AgentRegistry`].
     pub agents: AgentRegistry,
     /// Mints and checks resumable subscribers' positions; `None` refuses
@@ -198,25 +195,11 @@ pub struct PeerContext {
     pub compactor: Option<crate::compaction::Compactor>,
     /// Per-person limits of a public host; `None` limits nobody.
     pub member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
+    /// The rooms whose voice carrier this host serves: the calls of a room
+    /// it carries (a person's own workspace, synced across their devices
+    /// through it) are held by them. `None` holds no carried call.
+    pub carried_calls: Option<crate::rooms::WeakRooms>,
 }
-
-/// The host's browser plane, as the relay's sessions feed it.
-pub trait BrowserBridge: Send + Sync {
-    /// A validated live frame: workspace, stamped sender, frame.
-    fn live(&self, workspace_id: u64, from: [u8; 32], frame: &[u8]);
-    /// The presence payload a subscribed device (`from`, of `user`) sent.
-    fn presence(&self, workspace_id: u64, from: [u8; 32], user: [u8; 32], payload: &[u8]);
-    /// The rooms whose voice carrier the browser plane serves beside its
-    /// live carrier. They carry the calls of every room a device takes part
-    /// in here, whether this relay governs it or only carries it (a
-    /// person's own workspace, synced across their devices through it).
-    fn calls(&self) -> Option<crate::rooms::Rooms> {
-        None
-    }
-}
-
-/// Receives what sessions hand the browser plane, see [`BrowserBridge`].
-pub type LiveBridge = Arc<dyn BrowserBridge>;
 
 /// Agent devices by device key: their verified delegation, or `None` once
 /// the agent was withdrawn. An agent device is confined to its delegated
@@ -248,7 +231,6 @@ struct SessionCtx<'a> {
     own_device_public_key: &'a [u8; 32],
     app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
-    live_bridge: Option<&'a LiveBridge>,
     agents: &'a AgentRegistry,
     positions: Option<crate::position::PositionIssuer>,
     compactor: Option<&'a crate::compaction::Compactor>,
@@ -260,6 +242,9 @@ struct SessionCtx<'a> {
     /// Where this connection's rooms post the presence they fan out to it;
     /// `None` takes each presence on the frame queue.
     presence: Option<&'a Arc<crate::presence_mailbox::PresenceMailbox>>,
+    /// The rooms whose voice carrier this host serves, for the calls of a
+    /// room it carries; `None` holds no carried call.
+    carried_calls: Option<crate::rooms::WeakRooms>,
 }
 
 impl SessionCtx<'_> {

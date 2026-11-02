@@ -47,10 +47,6 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
     };
     let reply = request_to("/peer/v1/host").await;
     assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
-    // The live fallback's own paths are routed too: a malformed open is
-    // refused, not unknown.
-    let reply = request_to("/peer/v3/live/fallback/open").await;
-    assert!(!reply.starts_with("HTTP/1.1 404"), "{reply}");
 
     let refused = host
         .relay

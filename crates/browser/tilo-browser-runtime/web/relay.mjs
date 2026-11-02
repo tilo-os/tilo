@@ -9,9 +9,8 @@
  *   admission and the records this page holds;
  * - `mountDesktop(target, options)`: `host.mjs`'s mount in the workspace; its
  *   records replicate through the peer, and it publishes this device's
- *   pointer and caret (or, with `agent`, the agent's) while it is the mount
- *   acted in last;
- * - `live`, `agentLive(agent)`: the workspace's live layers.
+ *   pointer and caret while it is the mount acted in last;
+ * - `live`: the workspace's live layer.
  *
  * A workspace on a loopback `http:` origin (local review, `tilo-relay room
  * --web-plain`) is accepted: the page then needs no certificate exception.

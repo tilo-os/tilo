@@ -1,13 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
+import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
 
 const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
-const SEALED = 0x53;
-const sealedFrame = value => Uint8Array.from([SEALED, ...new TextEncoder().encode(JSON.stringify(value))]);
-const openedFrame = bytes => JSON.parse(new TextDecoder().decode(bytes.subarray(1)));
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
-const WORKSPACE_HEX = 'aa'.repeat(32);
 const SELF = 'dd'.repeat(32);
 const OTHER = 'cc'.repeat(32);
 const AGENT = 'ee'.repeat(32);
@@ -40,37 +36,8 @@ function memoryStore() {
   return {rows, get: async key => rows.get(key), put: async (key, value) => { rows.set(key, value); }, delete: async key => { rows.delete(key); }};
 }
 
-/** A live session with the interface of live-transport / live-fallback sessions. */
-function fakeCarriers() {
-  const connects = [];
-  const carriers = {
-    connects,
-    async connect(options) {
-      let closeSession;
-      const session = {
-        options,
-        presence: [], ops: [], closedOps: [],
-        memberWatcher: undefined,
-        presenceSubscribers: new Map(),
-        opsSubscribers: new Map(),
-        closed: new Promise(resolve => { closeSession = resolve; }),
-        publishPresence(bytes) { session.presence.push(bytes); return true; },
-        publishOps(name, bytes) { session.ops.push({name, bytes}); return true; },
-        closeOps(name) { session.closedOps.push(name); },
-        watchMembers({onMember}) { session.memberWatcher = onMember; return () => {}; },
-        subscribePresence(publisher, onFrame, onEnd) { session.presenceSubscribers.set(publisher, onFrame); session.presenceEnds = [...(session.presenceEnds ?? []), onEnd]; return () => {}; },
-        subscribeOps(publisher, name, onFrame) { session.opsSubscribers.set(`${publisher}/${name}`, onFrame); return () => {}; },
-        close() { closeSession(); },
-      };
-      connects.push(session);
-      return session;
-    },
-  };
-  return carriers;
-}
-
 function fakeRuntime({phase = 'ready'} = {}) {
-  const calls = {certify: [], started: [], grants: 0, grantAgents: []};
+  const calls = {certify: [], started: []};
   let peer;
   const runtime = {
     calls,
@@ -99,19 +66,12 @@ function fakeRuntime({phase = 'ready'} = {}) {
       calls.status = [...(calls.status ?? []), {requestId, device}];
       return JSON.stringify(calls.status.length < 2 ? {kind: 'waiting'} : {kind: 'admitted', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor'});
     },
-    encodeLivePresence: json => new TextEncoder().encode(json),
     presenceColor: id => `#${String(id).padEnd(6, '0').slice(0, 6).replace(/[^0-9a-f]/g, '0')}`,
-    decodeLiveFrame: bytes => {
-      const value = JSON.parse(new TextDecoder().decode(bytes));
-      return JSON.stringify(value.kind ? value : {kind: 'presence', frame: value});
-    },
-    liveRecordTrack: record => `ops/${'0'.repeat(64 - JSON.parse(record).record.length)}${JSON.parse(record).record}`,
-    encodeLivePreview: (record, seq, ops) => new TextEncoder().encode(JSON.stringify({kind: 'preview', record: JSON.parse(record), seq: Number(seq), ops: JSON.parse(ops)})),
-    encodeLivePreviewEnd: record => new TextEncoder().encode(JSON.stringify({kind: 'previewEnd', record: JSON.parse(record)})),
     WasmPeer: {
       start(config, custody, namespace, record, save, post, channelVault) {
         const listeners = [];
         const durable = [];
+        const liveEvents = [];
         peer = {
           config: JSON.parse(config), configText: config, custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0, retries: 0,
           phase,
@@ -123,18 +83,22 @@ function fakeRuntime({phase = 'ready'} = {}) {
           subscribe: listener => listeners.push(listener),
           sessionToken: () => 'ce'.repeat(32),
           joinWorkspace: workspace => { peer.workspace = workspace; },
-          liveGrant: async (room, ...agent) => {
-            calls.grants++;
-            calls.grantAgents.push(agent);
-            return JSON.stringify({token: '0102', workspace: WORKSPACE_HEX, publisher: agent.length ? AGENT : SELF, expiresAtNs: (Date.now() + 600_000) * 1e6});
-          },
-          // Stand-in channel keys: a sealed frame carries the SEALED marker,
-          // and only a sealed frame opens.
-          sealLive: async (room, bytes) => (peer.sealing === false ? null : Uint8Array.from([SEALED, ...bytes])),
-          openLive: async (room, bytes) => (bytes[0] === SEALED ? bytes.slice(1) : null),
           workspaceRecords: () => JSON.stringify(peer.records),
           hasRecord: (app, record) => peer.records.some(row => row.app === app && row.record === record),
           takeDurableEvents: () => JSON.stringify(durable.splice(0)),
+          /** This page's device key: the publisher the workspace knows it by. */
+          deviceKey: () => SELF,
+          announced: [], published: [], leftPointers: [], previews: [], endedPreviews: [],
+          announcePresence(workspace, arrived) { peer.announced.push({workspace, arrived}); },
+          publishPresence(workspace, value) { peer.published.push(JSON.parse(value)); },
+          pointerLeft(workspace) { peer.leftPointers.push(workspace); },
+          async publishPreview(workspace, record, seq, ops) {
+            if (peer.sealing === false) return false;
+            peer.previews.push({record: JSON.parse(record), seq: Number(seq), ops: JSON.parse(ops)});
+            return true;
+          },
+          async endPreview(workspace, record) { peer.endedPreviews.push(JSON.parse(record)); },
+          takeLiveEvents: () => JSON.stringify(liveEvents.splice(0)),
           takeRemoteActionEvents: () => '[]',
           sendRemoteAction: () => {},
           reconnect: () => { peer.reconnects++; },
@@ -149,7 +113,9 @@ function fakeRuntime({phase = 'ready'} = {}) {
           dispose: () => { peer.disposed = true; },
           flush: async () => {},
           setLocalState: () => {},
-          emit(phase = peer.phase, events = []) { peer.phase = phase; durable.push(...events); for (const listener of listeners) listener(); },
+          /** What the session told this page: durable changes to read, and
+           * what the members said. */
+          emit(phase = peer.phase, events = [], said = []) { peer.phase = phase; durable.push(...events); liveEvents.push(...said); for (const listener of listeners) listener(); },
         };
         calls.started.push(peer);
         return peer;
@@ -167,8 +133,11 @@ function vaultMemory() {
 
 const options = (runtime, store, extra = {}) => ({
   origin: 'https://host.example:8443', userPublicKey: 'bb'.repeat(32), label: 'Browser on Cloud', workspace: WORKSPACE,
-  custody, store, runtime, liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); }, ...extra,
+  custody, store, runtime, fetch: async () => { throw new Error('no network in tests'); }, ...extra,
 });
+
+/** What the workspace's members said, as the session hands it to the page. */
+const say = (runtime, said, durable = []) => runtime.peer.emit(runtime.peer.phase, durable, said);
 
 test('httpsPost posts bodies with the session header to the host origin', async () => {
   const seen = [];
@@ -226,7 +195,7 @@ test('a guest certificate from an invitation reaches the session byte for byte',
   const peer = await joinWorkspace({
     origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, admissionToken: 'token',
     runtime, custody, store: memoryStore(), storage: null,
-    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); },
+    fetch: async () => { throw new Error('no network in tests'); },
   });
   assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
   assert.ok(runtime.peer.configText.includes(`"hostCert":{"issued_at_ns":${NANOS}}`));
@@ -257,185 +226,131 @@ test('a page holding the root certifies itself, with no pairing code, and renews
 
 test('a watching page sees the members live and sends nothing of its own', async () => {
   const runtime = fakeRuntime();
-  const liveCarriers = fakeCarriers();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers, watching: true}));
+  const peer = await connect(options(runtime, memoryStore(), {watching: true}));
   assert.equal(runtime.peer.config.watching, true, 'the session asks no channel for access');
   assert.equal(peer.voice, undefined, 'a watching page joins no call');
   await until(() => peer.live.state === 'live', 'the live layer');
-  const [session] = liveCarriers.connects;
-  assert.deepEqual(session.options.directions, {publish: false, subscribe: true});
+  assert.deepEqual(runtime.peer.announced, [], 'a watcher joins no presence');
+  assert.equal(peer.live.publisherId, SELF);
 
   const presence = [];
   peer.live.onPresence(value => presence.push(value.publisher));
-  session.memberWatcher(OTHER, true);
-  session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: Date.now(), focus: null, pointer: {strip: '1', at: [1, 2]}, selection: null, drag: null}), performance.now());
-  await until(() => presence.length, 'a member\'s cursor');
+  say(runtime, [
+    {kind: 'arrived', publisher: OTHER},
+    {kind: 'pointer', publisher: OTHER, tab: 7, at: [1, 2], sentAtMs: Date.now()},
+  ]);
+  await until(() => presence.length, 'a member\'s presence and pointer');
+  assert.deepEqual(peer.live.members(), [OTHER]);
+  assert.deepEqual(peer.live.remoteState(performance.now() + 50)[0].pointer, {tile: {tab: 7}, at: [1, 2]});
 
-  peer.live.publishPresence({pointer: {strip: '1', at: [5, 6]}});
+  peer.live.publishPresence({pointer: {tile: {tab: 7}, at: [5, 6]}});
   const record = {app: 'so.tilo.notes', record: 'note-1'};
   assert.equal(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'x'}]), false);
   peer.live.endPreview(record);
   peer.setDisplayName('Visitor');
   runtime.peer.here = async () => { throw new Error('a watching page posted /here'); };
   assert.deepEqual(await peer.here(null, [{id: '01', action: 'Edited', resource: 'Note', app: 'Notes', at_ms: 1}]), []);
-  // A presence change leaves at the end of the task it was made in (nothing
-  // was sent before, so no rate limit defers it): one turn of the event loop
-  // has run every send these calls queued.
+  // What a layer says of itself leaves at the end of the task it was said in
+  // (nothing was sent before, so no rate limit defers it): one turn of the
+  // event loop has run every send these calls queued.
   await settle();
-  assert.deepEqual(session.presence, []);
-  assert.deepEqual(session.ops, []);
-  assert.deepEqual(session.closedOps, []);
+  assert.deepEqual(runtime.peer.published, [], 'no presence of its own');
+  assert.deepEqual(runtime.peer.leftPointers, [], 'and no pointer to take back');
+  assert.deepEqual(runtime.peer.previews, []);
+  assert.deepEqual(runtime.peer.endedPreviews, []);
   await peer.dispose();
 });
 
-test('a member page publishes on the live plane and keeps its call', async () => {
+test('a member page joins its workspace as one device of it, and leaves it', async () => {
   const runtime = fakeRuntime();
-  const liveCarriers = fakeCarriers();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  const peer = await connect(options(runtime, memoryStore()));
   assert.equal(runtime.peer.config.watching, false);
   await until(() => peer.live.state === 'live', 'the live layer');
-  assert.deepEqual(liveCarriers.connects[0].options.directions, {publish: true, subscribe: true});
-  await peer.dispose();
-});
+  assert.deepEqual(runtime.peer.announced, [{workspace: WORKSPACE, arrived: true}]);
+  assert.equal(peer.live.publisherId, SELF, 'the publisher the workspace knows this device by');
 
-test('the live layer joins over the carrier with the session grant and interpolates members', async () => {
-  const runtime = fakeRuntime();
-  const liveCarriers = fakeCarriers();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
-  await until(() => peer.live.state === 'live', 'the live layer');
-  const [session] = liveCarriers.connects;
-  assert.equal(session.options.endpoint, 'https://host.example:8443/moq/live');
-  assert.deepEqual([...session.options.authorization], [1, 2]);
-  assert.deepEqual(session.options.namespace, ['tilo-live', WORKSPACE_HEX, SELF]);
-  assert.equal(peer.live.state, 'live');
+  peer.live.publishPresence({pointer: {tile: {tab: 7}, at: [5, 6]}});
+  await until(() => runtime.peer.published.some(value => value.pointer), 'the pointer frame');
+  assert.deepEqual(runtime.peer.published.at(-1).pointer, {tile: {tab: 7}, at: [5, 6]});
+  assert.deepEqual(runtime.peer.published.at(-1).participant, peer.live.stats().state === 'live'
+    ? runtime.peer.published.at(-1).participant : undefined);
+  assert.equal(runtime.peer.published.at(-1).participant.kind, 'person', 'with who it is');
 
-  const presence = [];
-  peer.live.onPresence(value => presence.push(value.publisher));
-  session.memberWatcher(OTHER, true);
-  assert.deepEqual(peer.live.members(), [OTHER]);
-  const frame = {seq: 1, sentAtMs: Date.now(), focus: null, pointer: {strip: '1', at: [1, 2]}, selection: null, drag: null};
-  // An unsealed frame is never opened.
-  session.presenceSubscribers.get(OTHER)(new TextEncoder().encode(JSON.stringify(frame)), performance.now());
-  await settle();
-  assert.deepEqual(presence, []);
-  session.presenceSubscribers.get(OTHER)(sealedFrame(frame), performance.now());
-  await until(() => presence.length, 'the sealed presence');
-  assert.deepEqual(presence, [OTHER]);
-  const [remote] = peer.live.remoteState(performance.now() + 50);
-  assert.deepEqual(remote.pointer, {strip: '1', at: [1, 2]});
+  peer.live.publishPresence({pointer: null});
+  await until(() => runtime.peer.leftPointers.length, 'the pointer left');
+  assert.deepEqual(runtime.peer.leftPointers, [WORKSPACE]);
 
   const record = {app: 'so.tilo.notes', record: 'note-1'};
-  peer.live.watchRecord(record);
-  const track = runtime.liveRecordTrack(JSON.stringify(record));
-  const preview = {kind: 'preview', record, seq: 1, ops: [{kind: 'insert', at: '01', text: 'x'}]};
-  session.opsSubscribers.get(`${OTHER}/${track}`)(sealedFrame(preview));
-  await until(() => Object.keys(peer.live.remoteState()[0].previews).length, 'the sealed preview');
-  assert.equal(Object.keys(peer.live.remoteState()[0].previews).length, 1);
-  runtime.peer.emit('ready', [{kind: 'durable', record}]);
-  assert.equal(Object.keys(peer.live.remoteState()[0].previews).length, 0, 'the durable change supersedes previews');
-
-  peer.live.publishPresence({pointer: {strip: '1', at: [5, 6]}});
-  // The publisher sends at most 120 frames/s: the pointer may wait out the
-  // interval after the participant frame.
-  const lastSent = () => openedFrame(session.presence.at(-1));
-  await until(() => lastSent().pointer !== null, 'the pointer frame');
-  assert.deepEqual(lastSent().pointer, {strip: '1', at: [5, 6]});
-  assert.ok(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'y'}]));
-  await until(() => session.ops.length, 'the sealed preview frame');
-  assert.equal(session.ops.at(-1).name, track);
-  assert.equal(session.ops.at(-1).bytes[0], SEALED, 'only a sealed frame leaves');
-  assert.ok(session.presence.every(bytes => bytes[0] === SEALED), 'only sealed presence leaves');
-
+  assert.equal(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'y'}]), true);
+  await until(() => runtime.peer.previews.length, 'the preview frame');
+  assert.deepEqual(runtime.peer.previews.at(-1), {record, seq: 1, ops: [{kind: 'insert', at: '01', text: 'y'}]});
+  peer.live.endPreview(record);
+  await until(() => runtime.peer.endedPreviews.length, 'the preview end');
+  assert.deepEqual(runtime.peer.endedPreviews, [record]);
   // Without the record's keys nothing leaves at all.
   runtime.peer.sealing = false;
-  const sentBefore = session.ops.length;
-  peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'z'}]);
+  const before = runtime.peer.previews.length;
+  await tick();
+  assert.equal(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'z'}]), true);
   await settle();
-  assert.equal(session.ops.length, sentBefore);
+  assert.equal(runtime.peer.previews.length, before, 'a preview that could not be sealed never left');
+
   await peer.dispose();
+  assert.deepEqual(runtime.peer.announced.at(-1), {workspace: WORKSPACE, arrived: false}, 'leaving withdraws it');
   assert.equal(peer.live.state, 'closed');
 });
 
-test("a record's ops track is asked for once, however much it is typed in", async () => {
+test("the live layer reads the members' presence from the session, on their own time", async () => {
   const runtime = fakeRuntime();
-  let asked = 0;
-  const ask = runtime.liveRecordTrack;
-  runtime.liveRecordTrack = record => { asked++; return ask(record); };
-  const liveCarriers = fakeCarriers();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  const peer = await connect(options(runtime, memoryStore()));
   await until(() => peer.live.state === 'live', 'the live layer');
-  const [session] = liveCarriers.connects;
+  const presence = [];
+  peer.live.onPresence(value => presence.push(value.publisher));
+
+  const nowMs = Date.now();
+  say(runtime, [{kind: 'arrived', publisher: OTHER}, {kind: 'shell', publisher: OTHER, frame: {
+    seq: 1, sentAtMs: nowMs, participant: {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null},
+    focus: {app: 'so.tilo.notes', record: 'note-1'},
+    layout: {size: [1440, 852], windows: [{app: 'so.tilo.notes', record: '0000000000000001', rect: [0, 0, 5000, 5000], focused: true}]},
+  }}]);
+  await until(() => presence.length, 'the member\'s shell');
+  assert.deepEqual(peer.live.members(), [OTHER]);
+  assert.deepEqual(peer.live.people(), [{device: OTHER, name: 'Visitor', color: '#e5484d'}]);
+  const [remote] = peer.live.remoteState(performance.now() + 50);
+  assert.equal(remote.participant.label, 'Visitor');
+  assert.deepEqual(remote.focus, {app: 'so.tilo.notes', record: 'note-1'});
+
+  say(runtime, [{kind: 'pointer', publisher: OTHER, tab: 7, at: [1, 2], sentAtMs: Date.now()}]);
+  await until(() => peer.live.remoteState(performance.now() + 50)[0].pointer, 'the pointer');
+  assert.deepEqual(peer.live.remoteState(performance.now() + 50)[0].pointer, {tile: {tab: 7}, at: [1, 2]});
+
   const record = {app: 'so.tilo.notes', record: 'note-1'};
-  peer.live.watchRecord(record);
-  await settle();
-  const before = asked;
-  // What a person typing produces: one preview per keystroke, each naming
-  // the same record and so the same track.
-  for (let i = 0; i < 20; i++) peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'x'}]);
-  await settle();
-  assert.equal(asked - before, 1, 'twenty keystrokes ask for the same track once');
-  assert.ok(session.ops.length, 'the previews still left');
+  say(runtime, [{kind: 'preview', publisher: OTHER, record, seq: 1, ops: [{kind: 'insert', at: '01', text: 'x'}]}]);
+  await until(() => Object.keys(peer.live.remoteState()[0].previews).length, 'the preview');
+  assert.equal(Object.keys(peer.live.remoteState()[0].previews).length, 1);
+  say(runtime, [], [{kind: 'durable', record}]);
+  assert.equal(Object.keys(peer.live.remoteState()[0].previews).length, 0, 'the durable change supersedes previews');
+
+  // A member that left takes everything of it with it.
+  say(runtime, [{kind: 'left', publisher: OTHER}]);
+  await until(() => peer.live.members().length === 0, 'the member left');
+  assert.deepEqual(peer.live.remoteState(), []);
   await peer.dispose();
 });
 
-test('a lost live session reconnects with a fresh grant', async () => {
-  const runtime = fakeRuntime();
-  const liveCarriers = fakeCarriers();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+test('a layer announces this page only once its session admitted it', async () => {
+  const runtime = fakeRuntime({phase: 'admitting'});
+  const peer = await connect(options(runtime, memoryStore()));
+  await tick();
+  assert.deepEqual(runtime.peer.announced, [], 'not before the workspace knows the device');
+  assert.equal(peer.live.available, false);
+  const ready = peer.whenReady();
+  runtime.peer.emit('ready');
+  assert.equal((await ready).phase, 'ready');
   await until(() => peer.live.state === 'live', 'the live layer');
-  liveCarriers.connects[0].close();
-  await until(() => liveCarriers.connects.length === 2 && peer.live.state === 'live', 'the reconnect');
-  assert.equal(liveCarriers.connects.length, 2);
-  assert.equal(runtime.calls.grants, 2);
+  assert.deepEqual(runtime.peer.announced, [{workspace: WORKSPACE, arrived: true}]);
+  assert.equal(peer.live.published ?? undefined, undefined);
   await peer.dispose();
-});
-
-test('a workspace of members that lost the live plane comes back at jittered waits, not one tick', async () => {
-  const timers = [];
-  const session = {closed: new Promise(() => {}), close() {}, publishPresence: () => true, watchMembers() {}, subscribePresence() { return () => {}; }, subscribeOps() { return () => {}; }};
-  let attempts = 0;
-  const layer = createLiveLayer({liveGrant: async () => { attempts++; throw new Error('the relay is restarting'); }}, fakeRuntime(), WORKSPACE, {
-    endpoint: 'test', carriers: {connect: async () => session},
-    setTimer: (callback, delay) => {timers.push(delay); return timers.length;}, clearTimer() {},
-    // A whole workspace's worth of pages, each with its own random draw.
-    random: () => 0.5,
-  });
-  await until(() => attempts === 1, 'the refused grant');
-  assert.equal(timers.at(-1), 250, 'the first wait is the live series\'s, centred');
-  const waits = new Set();
-  for (const draw of [0, 0.1, 0.37, 0.5, 0.9, 1]) {
-    timers.length = 0;
-    const jittered = createLiveLayer({liveGrant: async () => { throw new Error('restarting'); }}, fakeRuntime(), WORKSPACE, {
-      endpoint: 'test', carriers: {connect: async () => session},
-      setTimer: (callback, delay) => {timers.push(delay); return timers.length;}, clearTimer() {},
-      random: () => draw,
-    });
-    await until(() => timers.length, 'the first wait');
-    waits.add(timers.at(-1));
-    jittered.stop();
-  }
-  assert.ok(waits.size > 1, `one tick for the whole room: ${[...waits]}`);
-  assert.ok([...waits].every(ms => ms >= 200 && ms <= 300), `within a fifth either way: ${[...waits]}`);
-  assert.ok(attempts >= 1);
-  layer.stop();
-});
-
-test('late decryption cannot revive a departed or rejoined publisher', async () => {
-  const runtime = fakeRuntime();
-  const liveCarriers = fakeCarriers();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
-  await until(() => peer.live.state === 'live', 'the live layer');
-  const [session] = liveCarriers.connects;
-  session.memberWatcher(OTHER, true);
-  const original = runtime.peer.openLive.bind(runtime.peer);
-  let release;
-  runtime.peer.openLive = (...args) => new Promise(resolve => { release = () => resolve(original(...args)); });
-  session.presenceSubscribers.get(OTHER)(sealedFrame({seq:1,sentAtMs:1,pointer: {strip: '1', at: [1, 2]}}),1);
-  session.memberWatcher(OTHER, false);
-  session.memberWatcher(OTHER, true);
-  release();
-  await settle();
-  assert.deepEqual(peer.live.remoteState(), [], 'the previous membership epoch is gone');
 });
 
 test('reauthentication forgets the certificate and certifies again', async () => {
@@ -529,7 +444,7 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(kept));
   runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3), webtransportPort: 443});
   const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, vaultStorage, profile,
-    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); }};
+    fetch: async () => { throw new Error('no network in tests'); }};
 
   // Reconnecting with the kept state is refused, and nothing moves.
   await assert.rejects(connect({...common, workspace: WORKSPACE}), {name: 'AdmissionError', code: 'host-changed', message: HOST_CHANGED});
@@ -585,7 +500,7 @@ test('a device the workspace let go asks to join again under the certificate it 
     return JSON.stringify({reply: {kind: 'admitted', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor'}, cert: JSON.parse(held).cert});
   };
   const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, vaultStorage, profile,
-    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); }};
+    fetch: async () => { throw new Error('no network in tests'); }};
   const peer = await joinWorkspace({...common, invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
   assert.equal(runtime.calls.askedAs.held, kept, 'asked under the certificate the device holds');
   assert.equal(runtime.calls.askedAs.token, 'one-time-token');
@@ -617,7 +532,7 @@ test('a peer with a store of its own never moves it: a host set up again is refu
   await store.put('peer-record', 'outbox for the previous host');
   runtime.hostInfo = async () => JSON.stringify({hostCert: hostCertOf(1, 3), webtransportPort: 443});
   await assert.rejects(joinWorkspace({origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity: person(),
-    admissionToken: 'one-time-token', runtime, custody, store, storage: null, liveCarriers: fakeCarriers(),
+    admissionToken: 'one-time-token', runtime, custody, store, storage: null,
     fetch: async () => { throw new Error('no network in tests'); }}), {code: 'host-changed'});
   assert.equal(runtime.calls.started.length, 0, 'the kept record was never handed to a session');
   assert.deepEqual(JSON.parse(store.rows.get('certificate')).hostCert, hostCertOf(1, 2), 'nor its certificate replaced');
@@ -705,28 +620,6 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
   assert.equal(runtime.calls.certify.length, 1, 'the profile certificate is reused');
   assert.deepEqual(runtime.peer.channelVault, vault, 'the same vault opens the stored channel state');
   await again.dispose();
-});
-
-test('a presence subscription that ends while the member stays is retried', async t => {
-  const runtime = fakeRuntime();
-  const liveCarriers = fakeCarriers();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
-  await until(() => peer.live.state === 'live', 'the live layer');
-  const [session] = liveCarriers.connects;
-  session.memberWatcher(OTHER, true);
-  assert.equal(session.presenceEnds.length, 1);
-  // The retry backoff runs on the test's clock: past every backoff step, a
-  // retry that was scheduled has run, and one that was not never will.
-  t.mock.timers.enable({apis: ['setTimeout']});
-  session.presenceEnds[0]();
-  t.mock.timers.tick(60_000);
-  assert.equal(session.presenceEnds.length, 2, 'subscribed again');
-  session.memberWatcher(OTHER, false);
-  session.presenceEnds[1]();
-  t.mock.timers.tick(60_000);
-  assert.equal(session.presenceEnds.length, 2, 'not after the member left');
-  t.mock.timers.reset();
-  await peer.dispose();
 });
 
 /** A `host.mjs` stand-in whose mounts are driven by the test through `status`. */
@@ -872,40 +765,10 @@ test('refresh-checkpoint subscribes the workspace again and resolves once the ho
   await peer.dispose();
 });
 
-test('httpsPost and the live plane accept a loopback http workspace for local review', () => {
+test('httpsPost accepts a loopback http workspace for local review', () => {
   assert.doesNotThrow(() => httpsPost('http://localhost:9764'));
   assert.doesNotThrow(() => httpsPost('http://127.0.0.1:9764'));
   assert.throws(() => httpsPost('http://10.0.0.2:9764'), TypeError);
-  assert.deepEqual(liveEndpoints('http://localhost:9764', {webtransportPort: 9700}), {
-    endpoint: 'https://127.0.0.1:9700/moq/live', fallback: 'http://localhost:9764/moq/live',
-  });
-  assert.deepEqual(liveEndpoints('https://host.example:8443', {webtransportPort: 9700}), {
-    endpoint: 'https://host.example:8443/moq/live', fallback: 'https://host.example:8443/moq/live',
-  });
-  // Behind an HTTP-only proxy: QUIC goes to the direct origin, the stream stays proxied.
-  assert.deepEqual(liveEndpoints('https://rooms.example', {webtransportPort: 9781, webtransportOrigin: 'https://live.rooms.example'}), {
-    endpoint: 'https://live.rooms.example/moq/live', fallback: 'https://rooms.example/moq/live',
-  });
-});
-
-test('the live grant waits until the workspace admitted the device', async () => {
-  const runtime = fakeRuntime({phase: 'admitting'});
-  const liveCarriers = fakeCarriers();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
-  await tick();
-  assert.equal(runtime.calls.grants, 0, 'the relay refuses a grant before admission');
-  assert.equal(peer.live.available, false);
-  const ready = peer.whenReady();
-  runtime.peer.emit('ready');
-  assert.equal((await ready).phase, 'ready');
-  await until(() => peer.live.state === 'live', 'the live layer');
-  assert.equal(runtime.calls.grants, 1);
-  assert.equal(peer.live.state, 'live');
-  assert.equal(peer.live.publisherId, SELF);
-  const last = liveCarriers.connects[0].presence.at(-1);
-  const sent = last ? openedFrame(last) : null;
-  assert.equal(sent?.participant?.kind ?? 'person', 'person');
-  await peer.dispose();
 });
 
 test("a person's presence colour is the runtime's for who they are, whatever their device key", async () => {
@@ -917,7 +780,7 @@ test("a person's presence colour is the runtime's for who they are, whatever the
   await peer.dispose();
 });
 
-test('leaving the page leaves the live plane and its host session at once, so others take it down; back online, the session retries now', async () => {
+test('leaving the page withdraws its presence from the workspace at once; back online, the session retries now', async () => {
   const page = new EventTarget();
   globalThis.addEventListener = page.addEventListener.bind(page);
   globalThis.removeEventListener = page.removeEventListener.bind(page);
@@ -926,19 +789,19 @@ test('leaving the page leaves the live plane and its host session at once, so ot
   Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {sendBeacon: (url, body) => { beacons.push([url, body]); return true; }}});
   try {
     const runtime = fakeRuntime();
-    const liveCarriers = fakeCarriers();
-    const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+    const peer = await connect(options(runtime, memoryStore()));
     await until(() => peer.live.state === 'live', 'the live layer');
-    let closed = false;
-    liveCarriers.connects[0].closed.then(() => { closed = true; });
+    assert.deepEqual(runtime.peer.announced.at(-1), {workspace: WORKSPACE, arrived: true});
     page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: true}));
     await tick();
     assert.equal(peer.live.state, 'live', 'a page kept to come back to stays');
-    assert.deepEqual(beacons, [], 'and keeps its host session');
+    assert.deepEqual(runtime.peer.announced.at(-1), {workspace: WORKSPACE, arrived: true}, 'and keeps its place');
+    assert.deepEqual(beacons, [], 'and its host session');
     page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: false}));
     await tick();
     assert.equal(peer.live.state, 'closed');
-    assert.ok(closed, 'its session closed, withdrawing its announcement');
+    assert.deepEqual(runtime.peer.announced.at(-1), {workspace: WORKSPACE, arrived: false},
+      'the members take it down at once, not when its keepalive stops');
     assert.deepEqual(beacons, [['https://host.example:8443/peer/v1/session/end', 'ce'.repeat(32)]],
       'the host hears the page went, its session token the body');
     // Back online, the session tries again now instead of after its backoff.
@@ -964,104 +827,66 @@ test('whenReady rejects when the host refuses the device', async () => {
   await peer.dispose();
 });
 
-test('an agent layer publishes under the agent grant, and agents are told apart from people', async () => {
+test('agents the workspace shows are told apart from people', async () => {
   const runtime = fakeRuntime();
-  const liveCarriers = fakeCarriers();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
-  const agent = peer.agentLive('Reading agent');
-  assert.equal(peer.agentLive('Reading agent'), agent, 'one layer per agent');
-  await until(() => peer.live.state === 'live' && agent.state === 'live', 'both live layers');
-  assert.deepEqual(runtime.calls.grantAgents, [[], ['Reading agent']]);
-  const agentSession = liveCarriers.connects.find(session => session.options.namespace[2] === AGENT);
-  assert.ok(agentSession, 'the agent layer joins under its own namespace');
-  assert.equal(agent.agent, 'Reading agent');
-  agent.publishPresence({selection: {anchor: '03', head: '03'}});
-  const lastSent = () => (agentSession.presence.length ? openedFrame(agentSession.presence.at(-1)) : {});
-  await until(() => lastSent().selection, 'the agent caret');
-  const sent = lastSent();
-  assert.deepEqual(sent.participant, {kind: 'agent', activity: null, label: 'Reading agent', color: sent.participant.color});
-
-  // The person's layer names the agent as an agent, and people by their label.
-  const [session] = liveCarriers.connects;
+  const peer = await connect(options(runtime, memoryStore()));
+  await until(() => peer.live.state === 'live', 'the live layer');
   const activity = [];
   const members = [];
   peer.live.onAgentActivity(value => activity.push(value));
   peer.live.onMember(value => members.push(value));
-  const presence = (from, participant) => session.presenceSubscribers.get(from)(sealedFrame({
-    seq: 1, sentAtMs: Date.now(), focus: null, pointer: null, selection: null, drag: null, participant,
-  }), performance.now());
-  session.memberWatcher(AGENT, true);
-  session.memberWatcher(OTHER, true);
-  presence(AGENT, {kind: 'agent', label: 'Reading agent', color: '#8e4ec6', activity: null});
-  presence(OTHER, {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null});
-  await until(() => peer.live.people().length, 'the sealed presence of both');
+  say(runtime, [{kind: 'arrived', publisher: AGENT}, {kind: 'arrived', publisher: OTHER}]);
+  say(runtime, [
+    {kind: 'shell', publisher: AGENT, frame: {
+      seq: 1, sentAtMs: Date.now(), pointer: null, focus: null,
+      participant: {kind: 'agent', label: 'Reading agent', color: '#8e4ec6', activity: 'Reading the draft'},
+    }},
+    {kind: 'shell', publisher: OTHER, frame: {
+      seq: 1, sentAtMs: Date.now(), pointer: null, focus: null,
+      participant: {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null},
+    }},
+  ]);
+  await until(() => peer.live.people().length, 'both members\' presence');
   assert.deepEqual(peer.live.agents(), [{publisher: AGENT, agentId: 'Reading agent', name: 'Reading agent'}]);
   assert.deepEqual(peer.live.people(), [{device: OTHER, name: 'Visitor', color: '#e5484d'}]);
-  assert.equal(activity[0].name, 'Reading agent');
+  assert.deepEqual(activity.map(value => value.name), ['Reading agent']);
   assert.deepEqual(members.at(-1), {publisher: OTHER, active: true}, 'a name that arrives is announced');
-  await peer.dispose();
-  assert.equal(agent.state, 'closed');
-});
-
-test('a member focusing a record subscribes its typing previews there', async () => {
-  const runtime = fakeRuntime();
-  const liveCarriers = fakeCarriers();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
-  await until(() => peer.live.state === 'live', 'the live layer');
-  const [session] = liveCarriers.connects;
-  session.memberWatcher(OTHER, true);
-  const record = {app: 'so.tilo.word-processor', record: 'main'};
-  session.presenceSubscribers.get(OTHER)(sealedFrame({
-    seq: 1, sentAtMs: Date.now(), focus: record, pointer: null, selection: null, drag: null,
-  }), performance.now());
-  await until(() => session.opsSubscribers.size, 'the focused record subscription');
-  assert.ok(session.opsSubscribers.has(`${OTHER}/${runtime.liveRecordTrack(JSON.stringify(record))}`));
   await peer.dispose();
 });
 
 test('a record\'s preview ops grow in place and stay bounded while nobody applies them', async () => {
   const runtime = fakeRuntime();
-  const liveCarriers = fakeCarriers();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  const peer = await connect(options(runtime, memoryStore()));
   await until(() => peer.live.state === 'live', 'the live layer');
-  const [session] = liveCarriers.connects;
-  session.memberWatcher(OTHER, true);
   const record = {app: 'so.tilo.word-processor', record: 'main'};
   peer.live.watchRecord(record);
-  const track = runtime.liveRecordTrack(JSON.stringify(record));
-  // A remote state exists once its member's presence arrived.
-  session.presenceSubscribers.get(OTHER)(sealedFrame({
-    seq: 1, sentAtMs: Date.now(), focus: record, pointer: null, selection: null, drag: null,
-  }), performance.now());
+  // A remote state exists once its member\'s presence arrived.
+  say(runtime, [{kind: 'arrived', publisher: OTHER}, {kind: 'shell', publisher: OTHER, frame: {
+    seq: 1, sentAtMs: Date.now(), pointer: null, focus: record,
+    participant: {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null},
+  }}]);
   await until(() => peer.live.remoteState().length, 'the member');
-  // `watchRecord` subscribes once the member's presence focused it.
-  await until(() => session.opsSubscribers.has(`${OTHER}/${track}`), 'the record subscription');
-  const send = sequence => session.opsSubscribers.get(`${OTHER}/${track}`)(sealedFrame({
-    kind: 'preview', record, seq: sequence, ops: [{kind: 'insert', at: String(sequence), text: 'x'}],
-  }));
   // A single op arrives as one frame, thousands of times: no page reads
-  // remoteState here, so nothing drops what landed.
-  for (let sequence = 1; sequence <= 2000; sequence++) send(sequence);
-  // Opening a sealed frame is asynchronous (the keys are awaited).
+  // remoteState in between, so nothing drops what landed.
+  const ops = [];
+  for (let sequence = 1; sequence <= 2000; sequence++) {
+    ops.push({kind: 'preview', publisher: OTHER, record, seq: sequence, ops: [{kind: 'insert', at: String(sequence), text: 'x'}]});
+  }
+  say(runtime, ops);
   await until(() => Object.keys(peer.live.remoteState()[0].previews).length, 'the previews');
-  await settle();
-  const sent2000 = () => {
-    const [record] = Object.values(peer.live.remoteState()[0].previews);
-    return record?.at(-1);
-  };
-  await until(() => sent2000()?.at === '2000', 'every op to land');
   const [previews] = Object.values(peer.live.remoteState()[0].previews);
   assert.ok(previews.length <= 256, `bounded to ${previews.length}`);
   // The newest op is still there: a drop trims from the front.
   assert.deepEqual(previews.at(-1), {kind: 'insert', at: '2000', text: 'x'});
+  say(runtime, [], [{kind: 'durable', record}]);
+  assert.deepEqual(peer.live.remoteState()[0].previews, {}, 'the durable change supersedes previews');
   await peer.dispose();
 });
 
-test('mounts publish through their own view: the one acted in speaks, and an agent mount as its agent', async () => {
+test('mounts publish through their own view: the one acted in speaks', async () => {
   const runtime = fakeRuntime();
-  const liveCarriers = fakeCarriers();
   const desktop = fakeDesktop();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers, desktop}));
+  const peer = await connect(options(runtime, memoryStore(), {desktop}));
   await until(() => peer.live.state === 'live', 'the live layer');
   const target = () => {
     const handlers = new Map();
@@ -1071,10 +896,8 @@ test('mounts publish through their own view: the one acted in speaks, and an age
   const helperTarget = target();
   const writer = await peer.mountDesktop(writerTarget, {app: 'so.tilo.word-processor'});
   const helper = await peer.mountDesktop(helperTarget, {app: 'so.tilo.chat'});
-  const agentMount = await peer.mountDesktop(target(), {app: 'so.tilo.word-processor', agent: 'Reading agent'});
   await tick();
-  const [session] = liveCarriers.connects;
-  const selections = () => session.presence.map(bytes => openedFrame(bytes).selection?.anchor ?? null);
+  const selections = () => runtime.peer.published.map(value => value.selection?.anchor ?? null);
   const sent = anchor => until(() => selections().at(-1) === anchor, `the caret ${anchor}`);
   writer.options.live().publishPresence({selection: {anchor: 'w1', head: 'w1'}});
   await sent('w1');
@@ -1089,24 +912,19 @@ test('mounts publish through their own view: the one acted in speaks, and an age
   // Back in the writer: its unchanged caret is said again.
   writerTarget.fire('keydown');
   await sent('w1');
-  // The agent's mount publishes on the agent's own layer.
-  assert.equal(agentMount.options.live().agent, 'Reading agent');
-  assert.equal(writer.options.live().agent, undefined);
   await helper.cleanup();
   await peer.dispose();
 });
 
 test('an action through a mount speaks for the person only if it moved that mount\'s caret', async () => {
   const runtime = fakeRuntime();
-  const liveCarriers = fakeCarriers();
   const desktop = fakeDesktop();
-  const peer = await connect(options(runtime, memoryStore(), {liveCarriers, desktop}));
+  const peer = await connect(options(runtime, memoryStore(), {desktop}));
   await until(() => peer.live.state === 'live', 'the live layer');
   const writer = await peer.mountDesktop(undefined, {app: 'so.tilo.word-processor'});
   const chat = await peer.mountDesktop(undefined, {app: 'so.tilo.chat'});
   await tick();
-  const [session] = liveCarriers.connects;
-  const selections = () => session.presence.map(bytes => openedFrame(bytes).selection?.anchor ?? null);
+  const selections = () => runtime.peer.published.map(value => value.selection?.anchor ?? null);
   const sent = anchor => until(() => selections().at(-1) === anchor, `the caret ${anchor}`);
   writer.options.live().publishPresence({selection: {anchor: 'w1', head: 'w1'}});
   await sent('w1');
@@ -1151,51 +969,6 @@ test('recertification retires voice before disposing the certified peer', async 
   await peer.dispose();
 });
 
-test('raw record watches bind the member namespace and stop retrying after unwatch', async () => {
-  let onMember;
-  let endTrack;
-  let deliver;
-  let opened = 0;
-  let canceled = 0;
-  const timers = [];
-  const record = {app: 'so.tilo.legacy-window', record: '@tilo:legacy-windows'};
-  const runtime = fakeRuntime();
-  const track = runtime.liveRecordTrack(JSON.stringify(record));
-  const session = {
-    closed: new Promise(() => {}), close() {}, publishPresence: () => true,
-    watchMembers(options) { onMember = options.onMember; },
-    subscribePresence() { return () => {}; },
-    subscribeOps(publisher, name, onFrame, onEnd) {
-      assert.equal(publisher, OTHER);
-      assert.equal(name, track);
-      opened++; deliver = onFrame; endTrack = onEnd;
-      return () => { canceled++; };
-    },
-  };
-  const layer = createLiveLayer({liveGrant: async () => JSON.stringify({token: '0102', workspace: WORKSPACE_HEX,
-    publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6})}, runtime, WORKSPACE, {
-    endpoint: 'test', carriers: {connect: async () => session},
-    setTimer: callback => {timers.push(callback); return timers.length;}, clearTimer() {},
-  });
-  await until(() => onMember, 'the live member watcher');
-  const received = [];
-  const stop = layer.watchRecordFrames(record, (publisher, bytes) => received.push([publisher, [...bytes]]));
-  const only = [];
-  const stopMember = layer.subscribeMemberRecord(OTHER, record, bytes => only.push([...bytes]));
-  onMember(OTHER, true);
-  assert.equal(opened, 1, 'one raw subscription serves both consumers');
-  deliver(Uint8Array.from([0xf1, 4]));
-  assert.deepEqual(received, [[OTHER, [0xf1, 4]]]);
-  assert.deepEqual(only, [[0xf1, 4]]);
-  stop();
-  assert.equal(canceled, 0, 'the member consumer still owns the subscription');
-  endTrack();
-  stopMember();
-  for (const callback of timers.splice(1)) callback(); // omit the grant-renewal timer
-  assert.equal(opened, 1, 'an ended subscription has no consumers left to retry for');
-  layer.stop();
-});
-
 test('joining with an invitation waits for the owner, then connects with the root-certified device', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
@@ -1211,7 +984,7 @@ test('joining with an invitation waits for the owner, then connects with the roo
   const peer = await joinWorkspace({
     origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, displayName: 'Bob',
     runtime, custody, store, storage, pollMs: 1, onProgress: event => progress.push(event.phase),
-    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); },
+    fetch: async () => { throw new Error('no network in tests'); },
   });
   assert.deepEqual(progress, ['asking', 'waiting', 'waiting', 'admitted']);
   assert.equal(runtime.calls.asked.root, identity);
@@ -1254,7 +1027,7 @@ test('a pre-admitted person joins without waiting for the owner', async () => {
     origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, displayName: 'Cy',
     admissionToken: 'one-time-token', runtime, custody, store: memoryStore(), storage: null,
     onProgress: event => progress.push(event.phase),
-    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); },
+    fetch: async () => { throw new Error('no network in tests'); },
   });
   assert.deepEqual(progress, ['asking', 'admitted']);
   assert.equal(runtime.calls.asked.token, 'one-time-token');
@@ -1276,99 +1049,24 @@ test('an invitation the host will not honour is refused in plain words, and so i
     refusing.askToJoin = async () => JSON.stringify({reply, cert: {guest: true, device_public_key: Array(32).fill(0xdd)}});
     return joinWorkspace({origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity,
       admissionToken: 'another-persons-token', runtime: refusing, custody, store: memoryStore(), storage: null,
-      liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); }});
+      fetch: async () => { throw new Error('no network in tests'); }});
   };
   await assert.rejects(join({kind: 'refused', reason: 'this invitation is bound to another person'}),
     {name: 'AdmissionError', code: 'refused', message: REFUSED_JOIN});
   await assert.rejects(join({kind: 'declined'}), {name: 'AdmissionError', code: 'refused', message: /declined/});
 });
 
-test('an old membership retry cannot replace a rejoined publishers presence subscription', async () => {
+test('a person renamed since the page started says the new name with the next frame', async () => {
   const runtime = fakeRuntime();
-  const carriers = fakeCarriers();
-  const timers = [];
-  const layer = createLiveLayer({
-    liveGrant: async () => JSON.stringify({token: '0102', workspace: WORKSPACE_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
-    sealLive: async (_room, bytes) => bytes,
-    openLive: async (_room, bytes) => bytes.slice(1),
-  }, runtime, WORKSPACE, {
-    endpoint: 'test', carriers,
-    setTimer: callback => { timers.push(callback); return timers.length; }, clearTimer() {},
-  });
-  try {
-    await until(() => carriers.connects[0]?.memberWatcher, 'the live member watcher');
-    const session = carriers.connects[0];
-    session.memberWatcher(OTHER, true);
-    session.presenceEnds[0]();
-    const oldRetry = timers.at(-1);
-    session.memberWatcher(OTHER, false);
-    session.memberWatcher(OTHER, true);
-    session.presenceEnds[1]();
-    const currentRetry = timers.at(-1);
-    oldRetry();
-    currentRetry();
-    session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: 1, pointer: {strip: '1', at: [10, 20]}}), 1);
-    await settle();
-    assert.deepEqual(layer.remoteState(1).map(remote => remote.pointer?.at), [[10, 20]], 'the current membership must retain a working subscription');
-  } finally {
-    layer.stop();
-  }
-});
-
-
-test('a renewed live session announces the name the person chose since, not the one it started with', async () => {
-  const carriers = fakeCarriers();
-  const timers = [];
-  const layer = createLiveLayer({
-    liveGrant: async () => JSON.stringify({token: '0102', workspace: WORKSPACE_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
-    sealLive: async (_room, bytes) => bytes,
-  }, fakeRuntime(), WORKSPACE, {
-    endpoint: 'test', carriers, participant: {kind: 'person', label: 'Ada', color: '#336699', activity: null},
-    setTimer: callback => { timers.push(callback); return timers.length; }, clearTimer() {},
-  });
-  const labels = session => session.presence
-    .map(bytes => JSON.parse(new TextDecoder().decode(bytes)).participant?.label).filter(Boolean);
-  try {
-    await until(() => labels(carriers.connects[0] ?? {presence: []}).length, 'the first announcement');
-    assert.deepEqual(labels(carriers.connects[0]), ['Ada']);
-    layer.publishPresence({participant: {kind: 'person', label: 'Bea', color: '#336699', activity: null}});
-    // The grant is renewed: a new session announces the person again.
-    timers[0]();
-    await until(() => labels(carriers.connects[1] ?? {presence: []}).length, 'the renewed announcement');
-    assert.deepEqual(labels(carriers.connects[1]), ['Bea']);
-  } finally {
-    layer.stop();
-  }
-});
-
-test('each live grant tells the host what the page decodes; an agent\'s layer does not speak for the page', async () => {
-  const advertised = [];
-  const peerOf = () => ({
-    liveGrant: async () => JSON.stringify({token: '0102', workspace: WORKSPACE_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
-    legacyCodecs: async (room, codecs) => { advertised.push([room, JSON.parse(codecs)]); return true; },
-  });
-  const timers = [];
-  const settings = (carriers, pending = []) => ({
-    endpoint: 'test', carriers, decodable: async () => ['h264', 'vp9'],
-    setTimer: callback => { pending.push(callback); return pending.length; }, clearTimer() {},
-  });
-  const carriers = fakeCarriers();
-  const layer = createLiveLayer(peerOf(), fakeRuntime(), WORKSPACE, settings(carriers, timers));
-  const agentCarriers = fakeCarriers();
-  const agent = createLiveLayer(peerOf(), fakeRuntime(), WORKSPACE, {...settings(agentCarriers), agent: 'summarizer'});
-  try {
-    await until(() => advertised.length === 1, 'the codec advert');
-    assert.deepEqual(advertised, [[WORKSPACE, ['h264', 'vp9']]]);
-    await until(() => agentCarriers.connects[0], 'the agent layer connected');
-    // The grant is renewed: the advert goes with the new one.
-    timers[0]();
-    await until(() => advertised.length === 2, 'the advert with the renewed grant');
-    await settle();
-    assert.equal(advertised.length, 2, 'the agent layer never advertised');
-  } finally {
-    layer.stop();
-    agent.stop();
-  }
+  const peer = await connect(options(runtime, memoryStore()));
+  await until(() => peer.live.state === 'live', 'the live layer');
+  const labels = () => runtime.peer.published.map(value => value.participant?.label).filter(Boolean);
+  await until(() => labels().length, 'the first announcement');
+  assert.deepEqual(labels().at(-1), 'Browser on Cloud');
+  peer.setDisplayName('Bea');
+  peer.live.publishPresence({selection: {anchor: '03', head: '03'}});
+  await until(() => labels().at(-1) === 'Bea', 'the name the person chose since');
+  await peer.dispose();
 });
 
 test('resource hydration can be cancelled and leaving the peer refuses pending opens', async () => {

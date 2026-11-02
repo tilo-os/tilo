@@ -5,8 +5,7 @@
  *
  * Presence values (the JSON projection of the frozen `PresenceFrame`):
  *   {focus:{app,record}|null,
- *    pointer:{window:{app,record}, at:[x,y]}
- *           |{beside:{app,record}, edge:[fx,fy], at:[dx,dy]}|{strip:string, at:[x,y]}|null,
+ *    pointer:{tile:{tab}, at:[x,y]}|null,
  *    selection:{anchor:hex, head:hex}|null,
  *    drag:{object:{record:{app,record}|null,id:hex}, phase:'start'|'move'|'end'|'cancel',
  *          position:[x,y], size:[w,h]|null}|null,
@@ -14,13 +13,11 @@
  *    wave:{seq, target:hex}|null,
  *    layout:{size:[w,h], windows:[{app, record:hex16, rect:[x0,y0,x1,y1], focused}]}|null,
  *    following:hex|null}
- * `pointer` is relative to a window, named by its record: within the window
- * it is over (from its content's top-left corner), or over the empty
- * desktop beside the nearest window (from that window's nearest point,
- * `edge` fractions across it). Strips are personal in many workspaces, so only a
- * desk showing no window points in its strip's own coordinates. Each member
- * places it in their own layout (the runtime's `remote_pointers`); `at` and
- * `edge` interpolate while it stays relative to the same thing. `place` is where within its focus the publisher is (on a desktop, the
+ * `pointer` is over one tab of the workspace, `tab` its id, `at` a point in
+ * that tile's logical pixels: the same point every member's view of the tab
+ * shows, whatever their window's size or their own strips. Each member
+ * places it in their own layout (the runtime's `remote_pointers`); `at`
+ * interpolates while it stays over the same tab. `place` is where within its focus the publisher is (on a desktop, the
  * strip it shows). `chat` is what the publisher is saying beside its pointer
  * (cursor chat); `reaction` its latest reaction, new when its `seq` is;
  * `wave` its latest wave at the member whose publisher is `target`, new
@@ -80,15 +77,9 @@ function finitePair(value, name) {
 function normalizePointer(value) {
   const at = finitePair(value.at ?? null, 'pointer at');
   if (!at) throw new TypeError('a pointer has a point');
-  const record = value => ({app: String(value.app), record: String(value.record)});
-  if (value.window) return {window: record(value.window), at};
-  if (value.beside) {
-    const edge = finitePair(value.edge ?? null, 'pointer edge');
-    if (!edge || !edge.every(fraction => fraction >= 0 && fraction <= 1)) throw new TypeError('a pointer beside a window has an edge of fractions');
-    return {beside: record(value.beside), edge, at};
-  }
-  if (/^\d+$/.test(String(value.strip))) return {strip: String(value.strip), at};
-  throw new TypeError('a pointer is over or beside a window, or on a strip');
+  const tab = Number(value.tile?.tab);
+  if (!Number.isSafeInteger(tab) || tab < 0) throw new TypeError('a pointer is over a tab of the workspace: {tile: {tab}, at}');
+  return {tile: {tab}, at};
 }
 const unit = value => Math.min(10000, Math.max(0, Math.round(Number(value) || 0)));
 const side = value => Math.min(65535, Math.max(0, Math.round(Number(value) || 0)));
@@ -104,12 +95,9 @@ function normalizeLayout(value) {
   });
   return {size: [side(value.size[0]), side(value.size[1])], windows};
 }
-const sameRecord = (a, b) => Boolean(a && b) && a.app === b.app && a.record === b.record;
-/** Whether two pointers are relative to the same window or strip. */
+/** Whether two pointers are over the same tab. */
 export function sameAnchor(a, b) {
-  if (a.window || b.window) return sameRecord(a.window, b.window);
-  if (a.beside || b.beside) return sameRecord(a.beside, b.beside);
-  return a.strip === b.strip;
+  return a.tile?.tab === b.tile?.tab;
 }
 function normalizeField(key, value) {
   if (value === undefined || value === null) return null;
@@ -151,10 +139,10 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 /**
  * Publisher: `update(partial)` merges fields. A change leaves at the end of
  * the current task (updates made together coalesce into one frame) unless a
- * frame left less than PRESENCE_MIN_INTERVAL_MS ago; then it leaves when the
+ * frame left less than `minIntervalMs` ago; then it leaves when the
  * interval elapses, carrying the latest value. Input events arrive at display
- * rate, so the publish rate follows the display up to 120 Hz without waiting
- * for an animation frame. After the last change: loss-repair repeats, then a
+ * rate; the interval is the link's, not the display's, so publishing needs no
+ * animation frame. After the last change: loss-repair repeats, then a
  * slow keepalive. A drag that ended is cleared after its repeats.
  */
 export function createPresencePublisher({
@@ -167,6 +155,9 @@ export function createPresencePublisher({
   /** End-of-task scheduling (coalesces updates made in one event handler). */
   defer = callback => globalThis.queueMicrotask(callback),
   onPublish = () => {},
+  /** The soonest a second frame may leave: the workspace's presence is
+   * relayed, so the layer sets the rate the link carries. */
+  minIntervalMs = PRESENCE_MIN_INTERVAL_MS,
   keepaliveMs = PRESENCE_KEEPALIVE_MS,
   // The relay forwards only strictly increasing sequence numbers per
   // publisher; seeding from the wall clock (microseconds, < 2^53) keeps a
@@ -234,11 +225,10 @@ export function createPresencePublisher({
       armRepeat();
     }, delay);
   }
-  // Time until the rate limit admits the next frame (strictly <= 120/s for
-  // the relay; <= 0.05 ms counts as now, so timer rounding cannot spin on a
-  // sub-microsecond remainder).
+  // Time until the rate limit admits the next frame (<= 0.05 ms counts as
+  // now, so timer rounding cannot spin on a sub-microsecond remainder).
   const waitMs = () => {
-    const wait = PRESENCE_MIN_INTERVAL_MS - (now() - lastSentAt);
+    const wait = minIntervalMs - (now() - lastSentAt);
     return wait > 0.05 ? wait : 0;
   };
   function tick() {
@@ -442,19 +432,12 @@ export function createRemotePresence({maxSamples = 8} = {}) {
   function sample(nowMs) {
     if (!newest) return null;
     const at = nowMs - delay();
-    // A pointer moves smoothly while over one window or strip, and jumps
-    // to what it moved over: its earlier points are in other coordinates.
+    // A pointer moves smoothly while over one tab, and jumps to what it
+    // moved over: its earlier points are in other coordinates.
     const over = newest.pointer;
     const along = pick => (over ? position(s => (s.pointer && sameAnchor(s.pointer, over) ? pick(s.pointer) : null), at, () => true) : null);
     const point = along(p => p.at);
-    let pointer = null;
-    if (point && over.window) pointer = {window: over.window, at: point};
-    else if (point && over.beside) {
-      // Extrapolated motion along the window's side stays on the side.
-      const edge = (along(p => p.edge) ?? over.edge).map(fraction => Math.min(1, Math.max(0, fraction)));
-      pointer = {beside: over.beside, edge, at: point};
-    }
-    else if (point) pointer = {strip: over.strip, at: point};
+    const pointer = point ? {tile: over.tile, at: point} : null;
     let drag = null;
     const current = newest.drag;
     if (current && (current.phase === 'end' || current.phase === 'cancel')) {

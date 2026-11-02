@@ -906,11 +906,9 @@ pub struct Rooms {
 
 /// [`Rooms`] for whoever must not keep them alive: the browser plane, which
 /// hands sessions the calls of the rooms this relay carries.
-#[cfg(feature = "web")]
 #[derive(Clone)]
 pub struct WeakRooms(std::sync::Weak<RoomsInner>);
 
-#[cfg(feature = "web")]
 impl WeakRooms {
     /// The rooms, while the relay still has them.
     #[must_use]

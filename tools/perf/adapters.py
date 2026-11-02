@@ -98,20 +98,6 @@ Each adapter reads what a benchmark already prints and emits records through
   first presented frame); the demo's two only when the run had the demo. The
   report must name the env's renderer, commit and profile,
   and an unthrottled page.
-- `native-stream REPORT_JSON`: the native stream qualification's report
-  (`scripts/perf/native_stream_qualification.mjs`): a session's window
-  streamed to the browser desktop. Each sample list becomes one `stream.*` KPI
-  (`STREAM_KPIS`), and the frames sent but never drawn one
-  `stream.frame.missed` sample (percent). A stream in a codec other than
-  H.264 (`--codec vp9`) is its own series, its codec after the group
-  (`stream.vp9.frame.latency`), so it never shares a baseline with H.264's.
-  The report must name the env's renderer, commit and profile, and be
-  correct: an incorrect run is a failure, never a measurement. A
-  qualification that names the browser it drove (`--platform safari`, which
-  Safari's WebDriver drives on a macOS host) must have streamed what it asked
-  for: over the HTTPS stream, since Safari has no WebTransport, and in the
-  codec it asked for.
-
 Usage:
 
     python3 tools/perf/adapters.py fs-gate --env-json env.json run-*.log >> results.jsonl
@@ -126,7 +112,6 @@ Usage:
     python3 tools/perf/adapters.py notes-latency --env-json env.json notes-latency.log >> results.jsonl
     python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
     python3 tools/perf/adapters.py browser-qualification --env-json env.json browser.json >> results.jsonl
-    python3 tools/perf/adapters.py native-stream --env-json env.json stream.json >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
 drifted must not turn into a silently empty night.
@@ -606,80 +591,6 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
     return [record.from_samples(*BROWSER_KPIS[field], samples[field], meta=meta, **base) for field in fields]
 
 
-STREAM_KPIS = {
-    "startup_ms": ("stream.startup.first_picture", "ms"),
-    "frame_latency_ms": ("stream.frame.latency", "ms"),
-    "frame_interval_ms": ("stream.frame.interval", "ms"),
-    "encode_ms": ("stream.encode.frame", "ms"),
-    "input_ms": ("stream.input.latency", "ms"),
-}
-# The codec whose series carries no codec in its ids: H.264's series predate
-# the others and keep their ids, so their baselines continue.
-STREAM_DEFAULT_CODEC = "h264"
-
-
-def stream_kpi(kpi: str, codec: str) -> str:
-    """`kpi` for a stream in `codec`: `stream.vp9.frame.latency` for VP9's
-    `stream.frame.latency`, unchanged for H.264's."""
-    if codec == STREAM_DEFAULT_CODEC:
-        return kpi
-    group, rest = kpi.split(".", 1)
-    return f"{group}.{codec}.{rest}"
-
-
-def native_stream(report: dict[str, Any], env: dict[str, Any]) -> list[record.Record]:
-    """Records for one native stream qualification report.
-
-    Like the browser qualification's, the report must have measured the
-    environment the records claim: the env's WebGPU renderer and a clean
-    build of the env's commit in its profile. A run the harness judged
-    incorrect (a decoder error, a corrupt or stale picture, a lost press) is
-    refused: its numbers measure a broken stream.
-    """
-    if report.get("schema") != 1:
-        raise ValueError(f"native stream report schema {report.get('schema')!r}, not 1")
-    bundle, session = report["bundle"], report["session"]
-    if report["renderer"] != env["renderer"]:
-        raise ValueError(f"the report measured on {report['renderer']}, not the env's {env['renderer']}")
-    if bundle["profile"] != env["profile"]:
-        raise ValueError(f"the bundle is a {bundle['profile']} build, not the env's {env['profile']}")
-    if bundle["revision"] != env["commit"] or bundle["dirty"]:
-        raise ValueError(f"the bundle was built from {bundle['revision']}"
-                         f"{' (dirty)' if bundle['dirty'] else ''}, not {env['commit']}")
-    failures = report["correctness"]["failures"]
-    if failures:
-        raise ValueError(f"the stream was incorrect: {'; '.join(failures)}")
-    codec = report["workload"]["codec"]
-    if not re.fullmatch(r"[a-z][a-z0-9]*", codec):
-        raise ValueError(f"the report names codec {codec!r}")
-    if session["codec"] != codec:
-        raise ValueError(f"the session streamed {session['codec']}, not the requested {codec}")
-    # Safari has no WebTransport, so a run that names it took the HTTPS
-    # stream: a record claiming otherwise measured another browser.
-    if report.get("browser", {}).get("driver") == "webdriver" and report["workload"]["carrier"] != "https":
-        raise ValueError(f"the Safari run streamed over {report['workload']['carrier']}, not the HTTPS stream Safari takes")
-    samples = report["samples"]
-    missing = [field for field in STREAM_KPIS if not samples.get(field)]
-    if missing:
-        raise ValueError(f"the report has no samples for {missing}")
-    counts = report["counts"]
-    delivered = float(counts["deliveredPercent"])
-    if not 0.0 <= delivered <= 100.0:
-        raise ValueError(f"delivered {delivered} % is not a share")
-    meta = {**env.get("meta", {}), "bundle_digest": bundle["digest"], "browser": report["browser"]["product"],
-            "encoder": session["encoder"], "encoder_hardware": str(bool(session["hardware"])).lower(),
-            "window": f"{session['width']}x{session['height']}", "fps": str(session["fps"]),
-            "carrier": report["workload"]["carrier"], "codec": codec,
-            "viewport": "{width}x{height}@{deviceScaleFactor}".format(**report["viewport"]),
-            "frames_sent": str(counts["sent"])}
-    base = {name: value for name, value in env.items() if name != "meta"}
-    records = [record.from_samples(stream_kpi(kpi, codec), unit, samples[field], meta=meta, **base)
-               for field, (kpi, unit) in STREAM_KPIS.items()]
-    records.append(record.from_samples(stream_kpi("stream.frame.missed", codec), "percent",
-                                       [round(100.0 - delivered, 2)], meta=meta, **base))
-    return records
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -723,17 +634,11 @@ def main(argv: list[str] | None = None) -> int:
                                   help="records from scripts/perf/browser_qualification.mjs's report")
     browser.add_argument("--env-json", required=True, type=Path)
     browser.add_argument("report", type=Path)
-    stream = commands.add_parser("native-stream",
-                                 help="records from scripts/perf/native_stream_qualification.mjs's report")
-    stream.add_argument("--env-json", required=True, type=Path)
-    stream.add_argument("report", type=Path)
     args = parser.parse_args(argv)
     try:
         env = record.load_env(args.env_json)
         if args.command == "browser-qualification":
             records = browser_qualification(json.loads(args.report.read_text(encoding="utf-8")), env)
-        elif args.command == "native-stream":
-            records = native_stream(json.loads(args.report.read_text(encoding="utf-8")), env)
         elif args.command == "hosting-load":
             records = hosting_load(json.loads(args.report.read_text(encoding="utf-8")),
                                    tomllib.loads(args.prices.read_text(encoding="utf-8")), env)

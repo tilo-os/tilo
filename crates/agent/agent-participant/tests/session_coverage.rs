@@ -1,8 +1,8 @@
 //! Every web app over the real session: an agent (iroh, its own certified
 //! device and delegation) opens the app, makes an edit through a published
-//! operation found without app knowledge, and a browser (HTTPS documents,
-//! WebTransport presence) receives the change authored by the agent, merges
-//! it into its own replica of the record, and sees the agent on it.
+//! operation found without app knowledge, and a browser (over HTTPS) receives
+//! the change authored by the agent, merges it into its own replica of the
+//! record, and sees the agent on it.
 //! Finally a natural-language task goes through `ModelPlanner`.
 
 #![allow(
@@ -48,11 +48,10 @@ use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig, Replica, Seed,
     StepAction, record_provider,
 };
-use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
+use tilo_browser_peer::{Host, PeerEvent};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
-use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
@@ -169,20 +168,6 @@ fn page(
     body(&app)
 }
 
-/// Open a sealed live frame with `peer`'s channel keys.
-async fn open_live(peer: &PeerHandle, frame: Vec<u8>) -> Option<LiveFrame> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    peer.open_live_then(
-        workspace(),
-        frame,
-        Box::new(move |opened| {
-            let _ = tx.send(opened);
-        }),
-    )
-    .ok()?;
-    LiveFrame::decode(&rx.await.ok()??).ok()
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_web_app_over_the_session() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -247,7 +232,7 @@ async fn every_web_app_over_the_session() {
     )
     .unwrap();
 
-    // The browser: HTTPS for documents, WebTransport for presence.
+    // The browser: one HTTPS session for documents and presence.
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let browser = start_peer(
         Host::Https(host.https()),
@@ -264,29 +249,6 @@ async fn every_web_app_over_the_session() {
         async move { waiting.then_some(()) }
     })
     .await;
-
-    let (grant_tx, grant_rx) = tokio::sync::oneshot::channel();
-    browser
-        .live_grant_then(
-            workspace(),
-            Box::new(move |grant| {
-                let _ = grant_tx.send(grant);
-            }),
-        )
-        .unwrap();
-    let grant = grant_rx.await.unwrap().unwrap();
-    let url: url::Url = format!("https://127.0.0.1:{}/moq/live", host.web.addr.port())
-        .parse()
-        .unwrap();
-    let trust =
-        tilo_moq::carrier::Trust::Fingerprints(vec![host.web.certificate_sha256.clone().unwrap()]);
-    let own = tilo_moq::live::namespace_path(&grant.room, &grant.publisher).unwrap();
-    let live = tilo_moq::live::peer::Peer::connect(&url, &trust, &grant.token, Some(&own))
-        .await
-        .unwrap();
-    let agent_namespace =
-        tilo_moq::live::namespace_path(&grant.room, &hex::encode(agent_key)).unwrap();
-    let mut agent_presence = tilo_moq::live::peer::MemberPresence::follow(&live, &agent_namespace);
 
     let mut received: BTreeMap<DocumentRoute, Vec<Vec<u8>>> = BTreeMap::new();
     let mut table = String::from(
@@ -310,7 +272,9 @@ async fn every_web_app_over_the_session() {
         let expected = body(agent.app(&route).unwrap());
 
         // The browser receives the agent's changes in host order and its
-        // own mount of the app merges them into the agent's state.
+        // own mount of the app merges them into the agent's state; the views
+        // the agent says of itself arrive on the same session.
+        let mut shells: Vec<collab_types::presence::ShellPresence> = Vec::new();
         let deadline = tilo_test_env::hang_deadline();
         let merged = loop {
             agent.pump();
@@ -333,6 +297,12 @@ async fn every_web_app_over_the_session() {
                             .or_default()
                             .push(bytes);
                     }
+                } else if let PeerEvent::Presence { from, body, .. } = event
+                    && from == agent_key
+                    && let Some(collab_types::PeerPresencePayload::Shell(shell)) =
+                        support::presence(&body)
+                {
+                    shells.push(*shell);
                 }
             }
             if let Some(changes) = received.get(&route)
@@ -357,31 +327,46 @@ async fn every_web_app_over_the_session() {
             );
         }
 
-        // The browser sees the agent on this record: the first presence
-        // frame that focuses it. Every frame names the participant, so there
-        // is nothing to wait for once one has arrived.
+        // The browser sees the agent on this record: the view it says of
+        // itself names the record it works in.
+        let record = tilo_relay_protocol::live::LiveRecord {
+            app: app_id.to_owned(),
+            record: route.record.clone(),
+        }
+        .short_digest();
         let deadline = tilo_test_env::hang_deadline();
-        let presence: Option<PresenceFrame> = loop {
-            if Instant::now() > deadline {
-                break None;
-            }
-            agent.pump();
-            if let Some(datagram) = agent_presence.next(Duration::from_millis(200)).await
-                && let Some(LiveFrame::Presence(presence)) =
-                    open_live(&browser, datagram.to_vec()).await
-                && presence
-                    .focus
-                    .as_ref()
-                    .is_some_and(|focus| focus.app == app_id && focus.record == route.record)
-            {
-                break Some(presence);
-            }
+        let on_record = |shells: &[collab_types::presence::ShellPresence]| {
+            shells
+                .iter()
+                .find(|shell| {
+                    shell
+                        .windows
+                        .iter()
+                        .any(|window| window.app == app_id && window.record == record)
+                })
+                .cloned()
         };
+        let mut presence = on_record(&shells);
+        while presence.is_none() && Instant::now() <= deadline {
+            agent.pump();
+            for event in browser_events.drain() {
+                let PeerEvent::Presence { from, body, .. } = event else {
+                    continue;
+                };
+                if from == agent_key
+                    && let Some(collab_types::PeerPresencePayload::Shell(shell)) =
+                        support::presence(&body)
+                {
+                    shells.push(*shell);
+                }
+            }
+            presence = on_record(&shells);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         let cursor = match &presence {
             Some(presence) => {
-                let participant = presence.participant.as_ref().unwrap();
-                assert_eq!(participant.kind, ParticipantKind::Agent);
-                assert_eq!(participant.label, "Coverage agent");
+                assert!(presence.agent);
+                assert_eq!(presence.label, "Coverage agent");
                 "yes".to_owned()
             }
             None => {
@@ -657,7 +642,6 @@ async fn every_web_app_over_the_session() {
         failures.join("\n")
     );
     let _ = user;
-    drop(live);
     agent.close();
     browser.close();
     let retained = host
