@@ -325,10 +325,18 @@ impl Desktop {
     /// and its window took the place its tab held. The tab's id.
     pub(crate) fn wait_for_app_window(&self, app_id: &str) -> u64 {
         let deadline = tilo_test_env::hang_deadline();
+        let mut seen = String::new();
         loop {
             let state = self.state();
             if let Some(tab) = app_window_tab(&state["workspace_tree"], app_id) {
                 return tab;
+            }
+            // Each change of what the tabs show, so a timeout says where the
+            // launch stopped.
+            let tiles = tab_tiles(&state["workspace_tree"]);
+            if tiles != seen {
+                eprintln!("waiting for {app_id}'s window; tabs: {tiles}");
+                seen = tiles;
             }
             assert!(
                 Instant::now() < deadline,
