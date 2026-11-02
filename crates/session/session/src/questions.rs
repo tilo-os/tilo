@@ -862,6 +862,25 @@ fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
 /// with no access at all.
 fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: crate::agent_door::Admission = serde_json::from_value(details).ok()?;
+    if asked.as_person {
+        // Acting as the person is theirs to allow for now or for this session; it is never
+        // remembered beyond it, unless they name the program when they start the session.
+        let title = words(
+            "agent-door-admission-person",
+            &[("workspace", &asked.workspace)],
+        );
+        let mut dialog = review(
+            handle,
+            title,
+            who.to_owned(),
+            word("agent-door-admission-person-detail"),
+        );
+        dialog.body = Body::Choices(vec![
+            word("portal-allow-once"),
+            word("portal-allow-session"),
+        ]);
+        return Some((dialog, Plan::Choose(vec![ALLOW_ONCE, ALLOW_SESSION])));
+    }
     let title = words(
         "agent-door-admission",
         &[("workspace", &asked.workspace), ("agent", &asked.agent)],

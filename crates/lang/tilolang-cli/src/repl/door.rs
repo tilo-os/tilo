@@ -2,8 +2,9 @@
 //! door's socket (`docs/runtime-mcp.md`, "Inside a Tilo session"), and, for a nested session,
 //! its control socket, where the person's remote answer admits the REPL.
 //!
-//! The REPL is an agent like any other: it reaches only what the person grants it, every call
-//! passes the broker's gate as that agent, and its changes are its run's in history and undo.
+//! The REPL acts as the person, once they admit it: every call passes the broker's gate as them,
+//! within their own authority, and its changes are theirs, attributed to them, in history and
+//! undo.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -156,11 +157,14 @@ impl Door {
     ) -> Result<Self, String> {
         let mut lines = Lines::connect(socket)
             .map_err(|error| format!("the session's agent door isn't available: {error}"))?;
+        // The REPL asks to act as the person: its lines are theirs, typed by them. The person
+        // decides it, on the sheet the session shows, or by naming this program when they
+        // start the session (`tilo-session --admit-repl PATH`).
         lines.send(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {
                 "protocolVersion": PROTOCOL,
-                "capabilities": {},
+                "capabilities": {"experimental": {"so.tilo": {"actsAs": "person"}}},
                 "clientInfo": {"name": CLIENT, "version": env!("CARGO_PKG_VERSION")}
             }
         }))?;
@@ -176,7 +180,10 @@ impl Door {
                     "wait_ms": 5000
                 }))?;
             }
-            None => say("waiting for you to admit “tilolang repl” in the desktop…"),
+            None => say(
+                "asking to act as you: allow “tilolang repl” in the desktop, unless you named it \
+                 when you started the session (--admit-repl)…",
+            ),
         }
         let initialized = lines.receive(ADMIT_TIMEOUT)?;
         if let Some(error) = initialized.get("error") {

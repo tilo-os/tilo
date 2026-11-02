@@ -23,6 +23,29 @@ pub const SETTINGS_APP: &str = "so.tilo.settings";
 
 /// The device's surface as the session publishes it, which the session holds to its services.
 const DEVICE_SURFACE: &str = include_str!("../../../session/session/device-surface.json");
+/// The app the session's own resources are described as: `use so.tilo.session`.
+pub const SESSION_APP: &str = "so.tilo.session";
+/// What the session publishes, described as a package (`tilo_session::session_package`, which
+/// a test holds to what its door publishes).
+const SESSION_DESCRIPTION: &str = include_str!("../../../../apps/tl/session/surface.toml");
+
+/// The session's package: its resources' types and actions, which a shell's views, an agent's
+/// task and the REPL call as any package's (`session.place(resource: …, x: 80, y: 60)`).
+///
+/// # Errors
+/// The description does not read.
+pub fn session_package() -> Result<PackageMeta, String> {
+    crate::catalogue::described(SESSION_APP, "Session", SESSION_DESCRIPTION)
+}
+
+/// The resource each of the session's loose actions is published on, by the action's id.
+///
+/// # Errors
+/// The description does not read.
+pub fn session_addresses() -> Result<std::collections::BTreeMap<String, String>, String> {
+    crate::catalogue::addresses(SESSION_DESCRIPTION)
+}
+
 /// Settings' committed surface, the one its package ships.
 const SETTINGS_SURFACE: &str = include_str!("../../../../apps/settings/surface.toml");
 

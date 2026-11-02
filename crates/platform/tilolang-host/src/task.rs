@@ -95,8 +95,9 @@ impl RecordSource for Line {
 struct Door {
     line: Rc<Line>,
     reads: RecordReads,
-    /// The task as the actions it plans for a preview see their caller.
-    caller: tilolang_tilo::publish::Caller,
+    /// The author of the program running now, as the actions it plans for a preview see their
+    /// caller.
+    caller: RefCell<tilolang_tilo::publish::Caller>,
 }
 
 impl TaskDoor for Door {
@@ -120,7 +121,10 @@ impl TaskDoor for Door {
         if let Some(app) = call.get("app").and_then(Json::as_str).map(str::to_owned)
             && let Some((under, record)) = self.reads.address(&app)
         {
-            let preview = self.reads.plan(&call, &self.caller).unwrap_or(Json::Null);
+            let preview = self
+                .reads
+                .plan(&call, &self.caller.borrow())
+                .unwrap_or(Json::Null);
             if let Some(fields) = call.as_object_mut() {
                 fields.insert("app".to_owned(), json!(under));
                 fields.insert("record".to_owned(), json!(record));
@@ -184,6 +188,7 @@ pub struct Task {
     /// The program connection, watched for what the door sends.
     watched: OwnedFd,
     session: TaskSession,
+    door: Rc<Door>,
 }
 
 impl Task {
@@ -210,14 +215,14 @@ impl Task {
         let door = Rc::new(Door {
             line: Rc::clone(&line),
             reads,
-            caller: tilolang_tilo::publish::Caller {
-                actor: format!("agent:{}", request.task),
+            // Each program names its author; this is no one's until the first does.
+            caller: RefCell::new(tilolang_tilo::publish::Caller {
+                actor: String::new(),
                 agent: true,
                 on_behalf_of: request.person.clone(),
-            },
+            }),
         });
         let session = TaskSession::new(
-            &request.task,
             request.person.as_deref(),
             &(Rc::clone(&door) as Rc<dyn TaskDoor>),
             &bundles,
@@ -231,6 +236,7 @@ impl Task {
             line,
             watched,
             session,
+            door,
         })
     }
 
@@ -276,7 +282,11 @@ impl Task {
             };
         }
         let answer = match message.and_then(|message| program(&message)) {
-            Ok((source, confirm)) => self.session.run(&source, confirm),
+            Ok((source, confirm, author)) => {
+                let principal = tilolang_tilo::runtime::Principal::new(author.actor.clone());
+                *self.door.caller.borrow_mut() = author;
+                self.session.run(&source, confirm, &principal)
+            }
             Err(why) => {
                 tracing::warn!(
                     why,
@@ -293,8 +303,9 @@ impl Task {
     }
 }
 
-/// The program `message` asks the task to run, and whether its changes are confirmed.
-fn program(message: &Json) -> Result<(String, bool), String> {
+/// The program `message` asks the task to run, whether its changes are confirmed, and who wrote
+/// it: the door names the author of every program, the agent or the person typing.
+fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Caller), String> {
     let run = message.get("run").ok_or_else(|| {
         format!("the door sent the task something other than a program: {message}")
     })?;
@@ -304,7 +315,23 @@ fn program(message: &Json) -> Result<(String, bool), String> {
         .ok_or("the door sent a program without its source")?;
     // An absent `confirm` is a run not confirmed yet: its changes are previewed first.
     let confirm = run.get("confirm").and_then(Json::as_bool).unwrap_or(false);
-    Ok((source.to_owned(), confirm))
+    let author = run
+        .get("author")
+        .ok_or("the door sent a program without its author")?;
+    let actor = author
+        .get("actor")
+        .and_then(Json::as_str)
+        .filter(|actor| !actor.is_empty())
+        .ok_or("the door sent a program whose author names no one")?;
+    let author = tilolang_tilo::publish::Caller {
+        actor: actor.to_owned(),
+        agent: author.get("agent").and_then(Json::as_bool).unwrap_or(true),
+        on_behalf_of: author
+            .get("on_behalf_of")
+            .and_then(Json::as_str)
+            .map(str::to_owned),
+    };
+    Ok((source.to_owned(), confirm, author))
 }
 
 /// The bundles the sealed memfd `fd` holds, `len` bytes of them.
@@ -344,23 +371,19 @@ mod tests {
                 None,
                 Rc::clone(&line) as Rc<dyn RecordSource>,
             ),
-            caller: tilolang_tilo::publish::Caller {
+            caller: RefCell::new(tilolang_tilo::publish::Caller {
                 actor: "agent:task".to_owned(),
                 agent: true,
                 on_behalf_of: None,
-            },
+            }),
         });
-        let session = TaskSession::new(
-            "task",
-            None,
-            &(Rc::clone(&reached) as Rc<dyn TaskDoor>),
-            &[],
-        )
-        .expect("a session");
+        let session = TaskSession::new(None, &(Rc::clone(&reached) as Rc<dyn TaskDoor>), &[])
+            .expect("a session");
         let task = Task {
             line,
             watched: OwnedFd::from(ours),
             session,
+            door: reached,
         };
         (
             task,

@@ -110,6 +110,12 @@ impl Core {
                 if app == tilolang::HOST_APP || app.starts_with("agent.") || held.contains(app) {
                     continue;
                 }
+                // A description alone (`Runtime::load_foreign`: the device's sound, the
+                // session's windows) is read from the readings its publisher hands in, never
+                // from a record: there is nothing of it to find.
+                if !p.code {
+                    continue;
+                }
                 held.push(app.clone());
             }
             held

@@ -840,7 +840,7 @@ impl Shared {
         // of the person's: their answer admits it, and the client is served
         // from the next pass on.
         if let Some(door) = self.agent_door.borrow_mut().as_mut() {
-            door.follow(&self.handle, &self.person);
+            door.follow(&self.handle, &self.person, &self.doors);
         }
         self.asker.follow();
         self.shortcut_guide.follow();
@@ -1587,6 +1587,7 @@ impl Session {
                 std::sync::Arc::clone(&options.launches),
                 options.wake.handle(),
                 options.state.as_deref(),
+                &options.admit_repl,
             ) {
                 Ok(mounted) => Some(mounted),
                 Err(error) => {

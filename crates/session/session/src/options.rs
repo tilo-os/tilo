@@ -156,6 +156,12 @@ pub struct Options {
     /// this session serves no agents (a test, or a session in a window of
     /// another desktop).
     pub agent_door: Option<std::path::PathBuf>,
+    /// The programs the person admits, as they start the session, to act as
+    /// them at the agent door (`--admit-repl PATH`): their decision, made
+    /// ahead of time, so a REPL they start is let in without the sheet. Only
+    /// a connection whose executable is one of these and that asks to act as
+    /// the person is; any other is asked about as before.
+    pub admit_repl: Vec<std::path::PathBuf>,
     /// The runs of what people ask this session's agents to do. Without one
     /// the session keeps its own, which its broker delivers to the agents
     /// admitted here; one given is a run channel a test plays the agent's
@@ -324,6 +330,7 @@ impl Default for Options {
             kill_switch: None,
             action_plane: ActionPlane::default(),
             agent_door: None,
+            admit_repl: Vec::new(),
             agent_runs: None,
             launches: std::sync::Arc::default(),
             drives: None,

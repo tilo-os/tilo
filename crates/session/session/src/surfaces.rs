@@ -347,7 +347,7 @@ const ANSWERED_KEPT: usize = 256;
 const LISTING_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The provider surface apps address the desktop's actions under.
-pub const SESSION_PROVIDER: &str = "so.tilo.session";
+pub const SESSION_PROVIDER: &str = tilo_runtime::session_door::SESSION_PROVIDER;
 
 /// What the session answers its surface apps' actions from: the published
 /// side every caller of the desktop reaches, so a surface invokes what a
@@ -1027,7 +1027,10 @@ fn revision(resources: &[tilo_actions::ResourceSpec]) -> String {
 
 /// The latest update of an invocation whose receipt is `status`; `None`
 /// for a receipt that left it running and so has nothing new to say.
-fn outcome(invocation: InvocationId, status: &ReceiptStatus) -> Option<InvocationUpdate> {
+pub(crate) fn outcome(
+    invocation: InvocationId,
+    status: &ReceiptStatus,
+) -> Option<InvocationUpdate> {
     match status {
         ReceiptStatus::Accepted => None,
         ReceiptStatus::Completed { output } => Some(InvocationUpdate::Succeeded {
@@ -1055,7 +1058,7 @@ fn outcome(invocation: InvocationId, status: &ReceiptStatus) -> Option<Invocatio
 }
 
 /// A door's refusal as the action protocol says it.
-fn refusal(error: &tilo_actions::DoorError) -> ActionHostError {
+pub(crate) fn refusal(error: &tilo_actions::DoorError) -> ActionHostError {
     match error {
         tilo_actions::DoorError::Unknown(_) => ActionHostError::UnknownAction,
         other => ActionHostError::Refused {
