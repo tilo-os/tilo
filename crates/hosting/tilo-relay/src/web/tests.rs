@@ -930,3 +930,221 @@ async fn a_page_turns_its_call_at_the_host_and_only_an_admitted_device_is_answer
     serving.abort();
     crate::daemon::Relay::shutdown(relay).await;
 }
+
+/// The live plane a page joins: the relay's own WebTransport listener, a grant
+/// issued only to a page whose device the workspace admits, and a session cut
+/// when that device is removed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay carries the page's live session until it shuts down at the end"
+)]
+async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal() {
+    use base64::Engine as _;
+    use channel_crypto::{ChannelGroup, MemberKey};
+    use sha2::Digest as _;
+    use tilo_call_lane::Roster;
+    use tilo_live::live::Track;
+    use tilo_live::plane::{Join, Plane, PlaneError};
+    use tilo_live::scope::Scope;
+    use tilo_relay_protocol::web::{LiveInfo, LiveRequest};
+
+    const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    let signer = SigningKey::from_bytes(&[71; 32]);
+    let outsider_root = SigningKey::from_bytes(&[72; 32]);
+    let (host_key, host) = device(&signer, 73, DeviceCapabilities::host());
+    let (member_key, member) = device(&signer, 74, DeviceCapabilities::member());
+    let (outsider_key, outsider) = device(&outsider_root, 75, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let workspace = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
+    let relay = Relay::start_with_relay_mode(
+        RelayConfig {
+            state_root: state.path().into(),
+            // A guest of the host who is not a member of the workspace still
+            // opens a session: the route, not the handshake, keeps them out.
+            trust_policy: crate::policy::TrustPolicy::AllowList {
+                users: vec![
+                    hex::encode(signer.verifying_key().to_bytes()),
+                    hex::encode(outsider_root.verifying_key().to_bytes()),
+                ],
+            },
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: host.user_public_key,
+            device_signing_key: host_key,
+            device_cert: host.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let admit = |devices: Vec<[u8; 32]>| tilo_peer_state::GovernedAccess {
+        member_user_roots: vec![signer.verifying_key().to_bytes()],
+        member_devices: devices,
+    };
+    relay
+        .replace_governed_workspace_access(
+            workspace,
+            true,
+            admit(vec![member.device_public_key]),
+            state.path().into(),
+        )
+        .await
+        .unwrap();
+
+    // The daemon's own live listener, a development certificate as a host on
+    // its own machine has, serving its routes on a loopback port.
+    let sessions = Sessions::new(relay.web_context().clone());
+    let config = WebConfig {
+        listen: (std::net::Ipv4Addr::LOCALHOST, 0).into(),
+        tls: TlsSource::Development {
+            hosts: vec!["localhost".into(), "127.0.0.1".into()],
+            store: None,
+        },
+        allowed_origins: Vec::new(),
+        plain_listen: None,
+        public_origin: None,
+        limits: super::WebLimits::default(),
+        country: None,
+        fetch_proxy: None,
+    };
+    let identity = tls::Identity::load(&config.tls).unwrap();
+    let live = wt::Live::start(&identity, sessions.clone(), &config, "https://127.0.0.1").unwrap();
+    let answered = live.info.clone();
+    let lane = endpoint(&SigningKey::from_bytes(&[76; 32])).await;
+    let web = Arc::new(Web {
+        sessions,
+        host_info: HostInfo {
+            host_cert: host.clone(),
+        },
+        allowed_origins: vec![],
+        features: 0,
+        rooms: relay.rooms().cloned(),
+        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
+        profiles: envelopes::Envelopes::of(
+            envelopes::Kind::Profile,
+            relay.state_root().join("profiles"),
+        ),
+        here: Arc::new(here::Here::new(None)),
+        country: None,
+        fetch: None,
+        calls: Arc::new(call_lane::CallLane::at(lane)),
+        live: Some(Arc::new(live)),
+    });
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let serving = tokio::spawn(plain_accept_loop(listener, web.clone()));
+    drop(web);
+
+    let ask = |workspace_of: &str| {
+        postcard::to_allocvec(&LiveRequest {
+            workspace_id: workspace,
+            workspace: workspace_of.into(),
+        })
+        .unwrap()
+    };
+
+    // No session, no grant; a device the workspace does not admit gets none
+    // either, though its session is open; and not in a workspace this relay
+    // does not number.
+    assert_eq!(post(addr, "/live", None, ask(WORKSPACE)).await.0, 401);
+    let outsider_token = browser(addr, &outsider_key, &outsider).await;
+    assert_eq!(
+        post(addr, "/live", Some(outsider_token), ask(WORKSPACE))
+            .await
+            .0,
+        403
+    );
+    let member_token = browser(addr, &member_key, &member).await;
+    assert_eq!(
+        post(addr, "/live", Some(member_token), ask("Somewhere else"))
+            .await
+            .0,
+        400
+    );
+
+    // The admitted device's page is told where the listener is and which
+    // certificate it presents.
+    let (code, body) = post(addr, "/live", Some(member_token), ask(WORKSPACE)).await;
+    assert_eq!(code, 200);
+    let info: LiveInfo = postcard::from_bytes(&body).unwrap();
+    assert_eq!(info, answered);
+    assert!(info.webtransport_port > 0);
+    assert_eq!(
+        info.webtransport_origin,
+        format!("https://127.0.0.1:{}", info.webtransport_port)
+    );
+    let leaf = sha2::Sha256::digest(identity.chain.first().unwrap().as_ref());
+    assert_eq!(
+        info.certificate_sha256,
+        base64::engine::general_purpose::STANDARD.encode(leaf)
+    );
+
+    // The page joins that listener with its grant and publishes presence
+    // under the scope's keys, as the page's own carrier does.
+    let certificate: Vec<u8> = base64::engine::general_purpose::STANDARD
+        .decode(&info.certificate_sha256)
+        .unwrap();
+    let carrier = tilo_live::carrier::WebTransport::new(
+        &format!("{}{}", info.webtransport_origin, tilo_live::preface::PATH),
+        &[hex::encode(certificate)],
+    )
+    .unwrap();
+    let grant = tilo_relay_protocol::web::LiveGrant {
+        workspace_id: workspace,
+        token: member_token,
+    };
+    let keys = ChannelGroup::create(
+        collab_types::ChannelId::new(),
+        MemberKey::generate("alice").unwrap(),
+    )
+    .unwrap()
+    .content_keys()
+    .unwrap();
+    let plane = Plane::join(
+        &carrier,
+        &grant.encode(),
+        Join {
+            scope: Scope::workspace(WORKSPACE),
+            device: member.device_public_key,
+            keys,
+            roster: Roster::new([member.device_public_key]),
+            publish: true,
+        },
+    )
+    .await
+    .unwrap();
+    plane.publish(Track::Presence, 0, b"role=member").unwrap();
+
+    // Removing the device from the workspace cuts its page's session, and the
+    // route refuses it from then on.
+    relay
+        .replace_governed_workspace_access(workspace, true, admit(Vec::new()), state.path().into())
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !plane.ended() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(
+        plane.ended(),
+        "the removed device's live session stayed open"
+    );
+    assert_eq!(
+        plane.publish(Track::Presence, 1, b"role=member"),
+        Err(PlaneError::Ended)
+    );
+    assert_eq!(
+        post(addr, "/live", Some(member_token), ask(WORKSPACE))
+            .await
+            .0,
+        403
+    );
+
+    serving.abort();
+    crate::daemon::Relay::shutdown(relay).await;
+}

@@ -305,13 +305,7 @@ impl Offered {
     }
 }
 
-/// Exact-path patterns, or `None` when a name cannot be spelled as a path.
-pub(crate) fn exact(names: &[&str]) -> Option<moq_net::Patterns> {
-    names
-        .iter()
-        .map(|name| moq_net::Pattern::literal(name).ok())
-        .collect()
-}
+pub(crate) use crate::live::exact;
 
 impl Relay {
     /// Must be called inside a Tokio runtime: the shared origin's driver runs

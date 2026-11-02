@@ -273,25 +273,32 @@ where
     })
 }
 
+/// What a [`Dial`] answers with: one attempt's future. A device's transport
+/// may move the attempt between threads; a page's cannot, so the boxed
+/// future carries the bound its target's executor has.
+#[cfg(not(target_arch = "wasm32"))]
+pub type Dialling<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Connected, AdmissionError>> + Send + 'a>,
+>;
+
+/// See the device's [`Dialling`].
+#[cfg(target_arch = "wasm32")]
+pub type Dialling<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Connected, AdmissionError>> + 'a>>;
+
 /// How a client reaches a carrier: the one transport-specific step of
 /// connecting. Everything after the transport opens — the admission preface,
 /// `moq-lite` and its SETUP — is shared by every carrier.
 pub trait Dial: Send + Sync + 'static {
     /// Open a session, admit `grant` on it, and start `moq-lite`. `timeout`
     /// bounds the transport and the admission together.
-    #[allow(
-        clippy::type_complexity,
-        reason = "one boxed future per attempt: the transport differs, the steps after it do not"
-    )]
     fn dial<'a>(
         &'a self,
         grant: &'a [u8],
         publish: Option<moq_net::origin::Consumer>,
         subscribe: Option<moq_net::origin::Producer>,
         timeout: Duration,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Connected, AdmissionError>> + Send + 'a>,
-    >;
+    ) -> Dialling<'a>;
 }
 
 /// Runs an origin's driver for as long as it lives. An origin makes no

@@ -10,15 +10,14 @@ license.workspace = true
 default = []
 # The HTTPS server identity alone (`tls`): rustls, without the relay stack.
 tls = ["dep:rustls"]
-# The plane's names and the client half of its carrier: the namespace of one
-# device in one scope, the tracks within it and their delivery, and the
-# admission a page runs over WebTransport. Builds for the page, which
-# publishes and reads them itself.
-plane = ["dep:moq-net", "dep:hex", "dep:n0-future"]
-# The relay, the native carrier, and one participant's sealed plane: the
-# readers of a sealed plane run on the device's own runtime, which a page has
-# not.
-relay = ["tls", "plane", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json", "dep:tilo-call-lane", "dep:channel-crypto"]
+# One participant's sealed session in one scope: the namespace of one device
+# in one scope, the tracks within it and their delivery, the sealing under
+# the scope's channel keys, and the admission a page runs over WebTransport.
+# Builds for the page, which publishes and reads them itself.
+plane = ["dep:moq-net", "dep:hex", "dep:n0-future", "dep:tilo-call-lane", "dep:channel-crypto"]
+# The relay and the native carrier: the listening half, which runs on the
+# device that serves them.
+relay = ["tls", "plane", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
 # The same carrier over a direct iroh connection, beside WebTransport.
 native = ["relay", "dep:iroh"]
 
@@ -45,7 +44,7 @@ hex = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
 # A track is sealed and opened under the scope's channel keys, as a call's
 # frames are.
-tilo-call-lane = { version = "0.1.0", path = "../tilo-call-lane", optional = true }
+tilo-call-lane = { version = "0.1.0", path = "../tilo-call-lane", default-features = false, optional = true }
 # The scope's channel content keys a plane's tracks are sealed under.
 channel-crypto = { version = "0.1.0", path = "../channel-crypto", optional = true }
 

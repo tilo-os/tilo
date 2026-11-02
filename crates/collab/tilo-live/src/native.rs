@@ -468,7 +468,7 @@ impl carrier::Dial for Iroh {
         publish: Option<moq_net::origin::Consumer>,
         subscribe: Option<moq_net::origin::Producer>,
         timeout: Duration,
-    ) -> Pin<Box<dyn Future<Output = Result<Connected, AdmissionError>> + Send + 'a>> {
+    ) -> carrier::Dialling<'a> {
         Box::pin(async move {
             tokio::time::timeout(timeout, async {
                 let connection = self
