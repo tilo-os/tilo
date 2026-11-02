@@ -2414,10 +2414,12 @@ pub trait Widget {
         defaults::has_transient_feedback(self.children())
     }
 
-    /// Default `true` (dirty every frame). Opt into incremental redraw by
-    /// tracking a `dirty: bool`, setting it in `handle_event`/`sync`, and
-    /// clearing it in `mark_drawn()`. Containers MUST forward: dirty iff any
-    /// descendant is.
+    /// Default `false` (clean). A widget is clean until something it reads
+    /// changes: a leaf that keeps state says so by tracking a `dirty: bool`
+    /// (set in `handle_event`/`sync`, cleared in `mark_drawn()`), and one
+    /// that paints from the people on the document reads the frame's
+    /// presence ([`crate::presence::frame::frame`]). Containers MUST
+    /// forward: dirty iff any descendant is.
     fn needs_redraw(&self) -> bool {
         defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
