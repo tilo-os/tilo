@@ -9,7 +9,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 use std::rc::Rc;
-use std::time::Duration;
 
 use tilo_compositor::SurfaceHost as _;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
@@ -158,18 +157,9 @@ fn the_palettes_host_stands_above_the_windows_and_paints_nothing_once_closed() {
     );
 
     send_chord(&mut host);
-    // The palette arrives over a few frames, its dim with it.
-    let opened = tilo_clock::now();
-    for frame in 0..3 {
-        tilo_clock::testing::with_monotonic_time(
-            opened + Duration::from_millis(frame * 120),
-            || {
-                desk.relayout();
-                host.relayout();
-                host.prepare_frame();
-            },
-        );
-    }
+    desk.relayout();
+    host.relayout();
+    host.prepare_frame();
     assert!(handle.search_open(), "the chord opened the palette");
     let card = {
         let search = handle.search_palette();
@@ -190,13 +180,9 @@ fn the_palettes_host_stands_above_the_windows_and_paints_nothing_once_closed() {
 
     // Closing it takes the keys back and leaves nothing painted.
     handle.toggle_search();
-    for _ in 0..3 {
-        tilo_clock::testing::with_monotonic_time(opened + Duration::from_secs(2), || {
-            desk.relayout();
-            host.relayout();
-            host.prepare_frame();
-        });
-    }
+    desk.relayout();
+    host.relayout();
+    host.prepare_frame();
     assert!(!handle.search_open());
     assert!(
         !host.accepts_pointer(centre.x, centre.y),

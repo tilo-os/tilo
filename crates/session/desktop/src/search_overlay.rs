@@ -35,11 +35,12 @@ pub struct SearchOverlay {
     cursor: Option<Point>,
     /// The desk's search revision this overlay last took up.
     seen: u64,
-    /// Whether the palette was up when this overlay last looked.
-    was_open: bool,
     /// What the layout in hand was built for: whether the palette was up, the
     /// area it stood over and what the desk had published then.
     built: (bool, Option<Rect>, u64),
+    /// What the last drawn frame showed: whether the palette was up and what
+    /// the desk had published then.
+    shown: (bool, u64),
 }
 
 impl SearchOverlay {
@@ -53,8 +54,8 @@ impl SearchOverlay {
             rect: Rect::ZERO,
             cursor: None,
             seen,
-            was_open: false,
             built: (false, None, seen),
+            shown: (false, seen),
         }
     }
 
@@ -84,9 +85,8 @@ impl SearchOverlay {
 impl Widget for SearchOverlay {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let revision = self.handle.search_revision();
-        let changed = revision != self.seen || self.was_open != self.is_open();
+        let changed = revision != self.seen;
         self.seen = revision;
-        self.was_open = self.is_open();
         // The desk's palette is the card's own tree: what it needs to do each
         // frame, it does through here.
         let search = self.handle.search_palette();
@@ -132,44 +132,40 @@ impl Widget for SearchOverlay {
             let area = self.handle.search_area().unwrap_or(self.rect);
             let search = self.handle.search_palette();
             let mut search = search.borrow_mut();
-            // The palette dims what it stands over as it arrives, and the card
-            // stands where [`ui::action_palette::placement`] puts it.
-            let placed = search
+            // The card stands where [`ui::action_palette::placement`] puts it,
+            // three fifths of what it stands over and never wider than it.
+            let (origin, width) = ui::action_palette::placement(area, theme);
+            search.set_room(width, ui::action_palette::list_cap(area, theme));
+            let node = search
                 .palette_mut()
-                .map(|palette| palette.place_in(area, theme));
-            if let Some((origin, width)) = placed {
-                search.set_room(width, ui::action_palette::list_cap(area, theme));
-                let node = search
-                    .palette_mut()
-                    .map(|palette| palette.build_layout(taffy, theme, map));
-                if let Some(node) = node {
-                    let (width, _) = search.desired_size();
-                    let mut style = taffy.style(node).cloned().unwrap_or_default();
-                    style.position = taffy::Position::Absolute;
-                    // Inside the desk's edges, even where it is barely wider
-                    // than the card.
-                    let x0 = origin.x.clamp(
-                        self.rect.x0 + PALETTE_EDGE,
-                        (self.rect.x1 - width - PALETTE_EDGE).max(self.rect.x0 + PALETTE_EDGE),
-                    );
-                    #[allow(
-                        clippy::cast_possible_truncation,
-                        reason = "a place on the desk is a few thousand logical pixels"
-                    )]
-                    let at = |value: f64| taffy::LengthPercentageAuto::length(value as f32);
-                    style.inset = taffy::Rect {
-                        left: at(x0 - self.rect.x0),
-                        right: taffy::LengthPercentageAuto::auto(),
-                        top: at(origin.y - self.rect.y0),
-                        bottom: taffy::LengthPercentageAuto::auto(),
-                    };
-                    let _ = taffy.set_style(node, style);
-                    kids.push(node);
-                }
+                .map(|palette| palette.build_layout(taffy, theme, map));
+            if let Some(node) = node {
+                let (width, _) = search.desired_size();
+                let mut style = taffy.style(node).cloned().unwrap_or_default();
+                style.position = taffy::Position::Absolute;
+                // Inside the desk's edges, even where it is barely wider
+                // than the card.
+                let x0 = origin.x.clamp(
+                    self.rect.x0 + PALETTE_EDGE,
+                    (self.rect.x1 - width - PALETTE_EDGE).max(self.rect.x0 + PALETTE_EDGE),
+                );
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a place on the desk is a few thousand logical pixels"
+                )]
+                let at = |value: f64| taffy::LengthPercentageAuto::length(value as f32);
+                style.inset = taffy::Rect {
+                    left: at(x0 - self.rect.x0),
+                    right: taffy::LengthPercentageAuto::auto(),
+                    top: at(origin.y - self.rect.y0),
+                    bottom: taffy::LengthPercentageAuto::auto(),
+                };
+                let _ = taffy.set_style(node, style);
+                kids.push(node);
             }
         }
         // Over the whole chrome, out of its flow: the card sits where it was
-        // placed and dims what its own scrim covers.
+        // placed and dims what stands under it.
         let style = Style {
             position: taffy::Position::Absolute,
             inset: taffy::Rect {
@@ -207,16 +203,19 @@ impl Widget for SearchOverlay {
         presence: &PresenceCtx,
     ) {
         if !self.is_open() {
+            self.shown = (false, self.handle.search_revision());
             return;
         }
-        // The palette dims what it stands over as it arrives and draws the
-        // card over it: the same card, in the same place, as it stood in the
-        // desk.
+        // The desk's own dim, never a literal fill: the same scrim the shell
+        // lays under its palette, over everything the card stands above, the
+        // window in front included. Then the card, where it was laid out.
+        ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
         let search = self.handle.search_palette();
         let mut search = search.borrow_mut();
         if let Some(palette) = search.palette_mut() {
             palette.draw(scene, transform, text, theme, presence);
         }
+        self.shown = (true, self.handle.search_revision());
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -227,7 +226,9 @@ impl Widget for SearchOverlay {
         }
         if !self.is_open() {
             // Search's chord opens it, as it does from the desk: the desk
-            // opens the palette on its next pass.
+            // opens the palette on its next pass. Opening is what the chord
+            // does while the palette is up, too, where the desk's own key
+            // already closed it.
             if is_search_chord(event, *ctx.modifiers, self.platform) {
                 self.handle.open_search(Scope::Workspace, None);
                 self.handle.note_search_activity();
@@ -235,14 +236,16 @@ impl Widget for SearchOverlay {
             }
             return;
         }
-        let nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let Some(&palette) = nodes.first() else {
-            // The card is not laid out yet: the palette is the desk's, and
-            // nothing else may see this.
-            *ctx.handled = true;
-            self.handle.note_search_activity();
-            return;
-        };
+        // The card's node, or the overlay's own before the first layout of it:
+        // the palette answers the event either way, as it did standing in the
+        // desk.
+        let palette = ctx
+            .taffy
+            .children(ctx.node_id)
+            .unwrap_or_default()
+            .first()
+            .copied()
+            .unwrap_or(ctx.node_id);
         // The pointer is where it last moved, read as the palette answers
         // events: a press on the card is the palette's, and one off it is the
         // person leaving search.
@@ -262,6 +265,8 @@ impl Widget for SearchOverlay {
                 .is_some_and(|palette| palette.get_rect().contains(cursor))
         });
         if (pressed && !on_card) || is_search_chord(event, *ctx.modifiers, self.platform) {
+            // A press off the card, or the chord again, leaves search: the desk
+            // closes it on its next pass.
             self.close();
         } else if is_escape(event) {
             // Clears the query, or closes an empty search: see
@@ -285,7 +290,11 @@ impl Widget for SearchOverlay {
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         // The card is the desk's palette: the node this overlay lays out is
         // the palette's own, while the palette itself is not routed here (the
-        // overlay routes the person's input to it).
+        // overlay routes the person's input to it). Nothing of it is in the
+        // layout while it is closed.
+        if !self.is_open() {
+            return true;
+        }
         let search = self.handle.search_palette();
         let search = search.borrow();
         if let Some(palette) = search.palette() {
@@ -315,7 +324,11 @@ impl Widget for SearchOverlay {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.was_open != self.is_open() || self.handle.search_revision() != self.seen
+        // Search opened, closed, moved or found other rows since the last
+        // frame, or the card is still arriving: what stands on the screen no
+        // longer describes the desk, or is still moving.
+        self.shown != (self.is_open(), self.handle.search_revision())
+            || self.needs_animation_frame()
     }
 
     fn is_layout_dirty(&self) -> bool {

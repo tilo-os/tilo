@@ -243,9 +243,35 @@ pub(super) fn collect_named_targets(
         id: widget.test_id().map(str::to_owned),
     });
     let mut child_counts = HashMap::new();
-    for child in widget.children() {
+    let mut visit = |child: &dyn Widget| {
         collect_named_targets(child, &path, &mut child_counts, out);
+    };
+    for_each_retained_child(widget, &mut visit);
+}
+
+/// Every child a walk of the retained tree must see, in the order it lists
+/// them: those the widget routes input to, then those it only gives a layout
+/// node to — a host that stands for a subtree it does not own, like the
+/// chrome's search card, lists that subtree for layout and nowhere else.
+///
+/// A child listed both ways is visited once, so the paths and sibling counts
+/// of everything a widget already lists stay as they were.
+fn for_each_retained_child(widget: &dyn Widget, visit: &mut dyn FnMut(&dyn Widget)) {
+    let routed = widget.children();
+    let mut seen: Vec<usize> = Vec::with_capacity(routed.len());
+    for child in &routed {
+        seen.push(std::ptr::from_ref(*child).cast::<()>() as usize);
+        visit(*child);
     }
+    let mut visit = visit;
+    widget.for_each_layout_child(&mut |child| {
+        let key = std::ptr::from_ref(child).cast::<()>() as usize;
+        if seen.contains(&key) {
+            return;
+        }
+        seen.push(key);
+        visit(child);
+    });
 }
 
 pub(super) fn collect_inspection(
@@ -269,11 +295,10 @@ pub(super) fn collect_inspection(
     let (name, path, _) = next_widget_path(widget, parent_path, sibling_counts);
     let rect = widget.get_rect();
     let mut child_counts = HashMap::new();
-    let children = widget
-        .children()
-        .into_iter()
-        .map(|child| collect_inspection(child, &path, &mut child_counts))
-        .collect();
+    let mut children = Vec::new();
+    for_each_retained_child(widget, &mut |child| {
+        children.push(collect_inspection(child, &path, &mut child_counts));
+    });
     InspectionNode {
         path,
         widget: name,
