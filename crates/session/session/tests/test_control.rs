@@ -412,7 +412,7 @@ fn desk(windows: &[(u64, &str)]) -> DesktopTree {
         .iter()
         .enumerate()
         .map(|(at, (id, title))| WindowGroup {
-            id: 100 + u64::try_from(at).unwrap_or(u64::MAX),
+            id: u64::try_from(at).map_or(u64::MAX, |at| at.saturating_add(100)),
             active_tab: *id,
             tabs: vec![window(*id, title, "so.tilo.notes")],
             width: WindowWidth::Normal,

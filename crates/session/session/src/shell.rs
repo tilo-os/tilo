@@ -1087,11 +1087,20 @@ mod tests {
     fn the_shell_package_compiles_and_its_ids_lock_holds_every_declaration() {
         let packages = super::compile().unwrap_or_else(|why| panic!("{why}"));
         let compiled = packages.last().expect("the shell package compiles last");
-        let lock = compiled.ids.to_text();
-        assert_eq!(
-            lock,
-            tilo_surface_host::shell_part::shell_ids(),
-            "apps/tl/shell/app.ids is not the lock the package compiles to; write:\n{lock}"
+        // The session compiles the package without its scenarios, so the lock it compiles to
+        // retires theirs; every declaration it does compile keeps the id the package's lock holds.
+        let committed =
+            tilolang_tilo::tilolang::IdsLock::parse(tilo_surface_host::shell_part::shell_ids())
+                .expect("apps/tl/shell/app.ids reads");
+        let unheld: Vec<String> = compiled
+            .ids
+            .entries()
+            .filter(|(name, id)| committed.get(name) != Some(*id))
+            .map(|(name, id)| format!("{name} = {id}"))
+            .collect();
+        assert!(
+            unheld.is_empty(),
+            "apps/tl/shell/app.ids does not hold these declarations; run `tilolang check --write-ids apps/tl/shell`: {unheld:?}"
         );
     }
 

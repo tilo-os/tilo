@@ -2594,6 +2594,48 @@ impl Session {
         }
     }
 
+    /// What the person is writing with besides the keyboard: dictation and
+    /// the emoji picker, both through the field they are typing in.
+    fn follow_text_inputs(&mut self) {
+        // Dictation writes into the field the person is typing in, so it runs
+        // before the frame rather than with the sheets.
+        let locked = self.compositor.locked();
+        self.shared.dictation.step(
+            &mut self.compositor,
+            &self.shared.handle,
+            &self.shared.clipboard,
+            locked,
+            Instant::now(),
+        );
+        quick_settings::follow_dictation(&self.shared);
+        // The picker's picks go into the field the person was typing in,
+        // through the same text-input door dictation writes through.
+        let origin = self
+            .shared
+            .desktop
+            .with_widgets(|host| host.placement().origin);
+        self.shared
+            .emoji
+            .step(&mut self.compositor, origin, Instant::now());
+    }
+
+    /// The notifications that arrived this pass, and the flash a person who
+    /// asked for visual alerts sees for them.
+    fn follow_notifications(&mut self) {
+        let compositor = &mut self.compositor;
+        let appeared = self
+            .shared
+            .notifications
+            .borrow_mut()
+            .step(&mut || Some(compositor.activation_token()));
+        // What the person was just told flashes the screen when they asked
+        // for a visual alert: a person who cannot hear the alert sound is
+        // told of it the same way.
+        if appeared && compositor.a11y().visual_alerts {
+            compositor.flash();
+        }
+    }
+
     /// One turn of the loop: wait up to `timeout` for clients and devices,
     /// carry out what the desktop asked, and draw.
     ///
@@ -2654,38 +2696,8 @@ impl Session {
                 std::time::Instant::now(),
             );
         }
-        // Dictation writes into the field the person is typing in, so it runs
-        // before the frame rather than with the sheets.
-        let locked = self.compositor.locked();
-        self.shared.dictation.step(
-            &mut self.compositor,
-            &self.shared.handle,
-            &self.shared.clipboard,
-            locked,
-            Instant::now(),
-        );
-        quick_settings::follow_dictation(&self.shared);
-        // The picker's picks go into the field the person was typing in,
-        // through the same text-input door dictation writes through.
-        let origin = self
-            .shared
-            .desktop
-            .with_widgets(|host| host.placement().origin);
-        self.shared
-            .emoji
-            .step(&mut self.compositor, origin, Instant::now());
-        let compositor = &mut self.compositor;
-        let appeared = self
-            .shared
-            .notifications
-            .borrow_mut()
-            .step(&mut || Some(compositor.activation_token()));
-        // What the person was just told flashes the screen when they asked
-        // for a visual alert: a person who cannot hear the alert sound is
-        // told of it the same way.
-        if appeared && compositor.a11y().visual_alerts {
-            compositor.flash();
-        }
+        self.follow_text_inputs();
+        self.follow_notifications();
         self.shared.open_notifications();
         self.settle()?;
         self.follow_bars();

@@ -945,7 +945,8 @@ fn inked(shot: &image::RgbaImage, (x, y, w, h): (f64, f64, f64, f64)) -> usize {
     for py in (y.max(0.0) as u32)..((y + h) as u32).min(shot.height()) {
         for px in (x.max(0.0) as u32)..((x + w) as u32).min(shot.width()) {
             let pixel = shot.get_pixel(px, py).0;
-            *counts.entry(pixel).or_default() += 1;
+            let count = counts.entry(pixel).or_default();
+            *count = count.saturating_add(1);
             pixels.push(pixel);
         }
     }
