@@ -1410,6 +1410,30 @@ fn the_night_light_action_warms_the_displays_and_switches_back() {
     assert_eq!(session.compositor().night_light(), None);
 }
 
+#[test]
+fn the_night_light_warms_to_the_persons_warmth() {
+    let options = Options {
+        presentation: ui::headless::fixture_runner_inputs,
+        collab: false,
+        config: tilo_session::SessionConfig {
+            night_light: tilo_session::night_light::Preference {
+                on: true,
+                temperature: 2_400,
+                scheduled: false,
+            },
+            ..tilo_session::SessionConfig::default()
+        },
+        ..Options::default()
+    };
+    let mut session = Session::headless(options, &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)])
+        .expect("session");
+    assert_eq!(
+        session.compositor().night_light(),
+        Some(2_400),
+        "the warmth the person chose, not one the session picked"
+    );
+}
+
 fn active_workspace(session: &Session) -> Option<u64> {
     session
         .handle()

@@ -108,7 +108,7 @@ pub struct NightLightPrefs {
     /// Target correlated colour temperature used by the compositor's
     /// whole-output Night Light transform.
     #[serde(default = "default_night_light_temperature")]
-    #[model(range = 1_000..=10_000)]
+    #[model(range = 2_000..=6_500)]
     pub night_light_temperature: u32,
     /// Follow the Appearance day/night schedule instead of the manual switch:
     /// on from sunset, off from sunrise.

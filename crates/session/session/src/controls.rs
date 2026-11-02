@@ -28,7 +28,7 @@ use crate::displays::DisplayMode;
 use tilo_sheets::Seat as _;
 
 use crate::i18n::t;
-use crate::{NIGHT_LIGHT_WARMTH, apply_keyboard, displays, input_sources};
+use crate::{apply_keyboard, displays, input_sources};
 
 /// The operation type the session's own actions carry.
 const OPERATION: &str = "tilo.session.command";
@@ -418,18 +418,7 @@ impl crate::Session {
                 self.ended = true;
                 Ok(())
             }
-            SessionCommand::NightLight { on } => {
-                let (now, kept) = self.night_light;
-                let on = on.unwrap_or(!now);
-                self.night_light.0 = on;
-                self.compositor
-                    .set_night_light(on.then_some(NIGHT_LIGHT_WARMTH))?;
-                if kept && let Err(error) = settings_store::hardware::NIGHT_LIGHT.set(on) {
-                    tracing::warn!(%error, "the night light setting was not kept");
-                }
-                self.hint(OsdKind::NightLight, on);
-                Ok(())
-            }
+            SessionCommand::NightLight { on } => self.set_night_light(on),
             SessionCommand::PasteFiles { destination } => {
                 self.paste_files(&destination);
                 Ok(())
@@ -474,7 +463,7 @@ impl crate::Session {
             .clone_from(&ControlsReading {
                 locked: self.compositor.locked(),
                 touchpad: self.input.touchpad_enabled,
-                night_light: self.night_light.0,
+                night_light: self.night_light.showing(),
                 zoom,
             });
     }

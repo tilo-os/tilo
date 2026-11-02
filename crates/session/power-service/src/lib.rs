@@ -30,9 +30,8 @@
 //! test read and hold the same things through the session's action host:
 //!
 //! * `power:sleep` — the policy in force, what holds the machine awake, and
-//!   the actions `keep-awake`, `release`, `power-key` and `lid`;
-//! * `power:battery` — the pack's charge, its state and the last low or
-//!   critical battery notice.
+//!   the actions `keep-awake`, `release`, `power-key`, `lid` and `sleep`;
+//! * `power:battery` — the pack's charge, its state and the time left.
 //!
 //! # Wiring
 //!
@@ -51,8 +50,7 @@ use std::time::Instant;
 use tilo_lock::MutexRecover as _;
 use tilo_power_mgmt::inhibit::{INHIBIT_IDLE, INHIBIT_SUSPEND};
 use tilo_power_mgmt::{
-    InhibitRegistry, InhibitToken, PowerAction, PowerBridge, PowerNotification, PowerPolicy,
-    PowerSignal,
+    InhibitRegistry, InhibitToken, PowerAction, PowerBridge, PowerPolicy, PowerSignal,
 };
 
 pub use model::{Battery, ChargeCapCapability, Notice, Sleep};
@@ -113,6 +111,9 @@ struct Inner {
     notice: Mutex<Option<Notice>>,
     /// The holds taken through this link, by ticket.
     holds: Mutex<BTreeMap<u64, Held>>,
+    /// The holds mirroring the windows whose idle inhibitor is on screen,
+    /// by window.
+    idle_inhibitors: Mutex<BTreeMap<u64, (String, InhibitToken)>>,
     next_ticket: AtomicU64,
     /// Whether a service over logind runs for this link: without one the
     /// machine's sleep is the session actions' business, not ours.
@@ -151,6 +152,7 @@ impl PowerLink {
                 policy: Mutex::new(policy),
                 notice: Mutex::new(None),
                 holds: Mutex::new(BTreeMap::new()),
+                idle_inhibitors: Mutex::new(BTreeMap::new()),
                 next_ticket: AtomicU64::new(1),
                 attached: AtomicBool::new(false),
             }),
@@ -212,6 +214,27 @@ impl PowerLink {
     #[must_use]
     pub fn hold_reasons(&self) -> Vec<String> {
         self.inner.registry.active_reasons()
+    }
+
+    /// Hold the idle timer off for exactly the windows in `named` (window id
+    /// to the name the person knows it by), and let the rest go: a video the
+    /// person is watching holds the machine awake, and a video left in a
+    /// hidden tab or on another workspace does not. Quick settings and
+    /// logind read the same holds, so asking what keeps the machine up names
+    /// the app.
+    pub fn set_idle_inhibitors(&self, named: &BTreeMap<u64, String>) {
+        let mut held = self.inner.idle_inhibitors.lock_recover();
+        held.retain(|window, _| named.contains_key(window));
+        for (window, name) in named {
+            if held.get(window).is_some_and(|(held, _)| held == name) {
+                continue;
+            }
+            // A new window, or one renamed by another tab of the same app:
+            // a hold is named once, so this one is released and taken again
+            // under the name the person would read.
+            let token = self.inner.registry.acquire_for(name.clone(), INHIBIT_IDLE);
+            held.insert(*window, (name.clone(), token));
+        }
     }
 
     /// Hold the machine awake for `reason` until the ticket is released.
@@ -290,13 +313,10 @@ impl PowerLink {
         self.policy().on_lid(closed)
     }
 
-    /// Keep the battery notice `notice` until a surface shows it.
-    pub fn note_notice(&self, notice: &PowerNotification) {
-        *self.inner.notice.lock_recover() = Some(Notice {
-            summary: notice.summary.clone(),
-            body: notice.body.clone(),
-            critical: notice.critical,
-        });
+    /// Keep `notice` until a surface shows it: a bar or a banner reads it
+    /// from the battery's own reading, in the words this session showed.
+    pub fn note_notice(&self, notice: Notice) {
+        *self.inner.notice.lock_recover() = Some(notice);
     }
 
     /// The last battery notice, taking it.
@@ -304,8 +324,7 @@ impl PowerLink {
         self.inner.notice.lock_recover().take()
     }
 
-    /// The battery as it reads now, with the notice a surface has not shown
-    /// yet.
+    /// The battery as it reads now.
     #[must_use]
     pub fn battery(&self) -> Battery {
         let snapshot = tilo_power_mgmt::sysfs_battery_snapshot();

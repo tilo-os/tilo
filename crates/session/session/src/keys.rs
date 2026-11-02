@@ -121,6 +121,9 @@ const CAPTURE_STUDIO: &str = tilo_capture_studio::RESOURCE;
 /// the airplane-mode key; `XF86WLAN` is the older spelling.
 const KEY_XF86_RFKILL: u32 = 0x1008_ffb5;
 
+/// The app the calculator key opens.
+const CALCULATOR: &str = "so.tilo.calculator";
+
 /// How long a key's readout waits for the device to answer it before what it
 /// showed stands as it is.
 const READOUT_SETTLE: Duration = Duration::from_millis(250);
@@ -155,6 +158,8 @@ struct Hardware {
     /// Shift on the key asks for every display, as it does on the brightness
     /// key: the invocation carries `all`.
     shift_all: bool,
+    /// The app the key's invocation opens, carried as its `app` argument.
+    app: Option<&'static str>,
 }
 
 /// What a hardware key runs: an action of the session's resources, or one of
@@ -181,6 +186,7 @@ const fn hardware(
         while_locked,
         readout: None,
         shift_all: false,
+        app: None,
     }
 }
 
@@ -193,6 +199,7 @@ const fn desktop(action: ShortcutAction, repeats: bool, while_locked: bool) -> H
         while_locked,
         readout: None,
         shift_all: false,
+        app: None,
     }
 }
 
@@ -205,6 +212,12 @@ impl Hardware {
     /// Shift on it moves every display that can be dimmed.
     const fn together(mut self) -> Self {
         self.shift_all = true;
+        self
+    }
+
+    /// The key's action opens `app`: what the calculator key opens.
+    const fn opening(mut self, app: &'static str) -> Self {
+        self.app = Some(app);
         self
     }
 }
@@ -252,6 +265,18 @@ fn classify(keysym: u32) -> Option<Hardware> {
             hardware(KEYBOARD_BACKLIGHT, "toggle", false, true).reads(OsdKind::KeyboardBacklight)
         }
         keysyms::XF86_Display => hardware(DISPLAYS, "next-mode", false, false),
+        // The calculator key on a media keyboard opens Calculator, as the
+        // launcher's own action does; the lock screen stays shut.
+        keysyms::XF86_Calculator => {
+            hardware(CHROME_RESOURCE, "open-app", false, false).opening(CALCULATOR)
+        }
+        // The dedicated sleep key, and the suspend and standby spellings
+        // other keyboards send, sleeps the machine whatever the power
+        // policy says the power button does; it keeps its key to itself on
+        // the lock screen, as suspending from there would.
+        keysyms::XF86_Sleep | keysyms::XF86_Suspend | keysyms::XF86_Standby => {
+            hardware(SLEEP, "sleep", false, false)
+        }
         // The power key works on the lock screen too: a press there that the
         // policy resolves to lock turns the display off instead.
         keysyms::XF86_PowerOff => hardware(SLEEP, "power-key", false, true),
@@ -571,6 +596,9 @@ impl SessionKeys {
                 HardwareAction::Resource { resource, action } => Invocation::new(resource, action),
                 HardwareAction::Shortcut(action) => Invocation::shortcut(action),
             };
+            if let Some(app) = hardware.app {
+                invocation = invocation.with("app", app);
+            }
             if hardware.shift_all && key.modifiers.shift {
                 invocation = invocation.with("all", true);
             }
@@ -1130,6 +1158,43 @@ mod tests {
             keys.resolve(&play, true, false)
                 .map(|(invocation, _)| invocation),
             Some(Invocation::new(MEDIA, "play-pause").showing(OsdKind::Play))
+        );
+    }
+
+    #[test]
+    fn the_calculator_key_opens_calculator_and_the_sleep_key_sleeps() {
+        let keys = keys();
+        let calculator = key(keysyms::XF86_Calculator, None, KeyModifiers::default());
+        assert_eq!(
+            keys.resolve(&calculator, false, false),
+            Some((
+                Invocation::new(CHROME_RESOURCE, "open-app").with("app", CALCULATOR),
+                KeyClaim::Take
+            ))
+        );
+        assert_eq!(
+            keys.resolve(&calculator, true, false),
+            None,
+            "a key that opens an app reveals nothing behind the lock"
+        );
+        for sleeping in [
+            keysyms::XF86_Sleep,
+            keysyms::XF86_Suspend,
+            keysyms::XF86_Standby,
+        ] {
+            let sleep = key(sleeping, None, KeyModifiers::default());
+            assert_eq!(
+                keys.resolve(&sleep, false, false),
+                Some((Invocation::new(SLEEP, "sleep"), KeyClaim::Take))
+            );
+            assert_eq!(keys.resolve(&sleep, true, false), None);
+        }
+        let sleep = key(keysyms::XF86_Sleep, None, KeyModifiers::default());
+        assert_ne!(
+            keys.resolve(&sleep, false, false)
+                .map(|(invocation, _)| invocation),
+            Some(Invocation::new(SLEEP, "power-key")),
+            "the sleep key sleeps whatever the power button is set to"
         );
     }
 

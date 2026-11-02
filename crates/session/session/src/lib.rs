@@ -31,6 +31,7 @@ mod activity;
 mod activity_models;
 mod activity_provider;
 pub mod agent_door;
+mod ambient_brightness;
 mod app_icons;
 mod app_names;
 mod app_sheets;
@@ -96,6 +97,7 @@ mod lock_service;
 mod membership;
 pub mod messages;
 pub mod mount;
+pub mod night_light;
 pub mod notices;
 mod notifications;
 mod options;
@@ -229,9 +231,6 @@ const GENERATION: &str = "session";
 /// and the session's own view of it takes over, because a lock is never
 /// lifted for anything but the right password.
 const LOCK_SCREEN_TRIES: u32 = 3;
-
-/// How warm the night light makes the displays, in kelvin.
-const NIGHT_LIGHT_WARMTH: u32 = 3_400;
 
 /// What the session keeps between frames, shared with the loop.
 struct Shared {
@@ -761,9 +760,10 @@ pub struct Session {
     /// The temperature and colour every app window is told, as the settings
     /// and wallpapers last said them.
     warmth: window_warmth::Windows,
-    /// Whether the night light is on, and whether a change is kept in the
-    /// person's settings.
-    night_light: (bool, bool),
+    /// The person's warmth and when it shows, and the panel following the
+    /// light in the room while they asked for it.
+    night_light: night_light::NightLight,
+    auto_brightness: ambient_brightness::AutoBrightness,
     /// Where each display stands and where the person types, as the readout
     /// answers with them.
     readout_place: crate::panels::ReadoutPlaces,
@@ -976,6 +976,11 @@ impl Session {
             settings_store::desktop_controls::DesktopControlsConfig::load().hide_top_bar,
         ));
         let watched_hide = std::sync::Arc::clone(&hide_top_bar);
+        // The night light's warmth and schedule, and whether the panel
+        // follows the light in the room, read on the same watch.
+        let (night_light, watched_night_light) =
+            night_light::NightLight::watched(options.config.night_light, options.config.kept);
+        let (auto_brightness, watched_auto) = ambient_brightness::AutoBrightness::watched();
         // Artwork the session resolves off the loop wakes it when it is
         // ready, so the frame that painted the letter repaints with it; the
         // apps installed here are the lists' to resolve, on their worker.
@@ -988,6 +993,8 @@ impl Session {
             watched_wallpapers.follow(&document);
             desk::follow_prefs(&watched_widgets, &document);
             watched_media.read(&document);
+            watched_night_light.read(&document);
+            ambient_brightness::read(&watched_auto, &document);
             watched_hide.store(
                 settings_store::desktop_controls::DesktopControlsConfig::from_document(&document)
                     .hide_top_bar,
@@ -1886,7 +1893,8 @@ impl Session {
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             warmth,
-            night_light: (options.config.night_light, options.config.kept),
+            night_light,
+            auto_brightness,
             keyboard_preference: options.config.on_screen_keyboard,
             keyboard_run: keyboard::Run::default(),
             keyboard_starts: 0,
@@ -2014,9 +2022,6 @@ impl Session {
     /// the surface apps: their windows wait for the outputs the session has
     /// now added.
     fn warm(&mut self) -> Result<(), Error> {
-        if self.night_light.0 {
-            self.compositor.set_night_light(Some(NIGHT_LIGHT_WARMTH))?;
-        }
         self.follow_displays()?;
         self.follow_fullscreen();
         for surface in &self.surface_apps {
@@ -2040,7 +2045,10 @@ impl Session {
     /// Bring the displays in line with the person's arrangement and the way up
     /// the device is held, and advance a change waiting for their answer.
     fn follow_displays(&mut self) -> Result<(), Error> {
-        let night_light = self.night_light.0.then_some(NIGHT_LIGHT_WARMTH);
+        // The panel follows the light in the room while the person asked for
+        // it, and the displays are warmed to what the night light shows now;
+        // a new output takes both with the displays' arrangement.
+        let night_light = self.follow_light()?;
         let turned = self.rotation.follow(&self.compositor.outputs());
         // What the displays service publishes follows what the compositor
         // shows: which ones there are, and which one the person works on.

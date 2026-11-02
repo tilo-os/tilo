@@ -1,6 +1,19 @@
 # Notices the session shows the person: storage running out, the media codecs
 # arriving, the session or the computer having stopped, an update waiting for a
 # restart, and the machine's graphics having stopped.
+battery-app-name = Power
+battery-low-title = Battery low
+battery-low-body = { $percent }% remaining. Consider plugging in.
+battery-critical-title = Battery critically low
+battery-critical-suspend-body = { $percent }% remaining. Suspending to protect your work.
+battery-critical-plug-body = { $percent }% remaining. Please plug in now.
+
+idle-inhibit-unnamed-app = An app
+
+## What keeps this machine from suspending while someone uses it from another
+## of their devices.
+remote-use-hold = Remote use from another of your devices
+
 storage-app-name = Storage
 storage-volume-home = your files
 storage-volume-system = the system

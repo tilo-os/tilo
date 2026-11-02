@@ -220,8 +220,8 @@ impl Session {
     /// again, a frame of a recording, a probe of a device being woken, a
     /// saved window giving up, a schedule's tick, a sample of the
     /// accelerometer, a shared window's next frame, a screen share's next
-    /// frame, a readout no device answered yet. `None` when nothing does, and
-    /// the loop waits for an event alone.
+    /// frame, a readout no device answered yet, the warmth a schedule changes.
+    /// `None` when nothing does, and the loop waits for an event alone.
     pub fn next_deadline(&self) -> Option<Instant> {
         let locked = self.compositor.locked();
         let stream = self.display_sheet.video_stream();
@@ -229,9 +229,23 @@ impl Session {
             .then(|| self.projection_video.next_deadline(stream.as_ref()))
             .flatten();
         let shared_screen = (!locked).then(crate::calls::next_screen_frame).flatten();
+        // A night light that follows a schedule and a panel that follows the
+        // light in the room both come and go on their own: the loop looks at
+        // the clock rather than waiting for someone to touch something.
+        let now = Instant::now();
+        let night_light = self
+            .night_light
+            .wait()
+            .and_then(|wait| now.checked_add(wait));
+        let ambient = self
+            .auto_brightness
+            .wait()
+            .and_then(|wait| now.checked_add(wait));
         let deadlines = vec![
             video,
             shared_screen,
+            night_light,
+            ambient,
             self.shared.notifications.borrow().next_deadline(),
             self.shared
                 .sync

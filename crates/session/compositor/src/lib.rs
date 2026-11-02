@@ -1129,6 +1129,13 @@ impl Compositor {
         self.data.state.lock_by_idle()
     }
 
+    /// Whether the idle dim holds the backlight lowered, so nothing else —
+    /// the session's ambient light loop — raises it behind the person's back.
+    #[must_use]
+    pub fn dim_holds_backlight(&self) -> bool {
+        self.data.state.idle.dimmer.holds_backlight()
+    }
+
     /// How long since the person last touched this device.
     #[must_use]
     pub fn input_idle(&self) -> std::time::Duration {
@@ -1927,6 +1934,12 @@ impl Compositor {
     /// Whether a client keeps the session from idling (idle-inhibit).
     pub fn idle_inhibited(&self) -> bool {
         self.data.state.idle_inhibited()
+    }
+
+    /// The windows whose idle inhibitor is on screen: what holds the machine
+    /// awake, for the session to say who it is.
+    pub fn visible_idle_inhibitors(&self) -> Vec<WindowInfo> {
+        self.data.state.visible_idle_inhibitors()
     }
 
     /// The window with keyboard focus.

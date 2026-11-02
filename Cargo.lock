@@ -18013,12 +18013,14 @@ dependencies = [
 name = "tilo-capture-studio"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "tempfile",
  "tilo-app",
  "tilo-callstream",
  "tilo-clock",
  "tilo-media",
  "tilo-sheets",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",

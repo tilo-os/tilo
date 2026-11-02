@@ -177,6 +177,15 @@ fn private_parent(path: &std::path::Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// A request from another of the person's own devices is them using this
+/// machine: it holds suspend off for a lease, so nothing falls asleep
+/// mid-task however far the person is from it.
+fn attach_remote_use(actions: &crate::device_actions::DeviceActions, options: &Options) {
+    if let Some(power) = options.power.clone() {
+        actions.attach_power(power);
+    }
+}
+
 /// The plane the apps read and invoke this session's services on, when it
 /// serves one: the socket the launcher hands its apps, and the link the loop
 /// answers their calls through.
@@ -313,6 +322,7 @@ pub(crate) fn start_action_plane(
     let arriving = (actions, broker.app_action_broker());
     if let (Some(actions), Some(host)) = arriving {
         actions.install(host.device_host());
+        attach_remote_use(&actions, options);
     }
     Ok(Some(Plane {
         link,

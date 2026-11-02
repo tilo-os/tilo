@@ -522,6 +522,35 @@ impl State {
             .collect()
     }
 
+    /// The windows whose `zwp_idle_inhibit_v1` request is about a surface the
+    /// person can see, described: an inhibitor on a window parked off every
+    /// output (a hidden tab, another workspace) holds nothing.
+    pub(crate) fn visible_idle_inhibitors(&self) -> Vec<WindowInfo> {
+        if self.protocols.idle_inhibitors.is_empty() {
+            return Vec::new();
+        }
+        let outputs = self.output_geometries();
+        self.space
+            .elements()
+            .filter(|window| {
+                let holding = self.protocols.idle_inhibitors.iter().any(|surface| {
+                    surface.is_alive()
+                        && (window
+                            .toplevel()
+                            .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+                            || window
+                                .x11_surface()
+                                .is_some_and(|x11| x11.wl_surface().as_ref() == Some(surface)))
+                });
+                holding
+                    && self.space.element_location(window).is_some_and(|location| {
+                        on_an_output(location, window.geometry().size, &outputs)
+                    })
+            })
+            .filter_map(|window| describe(&self.display, &self.icons, window))
+            .collect()
+    }
+
     /// The mapped windows' descriptions, bottom first.
     pub(crate) fn windows(&self) -> Vec<(WindowInfo, Rectangle<i32, Logical>)> {
         self.space
@@ -1396,6 +1425,21 @@ pub(crate) fn window_id_of(surface: &WlSurface) -> Option<u64> {
 /// The [`WindowInfo`] id of the X11 window `window`.
 pub(crate) fn x11_window_id(window: u32) -> u64 {
     X11_IDS | u64::from(window)
+}
+
+/// Whether a window at `location` of `size` is on one of `outputs`: the
+/// desktop parks a hidden tab or a workspace nobody is on far off every
+/// output, and nothing there is something the person sees.
+pub(crate) fn on_an_output(
+    location: Point<i32, Logical>,
+    size: smithay::utils::Size<i32, Logical>,
+    outputs: &[Rectangle<i32, Logical>],
+) -> bool {
+    size.w > 0
+        && size.h > 0
+        && outputs
+            .iter()
+            .any(|output| output.overlaps(Rectangle::new(location, size)))
 }
 
 /// What a policy learns about a window, Wayland or X11; `None` for

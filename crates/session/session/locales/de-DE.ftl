@@ -2,6 +2,17 @@
 # Medien-Codecs, eine beendete Sitzung oder ein angehaltener Computer, ein
 # Update, das auf einen Neustart wartet, und eine Grafik, die nicht mehr
 # reagiert.
+battery-app-name = Energie
+battery-low-title = Akku fast leer
+battery-low-body = Noch { $percent } %. Lade das Gerät an, um weiterzuarbeiten.
+battery-critical-title = Akku kritisch leer
+battery-critical-suspend-body = Noch { $percent } %. Die Arbeit wird gesichert und das Gerät schläft ein.
+battery-critical-plug-body = Noch { $percent } %. Lade das Gerät bitte jetzt an.
+
+idle-inhibit-unnamed-app = Eine App
+
+remote-use-hold = Fernzugriff von einem anderen deiner Geräte
+
 storage-app-name = Speicher
 storage-volume-home = deine Dateien
 storage-volume-system = das System

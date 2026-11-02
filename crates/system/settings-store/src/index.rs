@@ -420,6 +420,11 @@ pub const SETTINGS: &[Setting] = &[
         "displays",
         "display.night_light_temperature",
     ),
+    s(
+        "display.night_light_schedule",
+        "displays",
+        "display.night_light_schedule",
+    ),
     s("display.scale", "displays", "display.output.*.scale"),
     s("display.resolution", "displays", "display.output.*.mode"),
     s(
