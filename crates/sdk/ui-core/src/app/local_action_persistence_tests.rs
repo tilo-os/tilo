@@ -21,7 +21,7 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
                     binding.clone(),
                 )],
                 publishes: true,
-                sent_heads: Vec::new(),
+                sent: crate::state::DocumentFrontier::default(),
                 needs_snapshot: true,
                 pending: Default::default(),
                 outbound_failure: None,

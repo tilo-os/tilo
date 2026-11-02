@@ -146,6 +146,22 @@ fn an_app_opens_on_its_local_replica_and_its_edits_sync_once_the_broker_answers(
         );
         std::thread::yield_now();
     }
+    // The broker refuses a change that names no action of this device, and
+    // the workspace's committed history is not this device's to send: every
+    // incremental that reached it names its action here.
+    let route = probe.owner.broker_route().unwrap();
+    for (sent_route, request) in &probe.app.document_routes.sent {
+        if *sent_route != route {
+            continue;
+        }
+        if let crate::collaboration::CollabRequest::Document {
+            mutation: collab_types::DocumentMutation::Incremental(bytes),
+            ..
+        } = request
+        {
+            collab_types::claim::named_changes(bytes).unwrap();
+        }
+    }
 }
 
 #[test]

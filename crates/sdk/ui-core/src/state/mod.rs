@@ -82,6 +82,13 @@ impl DocumentFrontier {
         }
     }
 
+    /// Whether `heads` names only changes this destination holds. Every
+    /// change a document has is an ancestor of one of its heads, so this
+    /// says whether the destination can already reach all of it.
+    pub fn covers(&self, heads: &[ChangeHash]) -> bool {
+        heads.iter().all(|head| self.heads.contains(head))
+    }
+
     fn observe_changes_after(&mut self, doc: &mut AutoCommit, before: &[ChangeHash]) {
         self.observe(
             doc.get_changes(before)

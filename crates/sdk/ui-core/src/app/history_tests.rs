@@ -2701,9 +2701,15 @@ fn native_owned_remote_merge_is_not_republished_as_an_echo() {
     assert_eq!(published(&fixture), expected);
     fixture.app.document_routes.sent.clear();
 
-    // Unsent local history interleaved with a merge is still published.
+    // Unsent local history interleaved with a merge is still published on its
+    // own: the merged remote change is held by the route already and carrying
+    // it back would be an echo no action names.
     let before = heads(&fixture);
     commit_local(&fixture, "unsent before merge");
+    let expected = fixture
+        .records
+        .read_checked(&id, |doc| doc.clone().save_after(&before))
+        .unwrap();
     let incoming = fixture.remote(0, "interleaved-remote", true);
     fixture.app.apply_signed_document_envelope(&incoming, None);
     assert_eq!(
@@ -2711,14 +2717,10 @@ fn native_owned_remote_merge_is_not_republished_as_an_echo() {
         Some("remote")
     );
     fixture.app.publish_owned_documents();
-    let expected = fixture
-        .records
-        .read_checked(&id, |doc| doc.clone().save_after(&before))
-        .unwrap();
     assert_eq!(
         published(&fixture),
         expected,
-        "unsent local changes survive the merge into the next publication"
+        "the next publication carries this replica's unsent change only"
     );
 }
 /// A committed read hands the owner history the native owner already holds:
@@ -2844,19 +2846,20 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
     fixture.app.advance_primary_document(published);
 
     // Unsent local history interleaved with a committed read is still
-    // published, together with what the read merged.
+    // published on its own: the read's history is held by the owner that
+    // served it and is not echoed back.
     let before = heads(&fixture);
     commit_local(&fixture, "unsent before committed read");
+    let expected = fixture
+        .records
+        .read_checked(&id, |doc| doc.clone().save_after(&before))
+        .unwrap();
     let read = committed(&fixture, "interleaved-committed");
     fixture
         .app
         .queue_committed_document(route.clone(), read.clone());
     assert!(read.was_applied());
     fixture.app.publish_owned_documents();
-    let expected = fixture
-        .records
-        .read_checked(&id, |doc| doc.clone().save_after(&before))
-        .unwrap();
     match &sent(&fixture)[..] {
         [
             CollabRequest::Document {
@@ -2865,7 +2868,7 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
             },
         ] => assert_eq!(
             bytes, &expected,
-            "unsent local changes survive the committed merge into the next publication"
+            "the next publication carries this replica's unsent change only"
         ),
         other => panic!("expected one incremental with the unsent local change, got {other:?}"),
     }

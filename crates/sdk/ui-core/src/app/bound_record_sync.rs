@@ -4,7 +4,6 @@ use super::{App, Widget};
 use crate::bound_dispatch::CallbackBinding;
 use crate::collaboration::PrimaryRouteWitness;
 use crate::state::DocumentFrontier;
-use tilo_sort::CompactSort as _;
 
 pub(super) struct BoundRecordSync {
     pub(super) binding: CallbackBinding,
@@ -23,17 +22,11 @@ impl BoundRecordSync {
         self.binding.checkout == *checkout && self.binding.records.same_owner(records)
     }
 
-    /// Whether every change up to `heads` (sorted) is already published.
-    pub(super) fn published_through(&self, heads: &[automerge::ChangeHash]) -> bool {
-        let mut published = self.frontier.heads().to_vec();
-        published.compact_sort();
-        published == heads
-    }
-
-    /// Count `heads` as published: history the primary document's owner
-    /// already holds, merged in from it.
-    pub(super) fn observe_published(&mut self, heads: Vec<automerge::ChangeHash>) {
-        self.frontier.advance(heads);
+    /// Count changes the primary document's owner served this replica as
+    /// published: it holds them, so publishing them back would be an echo.
+    /// Changes this replica still has to send stay outside the frontier.
+    pub(super) fn observe_published(&mut self, observed: Vec<automerge::ChangeHash>) {
+        self.frontier.observe(observed);
     }
 }
 

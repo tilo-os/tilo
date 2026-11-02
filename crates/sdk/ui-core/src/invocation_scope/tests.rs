@@ -311,7 +311,10 @@ fn causal_scope_observes_only_newly_applied_remote_range_without_laundering_loca
                 })
                 .unwrap();
         }
-        assert_eq!(fixture.owner.merge_remote(&incoming).unwrap(), Some(true));
+        assert_eq!(
+            fixture.owner.merge_remote(&incoming).unwrap().changed,
+            Some(true)
+        );
         let result = fixture
             .store
             .with_checked(&fixture.checkout.id, |doc| {

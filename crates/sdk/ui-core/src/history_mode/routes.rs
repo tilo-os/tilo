@@ -29,6 +29,27 @@ impl RemoteApplyError {
     }
 }
 
+/// What merging a peer's write into an owned document did.
+pub(crate) struct MergedRemote {
+    /// Whether the document changed; `None` while it cannot take the write
+    /// yet (an unfinished edit, a restore in flight).
+    pub(crate) changed: Option<bool>,
+    /// The changes the merge brought in. The route delivered them, so they
+    /// are never published back on it.
+    pub(crate) observed: Vec<ChangeHash>,
+}
+
+impl MergedRemote {
+    /// A merge the document cannot take yet: an unfinished edit, a restore
+    /// in flight. Nothing was applied or observed.
+    pub(crate) fn deferred() -> Self {
+        Self {
+            changed: None,
+            observed: Vec::new(),
+        }
+    }
+}
+
 /// Apply a mutation the host has already committed. Bytes from peers reach an
 /// app only after the host admitted them through `tilo_automerge_isolate`, so
 /// this applies in the app's own process.
@@ -216,9 +237,11 @@ pub(crate) struct OwnerRoute {
     /// record, and a refusal stops the whole collaboration
     /// ([`HistoryOwner::publishes_record`]).
     pub(crate) publishes: bool,
-    /// Heads whose changes the transport accepted. Advanced only after a
-    /// successful hand-off, so a refused change is offered again.
-    pub(crate) sent_heads: Vec<ChangeHash>,
+    /// Heads the transport holds from this app: the changes it accepted.
+    /// Changes that arrived from the route are counted as held too, without
+    /// claiming this app's own unsent ones were sent, so the next
+    /// publication omits the echo and keeps the local changes.
+    pub(crate) sent: crate::state::DocumentFrontier,
     pub(crate) needs_snapshot: bool,
     pub(crate) pending: PendingRemote,
     /// Why local changes on this route are not reaching peers.
@@ -452,9 +475,10 @@ impl OwnerDocumentRoutes {
                     entry.owners.push(owner);
                 }
             } else {
-                let Ok(doc) = owner.document(outer) else {
+                // A record this owner cannot read is not joined.
+                if owner.document(outer).is_err() {
                     continue;
-                };
+                }
                 joins.push(RouteJoin {
                     route: route.clone(),
                     record_kind: record_kind.clone(),
@@ -464,7 +488,9 @@ impl OwnerDocumentRoutes {
                     route,
                     owners: vec![owner],
                     publishes,
-                    sent_heads: super::sorted_heads(doc.base_heads()),
+                    // The whole document goes out first, so nothing is held
+                    // yet.
+                    sent: crate::state::DocumentFrontier::default(),
                     needs_snapshot: true,
                     pending: PendingRemote::default(),
                     outbound_failure: None,

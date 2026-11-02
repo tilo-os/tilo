@@ -258,13 +258,13 @@ impl HistoryOwner {
     pub(crate) fn prepare_publication(
         &self,
         outer: &AutoCommit,
-        sent_heads: &[automerge::ChangeHash],
+        sent: &crate::state::DocumentFrontier,
         needs_snapshot: bool,
         blocked: bool,
     ) -> Result<OwnedDocumentPublication, HistoryRegistrationError> {
         fn inspect(
             document: &AutoCommit,
-            sent_heads: &[automerge::ChangeHash],
+            sent: &crate::state::DocumentFrontier,
             needs_snapshot: bool,
             blocked: bool,
             provenance: &crate::invocation_scope::InvocationProvenance,
@@ -273,22 +273,34 @@ impl HistoryOwner {
                 return OwnedDocumentPublication::Unfinished;
             }
             let heads = super::sorted_heads(document.base_heads());
-            if heads == sent_heads && !needs_snapshot {
+            // The route already holds what the document holds: nothing goes
+            // out, and the history is not cloned to find that out.
+            if !needs_snapshot && sent.covers(&heads) {
                 return OwnedDocumentPublication::Unchanged;
             }
             if blocked {
                 return OwnedDocumentPublication::Blocked;
             }
+            // What this app holds that the route does not: its own unsent
+            // changes, never the ones the route delivered.
+            let from = if needs_snapshot {
+                Vec::new()
+            } else {
+                sent.heads().to_vec()
+            };
             #[cfg(test)]
             OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
             let mut document = document.clone();
-            let from = if needs_snapshot { &[][..] } else { sent_heads };
             let mutation = if needs_snapshot {
                 collab_types::DocumentMutation::Snapshot(document.save())
             } else {
-                collab_types::DocumentMutation::Incremental(document.save_after(from))
+                let delta = document.save_after(&from);
+                if delta.is_empty() {
+                    return OwnedDocumentPublication::Unchanged;
+                }
+                collab_types::DocumentMutation::Incremental(delta)
             };
-            let Ok(authorization) = provenance.capture(&mut document, from, &mutation) else {
+            let Ok(authorization) = provenance.capture(&mut document, &from, &mutation) else {
                 return OwnedDocumentPublication::Blocked;
             };
             OwnedDocumentPublication::Changed {
@@ -307,7 +319,7 @@ impl HistoryOwner {
                 .read_document(outer, |document, _| {
                     inspect(
                         document,
-                        sent_heads,
+                        sent,
                         needs_snapshot,
                         blocked,
                         &provenance.borrow(),
@@ -330,7 +342,7 @@ impl HistoryOwner {
                     .read_checked(&checkout.id, |document| {
                         inspect(
                             document,
-                            sent_heads,
+                            sent,
                             needs_snapshot,
                             blocked,
                             &provenance.borrow(),
@@ -362,7 +374,12 @@ mod publication_tests {
         let owner = HistoryOwner::record(store, stale, &lifetime, true);
 
         assert!(matches!(
-            owner.prepare_publication(&AutoCommit::new(), &[], true, false),
+            owner.prepare_publication(
+                &AutoCommit::new(),
+                &crate::state::DocumentFrontier::default(),
+                true,
+                false
+            ),
             Err(HistoryRegistrationError::UnsupportedOwner)
         ));
     }
@@ -402,7 +419,7 @@ impl HistoryOwner {
     pub(crate) fn merge_remote(
         &self,
         mutation: &collab_types::DocumentMutation,
-    ) -> Result<Option<bool>, super::routes::RemoteApplyError> {
+    ) -> Result<super::routes::MergedRemote, super::routes::RemoteApplyError> {
         self.validate()
             .map_err(|error| super::routes::RemoteApplyError::Unavailable(error.to_string()))?;
         let (store, checkout) = self.store_checkout();
