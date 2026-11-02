@@ -250,7 +250,8 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
     // certificate its person signed, this device's key, no root beside it and
     // no record of the person yet.
     let person = SigningKey::from_bytes(&[7; 32]);
-    let device = persist::load_or_create_device_key(&machine.paths).expect("this device's key");
+    let (device, _) =
+        persist::load_or_create_device_key(&machine.paths).expect("this device's key");
     let now = tilo_clock::unix_now_ns();
     let mut cert = DeviceCert {
         user_public_key: person.verifying_key().to_bytes(),
