@@ -6,7 +6,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     reason = "test fixtures: a failed step is the assertion"
 )]
 
@@ -89,7 +88,12 @@ fn windows_open_side_by_side_where_their_tabs_are_laid_out() {
     assert_eq!(policy.focused(), Some(1));
 
     // The second window went away: its tab closes and the first fills in.
-    let arranged = policy.arrange(&mapped[..1], &outputs).unwrap();
+    let (kept, _gone) = mapped
+        .split_first()
+        .expect("the first window is still there");
+    let arranged = policy
+        .arrange(std::slice::from_ref(kept), &outputs)
+        .unwrap();
     assert_eq!(arranged.len(), 1);
     assert_eq!(policy.focused(), Some(1));
     assert!(policy.take_close_requests().is_empty(), "it closed itself");
@@ -141,8 +145,9 @@ fn the_desktop_lies_under_the_windows_and_covers_the_output() {
     compositor.render().unwrap();
     let layers = host.layers();
     assert_eq!(layers.len(), 1);
-    assert_eq!(layers[0].location, (0, 0));
-    assert_eq!(layers[0].size, (640, 480), "the desktop covers the output");
+    let (layer, _rest) = layers.split_first().expect("the desktop draws one layer");
+    assert_eq!(layer.location, (0, 0));
+    assert_eq!(layer.size, (640, 480), "the desktop covers the output");
     assert!(
         host.accepts_pointer(320.0, 240.0),
         "and takes the pointer there"

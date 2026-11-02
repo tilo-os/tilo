@@ -677,35 +677,8 @@ impl Noun {
     }
 }
 
-/// Whether a resource is the one of its type a search naming the type
-/// means: mail's Inbox among its mailboxes, an app's root among what it
-/// holds. Later variants stand higher.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-pub enum Primary {
-    /// One of its type like the others.
-    #[default]
-    No,
-    /// The app's root: its one resource of the type, which stands first
-    /// when the app declares no primary of its own.
-    Root,
-    /// The instance its type declares its primary.
-    Declared,
-}
-
 /// What a resource is, in the words people use for it: its type's noun, the
-/// name of the app whose type it is, and whether it is its type's primary.
+/// name of the app whose type it is, and whether it is that app's root.
 /// What search matches a query naming what something is ("my mails",
 /// "notes") against, rather than its title.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -714,7 +687,10 @@ pub struct ResourceType {
     pub noun: Noun,
     /// Its app, as people call it: `Mail`, `mails`.
     pub app: Noun,
-    pub primary: Primary,
+    /// The app's root: its one resource of the type, which a search naming
+    /// the app means ("my mails" is Mail's root, drawn as its default view).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub root: bool,
 }
 
 /// One open/presented resource and the actions it exports. Resources

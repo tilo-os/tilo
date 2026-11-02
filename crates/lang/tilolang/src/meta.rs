@@ -179,16 +179,6 @@ pub struct SearchMeta {
     /// an agent's are (task-legibility.md §4).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mark_others: bool,
-    /// `noun "conversation"` or `noun "person" "people"`: what one is called, and several when
-    /// English does not add an `s`. None: the type's name in words, its plural derived.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub noun: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plural: Option<String>,
-    /// `primary role == "inbox"`: the test, over the resource's own fields, that the one of its
-    /// type a search naming the type means passes (search.md, "What a query names").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub primary: Option<crate::pred::Pred<String>>,
 }
 
 impl SearchMeta {
@@ -198,9 +188,6 @@ impl SearchMeta {
             && self.hidden.is_empty()
             && !self.declared
             && !self.mark_others
-            && self.noun.is_none()
-            && self.plural.is_none()
-            && self.primary.is_none()
     }
 
     /// The filter a query names `key`.
@@ -503,13 +490,10 @@ pub struct FnMeta {
 }
 
 impl TypeMeta {
-    /// What one is called in a sentence: the noun its `search` block declares, else its name in
-    /// words, lower case (`TodoList` is a `todo list`).
+    /// What one is called in a sentence: its name in words, lower case (`TodoList` is a
+    /// `todo list`).
     #[must_use]
     pub fn noun(&self) -> String {
-        if let Some(noun) = &self.search.noun {
-            return noun.clone();
-        }
         let mut words: Vec<String> = Vec::new();
         let mut word = String::new();
         for ch in self.name.chars() {
@@ -530,19 +514,14 @@ impl TypeMeta {
         words.join(" ")
     }
 
-    /// What several are called in a sentence: the plural its `search` block declares, else
-    /// [`plural`] of its [`noun`](Self::noun).
+    /// What several are called in a sentence: [`plural`] of its [`noun`](Self::noun).
     #[must_use]
     pub fn plural(&self) -> String {
-        self.search
-            .plural
-            .clone()
-            .unwrap_or_else(|| plural(&self.noun()))
+        plural(&self.noun())
     }
 }
 
-/// What several of a noun are called, as English writes most: `notes`, `entries`, `boxes`. A
-/// noun whose plural is otherwise says so (`noun "person" "people"`).
+/// What several of a noun are called, as English writes most: `notes`, `entries`, `boxes`.
 #[must_use]
 pub fn plural(noun: &str) -> String {
     let consonant_y = noun.strip_suffix('y').is_some_and(|stem| {

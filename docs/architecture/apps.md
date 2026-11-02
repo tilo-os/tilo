@@ -85,11 +85,15 @@ needs the person's consent (an outside action, a destructive one, anything beyon
 app's standing grants) is confirmed on a sheet the system draws, which the app
 can't draw over or answer. The app's own pixels never decide consent.
 
-The session signs every change as its actor, with this device's key, which the
-person's identity certified ([security architecture](../security/architecture.md) §3):
-the person's changes as theirs, and an agent's as that agent acting for them.
+The session signs every change as its actor. The person's changes are signed with this
+device's key, which their identity certified ([security architecture](../security/architecture.md) §3).
+A task agent's changes are signed with the key the session mints for that task,
+under a delegation the device key signs (`task_agents.rs`, `task_delegation.rs`),
+so history names the agent and on whose behalf it acted (`ActionInvoker`).
 Authorship verification (§7.2 there) is therefore unchanged for other devices;
-the only change is that keys are never in an app.
+the only change is that no key is ever in an app process. A task agent's key
+stays in the session too, and the agent reaches it through its door like any
+other caller.
 
 ## 5. Calling other apps
 
@@ -112,7 +116,11 @@ is a new rule at those points, never an app change:
   path, the actor, the place the view shows it in (a strip, a window, a canvas
   place), the device, and the time. "Only in this strip", "for the next hour",
   "read-only while shared in a call", "this agent, these three records": each is
-  a grant over those facts.
+  a grant over those facts. Today a grant (`action-policy` `Grant`) names a path
+  at seven levels (workspace, app, kind, resource, item, field, action), a subject
+  (person, role, agent, task, shortcut, app, bot, foreign device) and a lifetime
+  (once, session, until a time, until revoked). The place and a specific device
+  are the dimensions still to add, in the policy, not in any app.
 - **The place travels with every reading and action.** The session tags each
   reading it delivers, and each action it admits, with the place it belongs to,
   even when one view process serves several places. A per-place grant therefore
@@ -141,12 +149,23 @@ code can do to the machine.
 
 ## 8. What changes from today
 
-Today the framework runs inside the app process. The SDK (`crates/collab/collaboration`,
-`sdk_join_identity`) loads the identity broker the launcher passed in,
-obtains a signed join proof for the workspace, requests content keys
-(`tilo-identity-host` `channel_keys`), and opens and syncs documents itself.
-Security §6.5 grants apps a mesh "peer capability". All of that moves to
-the document host:
+Today the framework runs inside the app process:
+- **Native apps:** every one built on the SDK's runner (about sixty under `apps/`,
+  from activity to word-processor) loads the identity broker the launcher passed
+  in, obtains a signed join proof for the workspace, requests content keys
+  (`tilo-identity-host` `channel_keys`), and opens, signs and syncs documents
+  itself, through `crates/collab/collaboration` (`sdk_join_identity`, `join_native`).
+- **Tilolang apps:** they are closer. Their code is a WebAssembly module that
+  imports only the `tl` operations, and it runs in a tilolang host per workspace
+  and author. The host's own Rust code still holds the identity service, join
+  proofs and content keys, in the same process as the modules.
+- **Permission checks:** the SDK checks a `PermissionContext` before submitting,
+  and Chat calls it itself (`apps/chat/src/permissions.rs`).
+- **Outbox drains:** they run in the app's own process
+  (`tilo-app` `framework/effect.rs`), with no grant consulted per entry.
+- **Peer capability:** security §6.5 grants apps one on the collaboration mesh.
+
+All of that moves to the document host:
 
 1. The document host in the session runs a package's model and verbs as a
    WebAssembly module. The tilolang host already runs tilolang packages' code in
@@ -157,8 +176,11 @@ the document host:
 3. Outbox workers become their own sandboxed launch, with their grants.
 4. Input gesture tokens and actor attribution move into the session's door.
 5. The identity broker connection, join proofs, channel keys and the peer
-   capability are removed from app launches and from the SDK; §6.5 of the
-   security architecture is replaced by this document.
+   capability are removed from app launches, from the SDK and from the
+   tilolang host; §6.5 of the security architecture is replaced by this document.
+6. Permission checks leave the SDK and the apps: a view sees what it is offered
+   and nothing else, and Chat's own `ChatPermissions` goes.
+7. The outbox drain is decided per entry by the session's policy, like an action.
 
 Each step keeps apps working while it lands, and each ends by deleting the app-side
 code it replaced.

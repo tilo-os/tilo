@@ -778,7 +778,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
 /// "my mails" is mail's Inbox, its mailboxes' declared primary, though no word of it says
 /// "Inbox" and "my" names nothing.
 #[test]
-fn my_mails_on_the_canvas_places_the_inbox() {
+fn my_mails_on_the_canvas_places_mails_root() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let questions = Questions::new();
@@ -835,12 +835,13 @@ fn my_mails_on_the_canvas_places_the_inbox() {
     until(&mut session, "what \"my mails\" names placed", |session| {
         !placed(session).is_empty()
     });
+    let found = placed(&session);
     assert_eq!(
-        placed(&session),
-        [(
-            "tl.so.tilo.lang.mail.Mailbox".to_owned(),
-            "Inbox".to_owned()
-        )],
-        "\"my mails\" places mail's Inbox"
+        found
+            .iter()
+            .map(|(kind, _)| kind.as_str())
+            .collect::<Vec<_>>(),
+        ["tl.so.tilo.lang.mail.Mail"],
+        "\"my mails\" places Mail's root, which Mail draws as its inbox: {found:?}"
     );
 }

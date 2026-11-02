@@ -81,6 +81,7 @@ which people, agents and automations can find, read and pin.
 | Who may do what; versions | authority.md |
 | Concurrency, offline, outside services, invariants, flows | convergence.md |
 | Search and identifiers | search.md |
+| Words and their translations | i18n.md |
 | Agents writing tilolang programs | agents.md |
 | The agent experience | agent-ux.md |
 | The canvas: point at something and type | canvas.md |

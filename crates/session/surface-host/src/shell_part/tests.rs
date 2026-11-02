@@ -232,8 +232,13 @@ fn each_change_is_one_turn() {
         ("notification", |r| r.unread = 1),
         ("workspace switch", |r| {
             r.workspace = "Studio".to_owned();
-            r.workspaces[0].current = false;
-            r.workspaces[1].current = true;
+            // The reading lists the strip the bar shows first, so the switch moves the
+            // mark on to the workspace after it.
+            let [desk, studio, ..] = r.workspaces.as_mut_slice() else {
+                panic!("the reading lists both of the bar's workspaces");
+            };
+            desk.current = false;
+            studio.current = true;
         }),
     ];
     for (name, change) in changes {
