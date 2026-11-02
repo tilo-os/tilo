@@ -65,7 +65,7 @@ pub async fn join(
     keys: ChannelContentKeys,
     roster: Roster,
 ) -> Result<Plane, LiveError> {
-    let certificate = decode_sha256(certificate_sha256).ok_or(LiveError::Unavailable)?;
+    let certificate = decode_sha256(certificate_sha256).ok_or(PlaneError::Unavailable)?;
     let options = tilo_net::webtransport::Options::pinned(vec![certificate])
         .with_protocols(vec![tilo_live::preface::PROTOCOL.to_owned()]);
     let transport = tilo_net::webtransport::connect(&dial_url(origin), options)
