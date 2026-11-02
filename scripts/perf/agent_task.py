@@ -57,14 +57,15 @@ Records (tools/perf/record.py), one sample per repetition:
   agent.task.notes.retries       tool calls asked again
   agent.task.notes.step.<step>   one step's tool calls, ms
 
-The desktop is `crates/session/session` (--spawn): a
-development build started headless on a scratch profile, its desk opened
+The desktop is `crates/session/session` (`--spawn`): a release build with the
+test-control socket, started headless on a scratch profile, its desk opened
 with the throwaway identity a development login mints, and its agent door
 served in the profile's runtime directory. The session, its profile, its
 sockets and the client are removed on exit, whatever happens. Against a
 running desktop (`--socket`, a device's admin-control.sock, with its
-`agent.sock` beside it) the person's desktop is left as it was found. Either
-way the task never touches a notebook a person already has: the run first
+`agent.sock` beside it) the person's workspace is left as it was found, though
+the run's own workspace stays. Either way the task never touches a notebook a
+person already has: the run first
 creates a workspace of its own and opens Notes there
 (`scratch_notes.py`), so the agent is admitted to that workspace and its
 `notes` is that workspace's notebook; the agent is removed again at the end.
