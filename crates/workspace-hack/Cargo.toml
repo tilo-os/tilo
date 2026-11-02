@@ -19,7 +19,6 @@ adblock = { version = "0.12", default-features = false, features = ["content-blo
 aead-3b31131e45eafb45 = { package = "aead", version = "0.6", default-features = false, features = ["alloc", "rand_core"] }
 aead-d8f496e17d97b5cb = { package = "aead", version = "0.5", default-features = false, features = ["alloc", "getrandom"] }
 aes-gcm = { version = "0.10" }
-ahash = { version = "0.8" }
 aho-corasick = { version = "1" }
 anstream = { version = "1" }
 anyhow = { version = "1" }
@@ -140,7 +139,6 @@ ml-kem = { version = "0.3", features = ["hazmat"] }
 naga = { version = "29", features = ["wgsl-in"] }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
-num-iter = { version = "0.1", default-features = false, features = ["i128", "std"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
 p256-582f2526e08bb6a0 = { package = "p256", version = "0.14", features = ["ecdh"] }
@@ -217,7 +215,6 @@ strict-num = { version = "0.1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
-sysinfo = { version = "0.36" }
 tantivy = { version = "0.27", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 tilo-vello-encoding = { path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
@@ -266,7 +263,6 @@ adblock = { version = "0.12", default-features = false, features = ["content-blo
 aead-3b31131e45eafb45 = { package = "aead", version = "0.6", default-features = false, features = ["alloc", "rand_core"] }
 aead-d8f496e17d97b5cb = { package = "aead", version = "0.5", default-features = false, features = ["alloc", "getrandom"] }
 aes-gcm = { version = "0.10" }
-ahash = { version = "0.8" }
 aho-corasick = { version = "1" }
 anstream = { version = "1" }
 anyhow = { version = "1" }
@@ -390,7 +386,6 @@ ml-kem = { version = "0.3", features = ["hazmat"] }
 naga = { version = "29", features = ["wgsl-in"] }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
-num-iter = { version = "0.1", default-features = false, features = ["i128", "std"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
 p256-582f2526e08bb6a0 = { package = "p256", version = "0.14", features = ["ecdh"] }
@@ -468,7 +463,6 @@ subtle = { version = "2", features = ["const-generics"] }
 syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["extra-traits", "full", "visit", "visit-mut"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
-sysinfo = { version = "0.36" }
 tantivy = { version = "0.27", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 tilo-vello-encoding = { path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
@@ -515,7 +509,7 @@ zerovec = { version = "0.11", default-features = false, features = ["alloc", "de
 zune-jpeg = { version = "0.5" }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
-ahash = { version = "0.8", default-features = false, features = ["no-rng"] }
+ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }
@@ -537,17 +531,18 @@ reqwest = { version = "0.13", default-features = false, features = ["brotli", "g
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "stdio"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
+sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
-x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
-x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
+x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["std", "xfixes"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
-ahash = { version = "0.8", default-features = false, features = ["no-rng"] }
+ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }
@@ -569,17 +564,18 @@ reqwest = { version = "0.13", default-features = false, features = ["brotli", "g
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "stdio"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
+sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
-x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
-x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
+x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["std", "xfixes"] }
 
 [target.aarch64-unknown-linux-gnu.dependencies]
-ahash = { version = "0.8", default-features = false, features = ["no-rng"] }
+ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }
@@ -601,17 +597,18 @@ reqwest = { version = "0.13", default-features = false, features = ["brotli", "g
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "stdio"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
+sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
-x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
-x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
+x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["std", "xfixes"] }
 
 [target.aarch64-unknown-linux-gnu.build-dependencies]
-ahash = { version = "0.8", default-features = false, features = ["no-rng"] }
+ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }
@@ -633,13 +630,14 @@ reqwest = { version = "0.13", default-features = false, features = ["brotli", "g
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "stdio"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
+sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
-x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
-x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
+x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["std", "xfixes"] }
 
 ### END HAKARI SECTION
