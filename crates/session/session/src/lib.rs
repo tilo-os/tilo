@@ -997,6 +997,14 @@ impl Session {
         compositor.set_backlight(Box::new(display_settings::PanelBacklight::find()));
         let machine = mount::power::install(&mut compositor, &options);
         compositor.add_host(Box::new(desktop.clone()));
+        // The desk draws every window whole — its card, the lift under it
+        // and its edge, in the theme's colours, brighter on the window in
+        // use. The compositor shapes a window's corners to that card and
+        // draws nothing around it: one drawing, not two edges and two
+        // shadows on the same pixel.
+        compositor.set_window_frame(tilo_compositor::WindowFrame::corners(f64::from(
+            presentation.theme.tokens.radii.tile,
+        )));
         doors.add(Rc::new(RefCell::new(desktop.clone())));
 
         // The chrome above the windows: its own tree, beside the desk's.
