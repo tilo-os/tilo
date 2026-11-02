@@ -34,6 +34,9 @@ pub struct SourceFile {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PackageSource {
     pub files: Vec<SourceFile>,
+    /// The package's catalogues, `(locale, Fluent text)`: every `locales/<locale>.ftl` beside
+    /// its sources (i18n.md). They travel in the compiled module.
+    pub locales: Vec<(String, String)>,
 }
 
 impl PackageSource {
@@ -45,7 +48,15 @@ impl PackageSource {
                 .into_iter()
                 .map(|(path, text)| SourceFile { path, text })
                 .collect(),
+            locales: Vec::new(),
         }
+    }
+
+    /// The package with the catalogues `(locale, Fluent text)`.
+    #[must_use]
+    pub fn with_locales(mut self, locales: impl IntoIterator<Item = (String, String)>) -> Self {
+        self.locales = locales.into_iter().collect();
+        self
     }
 
     /// A package of one file, `app.tl`.
@@ -72,7 +83,7 @@ impl PackageSource {
                 std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             out.push((path.display().to_string(), text));
         }
-        Ok(Self::new(out))
+        Ok(Self::new(out).with_locales(read_locales(dir)?))
     }
 
     /// The app id the package declares and the app ids it imports with `use`, read leniently:
@@ -107,6 +118,34 @@ impl PackageSource {
         }
         (app, previously, uses)
     }
+}
+
+/// The catalogues in `dir`'s `locales/`, `(locale, Fluent text)` by file stem, sorted; none
+/// when it has no such directory.
+///
+/// # Errors
+/// A catalogue cannot be read.
+pub fn read_locales(dir: &Path) -> Result<Vec<(String, String)>, String> {
+    let locales = dir.join(crate::messages::LOCALES_DIR);
+    let Ok(entries) = std::fs::read_dir(&locales) else {
+        return Ok(Vec::new());
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "ftl"))
+        .collect();
+    paths.sort();
+    let mut out = Vec::new();
+    for path in paths {
+        let Some(locale) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        out.push((locale.to_owned(), text));
+    }
+    Ok(out)
 }
 
 /// The `.tl` files directly in `dir`, sorted.

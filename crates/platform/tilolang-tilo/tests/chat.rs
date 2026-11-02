@@ -152,7 +152,7 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     ben.host.sync_from(&ben.doc);
     // Phrases say their id and arguments, so a count shows in what a chip says.
     for r in [&ada, &ben] {
-        r.host.set_phrases(|id, args| format!("{id} {args:?}"));
+        r.host.set_words(EchoWords);
     }
 
     // The sidebar lists the category's channel under the category's heading.
@@ -1232,4 +1232,20 @@ fn a_places_person_is_a_row_of_them_and_your_own_conversation_is_your_notes() {
         None,
         "your own place shows the notes glyph, not your avatar"
     );
+}
+
+/// Words that say a phrase's id and arguments, so a count shows in what a chip says; a
+/// declaration's words stay the source's.
+struct EchoWords;
+
+impl tilolang_runtime::Words for EchoWords {
+    fn add(&self, _catalogues: &[(String, String)]) {}
+
+    fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
+        if key.starts_with("d-") {
+            source.to_owned()
+        } else {
+            format!("{key} {args:?}")
+        }
+    }
 }

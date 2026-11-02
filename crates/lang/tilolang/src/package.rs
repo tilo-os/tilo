@@ -232,7 +232,9 @@ pub fn compile_package_source_with(
     rng: &mut dyn Entropy,
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let a = analyze_package(source, ids, imports, rng)?;
-    Ok(emit_package(a))
+    let mut compiled = emit_package(a);
+    crate::meta::append_locales(&mut compiled.wasm, &source.locales);
+    Ok(compiled)
 }
 
 /// Reports every error of a package of one or more files, or an empty list when it is fine.

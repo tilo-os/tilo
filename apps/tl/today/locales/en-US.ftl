@@ -9,7 +9,6 @@ d-2lehvjd6 = Today
     }
 
 d-a5wukhyd = Today
-    .doc = Today's window: a card per app, holding that app's resources as rows that open them: the open todos, the pinned notes, the chat's channels.
 
 d-a5wukhyd~row0 = Today for item
 
