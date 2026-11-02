@@ -641,10 +641,6 @@ pub struct Session {
     /// force: a screen that keeps going is not staying up at all, and the
     /// lock is lifted rather than left with nothing able to unlock it.
     lock_starts: u32,
-    /// When the person's other devices were last read for their sessions:
-    /// their fabric says what it says for a while, and following it more
-    /// often would change nothing.
-    owner_session_poll: Option<Instant>,
     /// The screenshots asked for.
     captures: Option<capture::Captures>,
     /// The capture studio the session shows, and answers the asks of.
@@ -1591,7 +1587,6 @@ impl Session {
                 wake: loop_wake,
             },
             lock_starts: 0,
-            owner_session_poll: None,
             captures: options.captures,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),

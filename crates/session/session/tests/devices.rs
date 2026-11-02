@@ -19,7 +19,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tilo_actions::DoorError;
 use tilo_actions::remote::{RemoteActionTarget, application_action_target};
@@ -675,6 +675,29 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
     assert_eq!(published.count(), 2, "the reading counts this device too");
 }
 
+/// How long a lock or unlock followed from the person's other devices may take
+/// to land here: the lock screen is a whole app, and one that came up with the
+/// lock is given its second to leave before the lock lifts.
+const FOLLOWING: Duration = Duration::from_secs(90);
+
+/// Step the session until `done` holds: what the person's other devices say is
+/// followed on the pass that brings it, and the screen the lock shows comes up
+/// and leaves on its own clock.
+#[track_caller]
+fn until(harness: &mut Harness, mut done: impl FnMut(&mut Harness) -> bool) {
+    let deadline = Instant::now() + FOLLOWING;
+    while !done(harness) {
+        assert!(
+            Instant::now() < deadline,
+            "the session did not follow in {FOLLOWING:?}"
+        );
+        harness
+            .session
+            .step(Duration::from_millis(50))
+            .expect("step");
+    }
+}
+
 /// The person's session on their other devices: locking the laptop locks this
 /// one, unlocking it again undoes that where the person was here, and this
 /// device says its own session to theirs while doing so.
@@ -691,15 +714,9 @@ fn the_person_s_lock_follows_their_other_devices() {
         changed_unix_ms: tilo_clock::unix_now_ms().saturating_add(1),
         active_unix_ms: 0,
     });
-    for _ in 0..6 {
-        harness
-            .session
-            .step(Duration::from_millis(1100))
-            .expect("step");
-        if harness.session.compositor().locked() {
-            break;
-        }
-    }
+    until(&mut harness, |harness| {
+        harness.session.compositor().locked() && harness.session.surfaces().running("lock")
+    });
     assert!(
         harness.session.compositor().locked(),
         "the laptop's lock locks this device"
@@ -718,15 +735,9 @@ fn the_person_s_lock_follows_their_other_devices() {
         changed_unix_ms: tilo_clock::unix_now_ms().saturating_add(2),
         active_unix_ms: 0,
     });
-    for _ in 0..6 {
-        harness
-            .session
-            .step(Duration::from_millis(1100))
-            .expect("step");
-        if !harness.session.compositor().locked() {
-            break;
-        }
-    }
+    until(&mut harness, |harness| {
+        !harness.session.compositor().locked() && !harness.session.surfaces().running("lock")
+    });
     assert!(
         !harness.session.compositor().locked(),
         "the laptop's unlock unlocks this device again"

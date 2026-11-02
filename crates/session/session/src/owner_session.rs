@@ -25,11 +25,6 @@ use tilo_device_fabric::{DevicePresence, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSess
 
 use crate::{Error, Session};
 
-/// How often the person's other devices are read for their sessions: a lock
-/// or unlock arrives within this, and what their fabric says does not move
-/// between two reads.
-const OWNER_SESSION_STEP: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// What this device does to follow the person's other devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Follow {
@@ -182,21 +177,15 @@ pub fn shares_network(own: &DevicePresence, other: &DevicePresence) -> bool {
 }
 
 impl Session {
-    /// Follow the person's session on their other devices, once this pass:
-    /// idle time here counts from their use of one nearby, a lock or unlock
-    /// there is followed, and this device says its own session to them.
+    /// Follow the person's session on their other devices, every pass: idle
+    /// time here counts from their use of one nearby, a lock or unlock there
+    /// is followed on the pass that brings it, and this device says its own
+    /// session to them.
     pub(crate) fn follow_owner_session(&mut self) -> Result<(), Error> {
         let Some(fabric) = self.shared.fabric.clone() else {
             return Ok(());
         };
         let now = Instant::now();
-        if self
-            .owner_session_poll
-            .is_some_and(|polled| now.duration_since(polled) < OWNER_SESSION_STEP)
-        {
-            return Ok(());
-        }
-        self.owner_session_poll = Some(now);
         let now_ms = tilo_clock::unix_now_ms();
         let since_input =
             u64::try_from(self.compositor.input_idle().as_millis()).unwrap_or(u64::MAX);
