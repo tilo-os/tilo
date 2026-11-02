@@ -552,11 +552,7 @@ impl Shell {
     }
 
     /// Run `setting` of the shell's own record, as its settings' controls do.
-    pub(crate) fn run_setting(
-        &mut self,
-        setting: &str,
-        arguments: Vec<Value>,
-    ) -> Result<(), String> {
+    pub(crate) fn run_setting(&self, setting: &str, arguments: Vec<Value>) -> Result<(), String> {
         let (_, part) = self
             .parts
             .first()
@@ -1100,13 +1096,9 @@ impl crate::Session {
     /// # Errors
     /// The shell does not run, it declares no such setting, an argument does not hold the
     /// type the setting declares, or the setting refused.
-    pub fn run_shell_setting(
-        &mut self,
-        setting: &str,
-        arguments: Vec<Value>,
-    ) -> Result<(), String> {
+    pub fn run_shell_setting(&self, setting: &str, arguments: Vec<Value>) -> Result<(), String> {
         self.shell
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| "the shell does not run".to_owned())?
             .run_setting(setting, arguments)
     }

@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::Value as Json;
-use tilolang_tilo::runtime::{Principal, Value};
+use tilolang_tilo::runtime::Value;
 
 use super::{SHELL_RECORD, ShellPart};
 
@@ -44,13 +44,26 @@ impl ShellPart {
         // The record the setting changes comes first, as the settings' own presses run it.
         let mut values = vec![Value::resource(&record)];
         for (param, argument) in declared.params.iter().skip(1).zip(arguments) {
-            values.push(Self::case_value(meta, &param.ty, argument)?);
+            values.push(Self::case_value(meta, &param.ty, &argument)?);
         }
-        host.runtime()
-            .invoke_action(&Principal::new("session"), (declared.id.as_str(), values))
+        let outcome = host
+            .runtime()
+            .invoke_action(host.viewer(), (declared.id.as_str(), values))
             .map_err(|error| error.to_string())?;
-        // The record the setting wrote is this part's: its next turn sees the heads move and
-        // draws the shell as it is now, so the part goes on to that turn.
+        match outcome {
+            tilolang_tilo::runtime::InvokeOutcome::Done(_) => {}
+            tilolang_tilo::runtime::InvokeOutcome::Suggested(_) => {
+                return Err(format!("`{setting}` waits for a person's approval"));
+            }
+            tilolang_tilo::runtime::InvokeOutcome::Denied => {
+                return Err(format!("`{setting}` is not allowed"));
+            }
+        }
+        // The runtime committed the record's change under a ticket: the part applies it to
+        // the record its views read, as it does a change a press in the shell made, so the
+        // next turn draws the shell as the setting left it.
+        self.instance.commit_planned();
+        self.commit();
         self.again = true;
         Ok(())
     }
@@ -60,9 +73,20 @@ impl ShellPart {
     fn case_value(
         meta: &tilolang_tilo::tilolang::PackageMeta,
         ty: &str,
-        argument: Json,
+        argument: &Json,
     ) -> Result<Value, String> {
-        if let Some(choices) = meta.enums.iter().find(|en| en.id == ty || en.name == ty) {
+        // A parameter's declared type names a choice as `enum Finish`; its type is the one the
+        // package declares.
+        let named = match tilolang_tilo::runtime::meta::parse_ty(ty, &meta.app) {
+            Ok(tilolang_tilo::runtime::meta::Ty::Enum(key)) => Some(key.name),
+            _ => None,
+        };
+        let choices = named.as_deref().and_then(|name| {
+            meta.enums
+                .iter()
+                .find(|en| en.name == name || en.id == name)
+        });
+        if let Some(choices) = choices {
             let name = argument
                 .as_str()
                 .ok_or_else(|| format!("`{}` takes a case's name", choices.name))?;
@@ -77,6 +101,6 @@ impl ShellPart {
                 fields: BTreeMap::new(),
             }));
         }
-        tilolang_tilo::runtime::value::from_json(&argument)
+        tilolang_tilo::runtime::value::from_json(argument)
     }
 }
