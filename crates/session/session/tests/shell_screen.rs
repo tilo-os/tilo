@@ -20,108 +20,25 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-use std::time::Duration;
+mod common;
 
 use serde_json::{Map, Value, json};
-use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_service::{Service as _, Started};
+use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::ShellLayer;
-use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
-use tilolang_tilo::runtime::Principal;
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
-const PERSON: &str = "Pat";
-const NOTES: &str = "so.tilo.lang.notes";
-const NOTE_TITLE: &str = "Groceries";
-const BTN_LEFT: u32 = 0x110;
+use common::{
+    HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_screen, press, reached, until,
+};
+
 /// The framed canvas's entry, named for what it holds: the text typed to find what to place.
 const CANVAS_ENTRY: &str = "Typed";
-
-/// The titles of the notes [`notebook`] keeps, [`NOTE_TITLE`] first: one strip each.
-const TITLES: [&str; 12] = [
-    NOTE_TITLE,
-    "Packing list",
-    "Recipes",
-    "Reading",
-    "Garden",
-    "Errands",
-    "Budget",
-    "Birthday ideas",
-    "Books to read",
-    "Trip plan",
-    "Paint colours",
-    "Plumber quotes",
-];
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
 /// and the notes in it titled [`TITLES`], made through the app's own actions: their ids, in order.
 fn notebook() -> (RecordService, Vec<String>) {
-    let mut record = tilo_resource::Doc::new();
-    let host = Host::new(&record, Principal::new(PERSON), || None).unwrap();
-    let notes = host
-        .load_builtin(
-            include_str!("../../../../apps/tl/notes/app.tl"),
-            include_str!("../../../../apps/tl/notes/app.ids"),
-        )
-        .unwrap();
-    host.root_of(NOTES).unwrap();
-    for committed in host.take_committed() {
-        let action = &committed.action;
-        let context =
-            ui::tilo_actions::ActionContext::for_resource("workspace", &action.kind, &action.kind)
-                .with_invoker(ui::tilo_actions::ActionInvoker::actor(PERSON));
-        host.with_schemas(|| {
-            ui::tilo_actions::apply_local_with_context(
-                &mut record,
-                action,
-                action.encode().unwrap(),
-                Some(PERSON.as_bytes()),
-                context,
-            )
-        })
-        .unwrap();
-        record.commit();
-        host.sync_from(&record);
-    }
-    let action = |name: &str| {
-        notes
-            .meta
-            .actions
-            .iter()
-            .find(|action| action.name == name)
-            .unwrap()
-            .id
-            .clone()
-    };
-    let mut service = RecordService::new(record, host, PERSON);
-    let book = service
-        .resources()
-        .into_iter()
-        .find(|resource| resource.kind == format!("tl.{NOTES}.Notes"))
-        .unwrap();
-    let mut notes = Vec::new();
-    for title in TITLES {
-        let Started::Done(made) = service
-            .invoke(book.id.as_str(), &action("new_note"), &Map::new())
-            .unwrap()
-        else {
-            panic!("a tilolang action is done once committed");
-        };
-        let note = made.resources.first().cloned().unwrap();
-        service
-            .invoke(
-                &note,
-                &action("retitle"),
-                json!({ "title": title }).as_object().unwrap(),
-            )
-            .unwrap();
-        notes.push(note);
-    }
-    service.settle();
-    (service, notes)
+    notes(&TITLES)
 }
 
 fn session(layer: ShellLayer) -> (Session, String) {
@@ -146,83 +63,6 @@ fn session_at(layer: ShellLayer, width: i32, height: i32) -> (Session, Vec<Strin
     )
     .expect("session");
     (session, notes)
-}
-
-/// Run frames until `done` holds; `false` when it never did.
-fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) -> bool {
-    for _ in 0..400 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Run frames until `done` holds.
-#[track_caller]
-fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -> bool) {
-    assert!(
-        reached(session, done),
-        "{what}: not reached; the shell's refusals: {:?}; the session says: {:?}",
-        session.shell_refusals(),
-        session.accessible_labels()
-    );
-}
-
-/// Where the shell's control or region named `name` stands on screen, when it does.
-fn on_screen(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
-    session.shell_control(name).filter(|&(x, y, w, h)| {
-        w > 0.0
-            && h > 0.0
-            && x + w > 0.0
-            && y + h > 0.0
-            && x < f64::from(WIDTH)
-            && y < f64::from(HEIGHT)
-    })
-}
-
-/// Press the shell's control named `name` with the pointer, as the person does.
-fn press(session: &mut Session, name: &str) {
-    let (x, y, w, h) = on_screen(session, name)
-        .unwrap_or_else(|| panic!("the shell shows {name}: {:?}", session.accessible_labels()));
-    let (x, y) = (x + w / 2.0, y + h / 2.0);
-    session
-        .compositor()
-        .input(InputEvent::PointerMotion { x, y })
-        .unwrap();
-    session.step(Duration::from_millis(1)).unwrap();
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(InputEvent::PointerButton {
-                button: BTN_LEFT,
-                pressed,
-            })
-            .unwrap();
-        session.step(Duration::from_millis(1)).unwrap();
-    }
-}
-
-/// Press the point `(x, y, width, height)` on screen with the pointer, as the person does: the
-/// control a name happens to share.
-fn press_at(session: &mut Session, (x, y, w, h): (f64, f64, f64, f64)) {
-    let (x, y) = (x + w / 2.0, y + h / 2.0);
-    session
-        .compositor()
-        .input(InputEvent::PointerMotion { x, y })
-        .unwrap();
-    session.step(Duration::from_millis(1)).unwrap();
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(InputEvent::PointerButton {
-                button: BTN_LEFT,
-                pressed,
-            })
-            .unwrap();
-        session.step(Duration::from_millis(1)).unwrap();
-    }
 }
 
 /// Place `resource` on the canvas of the workspace in front, through the arrangement's
@@ -446,7 +286,7 @@ fn shown_as(session: &Session, title: &str) -> String {
 }
 
 /// Where the shell's control named `name` stands, when the whole of it is on a display `width`
-/// by `height`.
+/// by `height` (not only part of it, as [`on_screen`] asks).
 fn within(session: &Session, name: &str, width: i32, height: i32) -> Option<(f64, f64, f64, f64)> {
     session.shell_control(name).filter(|&(x, y, w, h)| {
         w > 0.0
@@ -662,7 +502,7 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
         .into_iter()
         .find(|rect| !chips.contains(rect))
         .expect("the row's item in the menu");
-    press_at(&mut session, item);
+    press_rect(&mut session, item);
     until(&mut session, "the place moved", |session| {
         place_row(session, placed) == Some(second)
     });
@@ -675,4 +515,24 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
     until(&mut session, "the place closed", |session| {
         place_strip(session, placed).is_none()
     });
+}
+
+/// Press the middle of `rect` with the pointer, as the person does.
+fn press_rect(session: &mut Session, (x, y, w, h): (f64, f64, f64, f64)) {
+    let (x, y) = (x + w / 2.0, y + h / 2.0);
+    session
+        .compositor()
+        .input(tilo_compositor::InputEvent::PointerMotion { x, y })
+        .unwrap();
+    session.step(std::time::Duration::from_millis(1)).unwrap();
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(tilo_compositor::InputEvent::PointerButton {
+                button: common::BTN_LEFT,
+                pressed,
+            })
+            .unwrap();
+        session.step(std::time::Duration::from_millis(1)).unwrap();
+    }
 }
