@@ -2374,20 +2374,35 @@ impl Session {
     }
 
     /// Lock the session as the person asked: with a key, a command, or
-    /// because one of their other devices locked. A session that cannot
-    /// check a password never locks: the lock screen could not be left again.
-    /// The desk goes the moment the lock is asked for and not when the screen
-    /// has started, so nothing of what was on it stays up for the start of a
-    /// process; the screen that shows the lock is started here, and asks the
-    /// compositor for the lock itself.
+    /// because one of their other devices locked. A session that could not be
+    /// left again never locks ([`Session::can_lock`]). The desk goes the
+    /// moment the lock is asked for and not when the screen has started, so
+    /// nothing of what was on it stays up for the start of a process; the
+    /// screen that shows the lock is started here, and asks the compositor for
+    /// the lock itself.
     pub(crate) fn lock_by_person(&mut self) -> Result<(), Error> {
-        if !self.unlocking.verifier.available() {
-            tracing::warn!("no password can be checked here: not locking");
+        if !self.can_lock() {
             return Ok(());
         }
         self.compositor.lock_now()?;
         self.start_lock_screen();
         Ok(())
+    }
+
+    /// Whether this session can lock at all: a password it can check, and a
+    /// screen that shows the lock and takes that password. Missing either, a
+    /// lock would leave the session with nothing that could lift it, so it
+    /// stays unlocked and says which part is missing.
+    pub(crate) fn can_lock(&self) -> bool {
+        if !self.unlocking.verifier.available() {
+            tracing::warn!("no password can be checked here: not locking");
+            return false;
+        }
+        if self.lock_screen().is_none() {
+            tracing::warn!("no lock screen is installed: not locking");
+            return false;
+        }
+        true
     }
 
     fn command(&mut self, command: SessionCommand) -> Result<(), Error> {

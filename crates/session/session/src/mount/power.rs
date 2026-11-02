@@ -246,12 +246,12 @@ impl Session {
     }
 
     /// Lock the session for the machine: a lid, a critical battery, the
-    /// power key. A session that cannot check a password never locks, and a
-    /// lock asked of a locked session turns the display off instead, so the
-    /// press always does something the person can see.
+    /// power key. A session that could not be left again never locks
+    /// ([`Session::can_lock`]), and a lock asked of a locked session turns the
+    /// display off instead, so the press always does something the person can
+    /// see.
     fn lock_for_power(&mut self) -> Result<(), Error> {
-        if !self.unlocking.verifier.available() {
-            tracing::warn!("no password can be checked here: not locking");
+        if !self.can_lock() {
             return Ok(());
         }
         if self.compositor.locked() {

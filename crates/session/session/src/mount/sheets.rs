@@ -55,12 +55,14 @@ pub(crate) fn mount_sheets(
     );
     if let Some(power) = &power {
         // The host's power is the host's: a session in a window offers no
-        // switching user, suspending or restarting, and a session that
-        // cannot check a password offers no locking.
+        // switching user, suspending or restarting, and a session that could
+        // not be left again offers no locking (no password to check, or no
+        // screen to take it).
+        let lock_screen = options.surfaces.iter().any(|surface| surface.lock);
         power.set_offers(tilo_sheets::power::Offers {
             user_switching: options.machine.is_owned(),
             host_power: options.machine.is_owned(),
-            locking: options.verifier.available(),
+            locking: options.verifier.available() && lock_screen,
             hangs_from: 0.0,
         });
     }

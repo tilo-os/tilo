@@ -355,6 +355,68 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
     );
 }
 
+/// A session with no lock screen installed never locks: the screen is the only
+/// thing that takes the password that lifts the lock, so locking without one
+/// would leave the person with a desktop they cannot come back to.
+#[test]
+fn a_session_with_no_lock_screen_never_locks() {
+    const DISPLAY: &str = "HEADLESS-1";
+    let _settled = ui::motion::testing::settled();
+    let home = private_home();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            collab: false,
+            action_plane: ActionPlane::At(home.path().join("collab.sock")),
+            surfaces: Vec::new(),
+            ..Options::default()
+        },
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    let _client = mapped(&mut session, "org.example.Terminal");
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    for _ in 0..60 {
+        session.step(REFRESH).expect("a turn of the session");
+    }
+    assert!(
+        !session.compositor().locked(),
+        "a session that nothing could unlock stays unlocked"
+    );
+    assert!(
+        !session.surfaces().running("lock"),
+        "no screen was started: {:?}",
+        session.surfaces().names()
+    );
+    assert!(
+        publisher(&session, "overview").is_some(),
+        "the desk is still the person's to use"
+    );
+    assert!(
+        !session
+            .power_menu()
+            .expect("power menu")
+            .offers()
+            .offers(tilo_sheets::power::PowerEffect::Lock),
+        "the power menu does not offer a lock nothing could lift"
+    );
+    // A lock the session cannot refuse — an idle timer's, once it is due — is
+    // lifted again rather than left with nothing to show it.
+    session
+        .compositor()
+        .lock_now()
+        .expect("a lock the session did not ask for");
+    for _ in 0..60 {
+        session.step(REFRESH).expect("a turn of the session");
+    }
+    assert!(
+        !session.compositor().locked(),
+        "the lock nothing could show is lifted again"
+    );
+}
+
 /// A session on two displays, the second smaller than the first: the lock
 /// screen covers every one of them while the session is locked — the same
 /// screen on both, of whatever size they are — and a press on either of them

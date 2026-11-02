@@ -75,6 +75,21 @@ impl crate::Session {
         // offers an action while it is up.
         let locked = self.compositor.locked();
         self.shared.doors.locked(locked);
+        // A lock this session cannot show is one nothing could lift: the lock
+        // screen is not installed, so it is lifted here rather than left with
+        // a desktop no one can come back to. The locks a person asks for are
+        // refused before they are taken ([`Session::can_lock`]); one the
+        // session cannot refuse, like the idle timer's, ends here.
+        if self.compositor.session_locked()
+            && !lock.shown().unlocking
+            && self.lock_screen().is_none()
+        {
+            tracing::error!(
+                "the lock screen is not installed: the lock is lifted rather than left with nothing to unlock it"
+            );
+            self.compositor.unlock()?;
+            return self.follow_lock();
+        }
         // The screen shows the session's own lock. A lock a client put up of
         // its own is that client's, and ends with it.
         if self.compositor.session_locked()

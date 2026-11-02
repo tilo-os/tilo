@@ -151,9 +151,9 @@ pub struct Offers {
     /// shares the host with another desktop: it offers no switching user,
     /// suspending or restarting, and shutting down ends only itself.
     pub host_power: bool,
-    /// A password unlocks this session, so its lock screen can be left
-    /// again. Without one, locking is not offered at all rather than
-    /// leaving the person on a screen nothing opens.
+    /// A password unlocks this session, and a screen takes it, so its lock can
+    /// be left again. Without either, locking is not offered at all rather
+    /// than leaving the person on a screen nothing opens.
     pub locking: bool,
     /// How far down the sheet the menu hangs from: the bottom of the top
     /// bar it was opened from.
