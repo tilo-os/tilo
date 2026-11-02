@@ -1520,6 +1520,80 @@
       }
     },
     {
+      "name": "Drawing",
+      "doc": "Shapes drawn with the design system over a box of their own: a ring, a gauge, a small chart, a diagram. Colours are theme roles and widths tokens; a press reports which shape.",
+      "props": [
+        {
+          "name": "shapes",
+          "doc": "The shapes, drawn in order, each over the ones before it.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Shape"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "meaning",
+          "doc": "What it means, for assistive technology and agents.",
+          "type": {
+            "choice": {
+              "name": "Meaning",
+              "cases": [
+                "progress",
+                "chart",
+                "picture",
+                "decoration"
+              ]
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "label",
+          "doc": "What it shows, as it is announced: \"Disk 60% full\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "value",
+          "doc": "How far it has got, for a progress drawing: a fraction.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "width",
+          "doc": "Its width in logical pixels; a square of its height unless said.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "height",
+          "doc": "Its height in logical pixels.",
+          "type": {
+            "option": "float"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "The person pressed a shape: carries its index in `shapes`.",
+          "value": "int"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "label"
+      }
+    },
+    {
       "name": "DropZone",
       "doc": "Where files go: drag them here, or press the button to choose them (an import, a picture to swap, a file to open). At rest it is a dashed edge around a glyph and a title; while a drag hovers it takes your colour.",
       "props": [
@@ -6515,6 +6589,396 @@
         "role": "ListItem",
         "presents": "item"
       }
+    }
+  ],
+  "enums": [
+    {
+      "name": "Shape",
+      "doc": "One shape of a drawing, in fractions of its box.",
+      "cases": [
+        {
+          "name": "rect",
+          "doc": "A rectangle, rounded by `round` (a fraction of its shorter side).",
+          "fields": [
+            {
+              "name": "x",
+              "ty": "float"
+            },
+            {
+              "name": "y",
+              "ty": "float"
+            },
+            {
+              "name": "w",
+              "ty": "float"
+            },
+            {
+              "name": "h",
+              "ty": "float"
+            },
+            {
+              "name": "round",
+              "ty": "float",
+              "default": {
+                "float": 0.0
+              }
+            },
+            {
+              "name": "fill",
+              "ty": {
+                "option": {
+                  "choice": {
+                    "name": "Ink",
+                    "cases": [
+                      "accent",
+                      "ink",
+                      "muted",
+                      "track",
+                      "success",
+                      "warning",
+                      "danger",
+                      "info"
+                    ]
+                  }
+                }
+              },
+              "default": "none"
+            },
+            {
+              "name": "stroke",
+              "ty": {
+                "option": {
+                  "choice": {
+                    "name": "Ink",
+                    "cases": [
+                      "accent",
+                      "ink",
+                      "muted",
+                      "track",
+                      "success",
+                      "warning",
+                      "danger",
+                      "info"
+                    ]
+                  }
+                }
+              },
+              "default": "none"
+            },
+            {
+              "name": "weight",
+              "ty": {
+                "choice": {
+                  "name": "Weight",
+                  "cases": [
+                    "hairline",
+                    "regular",
+                    "strong"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "regular"
+              },
+              "doc": "How heavy its line is."
+            }
+          ]
+        },
+        {
+          "name": "ellipse",
+          "doc": "An ellipse around (cx, cy).",
+          "fields": [
+            {
+              "name": "cx",
+              "ty": "float"
+            },
+            {
+              "name": "cy",
+              "ty": "float"
+            },
+            {
+              "name": "rx",
+              "ty": "float"
+            },
+            {
+              "name": "ry",
+              "ty": "float"
+            },
+            {
+              "name": "fill",
+              "ty": {
+                "option": {
+                  "choice": {
+                    "name": "Ink",
+                    "cases": [
+                      "accent",
+                      "ink",
+                      "muted",
+                      "track",
+                      "success",
+                      "warning",
+                      "danger",
+                      "info"
+                    ]
+                  }
+                }
+              },
+              "default": "none"
+            },
+            {
+              "name": "stroke",
+              "ty": {
+                "option": {
+                  "choice": {
+                    "name": "Ink",
+                    "cases": [
+                      "accent",
+                      "ink",
+                      "muted",
+                      "track",
+                      "success",
+                      "warning",
+                      "danger",
+                      "info"
+                    ]
+                  }
+                }
+              },
+              "default": "none"
+            },
+            {
+              "name": "weight",
+              "ty": {
+                "choice": {
+                  "name": "Weight",
+                  "cases": [
+                    "hairline",
+                    "regular",
+                    "strong"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "regular"
+              },
+              "doc": "How heavy its line is."
+            }
+          ]
+        },
+        {
+          "name": "arc",
+          "doc": "An arc around (cx, cy), from `from` to `to` in fractions of a turn from the top.",
+          "fields": [
+            {
+              "name": "cx",
+              "ty": "float"
+            },
+            {
+              "name": "cy",
+              "ty": "float"
+            },
+            {
+              "name": "radius",
+              "ty": "float"
+            },
+            {
+              "name": "from",
+              "ty": "float"
+            },
+            {
+              "name": "to",
+              "ty": "float"
+            },
+            {
+              "name": "stroke",
+              "ty": {
+                "choice": {
+                  "name": "Ink",
+                  "cases": [
+                    "accent",
+                    "ink",
+                    "muted",
+                    "track",
+                    "success",
+                    "warning",
+                    "danger",
+                    "info"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "weight",
+              "ty": {
+                "choice": {
+                  "name": "Weight",
+                  "cases": [
+                    "hairline",
+                    "regular",
+                    "strong"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "regular"
+              },
+              "doc": "How heavy its line is."
+            }
+          ]
+        },
+        {
+          "name": "line",
+          "doc": "A line from (x1, y1) to (x2, y2).",
+          "fields": [
+            {
+              "name": "x1",
+              "ty": "float"
+            },
+            {
+              "name": "y1",
+              "ty": "float"
+            },
+            {
+              "name": "x2",
+              "ty": "float"
+            },
+            {
+              "name": "y2",
+              "ty": "float"
+            },
+            {
+              "name": "stroke",
+              "ty": {
+                "choice": {
+                  "name": "Ink",
+                  "cases": [
+                    "accent",
+                    "ink",
+                    "muted",
+                    "track",
+                    "success",
+                    "warning",
+                    "danger",
+                    "info"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "weight",
+              "ty": {
+                "choice": {
+                  "name": "Weight",
+                  "cases": [
+                    "hairline",
+                    "regular",
+                    "strong"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "regular"
+              },
+              "doc": "How heavy its line is."
+            }
+          ]
+        },
+        {
+          "name": "path",
+          "doc": "A path through `points`, x and y in turn.",
+          "fields": [
+            {
+              "name": "points",
+              "ty": {
+                "list": "float"
+              }
+            },
+            {
+              "name": "smooth",
+              "ty": "bool",
+              "default": {
+                "bool": false
+              },
+              "doc": "A smooth curve rather than straight segments."
+            },
+            {
+              "name": "closed",
+              "ty": "bool",
+              "default": {
+                "bool": false
+              },
+              "doc": "Back to its first point."
+            },
+            {
+              "name": "fill",
+              "ty": {
+                "option": {
+                  "choice": {
+                    "name": "Ink",
+                    "cases": [
+                      "accent",
+                      "ink",
+                      "muted",
+                      "track",
+                      "success",
+                      "warning",
+                      "danger",
+                      "info"
+                    ]
+                  }
+                }
+              },
+              "default": "none"
+            },
+            {
+              "name": "stroke",
+              "ty": {
+                "option": {
+                  "choice": {
+                    "name": "Ink",
+                    "cases": [
+                      "accent",
+                      "ink",
+                      "muted",
+                      "track",
+                      "success",
+                      "warning",
+                      "danger",
+                      "info"
+                    ]
+                  }
+                }
+              },
+              "default": "none"
+            },
+            {
+              "name": "weight",
+              "ty": {
+                "choice": {
+                  "name": "Weight",
+                  "cases": [
+                    "hairline",
+                    "regular",
+                    "strong"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "regular"
+              },
+              "doc": "How heavy its line is."
+            },
+            {
+              "name": "wash",
+              "ty": "bool",
+              "default": {
+                "bool": false
+              },
+              "doc": "Its fill fading out downward."
+            }
+          ]
+        }
+      ]
     }
   ]
 }
