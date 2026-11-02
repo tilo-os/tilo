@@ -105,7 +105,8 @@ fn serving_desk(
         ui::permissions::UserId("tester".into()),
     );
     driver.set_caller_palette_enabled(false);
-    let (session, openings) = tilo_desktop_surface::session::serve(workspace, std::sync::Arc::default());
+    let (session, openings) =
+        tilo_desktop_surface::session::serve(workspace, std::sync::Arc::default());
     driver.set_session_door(
         ui::RemoteActions::with_host(
             session,
