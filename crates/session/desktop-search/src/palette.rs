@@ -639,8 +639,11 @@ impl DesktopSearch {
             }
             // No room for even this many groups: the lowest-ranked one the
             // search's own rows do not keep makes way for the all-results
-            // row, which lists it too.
-            let Some(at) = groups.iter().rposition(|group| !always_shown(&group.kind)) else {
+            // row, which lists it too. A group the person asked to see whole
+            // never makes way: the card scrolls it.
+            let Some(at) = groups.iter().rposition(|group| {
+                !always_shown(&group.kind) && !self.expanded.contains(&group.kind)
+            }) else {
                 return last;
             };
             groups.remove(at);
@@ -2291,6 +2294,63 @@ mod tests {
                 .visible_entries()
                 .iter()
                 .all(|entry| !entry.id.starts_with(MORE_PREFIX))
+        );
+    }
+
+    /// Choosing a group's "Show all" keeps that group on the card even when
+    /// listing it whole no longer fits: the card scrolls what the person
+    /// asked for instead of taking it away again.
+    #[test]
+    fn a_group_asked_for_whole_scrolls_rather_than_making_way() {
+        let mut search = DesktopSearch::new();
+        search.set_room(400.0, 120.0);
+        search.open(SearchData {
+            applications: vec![AppEntry {
+                id: "so.tilo.notes".into(),
+                title: "Notes".into(),
+                category: None,
+                description: None,
+            }],
+            windows: vec![WindowEntry {
+                tab: 1,
+                title: "Notes".into(),
+                app_title: "Notes".into(),
+                app: Some("so.tilo.notes".into()),
+                place: Vec::new(),
+            }],
+            commands: (0..6)
+                .map(|i| CommandSpec {
+                    id: format!("host:{i}"),
+                    title: format!("Command {i}"),
+                    subtitle: None,
+                })
+                .collect(),
+            ..SearchData::default()
+        });
+        settled(&mut search);
+        let entries = search.palette().visible_entries();
+        let (at, group, total) = entries
+            .iter()
+            .enumerate()
+            .find_map(|(at, entry)| {
+                Some((at, entry.group.clone()?, entry.group_total?))
+                    .filter(|_| entry.id.starts_with(MORE_PREFIX))
+            })
+            .unwrap_or_else(|| panic!("a cramped card offers the rest: {:?}", entries));
+        search.palette_mut().set_cursor(at);
+        search.palette_mut().activate_selected();
+        assert!(!search.observe(), "showing all keeps search open");
+        let shown = search.palette().visible_entries();
+        let listed = shown
+            .iter()
+            .filter(|entry| entry.group.as_deref() == Some(group.as_str()))
+            .filter(|entry| entry.id.starts_with("hit:"))
+            .count();
+        assert_eq!(listed, total, "every row of {group} is on the card");
+        assert!(
+            shown.iter().all(|entry| !(entry.id.starts_with(MORE_PREFIX)
+                && entry.group.as_deref() == Some(group.as_str()))),
+            "{group} is not offered itself again"
         );
     }
 
