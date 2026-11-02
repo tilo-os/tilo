@@ -737,7 +737,7 @@ fn my_mails_on_the_canvas_places_the_inbox() {
     let (answer, failed) = repl.call(
         &mut session,
         "tilo",
-        json!({"program": "session.place_found(text: \"my mails\", view: .none, x: .some(80), y: .some(60))"}),
+        &json!({"program": "session.place_found(text: \"my mails\", view: .none, x: .some(80), y: .some(60))"}),
     );
     assert!(!failed, "the program ran: {answer}");
     let placed = |session: &Session| {
