@@ -328,7 +328,6 @@ fn window(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i3
 /// client's window is titled by its own app id, so the desk names it as it
 /// names any window: its title and the app it shows.
 fn window_resource(session: &Session, app: &str) -> Option<ResourceSpec> {
-    let label = tilo_desktop_search::names::window_name(app, app);
     fn find(resources: &[ResourceSpec], label: &str) -> Option<ResourceSpec> {
         resources.iter().find_map(|resource| {
             if resource.kind == WINDOW_KIND && resource.label == label {
@@ -338,6 +337,7 @@ fn window_resource(session: &Session, app: &str) -> Option<ResourceSpec> {
             }
         })
     }
+    let label = tilo_desktop_search::names::window_name(app, app);
     find(&session.resources(), &label)
 }
 
