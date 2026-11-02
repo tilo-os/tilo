@@ -205,9 +205,11 @@ impl Decorator for BodyEditor {
         edited || followed || inner
     }
 
-    /// The editor hangs its handle gutter outside the column (a negative leading margin as
-    /// wide as the gutter), so its text starts on the column's edge, under the title, and still
-    /// runs to the column's end, as native Notes lines a note's title up with its text.
+    /// The editor hangs its handle gutter outside the column, so its text starts on the
+    /// column's edge, under the title, and still runs to the column's end, as native Notes
+    /// lines a note's title up with its text. It is placed there, not margined there: a
+    /// margin would have the layout ask the block stack for heights at a second width than
+    /// the one it is applied at, and its blocks then paint taller than the rect they got.
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,
@@ -218,9 +220,7 @@ impl Decorator for BodyEditor {
         let node = self.editor.build_layout(taffy, theme, node_map);
         if let Ok(style) = taffy.style(node) {
             let mut hung = style.clone();
-            let margin = -(inset as f32);
-            hung.margin.left = ui::taffy::LengthPercentageAuto::length(margin);
-            // The node must take what the column offers plus the hung gutter.
+            hung.inset.left = ui::taffy::LengthPercentageAuto::length(-(inset as f32));
             let _ = taffy.set_style(node, hung);
         }
         node
