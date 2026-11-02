@@ -43,8 +43,51 @@ pub const OSD_RESOURCE: &str = "desktop:osd";
 /// does not leave it hanging around.
 pub const OSD_HOLD: Duration = Duration::from_millis(1_500);
 
-/// The slab's size, logical pixels: a host places it this big.
-pub const OSD_SIZE: (u32, u32) = (320, 56);
+/// The pill's height: its glyph's square and the gap above and below it.
+/// Unscaled `BASE` values because a host sizes the surface from this before
+/// any theme is in hand.
+pub const OSD_HEIGHT: f32 = ui::tokens::Metrics::BASE.icon_lg + 2.0 * ui::tokens::Spacing::BASE.s3;
+
+/// Room above and below the pill's body for the shadow it floats on: a
+/// surface sized to the body alone would cut the shadow off in a hard edge.
+pub const OSD_MARGIN: f32 = ui::tokens::Spacing::BASE.s8;
+
+/// How far the pill's bottom edge stands above the output's bottom edge: the
+/// same inset the readouts have always rested at, where a glance finds them
+/// and no bar or dock sits.
+pub const OSD_INSET: f32 = ui::tokens::Spacing::BASE.s16;
+
+/// The height of the surface a host shows the readout on: the pill and its
+/// shadow's room, in whole logical pixels.
+#[must_use]
+pub fn surface_height() -> i32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a pill's height in logical pixels is a few dozen"
+    )]
+    let height = (OSD_HEIGHT + 2.0 * OSD_MARGIN).ceil() as i32;
+    height
+}
+
+/// Where the readout's surface goes on the output `(x, y, w, h)`: a band
+/// across the output, its pill bottom-centred in it, [`OSD_INSET`] above the
+/// output's bottom edge. The pill is as wide as what it reads, so the band is
+/// as wide as the output and the pill centres itself in it.
+#[must_use]
+pub fn place(output: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "insets of a few dozen logical pixels"
+    )]
+    let (inset, margin) = (OSD_INSET.round() as i32, OSD_MARGIN.round() as i32);
+    let (x, y, w, h) = output;
+    let height = surface_height();
+    let bottom = y
+        .saturating_add(h)
+        .saturating_sub(inset)
+        .saturating_add(margin);
+    (x, bottom.saturating_sub(height), w.max(1), height)
+}
 
 /// What the readout is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,9 +186,250 @@ impl Osd {
             OsdKind::Stop => t("osd-stop"),
         }
     }
+
+    /// The short value the pill reads beside its glyph: `65%`, `Muted`,
+    /// `Off`, or the whole message where there is no level to read.
+    #[must_use]
+    pub fn value_text(&self) -> String {
+        let percent = || t_args("osd-percent", &[("percent", percent(self.level).into())]);
+        match self.kind {
+            OsdKind::Volume if !self.on => t("osd-muted"),
+            OsdKind::KeyboardBacklight if self.level <= 0.0 => t("osd-off"),
+            OsdKind::Volume | OsdKind::Brightness | OsdKind::KeyboardBacklight => percent(),
+            _ => self.caption(),
+        }
+    }
+
+    /// The glyph for what the readout is about, and whether it reads as on:
+    /// a state that is off (muted, dark, radio down) dims its glyph and, for
+    /// the microphone, warns.
+    #[must_use]
+    pub fn glyph(&self) -> (ui::icons::Icon, GlyphTone) {
+        use ui::icons::Icon;
+        match self.kind {
+            OsdKind::Volume if self.on => (Icon::Volume2, GlyphTone::On),
+            OsdKind::Volume => (Icon::VolumeX, GlyphTone::On),
+            OsdKind::Brightness => (Icon::Sun, GlyphTone::On),
+            OsdKind::KeyboardBacklight if self.level <= 0.0 => (Icon::Keyboard, GlyphTone::Off),
+            OsdKind::KeyboardBacklight => (Icon::Keyboard, GlyphTone::On),
+            OsdKind::Microphone if self.on => (Icon::Mic, GlyphTone::On),
+            OsdKind::Microphone => (Icon::MicOff, GlyphTone::Warn),
+            OsdKind::AirplaneMode if self.on => (Icon::WifiOff, GlyphTone::On),
+            OsdKind::AirplaneMode => (Icon::Wifi, GlyphTone::On),
+            OsdKind::Touchpad if self.on => (Icon::Mouse, GlyphTone::On),
+            OsdKind::Touchpad => (Icon::Mouse, GlyphTone::Off),
+            OsdKind::Play => (Icon::Play, GlyphTone::On),
+            OsdKind::Pause => (Icon::Pause, GlyphTone::On),
+            OsdKind::NextTrack => (Icon::SkipForward, GlyphTone::On),
+            OsdKind::PreviousTrack => (Icon::SkipBack, GlyphTone::On),
+            OsdKind::Stop => (Icon::Square, GlyphTone::On),
+            OsdKind::NoBacklight => (Icon::Monitor, GlyphTone::Off),
+        }
+    }
+
+    /// How much of the level track is filled: a muted volume keeps its track
+    /// and empties its fill, so the pill does not change shape while still
+    /// agreeing with the crossed-out volume glyph.
+    #[must_use]
+    pub fn filled(&self) -> f64 {
+        if self.kind == OsdKind::Volume && !self.on {
+            0.0
+        } else if self.kind.has_level() {
+            f64::from(self.level.clamp(0.0, 1.0))
+        } else {
+            0.0
+        }
+    }
 }
 
-/// The readout's resource: `show`, with what to show.
+/// How a readout's glyph is inked: lit, dimmed (the thing is off) or
+/// warning (the microphone is muted and the person may be talking to it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlyphTone {
+    On,
+    Off,
+    Warn,
+}
+
+/// The pill's geometry: its glyph, optional level track and value on one
+/// row, bottom-centred in the surface's band. Kept apart from paint so the
+/// rhythm is testable and every kind, level or state, shares one shape.
+#[derive(Clone, Debug, PartialEq)]
+struct Pill {
+    rect: Rect,
+    glyph: Rect,
+    /// The level track between the glyph and the value, for a kind with a
+    /// level.
+    track: Option<Rect>,
+    /// Where the value goes: right-aligned in its slot after the track for a
+    /// level, or straight after the glyph for a bare message.
+    text: Rect,
+    value: String,
+}
+
+impl Pill {
+    /// Lay the pill out in the surface's `band`, whose pill is
+    /// [`OSD_HEIGHT`] tall and as wide as its widest reading.
+    fn layout(
+        band: Rect,
+        theme: &Theme,
+        text: &mut TextRenderer,
+        osd: Osd,
+        style: &ui::text_render::TextStyle,
+    ) -> Self {
+        let sp = &theme.tokens.spacing;
+        let icon = f64::from(theme.tokens.metrics.icon_lg);
+        let (pad, gap) = (f64::from(sp.s4), f64::from(sp.s3));
+        let value = osd.value_text();
+        let (value_w, text_h) = text.measure_style(&value, None, style);
+        let has_track = osd.kind.has_level();
+        // A level's value slot is as wide as its widest reading, so the
+        // track does not shift as the number gains digits or the sink mutes.
+        let mut slot = f64::from(value_w);
+        if has_track {
+            let full = t_args("osd-percent", &[("percent", 100.into())]);
+            for reading in [full, t("osd-muted")] {
+                let (w, _) = text.measure_style(&reading, None, style);
+                slot = slot.max(f64::from(w));
+            }
+        }
+        let track_len = icon * 6.0;
+        let wanted = pad * 2.0 + icon + gap + slot + if has_track { gap + track_len } else { 0.0 };
+        let width = wanted.min(band.width()).max(0.0);
+        // As tall as its glyph or its line, and the gap above and below,
+        // never taller than the band has room for.
+        let room = (band.height() - 2.0 * f64::from(OSD_MARGIN)).max(0.0);
+        let height = (icon.max(f64::from(text_h)) + 2.0 * gap).min(room);
+        // Bottom-centred: the pill grows upward from the line it rests on.
+        let x0 = band.center().x - width / 2.0;
+        let y1 = band.y1 - f64::from(OSD_MARGIN);
+        let rect = Rect::new(x0, y1 - height, x0 + width, y1);
+        let cy = rect.center().y;
+        let glyph = Rect::new(
+            rect.x0 + pad,
+            cy - icon / 2.0,
+            rect.x0 + pad + icon,
+            cy + icon / 2.0,
+        );
+        let text_x0 = if has_track {
+            rect.x1 - pad - slot
+        } else {
+            glyph.x1 + gap
+        };
+        let text_rect = Rect::new(
+            text_x0,
+            cy - f64::from(text_h) / 2.0,
+            rect.x1 - pad,
+            cy + f64::from(text_h) / 2.0,
+        );
+        let track = has_track.then(|| {
+            let track_h = f64::from(sp.s1) * 1.5;
+            Rect::new(
+                glyph.x1 + gap,
+                cy - track_h / 2.0,
+                text_x0 - gap,
+                cy + track_h / 2.0,
+            )
+        });
+        Self {
+            rect,
+            glyph,
+            track,
+            text: text_rect,
+            value,
+        }
+    }
+}
+
+/// The empty part of the level track: a hairline wash over the pill's own
+/// ground, so it reads on every palette rather than vanishing under a lift
+/// of the desktop's base.
+fn track_color(theme: &Theme) -> vello::peniko::Color {
+    ui::tokens::colors::Colors::hairline_on(ui::chrome::shell::panel_ground(theme), 80)
+}
+
+/// Paint the readout's pill in `band`, returning its resting rect.
+fn draw_pill(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    band: Rect,
+    raised: Osd,
+) -> Rect {
+    let style = theme
+        .text(TextRole::Label)
+        .with_weight(TextWeight::Medium)
+        .with_kind(TextKind::Numeric);
+    let pill = Pill::layout(band, theme, text, raised, &style);
+    let painted = ui::chrome::shell::paint_panel(scene, transform, pill.rect, theme, 1.0);
+    let theme = &painted.theme;
+    let colors = &theme.tokens.colors;
+    let (icon, tone) = raised.glyph();
+    let tint = match tone {
+        GlyphTone::On => colors.text_primary,
+        GlyphTone::Off => colors.text_dim,
+        GlyphTone::Warn => colors.semantic.warning,
+    };
+    ui::icons::draw_icon(
+        scene,
+        transform,
+        pill.glyph,
+        icon,
+        tint,
+        ui::icons::LUCIDE_DEFAULT_STROKE_PX * 1.4,
+    );
+    if let Some(track) = pill.track {
+        let track_h = track.height();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            track_color(theme),
+            None,
+            &vello::kurbo::RoundedRect::from_rect(track, track_h / 2.0),
+        );
+        let filled = raised.filled();
+        if filled > 0.0 {
+            let w = (track.width() * filled).max(track_h);
+            let fill = Rect::new(track.x0, track.y0, track.x0 + w, track.y1);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.text_primary,
+                None,
+                &vello::kurbo::RoundedRect::from_rect(fill, track_h / 2.0),
+            );
+        }
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a pill's value room in logical pixels is far inside f32 range"
+    )]
+    let room = pill.text.width() as f32;
+    let shown = text.elide_to_width_style(&pill.value, room, &style);
+    let (shown_w, shown_h) = text.measure_style(&shown, None, &style);
+    let muted = raised.kind == OsdKind::Volume && !raised.on;
+    // The value hugs the track's end; a bare message starts at the glyph.
+    let x = if pill.track.is_some() {
+        pill.text.x1 - f64::from(shown_w)
+    } else {
+        pill.text.x0
+    };
+    text.draw_style(
+        scene,
+        &shown,
+        if muted {
+            colors.text_dim
+        } else {
+            colors.text_primary
+        },
+        transform.pre_translate((x, pill.text.center().y - f64::from(shown_h) / 2.0).into()),
+        None,
+        &style,
+    );
+    pill.rect
+}
+
 #[must_use]
 #[expect(clippy::expect_used, reason = "a readout always serializes to JSON")]
 pub fn osd_resource() -> ResourceSpec {
@@ -344,7 +628,15 @@ impl Widget for OsdSlab {
         if alpha <= 0.0 {
             return;
         }
-        let rect = self.rect.inset(-1.0);
+        // The pill rises into place as it fades in and sinks as it fades out;
+        // the slide follows the opacity, so it needs no clock of its own and a
+        // reduced-motion theme (alpha pinned at 1) never moves.
+        let slide = if theme.reduce_motion {
+            0.0
+        } else {
+            f64::from(theme.tokens.spacing.s2) * f64::from(1.0 - alpha.clamp(0.0, 1.0))
+        };
+        let transform = transform.then_translate((0.0, slide).into());
         if alpha < 0.999 {
             scene.push_layer(
                 Fill::NonZero,
@@ -354,48 +646,7 @@ impl Widget for OsdSlab {
                 &self.rect,
             );
         }
-        let painted = ui::chrome::shell::paint_panel(scene, transform, rect, theme, 1.0);
-        let theme = &painted.theme;
-        let colors = &theme.tokens.colors;
-        let pad = f64::from(theme.tokens.spacing.s4);
-        let inner = rect.inset(-pad);
-        let style = theme
-            .text(TextRole::Label)
-            .with_weight(TextWeight::Medium)
-            .with_kind(TextKind::Numeric);
-        let caption = raised.osd.caption();
-        let (_, height) = text.measure_style(&caption, None, &style);
-        let caption_at = Point::new(inner.x0, inner.center().y - f64::from(height) / 2.0);
-        if raised.osd.kind.has_level() {
-            // The bar fills the right of the slab; the caption ends it. A
-            // muted bar keeps its level in secondary ink.
-            let height = ui::widget::ProgressBarFace::height(theme);
-            let bar_width = inner.width() * 0.45;
-            let bar = Rect::new(
-                inner.x1 - bar_width,
-                inner.center().y - height / 2.0,
-                inner.x1,
-                inner.center().y + height / 2.0,
-            );
-            let face = ui::widget::ProgressBarFace::new(raised.osd.level.clamp(0.0, 1.0));
-            let face = if raised.osd.on {
-                face
-            } else {
-                face.tone(ui::widget::Tone::Neutral)
-            };
-            face.paint(
-                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
-                bar,
-            );
-        }
-        text.draw_style(
-            scene,
-            &caption,
-            colors.text_primary,
-            transform.pre_translate(caption_at.to_vec2()),
-            None,
-            &style,
-        );
+        draw_pill(scene, transform, text, theme, self.rect, raised.osd);
         if alpha < 0.999 {
             scene.pop_layer();
         }
@@ -441,12 +692,21 @@ mod tests {
             on: true,
         };
         assert_eq!(volume.caption(), "Volume 55%");
+        assert_eq!(volume.value_text(), "55%");
         assert_eq!(
             Osd {
                 on: false,
                 ..volume
             }
             .caption(),
+            "Muted"
+        );
+        assert_eq!(
+            Osd {
+                on: false,
+                ..volume
+            }
+            .value_text(),
             "Muted"
         );
         assert_eq!(
@@ -458,6 +718,180 @@ mod tests {
             .caption(),
             "Touchpad off"
         );
+        assert_eq!(
+            Osd {
+                kind: OsdKind::KeyboardBacklight,
+                level: 0.0,
+                on: true,
+            }
+            .value_text(),
+            "Off"
+        );
+        assert_eq!(
+            Osd {
+                kind: OsdKind::KeyboardBacklight,
+                level: 0.4,
+                on: true,
+            }
+            .value_text(),
+            "40%"
+        );
+    }
+
+    /// A 1280 by 800 output's readout band.
+    fn band() -> Rect {
+        let (x, y, w, h) = place((0, 0, 1280, 800));
+        Rect::new(
+            f64::from(x),
+            f64::from(y),
+            f64::from(x.saturating_add(w)),
+            f64::from(y.saturating_add(h)),
+        )
+    }
+
+    /// The pill `osd` lays out in the band of a 1280 by 800 output.
+    fn pill(osd: Osd) -> Pill {
+        let theme = Theme::dark();
+        let style = theme
+            .text(TextRole::Label)
+            .with_weight(TextWeight::Medium)
+            .with_kind(TextKind::Numeric);
+        Pill::layout(band(), &theme, &mut TextRenderer::new(), osd, &style)
+    }
+
+    fn volume(level: f32) -> Osd {
+        Osd {
+            kind: OsdKind::Volume,
+            level,
+            on: true,
+        }
+    }
+
+    #[test]
+    fn the_readout_rests_bottom_centred_where_the_old_shell_put_it() {
+        let pill = pill(volume(0.65));
+        // The old shell's pill on this output: a body 260 wide by 48 high at
+        // x510..769, y688..735, its shadow reaching a few pixels further and
+        // its bottom edge 64 above the screen's.
+        assert_eq!(pill.rect.y1, 736.0);
+        assert_eq!(pill.rect.y0, 688.0);
+        assert_eq!(pill.rect.center().x, 640.0);
+        assert!(pill.rect.width() < 320.0, "{}", pill.rect.width());
+        // The glyph starts the pill's left inset and is a square icon.
+        assert_eq!(pill.glyph.x0, pill.rect.x0 + 16.0);
+        assert_eq!(pill.glyph.width(), pill.glyph.height());
+        // The value ends it, right-aligned an inset from the right edge.
+        assert_eq!(pill.text.x1, pill.rect.x1 - 16.0);
+        // The track runs between them, six icons long.
+        let track = pill.track.expect("a level has a track");
+        assert_eq!(track.width(), pill.glyph.width() * 6.0);
+        assert!(track.x0 > pill.glyph.x1 && track.x1 <= pill.text.x0);
+        assert!(track.height() < 8.0, "a hairline, not a bar");
+        assert_eq!(pill.value, "65%");
+    }
+
+    #[test]
+    fn a_level_pill_keeps_its_width_as_the_reading_changes() {
+        let wide = pill(volume(0.65)).rect.width();
+        for other in [
+            volume(0.05),
+            volume(1.0),
+            Osd {
+                on: false,
+                ..volume(0.65)
+            },
+        ] {
+            assert_eq!(pill(other).rect.width(), wide, "{other:?} resized the pill");
+        }
+        // And a bare state is as wide as its own message, not a level's slot.
+        let touchpad = Osd {
+            kind: OsdKind::Touchpad,
+            level: 0.0,
+            on: true,
+        };
+        assert!(pill(touchpad).track.is_none());
+        assert_eq!(pill(touchpad).text.x0, pill(touchpad).glyph.x1 + 12.0);
+    }
+
+    #[test]
+    fn the_track_empties_when_the_sound_is_muted() {
+        assert!((volume(0.37).filled() - 0.37).abs() < 1e-6);
+        assert_eq!(
+            Osd {
+                on: false,
+                ..volume(0.37)
+            }
+            .filled(),
+            0.0
+        );
+        assert_eq!(
+            Osd {
+                kind: OsdKind::Touchpad,
+                level: 0.5,
+                on: true,
+            }
+            .filled(),
+            0.0,
+            "a state with no level has no track to fill"
+        );
+        // Out-of-range levels are clamped, never drawn past the track.
+        assert_eq!(volume(2.0).filled(), 1.0);
+        assert_eq!(volume(-1.0).filled(), 0.0);
+    }
+
+    #[test]
+    fn every_kind_names_its_own_glyph_and_dims_when_it_is_off() {
+        use ui::icons::Icon;
+        let glyph = |kind, level, on| Osd { kind, level, on }.glyph();
+        assert_eq!(
+            glyph(OsdKind::Volume, 0.5, true),
+            (Icon::Volume2, GlyphTone::On)
+        );
+        assert_eq!(
+            glyph(OsdKind::Volume, 0.5, false),
+            (Icon::VolumeX, GlyphTone::On)
+        );
+        assert_eq!(
+            glyph(OsdKind::Brightness, 0.5, true),
+            (Icon::Sun, GlyphTone::On)
+        );
+        assert_eq!(
+            glyph(OsdKind::KeyboardBacklight, 0.5, true),
+            (Icon::Keyboard, GlyphTone::On)
+        );
+        assert_eq!(
+            glyph(OsdKind::KeyboardBacklight, 0.0, true),
+            (Icon::Keyboard, GlyphTone::Off)
+        );
+        assert_eq!(
+            glyph(OsdKind::Microphone, 0.0, false),
+            (Icon::MicOff, GlyphTone::Warn)
+        );
+        assert_eq!(
+            glyph(OsdKind::Touchpad, 0.0, false),
+            (Icon::Mouse, GlyphTone::Off)
+        );
+        assert_eq!(
+            glyph(OsdKind::NextTrack, 0.0, true),
+            (Icon::SkipForward, GlyphTone::On)
+        );
+        assert_eq!(
+            glyph(OsdKind::NoBacklight, 0.0, true),
+            (Icon::Monitor, GlyphTone::Off)
+        );
+        // Every kind the action accepts has a glyph of its own.
+        for kind in OsdKind::ALL {
+            let (_, tone) = Osd {
+                kind,
+                level: 0.0,
+                on: true,
+            }
+            .glyph();
+            assert!(matches!(
+                tone,
+                GlyphTone::On | GlyphTone::Off | GlyphTone::Warn
+            ));
+        }
     }
 
     #[test]

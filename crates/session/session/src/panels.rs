@@ -347,13 +347,17 @@ pub(crate) struct Readout {
 
 impl Readout {
     pub(crate) fn new(scale: f64) -> Self {
-        let (w, h) = tilo_desktop::osd::OSD_SIZE;
         Self {
             host: tilo_surface_host::WidgetHost::new(
                 Box::new(tilo_desktop::osd::OsdSlab::new()),
                 Placement {
                     origin: (0, 0),
-                    size: (w, h),
+                    // Placed on the outputs before anything is drawn; the
+                    // readout's pill is as wide as what it reads.
+                    size: (
+                        1,
+                        u32::try_from(tilo_desktop::osd::surface_height()).unwrap_or(1),
+                    ),
                     scale,
                 },
                 false,
@@ -418,26 +422,14 @@ impl SurfaceHost for Readout {
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
-        let Some((x, y, w, h)) = first(outputs) else {
+        let Some(output) = first(outputs) else {
             return;
         };
-        let (width, height) = tilo_desktop::osd::OSD_SIZE;
-        let (width, height) = (
-            i32::try_from(width).unwrap_or(i32::MAX),
-            i32::try_from(height).unwrap_or(i32::MAX),
-        );
         let scale = self.host.placement().scale;
-        // A sixth of the way up from the bottom edge, where a glance finds
-        // it and no bar sits.
-        self.host.set_placement(placement(
-            x.saturating_add(w.saturating_sub(width) / 2),
-            y.saturating_add(h)
-                .saturating_sub(height)
-                .saturating_sub(h / 6),
-            width,
-            height,
-            scale,
-        ));
+        // A band across the output, its pill bottom-centred in it: where a
+        // glance finds it, clear of the bar and the dock.
+        let (x, y, w, h) = tilo_desktop::osd::place(output);
+        self.host.set_placement(placement(x, y, w, h, scale));
     }
 }
 
