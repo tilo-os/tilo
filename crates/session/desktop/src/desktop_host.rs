@@ -37,7 +37,7 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 
 use crate::about::TiloMenu;
 use crate::chrome::{ChromeIntent, TopBarPresence};
-use crate::desk_verbs::{chrome_resource, desk_resource, launchpad_resource};
+use crate::desk_verbs::{OpenSearch, chrome_resource, desk_resource, launchpad_resource};
 use crate::desk_widgets::music::MusicAction;
 use crate::emoji_picker::{EmojiLink, EmojiPicker};
 use crate::fullscreen_hint::FullscreenHint;
@@ -468,10 +468,11 @@ impl ui::resources::PublishesResources for DeskLayer {
                 .collect()
         });
         let (query, rows) = self.handle.search_rows();
-        let search = self
-            .handle
-            .search_open()
-            .then_some((query.as_str(), rows.as_slice()));
+        let search = self.handle.search_open().then_some(OpenSearch {
+            query: query.as_str(),
+            rows: rows.as_slice(),
+            searching: self.handle.search_searching(),
+        });
         let mut resources = vec![desk_resource(&tabs, &self.handle.displays(), search)];
         if self.handle.read(desk_is_empty) {
             resources.push(launchpad_resource());

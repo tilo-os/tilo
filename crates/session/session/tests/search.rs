@@ -278,9 +278,7 @@ fn typing_once_search_has_settled_reaches_its_query() {
     until(&mut session, |session| {
         find(&session.resources(), SEARCH_RESOURCE).is_some()
     });
-    for _ in 0..40 {
-        session.step(Duration::from_millis(16)).expect("step");
-    }
+    await_search(&mut session, None);
     for keycode in [46, 30, 38] {
         type_key(&mut session, keycode);
     }
@@ -528,18 +526,7 @@ fn session_with_settings() -> Session {
 /// Search for `query` and choose the row titled `title`: a switch stays in
 /// view, anything else closes search.
 fn choose(session: &mut Session, query: &str, title: &str) {
-    invoke(
-        session,
-        DESK_RESOURCE,
-        "search",
-        serde_json::json!({ "query": query }),
-    );
-    for _ in 0..200 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if row(session, title).is_some() {
-            break;
-        }
-    }
+    search_for(session, query);
     let Some(row) = row(session, title) else {
         let labels: Vec<String> = rows(session).into_iter().map(|row| row.label).collect();
         panic!("no row {title:?} for {query:?} among {labels:?}");
@@ -607,15 +594,63 @@ fn switched_off() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// How many frames a search is waited out: the desk asks its sources in the
-/// frames that follow the query, a few at a time, and rebuilds the rows once
-/// the card has laid out and once the index's code has arrived. The sources
-/// are far fewer than this, and the slowest is asked in a frame of its own.
-const SEARCH_FRAMES: usize = 200;
+/// How many frames a failing search is given before the test says so: a
+/// source is asked a frame at a time, and a slow one in a frame of its own,
+/// so a search over many of them takes as many frames. Any search here is
+/// over far fewer; reaching this is a search that never ends, and the
+/// failure says what was still missing.
+const SEARCH_FRAME_CAP: usize = 600;
+
+/// The open search, as the desk publishes it.
+fn open_search(session: &Session) -> Option<ResourceSpec> {
+    find(&session.resources(), SEARCH_RESOURCE)
+}
+
+/// Whether the desk publishes the open search as over: no source has still
+/// to answer for the query and its rows are cut to the card. The search
+/// says it is still searching in its detail until then.
+fn search_settled(search: &ResourceSpec) -> bool {
+    search
+        .presentation
+        .as_ref()
+        .and_then(|presentation| presentation.detail.as_deref())
+        .is_none()
+}
+
+/// Step until the open search is over: it names `query` when one is given,
+/// and is no longer filling in.
+fn await_search(session: &mut Session, query: Option<&str>) {
+    for _ in 0..SEARCH_FRAME_CAP {
+        session.step(Duration::from_millis(1)).expect("step");
+        let over = open_search(session).is_some_and(|search| {
+            search_settled(&search) && query.is_none_or(|query| search.label == query)
+        });
+        if over {
+            return;
+        }
+    }
+    let state = open_search(session).map(|search| {
+        (
+            search.label,
+            search
+                .presentation
+                .and_then(|presentation| presentation.detail),
+            search
+                .children
+                .into_iter()
+                .map(|row| row.label)
+                .collect::<Vec<_>>(),
+        )
+    });
+    panic!(
+        "the search for {query:?} is still filling in after {SEARCH_FRAME_CAP} frames: \
+         open search (typed, searching, rows) = {state:?}"
+    );
+}
 
 /// Search for `query` and wait for the search to be over: the published
 /// search names what is typed, and its rows stand once every source has
-/// answered.
+/// answered and they are cut to the card.
 fn search_for(session: &mut Session, query: &str) {
     invoke(
         session,
@@ -623,12 +658,7 @@ fn search_for(session: &mut Session, query: &str) {
         "search",
         serde_json::json!({ "query": query }),
     );
-    // A frame that changes nothing stands while a source is still to
-    // answer, so the rows are read only after the frames a search takes,
-    // never when they happen to stop changing.
-    for _ in 0..SEARCH_FRAMES {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
+    await_search(session, Some(query));
 }
 
 /// The row whose label is exactly `title`.
