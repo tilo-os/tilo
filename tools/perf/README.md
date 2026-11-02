@@ -42,6 +42,11 @@ tools/perf/startup_marks.py ~/session-startup.json --device opi3b --json opi3b-s
 # The web shell: build a bundle, then load it in headless Chrome.
 crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/bundle" --bundle desktop
 node tools/perf/web_startup.mjs --bundle "$PWD/bundle" --device web-desktop --json web.json
+# The page names the graphics step it waits on (`device`, `pipelines`,
+# `surface`), printed with its time: a slow first frame on a browser without
+# a GPU is the browser compiling the renderer's pipelines, not the page.
+# `--chrome-arg=SWITCH` passes one browser switch (`=`, since a switch starts
+# with a dash), e.g. to ask for a hardware backend.
 
 # Check every measurement against its budget.
 tools/perf/check_kpi.py check x86-arriving.json x86-apps.json web.json
@@ -57,7 +62,7 @@ CPU a frame owes, which is what a slow machine runs out of.
 `kpi-budgets.toml` holds one table per device class and measurement kind. A
 budget follows a measurement: set it from a run on the class, with the
 headroom noted in its comment, and lower it when the measurement improves.
-`check_kpi_test.py` proves the check fails when a budget is exceeded.
+`test_check_kpi.py` proves the check fails when a budget is exceeded.
 
 Steady-state allocations are budgeted at zero: a frame that allocates is a
 frame that will stutter when the allocator does something other than hand back

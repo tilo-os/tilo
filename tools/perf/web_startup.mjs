@@ -55,6 +55,12 @@ the JavaScript heap after the first frame, and the frames it presents while
 the strip pans.`);
       process.exit(0);
     }
+    // `--flag=value` for values that themselves start with a dash, as a
+    // browser switch does.
+    if (flag.startsWith('--chrome-arg=')) {
+      (options.chromeArgs ??= []).push(flag.slice('--chrome-arg='.length));
+      continue;
+    }
     const value = argv[i + 1];
     if (value === undefined) throw new Error(`${flag} needs a value`);
     i += 1;
@@ -63,12 +69,16 @@ the strip pans.`);
     else if (flag === '--page') options.page = value;
     else if (flag === '--json') options.json = value;
     else if (flag === '--timeout') options.timeout = Number(value);
+    else if (flag === '--chrome-arg') (options.chromeArgs ??= []).push(value);
     else throw new Error(`unknown argument ${flag}`);
   }
   options.device ??= process.env.TILO_PERF_DEVICE ?? 'web-desktop';
   if (!options.bundle) throw new Error('--bundle is required (a directory build.sh wrote)');
   return options;
 }
+
+/** Graphics start-up's step, as the page names it (`data-gpu-step`), if it says. */
+const readGpuStep = () => document.documentElement.dataset.gpuStep;
 
 /** The page's marks, by name, in milliseconds from navigation start. */
 const readMarks = () => {
@@ -94,14 +104,29 @@ const readMarks = () => {
 const main = async () => {
   const options = arguments_(process.argv.slice(2));
   const served = await serve(options.bundle);
-  const browser = await launch();
+  const browser = await launch({args: options.chromeArgs ?? []});
   try {
     const tab = await browser.tab();
-    const navigation = await tab.navigate(`${served.url}/${options.page}`);
+    // The desktop page is the bundle's root: everything it links lives after
+    // the `#`, so any other path is a page it refuses to open.
+    const at = options.page === 'index.html' ? `${served.url}/` : `${served.url}/${options.page}`;
+    const navigation = await tab.navigate(at);
     if (navigation.errorText) throw new Error(navigation.errorText);
     const deadline = Date.now() + options.timeout;
     let present;
+    // Graphics start-up names the step it waits on: device, pipelines,
+    // surface. A slow first frame that sits on one of them is the browser's
+    // rasteriser, not the page's own work, and only the sampled steps say
+    // which. Sampled from navigation, so they read in the same clock as the
+    // page's marks.
+    const steps = [];
+    const stepped = async step => {
+      if (step && steps.at(-1)?.step !== step) {
+        steps.push({step, at_ms: await tab.evaluate('performance.now()').catch(() => null)});
+      }
+    };
     for (;;) {
+      await stepped(await tab.evaluate(`(${readGpuStep.toString()})()`).catch(() => null));
       present = await tab.evaluate(`(${readMarks.toString()})()`).catch(() => null);
       if (present?.marks['first-frame'] !== undefined) break;
       const failed = await tab
@@ -114,6 +139,16 @@ const main = async () => {
       }
       if (tab.log.some(line => line.startsWith('EXC '))) break;
       await sleep(100);
+    }
+    if (present?.marks['first-frame'] === undefined) {
+      // The page failed before it drew: its own words say why, and they are
+      // worth more than a timeout.
+      const said = await tab
+        .evaluate(`document.body?.innerText?.slice(0, 400) ?? ''`)
+        .catch(() => '');
+      throw new Error(
+        `no first frame${said ? `; page says: ${said}` : ''}\n${tab.log.join('\n')}`,
+      );
     }
     // The frame after the first is what a person sees as "it answers": wait
     // for one more presented state, then read the settled numbers.
@@ -163,6 +198,7 @@ const main = async () => {
       first_frame_ms: firstFrame,
       marks_ms: marks,
       gaps_ms: gaps,
+      gpu_steps: steps,
       wasm: settled.wasm ?? null,
       heap_mib: settled.heap_mib ?? null,
       frames: frames ?? null,
@@ -172,6 +208,13 @@ const main = async () => {
     console.log(`first frame      ${firstFrame.toFixed(1)} ms`);
     for (const [phase, ms] of Object.entries(gaps)) {
       console.log(`  ${phase.padEnd(14)} ${ms.toFixed(1)} ms`);
+    }
+    if (measurement.gpu_steps.length) {
+      console.log(
+        `graphics         ${measurement.gpu_steps
+          .map(({step, at_ms}) => `${step} @ ${at_ms?.toFixed(0) ?? '?'} ms`)
+          .join(', ')}`,
+      );
     }
     if (measurement.wasm) {
       console.log(
