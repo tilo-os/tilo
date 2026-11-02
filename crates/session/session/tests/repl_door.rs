@@ -718,7 +718,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
             shell: Some(ShellLayer::Screen),
             collab: false,
             services: vec![Box::new(apps)],
-            questions: Some(questions.clone()),
+            questions: Some(questions),
             action_plane: ActionPlane::At(root.path().join("plane.sock")),
             agent_door: Some(root.path().join("agent.sock")),
             admit_repl: vec![program],
