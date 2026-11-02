@@ -44,11 +44,11 @@ impl Mount {
     }
 }
 
-/// A room member's presence from the page's live layer: `publisher` (the
+/// A workspace member's presence from the page's live layer: `publisher` (the
 /// member's device, hex) with its participant `label` and `kind` (`person`
 /// or `agent`), and its caret or selection as the live anchors (hex) it
 /// published, or none when it has no selection. Editors draw the caret,
-/// labelled, in the next frame. Its colour is the room's to settle
+/// labelled, in the next frame. Its colour is the workspace's to settle
 /// ([`tilo_desktop::here::HereState::colors`]), never the one it publishes,
 /// so two people here at once are never drawn alike.
 ///
@@ -103,7 +103,7 @@ pub fn remote_presence(
     })
 }
 
-/// A member left the room: forget its carets and name.
+/// A member left the workspace: forget its carets and name.
 ///
 /// # Errors
 ///
@@ -120,10 +120,10 @@ pub fn remote_presence_gone(id: u64, publisher: &str) -> Result<(), JsValue> {
     })
 }
 
-/// Name the people of the mount's room, `[{id, name}]`, `id` each person's
+/// Name the people of the mount's workspace, `[{id, name}]`, `id` each person's
 /// key as their actions record it (what `cx.me()` and `ActionCx::author`
 /// answer). Live presence names devices; a page that knows who belongs to
-/// the room (its door admitted them) names the people, so an app shows
+/// the workspace (its door admitted them) names the people, so an app shows
 /// `cx.people().name(author)` as the person's name rather than their key.
 ///
 /// # Errors

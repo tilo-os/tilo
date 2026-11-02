@@ -37,7 +37,7 @@ fn destination() -> tilo_desktop::feedback::Destination {
     }
 }
 fn answer(connection: &Connection) -> FeedbackAnswer {
-    let room = crate::shell::state::RoomId::parse(&connection.destination.room).unwrap();
+    let room = crate::shell::state::RoomId::parse(&connection.destination.workspace).unwrap();
     let (standing, sandbox) = connection
         .network
         .native_owner()
@@ -78,7 +78,8 @@ fn answer(connection: &Connection) -> FeedbackAnswer {
 fn admit(delivery: &Delivery) {
     let mut connection = delivery.connection.borrow_mut();
     let response = answer(&connection);
-    let workspace = tilo_relay_protocol::room_workspace_id(&connection.destination.room).unwrap();
+    let workspace =
+        tilo_relay_protocol::room_workspace_id(&connection.destination.workspace).unwrap();
     let owner = iroh::EndpointId::from_bytes(&connection.owner.device_public_key).unwrap();
     crate::shell::network::native_remote_answer_for_test(
         &connection.network,
@@ -243,7 +244,7 @@ fn native_configuration_cannot_supply_role_or_reporter_authority() {
     assert!(configured_destination(profile.path()).unwrap().is_none());
     let file = profile.path().join("feedback-destination.json");
     let mut wire = serde_json::to_value(FeedbackDestination {
-        room: destination().room,
+        workspace: destination().room,
         provider: destination().provider,
         channel: destination().channel,
     })

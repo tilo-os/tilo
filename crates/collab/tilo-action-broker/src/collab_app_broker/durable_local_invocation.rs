@@ -552,7 +552,7 @@ impl AppBrokerState {
     ) -> Result<Option<tilo_actions::remote::InvocationState>, tilo_actions::remote::ActionHostError>
     {
         let workspace = caller
-            .room()
+            .workspace()
             .ok_or_else(|| unavailable("caller workspace unavailable"))?;
         let actor = self.caller_actor(caller, workspace);
         // Ordinary durable observations may reconcile effects too. Only a workspace

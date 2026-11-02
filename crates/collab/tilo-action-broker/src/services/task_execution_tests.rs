@@ -528,7 +528,7 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
         let denied = requirement.check_run(&peer, workspace, now).unwrap_err();
         assert!(denied.contains("not allowed"), "{denied}");
 
-        let policy = tilo_desktop_model::projection::room_policy_of(
+        let policy = tilo_desktop_model::projection::workspace_policy_of(
             peer.admitted_workspace().unwrap(),
             workspace,
         );

@@ -1376,7 +1376,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 " let mut registry = ActionRegistry::new();\n"
                 " actions::register(&mut registry);\n"
                 " Ok(ui::launch::LegacyLaunchInputs::new(state, widget, autosave)\n"
-                " .with_records(records, room.doc).with_registry(registry),) } }\n"
+                " .with_records(records, workspace.doc).with_registry(registry),) } }\n"
             )
             wrapper = (
                 "fn prepare(args: &Args) -> Result<LegacyLaunchInputs, Error> {\n"
@@ -1387,7 +1387,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "direct": (launch + inputs.replace("fn inputs(", "fn prepare("), True),
                 "widget_owned_persistence": (
                     launch + wrapper + inputs.replace(
-                        ".with_records(records, room.doc).with_registry(registry)",
+                        ".with_records(records, workspace.doc).with_registry(registry)",
                         ".with_registry(registry).with_widget_owned_persistence()",
                     ), True,
                 ),

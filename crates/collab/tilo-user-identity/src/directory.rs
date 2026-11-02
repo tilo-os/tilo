@@ -4,7 +4,7 @@
 //! document. It carries:
 //!
 //! - The list of workspaces the user owns (`id`, `name`, and the
-//!   collaboration room that carries the workspace's content).
+//!   collaboration topic that carries the workspace's content).
 //! - Per-workspace member-device set — which of the user's devices
 //!   replicate the workspace.
 //! - Host assignments — which device(s) act as the always-on host
@@ -58,14 +58,17 @@ pub struct WorkspaceMeta {
     pub id: WorkspaceId,
     /// Human-readable name — "Personal", "Company Wiki", etc.
     pub name: String,
-    /// The collaboration room (a UUID string) whose document carries this
-    /// workspace's strips, window groups and tabs. `None` for an entry no
-    /// device has bound to a room yet.
+    /// The workspace's collaboration topic (a UUID string) whose document
+    /// carries this workspace's strips, window groups and tabs. `None` for an
+    /// entry no device has bound to a topic yet.
+    ///
+    /// The field keeps the spelling `room` because the old shell's copy of
+    /// this directory reads it by that name; it goes when the shell does.
     pub room: Option<String>,
-    /// Who governs the room when someone other than this directory's
+    /// Who governs the workspace when someone other than this directory's
     /// person owns it: the governing peer as the device that accepted the
-    /// invitation pinned it. `None` for the person's own rooms, which any
-    /// of their devices governs.
+    /// invitation pinned it. `None` for the person's own workspaces, which
+    /// any of their devices governs.
     pub governor: Option<String>,
     /// Where the workspace sits in the person's list: entries sort by
     /// `(order, id)`, an entry without one last. Each entry's position is
@@ -93,6 +96,11 @@ pub struct WorkspaceMeta {
 /// Key prefix on a workspace entry marking a device that keeps the
 /// workspace off its desktop; the rest of the key is the device's hex key.
 const KEPT_OFF_PREFIX: &str = "kept_off:";
+
+/// Document key holding a workspace's collaboration topic. Entries written
+/// under the older name are stored as "room", so the key keeps that
+/// spelling: changing it would orphan every existing entry.
+const TOPIC_KEY: &str = "room";
 
 /// A signed, incremental directory delta. Produced by
 /// [`WorkspaceDirectory::sync_incremental`] and consumed by
@@ -276,27 +284,39 @@ impl WorkspaceDirectory {
         Ok(())
     }
 
-    /// Add or rename the workspace that collaboration room `room` carries.
-    /// `id` is the room's stable workspace id, as for [`Self::add_workspace`].
-    /// Idempotent, and an unchanged value writes nothing, so republishing
-    /// the same list adds no history.
+    /// Add or rename workspace `id` together with the collaboration topic
+    /// that carries its content; `id` is the workspace's stable id, as for
+    /// [`Self::add_workspace`]. Idempotent, and an unchanged value writes
+    /// nothing, so republishing the same list adds no history.
     ///
     /// # Errors
     ///
     /// Returns [`DirectoryError::Automerge`] if the underlying
     /// Automerge document operation fails.
-    pub fn add_room_workspace(
+    pub fn add_workspace_with_topic(
         &mut self,
         id: WorkspaceId,
-        room: &str,
+        topic: &str,
         name: &str,
     ) -> Result<(), DirectoryError> {
         self.add_workspace(id, name)?;
         let obj = self.ensure_workspace_obj(id)?;
-        Ok(self.doc.put_str_if_changed(&obj, "room", room)?)
+        Ok(self.doc.put_str_if_changed(&obj, TOPIC_KEY, topic)?)
     }
 
-    /// Record who governs the room of workspace `id`, or that the person
+    /// The name the old shell still lists a workspace by; it goes when the
+    /// shell does.
+    #[doc(hidden)]
+    pub fn add_room_workspace(
+        &mut self,
+        id: WorkspaceId,
+        topic: &str,
+        name: &str,
+    ) -> Result<(), DirectoryError> {
+        self.add_workspace_with_topic(id, topic, name)
+    }
+
+    /// Record who governs workspace `id`, or that the person
     /// does (`None`). Unchanged values write nothing.
     ///
     /// # Errors
@@ -538,7 +558,7 @@ impl WorkspaceDirectory {
                 continue;
             };
             let name = self.doc.str_at(&obj, "name").unwrap_or_default();
-            let room = self.doc.str_at(&obj, "room");
+            let topic = self.doc.str_at(&obj, TOPIC_KEY);
             let governor = self.doc.str_at(&obj, "governor");
             let order = match self.doc.get(&obj, "order") {
                 Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -550,7 +570,7 @@ impl WorkspaceDirectory {
             out.push(WorkspaceMeta {
                 id,
                 name,
-                room,
+                room: topic,
                 governor,
                 order,
                 member_devices: self.read_pubkey_list(&obj, "members"),
@@ -1081,11 +1101,11 @@ mod tests {
         }
     }
 
-    /// A workspace names the room carrying its content; republishing the
-    /// same name and room adds no history, and a signed snapshot brings
+    /// A workspace names the topic carrying its content; republishing the
+    /// same name and topic adds no history, and a signed snapshot brings
     /// both to another device of the same person.
     #[test]
-    fn a_room_workspace_reaches_another_device_without_churn() {
+    fn a_workspace_topic_reaches_another_device_without_churn() {
         let f = fresh_user();
         let (a_sk, a_pk, a_cert) = enrol_device(
             &f.user_sk,
@@ -1095,12 +1115,16 @@ mod tests {
         );
         let (b_sk, b_pk, _) =
             enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
-        let room = "6b3f9a10-0000-4000-8000-000000000063";
+        let topic = "6b3f9a10-0000-4000-8000-000000000063";
 
         let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
-        laptop.add_room_workspace(7, room, "Research").unwrap();
+        laptop
+            .add_workspace_with_topic(7, topic, "Research")
+            .unwrap();
         let heads = laptop.doc.get_heads();
-        laptop.add_room_workspace(7, room, "Research").unwrap();
+        laptop
+            .add_workspace_with_topic(7, topic, "Research")
+            .unwrap();
         laptop.doc.commit();
         assert_eq!(
             laptop.doc.get_heads(),
@@ -1116,7 +1140,7 @@ mod tests {
         let listed = board.list_workspaces();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "Research");
-        assert_eq!(listed[0].room.as_deref(), Some(room));
+        assert_eq!(listed[0].room.as_deref(), Some(topic));
 
         assert!(
             board.covered_by(&snapshot.delta),
@@ -1124,7 +1148,7 @@ mod tests {
         );
         assert!(laptop.covered_by(&board.signed_snapshot(&b_sk, 1_200).unwrap().delta));
 
-        laptop.add_room_workspace(7, room, "Thesis").unwrap();
+        laptop.add_workspace_with_topic(7, topic, "Thesis").unwrap();
         assert!(
             !laptop.covered_by(&snapshot.delta),
             "the rename is news to the board"
@@ -1138,9 +1162,9 @@ mod tests {
         // Snapshots taken between uncommitted edits stay one history: the
         // second edit must not reuse the first snapshot's change.
         let mut fresh = WorkspaceDirectory::new(f.user_pk, a_pk);
-        fresh.add_room_workspace(8, room, "One").unwrap();
+        fresh.add_workspace_with_topic(8, topic, "One").unwrap();
         let first = fresh.signed_snapshot(&a_sk, 3_000).unwrap();
-        fresh.add_room_workspace(8, room, "Two").unwrap();
+        fresh.add_workspace_with_topic(8, topic, "Two").unwrap();
         let second = fresh.signed_snapshot(&a_sk, 3_100).unwrap();
         let mut other = WorkspaceDirectory::new(f.user_pk, b_pk);
         for update in [&first, &second] {
@@ -1164,7 +1188,7 @@ mod tests {
         let (_b_sk, b_pk, _) =
             enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
         let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
-        laptop.add_room_workspace(1, "r1", "One").unwrap();
+        laptop.add_workspace_with_topic(1, "r1", "One").unwrap();
         laptop.set_order(1, 2.5).unwrap();
         laptop.register_device(a_pk, "Laptop").unwrap();
         let heads = laptop.doc.get_heads();

@@ -54,7 +54,7 @@ impl Chained for LogPart {
     type Base = Log;
 
     fn chain() -> RecordId {
-        RecordId::derived("lines", &RecordId::room_default())
+        RecordId::derived("lines", &RecordId::workspace_default())
     }
 
     fn part_for(_: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
@@ -68,10 +68,10 @@ impl Chained for LogPart {
     }
 }
 
-/// One device's records of the log in its room.
+/// One device's records of the log in its workspace.
 fn device() -> RecordStore {
     RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()))
-        .open("so.tilo.test-chain-log", "room")
+        .open("so.tilo.test-chain-log", "workspace")
         .unwrap()
 }
 
@@ -84,7 +84,7 @@ fn chain_in(store: &RecordStore, me: &str) -> Chain<LogPart> {
 }
 
 /// A writer that filled parts 0 and 1 and wrote one line into part 2, and
-/// a reader that joined after: its room sent it the head only.
+/// a reader that joined after: its workspace sent it the head only.
 struct Joined {
     writer: RecordStore,
     reader: RecordStore,
@@ -115,7 +115,7 @@ impl Joined {
         joined
     }
 
-    /// The writer's part `index` reaches the reader, as the room's record
+    /// The writer's part `index` reaches the reader, as the workspace's record
     /// sync sends a part the reader opened.
     fn deliver(&self, index: u64) {
         let id = LogPart::chain().part(index);
@@ -239,12 +239,12 @@ fn a_chain_list_pages_back_when_its_first_row_shows() {
     assert_eq!(list.item(0).map(String::as_str), Some("line 0"));
 }
 
-/// The room's hosts sent everything they hold of a part asked for, without
+/// The workspace's hosts sent everything they hold of a part asked for, without
 /// it (or none is connected): the view says the earlier lines are not
 /// available, nothing spins and nothing before it is asked for, until it
 /// arrives after all.
 #[test]
-fn a_part_the_room_has_none_of_shows_unavailable_until_it_arrives() {
+fn a_part_the_workspace_has_none_of_shows_unavailable_until_it_arrives() {
     let joined = Joined::new();
     let mut list = ChainList::new(joined.chain.clone(), texts);
     list.request_range(0..2);
@@ -272,7 +272,7 @@ fn a_part_the_room_has_none_of_shows_unavailable_until_it_arrives() {
     assert_eq!(list.item(1).map(String::as_str), Some("line 3"));
 }
 
-/// A part looked for that the room has none of ends the search.
+/// A part looked for that the workspace has none of ends the search.
 #[test]
 fn an_item_looked_for_past_an_unavailable_part_is_not_found() {
     let joined = Joined::new();

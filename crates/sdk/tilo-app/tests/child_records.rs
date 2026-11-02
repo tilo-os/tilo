@@ -10,12 +10,12 @@ use tilo_app::tilo_resource::Segment;
 use tilo_app::tilo_resource::children::Children as Container;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Room {
+pub struct Workspace {
     pub entries: Container,
 }
 
-#[resource(kind = "test.child-room", label = "Room")]
-impl Room {
+#[resource(kind = "test.child-workspace", label = "Workspace")]
+impl Workspace {
     /// Rename nothing.
     #[action]
     pub fn touch(&mut self) {}
@@ -37,8 +37,8 @@ impl Topic {
 }
 
 impl ChildRecord for Topic {
-    type Parent = Room;
-    fn container(parent: &Room) -> &Container {
+    type Parent = Workspace;
+    fn container(parent: &Workspace) -> &Container {
         &parent.entries
     }
     fn container_path() -> Vec<Segment> {
@@ -51,7 +51,7 @@ impl ChildRecord for Topic {
 struct TopicsApp;
 
 impl ResourceApp for TopicsApp {
-    type Resource = Room;
+    type Resource = Workspace;
     const ID: &'static str = "so.tilo.test-child-records";
     const TITLE: &'static str = "Topics";
 
@@ -59,7 +59,7 @@ impl ResourceApp for TopicsApp {
         records.children::<Topic>();
     }
 
-    fn view(cx: &mut ViewCx<Room>) -> Element {
+    fn view(cx: &mut ViewCx<Workspace>) -> Element {
         let topics = cx.children::<Topic>().expect("a window someone uses");
         let (making, trashing, moving) = (topics.clone(), topics.clone(), topics);
         Box::new(

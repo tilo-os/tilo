@@ -1285,7 +1285,7 @@ fn searching_everywhere_from_the_launcher_opens_the_desks_search_with_the_query(
         session.resources().iter().any(|resource| {
             resource.id.as_str() == "desktop:desk"
                 && resource.children.iter().any(|child| {
-                    child.id.as_str() == tilo_desktop::desktop_actions::SEARCH_RESOURCE
+                    child.id.as_str() == tilo_desktop::desk_verbs::SEARCH_RESOURCE
                         && child.label == "quarterly"
                 })
         })

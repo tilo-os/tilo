@@ -353,7 +353,7 @@ agree on, in one place per resource.
 A child that can need its own permissions, sharing or history (a chat's
 channel, a category) is a record of its own, not a field: `Children` in the
 parent lists each one by id, in order, with its kind, the sibling it is
-grouped under and whether it is in the room's trash
+grouped under and whether it is in the workspace's trash
 (`tilo_resource::children`). Its record is `RecordId::child` of the parent,
 under an id minted once that never changes, so moving it moves only its
 reference and every reference to it keeps working.
@@ -365,7 +365,7 @@ publishes the container beside the app's resource (each child with its own
 actions, carried out on its record) and gives every container the same
 lifecycle, which the app does not write: `create` with the child's first
 fields, `delete` to the trash (record and id kept), `restore`, and `move` to
-another group or place. All of it is checked against the room's roles and
+another group or place. All of it is checked against the workspace's roles and
 recorded in history like the app's own actions.
 
 ### 2.7 References to actions
@@ -418,7 +418,7 @@ cx.record(&display, |cx| Box::new(cx.checkbox("High contrast", Display::paths().
 Each is published beside the app's resource (`person:<kind>`, `settings:<kind>`)
 with its field edits and verbs, so the palette and agents edit it by path too.
 Only its person changes it (or software acting for them), whatever their role
-in the room; its `check` holds on every way in; each change is recorded in the
+in the workspace; its `check` holds on every way in; each change is recorded in the
 record's history (the record's own history and undo, the settings
 document's log of what changed which setting and who).
 

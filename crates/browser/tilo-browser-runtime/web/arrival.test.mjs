@@ -361,7 +361,7 @@ test('an address the host turns away after a removal is told why and that trying
   assert.doesNotMatch(failureMessage(cooling), /HTTP|connection/);
 });
 
-test('a person the room removed is told so in their language, and trying again does not help', () => {
+test('a person the workspace removed is told so in their language, and trying again does not help', () => {
   const removed = Object.assign(new Error('You were removed from Lounge.'), {name: 'AdmissionError', code: 'removed'});
   const door = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'removed'});
   assert.ok(refusedByHost(door));
@@ -374,7 +374,7 @@ test('a person the room removed is told so in their language, and trying again d
   }
 });
 
-test('a room taking people by invitation tells a visitor without one that they need one, in their language', () => {
+test('a workspace taking people by invitation tells a visitor without one that they need one, in their language', () => {
   const door = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'invitation-only'});
   assert.ok(refusedByHost(door));
   assert.equal(failureMessage(door, {workspace: 'Lounge'}),
@@ -430,7 +430,7 @@ test('a watching page promises a join only where the door gives one', () => {
     assert.match(closed.line, /closed for now/);
   }
   assert.match(visitLine({entered: 'seatless', because: 'full', presence: open}).line, /when a seat frees up/);
-  // A member of an invite-only room without a seat still joins once one frees.
+  // A member of an invite-only workspace without a seat still joins once one frees.
   assert.equal(visitLine({entered: 'seatless', because: 'full', presence: {admission: 'invite', joins: true}}).join, 'seat');
 });
 

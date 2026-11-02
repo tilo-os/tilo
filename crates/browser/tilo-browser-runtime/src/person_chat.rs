@@ -1,5 +1,5 @@
-//! The page's door to its room's private person conversations: the
-//! toolkit's `ui::person_chat` asks the room's governor over this page's
+//! The page's door to its workspace's private person conversations: the
+//! toolkit's `ui::person_chat` asks the workspace's governor over this page's
 //! session (`tilo_relay_protocol::rooms::private`), the same door and
 //! governor code a native device reaches over iroh, authenticated by the
 //! device certificate the session proved. Nothing waits on the page thread:
@@ -11,31 +11,31 @@ use tilo_relay_protocol::rooms::private::{
 };
 use ui::person_chat::{Answer, AnswerDone, Contact, Conversation, Message, Request, WatchDone};
 
-/// Most contacts a room's answer may carry.
+/// Most contacts a workspace's answer may carry.
 const MAX_CONTACTS: usize = 2000;
 
-/// The room `room` this page's peer `handle` is in, as its private door.
+/// The workspace `workspace` this page's peer `handle` is in, as its private door.
 #[derive(Clone)]
 struct PagePrivate {
     handle: PeerHandle,
-    room: String,
+    workspace: String,
 }
 
-/// The page's door while it is in a room: what [`ask_private`] asks.
+/// The page's door while it is in a workspace: what [`ask_private`] asks.
 static DOOR: std::sync::RwLock<Option<PagePrivate>> = std::sync::RwLock::new(None);
 
-/// Make the room `room`, through `handle`, the page's door to private
+/// Make the workspace `workspace`, through `handle`, the page's door to private
 /// conversations.
-pub(crate) fn install(handle: PeerHandle, room: &str) {
+pub(crate) fn install(handle: PeerHandle, workspace: &str) {
     let door = PagePrivate {
         handle,
-        room: room.to_owned(),
+        workspace: workspace.to_owned(),
     };
     set_door(Some(door.clone()));
     ui::person_chat::install_transport(Some(std::sync::Arc::new(door)));
 }
 
-/// The page left its room: no door, and nothing kept from it.
+/// The page left its workspace: no door, and nothing kept from it.
 pub(crate) fn uninstall() {
     set_door(None);
     ui::person_chat::install_transport(None);
@@ -46,19 +46,19 @@ fn set_door(door: Option<PagePrivate>) {
     *DOOR.write_recover() = door;
 }
 
-/// What the room answered one private operation.
+/// What the workspace answered one private operation.
 pub type PrivateAnswer =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<PrivateReply, String>> + Send>>;
 
-/// Ask the room the page is in for one private operation, as the device
+/// Ask the workspace the page is in for one private operation, as the device
 /// its session proved: the door a service the bundle lends an app
 /// (Messages' Tilo messages) carries its conversations through. Fails
-/// while the page is in no room.
+/// while the page is in no workspace.
 pub fn ask_private(operation: PrivateOperation) -> PrivateAnswer {
     use tilo_lock::RwLockRecover as _;
     let door = DOOR.read_recover().clone();
     Box::pin(async move {
-        let door = door.ok_or("the page is in no room")?;
+        let door = door.ok_or("the page is in no workspace")?;
         let answer = door.exchange(operation).await;
         // What came of it shows in the next frame of every desktop.
         crate::browser::wake_desktops();
@@ -67,12 +67,12 @@ pub fn ask_private(operation: PrivateOperation) -> PrivateAnswer {
 }
 
 impl PagePrivate {
-    /// One operation, answered as the room answered it.
+    /// One operation, answered as the workspace answered it.
     async fn exchange(&self, operation: PrivateOperation) -> Result<PrivateReply, String> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.handle.private_then(
             PrivateCall {
-                room: self.room.clone(),
+                room: self.workspace.clone(),
                 operation,
             },
             Box::new(move |answer| {
@@ -85,7 +85,7 @@ impl PagePrivate {
     /// One operation; a refusal is an error that says nothing of why.
     async fn ask(&self, operation: PrivateOperation) -> Result<PrivateReply, String> {
         match self.exchange(operation).await? {
-            PrivateReply::Refused => Err("the room refused the private operation".into()),
+            PrivateReply::Refused => Err("the workspace refused the private operation".into()),
             reply => Ok(reply),
         }
     }

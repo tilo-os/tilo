@@ -103,7 +103,7 @@ impl NativePersonalSession {
         selection()?;
         if binding.target_uid != rustix::process::geteuid().as_raw()
             || binding.target_pid != std::process::id()
-            || binding.room.as_str() != self.caller.room().ok_or_else(refused)?
+            || binding.room.as_str() != self.caller.workspace().ok_or_else(refused)?
         {
             return Err(refused());
         }

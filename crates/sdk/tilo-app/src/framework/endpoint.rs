@@ -6,7 +6,7 @@
 //! mounts an [`EffectEndpoint`] anywhere in its tree and publishes the vocabulary's specs on a
 //! resource itself. The endpoint answers each invocation at once, as the typed value it
 //! decoded, with who invoked it; it starts no job and changes no document by itself, so what an invocation changes in
-//! the room it changes through the host's own commits.
+//! the workspace it changes through the host's own commits.
 
 use std::collections::HashMap;
 
@@ -29,7 +29,7 @@ pub struct EffectCaller {
 
 type Handler<E> = Box<dyn FnMut(E, &EffectCaller) -> Result<ActionOutput, String>>;
 
-/// A widget that takes no room and answers the vocabulary `E`.
+/// A widget that takes no workspace and answers the vocabulary `E`.
 pub struct EffectEndpoint<E: Effect> {
     handle: Handler<E>,
     /// The operation type of `E`, in the form the host's handler registry reads.

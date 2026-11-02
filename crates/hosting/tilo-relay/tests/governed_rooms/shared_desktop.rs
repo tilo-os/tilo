@@ -525,7 +525,7 @@ async fn a_public_rooms_guest_is_answered_the_role_it_was_admitted_with() {
     rooms
         .set_layout(
             &room.room,
-            tilo_desktop_model::projection::RoomLayout::Personal,
+            tilo_desktop_model::projection::WorkspaceLayout::Personal,
         )
         .await
         .unwrap();

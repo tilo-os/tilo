@@ -1,7 +1,7 @@
-//! What a device asks a room's governor about invitations, and what it
+//! What a device asks a workspace's governor about invitations, and what it
 //! answers: issuing one, cancelling one, and listing those still
-//! redeemable. The governor is whichever machine runs the room's
-//! governance: a relay, a cloud host or the device that made the room.
+//! redeemable. The governor is whichever machine runs the workspace's
+//! governance: a relay, a cloud host or the device that made the workspace.
 //!
 //! These are postcard wire formats between separately updated hosts and
 //! desktops: field order is the wire, so append only. `tilo-relay-session`

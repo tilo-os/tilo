@@ -55,7 +55,7 @@ Type=simple
 #
 # `--blob-sock` serves document media (images in notes, chat, photos, …)
 # from the same content store. The launcher connects to it for each app and
-# names the app and room before the app receives the descriptor, so apps only
+# names the app and workspace before the app receives the descriptor, so apps only
 # ever hold a scoped capability; the socket is group-connectable like the
 # storage socket and never bound into a sandbox.
 #
@@ -96,7 +96,7 @@ ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/
 #
 # On a machine with a dedicated store volume at /var/lib/tilo/store
 # (`--store`) the daemon serves the Tier 1 data plane instead: the
-# room's native tree is bind-mounted at /var/workspace and fanotify fills
+# workspace's native tree is bind-mounted at /var/workspace and fanotify fills
 # placeholders on first access. Placeholders read as holes once the daemon's
 # fanotify group is gone, so the bind must never outlive the process. The
 # daemon detaches it on a clean stop. This lazy umount is the backstop for
@@ -119,7 +119,7 @@ KeyringMode=private
 # CAP_SYS_ADMIN: the FUSE mount, or on Tier 1 the fanotify filesystem mark,
 # pre-content group, Btrfs snapshots and the bind mount. CAP_DAC_READ_SEARCH:
 # open_by_handle_at, which turns fanotify's directory handles into paths.
-# CAP_CHOWN, CAP_FOWNER, CAP_DAC_OVERRIDE: on Tier 1 the room and every file
+# CAP_CHOWN, CAP_FOWNER, CAP_DAC_OVERRIDE: on Tier 1 the workspace and every file
 # in it belong to the local person, not to the daemon, yet the daemon creates
 # remote files there and hands them to that person (chown), fills
 # placeholders and restores their mtime and residency xattr (owner-only

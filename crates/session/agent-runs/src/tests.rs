@@ -37,19 +37,19 @@ fn view() -> ResourceAt {
     }
 }
 
-const ROOM: &str = "room-1";
+const WORKSPACE: &str = "workspace-1";
 
-/// Runs of a session whose person asked in `room`, with `agents` admitted.
+/// Runs of a session whose person asked in `workspace`, with `agents` admitted.
 fn runs(agents: &[&str]) -> Arc<AgentRuns> {
     let runs = Arc::new(AgentRuns::new(None));
-    runs.here("ada", ROOM, vec![room(ROOM, agents)]);
+    runs.here("ada", WORKSPACE, vec![workspace(WORKSPACE, agents)]);
     runs
 }
 
-/// `room`, admitting `agents`.
-fn room(room: &str, agents: &[&str]) -> crate::RoomFacts {
-    crate::RoomFacts::new(
-        room,
+/// `workspace`, admitting `agents`.
+fn workspace(workspace: &str, agents: &[&str]) -> crate::WorkspaceFacts {
+    crate::WorkspaceFacts::new(
+        workspace,
         agents.iter().map(|agent| (*agent).to_owned()).collect(),
         None,
     )
@@ -120,12 +120,12 @@ fn an_ask_says_what_it_asks_and_of_whom() {
 }
 
 #[test]
-fn a_session_in_no_room_runs_nothing() {
+fn a_session_in_no_workspace_runs_nothing() {
     let runs = Arc::new(AgentRuns::new(None));
     runs.here("ada", "", Vec::new());
     let refused = runs.ask(ask("Tidy", "claude")).unwrap_err();
     assert!(
-        matches!(refused, DoorError::Unavailable { ref code, .. } if code == "no-room"),
+        matches!(refused, DoorError::Unavailable { ref code, .. } if code == "no-workspace"),
         "{refused:?}"
     );
 }
@@ -165,12 +165,17 @@ fn what_an_agent_reports_lands_in_its_run() {
     let runs = runs(&["claude"]);
     let asked = runs.ask(ask("Tidy", "claude")).unwrap();
     let issue = asked.issue;
-    runs.absorb_report(ROOM, &issue, 1, &runtime_collab::TaskRunUpdate::Accepted);
+    runs.absorb_report(
+        WORKSPACE,
+        &issue,
+        1,
+        &runtime_collab::TaskRunUpdate::Accepted,
+    );
     assert_eq!(runs.reading("next").unwrap().phase, wire::Phase::Accepted);
 
     for said in ["one", "two", "three", "four", "five"] {
         runs.absorb_report(
-            ROOM,
+            WORKSPACE,
             &issue,
             1,
             &runtime_collab::TaskRunUpdate::Progress {
@@ -190,7 +195,7 @@ fn what_an_agent_reports_lands_in_its_run() {
 
     runs.send_message("next", "Also the calendar").unwrap();
     runs.absorb_report(
-        ROOM,
+        WORKSPACE,
         &issue,
         1,
         &runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 },
@@ -200,7 +205,7 @@ fn what_an_agent_reports_lands_in_its_run() {
     assert!(run.directions[0].incorporated);
 
     runs.absorb_report(
-        ROOM,
+        WORKSPACE,
         &issue,
         1,
         &runtime_collab::TaskRunUpdate::Succeeded {
@@ -217,7 +222,7 @@ fn a_run_that_fails_or_is_stopped_says_why() {
     let runs = runs(&["claude"]);
     let asked = runs.ask(ask("Tidy", "claude")).unwrap();
     runs.absorb_report(
-        ROOM,
+        WORKSPACE,
         &asked.issue,
         1,
         &runtime_collab::TaskRunUpdate::Failed {
@@ -236,7 +241,7 @@ fn a_run_that_fails_or_is_stopped_says_why() {
         })
         .unwrap();
     runs.absorb_report(
-        ROOM,
+        WORKSPACE,
         &other.issue,
         1,
         &runtime_collab::TaskRunUpdate::Cancelled {
@@ -254,11 +259,11 @@ fn a_run_that_fails_or_is_stopped_says_why() {
 }
 
 #[test]
-fn a_report_for_another_room_or_epoch_changes_nothing() {
+fn a_report_for_another_workspace_or_epoch_changes_nothing() {
     let runs = runs(&["claude"]);
     let asked = runs.ask(ask("Tidy", "claude")).unwrap();
     runs.absorb_report(
-        "another-room",
+        "another-workspace",
         &asked.issue,
         1,
         &runtime_collab::TaskRunUpdate::Succeeded {
@@ -266,7 +271,7 @@ fn a_report_for_another_room_or_epoch_changes_nothing() {
         },
     );
     runs.absorb_report(
-        ROOM,
+        WORKSPACE,
         &asked.issue,
         7,
         &runtime_collab::TaskRunUpdate::Succeeded {
@@ -274,7 +279,7 @@ fn a_report_for_another_room_or_epoch_changes_nothing() {
         },
     );
     runs.absorb_report(
-        ROOM,
+        WORKSPACE,
         "tasks.tracker/issues/nope",
         1,
         &runtime_collab::TaskRunUpdate::Succeeded {
@@ -299,21 +304,26 @@ fn what_a_run_streams_is_the_newest_snapshot() {
         finish: None,
         detail: String::new(),
     };
-    runs.absorb_presentation(ROOM, &asked.issue, 1, Some(&presentation(1, "Writ")));
+    runs.absorb_presentation(WORKSPACE, &asked.issue, 1, Some(&presentation(1, "Writ")));
     assert_eq!(
         runs.reading("next").unwrap().live.unwrap().text,
         "Writ",
         "what the turn says so far"
     );
-    runs.absorb_presentation(ROOM, &asked.issue, 1, Some(&presentation(2, "Writing")));
+    runs.absorb_presentation(
+        WORKSPACE,
+        &asked.issue,
+        1,
+        Some(&presentation(2, "Writing")),
+    );
     assert_eq!(runs.reading("next").unwrap().live.unwrap().text, "Writing");
-    runs.absorb_presentation(ROOM, &asked.issue, 1, Some(&presentation(1, "older")));
+    runs.absorb_presentation(WORKSPACE, &asked.issue, 1, Some(&presentation(1, "older")));
     assert_eq!(
         runs.reading("next").unwrap().live.unwrap().text,
         "Writing",
         "a snapshot the follower has passed changes nothing"
     );
-    runs.absorb_presentation(ROOM, &asked.issue, 1, None);
+    runs.absorb_presentation(WORKSPACE, &asked.issue, 1, None);
     assert!(runs.reading("next").unwrap().live.is_none());
 }
 
@@ -322,7 +332,9 @@ fn a_run_reads_on_the_run_channel_as_the_broker_names_it() {
     let runs = runs(&["claude"]);
     let asked = runs.ask(ask("Tidy", "claude")).unwrap();
     runs.send_message("next", "Also the calendar").unwrap();
-    let tracked = runs.tracked(ROOM).expect("the room in front's runs");
+    let tracked = runs
+        .tracked(WORKSPACE)
+        .expect("the workspace in front's runs");
     assert_eq!(tracked.len(), 1);
     let run = &tracked[0];
     assert_eq!(run.issue, asked.issue);
@@ -333,12 +345,12 @@ fn a_run_reads_on_the_run_channel_as_the_broker_names_it() {
     assert_eq!(run.directions[0].text, "Also the calendar");
     assert_eq!(run.latest_revision(), 1);
     assert_eq!(run.applied_revision(), 0);
-    assert!(runs.tracked("another-room").is_err());
+    assert!(runs.tracked("another-workspace").is_err());
 
-    runs.admits(ROOM, "claude")
+    runs.admits(WORKSPACE, "claude")
         .expect("the agent admitted here");
-    assert!(runs.admits(ROOM, "someone-else").is_err());
-    assert_eq!(runs.room(), ROOM, "the room in front");
+    assert!(runs.admits(WORKSPACE, "someone-else").is_err());
+    assert_eq!(runs.front(), WORKSPACE, "the workspace in front");
 }
 
 #[test]
@@ -346,20 +358,24 @@ fn a_run_outlives_the_workspace_the_person_moves_to() {
     let runs = runs(&["claude"]);
     runs.ask(ask("Tidy", "claude")).unwrap();
     // The person moves to another workspace: both are open, the other in
-    // front. The run asked in the first is still its room's.
-    let other = "room-2";
+    // front. The run asked in the first is still its workspace's.
+    let other = "workspace-2";
     runs.here(
         "ada",
         other,
-        vec![room(ROOM, &["claude"]), room(other, &["scribe"])],
+        vec![
+            workspace(WORKSPACE, &["claude"]),
+            workspace(other, &["scribe"]),
+        ],
     );
-    assert_eq!(runs.room(), other, "the room in front moved");
+    assert_eq!(runs.front(), other, "the workspace in front moved");
     let tracked = runs
-        .tracked(ROOM)
-        .expect("the run's own room is still open");
+        .tracked(WORKSPACE)
+        .expect("the run's own workspace is still open");
     assert_eq!(tracked.len(), 1, "its agent still gets it");
     assert_eq!(tracked[0].issue, wire::issue("next"));
-    runs.admits(ROOM, "claude").expect("admitted in its room");
+    runs.admits(WORKSPACE, "claude")
+        .expect("admitted in its workspace");
     assert!(runs.admits(other, "claude").is_err(), "and nowhere else");
     assert_eq!(
         runs.reading("next").unwrap().phase,
@@ -367,8 +383,8 @@ fn a_run_outlives_the_workspace_the_person_moves_to() {
         "the run goes on"
     );
 
-    // A workspace closed is a room this session cannot speak for.
-    runs.here("ada", ROOM, vec![room(ROOM, &["claude"])]);
+    // A closed workspace is one this session cannot speak for.
+    runs.here("ada", WORKSPACE, vec![workspace(WORKSPACE, &["claude"])]);
     assert!(runs.tracked(other).is_err());
     assert!(!runs.knows(other));
 }
@@ -395,7 +411,7 @@ fn a_runs_transcript_keeps_what_was_said_and_run_in_the_order_it_happened() {
     let asked = runs.ask(ask("Tidy the notes", "claude")).unwrap();
     let before = runs.revision();
     runs.absorb_report(
-        ROOM,
+        WORKSPACE,
         &asked.issue,
         1,
         &runtime_collab::TaskRunUpdate::Progress {
@@ -407,7 +423,7 @@ fn a_runs_transcript_keeps_what_was_said_and_run_in_the_order_it_happened() {
         .unwrap();
     runs.send_message("next", "Leave the drafts").unwrap();
     runs.absorb_report(
-        ROOM,
+        WORKSPACE,
         &asked.issue,
         1,
         &runtime_collab::TaskRunUpdate::Succeeded {

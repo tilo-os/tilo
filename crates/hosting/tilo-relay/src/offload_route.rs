@@ -54,9 +54,9 @@ impl OffloadRoute {
     async fn route(&self, request: &OffloadRequest) -> Result<Offloaded, String> {
         let workspace_id = *self
             .workspaces
-            .get(&request.room)
+            .get(&request.workspace)
             .ok_or("this device places no compute for the room")?;
-        let scope = BlobScope::new(request.room.clone(), request.app_id.clone())
+        let scope = BlobScope::new(request.workspace.clone(), request.app_id.clone())
             .map_err(|error| format!("the room's content is not addressable: {error}"))?;
         let mut inputs = Vec::with_capacity(request.inputs.len());
         for (index, hex) in request.inputs.iter().enumerate() {
@@ -67,7 +67,7 @@ impl OffloadRoute {
         }
         // Every input is the room's media here, or nothing leaves.
         let bytes = self.offloader.input_bytes(&scope, &inputs).await?;
-        let key = (request.room.clone(), request.inputs.clone());
+        let key = (request.workspace.clone(), request.inputs.clone());
         {
             let mut running = self.running_here.lock_recover();
             // A local run the door never reports (it failed) is forgotten
@@ -116,7 +116,7 @@ impl ActionOffload for OffloadRoute {
         let bytes = self
             .running_here
             .lock_recover()
-            .remove(&(request.room.clone(), request.inputs.clone()));
+            .remove(&(request.workspace.clone(), request.inputs.clone()));
         if let Some(bytes) = bytes {
             self.offloader
                 .record_local(&request.offload, elapsed, bytes);

@@ -504,7 +504,8 @@ mod tests {
             authority.decide(&agent, std::slice::from_ref(&tasks), &own),
             Decision::Deny
         );
-        // A grant on Todo's node, `room/app:todo/**`, decides for a member on Tasks.
+        // A grant on Todo's node, `room/app:todo/**` (the workspace root's path), decides for a
+        // member on Tasks.
         let mut policy = WorkspacePolicy::new(WORKSPACE, PERSON);
         let node_denied = Grant::new(
             "no-todo-for-bob",

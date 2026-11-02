@@ -203,7 +203,7 @@ pub fn desktop_acknowledge(id: u64, text: &str) -> Result<(), JsValue> {
     })
 }
 
-/// The room's host answered the room action `request` the desktop asked for
+/// The workspace's host answered the workspace action `request` the desktop asked for
 /// (a `room-action` host request): `answer` is `{"ok": value}` or
 /// `{"error": "why"}`.
 ///
@@ -212,19 +212,19 @@ pub fn desktop_acknowledge(id: u64, text: &str) -> Result<(), JsValue> {
 /// Rejects a closed or single-application mount, or an answer of neither
 /// form.
 #[wasm_bindgen]
-pub fn desktop_room_action_answer(id: u64, request: u32, answer: &str) -> Result<(), JsValue> {
+pub fn desktop_record_action_answer(id: u64, request: u32, answer: &str) -> Result<(), JsValue> {
     let answer: serde_json::Value = serde_json::from_str(answer).map_err(error)?;
     let answer = match (answer.get("ok"), answer.get("error")) {
         (Some(value), None) => Ok(value.clone()),
         (None, Some(why)) => Err(why.as_str().unwrap_or("refused").to_owned()),
-        _ => return Err(error("a room action answer is {ok} or {error}")),
+        _ => return Err(error("a record action answer is {ok} or {error}")),
     };
     with_mount(id, |m| {
         let desktop = m
             .desktop
             .as_ref()
             .ok_or_else(|| error("Desktop unavailable"))?;
-        desktop.shared.room_actions.answer(request, answer);
+        desktop.shared.record_actions.answer(request, answer);
         m.pending = true;
         m.window.request_redraw();
         Ok(())
@@ -457,21 +457,20 @@ impl super::Desktop {
                 })
             });
             if let Some(route) = route {
-                let command = tilo_desktop_surface::navigation::Command::Close {
-                    generation: self.generation.clone(),
-                    route,
-                };
+                let command =
+                    tilo_desktop_surface::navigation::DeskEffect::CloseTab { tab: route.tab };
                 // A window the person already closed is gone either way.
-                let _ = self.handle.dispatch(&command, &self.generation);
+                let _ = self.handle.dispatch(command);
             }
             self.shared.closed_peer_window(tab);
         }
         for app in launch {
-            let command = tilo_desktop_surface::navigation::Command::Launch {
-                generation: self.generation.clone(),
+            let command = tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
                 app,
+                beside: None,
+                background: None,
             };
-            self.handle.dispatch(&command, &self.generation)?;
+            self.handle.dispatch(command)?;
         }
         self.shared.wake();
         Ok(true)
@@ -499,19 +498,18 @@ pub fn desktop_navigation_revision(id: u64) -> Result<f64, JsValue> {
     })
 }
 
-/// Dispatch a `DesktopNavigationCommand` (JSON). Acceptance queues the
-/// change for the next frame; the page observes it in later snapshots.
+/// Dispatch a verb (JSON: its effect id and arguments). Acceptance queues
+/// the change for the next frame; the page observes it in later snapshots.
 ///
 /// # Errors
 ///
-/// Rejects a closed or single-application mount, a malformed command, a
-/// stale generation, an absent target, or a command the desktop does not
-/// perform.
+/// Rejects a closed or single-application mount, a malformed verb, an
+/// absent target, or a verb the desktop does not perform.
 #[wasm_bindgen]
 pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
-    let command: tilo_desktop_surface::navigation::Command =
-        serde_json::from_str(command).map_err(error)?;
-    if let tilo_desktop_surface::navigation::Command::Launch { app, .. } = &command
+    use tilo_desktop_surface::navigation::{ChromeEffect, Verb};
+    let verb = Verb::from_payload(command.as_bytes()).map_err(error)?;
+    if let Verb::Chrome(ChromeEffect::OpenApp { app, .. }) = &verb
         && crate::desktop::known_application(app).is_none()
     {
         return Err(error(format!("{app} is not available in the browser")));
@@ -521,10 +519,7 @@ pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
             .desktop
             .as_ref()
             .ok_or_else(|| error("Desktop navigation unavailable"))?;
-        desktop
-            .handle
-            .dispatch(&command, &desktop.generation)
-            .map_err(error)?;
+        desktop.handle.dispatch(verb).map_err(error)?;
         desktop.shared.wake();
         m.pending = true;
         m.window.request_redraw();

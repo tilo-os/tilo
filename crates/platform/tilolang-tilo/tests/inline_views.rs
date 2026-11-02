@@ -86,7 +86,7 @@ impl Invoker for Sent {
 
 /// A host running the caller's package, with the callee's package loaded as another app's
 /// (its module, its records elsewhere), and the callee's item reading `title`.
-struct Room {
+struct Workspace {
     host: Host,
     callee: ModuleHash,
     caller: ModuleHash,
@@ -94,20 +94,21 @@ struct Room {
     caller_meta: tilolang_runtime::Meta,
 }
 
-fn room(title: &str) -> Room {
-    let room = unread_room();
-    room.host
+fn workspace(title: &str) -> Workspace {
+    let workspace = unread_workspace();
+    workspace
+        .host
         .runtime()
         .set_reading(
             &item(),
             &json!({ "title": title, "done": false }).to_string(),
         )
         .unwrap();
-    room
+    workspace
 }
 
 /// The same host before any reading of the callee's item arrived.
-fn unread_room() -> Room {
+fn unread_workspace() -> Workspace {
     let doc = AutoCommit::new();
     let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
     let shown = tilolang::compile_package(CALLEE, &IdsLock::new(), &[])
@@ -121,7 +122,7 @@ fn unread_room() -> Room {
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
     let composing_hash = tilolang_runtime::Runtime::module_hash(&composing.wasm);
     host.load_compiled(&composing).unwrap();
-    Room {
+    Workspace {
         host,
         callee: shown_hash,
         caller: composing_hash,
@@ -154,7 +155,7 @@ fn anchor_id(meta: &tilolang_runtime::Meta, name: &str) -> String {
         .clone()
 }
 
-impl Room {
+impl Workspace {
     fn main(&self) -> ViewInstance {
         self.host
             .open_resource(&item(), Some(&view_id(&self.caller_meta, "a_main")))
@@ -208,12 +209,12 @@ fn kinds(node: &UiNode) -> Vec<String> {
 
 #[test]
 fn a_view_of_another_package_renders_inline_over_its_reading() {
-    let room = room("Milk");
-    let view = room.main();
+    let workspace = workspace("Milk");
+    let view = workspace.main();
     let shown = texts(view.tree());
     assert_eq!(shown, vec!["Shopping", "Milk"], "{:#?}", view.tree());
     assert!(
-        view.find(&room.finish()).is_some(),
+        view.find(&workspace.finish()).is_some(),
         "the callee's button stands in the caller's tree: {:#?}",
         view.tree()
     );
@@ -225,9 +226,10 @@ fn a_view_of_another_package_renders_inline_over_its_reading() {
 
 #[test]
 fn a_new_reading_runs_the_composed_view_again() {
-    let room = room("Milk");
-    let mut view = room.main();
-    room.host
+    let workspace = workspace("Milk");
+    let mut view = workspace.main();
+    workspace
+        .host
         .runtime()
         .set_reading(
             &item(),
@@ -241,11 +243,11 @@ fn a_new_reading_runs_the_composed_view_again() {
 
 #[test]
 fn a_press_in_the_composed_view_invokes_the_callees_action_as_the_callee() {
-    let room = room("Milk");
-    let view = room.main();
+    let workspace = workspace("Milk");
+    let view = workspace.main();
     let sent = Rc::new(RefCell::new(Vec::new()));
-    room.host.runtime().set_invoker(Sent(Rc::clone(&sent)));
-    view.press(&room.finish())
+    workspace.host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    view.press(&workspace.finish())
         .expect("the button invokes the callee's action");
     let sent = sent.borrow();
     let [
@@ -260,7 +262,7 @@ fn a_press_in_the_composed_view_invokes_the_callees_action_as_the_callee() {
     else {
         panic!("one invocation of the callee's action: {sent:?}");
     };
-    let done = room
+    let done = workspace
         .callee_meta
         .actions
         .iter()
@@ -271,16 +273,16 @@ fn a_press_in_the_composed_view_invokes_the_callees_action_as_the_callee() {
     assert_eq!(subject.as_ref(), Some(&item()));
     assert_eq!(
         author.as_ref(),
-        Some(&room.callee),
+        Some(&workspace.callee),
         "the callee's code asked, never the caller's"
     );
-    assert_ne!(author.as_ref(), Some(&room.caller));
+    assert_ne!(author.as_ref(), Some(&workspace.caller));
 }
 
 #[test]
 fn show_draws_another_apps_resource_found_by_id_through_a_named_or_its_default_view() {
-    let room = room("Milk");
-    let view = room.canvas();
+    let workspace = workspace("Milk");
+    let view = workspace.canvas();
     let shown = texts(view.tree());
     // The item through `b_row` (named), then through `b_card` (its type's default); the id no
     // reading named stands as nothing found.
@@ -291,32 +293,33 @@ fn show_draws_another_apps_resource_found_by_id_through_a_named_or_its_default_v
         view.tree()
     );
     assert!(
-        view.find(&room.finish()).is_some(),
+        view.find(&workspace.finish()).is_some(),
         "the drawn view's button stands in the tree"
     );
 }
 
 #[test]
 fn a_press_in_a_composed_place_carries_the_callees_author() {
-    let room = room("Milk");
-    let view = room.canvas();
+    let workspace = workspace("Milk");
+    let view = workspace.canvas();
     let sent = Rc::new(RefCell::new(Vec::new()));
-    room.host.runtime().set_invoker(Sent(Rc::clone(&sent)));
-    view.press(&room.finish())
+    workspace.host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    view.press(&workspace.finish())
         .expect("the press reaches the callee");
     let sent = sent.borrow();
     let [Invocation::Action { app, author, .. }] = sent.as_slice() else {
         panic!("one invocation: {sent:?}");
     };
     assert_eq!(app, CALLEE_APP);
-    assert_eq!(author.as_ref(), Some(&room.callee));
+    assert_eq!(author.as_ref(), Some(&workspace.callee));
 }
 
 #[test]
 fn a_new_reading_runs_a_composed_place_again() {
-    let room = room("Milk");
-    let mut view = room.canvas();
-    room.host
+    let workspace = workspace("Milk");
+    let mut view = workspace.canvas();
+    workspace
+        .host
         .runtime()
         .set_reading(
             &item(),
@@ -329,15 +332,16 @@ fn a_new_reading_runs_a_composed_place_again() {
 
 #[test]
 fn a_composed_place_waits_for_its_first_reading_and_draws_it_when_it_arrives() {
-    let room = unread_room();
-    let mut view = room.canvas();
+    let workspace = unread_workspace();
+    let mut view = workspace.canvas();
     let shown = texts(view.tree());
     assert_eq!(
         shown,
         vec!["no item yet", "a well"],
         "before its reading the resource is not known here: {shown:?}"
     );
-    room.host
+    workspace
+        .host
         .runtime()
         .set_reading(
             &item(),

@@ -911,7 +911,7 @@ fn authenticated_window_harness() -> (Harness, shell::shell::state::RoomId, u32,
             let mut tree = state.workspace_tree.write();
             let before = tree.workspaces[0].clone();
             let mut workspace =
-                shell::shell::state::Workspace::in_room(before.id, room, before.name.clone());
+                shell::shell::state::Workspace::in_workspace(before.id, room, before.name.clone());
             workspace.strips = before.strips;
             workspace.policy = before.policy;
             workspace.policy.rehome(room.to_string());

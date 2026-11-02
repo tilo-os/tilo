@@ -7,7 +7,7 @@ license.workspace = true
 description = "Starting an application from the desktop: the launch vocabulary, each app's environment, host entry kinds, document and link routing, and crash reporting."
 
 # What the desktop starts and how: a Tilo package through `tilo-launcher`, the
-# machine's own applications through their desktop entries, and the room and
+# machine's own applications through their desktop entries, and the workspace and
 # environment either is given. Nothing here draws; the session owns the loop
 # and hands over what this crate plans and spawns.
 
@@ -21,7 +21,7 @@ test-support = []
 # Reading a downloaded `AppImage`'s own name and artwork needs its image.
 desktop-entry = { version = "0.1.0", package = "tilo-desktop-entry", path = "../../system/desktop-entry", features = ["appimage"] }
 tilo-installed-apps = { version = "0.1.0", path = "../../packaging/installed-apps" }
-# The room's grants, as the launcher's capability file carries them.
+# The workspace's grants, as the launcher's capability file carries them.
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # A record's id: what one is, and the URI that asks an app to open it.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }

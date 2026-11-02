@@ -223,7 +223,7 @@ mod tests {
     use std::io::Read as _;
 
     fn key() -> AppKey {
-        AppKey::new("room", "so.tilo.pdf-viewer").unwrap()
+        AppKey::new("workspace", "so.tilo.pdf-viewer").unwrap()
     }
 
     fn read(target: &Target) -> io::Result<Vec<u8>> {
@@ -256,7 +256,7 @@ mod tests {
                 "{beside}"
             );
         }
-        let elsewhere = AppKey::new("room", "so.tilo.files").unwrap();
+        let elsewhere = AppKey::new("workspace", "so.tilo.files").unwrap();
         assert!(resolve(&documents, &elsewhere, &path).is_none());
     }
 

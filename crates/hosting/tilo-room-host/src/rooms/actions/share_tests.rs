@@ -502,7 +502,7 @@ async fn shared_windows(
     let held = state.lock().await;
     let doc = held.peer().admitted_workspace().unwrap();
     let shared = tilo_desktop_model::window_share::window_shares(
-        &tilo_desktop_model::projection::room_policy_of(doc, room),
+        &tilo_desktop_model::projection::workspace_policy_of(doc, room),
         &tilo_desktop_model::window_share::device_salts(doc),
         tilo_clock::unix_now_ms(),
     );
@@ -514,7 +514,7 @@ async fn shared_windows(
 async fn grants_of_share(rooms: &crate::rooms::Rooms, room: &str, share: &str) -> usize {
     let state = rooms.room(room).await.unwrap();
     let held = state.lock().await;
-    let grants = tilo_desktop_model::projection::room_policy_of(
+    let grants = tilo_desktop_model::projection::workspace_policy_of(
         held.peer().admitted_workspace().unwrap(),
         room,
     )

@@ -23,7 +23,7 @@ const MAX_ANSWER_BYTES: usize = 64 * 1024;
 const EFFORT: &str = "low";
 const TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The profile a room host uses when its operator configures none: the
+/// The profile a workspace host uses when its operator configures none: the
 /// hosted Anthropic endpoint and [`crate::DEFAULT_MODEL`], or `model`.
 #[must_use]
 pub fn profile(id: &str, model: Option<&str>) -> ProviderProfile {
@@ -211,10 +211,10 @@ pub fn store_key(store: &SecretStore, profile: &ProviderProfile, key: &[u8]) -> 
         .map_err(|error| error.to_string())
 }
 
-/// The profile id a room host keeps its moderation key under.
+/// The profile id a workspace host keeps its moderation key under.
 pub const HOST_PROFILE: &str = "moderation";
 
-/// The judge of a room host whose operator mounts the key as a file from
+/// The judge of a workspace host whose operator mounts the key as a file from
 /// their encrypted secrets: the key is kept in the host's secret store, as
 /// every provider key is, and the judge reads it from there. `model` is the
 /// operator's choice, [`crate::DEFAULT_MODEL`] when `None`.

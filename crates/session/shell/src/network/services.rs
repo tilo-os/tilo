@@ -1,7 +1,8 @@
 //! The desktop's side of the network actor ([`tilo_network_actor::services`]):
-//! room calls, device enrollments, a host's questions for an approver, an
-//! early-boot device asking for its unlock half, a device routing through
-//! this one, and peers at another protocol version.
+//! device enrollments, a host's questions for an approver, an early-boot
+//! device asking for its unlock half, a device routing through this one, and
+//! peers at another protocol version. Calls are not among them: the session
+//! that hosts a call carries it.
 
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
@@ -13,7 +14,6 @@ use tilo_relay_session::coedit::{RelayCoeditSession, VoiceEvent};
 
 use super::agent_questions::Answering;
 use super::invite::enrollment_driver;
-use super::native_media;
 
 /// Install the desktop's services for every actor this process starts.
 /// Whatever starts an actor calls it first; the first call installs them.
@@ -22,7 +22,7 @@ pub(crate) fn install() {
         peer_version: crate::shell::collaborator_versions::note,
         device_unlock,
         device_vpn,
-        calls: || Box::new(native_media::Registry::default()),
+        calls: || Box::new(NoCalls),
         enrollments: || Box::new(enrollment_driver::Registry::default()),
         approvers: || Box::new(Answering::default()),
     });
@@ -44,25 +44,22 @@ fn device_vpn(connection: Connection) {
     connection.close(0u32.into(), b"not served");
 }
 
-impl Calls for native_media::Registry {
+/// This process takes part in no call: a call runs in the session that hosts
+/// it, not in this network.
+struct NoCalls;
+
+impl Calls for NoCalls {
     fn handle(
         &mut self,
-        command: ServiceCommand,
-        identity: Option<&HostIdentity>,
-        sessions: Sessions<'_>,
+        _command: ServiceCommand,
+        _identity: Option<&HostIdentity>,
+        _sessions: Sessions<'_>,
     ) {
-        if let Some(command) = command.downcast::<native_media::Command>() {
-            Self::handle(self, command, identity, sessions);
-        }
     }
 
-    fn voice(&mut self, ws: u64, event: &VoiceEvent, session: Option<&RelayCoeditSession>) {
-        Self::voice(self, ws, event, session);
-    }
+    fn voice(&mut self, _ws: u64, _event: &VoiceEvent, _session: Option<&RelayCoeditSession>) {}
 
-    fn reconnected(&mut self, ws: u64, session: &RelayCoeditSession) {
-        Self::reconnected(self, ws, session);
-    }
+    fn reconnected(&mut self, _ws: u64, _session: &RelayCoeditSession) {}
 }
 
 impl Enrollments for enrollment_driver::Registry {

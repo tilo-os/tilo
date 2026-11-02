@@ -104,7 +104,7 @@ fn admit(
 
 /// A record the workspace holds, as any member writes it.
 fn hold_record(doc: &mut AutoCommit, record: &str) {
-    tilo_desktop_model::projection::project_room_records(
+    tilo_desktop_model::projection::project_workspace_records(
         doc,
         &BTreeMap::from([(record.to_owned(), "document".to_owned())]),
     )
@@ -141,8 +141,8 @@ fn a_base_keeps_the_workspace_s_authority_and_an_editor_writes_on_it() {
     let workspace = governed();
     let based = super::super::base::rebase(&workspace, automerge::ActorId::random()).unwrap();
     assert_eq!(
-        tilo_desktop_model::projection::room_policy_of(&based, WORKSPACE),
-        tilo_desktop_model::projection::room_policy_of(&workspace, WORKSPACE)
+        tilo_desktop_model::projection::workspace_policy_of(&based, WORKSPACE),
+        tilo_desktop_model::projection::workspace_policy_of(&workspace, WORKSPACE)
     );
     let writer = key(0x02);
     let edit = changes_after(&based, |doc| hold_record(doc, "file:/plan.md"));
@@ -151,7 +151,7 @@ fn a_base_keeps_the_workspace_s_authority_and_an_editor_writes_on_it() {
     let mut ungranted = workspace;
     ungranted.delete(ROOT, "grants").unwrap();
     ungranted.commit();
-    let policy = tilo_desktop_model::projection::room_policy_of(&ungranted, WORKSPACE);
+    let policy = tilo_desktop_model::projection::workspace_policy_of(&ungranted, WORKSPACE);
     assert_eq!(policy.active_role(&person_id(EDITOR)), Some(Role::Editor));
     let edit = changes_after(&ungranted, |doc| hold_record(doc, "file:/plan.md"));
     assert_eq!(
@@ -795,7 +795,7 @@ fn an_administrator_admits_a_member_and_an_editor_cannot() {
     )
     .expect("an administrator admits a member");
     assert_eq!(
-        tilo_desktop_model::projection::room_policy_of(&admitted.candidate, WORKSPACE)
+        tilo_desktop_model::projection::workspace_policy_of(&admitted.candidate, WORKSPACE)
             .role_of(&person_id(NEWCOMER)),
         Some(Role::Commenter)
     );

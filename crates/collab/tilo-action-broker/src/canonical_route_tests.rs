@@ -23,7 +23,7 @@ fn canonical_query(
 ) -> tilo_actions::remote::CatalogueQuery {
     tilo_actions::remote::CatalogueQuery {
         canonical_route: Some(tilo_actions::remote::CanonicalActionRoute {
-            room: workspace.route.cluster_id.clone(),
+            workspace: workspace.route.cluster_id.clone(),
             app_id: workspace.route.app_id.clone(),
             record_id: workspace.route.record_id.clone(),
         }),
@@ -377,7 +377,7 @@ async fn canonical_route_refuses_cross_workspace_forged_tokens_and_filtered_look
                 )
                 .unwrap();
             let mut wrong_workspace = canonical_query(&workspace);
-            wrong_workspace.canonical_route.as_mut().unwrap().room =
+            wrong_workspace.canonical_route.as_mut().unwrap().workspace =
                 uuid::Uuid::new_v4().to_string();
             assert!(
                 canonical_pending(&workspace, host.query(&caller, wrong_workspace))

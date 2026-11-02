@@ -806,7 +806,7 @@ mod tests {
         };
         let here = WorkspaceHere {
             id: 1,
-            room: "room".into(),
+            workspace: "workspace".into(),
             name: "Studio".into(),
             active: true,
             people: vec![person.clone()],
@@ -969,7 +969,7 @@ mod tests {
         );
         vec![PublishedActions {
             app: "shell".into(),
-            room: "room".into(),
+            workspace: "workspace".into(),
             actions: tilo_actions::door::survey(&[resource]),
         }]
     }
@@ -997,8 +997,8 @@ mod tests {
             panic!("the switch runs by address at its provider");
         };
         assert_eq!(
-            (invoke.app.as_str(), invoke.room.as_str()),
-            ("shell", "room")
+            (invoke.app.as_str(), invoke.workspace.as_str()),
+            ("shell", "workspace")
         );
         assert_eq!(
             invoke.address,
@@ -1441,7 +1441,7 @@ mod tests {
             commands: (0..12)
                 .map(|i| CommandSpec {
                     id: format!("host:{i}"),
-                    title: format!("Meeting room {i}"),
+                    title: format!("Meeting workspace {i}"),
                     subtitle: None,
                 })
                 .collect(),

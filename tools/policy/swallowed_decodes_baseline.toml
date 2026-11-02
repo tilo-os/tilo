@@ -23,7 +23,6 @@
 "crates/session/shell/src/compositor/state.rs" = 1
 "crates/session/shell/src/compositor/watchdog.rs" = 1
 "crates/session/shell/src/compositor/xwayland_composer.rs" = 2
-"crates/session/shell/src/network/native_media/observer.rs" = 2
 "crates/session/shell/src/portal/desktop_services.rs" = 1
 "crates/session/shell/src/portal/global_shortcuts.rs" = 1
 "crates/session/shell/src/portal/mod.rs" = 1
@@ -85,7 +84,6 @@
 "crates/session/shell/src/shell/network/one_host_tests/old_rooms.rs" = 1
 "crates/session/shell/src/shell/network/relay_rooms.rs" = 1
 "crates/session/shell/src/shell/network/room_rosters.rs" = 1
-"crates/session/shell/src/shell/network/room_window_carriers.rs" = 1
 "crates/session/shell/src/shell/network/room_window_views.rs" = 2
 "crates/session/shell/src/shell/network/site_join.rs" = 4
 "crates/session/shell/src/shell/notification.rs" = 1

@@ -108,7 +108,7 @@ export function createFallbackTransport({fetch: fetcher = (...args) => globalThi
     signal?.throwIfAborted?.();
     const origin = validateLiveEndpoint(endpoint).origin;
     if (!Array.isArray(namespace) || namespace.length !== 3 || namespace[0] !== LIVE_ROOT || !HEX64.test(namespace[1]) || !HEX64.test(namespace[2])) {
-      throw new TypeError('live namespace must be ("tilo-live", room hex, publisher hex)');
+      throw new TypeError('live namespace must be ("tilo-live", workspace hex, publisher hex)');
     }
     if (!(authorization instanceof Uint8Array) || authorization.byteLength === 0 || authorization.byteLength > MAX_AUTHORIZATION_BYTES) {
       throw new TypeError('live authorization must be 1..2048 grant bytes');

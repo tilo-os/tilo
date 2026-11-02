@@ -97,7 +97,7 @@ mod tests {
         NeighbourMsg::AppPresenceV2 {
             peer: 7,
             app_id: "so.tilo.word-processor".into(),
-            cluster_id: "room".into(),
+            cluster_id: "workspace".into(),
             presence: PeerPresence {
                 key: key.to_vec(),
                 payload,

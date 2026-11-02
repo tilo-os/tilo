@@ -50,7 +50,7 @@ fn pane() -> Rect {
 /// a Viewer or Commenter changes nothing, an Editor adds and removes their
 /// own, and removing someone else's is moderation.
 #[test]
-fn the_rooms_roles_decide_who_adds_and_removes_emoji() {
+fn the_workspaces_roles_decide_who_adds_and_removes_emoji() {
     let ws = workspace();
     let grants = |who: &str| EmojiGrants::of(&ws, who, NOW);
     for nobody in ["vera", "cora", "stranger"] {

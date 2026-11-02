@@ -321,7 +321,7 @@ pub fn definition() -> &'static crate::application::ApplicationDefinition {
 
 /// Prepare the chrome component over an isolated, ephemeral store. The host's
 /// durable outbox is lent separately; raw drafts cannot reach profile records,
-/// history or room synchronization through this preparation path.
+/// history or workspace synchronization through this preparation path.
 ///
 /// # Errors
 /// Reports invalid host identity or component admission failure.
@@ -333,12 +333,12 @@ pub fn prepare(
 ) -> Result<AppComponent, crate::launch::LaunchError> {
     let definition = definition();
     let store = Rc::new(crate::feedback::MemoryStore::new());
-    let room = "feedback-private-draft";
+    let workspace = "feedback-private-draft";
     let records = crate::record::RecordOwners::with_store(store.clone())
-        .open(FeedbackComposer::ID, room)
+        .open(FeedbackComposer::ID, workspace)
         .map_err(|error| crate::launch::LaunchError::Operation(error.to_string()))?;
     let views = Rc::new(
-        InstanceViewStore::with_store(store, device, room)
+        InstanceViewStore::with_store(store, device, workspace)
             .map_err(|error| crate::launch::LaunchError::Operation(error.to_string()))?,
     );
     let target = LaunchTarget::New;
@@ -607,7 +607,7 @@ fn group() -> Column {
 /// Wire the effects to the lent controller; true when its host can offer a
 /// screenshot at all.
 fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> bool {
-    // Refuse a host accidentally mounting the raw draft in a shared room.
+    // Refuse a host accidentally mounting the raw draft in a shared workspace.
     let services = cx
         .is_private()
         .then(|| cx.take_lent::<FeedbackServices>())

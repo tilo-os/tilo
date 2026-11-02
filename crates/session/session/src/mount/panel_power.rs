@@ -155,6 +155,8 @@ mod tests {
             power_key: tilo_power_mgmt::PowerAction::Lock,
             held_awake: true,
             holds: vec!["a long download".into()],
+            profile: None,
+            profiles: Vec::new(),
         };
         let reading = Reading::of(None, Some(&sleep));
         assert_eq!(reading.holds, vec!["a long download".to_owned()]);

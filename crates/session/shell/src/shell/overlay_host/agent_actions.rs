@@ -1552,7 +1552,7 @@ fn provider_step(
     let providers: Vec<_> = page
         .providers
         .iter()
-        .filter(|provider| provider.app_id == app && provider.room == owner.room)
+        .filter(|provider| provider.app_id == app && provider.workspace == owner.room)
         .collect();
     let [provider] = providers.as_slice() else {
         return Step::Refused(Refusal::refused(format!(
@@ -2211,7 +2211,7 @@ mod tests {
                     providers: vec![CatalogueProvider {
                         provider: "agent".into(),
                         app_id: AGENT.into(),
-                        room: self.id.clone(),
+                        workspace: self.id.clone(),
                         record_id: String::new(),
                         browsable: false,
                     }],

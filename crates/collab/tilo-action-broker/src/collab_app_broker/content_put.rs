@@ -145,7 +145,7 @@ struct BrokerContentPuts {
 impl ContentPuts for BrokerContentPuts {
     fn begin(&self, caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError> {
         let workspace = caller
-            .room()
+            .workspace()
             .ok_or_else(|| ActionHostError::InvalidRequest {
                 reason: "content goes to a workspace, and this session is in none".into(),
             })?

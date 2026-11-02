@@ -11,7 +11,7 @@ const view = {address: {resource: resource.id, action: 'show'}, kind: 'View',
 const row = {provider, app_id: 'so.tilo.chat', resource, action: view};
 
 // Two endpoints exchange the actual remote action frames. Authentication and
-// room admission remain the existing CertifiedPeer's job, not this resolver's.
+// workspace admission remain the existing CertifiedPeer's job, not this resolver's.
 function endpoints(reply) {
   const received = [], sent = [];
   const peer = {
@@ -26,7 +26,7 @@ function endpoints(reply) {
     },
     takeRemoteActionEvents: () => JSON.stringify(received.splice(0)),
   };
-  const actions = createActions({peer, room, hostDevice: host});
+  const actions = createActions({peer, workspace: room, hostDevice: host});
   return {actions, sent};
 }
 
@@ -43,6 +43,19 @@ test('shared resource resolves only through its admitted record and current publ
     assert.equal(resolved.app, 'so.tilo.chat');
     assert.deepEqual(resolved.views, [view]);
     assert.equal(sent.length, 1);
+  } finally { actions.dispose(); }
+});
+
+test('a locator names the admitted workspace the page holds, not another', async () => {
+  const origin = 'https://ada.tilo.cloud';
+  const locator = {origin, workspace: room, hostDevice: host, provider};
+  const {actions} = endpoints(() => ({revision: 'r1', rows: [row], locator}));
+  try {
+    const scope = {origin, workspace: room, hostDevice: host};
+    const resolved = await resolveResourceReference({reference, provider, actions, current: () => true, scope});
+    assert.equal(resolved.resource.id, resource.id);
+    await assert.rejects(resolveResourceReference({reference, provider, actions, current: () => true,
+      scope: {...scope, workspace: 'another-workspace'}}), /locator changed/);
   } finally { actions.dispose(); }
 });
 
@@ -67,7 +80,7 @@ test('disconnect and replacement session fence replies; consent is never implici
   const {actions, sent} = endpoints(() => { admitted = false; return {revision: 'r1', rows: [row]}; });
   try {
     const resolve = () => resolveResourceReference({reference, provider, actions, current: () => admitted});
-    await assert.rejects(resolve(), /current admitted room/);
+    await assert.rejects(resolve(), /current admitted workspace/);
     assert.equal(sent.length, 0);
     admitted = true;
     await assert.rejects(resolve(), /connection changed/);

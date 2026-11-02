@@ -2219,7 +2219,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_answers_list_and_describe_only_what_the_room_offers() {
+    fn discovery_answers_list_and_describe_only_what_the_workspace_offers() {
         {
             let mut revealed = Revealed::new();
             let out = operations(

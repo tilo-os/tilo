@@ -301,8 +301,8 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
     );
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let data = root.join(format!("worker-data-{}", "migration".repeat(12)));
-    let socket = launcher::appdir::host_app_dir(&data, launcher::appdir::PERSONAL_ROOM, PACKAGE)
-        .join("provider.sock");
+    let personal = launcher::appdir::PERSONAL_WORKSPACE;
+    let socket = launcher::appdir::host_app_dir(&data, personal, PACKAGE).join("provider.sock");
     assert!(
         socket.as_os_str().as_encoded_bytes().len() > 108,
         "qualify real long preparation roots"

@@ -20,7 +20,6 @@ use tilo_desktop::desk_widgets::{DeskFold, DeskMusic};
 use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk};
 use tilo_desktop::launchpad::CollaborationLaunchpad;
 use tilo_lock::MutexRecover as _;
-use tilo_quick_settings::QsEffect;
 use tilo_surface_host::{DesktopHost, StripPolicy, desktop_with};
 use ui::desk_widgets::DeskWidgetPrefs;
 
@@ -38,15 +37,15 @@ pub(crate) fn prefs() -> Prefs {
 }
 
 /// What plays, as the desk's music widget shows it: the song, whether it
-/// plays, and what its controls can do, from the panel's own reading of the
-/// player.
+/// plays, and what its controls can do, from the machine's own reading of the
+/// player in front.
 pub(crate) fn playing(
-    reading: &tilo_quick_settings::NowPlaying,
+    reading: &crate::status::Playing,
 ) -> tilo_desktop::desk_widgets::music::NowPlaying {
     tilo_desktop::desk_widgets::music::NowPlaying {
         title: reading.title.clone(),
         subtitle: reading.subtitle.clone(),
-        player: reading.player_name.clone(),
+        player: reading.player.clone(),
         art: reading.art.clone(),
         playing: reading.playing,
         can_toggle: reading.can_toggle,
@@ -58,19 +57,17 @@ pub(crate) fn playing(
 }
 
 impl crate::Shared {
-    /// Steer the player the panel shows, as the panel's own controls do: the
-    /// music widget's play or pause, previous and next are the panel's
-    /// effects, carried out by what owns the players.
+    /// Steer the player in front, as the panel's own controls do: the music
+    /// widget's play or pause, previous and next are the `media` resource's
+    /// actions, which every caller reaches through the same door.
     pub(crate) fn music(&self, action: Action) {
-        let Some(device) = &self.device else {
-            return;
+        let action = match action {
+            Action::PlayPause => "play-pause",
+            Action::Previous => "previous",
+            Action::Next => "next",
         };
-        let effect = match action {
-            Action::PlayPause => QsEffect::PlayPause,
-            Action::Previous => QsEffect::PreviousTrack,
-            Action::Next => QsEffect::NextTrack,
-        };
-        if let Err(error) = device.panel().run(effect) {
+        let address = tilo_actions::ActionAddress::new(crate::MEDIA, action);
+        if let Err(error) = self.doors.invoke(&address, &serde_json::Map::new()) {
             tracing::debug!(%error, ?action, "the desk's music control did not reach the player");
         }
     }
@@ -184,6 +181,20 @@ pub(crate) enum DeskPolicy {
 }
 
 impl DeskPolicy {
+    /// The shell drawing the whole screen places the windows in its wells; otherwise the
+    /// desktop's strips do.
+    pub(crate) fn for_shell(
+        shell: Option<tilo_surface_host::shell_part::ShellLayer>,
+        desktop: &DesktopHost,
+        strips: StripPolicy,
+    ) -> Self {
+        if shell == Some(tilo_surface_host::shell_part::ShellLayer::Screen) {
+            Self::Wells(desktop.well_policy())
+        } else {
+            Self::Strips(strips)
+        }
+    }
+
     /// Tell `observer` the process of each window the desktop gives a place.
     pub(crate) fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
         match self {

@@ -2,7 +2,7 @@
 //! `tilo-desktop-model` tree, with every tab an in-process application
 //! component registered through its `ApplicationDefinition`.
 //!
-//! The tree and the record each tab shows are kept per room in the profile's
+//! The tree and the record each tab shows are kept per workspace in the profile's
 //! durable store ([`Persistence`]) and committed to `IndexedDB` with the
 //! records themselves, so a reload restores the same windows on the same
 //! documents. A profile with no stored desktop is seeded with a window per
@@ -81,7 +81,7 @@ pub(crate) fn known_applications() -> Vec<(&'static str, &'static str)> {
 /// change the app's part of the workspace, or, to show something that
 /// exists (`existing`: a record, an item of one, such as a window shared
 /// with them), leave to read it. The window it opens is read-only to a
-/// person who may only read: the room keeps none of their changes.
+/// person who may only read: the workspace keeps none of their changes.
 ///
 /// # Errors
 /// An app this desktop doesn't have, or one this person may not open.
@@ -139,7 +139,7 @@ pub(crate) struct Inputs {
     /// key when the mount has a peer (every browser's profile namespace may
     /// be the same string), else the device namespace.
     pub salt: String,
-    pub room: String,
+    pub workspace: String,
     pub author: String,
     pub permissions: SharedPermissions,
     pub models: ui::models::Models,
@@ -147,7 +147,7 @@ pub(crate) struct Inputs {
     /// the page's own model service rather than its host's.
     pub model_name: String,
     pub provider_admin: ui::models::ProviderAdministration,
-    /// The peer whose room this desktop shows, when it has one.
+    /// The peer whose workspace this desktop shows, when it has one.
     pub peer: Option<u32>,
 }
 
@@ -156,7 +156,7 @@ pub(crate) struct Inputs {
 /// ([`tilo_desktop_model::ownership`]).
 pub(crate) type Authors = Rc<RefCell<BTreeMap<u64, String>>>;
 
-/// The roles a room answers a page's person holds, in the order
+/// The roles a workspace answers a page's person holds, in the order
 /// [`Standing`] counts them.
 const STANDINGS: [tilo_action_policy::Role; 5] = [
     tilo_action_policy::Role::Viewer,
@@ -167,8 +167,8 @@ const STANDINGS: [tilo_action_policy::Role; 5] = [
 ];
 
 /// The role this desktop's person holds where it is: the owner of a desktop
-/// of their own, and in a room what the room last answered (not known
-/// until it has). Shared with the room's replication, which asks.
+/// of their own, and in a workspace what the workspace last answered (not known
+/// until it has). Shared with the workspace's replication, which asks.
 #[derive(Clone, Debug)]
 pub(crate) struct Standing(Arc<std::sync::atomic::AtomicU8>);
 
@@ -223,7 +223,7 @@ impl Standing {
     }
 }
 
-/// What a desktop in a room installs its feedback startup with.
+/// What a desktop in a workspace installs its feedback startup with.
 pub(crate) struct LateFeedback {
     peer: u32,
     /// Asks the mount for a frame, which takes a registered startup up.
@@ -255,8 +255,8 @@ impl LateFeedback {
         *shared.feedback.borrow_mut() = Some(custody);
         // The model this page may use also looks over reports before they
         // are sent: its host's, or a provider the person set up here.
-        // Without one, the model the room's host lends its reporters does,
-        // asked through the room.
+        // Without one, the model the workspace's host lends its reporters does,
+        // asked through the workspace.
         let lent = if !self.model_name.is_empty() {
             Some((self.models.clone(), self.model_name.clone()))
         } else if self.models.is_available() && crate::host_services::page_models_set_up() {
@@ -361,30 +361,30 @@ pub(crate) struct Shared {
     /// The workspace renamed since the mount last looked, for a notice when
     /// someone else did it.
     pub renames: Rc<RefCell<Vec<tilo_desktop_surface::history_log::WorkspaceRename>>>,
-    /// Whether the room lets this desktop's person close and move what
+    /// Whether the workspace lets this desktop's person close and move what
     /// others made, as it last answered ([`crate::replication`] asks).
     pub moderates: Arc<AtomicBool>,
-    /// The role the room last answered this desktop's person holds, which
+    /// The role the workspace last answered this desktop's person holds, which
     /// the desktop's policy decides what to offer by
     /// ([`tilo_desktop_model::commands::policy`]).
     pub standing: Standing,
-    /// The room keeps no member's layout (a public room refused this
+    /// The workspace keeps no member's layout (a public workspace refused this
     /// desktop's): its windows and desks are the person's own, sent to
-    /// nobody, and the room's later layout no longer replaces them.
+    /// nobody, and the workspace's later layout no longer replaces them.
     pub own_layout: Rc<Cell<bool>>,
-    /// The page only watches the room, as its spectator: nobody there sees
+    /// The page only watches the workspace, as its spectator: nobody there sees
     /// this desktop's person, so it offers nothing about how they are seen.
     pub watching: Rc<Cell<bool>>,
-    /// The room's members as its governance lists them, once heard: what
+    /// The workspace's members as its governance lists them, once heard: what
     /// someone no longer among them made is released, anyone's here to
     /// close ([`tilo_desktop_model::ownership::released`]).
     pub members: Rc<RefCell<Option<std::collections::BTreeSet<String>>>>,
-    /// The person's accounts with the services this room is connected to,
-    /// read from the connectors' room records by the room's host
-    /// ([`PageRoomActions`]).
+    /// The person's accounts with the services this workspace is connected to,
+    /// read from the connectors' workspace records by the workspace's host
+    /// ([`HostRecordActions`]).
     pub linked: tilo_app::linked_accounts::LinkedAccounts,
-    /// The room actions this desktop asked the room's host to run.
-    pub room_actions: PageRoomActions,
+    /// The workspace actions this desktop asked the workspace's host to run.
+    pub record_actions: HostRecordActions,
     /// Applications whose code is being fetched.
     loading: Rc<RefCell<crate::app_load::Loads>>,
     /// Applications whose code failed to load since their tabs last asked.
@@ -451,7 +451,7 @@ impl PeerWindow {
 
 impl Shared {
     /// `person` as the desktop's policy asks about them here, among the
-    /// room's `members` (borrowed from [`Self::members`]).
+    /// workspace's `members` (borrowed from [`Self::members`]).
     pub fn standing_of<'a>(
         &self,
         person: &'a str,
@@ -572,15 +572,15 @@ impl Shared {
         notify();
     }
 
-    /// The room's store of `definition`'s records: the one a window of it
+    /// The workspace's store of `definition`'s records: the one a window of it
     /// opened, or opened now and flushed and replicated with the mount's.
-    fn room_store(
+    fn workspace_store(
         &self,
         owners: &RecordOwners,
-        room: &str,
+        workspace: &str,
         definition: &'static ApplicationDefinition,
     ) -> Result<RecordStore, String> {
-        let home = (definition.app_id().to_owned(), room.to_owned());
+        let home = (definition.app_id().to_owned(), workspace.to_owned());
         if let Some(store) = self
             .stores
             .borrow()
@@ -592,7 +592,7 @@ impl Shared {
         // Clones share the owner registry: the same writer either way.
         let store = owners
             .clone()
-            .open(definition.app_id(), room)
+            .open(definition.app_id(), workspace)
             .map_err(|error| error.to_string())?;
         self.stores.borrow_mut().push(store.clone());
         Ok(store)
@@ -690,7 +690,7 @@ impl Shared {
         let wanted = self.wanted_peer_windows.borrow().clone();
         let mut dismissed = self.dismissed_peer_windows.borrow_mut();
         dismissed.retain(|key| wanted.iter().any(|window| window.key == *key));
-        // A desktop that keeps its own layout has none of the room's tabs:
+        // A desktop that keeps its own layout has none of the workspace's tabs:
         // each window it is streamed shows on its own.
         let own_layout = self.own_layout.get();
         let wanted: Vec<PeerWindow> = wanted
@@ -786,15 +786,15 @@ impl Shared {
     /// close or move, named as `person` (by user root) names people here:
     /// the windows the desktop's policy keeps for whoever opened them
     /// ([`tilo_desktop_model::commands::policy::may_rearrange_window`]),
-    /// everyone's but their own unless they moderate the room. Another
+    /// everyone's but their own unless they moderate the workspace. Another
     /// member's legacy windows that only this page shows, in windows of
     /// their own, are its own to close. A window nobody opened is the
-    /// room's, named `room`.
+    /// workspace's, named `workspace`.
     pub fn holders(
         &self,
         tree: &DesktopTree,
         me: &str,
-        room: &str,
+        workspace: &str,
         person: &mut dyn FnMut(&str) -> PersonIdentity,
     ) -> HashMap<TabId, ui::widget::TabHolder> {
         if self.moderates.load(Ordering::Relaxed) {
@@ -819,14 +819,14 @@ impl Shared {
             .map(|tab| {
                 let (name, rgb) = match authors.get(&tab.id) {
                     Some(author) => person(author),
-                    None => (room.to_owned(), ui::presence::user_color(room)),
+                    None => (workspace.to_owned(), ui::presence::user_color(workspace)),
                 };
                 (tab.id, ui::widget::TabHolder { name, rgb })
             })
             .collect()
     }
 
-    /// The layout was replaced by the room's (`before` and `after` its
+    /// The layout was replaced by the workspace's (`before` and `after` its
     /// tabs): a layout tab showing a stream that another device closed or
     /// moved away stops showing it, which is not this person closing the
     /// window. The streams are placed again in the new layout.
@@ -892,7 +892,7 @@ impl Shared {
             .collect()
     }
 
-    /// The record `tab` shows in this desktop's room, as a report about
+    /// The record `tab` shows in this desktop's workspace, as a report about
     /// its window names it: what a recording of the window records.
     pub fn shown_record(
         &self,
@@ -902,7 +902,7 @@ impl Shared {
         if self.window_capture_protected(tree, tab) {
             return None;
         }
-        let workspace = crate::replication::room_uuid(self.room_actions.peer?)?;
+        let workspace = crate::replication::workspace_uuid(self.record_actions.peer?)?;
         let (_, record) = self.live_record_of(tree, tab)?;
         Some(tilo_desktop::feedback::ShownRecord { workspace, record })
     }
@@ -914,7 +914,7 @@ impl Shared {
             .is_some_and(|(app, _)| crate::capture_declarations::declared(&app))
     }
 
-    /// The record `tab` shows as the room's live layer names it: its
+    /// The record `tab` shows as the workspace's live layer names it: its
     /// application and the record id, empty for the package's primary
     /// record.
     pub fn live_record_of(&self, tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
@@ -940,41 +940,41 @@ impl Shared {
     }
 }
 
-/// An action of a room record the desktop asked the room's host to run, as
+/// An action of a workspace record the desktop asked the workspace's host to run, as
 /// the page reads it from the mount's status (`room-action`) and answers it
-/// ([`crate::browser::desktop_exports::desktop_room_action_answer`]).
+/// ([`crate::browser::desktop_exports::desktop_record_action_answer`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub(crate) struct RoomActionRequest {
+pub(crate) struct RecordActionRequest {
     pub id: u32,
     pub app: String,
     pub action: String,
     pub arguments: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The room actions the desktop asked for and not answered yet.
+/// The workspace actions the desktop asked for and not answered yet.
 #[derive(Default)]
-struct RoomActionQueue {
+struct RecordActionQueue {
     next: u32,
-    outbox: Vec<RoomActionRequest>,
+    outbox: Vec<RecordActionRequest>,
     waiting: HashMap<u32, Box<dyn FnOnce(tilo_app::linked_accounts::ActionAnswer)>>,
     /// Addresses to go to, leaving the page (a service's consent page).
     opens: Vec<String>,
 }
 
-/// The desktop's door to the room's records, run by the room's host: the
+/// The desktop's door to the workspace's records, run by the workspace's host: the
 /// page asks the host (`peer.actions`) to run each action as the person
 /// and hands the answer back. No app code runs in the page for it, so a
 /// connector the page never loads (Discord) answers too.
 #[derive(Clone, Default)]
-pub(crate) struct PageRoomActions {
-    queue: Rc<RefCell<RoomActionQueue>>,
-    /// The peer whose room this desktop shows, for the records it holds.
+pub(crate) struct HostRecordActions {
+    queue: Rc<RefCell<RecordActionQueue>>,
+    /// The peer whose workspace this desktop shows, for the records it holds.
     peer: Option<u32>,
 }
 
-impl PageRoomActions {
+impl HostRecordActions {
     /// The requests the page has to send, once.
-    pub fn take_requests(&self) -> Vec<RoomActionRequest> {
+    pub fn take_requests(&self) -> Vec<RecordActionRequest> {
         std::mem::take(&mut self.queue.borrow_mut().outbox)
     }
 
@@ -991,8 +991,8 @@ impl PageRoomActions {
     }
 }
 
-/// The person's linked accounts in this desktop's room, asked of the
-/// room's host through `shared`'s room actions; an answer wakes the mount.
+/// The person's linked accounts in this desktop's workspace, asked of the
+/// workspace's host through `shared`'s workspace actions; an answer wakes the mount.
 /// `shared` is the mount's before it holds them, so they hold no cycle.
 fn linked_accounts(
     shared: &Shared,
@@ -1000,8 +1000,8 @@ fn linked_accounts(
 ) -> tilo_app::linked_accounts::LinkedAccounts {
     let (woken, notify) = (shared.clone(), Arc::clone(notify));
     tilo_app::linked_accounts::LinkedAccounts::new(Rc::new(
-        tilo_app::linked_accounts::RoomAccounts::new(
-            Rc::new(shared.room_actions.clone()),
+        tilo_app::linked_accounts::WorkspaceAccounts::new(
+            Rc::new(shared.record_actions.clone()),
             Rc::new(move || {
                 woken.wake();
                 notify();
@@ -1010,9 +1010,9 @@ fn linked_accounts(
     ))
 }
 
-impl tilo_app::linked_accounts::RoomRecordActions for PageRoomActions {
+impl tilo_app::linked_accounts::WorkspaceRecordActions for HostRecordActions {
     fn apps(&self) -> Vec<String> {
-        let room_apps = self
+        let workspace_apps = self
             .peer
             .map(crate::replication::records)
             .unwrap_or_default()
@@ -1020,10 +1020,10 @@ impl tilo_app::linked_accounts::RoomRecordActions for PageRoomActions {
             .filter(|(_, record)| record.is_empty())
             .map(|(app, _)| app)
             .filter(|app| app != crate::replication::DESKTOP_APP);
-        // An app this page can open runs here, not on the room's host: no
+        // An app this page can open runs here, not on the workspace's host: no
         // connector, so its record is not asked for a reading.
         let here = known_applications();
-        tilo_app::linked_accounts::connector_apps(room_apps, |app| {
+        tilo_app::linked_accounts::connector_apps(workspace_apps, |app| {
             here.iter().any(|(id, _)| *id == app)
         })
     }
@@ -1039,7 +1039,7 @@ impl tilo_app::linked_accounts::RoomRecordActions for PageRoomActions {
         queue.next = queue.next.wrapping_add(1);
         let id = queue.next;
         queue.waiting.insert(id, done);
-        queue.outbox.push(RoomActionRequest {
+        queue.outbox.push(RecordActionRequest {
             id,
             app: app.to_owned(),
             action: action.to_owned(),
@@ -1067,9 +1067,9 @@ impl Tiles {
         if let Some(store) = self.stores.get(definition.app_id()) {
             return Ok(store.clone());
         }
-        let store = self
-            .shared
-            .room_store(&self.inputs.owners, &self.inputs.room, definition)?;
+        let store =
+            self.shared
+                .workspace_store(&self.inputs.owners, &self.inputs.workspace, definition)?;
         self.stores.insert(definition.app_id(), store.clone());
         Ok(store)
     }
@@ -1125,7 +1125,7 @@ impl Tiles {
         let store = self.store(definition)?;
         let (target, named_new) = self.launch_target(definition, &store, tab.id)?;
         if named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew) {
-            self.may_start_workspace_record(tab)?;
+            self.may_start_record(tab)?;
         }
         let restore = self
             .inputs
@@ -1184,7 +1184,7 @@ impl Tiles {
         context.provide_workspace_records(crate::workspace_records::in_page(
             &self.inputs.owners,
             &self.shared.stores,
-            &self.inputs.room,
+            &self.inputs.workspace,
             self.inputs.author.clone(),
         ));
         crate::person_records::provide(&mut context, &self.inputs.store)?;
@@ -1342,20 +1342,20 @@ impl Tiles {
         Ok(component)
     }
 
-    /// Whether this page may start the room's own record of `tab`'s app,
-    /// which this page does not hold yet: in a room, only someone who
-    /// writes there starts it. Anyone else's window waits for the room's
-    /// record (it opens once it arrives, or once the room says they write)
-    /// instead of showing a fresh one of its own as if it were the room's.
-    fn may_start_workspace_record(&self, tab: &Tab) -> Result<(), Unready> {
-        if self.shared.room_actions.peer.is_none() {
+    /// Whether this page may start the workspace's own record of `tab`'s app,
+    /// which this page does not hold yet: in a workspace, only someone who
+    /// writes there starts it. Anyone else's window waits for the workspace's
+    /// record (it opens once it arrives, or once the workspace says they write)
+    /// instead of showing a fresh one of its own as if it were the workspace's.
+    fn may_start_record(&self, tab: &Tab) -> Result<(), Unready> {
+        if self.shared.record_actions.peer.is_none() {
             return Ok(());
         }
         let notice = match self.shared.standing.role() {
             Some(role) if role.includes(tilo_action_policy::Role::Editor) => return Ok(()),
             None => format!("Opening {}…", tab.title),
             Some(_) => format!(
-                "{} has nothing in this room yet. It shows here once someone who writes in the room starts it.",
+                "{} has nothing in this workspace yet. It shows here once someone who writes in the workspace starts it.",
                 tab.title
             ),
         };
@@ -1363,7 +1363,7 @@ impl Tiles {
         Err(Unready::Notice(notice))
     }
 
-    /// The record `tab` opens: its saved one, the room's own record, or a
+    /// The record `tab` opens: its saved one, the workspace's own record, or a
     /// new one.
     fn launch_target(
         &self,
@@ -1390,9 +1390,9 @@ impl Tiles {
         }
     }
 
-    /// What a tab no record is bound to opens: the room's default record
+    /// What a tab no record is bound to opens: the workspace's default record
     /// while no other window of the app shows it (the record a native
-    /// launch into the room opens too), otherwise a new one. The second
+    /// launch into the workspace opens too), otherwise a new one. The second
     /// value names the default record when it has to be created.
     fn unbound_target(
         &self,
@@ -1400,7 +1400,10 @@ impl Tiles {
         store: &RecordStore,
         tab: TabId,
     ) -> Result<(LaunchTarget, Option<RecordId>), String> {
-        let default = RecordCheckout::new(RecordId::room_default(), definition.record_kind.clone());
+        let default = RecordCheckout::new(
+            RecordId::workspace_default(),
+            definition.record_kind.clone(),
+        );
         let taken = self
             .shared
             .records
@@ -1574,7 +1577,7 @@ impl TileSource for Tiles {
     }
 
     fn workspace_room(&self) -> Option<String> {
-        Some(self.inputs.room.clone())
+        Some(self.inputs.workspace.clone())
     }
 
     fn draws_embeds(&self) -> bool {
@@ -1634,14 +1637,14 @@ fn peer_salt(device: &str) -> u16 {
     tilo_desktop_model::ids::device_salt(u16::try_from(folded).unwrap_or(u16::MAX))
 }
 
-/// Where a room's desktop lives in the profile. Changing it orphans stored
+/// Where a workspace's desktop lives in the profile. Changing it orphans stored
 /// desktops.
 pub(crate) const DESKTOP_PACKAGE: &str = "so.tilo.browser-desktop";
 
 /// Saves a mounted desktop to the profile whenever its tree or its tabs'
 /// records change: the desk's own document
 /// ([`tilo_desktop_model::desktop_doc`]), whose changes are what the desk did
-/// and who did it, and which a room replicates as it stands. Writes are
+/// and who did it, and which a workspace replicates as it stands. Writes are
 /// accepted by the durable store and committed to `IndexedDB` by the page's
 /// durable host.
 pub(crate) struct Persistence {
@@ -1653,11 +1656,11 @@ pub(crate) struct Persistence {
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
     authors: Authors,
     /// The desk's document: the profile's copy of it, which is the desk's
-    /// history when this page is in no room.
+    /// history when this page is in no workspace.
     pub document: Rc<RefCell<AutoCommit>>,
-    /// The peer whose room this page joined, whose copy of the desk document
-    /// is the one that counts once the room answered
-    /// ([`Self::mirror_room`]).
+    /// The peer whose workspace this page joined, whose copy of the desk document
+    /// is the one that counts once the workspace answered
+    /// ([`Self::mirror_workspace`]).
     peer: Option<u32>,
     pub notifications: tilo_desktop_surface::DesktopNotifications,
     notifications_key: StorageKey,
@@ -1672,7 +1675,7 @@ impl Persistence {
     /// The store refused the write; the next change retries.
     pub fn save(&self, handle: &DesktopHandle) -> Result<(), String> {
         self.save_notifications()?;
-        let mirrored = self.mirror_room()?;
+        let mirrored = self.mirror_workspace()?;
         let revision = handle.revision();
         if !mirrored && revision == self.saved_revision.get() && !self.records_changed.get() {
             return Ok(());
@@ -1687,11 +1690,11 @@ impl Persistence {
             .and_then(crate::replication::desktop_history_heads)
             .is_some()
         {
-            // The room holds the desk itself; the copy keeps the view alone.
+            // The workspace holds the desk itself; the copy keeps the view alone.
             tilo_desktop_model::desktop_doc::seed_of_the_view(&mut document, &tree);
             document.pending_ops() > 0
         } else {
-            // No room holds this desk: what the person changed is this page's
+            // No workspace holds this desk: what the person changed is this page's
             // change of its own document.
             let records = live_records(&self.records.borrow(), &self.unbound.borrow(), &tree);
             let authors = live_authors(&self.authors.borrow(), &tree);
@@ -1715,11 +1718,11 @@ impl Persistence {
         Ok(())
     }
 
-    /// Take the room's desk document into the profile's copy, once the page's
-    /// desk is the room's: a reload opens the desk as the room has it, and
-    /// what the room changed reaches the file as the desk's own history.
+    /// Take the workspace's desk document into the profile's copy, once the page's
+    /// desk is the workspace's: a reload opens the desk as the workspace has it, and
+    /// what the workspace changed reaches the file as the desk's own history.
     /// Says whether it took a newer one.
-    fn mirror_room(&self) -> Result<bool, String> {
+    fn mirror_workspace(&self) -> Result<bool, String> {
         let Some(peer) = self.peer else {
             return Ok(false);
         };
@@ -1727,7 +1730,7 @@ impl Persistence {
             return Ok(false);
         };
         {
-            // The room's changes are here already, whichever changes of its
+            // The workspace's changes are here already, whichever changes of its
             // own the copy made since.
             let mut document = self.document.borrow_mut();
             if heads
@@ -1888,8 +1891,8 @@ fn tab_ids(tree: &DesktopTree) -> std::collections::HashSet<TabId> {
         .collect()
 }
 
-/// Put the room's desktop `value` back over a local change its person may
-/// not make, attribution included: what the room says made each strip and
+/// Put the workspace's desktop `value` back over a local change its person may
+/// not make, attribution included: what the workspace says made each strip and
 /// window is what this desktop says too.
 ///
 /// # Errors
@@ -1978,7 +1981,7 @@ pub(crate) fn as_desk_document(document: &AutoCommit, author: &str) -> AutoCommi
 }
 
 /// The desk document this profile keeps, opening whatever an older build kept
-/// for it: the desk's own document, the record a room's desktop was written
+/// for it: the desk's own document, the record a workspace's desktop was written
 /// to before it was one document, or the desktop an older build stored as
 /// JSON beside a log of its changes.
 fn open_desk(
@@ -2029,13 +2032,13 @@ fn open_desk(
     document
 }
 
-/// Mount the room's desktop from the profile, or seed one: one workspace
-/// named after the room, one strip, a window per requested application
+/// Mount the workspace's desktop from the profile, or seed one: one workspace
+/// named after the workspace, one strip, a window per requested application
 /// (the first registered one by default).
 ///
 /// # Errors
 /// Refuses an application id the page does not register.
-/// Install the page's feedback startup in a room's desktop, or take it up
+/// Install the page's feedback startup in a workspace's desktop, or take it up
 /// once the page's destination is admitted: the desktop never waits for it.
 fn take_up_feedback(
     shared: &Shared,
@@ -2070,17 +2073,17 @@ pub(crate) fn mount(
     workspace_name: Option<&str>,
     notify: Arc<dyn Fn() + Send + Sync>,
 ) -> Result<(DesktopSurface, DesktopHandle, Shared, Persistence), String> {
-    let key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "desktop");
+    let key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
     let mut shared = Shared::default();
-    shared.room_actions.peer = inputs.peer;
+    shared.record_actions.peer = inputs.peer;
     if inputs.peer.is_some() {
-        // In a room, the person holds what the room answers, once it has.
+        // In a workspace, the person holds what the workspace answers, once it has.
         shared.standing = Standing::unknown();
     }
     shared.linked = linked_accounts(&shared, &notify);
     take_up_feedback(&shared, &mut inputs, &store, &notify);
-    let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "history");
+    let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "history");
     let document = open_desk(store.as_ref(), &key, &history_key, &inputs.author);
     let tree = if let Some(stored) = tilo_desktop_model::shared_record::read(&document, None) {
         let (bound, unbound) = stored_records(&stored);
@@ -2118,7 +2121,7 @@ pub(crate) fn mount(
         tilo_desktop_surface::seed_tree(&mut minter, name, tabs)
     };
     let notifications_key =
-        StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "notifications");
+        StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "notifications");
     let notifications = tilo_desktop_surface::DesktopNotifications::default();
     if let Some(history) = store
         .read(&notifications_key)

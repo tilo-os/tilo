@@ -55,20 +55,20 @@ impl Enrollment {
         if standing.person != admission.reporter_user {
             return Err(Error::ReceiptMismatch);
         }
-        let room = destination.room.clone();
+        let workspace = destination.workspace.clone();
         let caller = |identity: &Identity| {
-            Caller::authenticated(identity.user, identity.device).in_workspace(room.clone())
+            Caller::authenticated(identity.user, identity.device).in_workspace(workspace.clone())
         };
         Ok(Self {
             destination: Destination {
-                room: room.clone(),
+                room: workspace.clone(),
                 provider: destination.provider.clone(),
                 channel: destination.channel.clone(),
             },
             owner: caller(owner),
             reporter: caller(reporter),
             permissions: PermissionContext::new(
-                Actor::person(standing.person.clone()).in_workspace(room),
+                Actor::person(standing.person.clone()).in_workspace(workspace),
                 serde_json::from_value(admission.sandbox.clone())?,
                 standing,
             )
@@ -92,8 +92,8 @@ impl Enrollment {
 
     fn pin(&self) -> Result<Pin, Error> {
         self.destination.validate()?;
-        if self.owner.room() != Some(self.destination.room.as_str())
-            || self.reporter.room() != Some(self.destination.room.as_str())
+        if self.owner.workspace() != Some(self.destination.room.as_str())
+            || self.reporter.workspace() != Some(self.destination.room.as_str())
         {
             return Err(Error::ReceiptMismatch);
         }
@@ -497,7 +497,7 @@ impl CanonicalDestination {
         signer: Box<dyn ReceiptSigner>,
     ) -> Result<Self, Error> {
         destination.validate()?;
-        if owner.room() != Some(destination.room.as_str())
+        if owner.workspace() != Some(destination.room.as_str())
             || owner.user_public_key().is_none()
             || owner.device_public_key().is_none()
             || owner != *signer.owner()
@@ -629,7 +629,7 @@ impl CanonicalReceiptSource for CanonicalRecord {
                 let scope = ui::record::workspace_scope(doc);
                 if scope
                     .as_deref()
-                    .is_some_and(|room| room != submission.destination.room)
+                    .is_some_and(|scope| scope != submission.destination.room)
                     || (!self.record.is_package_primary() && scope.is_none())
                 {
                     return Err(Error::ReceiptMismatch);

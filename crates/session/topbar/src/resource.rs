@@ -1,8 +1,8 @@
-//! The bar as a resource: the door its effects are published on, so the
-//! person, the palette, an agent and a script switch workspaces, open quick
-//! settings, the notifications, the people here or their own card, press a
-//! running application's tray item or pause what plays through the same
-//! actions.
+//! The bar as a resource: the door its own verbs are published on — invite
+//! someone, open your profile card, press a running application's tray
+//! item, continue what another device offers, take the keyboard. What the
+//! bar shows of the desktop is done with the verbs the desk, the chrome and
+//! the media resource publish, not with a copy of them here.
 //!
 //! The bar keeps no document. What it shows is the desktop's, lent to it
 //! ([`crate::link`]), and published as its live rows; nothing of it is
@@ -15,7 +15,7 @@ use ui::widget::Element;
 use crate::link::BarService;
 use crate::surface::TopBarSurface;
 
-/// The bar resource: the door its effects and rows are published on. It
+/// The bar resource: the door its own verbs and rows are published on. It
 /// holds nothing.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct TopBar {}
@@ -23,76 +23,37 @@ pub struct TopBar {}
 #[resource(kind = "desktop.topbar", label = "Top bar")]
 impl TopBar {}
 
-/// What anyone can do from the desktop's top bar.
+/// What only the bar can do: press a running application's tray item, open
+/// the profile card, invite someone, continue what another device offers,
+/// or take the keyboard.
+///
+/// The bar shows the desktop's own verbs — switching workspaces, the
+/// overview, quick settings, the notification centre, who is here, History,
+/// the workspace menu and naming it, the strips — and the media transport;
+/// those are published, with their grants and their history, by the
+/// resources that carry them out ([`ChromeEffect`](tilo_desktop_surface::navigation::ChromeEffect)
+/// and the media resource), so the bar names them where they live.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.topbar")]
-pub enum TopBarEffect {
-    /// Switch to workspace
-    #[effect(own_device, icon = "layout-grid")]
-    SwitchWorkspace {
-        #[param("The workspace, by its name or its place counting from 1")]
-        workspace: String,
-    },
-    /// Next workspace
-    #[effect(own_device)]
-    NextWorkspace,
-    /// Previous workspace
-    #[effect(own_device)]
-    PreviousWorkspace,
-    /// Show strips
-    #[effect(view, own_device)]
-    ShowStrips,
-    /// Overview
-    #[effect(view, own_device)]
-    Overview,
-    /// Open quick settings
-    #[effect(view, own_device, icon = "settings")]
-    QuickSettings,
-    /// Open notifications
-    #[effect(view, own_device, icon = "bell")]
-    Notifications,
-    /// Show who is here
-    #[effect(view, own_device, icon = "users")]
-    People,
-    /// Open History
-    #[effect(view, own_device)]
-    Activity,
+#[effect(operation = "so.tilo.bar")]
+pub enum BarEffect {
     /// Invite someone here
     #[effect(own_device, attended, icon = "user-plus")]
     Invite,
     /// Open your profile card
     #[effect(view, own_device)]
     Profile,
-    /// Open the workspace menu
-    #[effect(view, own_device)]
-    WorkspaceMenu,
-    /// Rename workspace
-    #[effect(own_device)]
-    RenameWorkspace {
-        #[param("The workspace's new name")]
-        name: String,
-    },
     /// Press tray item
     #[effect(own_device, attended)]
     ActivateTrayItem {
         #[param("The running application's tray item, by its name")]
         item: String,
     },
-    /// Play or pause
-    #[effect(own_device, icon = "play")]
-    PlayPause,
-    /// Next track
-    #[effect(own_device)]
-    NextTrack,
-    /// Previous track
-    #[effect(own_device)]
-    PreviousTrack,
     /// Continue here what another device offers
     #[effect(own_device)]
     Continue,
     /// Focus the top bar
     #[effect(view, own_device)]
-    Focus,
+    FocusBar,
 }
 
 /// The screenshot scenarios ([`crate::fixture`]).
@@ -138,22 +99,35 @@ impl ResourceApp for TopBarApp {
 mod tests {
     use super::*;
 
+    /// The desktop's verbs are published where they are carried out; the
+    /// bar names none of them a second time.
+    #[test]
+    fn the_bar_names_no_desktop_verb() {
+        let desktop: std::collections::BTreeSet<&str> =
+            tilo_desktop_surface::navigation::ChromeEffect::declarations()
+                .into_iter()
+                .chain(tilo_desktop_surface::navigation::DeskEffect::declarations())
+                .map(|decl| decl.id)
+                .collect();
+        for decl in BarEffect::declarations() {
+            assert!(
+                !desktop.contains(&decl.id),
+                "{} is the desktop's own verb",
+                decl.id
+            );
+        }
+    }
+
     #[test]
     fn every_bar_action_is_published_by_its_name() {
         let ids: Vec<&str> = [
-            TopBarEffect::SwitchWorkspace {
-                workspace: String::new(),
-            },
-            TopBarEffect::QuickSettings,
-            TopBarEffect::Notifications,
-            TopBarEffect::People,
-            TopBarEffect::Profile,
-            TopBarEffect::ActivateTrayItem {
+            BarEffect::Invite,
+            BarEffect::Profile,
+            BarEffect::ActivateTrayItem {
                 item: String::new(),
             },
-            TopBarEffect::PlayPause,
-            TopBarEffect::NextTrack,
-            TopBarEffect::Focus,
+            BarEffect::Continue,
+            BarEffect::FocusBar,
         ]
         .iter()
         .map(Effect::id)
@@ -161,15 +135,11 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "switch-workspace",
-                "quick-settings",
-                "notifications",
-                "people",
+                "invite",
                 "profile",
                 "activate-tray-item",
-                "play-pause",
-                "next-track",
-                "focus",
+                "continue",
+                "focus-bar",
             ]
         );
     }

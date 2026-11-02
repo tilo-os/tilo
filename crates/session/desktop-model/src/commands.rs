@@ -70,7 +70,8 @@ impl std::error::Error for DesktopCommandError {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandSource {
-    pub room: String,
+    #[serde(rename = "workspace", alias = "room")]
+    pub workspace: String,
     /// Exact admitted Automerge heads observed by the initiating desktop.
     pub heads: Vec<[u8; 32]>,
 }
@@ -929,7 +930,9 @@ pub fn apply_command(
         DesktopCommand::MoveStrip { strip, before } => move_strip(workspace, *strip, *before)?,
         DesktopCommand::RenameWorkspace { name: label } => workspace.name = name(label)?,
         DesktopCommand::ClaimNamespace { .. } => {
-            return Err("a namespace claim changes the room's registry, not a workspace".into());
+            return Err(
+                "a namespace claim changes the workspace's registry, not another workspace".into(),
+            );
         }
         DesktopCommand::SetArrangement { canvas } => {
             workspace.arrangement.kind = if *canvas {

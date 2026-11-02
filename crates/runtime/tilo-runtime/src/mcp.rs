@@ -613,7 +613,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             ));
         };
         let workspace = caller
-            .room()
+            .workspace()
             .ok_or_else(|| std::io::Error::other("MCP workspace unavailable"))?
             .to_owned();
         if caller.user_public_key().is_none()
@@ -904,7 +904,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let name = &target.address.resource;
         if name.is_empty()
             || name.len() > RESOURCE_NAME_BYTES
-            || tilo_actions::remote::workspace_provider_room(&target.provider).is_some()
+            || tilo_actions::remote::provider_workspace(&target.provider).is_some()
         {
             return Ok(None);
         }
@@ -937,7 +937,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             return Ok(name);
         }
         let rows = self.top_resources(provider).await?;
-        let workspace = tilo_actions::remote::workspace_provider_room(provider).is_some();
+        let workspace = tilo_actions::remote::provider_workspace(provider).is_some();
         if rows.iter().any(|row| row.resource.id == name) {
             return Ok(name);
         }
@@ -1212,7 +1212,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if fields.get("has_children") == Some(&Value::Bool(false)) {
             fields.remove("has_children");
         }
-        if tilo_actions::remote::workspace_provider_room(provider).is_none() {
+        if tilo_actions::remote::provider_workspace(provider).is_none() {
             fields.insert(
                 "resource".into(),
                 self.handles().short(&row.resource.id).into(),
@@ -1601,7 +1601,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // costs this runtime nothing.
         let eager = match query.provider.as_deref() {
             None => query.max_results > 0,
-            Some(provider) => tilo_actions::remote::workspace_provider_room(provider).is_some(),
+            Some(provider) => tilo_actions::remote::provider_workspace(provider).is_some(),
         };
         tokio::time::timeout(
             HOST_ANSWER_WAIT,
@@ -1824,7 +1824,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         } else {
             self.parent_named(&provider, parent).await?
         };
-        let workspace = tilo_actions::remote::workspace_provider_room(&provider).is_some();
+        let workspace = tilo_actions::remote::provider_workspace(&provider).is_some();
         let query = CatalogueQuery {
             canonical_route: None,
             view_resource: None,
@@ -2964,8 +2964,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // The workspace's own actions are admitted and started synchronously
         // (a launch among them); an app's action is resolved on the broker's
         // set and answers later.
-        let blocking =
-            tilo_actions::remote::workspace_provider_room(&request.target.provider).is_some();
+        let blocking = tilo_actions::remote::provider_workspace(&request.target.provider).is_some();
         // What the answer will be read for is settled as the action starts,
         // on the revision it starts at: whether it is a view or an effect is
         // what decides if a picture it names is shown or left as an address.

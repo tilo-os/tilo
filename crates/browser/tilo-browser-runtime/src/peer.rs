@@ -9,7 +9,7 @@
 //! one (`web/root-identity.mjs`) lends it as a signer, the same shape as
 //! custody, to [`issue_device_cert`] and [`certify_with_root`].
 //!
-//! The peer record (certificates and the commit outbox) and the rooms it
+//! The peer record (certificates and the commit outbox) and the workspaces it
 //! holds are kept in the profile's durable store when the page names a profile
 //! ([`DurablePeerStore`]), committed to `IndexedDB` with everything else.
 //! Once started, the certified user becomes the toolkit's local identity
@@ -141,8 +141,8 @@ struct DurablePeerStore {
     key: durable_store::StorageKey,
     /// Channel membership and the edits held for it, beside the record.
     channels_key: durable_store::StorageKey,
-    /// The rooms the peer holds, beside the record.
-    rooms_key: durable_store::StorageKey,
+    /// The workspaces the peer holds, beside the record.
+    workspaces_key: durable_store::StorageKey,
     /// Seals the member state in `channels_key`. The page keeps it wrapped
     /// by a non-extractable `WebCrypto` key (`channel-vault.mjs`), never in
     /// this store.
@@ -179,7 +179,7 @@ impl DurablePeerStore {
                 crate::storage::PROFILE_WORKSPACE,
                 format!("{}.channels", hex::encode(user_public_key)),
             ),
-            rooms_key: durable_store::StorageKey::record(
+            workspaces_key: durable_store::StorageKey::record(
                 PEER_PACKAGE,
                 crate::storage::PROFILE_WORKSPACE,
                 format!("{}.rooms", hex::encode(user_public_key)),
@@ -224,14 +224,14 @@ impl PeerStore for DurablePeerStore {
 
     fn load_rooms(&self) -> Option<Vec<u8>> {
         use durable_store::DurableStore as _;
-        Some(self.store.read(&self.rooms_key).ok()??.bytes)
+        Some(self.store.read(&self.workspaces_key).ok()??.bytes)
     }
 
     fn save_rooms(&self, bytes: &[u8]) -> Result<(), String> {
         use durable_store::DurableStore as _;
         self.store
             .write(
-                &self.rooms_key,
+                &self.workspaces_key,
                 durable_store::WriteOp::Replace(bytes.to_vec()),
                 None,
             )
@@ -302,7 +302,7 @@ impl HttpClient for PageHttp {
     }
 }
 
-/// The store a peer replicates its room into, and where it lives.
+/// The store a peer replicates its workspace into, and where it lives.
 type ReplicaStore = (Rc<durable_store::MemoryStore>, crate::replication::Kept);
 
 #[derive(Deserialize)]
@@ -313,11 +313,11 @@ struct ConnectConfig {
     /// The person's chosen name, for history and presence; empty for none.
     #[serde(default)]
     display_name: String,
-    /// The page only watches the rooms it joins, as a public room's
+    /// The page only watches the workspaces it joins, as a public workspace's
     /// spectator ([`PeerConfig::watching`]).
     #[serde(default)]
     watching: bool,
-    /// The page keeps this peer beside the room in front, to deliver for
+    /// The page keeps this peer beside the workspace in front, to deliver for
     /// it ([`PeerConfig::background`]).
     #[serde(default)]
     background: bool,
@@ -523,7 +523,7 @@ pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<S
 
 /// Ask to join with `invitation` as this page's device (`custody`),
 /// certified by the person's own root (`root`) as `label`, named `name` to
-/// the room's owner, under request `requestIdHex`; with `admissionToken`,
+/// the workspace's owner, under request `requestIdHex`; with `admissionToken`,
 /// the one-time token of the owner's pre-admission, the host admits it at
 /// once. Resolves to JSON
 /// `{reply, cert}`: the host's answer (`waiting`, `admitted`, `declined`,
@@ -1105,8 +1105,8 @@ fn ops_from_js(ops: Vec<JsPreviewOp>) -> Result<Vec<PreviewOp>, JsError> {
         .collect()
 }
 
-fn workspace(room: &str) -> Result<u64, JsError> {
-    tilo_relay_protocol::room_workspace_id(room).map_err(|_| js_error("room must be a uuid"))
+fn workspace_number(text: &str) -> Result<u64, JsError> {
+    tilo_relay_protocol::room_workspace_id(text).map_err(|_| js_error("not a workspace uuid"))
 }
 
 /// Encode one presence value from `live-presence.mjs` (JSON, with its own
@@ -1220,7 +1220,7 @@ struct JsHerePerson {
 #[serde(rename_all = "camelCase")]
 struct JsGrant {
     token: String,
-    room: String,
+    workspace: String,
     publisher: String,
     expires_at_ns: u64,
 }
@@ -1323,7 +1323,7 @@ struct JsVoiceGrant {
     expires_at_ns: u64,
 }
 
-/// A call of the room as `web/voice.mjs` lists it.
+/// A call of the workspace as `web/voice.mjs` lists it.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct JsCall {
@@ -1372,8 +1372,11 @@ enum JsVoiceEvent {
     },
 }
 
-fn room_of(workspace_id: u64, rooms: &RefCell<std::collections::HashMap<u64, String>>) -> String {
-    rooms
+fn workspace_of(
+    workspace_id: u64,
+    workspaces: &RefCell<std::collections::HashMap<u64, String>>,
+) -> String {
+    workspaces
         .borrow()
         .get(&workspace_id)
         .cloned()
@@ -1382,7 +1385,7 @@ fn room_of(workspace_id: u64, rooms: &RefCell<std::collections::HashMap<u64, Str
 
 fn voice_event(
     event: tilo_browser_peer::VoiceEvent,
-    rooms: &RefCell<std::collections::HashMap<u64, String>>,
+    workspaces: &RefCell<std::collections::HashMap<u64, String>>,
 ) -> JsVoiceEvent {
     use tilo_browser_peer::VoiceEvent;
     match event {
@@ -1412,7 +1415,7 @@ fn voice_event(
                 Err(error) => (None, Some(error)),
             };
             JsVoiceEvent::Calls {
-                room: room_of(workspace_id, rooms),
+                room: workspace_of(workspace_id, workspaces),
                 calls,
                 error,
             }
@@ -1427,7 +1430,7 @@ fn voice_event(
                 Err(error) => (None, Some(error)),
             };
             JsVoiceEvent::CallResult {
-                room: room_of(workspace_id, rooms),
+                room: workspace_of(workspace_id, workspaces),
                 request: hex::encode(request),
                 call,
                 error,
@@ -1439,7 +1442,7 @@ fn voice_event(
         } => {
             let grant = *grant;
             JsVoiceEvent::Granted {
-                room: room_of(workspace_id, rooms),
+                room: workspace_of(workspace_id, workspaces),
                 grant: JsVoiceGrant {
                     call: hex::encode(grant.call),
                     epoch: grant.epoch,
@@ -1460,7 +1463,7 @@ fn voice_event(
             call,
             reason,
         } => JsVoiceEvent::Ended {
-            room: room_of(workspace_id, rooms),
+            room: workspace_of(workspace_id, workspaces),
             call: hex::encode(call),
             reason,
         },
@@ -1542,7 +1545,7 @@ enum JsRemoteAction {
     Undeliverable { to: String, reason: String },
 }
 
-/// `{agentId, label, color, device, rooms, apps, mayConfirm, expiresAtNs}`
+/// `{agentId, label, color, device, workspaces, apps, mayConfirm, expiresAtNs}`
 /// of a delegation that verified.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1612,29 +1615,29 @@ pub struct WasmPeer {
     durable_events: PeerEvents,
     remote_events: PeerEvents,
     voice_events: PeerEvents,
-    /// Joined rooms by workspace, to name them in call events.
-    voice_rooms: RefCell<std::collections::HashMap<u64, String>>,
+    /// Joined workspaces by workspace, to name them in call events.
+    voice_workspaces: RefCell<std::collections::HashMap<u64, String>>,
     listeners: Rc<RefCell<Vec<Function>>>,
-    /// Where the room's documents are kept (the profile's store, or memory
-    /// for a peer in no profile) and a queue opened at start, until a room
+    /// Where the workspace's documents are kept (the profile's store, or memory
+    /// for a peer in no profile) and a queue opened at start, until a workspace
     /// is joined and replicated ([`crate::replication`]).
     replication: RefCell<Option<(PeerEvents, ReplicaStore)>>,
-    /// The room the person takes part in through this page, once joined
+    /// The workspace the person takes part in through this page, once joined
     /// as a person rather than a spectator: the one that names them.
-    speaking_room: RefCell<Option<String>>,
+    speaking_workspace: RefCell<Option<String>>,
 }
 
-/// Tell `room` its member, the page's person, goes by `name` from now on:
+/// Tell `workspace` its member, the page's person, goes by `name` from now on:
 /// what its member list and everyone's person lists show for them. Asked
 /// as the page joins and whenever the person renames themself, so a name
-/// the room recorded earlier is corrected on the next visit. A person who
+/// the workspace recorded earlier is corrected on the next visit. A person who
 /// chose no name keeps the one they were admitted with.
-fn name_in_room(handle: &PeerHandle, room: &str, name: &str) {
+fn set_member_name(handle: &PeerHandle, workspace: &str, name: &str) {
     if name.trim().is_empty() {
         return;
     }
     let request = tilo_relay_protocol::rooms::RoomsRequest::Name {
-        room: room.to_owned(),
+        room: workspace.to_owned(),
         name: name.to_owned(),
     };
     let _ = handle.rooms_then(request, Box::new(|_| {}));
@@ -1644,7 +1647,7 @@ fn name_in_room(handle: &PeerHandle, room: &str, name: &str) {
 impl WasmPeer {
     /// Start a session. `configJson` is `{cert, hostCert}` from
     /// [`certify_device`], optionally with `displayName`, and `watching:
-    /// true` for a page that only watches public rooms. With `namespace`
+    /// true` for a page that only watches public workspaces. With `namespace`
     /// (`{profile, device}` JSON, whose storage the page has opened) the
     /// peer record lives in that profile's durable store; otherwise `record`
     /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
@@ -1720,15 +1723,15 @@ impl WasmPeer {
             next.set(id.wrapping_add(1).max(1));
             id
         });
-        // A lobby started beside the room's peer does not rename the
+        // A lobby started beside the workspace's peer does not rename the
         // page's person.
         if crate::page_person::claim(id) {
             install_identity(&reporter_cert, display_name);
         }
-        // Every peer replicates the room it joins, so a desktop mounted
+        // Every peer replicates the workspace it joins, so a desktop mounted
         // through it always has a replica to attach to. A peer kept in no
         // profile (a watching page's, whose device lives only in memory)
-        // keeps the room's documents in memory for as long as the page.
+        // keeps the workspace's documents in memory for as long as the page.
         let replication_store = match profile_store {
             Some(store) => (store, crate::replication::Kept::InProfile),
             None => (
@@ -1768,11 +1771,11 @@ impl WasmPeer {
             durable_events: handle.events(),
             remote_events: handle.events(),
             voice_events: handle.events(),
-            voice_rooms: RefCell::default(),
+            voice_workspaces: RefCell::default(),
             handle,
             listeners,
             replication,
-            speaking_room: RefCell::default(),
+            speaking_workspace: RefCell::default(),
         })
     }
 
@@ -1792,8 +1795,8 @@ impl WasmPeer {
         .map_err(js_error)
     }
     /// Send the reports of desktops mounted with this peer through the
-    /// page's peer `carrier` (its `id`), which is in the destination's room:
-    /// reports reach that room's channel from whichever room the page is in.
+    /// page's peer `carrier` (its `id`), which is in the destination's workspace:
+    /// reports reach that workspace's channel from whichever workspace the page is in.
     #[wasm_bindgen(js_name = sendFeedbackThrough)]
     pub fn send_feedback_through(&self, carrier: u32) {
         crate::feedback_code::send_through(self.id, carrier);
@@ -1808,7 +1811,7 @@ impl WasmPeer {
         serde_json::to_string(&PeerSnapshot::from_status(&self.handle.status())).unwrap_or_default()
     }
 
-    /// This page's channel state as text: whom each room follows, which
+    /// This page's channel state as text: whom each workspace follows, which
     /// senders may govern it, and each route's membership.
     #[wasm_bindgen(js_name = channelDiagnostics)]
     pub fn channel_diagnostics(&self) -> String {
@@ -1820,60 +1823,67 @@ impl WasmPeer {
         self.listeners.borrow_mut().push(listener);
     }
 
-    /// Join a room (uuid). A page of the person's own joins it once its
+    /// Join a workspace (uuid). A page of the person's own joins it once its
     /// host governs it, creating it there as `name` (the workspace's name,
     /// `Workspace` when the page knows none) unless the host has it; a
     /// page that only watches joins it as it is.
-    #[wasm_bindgen(js_name = joinRoom)]
-    pub fn join_room(&self, room: &str, name: Option<String>) -> Result<(), JsError> {
-        let workspace_id = workspace(room)?;
+    #[wasm_bindgen(js_name = joinWorkspace)]
+    pub fn join_workspace(&self, workspace: &str, name: Option<String>) -> Result<(), JsError> {
+        let workspace_id = workspace_number(workspace)?;
         if self.handle.watching() {
             self.handle.join(workspace_id).map_err(js_error)?;
         } else {
             let name = name.filter(|name| !name.trim().is_empty());
             self.handle
-                .join_placed(room, name.as_deref().unwrap_or("Workspace"))
+                .join_placed(workspace, name.as_deref().unwrap_or("Workspace"))
                 .map_err(js_error)?;
         }
-        self.voice_rooms
+        self.voice_workspaces
             .borrow_mut()
-            .insert(workspace_id, room.to_owned());
+            .insert(workspace_id, workspace.to_owned());
         if let Some((events, store)) = self.replication.borrow_mut().take() {
             let device = hex::encode(self.device_key);
-            crate::replication::open(self.id, device, self.handle.clone(), events, room, store)
-                .map_err(js_error)?;
-            // The room the page replicates is the one its person talks in
+            crate::replication::open(
+                self.id,
+                device,
+                self.handle.clone(),
+                events,
+                workspace,
+                store,
+            )
+            .map_err(js_error)?;
+            // The workspace the page replicates is the one its person talks in
             // privately; a page that only watches has no conversations.
             if !self.handle.watching() && crate::page_person::speaks(self.id) {
-                crate::person_chat::install(self.handle.clone(), room);
+                crate::person_chat::install(self.handle.clone(), workspace);
                 if let Some(identity) = ui::local_identity::load() {
-                    name_in_room(&self.handle, room, &identity.display_name);
+                    set_member_name(&self.handle, &workspace, &identity.display_name);
                 }
-                *self.speaking_room.borrow_mut() = Some(room.to_owned());
+                *self.speaking_workspace.borrow_mut() = Some(workspace.to_owned());
             }
         }
         Ok(())
     }
 
     /// This peer in the page, for `mountDesktop({peer})`: mounts in its
-    /// room replicate their records and desktop through it.
+    /// workspace replicate their records and desktop through it.
     #[wasm_bindgen(getter)]
     pub fn id(&self) -> u32 {
         self.id
     }
 
-    /// A live-plane grant for `room` over the current HTTPS session, as
-    /// `{token (hex), room, publisher, expiresAtNs}` JSON. With `agent`, the
+    /// A live-plane grant for `workspace` over the current HTTPS session, as
+    /// `{token (hex), workspace, publisher, expiresAtNs}` JSON. With `agent`, the
     /// grant is for that agent of this device: it publishes under the
     /// agent's own namespace, never as the device.
     ///
     /// # Errors
     ///
-    /// Rejects when not connected or not admitted to the room.
-    /// Administer the host's rooms as this device: `request` is a
+    /// Rejects when not connected or not admitted to the workspace.
+    /// Administer the host's workspaces as this device: `request` is a
     /// `RoomsRequest` as JSON (serde's external tagging, byte arrays as
     /// arrays of numbers); resolves to the `RoomsReply` as JSON.
-    pub async fn rooms(&self, request: String) -> Result<String, JsError> {
+    pub async fn govern(&self, request: String) -> Result<String, JsError> {
         let request: tilo_relay_protocol::rooms::RoomsRequest =
             serde_json::from_str(&request).map_err(js_error)?;
         let (reply, receipt) = tokio::sync::oneshot::channel();
@@ -1925,7 +1935,7 @@ impl WasmPeer {
 
     /// The token of the host session this page runs now, `undefined`
     /// between sessions: the page sends it to the host's session end as it
-    /// leaves, so the room stops counting it then, not when its polls stop.
+    /// leaves, so the workspace stops counting it then, not when its polls stop.
     #[wasm_bindgen(js_name = sessionToken)]
     pub fn session_token(&self) -> Option<String> {
         self.handle.session_token()
@@ -1933,14 +1943,14 @@ impl WasmPeer {
 
     /// Pre-admit whoever redeems the invitation this issues and presents
     /// the token whose SHA-256 the grant names: `options` is JSON
-    /// `{requestId, room, role, tokenSha256, label, expiresInSeconds,
+    /// `{requestId, workspace, role, tokenSha256, label, expiresInSeconds,
     /// inviterName?}` (hex ids, `role` `Viewer`/`Commenter`/`Editor`); the
     /// owner's `root` signs the grant. Resolves to the `RoomsReply` as JSON.
     ///
     /// # Errors
     ///
     /// Rejects for malformed options, when the root does not sign, or as
-    /// [`Self::rooms`].
+    /// [`Self::workspaces`].
     #[wasm_bindgen(js_name = preAdmit)]
     pub async fn pre_admit(&self, root: JsValue, options: String) -> Result<String, JsError> {
         use tilo_browser_peer::DeviceSigner as _;
@@ -1948,7 +1958,7 @@ impl WasmPeer {
         #[serde(rename_all = "camelCase")]
         struct Options {
             request_id: String,
-            room: String,
+            workspace: String,
             role: tilo_relay_protocol::rooms::RoomRole,
             token_sha256: String,
             label: String,
@@ -1959,7 +1969,7 @@ impl WasmPeer {
         let root = PageSigner::from_js(&root)?;
         let now_ns = ui::time::unix_now_ns();
         let mut grant = tilo_relay_protocol::rooms::PreAdmission {
-            room: options.room,
+            room: options.workspace,
             role: options.role,
             token_sha256: device_key(&options.token_sha256)?,
             label: options.label,
@@ -1972,7 +1982,7 @@ impl WasmPeer {
             .sign(grant.digest().map_err(js_error)?.to_vec())
             .await
             .map_err(|error| js_error(error.0))?;
-        self.rooms(
+        self.govern(
             serde_json::to_string(&tilo_relay_protocol::rooms::RoomsRequest::PreAdmit {
                 request_id: request_id(&options.request_id)?,
                 grant,
@@ -1984,15 +1994,19 @@ impl WasmPeer {
     }
 
     #[wasm_bindgen(js_name = liveGrant)]
-    pub async fn live_grant(&self, room: String, agent: Option<String>) -> Result<String, JsError> {
+    pub async fn live_grant(
+        &self,
+        workspace: String,
+        agent: Option<String>,
+    ) -> Result<String, JsError> {
         let (reply, receipt) = tokio::sync::oneshot::channel();
         let done: tilo_browser_peer::session::GrantCompletion = Box::new(move |grant| {
             let _ = reply.send(grant);
         });
-        let workspace = workspace(&room)?;
+        let workspace_id = workspace_number(&workspace)?;
         match agent {
-            None => self.handle.live_grant_then(workspace, done),
-            Some(agent) => self.handle.agent_live_grant_then(workspace, agent, done),
+            None => self.handle.live_grant_then(workspace_id, done),
+            Some(agent) => self.handle.agent_live_grant_then(workspace_id, agent, done),
         }
         .map_err(js_error)?;
         let grant = receipt
@@ -2001,31 +2015,31 @@ impl WasmPeer {
             .map_err(js_error)?;
         serde_json::to_string(&JsGrant {
             token: hex::encode(grant.token),
-            room: grant.room,
+            workspace: grant.room,
             publisher: grant.publisher,
             expires_at_ns: grant.expires_at_ns,
         })
         .map_err(js_error)
     }
 
-    /// Seal one encoded live frame of `room` (from [`encode_live_presence`]
+    /// Seal one encoded live frame of `workspace` (from [`encode_live_presence`]
     /// and friends) with the channel keys of the record it names, for the
     /// page's live plane. Resolves to `null` when the frame names no record
     /// or this device holds none of its keys: such a frame is never sent.
     ///
     /// # Errors
     ///
-    /// Rejects for a malformed room or a closed session.
+    /// Rejects for a malformed workspace or a closed session.
     #[wasm_bindgen(js_name = sealLive)]
     pub async fn seal_live(
         &self,
-        room: String,
+        workspace: String,
         frame: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, JsError> {
         let (reply, receipt) = tokio::sync::oneshot::channel();
         self.handle
             .seal_live_then(
-                workspace(&room)?,
+                workspace_number(&workspace)?,
                 frame,
                 Box::new(move |sealed| {
                     let _ = reply.send(sealed);
@@ -2035,23 +2049,23 @@ impl WasmPeer {
         receipt.await.map_err(|_| js_error("peer session closed"))
     }
 
-    /// Open one sealed live frame of `room` the live plane delivered.
+    /// Open one sealed live frame of `workspace` the live plane delivered.
     /// Resolves to the encoded frame for [`decode_live_frame`], or `null`
     /// when it does not open with keys this device holds.
     ///
     /// # Errors
     ///
-    /// Rejects for a malformed room or a closed session.
+    /// Rejects for a malformed workspace or a closed session.
     #[wasm_bindgen(js_name = openLive)]
     pub async fn open_live(
         &self,
-        room: String,
+        workspace: String,
         frame: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, JsError> {
         let (reply, receipt) = tokio::sync::oneshot::channel();
         self.handle
             .open_live_then(
-                workspace(&room)?,
+                workspace_number(&workspace)?,
                 frame,
                 Box::new(move |opened| {
                     let _ = reply.send(opened);
@@ -2061,29 +2075,31 @@ impl WasmPeer {
         receipt.await.map_err(|_| js_error("peer session closed"))
     }
 
-    /// Ask the host for `room`'s calls; the answer is a `calls` event of
+    /// Ask the host for `workspace`'s calls; the answer is a `calls` event of
     /// [`Self::take_voice_events`].
     ///
     /// # Errors
     ///
-    /// Throws for a malformed room or a closed session.
+    /// Throws for a malformed workspace or a closed session.
     #[wasm_bindgen(js_name = voiceCalls)]
-    pub fn voice_calls(&self, room: &str) -> Result<(), JsError> {
-        self.handle.voice_calls(workspace(room)?).map_err(js_error)
+    pub fn voice_calls(&self, workspace: &str) -> Result<(), JsError> {
+        self.handle
+            .voice_calls(workspace_number(workspace)?)
+            .map_err(js_error)
     }
 
-    /// Start, end or restart a call of `room` (`{kind: 'start', app, record,
+    /// Start, end or restart a call of `workspace` (`{kind: 'start', app, record,
     /// channel, allowed}`, `{kind: 'end' | 'restart', call, epoch}` JSON);
     /// its `callResult` event names `request` (16 bytes of hex).
     ///
     /// # Errors
     ///
-    /// Throws for a malformed room, operation or request, or a closed
+    /// Throws for a malformed workspace, operation or request, or a closed
     /// session.
     #[wasm_bindgen(js_name = voiceCall)]
     pub fn voice_call(
         &self,
-        room: &str,
+        workspace: &str,
         operation_json: &str,
         request: &str,
     ) -> Result<(), JsError> {
@@ -2093,42 +2109,48 @@ impl WasmPeer {
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| js_error("request must be 16 bytes of hex"))?;
         self.handle
-            .voice_call(workspace(room)?, request, operation.into_operation()?)
+            .voice_call(
+                workspace_number(workspace)?,
+                request,
+                operation.into_operation()?,
+            )
             .map_err(js_error)
     }
 
-    /// Take part in call `call` (hex) of `room` until [`Self::voice_leave`]:
+    /// Take part in call `call` (hex) of `workspace` until [`Self::voice_leave`]:
     /// the session keeps the participation alive and its grants arrive as
     /// `granted` events of [`Self::take_voice_events`].
     ///
     /// # Errors
     ///
-    /// Throws for a malformed room or call, or a closed session.
+    /// Throws for a malformed workspace or call, or a closed session.
     #[wasm_bindgen(js_name = voiceJoin)]
-    pub fn voice_join(&self, room: &str, call: &str) -> Result<(), JsError> {
+    pub fn voice_join(&self, workspace: &str, call: &str) -> Result<(), JsError> {
         self.handle
-            .voice_join(workspace(room)?, hex32(call, "call")?)
+            .voice_join(workspace_number(workspace)?, hex32(call, "call")?)
             .map_err(js_error)
     }
 
-    /// Leave the call of `room`.
+    /// Leave the call of `workspace`.
     ///
     /// # Errors
     ///
-    /// Throws for a malformed room or a closed session.
+    /// Throws for a malformed workspace or a closed session.
     #[wasm_bindgen(js_name = voiceLeave)]
-    pub fn voice_leave(&self, room: &str) -> Result<(), JsError> {
-        self.handle.voice_leave(workspace(room)?).map_err(js_error)
+    pub fn voice_leave(&self, workspace: &str) -> Result<(), JsError> {
+        self.handle
+            .voice_leave(workspace_number(workspace)?)
+            .map_err(js_error)
     }
 
     /// Show this session's camera (`camera`) or a shared screen (`screen`)
-    /// besides its voice in the call of `room`, or stop, whether its
+    /// besides its voice in the call of `workspace`, or stop, whether its
     /// microphone is off (`muted`) and whether it hears the call
-    /// (`deafened`): everyone in the call learns it from the room.
+    /// (`deafened`): everyone in the call learns it from the workspace.
     ///
     /// # Errors
     ///
-    /// Throws for a malformed room or a closed session.
+    /// Throws for a malformed workspace or a closed session.
     #[wasm_bindgen(js_name = voiceShow)]
     #[allow(
         clippy::fn_params_excessive_bools,
@@ -2136,7 +2158,7 @@ impl WasmPeer {
     )]
     pub fn voice_show(
         &self,
-        room: &str,
+        workspace: &str,
         camera: bool,
         screen: bool,
         muted: bool,
@@ -2144,7 +2166,7 @@ impl WasmPeer {
     ) -> Result<(), JsError> {
         self.handle
             .voice_show(
-                workspace(room)?,
+                workspace_number(workspace)?,
                 tilo_relay_protocol::voice::Showing {
                     camera,
                     screen,
@@ -2166,7 +2188,7 @@ impl WasmPeer {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::Voice(event) => Some(voice_event(event, &self.voice_rooms)),
+                PeerEvent::Voice(event) => Some(voice_event(event, &self.voice_workspaces)),
                 _ => None,
             })
             .collect();
@@ -2174,7 +2196,7 @@ impl WasmPeer {
     }
 
     /// Post this person's display name, the window they focus (`window`:
-    /// tab id in hex) and own recent semantic actions in `room` (`actions`:
+    /// tab id in hex) and own recent semantic actions in `workspace` (`actions`:
     /// JSON array of `{id: 32 hex, action, resource, app, at_ms}`, titles
     /// only) and resolve to who is here there: a JSON array of `{device,
     /// user, label, window, status, recent, sources, generated, updated_ms}` with keys and
@@ -2182,14 +2204,14 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = here)]
     pub async fn here(
         &self,
-        room: String,
+        workspace: String,
         label: String,
         window: Option<String>,
         actions: String,
     ) -> Result<String, JsError> {
         let actions: Vec<JsHereAction> = serde_json::from_str(&actions).map_err(js_error)?;
         let request = tilo_relay_protocol::web::HereRequest {
-            workspace_id: workspace(&room)?,
+            workspace_id: workspace_number(&workspace)?,
             label: label
                 .chars()
                 .filter(|c| !c.is_control())
@@ -2251,13 +2273,13 @@ impl WasmPeer {
 
     /// Send `events` (JSON array of `legacy_window::InputEvent`s, externally
     /// tagged: `{"PointerMotion": {"x": 1, "y": 2}}`) for the legacy window
-    /// `surface` (16 hex) that `publisher` (64 hex) streams in `room`. With
+    /// `surface` (16 hex) that `publisher` (64 hex) streams in `workspace`. With
     /// no events it only asks whether this device may drive the window.
     /// Resolves `false` when it may not.
     #[wasm_bindgen(js_name = legacyInput)]
     pub async fn legacy_input(
         &self,
-        room: String,
+        workspace: String,
         publisher: String,
         surface: String,
         events: String,
@@ -2268,7 +2290,7 @@ impl WasmPeer {
             .ok_or_else(|| js_error("publisher is not a device key"))?;
         let surface = u64::from_str_radix(&surface, 16).map_err(js_error)?;
         let request = tilo_relay_protocol::legacy_window::InputRequest {
-            workspace_id: workspace(&room)?,
+            workspace_id: workspace_number(&workspace)?,
             publisher,
             surface,
             events: serde_json::from_str(&events).map_err(js_error)?,
@@ -2293,12 +2315,12 @@ impl WasmPeer {
 
     /// Tell the host which video codecs this page decodes (`codecs`, a JSON
     /// array of `SurfaceStreamStart` labels such as `["h264","vp9"]`), so
-    /// sessions stream their legacy windows in `room` in one every member
+    /// sessions stream their legacy windows in `workspace` in one every member
     /// plays. Resolves `false` when the host predates codec adverts.
     #[wasm_bindgen(js_name = legacyCodecs)]
-    pub async fn legacy_codecs(&self, room: String, codecs: String) -> Result<bool, JsError> {
+    pub async fn legacy_codecs(&self, workspace: String, codecs: String) -> Result<bool, JsError> {
         let request = tilo_relay_protocol::legacy_window::CodecsRequest {
-            workspace_id: workspace(&room)?,
+            workspace_id: workspace_number(&workspace)?,
             decode: serde_json::from_str(&codecs).map_err(js_error)?,
         };
         if !request.valid() {
@@ -2319,7 +2341,7 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// How many changes this page made to its room: records it sent, and
+    /// How many changes this page made to its workspace: records it sent, and
     /// windows the person opened, closed or moved on its desktop.
     #[wasm_bindgen(js_name = authoredChanges)]
     pub fn authored_changes(&self) -> f64 {
@@ -2354,20 +2376,25 @@ impl WasmPeer {
     }
 
     /// Send one remote-action frame (JSON `RemoteActionFrame` text) to the
-    /// device `to` (hex) of `room`; the host's own device key reaches its
+    /// device `to` (hex) of `workspace`; the host's own device key reaches its
     /// app-serving plane (apps and the agent supervisor).
     ///
     /// # Errors
     ///
-    /// Throws for a malformed room or device, or a closed session.
+    /// Throws for a malformed workspace or device, or a closed session.
     #[wasm_bindgen(js_name = sendRemoteAction)]
-    pub fn send_remote_action(&self, room: &str, to: &str, frame: &str) -> Result<(), JsError> {
+    pub fn send_remote_action(
+        &self,
+        workspace: &str,
+        to: &str,
+        frame: &str,
+    ) -> Result<(), JsError> {
         let to: [u8; 32] = hex::decode(to)
             .ok()
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| js_error("device must be 32 bytes of hex"))?;
         self.handle
-            .send_remote_action(workspace(room)?, to, frame.as_bytes().to_vec())
+            .send_remote_action(workspace_number(workspace)?, to, frame.as_bytes().to_vec())
             .map_err(js_error)
     }
 
@@ -2397,24 +2424,24 @@ impl WasmPeer {
         serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
     }
 
-    /// Whether the page holds the room's record `record` of `app`: open in
-    /// a mount, or received from the room and stored for whoever opens it.
+    /// Whether the page holds the workspace's record `record` of `app`: open in
+    /// a mount, or received from the workspace and stored for whoever opens it.
     #[wasm_bindgen(js_name = hasRecord)]
     pub fn has_record(&self, app: &str, record: &str) -> bool {
         crate::replication::has_record(self.id, app, record)
     }
 
-    /// The name of the workspace in front on the room's shared desktop, as
-    /// its people last set it; `undefined` until the room delivered it.
+    /// The name of the workspace in front on the workspace's shared desktop, as
+    /// its people last set it; `undefined` until the workspace delivered it.
     #[wasm_bindgen(js_name = workspaceName)]
     pub fn workspace_name(&self) -> Option<String> {
         crate::replication::workspace_name(self.id)
     }
 
-    /// The room's records this page holds, as JSON `[{app, record}]`, so a
+    /// The workspace's records this page holds, as JSON `[{app, record}]`, so a
     /// page can hand a guest the record its desktop created.
-    #[wasm_bindgen(js_name = roomRecords)]
-    pub fn room_records(&self) -> String {
+    #[wasm_bindgen(js_name = workspaceRecords)]
+    pub fn workspace_records(&self) -> String {
         let records: Vec<JsRecord> = crate::replication::records(self.id)
             .into_iter()
             .map(|(app, record)| JsRecord { app, record })
@@ -2425,7 +2452,7 @@ impl WasmPeer {
     /// Report the page store's durability of a record (`unknown`,
     /// `pending`, `committing`, `durable`, `failed`).
     #[wasm_bindgen(js_name = setLocalState)]
-    pub fn set_local_state(&self, app: &str, room: &str, record: &str, state: &str) {
+    pub fn set_local_state(&self, app: &str, workspace: &str, record: &str, state: &str) {
         let state = match state {
             "pending" => LocalState::Pending,
             "committing" => LocalState::Committing,
@@ -2436,7 +2463,7 @@ impl WasmPeer {
         self.handle.set_local_state(
             DocumentRoute {
                 app_id: app.into(),
-                cluster_id: room.into(),
+                cluster_id: workspace.into(),
                 record: record.into(),
             },
             state,
@@ -2469,7 +2496,7 @@ impl WasmPeer {
         self.handle.retry_now().map_err(js_error)
     }
 
-    /// Ask the host for the joined rooms' shared state again.
+    /// Ask the host for the joined workspaces' shared state again.
     pub fn refresh(&self) -> Result<(), JsError> {
         self.handle.refresh().map_err(js_error)
     }
@@ -2509,8 +2536,8 @@ impl WasmPeer {
     /// (empty for none).
     #[wasm_bindgen(js_name = setDisplayName)]
     pub fn set_display_name(&self, name: String) {
-        if let Some(room) = self.speaking_room.borrow().as_deref() {
-            name_in_room(&self.handle, room, &name);
+        if let Some(workspace) = self.speaking_workspace.borrow().as_deref() {
+            set_member_name(&self.handle, workspace, &name);
         }
         if crate::page_person::speaks(self.id) {
             install_identity(&self.reporter_cert, name);
@@ -2518,7 +2545,7 @@ impl WasmPeer {
     }
 
     /// End the session. The page no longer acts as the certified user; a
-    /// lobby disposed beside the room's peer leaves the person's identity
+    /// lobby disposed beside the workspace's peer leaves the person's identity
     /// and conversations to that one.
     pub fn dispose(&self) {
         self.listeners.borrow_mut().clear();

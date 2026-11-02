@@ -450,7 +450,7 @@ impl CertifiedActionSession {
         };
         let session = Self::open_execution(
             broker,
-            caller.room().ok_or("native person room required")?,
+            caller.workspace().ok_or("native person room required")?,
             Some(person),
             caller.execution_lease(),
         )?;
@@ -531,7 +531,7 @@ mod forwarding_tests {
     impl Probe {
         fn check(&self, caller: &Caller) {
             assert_eq!(caller.principal(), self.caller.principal());
-            assert_eq!(caller.room(), self.caller.room());
+            assert_eq!(caller.workspace(), self.caller.workspace());
             assert_eq!(caller.user_public_key(), self.caller.user_public_key());
             assert_eq!(caller.device_public_key(), self.caller.device_public_key());
             assert_eq!(caller.execution_id(), self.caller.execution_id());

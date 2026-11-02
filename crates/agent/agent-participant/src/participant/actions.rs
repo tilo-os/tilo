@@ -21,7 +21,7 @@ use tilo_actions::door::DoorError;
 use tilo_actions::remote::{
     ActionHostError, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow,
     InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, application_open_target, workspace_provider, workspace_provider_room,
+    RemoteActionMessage, application_open_target, provider_workspace, workspace_provider,
 };
 use tilo_actions::{ActionFailure, ActionOutput, PROMPTED_PARAM};
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -171,7 +171,7 @@ impl AgentParticipant {
             providers.push(CatalogueProvider {
                 provider: provider.clone(),
                 app_id: route.app_id.clone(),
-                room: workspace.clone(),
+                workspace: workspace.clone(),
                 record_id: route.record.clone(),
                 browsable: false,
             });
@@ -199,7 +199,7 @@ impl AgentParticipant {
             providers.push(CatalogueProvider {
                 provider,
                 app_id: String::new(),
-                room: workspace,
+                workspace,
                 record_id: String::new(),
                 browsable: false,
             });
@@ -258,7 +258,7 @@ impl AgentParticipant {
             return Err(reject(ActionHostError::StaleRevision));
         }
         let target = &request.target;
-        if workspace_provider_room(&target.provider) == Some(self.workspace.as_str()) {
+        if provider_workspace(&target.provider) == Some(self.workspace.as_str()) {
             let app = target
                 .address
                 .resource

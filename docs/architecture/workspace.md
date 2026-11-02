@@ -2,8 +2,8 @@
 
 A workspace is the one unit of collaboration. It is the same thing on the
 native desktop, on a workspace host, in the standalone runtime and in the
-browser. There is no second unit beside or under it: no room, no personal
-space, no continuity lane.
+browser. There is no second unit beside or under it: no personal space, no
+continuity lane.
 
 A workspace has three parts:
 
@@ -257,9 +257,11 @@ that resource instead of enumerating parts themselves.
 The code still carries models this page does not have. Each goes, not beside
 the model but instead of it:
 
-- **Rooms.** `RoomId` and the room/workspace split, `(app, room, record)`
-  routes, per-room app directories and the package document keyed by room.
-  The workspace is the key.
+- **The stored room spelling.** `RoomId`, the `room` key a desktop entry or an
+  action row stores its workspace id under, `(app, room, record)` addresses and
+  `tilo-rooms` on disk. The workspace is the key and is written `workspace`;
+  what is stored today keeps reading, and `RoomId`'s last uses are the old
+  shell's.
 - **Governance by one device.** The governor, the pinned governance writer,
   the separate governance document with its receipts, custody and succession,
   and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
@@ -275,7 +277,7 @@ the model but instead of it:
   sessions run on it. The person's devices already meet without it, on the
   session between two of them (`tilo-relay-sibling/1`), and learn the
   person's workspaces from the hosts holding them (`room.list`). The person's
-  own records in particular are in no room and no workspace: their store is
+  own records in particular are in no workspace: their store is
   one cluster per person, derived from the root key, and the readers of its
   channels are the identity's certified devices that are not revoked — the
   identity decides, and no governor or workspace takes part. Any of those

@@ -89,7 +89,7 @@ impl Page {
 }
 
 /// A workspace whose desktop holds Ada's window 1 and Ben's window 2.
-fn room() -> DesktopGuard {
+fn workspace() -> DesktopGuard {
     let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
     shared_record::write(&mut doc, &desktop(&[(1, 100, ADA), (2, 200, BEN)])).unwrap();
     doc.commit();
@@ -115,7 +115,7 @@ fn moderates(writer: &'static str) -> impl Fn(&Touched) -> bool {
 
 #[test]
 fn a_guest_closes_their_own_window_but_not_someone_elses() {
-    let mut guard = room();
+    let mut guard = workspace();
     let closes_bens = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA)]));
     let refused = guard
         .decide(&closes_bens, &writer(ADA, None, &moderates(ADA)))
@@ -140,7 +140,7 @@ fn a_guest_closes_their_own_window_but_not_someone_elses() {
 
 #[test]
 fn the_owner_closes_their_window_and_a_moderator_closes_anyones() {
-    let mut guard = room();
+    let mut guard = workspace();
     let closes_his = Page::of(&guard, 2).write(&desktop(&[(1, 100, ADA)]));
     guard
         .decide(&closes_his, &writer(BEN, None, &moderates(BEN)))
@@ -154,7 +154,7 @@ fn the_owner_closes_their_window_and_a_moderator_closes_anyones() {
 
 #[test]
 fn moving_someone_elses_window_is_refused() {
-    let mut guard = room();
+    let mut guard = workspace();
     // Ben's window put in front of Ada's: his order among others' is the
     // same, so this reads as Ada moving hers, and is admitted.
     let swapped = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN), (1, 100, ADA)]));
@@ -173,7 +173,7 @@ fn moving_someone_elses_window_is_refused() {
 
 #[test]
 fn a_page_writing_over_an_old_desktop_is_judged_by_what_it_changed() {
-    let mut guard = room();
+    let mut guard = workspace();
     let mut ada = Page::of(&guard, 1);
     // Ben opens window 3 while Ada's page is behind.
     let opens = Page::of(&guard, 2).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
@@ -191,7 +191,7 @@ fn a_page_writing_over_an_old_desktop_is_judged_by_what_it_changed() {
 
 #[test]
 fn claiming_someone_elses_window_is_refused() {
-    let mut guard = room();
+    let mut guard = workspace();
     let claims = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, ADA)]));
     let refused = guard
         .decide(&claims, &writer(ADA, None, &moderates(ADA)))
@@ -205,7 +205,7 @@ fn claiming_someone_elses_window_is_refused() {
 /// not open one as Ben's.
 #[test]
 fn opening_a_window_in_someone_elses_name_is_refused() {
-    let mut guard = room();
+    let mut guard = workspace();
     let forged =
         Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
     let refused = guard
@@ -258,7 +258,7 @@ fn not_even_its_maker_rebinds_a_windows_record() {
 
 #[test]
 fn a_write_that_is_not_automerge_changes_nothing() {
-    let mut guard = room();
+    let mut guard = workspace();
     let _ = guard.decide(
         &DocumentMutation::Incremental(vec![1, 2, 3]),
         &writer(ADA, None, &moderates(ADA)),
@@ -269,8 +269,8 @@ fn a_write_that_is_not_automerge_changes_nothing() {
 /// Ben has left the workspace: his window holds nobody, and Ada, who writes
 /// there, may close it without moderating.
 #[test]
-fn a_window_of_someone_who_left_the_room_is_anyones_to_close() {
-    let mut guard = room();
+fn a_window_of_someone_who_left_the_workspace_is_anyones_to_close() {
+    let mut guard = workspace();
     let members: std::collections::BTreeSet<String> = [ADA.to_owned()].into();
     let closes_bens = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA)]));
     guard
@@ -283,7 +283,7 @@ fn a_window_of_someone_who_left_the_room_is_anyones_to_close() {
 /// is decided as its own author's once that change is here.
 #[test]
 fn a_write_ahead_of_what_it_builds_on_waits_and_is_decided_as_its_authors() {
-    let mut held = room().doc().clone();
+    let mut held = workspace().doc().clone();
     let mut ben = Page::of(&DesktopGuard::new(held.clone()), 2);
     let opens = ben.write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
     let closes_adas = ben.write(&desktop(&[(2, 200, BEN), (3, 300, BEN)]));

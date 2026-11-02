@@ -1,11 +1,11 @@
-// Who is here in the desktop's room and what they are doing.
+// Who is here in the desktop's workspace and what they are doing.
 //
-// The room's live layer says who is present now: each member's publisher,
+// The workspace's live layer says who is present now: each member's publisher,
 // name, the record they focus, and for an agent what it is doing. Every few seconds the page asks the runtime what its own person is
 // doing (`desktop_here_tick`: the window they focus and the titles of their
 // own recent steps, never content) and posts it to the host's `/here`
 // (`peer.here`), which answers with everyone's one-line status and recent
-// summary. A host's room service also counts its spectators. All of it goes
+// summary. A host's workspace service also counts its spectators. All of it goes
 // to the runtime as ambient presence; none of it is a notification.
 
 /** How often the page checks what its person is doing. */
@@ -36,7 +36,7 @@ export function liveMembers(layer, seen) {
       kind: participant?.kind === 'agent' ? 'agent' : 'person',
       label: participant?.label ?? '',
       // The record they focus: the window it shows here, or where no
-      // window here shows it (a room whose layout is personal) its app,
+      // window here shows it (a workspace whose layout is personal) its app,
       // is where the people panel says they are.
       focus: focus ?? null,
       activity: participant?.activity ?? null,
@@ -58,9 +58,9 @@ export function liveMembers(layer, seen) {
  * @param options.runtime      the page runtime
  * @param options.mountId      the desktop mount's id
  * @param options.active       whether the mount is still shown
- * @param options.layer        the room's live layer, or undefined
+ * @param options.layer        the workspace's live layer, or undefined
  * @param options.peer         the certified peer: `here(window, actions)`, `participant`
- * @param options.presenceUrl  the room service's spectator count, if any
+ * @param options.presenceUrl  the workspace service's spectator count, if any
  * @param options.photos       follows people's profile pictures (`profile-photos.mjs` `followPhotos`), if any
  */
 export function createHere({runtime, mountId, active, layer, peer, presenceUrl, photos = null,

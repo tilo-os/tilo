@@ -68,8 +68,8 @@ test('the own desktop opens without a peer for whom the home’s gate is open, o
 test('a host whose listed workspace has an admission door lets the person in when the browser has no account there', async () => {
   const {calls, deps} = doors({workspaceAt: origin => (origin === room.host ? commons : null)});
   assert.deepEqual(await admit({scope: room, deps}), {peer: {admission: true, room: room.room}});
-  // The door is told which room the link names: a host set up again is not
-  // offered to be joined again from a link to a room it no longer has.
+  // The door is told which workspace the link names: a host set up again is not
+  // offered to be joined again from a link to a workspace it no longer has.
   assert.deepEqual(calls, [['readAccounts', room.host], ['enterViaHost', {workspace: commons, room: room.room}]]);
 });
 
@@ -80,7 +80,7 @@ test('a member of a host with an admission door connects as the member', async (
   assert.ok(!calls.some(([name]) => name === 'enterViaHost'));
 });
 
-test('the home workspace, whose room is not known yet, is entered through its host’s door or not at all', async () => {
+test('the home workspace, whose workspace is not known yet, is entered through its host’s door or not at all', async () => {
   const home = {kind: 'room', host: room.host, room: null};
   const {calls, deps} = doors({workspaceAt: () => commons});
   assert.deepEqual(await admit({scope: home, deps}), {peer: {admission: true, room: room.room}});
@@ -88,10 +88,10 @@ test('the home workspace, whose room is not known yet, is entered through its ho
   await assert.rejects(admit({scope: home, deps: doors().deps}), {code: 'no-access'});
 });
 
-test('a person let in through the door is not taken to another room on the host than the one they were admitted to', async () => {
+test('a person let in through the door is not taken to another workspace on the host than the one they were admitted to', async () => {
   let disposed = false;
   const {deps} = doors({workspaceAt: () => commons,
-    enterViaHost: async () => ({room: 'another-room', dispose: async () => { disposed = true; }})});
+    enterViaHost: async () => ({workspace: 'another-workspace', dispose: async () => { disposed = true; }})});
   await assert.rejects(admit({scope: room, deps}), {code: 'no-access', message: NO_ACCESS});
   assert.ok(disposed);
 });
@@ -108,7 +108,7 @@ test('an invitation is inspected and confirmed before it is redeemed', async () 
   assert.ok(!declined.calls.some(([name]) => name === 'joinWorkspace'));
 });
 
-test('an invitation for another room than the link names is refused', async () => {
+test('an invitation for another workspace than the link names is refused', async () => {
   const {deps} = doors({inspectInvitation: async () => ({room: 'other', role: 'viewer'})});
   await assert.rejects(admit({scope: room, secrets: {invite: 'AAEC'}, deps}), {code: 'mismatch'});
 });
@@ -126,7 +126,7 @@ test('a member connects with their account for that host', async () => {
   assert.deepEqual(calls, [['connectMember', {origin: room.host, room: room.room, account}]]);
 });
 
-test('no access says the same thing for a missing and a private room', async () => {
+test('no access says the same thing for a missing and a private workspace', async () => {
   const none = doors();
   const noAccount = await admit({scope: room, deps: none.deps}).catch(error => error);
   const refused = doors({
@@ -167,7 +167,7 @@ test('a member whose device keys other tabs hold gets in as a new device, or is 
     reconnect: async () => null,
   });
   await assert.rejects(admit({scope: room, deps}), {name: 'CustodyError', code: 'custody-busy'});
-  // As where the room cannot admit a new device of the person by itself.
+  // As where the workspace cannot admit a new device of the person by itself.
   const uninvited = doors({reconnect: async () => busy()});
   await assert.rejects(admit({scope: room, deps: uninvited.deps}), {name: 'CustodyError', code: 'custody-busy'});
   const missing = doors({

@@ -98,7 +98,7 @@ pub const MAX_SURFACE_VIEW_DECODERS: usize = 8;
 pub const MAX_SURFACE_VIEW_SIDE: u32 = 8192;
 
 /// One window a viewer shows: the workspace tab holding it (the same id on
-/// every device of the room) and the tile's size in logical pixels.
+/// every device of the workspace) and the tile's size in logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceView {
     pub tab: u64,
@@ -118,7 +118,7 @@ pub struct SurfaceDecodeLimit {
 pub type PresenceKey = String;
 
 /// The colour the person at the publishing session wears for everyone in
-/// the room: one of the twelve presence hues by its stored name (`"red"` …
+/// the workspace: one of the twelve presence hues by its stored name (`"red"` …
 /// `"pink"`, as `identity.colour` spells it) — their choice, or the one their
 /// stable identity derives, so every collaborator paints them the same. Self-
 /// asserted and cosmetic, like `user`. `None` when the sender did not say; a
@@ -132,12 +132,13 @@ pub type PresenceColour = Option<String>;
 /// [`Eq`]; [`PartialEq`] is sufficient for tests and dispatch logic.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum NeighbourMsg {
-    /// Request: replay every Automerge change to `room` after the included clock.
+    /// Request: replay every Automerge change to the workspace named by `room`
+    /// after the included clock.
     ///
-    /// `room` is the workspace room uuid string that scopes the
-    /// answer — an empty/unparseable value names no room (not a wildcard) and gets
+    /// `room` is the workspace id as text that scopes the
+    /// answer — an empty/unparseable value names no workspace (not a wildcard) and gets
     /// no document back. The transport emits one on peer-join, before it knows
-    /// what room the peer is in.
+    /// what workspace the peer is in.
     SyncReq {
         since: Vec<u8>,
         room: String,
@@ -148,14 +149,14 @@ pub enum NeighbourMsg {
         invite_id: Option<[u8; 32]>,
         /// Fresh per request. Transports that deduplicate by content would
         /// otherwise discard a repeated anti-entropy request for unchanged
-        /// heads as already seen, and a room that missed its first
+        /// heads as already seen, and a workspace that missed its first
         /// answer would never catch up.
         #[serde(default)]
         nonce: u64,
     },
-    /// Response: a batch of opaque Automerge change blobs for `room`. The blobs
-    /// carry the room identity too; the receiver checks the two agree before
-    /// merging.
+    /// Response: a batch of opaque Automerge change blobs for the workspace named by
+    /// `room`. The blobs carry the workspace identity too; the receiver checks the two
+    /// agree before merging.
     SyncResp { changes: Vec<Vec<u8>>, room: String },
     /// Peer's presence cursor moved within `key`'s coordinate space.
     ///
@@ -245,7 +246,7 @@ pub enum NeighbourMsg {
         #[serde(default)]
         app_id: String,
         /// The workspace tab holding the window, the same id on every device
-        /// of the room, so a viewer shows the stream in exactly that tab
+        /// of the workspace, so a viewer shows the stream in exactly that tab
         /// even when several windows of one app are open. `0` when the
         /// sender does not name one.
         #[serde(default)]
@@ -254,7 +255,7 @@ pub enum NeighbourMsg {
     /// Explicit end-of-stream (owner tore down the share, or the surface
     /// unmapped). Receivers drop their `PeerView` + decoder on receipt, instead of
     /// waiting out the 15s heartbeat-eviction path that implicit end-of-stream
-    /// (owner vanishes from the room) still relies on.
+    /// (owner vanishes from the workspace) still relies on.
     SurfaceStreamEnd {
         surface: SurfaceId,
         source_peer: PeerId,
@@ -306,7 +307,7 @@ pub enum NeighbourMsg {
         /// Wire name of the originating document's record — third routing-key
         /// component; empty means the sender announced no record. A local
         /// record id that embeds a filesystem path is never sent: it is
-        /// replaced by its sealed, room-scoped name (the compositor's
+        /// replaced by its sealed, workspace-scoped name (the compositor's
         /// `network::wire_record`), which receivers map back to their own
         /// local id.
         record_id: String,
@@ -315,7 +316,7 @@ pub enum NeighbourMsg {
         envelope: Box<collab_types::SignedOp>,
     },
     /// App-level presence crossing the host boundary. Presence is cluster scoped,
-    /// so a participant remains visible while moving between apps in one room.
+    /// so a participant remains visible while moving between apps in one workspace.
     /// `colour` is the colour the person there wears ([`PresenceColour`]).
     AppPresenceV2 {
         peer: PeerId,
@@ -325,7 +326,7 @@ pub enum NeighbourMsg {
         #[serde(default)]
         colour: PresenceColour,
     },
-    /// Cooperative scrollback request, published on the room when a peer's
+    /// Cooperative scrollback request, published on the workspace when a peer's
     /// local broker has no in-memory scrollback for a range an app asked for.
     /// Any peer holding the range replies with
     /// [`NeighbourMsg::ScrollbackResponse`].
@@ -364,7 +365,7 @@ pub enum NeighbourMsg {
         responder: PeerId,
     },
     /// Retired first generation of [`Self::IdentityAnnouncementV2`]: a
-    /// root-signed device certificate announced on one room, without the
+    /// root-signed device certificate announced on one workspace, without the
     /// revocations that keep a lost device out. No build produces it and
     /// receivers refuse it ([`NeighbourMsg::is_retired`]); it stays only so
     /// every later Postcard discriminant keeps its value.
@@ -378,7 +379,7 @@ pub enum NeighbourMsg {
         workspace: String,
         device_cert: Box<tilo_user_identity::DeviceCert>,
         /// Additive root-signed revocations for the certificate's human root.
-        /// The room governor verifies and retains them independently of the
+        /// The workspace governor verifies and retains them independently of the
         /// announcing device, so omission can never resurrect a device.
         revocations: Vec<tilo_user_identity::RevocationEntry>,
     },
@@ -388,7 +389,7 @@ pub enum NeighbourMsg {
     ///
     /// It travels only on an exact-target route, never workspace-wide
     /// fan-out, so arguments and results are not disclosed to the rest of
-    /// the room. The receiver takes the caller from the authenticated
+    /// the workspace. The receiver takes the caller from the authenticated
     /// transport; nothing in the frame names it. Appended to preserve all
     /// existing Postcard discriminants.
     RemoteAction { frame: Vec<u8> },
@@ -435,7 +436,7 @@ pub enum NeighbourMsg {
     },
     /// The person's workspace directory as one of their devices holds it:
     /// a device-signed Automerge snapshot of which workspaces the person
-    /// has and which room carries each. Travels only on the session between
+    /// has and which workspace carries each. Travels only on the session between
     /// two of the person's devices; the receiver merges it only when the
     /// certificate that session proved and the update's author are devices
     /// of `user_public_key`. Appended to preserve every existing Postcard
@@ -444,9 +445,9 @@ pub enum NeighbourMsg {
         user_public_key: [u8; 32],
         update: Box<tilo_user_identity::DirectoryUpdate>,
     },
-    /// A device asking the room for one piece of content a record of
-    /// `app_id` in room `cluster_id` refers to, by its BLAKE3 `hash`. Rides
-    /// the room's topic, so only peers admitted to read the room see it;
+    /// A device asking the workspace for one piece of content a record of
+    /// `app_id` in workspace `cluster_id` refers to, by its BLAKE3 `hash`. Rides
+    /// the workspace's topic, so only peers admitted to read the workspace see it;
     /// any of them holding the content answers with
     /// [`Self::RecordContentPiece`]. Appended to preserve every existing
     /// Postcard discriminant.
@@ -474,10 +475,10 @@ pub enum NeighbourMsg {
     /// [`Self::MlsAccessRequest`] with the route of the record the channel
     /// carries, so a participant can decide Read on that record, a Deny over
     /// its app or any pattern covering it included. The route proves itself:
-    /// a participant refuses it unless it hashes, with `room`, to the request's
-    /// channel ([`collab_types::ChannelRoute::proves`]). A device that knows
-    /// the route sends this form only. Appended to preserve every existing
-    /// Postcard discriminant.
+    /// a participant refuses it unless, with the workspace id `room` gives, it
+    /// hashes to the request's channel ([`collab_types::ChannelRoute::proves`]).
+    /// A device that knows the route sends this form only. Appended to preserve
+    /// every existing Postcard discriminant.
     MlsRoutedAccessRequest {
         room: String,
         request: Box<collab_types::MlsAccessRequestV1>,
@@ -498,20 +499,20 @@ pub enum NeighbourMsg {
         surface: SurfaceId,
         seq: u64,
     },
-    /// One of session `peer`'s live presence frames in the room
+    /// One of session `peer`'s live presence frames in the workspace
     /// (`tilo_relay_protocol::live`, sealed with the channel keys of the
-    /// record it names), on the room's own topic: how the frame travels
-    /// when no workspace host's live plane reaches the room. It is the same
+    /// record it names), on the workspace's own topic: how the frame travels
+    /// when no workspace host's live plane reaches the workspace. It is the same
     /// frame, read the same way as one the live plane delivers, so what
-    /// rides it (a wave) reaches the room's people with or without a host.
+    /// rides it (a wave) reaches the workspace's people with or without a host.
     /// Appended to preserve every existing Postcard discriminant.
     LivePresence { peer: PeerId, frame: Vec<u8> },
-    /// Viewer `peer`, a member of `room`, shows these of the receiving
-    /// device's windows (host and unconfined programs' windows, which cross
-    /// a room that shares its layout as hosted on that device): it streams
+    /// Viewer `peer`, a member of the workspace `room` names, shows these of the
+    /// receiving device's windows (host and unconfined programs' windows, which cross
+    /// a workspace that shares its layout as hosted on that device): it streams
     /// each to the viewer while the list keeps arriving and names it, read
     /// only. Sent to that device alone over the authenticated direct route,
-    /// never to the room; an empty list ends every stream at once. Appended
+    /// never to the workspace; an empty list ends every stream at once. Appended
     /// to preserve every existing Postcard discriminant.
     SurfaceViewRequest {
         peer: PeerId,
@@ -660,8 +661,8 @@ mod tests {
         assert_eq!(peer_handle(&[7; 32]), 0xf160_fd08_b6d9_aac5);
     }
 
-    /// Room id shared by every fixture that names one.
-    const ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000c";
+    /// Workspace id shared by every fixture that names one.
+    const WORKSPACE: &str = "6b3f9a10-0000-4000-8000-00000000000c";
 
     /// Fixed artifact ids keep the golden encodings reproducible.
     fn artifact(fill: u8) -> collab_types::ArtifactId {
@@ -721,7 +722,7 @@ mod tests {
                 responder: 3,
                 requester: 4,
                 app_id: "so.tilo.slides".into(),
-                cluster_id: "room".into(),
+                cluster_id: "workspace".into(),
                 hash: "ab".into(),
             },
         ));
@@ -760,7 +761,7 @@ mod tests {
             (
                 "channel governance frame",
                 NeighbourMsg::MlsGovernance {
-                    workspace: ROOM.into(),
+                    workspace: WORKSPACE.into(),
                     frame: Box::new(MlsGovernanceFrame {
                         version: 2,
                         channel,
@@ -782,7 +783,7 @@ mod tests {
             (
                 "channel access request",
                 NeighbourMsg::MlsAccessRequest {
-                    workspace: ROOM.into(),
+                    workspace: WORKSPACE.into(),
                     request: Box::new(MlsAccessRequestV1 {
                         version: 1,
                         channel,
@@ -797,7 +798,7 @@ mod tests {
             (
                 "channel routed access request",
                 NeighbourMsg::MlsRoutedAccessRequest {
-                    room: ROOM.into(),
+                    room: WORKSPACE.into(),
                     request: Box::new(MlsAccessRequestV1 {
                         version: 1,
                         channel,
@@ -822,7 +823,7 @@ mod tests {
                 "sync request",
                 NeighbourMsg::SyncReq {
                     since: vec![1, 2, 3],
-                    room: ROOM.into(),
+                    room: WORKSPACE.into(),
                     invite_id: Some([9; 32]),
                     nonce: 7,
                 },
@@ -831,7 +832,7 @@ mod tests {
                 "sync response",
                 NeighbourMsg::SyncResp {
                     changes: vec![vec![0xAA, 0xBB], vec![0xCC]],
-                    room: ROOM.into(),
+                    room: WORKSPACE.into(),
                 },
             ),
             (
@@ -957,14 +958,14 @@ mod tests {
             (
                 "identity announcement",
                 NeighbourMsg::IdentityAnnouncement {
-                    workspace: ROOM.into(),
+                    workspace: WORKSPACE.into(),
                     device_cert: device_cert(),
                 },
             ),
             (
                 "identity announcement v2",
                 NeighbourMsg::IdentityAnnouncementV2 {
-                    workspace: ROOM.into(),
+                    workspace: WORKSPACE.into(),
                     device_cert: device_cert(),
                     revocations: Vec::new(),
                 },
@@ -1009,7 +1010,7 @@ mod tests {
                 NeighbourMsg::AppDocument {
                     peer: 0x00AB_CDEF,
                     app_id: "notes".into(),
-                    cluster_id: ROOM.into(),
+                    cluster_id: WORKSPACE.into(),
                     record_id: "uuid:1c2f".into(),
                     envelope: dummy_envelope(),
                 },
@@ -1019,7 +1020,7 @@ mod tests {
                 NeighbourMsg::AppPresenceV2 {
                     peer: 0x00AB_CDEF,
                     app_id: "notes".into(),
-                    cluster_id: ROOM.into(),
+                    cluster_id: WORKSPACE.into(),
                     presence: PeerPresence {
                         key: vec![4, 5],
                         payload: PeerPresencePayload::Selection { start: 3, end: 8 },
@@ -1032,7 +1033,7 @@ mod tests {
                 NeighbourMsg::RecordContentWant {
                     requester: 0x00AB_CDEF,
                     app_id: "so.tilo.slides".into(),
-                    cluster_id: "room".into(),
+                    cluster_id: "workspace".into(),
                     hash: "ab".into(),
                 },
             ),
@@ -1042,7 +1043,7 @@ mod tests {
                     responder: 0x123_456,
                     requester: 0x00AB_CDEF,
                     app_id: "so.tilo.slides".into(),
-                    cluster_id: "room".into(),
+                    cluster_id: "workspace".into(),
                     hash: "ab".into(),
                     total: 3,
                     offset: 0,
@@ -1262,12 +1263,12 @@ mod tests {
         ),
         (
             "record content want",
-            "17ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162",
+            "17ef9baf050e736f2e74696c6f2e736c6964657309776f726b7370616365026162",
         ),
         (
             "record content piece",
             concat!(
-                "18d6e848ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d02616203",
+                "18d6e848ef9baf050e736f2e74696c6f2e736c6964657309776f726b737061636502616203",
                 "0003010203",
             ),
         ),
@@ -1330,7 +1331,7 @@ mod tests {
         ("live presence", "1b0303010203"),
         (
             "record content lacks",
-            "1d03040e736f2e74696c6f2e736c6964657304726f6f6d026162",
+            "1d03040e736f2e74696c6f2e736c6964657309776f726b7370616365026162",
         ),
     ];
 

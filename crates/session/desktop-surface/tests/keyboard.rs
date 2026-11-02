@@ -443,7 +443,7 @@ struct Source {
 
 impl TileSource for Source {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
-        let room = workspace.room().to_string();
+        let workspace = workspace.room().to_string();
         NEXT.with_borrow_mut(|slot| *slot = Some((tab.id, Rc::clone(&self.typed))));
         let definition = ApplicationDefinition {
             app_id: APP.into(),
@@ -458,9 +458,9 @@ impl TileSource for Source {
             opens: &[],
             create: factory,
         };
-        let records = self.owners.open(APP, &room).unwrap();
+        let records = self.owners.open(APP, &workspace).unwrap();
         let views = Rc::new(
-            ui::application_view::InstanceViewStore::new(self.root.clone(), "device", &room)
+            ui::application_view::InstanceViewStore::new(self.root.clone(), "device", &workspace)
                 .unwrap(),
         );
         let permissions =
@@ -640,11 +640,13 @@ fn the_window_shown_first_and_a_window_just_opened_take_the_keyboard() {
         "the desktop's focused window has the keyboard from the start"
     );
 
-    let command = serde_json::from_value(serde_json::json!({
-        "kind": "launch", "generation": "g", "app": APP
-    }))
-    .unwrap();
-    desk.handle.dispatch(&command, "g").unwrap();
+    desk.handle
+        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+            app: APP.into(),
+            beside: None,
+            background: None,
+        })
+        .unwrap();
     desk.settle();
     let opened = desk
         .handle

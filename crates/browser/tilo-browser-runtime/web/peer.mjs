@@ -11,7 +11,7 @@
  * - the live plane (`peer.live`) over WebTransport `moq-lite`
  *   (`live-transport.mjs`), or its HTTPS stream fallback (`live-fallback.mjs`),
  *   admitted by a host grant for this session. Never authority;
- * - the room's calls (`peer.voice`, `voice-peer.mjs`): the session holds the
+ * - the workspace's calls (`peer.voice`, `voice-peer.mjs`): the session holds the
  *   participation, the page's voice carrier follows its grants.
  *
  * The page holds one device key (`device-custody.mjs`): each tab is a
@@ -166,7 +166,7 @@ function expiresWithinADay(stored) {
 const GRANT_RENEW_MS = 60_000;
 /** Rejoining the live plane: the first wait and the longest, exponential
  * between, each jittered by `reconnect.mjs` (`backoffDelay`) so the members
- * of a room whose relay restarted do not all come back in the same tick. */
+ * of a workspace whose relay restarted do not all come back in the same tick. */
 const LIVE_RETRY = {firstMs: 250, factor: 4, capMs: 10_000, jitter: 0.2};
 /** A member's track may be announced a moment after the member: retry a
  * subscription that ended while the member is still present. */
@@ -213,7 +213,7 @@ const unhex = text => Uint8Array.from(text.match(/../g) ?? [], byte => parseInt(
 const hexKey = key => (typeof key === 'string' ? key : Array.from(key ?? [], byte => byte.toString(16).padStart(2, '0')).join(''));
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
-/** A host served over plain HTTP on this machine (`tilo-relay room --web-plain`). */
+/** A host served over plain HTTP on this machine (`tilo-relay workspace --web-plain`). */
 const isLoopbackHttp = url => url.protocol === 'http:' && LOOPBACK.has(url.hostname);
 
 /** `post(path, session, body)` over `fetch` to the host origin: https, or
@@ -238,8 +238,8 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
 const DIRECT_WEBTRANSPORT_BUDGET_MS = 2000;
 
 /**
- * Where a room's live plane is reached from `origin`: its `/moq/live`, both
- * for WebTransport and the HTTPS stream fallback. A room on a loopback
+ * Where a workspace's live plane is reached from `origin`: its `/moq/live`, both
+ * for WebTransport and the HTTPS stream fallback. A workspace on a loopback
  * `http:` origin (local review) serves WebTransport only on its TLS port
  * (`host.webtransportPort`, pinned by `certificateSha256`); its fallback
  * stays on the plain origin. A host behind a proxy that passes HTTP only
@@ -258,19 +258,19 @@ export function liveEndpoints(origin, host = {}) {
 }
 
 /**
- * The live layer of one room — the interface the desktop mount consumes.
+ * The live layer of one workspace — the interface the desktop mount consumes.
  * `peer` is the wasm `WasmPeer`, `runtime` the wasm module (live codec).
  * `participant` (`{label, color}`) is published with this device's
  * presence. With `agent`, the layer publishes as that agent of this device,
  * under its own namespace (`tilo_relay_protocol::web::agent_publisher`),
  * with an agent participant. The grant is asked for once `ready` resolves:
- * the room refuses it until it admitted the device.
+ * the workspace refuses it until it admitted the device.
  *
  * With each grant the person's layer tells the host which video codecs the
- * page decodes (`decodable`, `peer.legacyCodecs`), so the room's sessions
+ * page decodes (`decodable`, `peer.legacyCodecs`), so the workspace's sessions
  * stream legacy windows in one this page plays.
  */
-export function createLiveLayer(peer, runtime, room, {
+export function createLiveLayer(peer, runtime, workspace, {
   origin, endpoint = new URL(LIVE_PATH, origin).href, carriers, participant, agent, ready = Promise.resolve(),
   watching = false,
   decodable = probedCodecs,
@@ -315,11 +315,11 @@ export function createLiveLayer(peer, runtime, room, {
   // A live frame leaves only sealed with the channel keys of the record it
   // names; one this device cannot seal is dropped, never sent in the clear.
   // Sealing and opening run in the session's order, so frames keep theirs.
-  const sealed = bytes => peer.sealLive(room, bytes).then(frame => frame ?? null, () => null);
+  const sealed = bytes => peer.sealLive(workspace, bytes).then(frame => frame ?? null, () => null);
   const opened = (from, payload, handle) => {
     const epoch = memberEpochs.get(from), current = session;
     if (!epoch || !current || stopped) return;
-    peer.openLive(room, payload).then(frame => {
+    peer.openLive(workspace, payload).then(frame => {
       if (frame && !stopped && session === current && memberEpochs.get(from) === epoch) handle(frame);
     }, () => {});
   };
@@ -468,11 +468,11 @@ export function createLiveLayer(peer, runtime, room, {
     if (stopped) return;
     setState(retry === 0 ? 'connecting' : 'reconnecting');
     try {
-      const grant = JSON.parse(agent === undefined ? await peer.liveGrant(room) : await peer.liveGrant(room, agent));
+      const grant = JSON.parse(agent === undefined ? await peer.liveGrant(workspace) : await peer.liveGrant(workspace, agent));
       const opened = await carriers.connect({
         endpoint,
         authorization: unhex(grant.token),
-        namespace: [LIVE_ROOT, grant.room, grant.publisher],
+        namespace: [LIVE_ROOT, grant.workspace, grant.publisher],
         directions: {publish: !watching, subscribe: true},
       });
       if (stopped) { opened.close(); return; }
@@ -504,7 +504,7 @@ export function createLiveLayer(peer, runtime, room, {
   function advertiseCodecs() {
     if (agent !== undefined) return;
     Promise.resolve().then(decodable)
-      .then(codecs => stopped ? false : peer.legacyCodecs(room, JSON.stringify(codecs)))
+      .then(codecs => stopped ? false : peer.legacyCodecs(workspace, JSON.stringify(codecs)))
       .catch(() => {});
   }
   function dropSession() {
@@ -543,10 +543,10 @@ export function createLiveLayer(peer, runtime, room, {
   const isAgent = from => participants.get(from)?.kind === 'agent';
 
   return {
-    room,
+    workspace,
     get state() { return state; },
     get available() { return state === 'live'; },
-    /** This layer's publisher in the room (the device, or its agent), once live. */
+    /** This layer's publisher in the workspace (the device, or its agent), once live. */
     get publisherId() { return publisherId; },
     get memberCount() { return members.size; },
     /** The agent this layer publishes as, or `undefined` for the device. */
@@ -632,7 +632,7 @@ export function createLiveLayer(peer, runtime, room, {
     people: () => [...members].filter(from => !isAgent(from)).map(from => ({
       device: from, name: participants.get(from)?.label ?? '', color: participants.get(from)?.color,
     })),
-    /** Agents present in the room (their presence names them as agents). */
+    /** Agents present in the workspace (their presence names them as agents). */
     agents: () => [...members].filter(isAgent).map(from => ({
       publisher: from, agentId: participants.get(from).label, name: participants.get(from).label,
     })),
@@ -673,7 +673,7 @@ export function createLiveLayer(peer, runtime, room, {
  * @param options.origin         host HTTPS origin (`https://host:port`)
  * @param options.userPublicKey  the user's root public key (hex)
  * @param options.label          device label shown to the approver
- * @param options.room           room uuid to join, optional
+ * @param options.workspace           workspace uuid to join, optional
  * @param options.custody        from `openDeviceCustody`
  * @param options.profile        profile whose durable storage keeps the peer's
  *                               certificates and outbox (with `device`); its
@@ -701,14 +701,14 @@ export function createLiveLayer(peer, runtime, room, {
  *                               device key, certified by an approver)
  * @param options.deviceCertificate  `{cert, hostCert}` JSON this device was
  *                               certified with elsewhere (`joinWorkspace`)
- * @param options.watching       `true`: the page only watches `room`, as a
- *                               public room's spectator (`spectate`). It
- *                               reads the room and what its members seal,
- *                               with keys the room's node hands it, and
+ * @param options.watching       `true`: the page only watches `workspace`, as a
+ *                               public workspace's spectator (`spectate`). It
+ *                               reads the workspace and what its members seal,
+ *                               with keys the workspace's node hands it, and
  *                               writes nothing: no channel access request,
  *                               live join, presence, voice or `here`.
  * @param options.background     `true`: the page keeps this peer beside the
- *                               room in front, only to deliver for it
+ *                               workspace in front, only to deliver for it
  *                               (problem reports to its home workspace).
  *                               The host counts nobody online by it: no
  *                               seat, no face, no online count.
@@ -750,7 +750,7 @@ export async function withCustody(custody, connecting, signal) {
 }
 
 async function connect({
-  origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity, deviceCertificate,
+  origin, userPublicKey, label = 'Browser', workspace, custody, store, runtime, identity, deviceCertificate,
   profile, device, displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
@@ -794,7 +794,7 @@ async function connect({
   const custodyKeyHex = () => [...(custodyForWasm.publicKey ?? [])].map(b => b.toString(16).padStart(2, '0')).join('');
   // The colour this person's presence names, the runtime's for who they are
   // (their user root): the same one a native desktop draws them in. A
-  // desktop settles everyone here over the whole room instead, so people
+  // desktop settles everyone here over the whole workspace instead, so people
   // here together never share one.
   const ownColor = () => runtime.presenceColor(userPublicKey);
   const carriersFor = info => {
@@ -852,7 +852,7 @@ async function connect({
   };
   let snapshot = {phase: 'authenticating', records: []};
   // The session's remote-action events are taken once per change and read
-  // by every consumer: agents' and the room's actions share the path.
+  // by every consumer: agents' and the workspace's actions share the path.
   let remoteEvents = '[]';
   const remote = {
     sendRemoteAction: (...args) => peer.sendRemoteAction(...args),
@@ -963,9 +963,9 @@ async function connect({
     for (const entry of [...surfaces.values()]) await entry.mount?.flush?.();
     peer.clearFailure(undefined, undefined);
   }
-  /** Subscribe the rooms anew; resolves once the host admitted them again. */
+  /** Subscribe the workspaces anew; resolves once the host admitted them again. */
   async function refreshCheckpoint() {
-    if (!room) { peer.refresh(); return; }
+    if (!workspace) { peer.refresh(); return; }
     let resubscribed = false;
     const admitted = untilSnapshot(current => {
       const admission = current.health?.admission;
@@ -1051,22 +1051,22 @@ async function connect({
       channelVault,
     );
     peer.subscribe(publish);
-    if (room) {
-      // A room of the person's own its host does not govern yet is placed
+    if (workspace) {
+      // A workspace of the person's own its host does not govern yet is placed
       // there under the workspace's name.
-      peer.joinRoom(room, workspaceName);
+      peer.joinWorkspace(workspace, workspaceName);
       if (liveEnabled) {
-        live = createLiveLayer(peer, runtime, room, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, watching, participant: {
+        live = createLiveLayer(peer, runtime, workspace, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, watching, participant: {
           kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity,
         }});
       }
       agents?.dispose();
       actions?.dispose();
-      voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, room, ...voiceOptions});
+      voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, workspace, ...voiceOptions});
       const hostDevice = hexKey(host.hostCert?.device_public_key);
-      agents = hostDevice ? createAgents({peer: remote, runtime, room, live, userPublicKey, hostDevice}) : undefined;
+      agents = hostDevice ? createAgents({peer: remote, runtime, workspace, live, userPublicKey, hostDevice}) : undefined;
       actions = hostDevice
-        ? createActions({peer: remote, room, hostDevice, device: custodyKeyHex(), userPublicKey, store})
+        ? createActions({peer: remote, workspace, hostDevice, device: custodyKeyHex(), userPublicKey, store})
         : undefined;
     }
     publish();
@@ -1075,7 +1075,7 @@ async function connect({
   function agentLive(agent) {
     let layer = agentLayers.get(agent);
     if (!layer && live) {
-      layer = createLiveLayer(peer, runtime, room, {
+      layer = createLiveLayer(peer, runtime, workspace, {
         origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, agent, watching,
         participant: {label: agent.slice(0, 32), color: runtime.presenceColor(`agent:${agent}`)},
       });
@@ -1113,11 +1113,11 @@ async function connect({
     throw error;
   }
 
-  // Leaving the page leaves the room's live plane at once: closing its
+  // Leaving the page leaves the workspace's live plane at once: closing its
   // sessions withdraws this page's announcement, so everyone else takes its
   // pointer and face down now, not when the link times out. Its host
   // session ends with it, by beacon (the one request a leaving page still
-  // sends), so the room stops counting the page now too, not once its polls
+  // sends), so the workspace stops counting the page now too, not once its polls
   // are missed. A page kept to come back to (`persisted`) is frozen, not
   // gone.
   const page = typeof globalThis.addEventListener === 'function' ? globalThis : null;
@@ -1162,38 +1162,38 @@ async function connect({
   signal?.addEventListener('abort', dispose, {once: true});
 
   const membership = createMembership({
-    rooms: request => peer.rooms(request), room, displayName,
+    workspaces: request => peer.govern(request), workspace, displayName,
     preAdmit: identity ? options => peer.preAdmit(identity, options) : undefined,
   });
   const certifiedPeer = {
     get host() { return host; },
-    /** The host origin and room this peer is in, as a link names them; the
-     * room is undefined for a peer that joined none. */
+    /** The host origin and workspace this peer is in, as a link names them; the
+     * workspace is undefined for a peer that joined none. */
     origin: new URL(origin).origin,
-    room,
+    workspace,
     /** The person (user root, hex) this device is certified as. */
     userPublicKey,
     /** The person's name, as history and presence show it from now on. */
     get displayName() { return displayName; },
-    /** The room's name as its people last set it (the workspace in front on
-     * its shared desktop), once the room delivered it; else `undefined`. */
+    /** The workspace's name as its people last set it (the workspace in front on
+     * its shared desktop), once the workspace delivered it; else `undefined`. */
     get workspaceName() {
       // Asked after a failure too, when the session may be gone.
       try { return peer?.workspaceName?.() ?? undefined; } catch { return undefined; }
     },
     setDisplayName: name => rename(name),
-    /** Issue an invitation to the room (`membership.mjs`): resolves to its
-     * text. A watching page has none to give: it is not in the room. */
+    /** Issue an invitation to the workspace (`membership.mjs`): resolves to its
+     * text. A watching page has none to give: it is not in the workspace. */
     ...(watching ? {} : {createInvitation: options => membership.createInvitation(options)}),
-    /** The room's members, waiting people and invitations, for its owner
+    /** The workspace's members, waiting people and invitations, for its owner
      * (`membership.mjs`): `list()`, `admit`, `decline`, `setRole`,
      * `remove`, `cancelInvitation`. */
     get membership() { return membership; },
     /** The workspaces the host governs (`membership.mjs`): `list()`,
-     * `create(name)`, `enter(room)`; needs no room. */
-    workspaces: createWorkspaces({rooms: request => peer.rooms(request)}),
+     * `create(name)`, `enter(workspace)`; needs no workspace. */
+    workspaces: createWorkspaces({workspaces: request => peer.govern(request)}),
     getSnapshot: () => snapshot,
-    /** How many changes this page made to the room's records and sent:
+    /** How many changes this page made to the workspace's records and sent:
      * above zero once the person posted or created something. */
     authoredChanges: () => peer?.authoredChanges?.() ?? 0,
     /** Diagnostic text of the page's channel membership (not a contract). */
@@ -1202,16 +1202,16 @@ async function connect({
     /** Read the session's own status after every change to it (`onStatus`),
      * so a page can follow it rather than only its first snapshot. */
     onStatus(listener) { statusListeners.add(listener); return () => statusListeners.delete(listener); },
-    /** The live layer of the joined room, or `undefined` without a room. */
+    /** The live layer of the joined workspace, or `undefined` without a workspace. */
     get live() { return live; },
-    /** The room's agents (`agents.mjs`), or `undefined` without a room. */
+    /** The workspace's agents (`agents.mjs`), or `undefined` without a workspace. */
     get agents() { return agents; },
     /** Send input `events` for the legacy window `surface` (16 hex) that
-     * `publisher` (64 hex) streams in the room; resolves whether the host
+     * `publisher` (64 hex) streams in the workspace; resolves whether the host
      * took them. With no events: whether this device may drive it. */
     legacyInput(publisher, surface, events) {
-      if (!room || !peer) return Promise.resolve(false);
-      return peer.legacyInput(room, publisher, surface, JSON.stringify(events));
+      if (!workspace || !peer) return Promise.resolve(false);
+      return peer.legacyInput(workspace, publisher, surface, JSON.stringify(events));
     },
     /** This person as their presence names them: `{label, color}`. */
     get participant() {
@@ -1233,15 +1233,15 @@ async function connect({
      * updated_ms}]`. */
     async here(window, actions = []) {
       // A watching page is not listed: it would only post for itself.
-      if (!room || !peer || watching) return [];
-      const lines = JSON.parse(await peer.here(room, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
+      if (!workspace || !peer || watching) return [];
+      const lines = JSON.parse(await peer.here(workspace, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
       // Someone else here already goes by this person's drawn name: they
-      // take another, so the room and what it is bridged with tell them apart.
+      // take another, so the workspace and what it is bridged with tell them apart.
       const redrawn = drawName?.(displayName, lines);
       if (redrawn && redrawn !== displayName) rename(redrawn);
       return lines;
     },
-    /** Who draws this person's name again when it collides in the room:
+    /** Who draws this person's name again when it collides in the workspace:
      * `(current, lines) => name | null`, or `null` once they chose one. */
     setNameDrawer(draw) { drawName = typeof draw === 'function' ? draw : null; },
     /** The host's fetch proxy for this page's apps (`fetch-proxy.mjs`):
@@ -1258,13 +1258,13 @@ async function connect({
       if (!peer) return null;
       return (await peer.nodeSession()) ?? null;
     },
-    /** The room's app actions (`actions.mjs`), or `undefined` without a room. */
+    /** The workspace's app actions (`actions.mjs`), or `undefined` without a workspace. */
     get actions() { return actions; },
     /** Bind feedback before mounting the desktop. The destination only selects
      * an existing text channel: Rust obtains identity and current capabilities
      * from the authenticated owner. This creates no membership or grant. */
     async configureFeedback(destination) {
-      if (!room || destination?.room !== room || disposed) throw new Error('Feedback needs this existing room');
+      if (!workspace || destination?.room !== workspace || disposed) throw new Error('Feedback needs this existing workspace');
       await certifiedPeer.whenRecord('so.tilo.chat', '', {signal});
       if (typeof peer?.configureFeedback !== 'function') throw new Error('Feedback delivery is unavailable in this runtime');
       peer.configureFeedback(JSON.stringify(destination));
@@ -1277,9 +1277,9 @@ async function connect({
       }, 30_000, 'Feedback owner admission timed out');
     },
     feedbackStatus: () => peer?.feedbackStatus?.() ?? 'unconfigured',
-    /** Send this room's reports through `carrier`, the page's peer in the
-     * room whose channel takes them (a web host's home workspace): reports
-     * reach it from whichever room the page is in. */
+    /** Send this workspace's reports through `carrier`, the page's peer in the
+     * workspace whose channel takes them (a web host's home workspace): reports
+     * reach it from whichever workspace the page is in. */
     sendFeedbackThrough(carrier) {
       const id = carrier?.runtimeId;
       if (disposed || typeof id !== 'number') throw new Error('Feedback needs a connected peer to send through');
@@ -1289,12 +1289,12 @@ async function connect({
 
     /** Public address of this admitted session; it conveys no authority. */
     get resourceScope() {
-      if (disposed || snapshot.phase !== 'ready' || !actions || !room) return undefined;
-      return {origin: new URL(origin).origin, room,
+      if (disposed || snapshot.phase !== 'ready' || !actions || !workspace) return undefined;
+      return {origin: new URL(origin).origin, workspace,
         hostDevice: hexKey(host.hostCert?.device_public_key)};
     },
     /** Fresh permission-filtered metadata for a record-local shared resource.
-     * The host-issued source provider is required; this never joins a room,
+     * The host-issued source provider is required; this never joins a workspace,
      * grants access, follows a peer or navigates as a side effect. */
     resolveResource(reference, provider) {
       const connection = actions;
@@ -1312,20 +1312,20 @@ async function connect({
         waitRecord: (app, record) => certifiedPeer.whenRecord(app, record, {signal}),
         mount: ({app, record}) => certifiedPeer.mountDesktop(target, {app, record, signal})});
     },
-    /** The room's calls (`voice-peer.mjs`), or `undefined` without a room. */
+    /** The workspace's calls (`voice-peer.mjs`), or `undefined` without a workspace. */
     get voice() { return voice; },
     /** `actions` in the frozen `actionsV1` contract. */
     get actionsV1() { return actions?.v1; },
     /** This peer in the wasm runtime, for mounts that replicate through it. */
     get runtimeId() { return peer?.id; },
-    /** The desktop mount (`host.mjs`) in this peer's profile and room.
+    /** The desktop mount (`host.mjs`) in this peer's profile and workspace.
      * `options.surfaceId` names the surface in SessionHealth failures and
      * `retry-desktop`/`retry-asset` requests (default `surface-N`); the
      * mount carries it as `surfaceId`. */
     async mountDesktop(target, options = {}) {
       const surface = await surfaceModule();
       if (typeof surface.mountDesktop !== 'function') throw new Error('desktop mount is unavailable');
-      const scope = {...(profile ? {profile, device} : {}), ...(room ? {room} : {})};
+      const scope = {...(profile ? {profile, device} : {}), ...(workspace ? {workspace} : {})};
       const {surfaceId = `surface-${++surfaceCount}`, onStatus: forward, ...rest} = options;
       if (surfaces.has(surfaceId)) throw new Error(`desktop surface ${surfaceId} is already mounted`);
       const entry = {id: surfaceId, mount: undefined, generation: 0, presented: false, waiters: new Set(), recovering: undefined};
@@ -1351,7 +1351,7 @@ async function connect({
       if (invokeAction) mount.invokeAction = (...args) => { presence.acted(); return invokeAction(...args); };
       return mount;
     },
-    /** Resolves once the host admitted the room (`phase === 'ready'`);
+    /** Resolves once the host admitted the workspace (`phase === 'ready'`);
      * rejects when it refused this device. */
     whenReady({signal, timeoutMs = 30_000} = {}) {
       return new Promise((resolve, reject) => {
@@ -1369,18 +1369,18 @@ async function connect({
         };
         if (signal?.aborted) { abort(); return; }
         // Not a refusal: the host has not answered yet.
-        timer = setTimeout(() => finish(new DOMException('Room admission timed out', 'TimeoutError')), timeoutMs);
+        timer = setTimeout(() => finish(new DOMException('Workspace admission timed out', 'TimeoutError')), timeoutMs);
         listeners.add(check); pendingRecordWaits.add(finish);
         signal?.addEventListener('abort', abort, {once: true});
         check(snapshot);
       });
     },
-    /** The room's records this page holds, open in a mount or received:
-     * `[{app, record}]` (a package's room document has record `''`). */
-    records: () => JSON.parse(peer?.roomRecords?.() ?? '[]'),
-    /** Whether this page holds the room's record `record` of `app`. */
+    /** The workspace's records this page holds, open in a mount or received:
+     * `[{app, record}]` (a package's workspace document has record `''`). */
+    records: () => JSON.parse(peer?.workspaceRecords?.() ?? '[]'),
+    /** Whether this page holds the workspace's record `record` of `app`. */
     hasRecord,
-    /** Resolves once the room's record `record` of `app` reached this page. */
+    /** Resolves once the workspace's record `record` of `app` reached this page. */
     whenRecord(app, record, {timeoutMs = 30_000, signal} = {}) {
       return new Promise((resolve, reject) => {
         if (signal?.aborted) { reject(signal.reason); return; }
@@ -1397,7 +1397,7 @@ async function connect({
           if (peer !== source || snapshot.phase === 'failed') { finish(new Error('Shared resource connection changed')); return; }
           if (hasRecord(app, record)) finish();
         };
-        const timer = setTimeout(() => finish(new Error(`the room sent no ${app} record ${record}`)), timeoutMs);
+        const timer = setTimeout(() => finish(new Error(`the workspace sent no ${app} record ${record}`)), timeoutMs);
         listeners.add(check); pendingRecordWaits.add(finish);
         signal?.addEventListener('abort', abort, {once: true});
       });
@@ -1452,7 +1452,7 @@ async function connect({
       throw new TypeError(`unsupported recovery ${request?.kind}`);
     },
     /** Report the page store's durability of a record to SessionHealth. */
-    setLocalState: (app, recordRoom, record, state) => peer.setLocalState(app, recordRoom, record, state),
+    setLocalState: (app, workspace, record, state) => peer.setLocalState(app, workspace, record, state),
     dispose,
   };
   return certifiedPeer;
@@ -1480,7 +1480,7 @@ const invitationBytes = invitation => {
 
 /**
  * What an invitation (its signed bytes, or them as base64/base64url) offers
- * at the host `relayUrl`: `{workspaceName, role, room, workspaceId,
+ * at the host `relayUrl`: `{workspaceName, role, workspace, workspaceId,
  * expiresAtNs, inviter}`. `inviter` is `{name, userPublicKey}` as the host
  * signed it into the invitation, or undefined when it names nobody.
  */
@@ -1506,7 +1506,7 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
  * holds their root approves it. Then, with `admission` (resolving to the
  * host's `{invitation, admissionToken, origin?}` for the person), the
  * device joins that workspace as a device of theirs; without, it connects
- * to `room`. Takes `connectPeer`'s other options; the device key is
+ * to `workspace`. Takes `connectPeer`'s other options; the device key is
  * `custody`, else a free one of `profile` (default the person's profile for
  * that host). Resolves to the `CertifiedPeer`.
  */
@@ -1537,9 +1537,9 @@ const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '
  * Join the workspace `invitation` (as `inspectInvitation` takes) offers at
  * `origin`, as `identity` (default the current one): this page's device for
  * that host is certified by the person's own root, the request waits for
- * the room's owner (`onProgress({phase: 'waiting'})`, polled every
+ * the workspace's owner (`onProgress({phase: 'waiting'})`, polled every
  * `pollMs`), and once admitted the page connects. Resolves to the
- * `CertifiedPeer` in the room; rejects when declined or refused. A page that
+ * `CertifiedPeer` in the workspace; rejects when declined or refused. A page that
  * reloads while waiting asks again under the same request. With
  * `admissionToken` (the one-time token of the owner's pre-admission for this
  * invitation) the host admits the page at once.
@@ -1556,7 +1556,7 @@ export async function joinWorkspace(options) {
 /**
  * The certificate (`{cert, hostCert}` JSON) this profile's device already
  * holds from the host answering at `post`, as the person `identity`, or
- * `null`. A room keeps the certificate of every device it admitted, also
+ * `null`. A workspace keeps the certificate of every device it admitted, also
  * once its person left (removed, or pruned after an absence), and admits
  * that device again only under the same certificate: a device that holds
  * one asks under it rather than certify itself anew. Read from `store`, else
@@ -1647,7 +1647,7 @@ async function join({
   forget();
   onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});
   return connect({
-    ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, room: reply.room, label, displayName, custody, runtime, signal,
+    ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, workspace: reply.room, label, displayName, custody, runtime, signal,
     profile: connectOptions.store ? undefined : profile,
     // Certificates go on as the text they were kept or written as: their
     // nanosecond timestamps exceed what a JavaScript number holds exactly

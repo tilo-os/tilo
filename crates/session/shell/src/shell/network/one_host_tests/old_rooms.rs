@@ -51,8 +51,8 @@ fn a_device_with_a_former_engines_workspace_starts_and_its_host_places_it_as_it_
     // A file its apps kept in that workspace's room.
     let data_home = launcher::appdir::host_data_home().expect("a data home");
     let room_files = data_home
-        .join(launcher::appdir::ROOMS_DIR)
-        .join(launcher::appdir::room_slug(Some(OLD_ROOM)));
+        .join(launcher::appdir::WORKSPACES_DIR)
+        .join(launcher::appdir::workspace_slug(Some(OLD_ROOM)));
     std::fs::create_dir_all(&room_files).unwrap();
     let kept = room_files.join("notes.txt");
     std::fs::write(&kept, b"written before the one host").unwrap();

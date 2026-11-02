@@ -1,6 +1,6 @@
 //! Settings' common actions are found by every word people use for them.
 
-use ui::tilo_resource::{Effect as _, Resource as _, declaration_spec};
+use ui::tilo_resource::{Effect as _, EffectDecl, Resource as _, declaration_spec};
 
 /// Each word people use for one of the app's common actions ranks that
 /// action among the app's first three, on the fields every search ranks an
@@ -12,12 +12,12 @@ fn people_find_settings_actions_by_the_words_they_use() {
     actions.extend(
         <settings::panes::audio::AudioEffect>::declarations()
             .iter()
-            .map(|effect| effect.spec(<settings::panes::audio::AudioEffect>::OPERATION)),
+            .map(EffectDecl::spec_of::<settings::panes::audio::AudioEffect>),
     );
     actions.extend(
         <settings::panes::display::DisplayEffect>::declarations()
             .iter()
-            .map(|effect| effect.spec(<settings::panes::display::DisplayEffect>::OPERATION)),
+            .map(EffectDecl::spec_of::<settings::panes::display::DisplayEffect>),
     );
     // The screen reader is turned on by the `accessibility` section's verb.
     actions.extend(
@@ -28,14 +28,12 @@ fn people_find_settings_actions_by_the_words_they_use() {
     actions.extend(
         <settings::panes::appearance::AppearanceEffect>::declarations()
             .iter()
-            .map(|effect| effect.spec(<settings::panes::appearance::AppearanceEffect>::OPERATION)),
+            .map(EffectDecl::spec_of::<settings::panes::appearance::AppearanceEffect>),
     );
     actions.extend(
         <settings::panes::keyboard_shortcuts::ShortcutEffect>::declarations()
             .iter()
-            .map(|effect| {
-                effect.spec(<settings::panes::keyboard_shortcuts::ShortcutEffect>::OPERATION)
-            }),
+            .map(EffectDecl::spec_of::<settings::panes::keyboard_shortcuts::ShortcutEffect>),
     );
     // Shortcuts are rebound by the `shortcuts` section's own verbs.
     actions.extend(
@@ -51,17 +49,17 @@ fn people_find_settings_actions_by_the_words_they_use() {
     actions.extend(
         <settings::panes::network::NetworkEffect>::declarations()
             .iter()
-            .map(|effect| effect.spec(<settings::panes::network::NetworkEffect>::OPERATION)),
+            .map(EffectDecl::spec_of::<settings::panes::network::NetworkEffect>),
     );
     actions.extend(
         <settings::panes::bluetooth::BluetoothEffect>::declarations()
             .iter()
-            .map(|effect| effect.spec(<settings::panes::bluetooth::BluetoothEffect>::OPERATION)),
+            .map(EffectDecl::spec_of::<settings::panes::bluetooth::BluetoothEffect>),
     );
     actions.extend(
         <settings::panes::mouse_keyboard::InputEffect>::declarations()
             .iter()
-            .map(|effect| effect.spec(<settings::panes::mouse_keyboard::InputEffect>::OPERATION)),
+            .map(EffectDecl::spec_of::<settings::panes::mouse_keyboard::InputEffect>),
     );
     // The data used is started again and forgotten by the `network_usage`
     // section's verbs.

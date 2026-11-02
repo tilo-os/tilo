@@ -9,7 +9,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_desktop_model::WorkspaceId;
 use tilo_overview::{
     OverviewApp, OverviewEffect, OverviewPick, OverviewSeat, OverviewSurface, fixture,
 };
@@ -136,66 +135,20 @@ fn the_keyboard_walks_the_windows_and_enter_goes_to_one() {
 }
 
 #[test]
+fn the_overviews_own_verbs_show_and_close_it() {
+    let (mut app, seat) = seated();
+    app.effect(&OverviewEffect::Close).unwrap();
+    assert!(!seat.presentation().is_open(), "close takes it away");
+    app.effect(&OverviewEffect::Open).unwrap();
+    assert!(seat.take_open_asked(), "open asks the shell for it");
+}
+
+#[test]
 fn escape_leaves_the_overview_where_it_was() {
     let (mut app, seat) = seated();
     key(&mut app, "Escape");
     assert!(seat.take_asked().is_empty());
     assert!(!seat.presentation().is_open());
-}
-
-#[test]
-fn every_action_reaches_the_shell_as_what_it_asks() {
-    let (mut app, seat) = seated();
-    app.effect(&OverviewEffect::MoveWindow {
-        window: "Week 44".into(),
-        workspace: "Research".into(),
-    })
-    .unwrap();
-    app.effect(&OverviewEffect::RenameStrip {
-        strip: "Reading".into(),
-        name: "Later".into(),
-    })
-    .unwrap();
-    app.effect(&OverviewEffect::CloseWindow {
-        window: "~/src/tilo".into(),
-    })
-    .unwrap();
-    assert_eq!(
-        seat.take_asked(),
-        vec![
-            OverviewPick::MoveWindow {
-                tab: 106,
-                to: WorkspaceId(2)
-            },
-            OverviewPick::RenameStrip {
-                strip: fixture::READING,
-                name: "Later".into()
-            },
-            OverviewPick::CloseWindow(104),
-        ]
-    );
-    assert!(
-        seat.presentation().is_open(),
-        "editing the desktop keeps the overview up"
-    );
-    app.effect(&OverviewEffect::SwitchWorkspace {
-        workspace: "research".into(),
-    })
-    .unwrap();
-    assert_eq!(
-        seat.take_asked(),
-        vec![OverviewPick::Workspace(WorkspaceId(2))]
-    );
-    assert!(!seat.presentation().is_open());
-    assert!(
-        app.effect(&OverviewEffect::FocusWindow {
-            window: "Atlantis".into()
-        })
-        .is_err(),
-        "a window that is not there"
-    );
-    app.effect(&OverviewEffect::Open).unwrap();
-    assert!(seat.take_open_asked());
 }
 
 #[test]

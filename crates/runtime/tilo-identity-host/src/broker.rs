@@ -1045,7 +1045,7 @@ mod tests {
             .expect("device key");
         let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
-        let mut committed = Workspace::in_room(WorkspaceId(1), workspace, "Workspace");
+        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
         committed.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
@@ -1322,7 +1322,7 @@ params = []
         let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .expect("device key");
         let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
-        let mut committed = Workspace::in_room(WorkspaceId(1), workspace, "Workspace");
+        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
         committed.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
@@ -1387,7 +1387,7 @@ params = []
             .unwrap()
             .unwrap();
         let original = std::fs::read(&profile.record_path).unwrap();
-        let mut committed = Workspace::in_room(WorkspaceId(1), workspace, "Workspace");
+        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
         committed.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
@@ -1493,7 +1493,7 @@ params = []
         let profile = crate::registry::selected_identity_profile(&workspace_id)
             .expect("registry")
             .expect("profile");
-        let mut committed = Workspace::in_room(WorkspaceId(1), workspace, "Workspace");
+        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
         committed.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
@@ -1793,7 +1793,7 @@ params = []
         let profile = crate::registry::selected_identity_profile(&fixture.workspace)
             .expect("registry")
             .expect("profile");
-        let mut committed = Workspace::in_room(WorkspaceId(1), workspace, "Workspace");
+        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
         committed.set_owner(profile.principal_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);

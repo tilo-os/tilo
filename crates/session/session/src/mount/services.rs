@@ -101,6 +101,8 @@ pub(crate) struct Collaboration<'a> {
     pub revocations: crate::engine::Revocations,
     pub sync: Option<&'a crate::sync::Client>,
     pub sealed: Sealed,
+    /// The records' content this session keeps and asks the workspaces for.
+    pub content: Option<std::sync::Arc<crate::content::Plane>>,
 }
 
 /// The plane the apps read and invoke this session's services on, when it
@@ -123,6 +125,7 @@ pub(crate) fn start_action_plane(
         revocations,
         sync,
         sealed,
+        content,
     } = collaboration;
     let path = match &options.action_plane {
         ActionPlane::Off => return Ok(None),
@@ -136,8 +139,27 @@ pub(crate) fn start_action_plane(
     };
     let link = plane::Link::new(options.wake.handle());
     // What the broker decides against, from this pass on: the desk as it is
-    // before the person touches anything, and every desk it shows after.
-    let desk = std::sync::Arc::new(DeskAuthority::new(handle.read(Clone::clone), revocations));
+    // before the person touches anything, and every desk it shows after. It
+    // journals what it admits on the person's behalf beside this device's
+    // desk, so a shortcut a trigger starts survives the session stopping
+    // mid-run — once, as it would have run.
+    let journal = match options.state.as_deref() {
+        Some(state) => {
+            let mut path = crate::desk_doc::path(state).into_os_string();
+            path.push(".invocations");
+            let path = std::path::PathBuf::from(path);
+            if let Some(directory) = path.parent() {
+                std::fs::create_dir_all(directory)?;
+            }
+            Some(path)
+        }
+        None => None,
+    };
+    let desk = std::sync::Arc::new(DeskAuthority::new(
+        handle.read(Clone::clone),
+        revocations,
+        journal,
+    ));
     // The workspace's activity, as the apps this session runs read it: the
     // same model the desk serves its own windows.
     let activity_wire = activity_provider::wire(activity.requests());
@@ -171,18 +193,22 @@ pub(crate) fn start_action_plane(
             sync.engine().map(|engine| engine.keys()),
             roster,
             options.questions.clone(),
+            sync.own().user,
         );
         service.install_factory(std::sync::Arc::new(crate::calls::Factory::new(sources)));
         service
     });
     // An app's action on another of the person's own devices leaves through
     // the plane the collaboration endpoint runs.
-    let own_device = sync
-        .and_then(crate::sync::Client::device_actions)
-        .map(|actions| {
-            std::sync::Arc::new(actions)
-                as std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>
-        });
+    let actions = sync.and_then(crate::sync::Client::device_actions);
+    let own_device = actions.clone().map(|actions| {
+        std::sync::Arc::new(actions)
+            as std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>
+    });
+    // An offloadable action runs where a device of its workspace would run it
+    // sooner: the round asks them over that same plane, and what the device
+    // that wins produced is kept in the content this session keeps.
+    let action_offload = offload_route(actions.as_ref(), content.as_ref());
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
@@ -203,15 +229,14 @@ pub(crate) fn start_action_plane(
             sealed,
             own_device,
             engine: sync.and_then(crate::sync::Client::engine).cloned(),
+            record_content: content,
+            action_offload,
         },
     )?;
     // What arrives on this device's action plane is answered by the broker
     // that now serves: another of the person's devices runs nothing here the
     // person in front of it could not.
-    let arriving = (
-        sync.and_then(crate::sync::Client::device_actions),
-        broker.app_action_broker(),
-    );
+    let arriving = (actions, broker.app_action_broker());
     if let (Some(actions), Some(host)) = arriving {
         actions.install(host.device_host());
     }
@@ -223,6 +248,19 @@ pub(crate) fn start_action_plane(
         calls,
         calls_service,
     }))
+}
+
+/// Where an app's offloadable action runs: the round this device's plane asks
+/// the invoking workspace's other devices, keeping what the device that wins
+/// produced in `content` — the store the invoking app reads its output from.
+/// `None` when this session has no device plane or keeps no content to weigh
+/// the job by, so every offloadable action runs here.
+fn offload_route(
+    actions: Option<&crate::device_actions::DeviceActions>,
+    content: Option<&std::sync::Arc<crate::content::Plane>>,
+) -> Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>> {
+    let (actions, content) = (actions?, content?);
+    actions.offload_route(std::sync::Arc::clone(content))
 }
 
 /// The person's private messages, published beside the other services: the

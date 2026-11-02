@@ -214,7 +214,7 @@ mod tests {
     use crate::chrome::ArrivalNotice;
     use tilo_desktop_model::{Collaborator, DesktopTree, Workspace, WorkspaceId};
 
-    fn room() -> DesktopTree {
+    fn desk() -> DesktopTree {
         let mut workspace = Workspace::new(WorkspaceId(1), "Hacked");
         workspace.collaborators = vec![
             Collaborator::new("ada", "Ada Lovelace"),
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn arriving_slides_a_short_name_out_of_the_faces_for_a_moment() {
         ui::i18n::I18nManager::init("en-US");
-        let tree = room();
+        let tree = desk();
         let chrome = FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         bar.sync_from_tree(&tree);
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn the_status_going_damages_only_where_it_stood() {
         ui::i18n::I18nManager::init("en-US");
-        let tree = room();
+        let tree = desk();
         let chrome = FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         bar.sync_from_tree(&tree);
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn what_the_people_here_see_opens_your_menu() {
         ui::i18n::I18nManager::init("en-US");
-        let tree = room();
+        let tree = desk();
         let chrome = FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         bar.sync_from_tree(&tree);

@@ -157,7 +157,7 @@ mod tests {
         std::fs::create_dir(&watched).expect("the watched folder");
         let mut watch = FolderWatch::default();
         watch.watch(vec![WatchedFolder {
-            room: "room".into(),
+            workspace: "workspace".into(),
             capability: "inbox-read".into(),
             path: watched.clone(),
         }]);
@@ -175,7 +175,7 @@ mod tests {
         }
         assert!(
             seen.iter()
-                .all(|change| change.capability == "inbox-read" && change.room == "room"),
+                .all(|change| change.capability == "inbox-read" && change.workspace == "workspace"),
             "{seen:?}"
         );
         assert!(
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn a_file_is_reported_once_it_stops_changing() {
         let folder = WatchedFolder {
-            room: "room".into(),
+            workspace: "workspace".into(),
             capability: "inbox-read".into(),
             path: PathBuf::from("/var/workspace/inbox"),
         };

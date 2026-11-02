@@ -2,8 +2,8 @@
 """Measure a running device through tilo-vm, in a Notes notebook of its own.
 
 Every Notes window in a workspace opens that workspace's notebook, so the
-capture first creates a workspace (a new room), opens Notes there and
-addresses every Notes action by that room and record (`scratch_notes`). It
+capture first creates a workspace, opens Notes there and
+addresses every Notes action by that workspace and record (`scratch_notes`). It
 never reads from or writes to a notebook that existed before the run.
 
 Uses the normal semantic app actions and kernel input path. Missing state or
@@ -44,14 +44,16 @@ def require_scratch(state, page, count):
 
 
 def require_keyboard_notes(state, notes):
-    """Refuse input unless the keyboard goes to the one Notes surface of the scratch room."""
+    """Refuse input unless the keyboard goes to the one Notes surface of the scratch
+    workspace."""
     focus = state["chrome"]["seat_focus"]
     keyboard = focus.get("keyboard") or {}
     surfaces = notes.surfaces(state)
     if (len(surfaces) != 1 or keyboard.get("app_id") != NOTES_APP
             or keyboard.get("root_surface") != surfaces[0]
             or focus.get("routed_keyboard_surface") != surfaces[0]):
-        raise RuntimeError("The compositor keyboard is not routed to the scratch room's Notes surface")
+        raise RuntimeError(
+            "The compositor keyboard is not routed to the scratch workspace's Notes surface")
 
 
 class Device:
@@ -113,7 +115,7 @@ class Device:
     def action(self, operation, payload, resource=None):
         """Invoke one Notes operation of the scratch notebook, never any other."""
         if self.notes is None:
-            raise RuntimeError("No scratch Notes room is open; refusing to address any notebook")
+            raise RuntimeError("No scratch Notes workspace is open; refusing to address any notebook")
         deadline = time.monotonic() + 15
         while True:
             rows = [row for row in self.notes_rows()
@@ -192,7 +194,7 @@ def capture(device, options):
         private_write(options.out / "states.json", json.dumps(states, indent=2))
         private_write(options.out / "capture.json", json.dumps({
             "device": options.device, "slot": options.slot,
-            "scratch_workspace": notes.workspace, "scratch_room": notes.room,
+            "scratch_workspace": notes.workspace, "scratch_workspace_id": notes.workspace_id,
             "scratch_record": notes.record, "scratch_page": page, "samples_requested": options.samples,
             "samples_adopted": len(states), "log_path": log_path,
         }, indent=2))

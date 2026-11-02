@@ -84,12 +84,7 @@ pub trait Service {
 }
 
 /// `resource` offering every action of the vocabulary `E`.
-#[must_use]
-pub fn offer<E: Effect>(resource: ResourceSpec) -> ResourceSpec {
-    let mut resource = resource;
-    resource.actions.extend(E::specs());
-    resource
-}
+pub use tilo_resource::offer;
 
 /// Mark the action `action` of `resource` unavailable, with why: the
 /// device has no such radio, the daemon is not running.

@@ -99,11 +99,11 @@ impl RootSelectedEditor {
             || self.binding.app_id != self.request.app_id
             || self.binding.app_id != selected.app_id
             || self.binding.package_sha256 != selected.package_sha256
-            || self.binding.room != selected.room
+            || self.binding.workspace != selected.room
             || self.binding.resource_record != self.request.resource_record()
             || selected.resource_record != self.request.resource_record()
             || self.binding.shell_context_sha256 != selected.context_sha256
-            || self.binding.room
+            || self.binding.workspace
                 != runtime_collab::retained_person::personal_cluster(
                     &self.input.person_public_key(),
                 )

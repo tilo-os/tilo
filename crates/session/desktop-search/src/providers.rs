@@ -344,13 +344,13 @@ impl Source for Actions {
     }
 }
 
-/// What one app publishes in one room, as the session's action host lists
+/// What one app publishes in one workspace, as the session's action host lists
 /// it: inert descriptors.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PublishedActions {
     pub app: String,
-    /// The room (workspace) it publishes them in.
-    pub room: String,
+    /// The workspace it publishes them in.
+    pub workspace: String,
     pub actions: Vec<tilo_actions::ActionDescriptor>,
 }
 
@@ -374,7 +374,7 @@ impl Published {
     fn row_id(published: &PublishedActions, address: &ActionAddress) -> String {
         format!(
             "{}\u{1f}{}\u{1f}{}\u{1f}{}",
-            published.app, published.room, address.resource, address.action
+            published.app, published.workspace, address.resource, address.action
         )
     }
 }
@@ -420,7 +420,7 @@ impl Source for Published {
                     icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
                     target: Target::Invoke(Box::new(crate::model::InvokeTarget {
                         app: published.app.clone(),
-                        room: published.room.clone(),
+                        workspace: published.workspace.clone(),
                         address: action.address.clone(),
                         arguments: serde_json::Map::new(),
                         descriptor: Some(action.clone()),

@@ -52,7 +52,7 @@ impl ShellNetwork {
                 .as_ref()
                 .map(|home| home.expectation.device_public_key);
             hosted.push(HostedWorkspace {
-                room: room.to_string(),
+                workspace: room.to_string(),
                 name,
                 on_relay: hosts
                     .iter()

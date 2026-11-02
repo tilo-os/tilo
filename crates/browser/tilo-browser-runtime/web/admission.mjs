@@ -1,12 +1,12 @@
 /**
- * Getting into the room a link names, before anything about its target is
+ * Getting into the workspace a link names, before anything about its target is
  * read. In order:
  * 1. the person's own desktop (`/me`) is this browser's, with no peer,
  *    once the home's door let them in where it gates (`ownDesktop`);
  * 2. an invitation is inspected (what the host verified: workspace, role,
  *    inviter), confirmed by the person, then redeemed; a pre-admission
  *    `token` admits at once, otherwise the owner admits while the page waits;
- *    a room service guest `ticket` is spent on this page's pairing code at
+ *    a workspace service guest `ticket` is spent on this page's pairing code at
  *    the redemption door the web host names (`entry.json` `tickets`);
  *    with `pair`, this browser becomes a new device of that person once
  *    one of their devices approves its pairing code (the host relays): the
@@ -15,18 +15,18 @@
  *    (where other tabs hold every device key it has there, this tab goes on
  *    to 4 and 5 as a new device of the person);
  * 4. a host whose listed workspace has an admission door (`workspaces.mjs`)
- *    admits this browser's person at once; a link that names a room there
- *    is followed only if that is the room the person was admitted to;
+ *    admits this browser's person at once; a link that names a workspace there
+ *    is followed only if that is the workspace the person was admitted to;
  * 5. a host this browser set up for its person, or joined as them through
  *    an invitation, is reconnected to with the root the page holds
- *    (`reconnect`); the host decides whether that person is in the room;
+ *    (`reconnect`); the host decides whether that person is in the workspace;
  * 6. anyone else is told they have no access and who can invite them.
- * A scope without a room (the web host's home workspace, whose room the
+ * A scope without a workspace (the web host's home workspace, whose workspace the
  * page learns on admission) can only be entered through its host's door.
- * A link never grants anything: each step is the room's own door. A failure
- * to connect reads the same whether the room is missing or private, so a
- * link never tells a stranger which rooms exist. Only after admission does
- * the page read the room's catalogue to resolve the target.
+ * A link never grants anything: each step is the workspace's own door. A failure
+ * to connect reads the same whether the workspace is missing or private, so a
+ * link never tells a stranger which workspaces exist. Only after admission does
+ * the page read the workspace's catalogue to resolve the target.
  */
 import {parsePairSecret} from './pairing.mjs';
 
@@ -46,14 +46,14 @@ async function ready(peer) {
   return {peer};
 }
 
-/** Admission through `workspace`'s host door, held to the room the link names. */
+/** Admission through `workspace`'s host door, held to the workspace the link names. */
 async function viaHost({workspace, room, deps, onProgress}) {
   onProgress({phase: 'joining'});
-  // The room a link names, if any: what this browser kept for a host set up
+  // The workspace a link names, if any: what this browser kept for a host set up
   // again is offered to be joined again only from the bare entry, where the
-  // door's room is the one the person asked for.
+  // door's workspace is the one the person asked for.
   const peer = await deps.enterViaHost(room ? {workspace, room} : {workspace});
-  if (room && peer?.room && peer.room !== room) {
+  if (room && peer?.workspace && peer.workspace !== room) {
     await peer.dispose?.();
     throw new AdmissionError('no-access', NO_ACCESS);
   }
@@ -120,7 +120,7 @@ export async function admit({scope, secrets = {}, tickets, home = null, deps, on
       // Other tabs hold every device key this browser can get in with: not
       // the host's answer.
       if (error?.name === 'CustodyError' && error.code === 'custody-busy') throw error;
-      // As below: the host's reason could tell a missing room from a private one.
+      // As below: the host's reason could tell a missing workspace from a private one.
       console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');
     }
     if (!peer) throw busy ?? new AdmissionError('no-access', NO_ACCESS);
@@ -142,7 +142,7 @@ export async function admit({scope, secrets = {}, tickets, home = null, deps, on
     // so. (An account with no device key here is no access, as a host's
     // refusal is.)
     if (error?.name === 'CustodyError' && error.code === 'custody-busy') return withoutAccount(error);
-    // The host's reason could tell "no such room" from "not a member".
+    // The host's reason could tell "no such workspace" from "not a member".
     console.warn('admission: connecting failed', error?.code ?? error?.name ?? 'error');
     throw new AdmissionError('no-access', NO_ACCESS);
   }

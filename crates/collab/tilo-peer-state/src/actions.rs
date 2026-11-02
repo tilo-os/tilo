@@ -42,6 +42,8 @@ use iroh::{Endpoint, EndpointAddr};
 use neighbour_wire::actions::{ActionReplayWindow, DeviceAction, PlaneFrame, SignedDeviceAction};
 use neighbour_wire::offer::{Answer, Query, Route, State, Work};
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -114,11 +116,26 @@ const MAX_FOLLOWED: usize = 1024;
 /// [`Replica`]s: the plane then reads a workspace's state when a request names
 /// it, so a revocation, a removal or a new certificate is seen as it
 /// happens rather than as it was when the plane was handed the workspace.
+///
+/// A workspace a view keeps behind a lock of its own (a host holding its
+/// workspaces for their members) is locked for the read, so what is read is
+/// the state that holds then: a copy of the workspace taken out from under
+/// the lock would stop seeing its roster change, because
+/// [`StatePeer`](crate::StatePeer)'s maps are written copy-on-write.
 pub trait Workspaces: Send + Sync {
     /// Read the state of `workspace`, if this device holds it: whether it
     /// did.
-    fn read(&self, workspace: &str, read: &mut dyn FnMut(&crate::StatePeer)) -> bool;
+    fn read<'a>(
+        &'a self,
+        workspace: &'a str,
+        read: &'a mut (dyn FnMut(&crate::StatePeer) + Send),
+    ) -> ReadFuture<'a>;
 }
+
+/// What a [`Workspaces`] view answers a read with: a future of its own,
+/// because a view may wait for a workspace it keeps behind an async lock
+/// before it can read it.
+pub type ReadFuture<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
 
 /// What a device knows of itself when another device of its workspace offers
 /// it work ([`ActionPlane::offers`]).
@@ -260,10 +277,10 @@ impl ActionPlane {
     /// Read one workspace's state, from wherever this device holds it: a
     /// replica handed to [`Self::hold`], else what [`Workspaces`] says of
     /// it.
-    fn read_workspace<R>(
+    async fn read_workspace<R: Send>(
         &self,
         workspace: &str,
-        mut read: impl FnMut(&crate::StatePeer) -> R,
+        mut read: impl FnMut(&crate::StatePeer) -> R + Send,
     ) -> Option<R> {
         let held = self.0.replicas.lock_recover().get(workspace).cloned();
         if let Some(replica) = held {
@@ -271,10 +288,10 @@ impl ActionPlane {
         }
         let workspaces = self.0.workspaces.as_ref()?;
         let mut answer = None;
-        workspaces
+        let held = workspaces
             .read(workspace, &mut |peer| answer = Some(read(peer)))
-            .then_some(())
-            .and(answer)
+            .await;
+        held.then_some(()).and(answer)
     }
 
     /// A host for another device's actions in `workspace`, asked as this
@@ -309,8 +326,7 @@ impl ActionPlane {
     /// The devices of `workspace` that may be offered work, other than this
     /// one: certified, unrevoked and unexpired, its person a member, its
     /// delegation live ([`StatePeer::permissions`](crate::StatePeer::permissions)).
-    #[must_use]
-    pub fn participants(&self, workspace: &str) -> Vec<[u8; 32]> {
+    pub async fn participants(&self, workspace: &str) -> Vec<[u8; 32]> {
         let device = self.device();
         let mut participants = self
             .read_workspace(workspace, |peer| {
@@ -321,6 +337,7 @@ impl ActionPlane {
                     .filter(|source| peer.permissions(*source, now).is_ok())
                     .collect::<Vec<_>>()
             })
+            .await
             .unwrap_or_default();
         participants.retain(|source| *source != device);
         participants.sort_unstable();
@@ -390,15 +407,23 @@ impl ActionPlane {
         answer
     }
 
-    /// Answer one offer: what this device says of itself, or `None` when the
-    /// device that asked may not be told — it is not in this workspace's
-    /// roster, or this device does not hold the workspace.
-    fn answer_offer(&self, remote: [u8; 32], query: &Query) -> Option<Answer> {
+    /// Answer one offer: what this device says of itself, or `None` when
+    /// nothing is to be said — this device does not hold the workspace, it is
+    /// not a member of it, or the device that asked is not.
+    async fn answer_offer(&self, remote: [u8; 32], query: &Query) -> Option<Answer> {
         let now = SystemTime::now();
-        let admitted = self.read_workspace(&query.workspace, |peer| {
-            peer.permissions(remote, now).is_ok()
-        })?;
-        if !admitted {
+        let device = self.device();
+        let (admits_asker, is_member) = self
+            .read_workspace(&query.workspace, |peer| {
+                (
+                    peer.permissions(remote, now).is_ok(),
+                    peer.permissions(device, now).is_ok(),
+                )
+            })
+            .await?;
+        // An offer is answered as a member device: one the workspace's
+        // roster no longer holds offers nothing, as it may act nowhere in it.
+        if !admits_asker || !is_member {
             return None;
         }
         let Some(offering) = self.0.offering.lock_recover().clone() else {
@@ -433,14 +458,14 @@ impl ActionPlane {
     ) -> Option<RemoteActionMessage> {
         let action = signed.action();
         let request = &action.message;
-        match self.authorize(remote, &signed) {
+        match self.authorize(remote, &signed).await {
             Ok((caller, _workspace)) => self.dispatch(&caller, request).await,
             Err(error) => refusal(request, error),
         }
     }
 
     /// The caller a verified request acts as, or why it is refused.
-    fn authorize(
+    async fn authorize(
         &self,
         remote: [u8; 32],
         signed: &SignedDeviceAction,
@@ -478,6 +503,7 @@ impl ActionPlane {
                     .find(|certificate| certificate.device_public_key == source);
                 (authority, certificate)
             })
+            .await
             .ok_or_else(|| ActionHostError::Refused {
                 reason: "this device does not hold that workspace".into(),
             })?;
@@ -685,7 +711,7 @@ impl ActionPlane {
             // unanswered: the asking device takes it as away, and nothing
             // about this one leaves with it.
             PlaneFrame::Offer(query) => {
-                if let Some(state) = self.answer_offer(remote, &query) {
+                if let Some(state) = self.answer_offer(remote, &query).await {
                     let bytes = postcard::to_allocvec(&state).map_err(|error| error.to_string())?;
                     write_frame(&mut send, &bytes).await?;
                 }

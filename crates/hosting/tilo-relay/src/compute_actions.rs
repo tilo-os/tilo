@@ -408,7 +408,7 @@ fn provider_entry() -> CatalogueProvider {
     CatalogueProvider {
         provider: COMPUTE_PROVIDER.into(),
         app_id: COMPUTE_PROVIDER.into(),
-        room: String::new(),
+        workspace: String::new(),
         record_id: String::new(),
         browsable: false,
     }

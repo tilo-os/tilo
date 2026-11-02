@@ -10,7 +10,7 @@ pub(super) fn link_host() -> tilo_actions::remote::TestHost {
             Ok(tilo_actions::remote::CataloguePage {
                 locator: Some(tilo_actions::remote::ResourceViewLocator {
                     origin: "https://host.example".into(),
-                    room: "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90".into(),
+                    workspace: "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90".into(),
                     host_device: "ab".repeat(32),
                     provider: query.provider.unwrap_or_default(),
                     web_entry: Some("https://tilo.so/".into()),

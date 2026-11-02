@@ -23,7 +23,7 @@
 #   KEY_FILE=… KARGS=…
 #
 # When the disk is large enough (tilo-store-volume plan), the root is followed
-# by the room store: a LUKS2 + Btrfs partition of its own, which the storage
+# by the store: a LUKS2 + Btrfs partition of its own, which the storage
 # daemon's native data plane needs. Its
 # key file is persistent — the installer moves it into the encrypted root,
 # from where the store unlocks without a second prompt — and `enrol
@@ -533,7 +533,7 @@ cmd_enrol() {
 
   # The store unlocks from its key file inside the root. Should the root ever
   # be unreadable, the same recovery key opens the store from any rescue
-  # system, so the person's rooms are never behind a factor they were not
+  # system, so the person's workspaces are never behind a factor they were not
   # shown. A passphrase slot, so it gets cryptsetup's default Argon2 cost.
   if [ -n "$store_part" ]; then
     log "  adding the recovery key to the store volume…"

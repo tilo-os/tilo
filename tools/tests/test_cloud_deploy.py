@@ -44,16 +44,16 @@ manifest = "apps/web/deployment.yaml"
 health = "https://web.example/version.json"
 
 [[service]]
-name = "room-service"
-image = "{REGISTRY}/tilo/room-service"
-manifest = "apps/rooms/deployment.yaml"
-health = "https://rooms.example/mode"
+name = "relay"
+image = "{REGISTRY}/tilo/relay"
+manifest = "apps/relay/deployment.yaml"
+health = "https://relay.example/mode"
 expect = {{ relay = "up" }}
 """
 
 
 TARGET = deploy.load_target(target_text(), "test")
-WEB, ROOM = TARGET.services
+WEB, RELAY = TARGET.services
 
 
 def digest(data: bytes) -> str:
@@ -166,7 +166,7 @@ class CloudDeployTests(unittest.TestCase):
         self.git("init", "-q", "-b", "stable", str(self.repo), cwd=self.temp.name)
         subjects = ["init: deployed",
                     "Merge pull request 'fix(web): offer a reload after a deploy' (#11) from a into main",
-                    "Merge pull request 'feat(relay): serve governed rooms' (#12) from b into main",
+                    "Merge pull request 'feat(relay): serve governed workspaces' (#12) from b into main",
                     "fix(web): newest, web image only"]
         self.revisions = []
         for subject in subjects:
@@ -180,24 +180,24 @@ class CloudDeployTests(unittest.TestCase):
         self.fake = Fake()
         for revision in (self.deployed, self.target):
             self.fake.publish(WEB, revision)
-            self.fake.publish(ROOM, revision)
+            self.fake.publish(RELAY, revision)
         self.fake.publish(WEB, self.newest)
         self.fake.publish(WEB, self.side)
         guest = deploy.Service("legacy-guest", deploy.GUEST_IMAGE, "", "")
         for revision in (self.deployed, self.target, self.newest, self.side):
             self.fake.publish(guest, revision)
-        self.fake.publish(ROOM, self.side)
-        self.running = {WEB.name: self.deployed, ROOM.name: self.deployed}
-        # The room service of a build whose relay cannot start answers, without a relay.
+        self.fake.publish(RELAY, self.side)
+        self.running = {WEB.name: self.deployed, RELAY.name: self.deployed}
+        # The relay of a build whose worker cannot start answers, without a worker.
         self.relay_down_in = set()
         self.serve_running()
         self.clock = Clock()
 
     def serve_running(self):
         self.fake.serve(WEB.health, {"version": "0123456789abcdef0123", "revision": self.running[WEB.name]})
-        room = self.running[ROOM.name]
-        self.fake.serve(ROOM.health, {"mode": "normal", "revision": room,
-                                      "relay": "restarting" if room in self.relay_down_in else "up"})
+        relay = self.running[RELAY.name]
+        self.fake.serve(RELAY.health, {"mode": "normal", "revision": relay,
+                                      "relay": "restarting" if relay in self.relay_down_in else "up"})
 
     def git(self, *args, cwd=None):
         return subprocess.run(["git", *args], cwd=cwd or self.repo, check=True, text=True,
@@ -249,7 +249,7 @@ class CloudDeployTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         plan = json.loads((out_dir / "plan.json").read_text())
         self.assertEqual(plan["revision"], self.target)
-        self.assertEqual(plan["moves"], ["web-entry", "room-service"])
+        self.assertEqual(plan["moves"], ["web-entry", "relay"])
         for service in TARGET.services:
             self.assertEqual(plan["images"][service.name]["digest"], self.fake.digests[(service.name, self.target)])
             self.assertEqual(plan["current"][service.name]["built"], self.deployed)
@@ -258,8 +258,8 @@ class CloudDeployTests(unittest.TestCase):
             self.assertIn(f"-          image: {service.image}@{self.fake.digests[(service.name, self.deployed)]}", diff)
             self.assertIn(f"+          image: {service.image}@{self.fake.digests[(service.name, self.target)]}", diff)
         message = (out_dir / "message.txt").read_text()
-        self.assertTrue(message.startswith(f"rooms, web: deploy tilo/tilo {self.target[:12]}\n"), message)
-        self.assertIn("- feat(relay): serve governed rooms (#12)", message)
+        self.assertTrue(message.startswith(f"relay, web: deploy tilo/tilo {self.target[:12]}\n"), message)
+        self.assertIn("- feat(relay): serve governed workspaces (#12)", message)
         self.assertIn("- fix(web): offer a reload after a deploy (#11)", message)
         self.assertNotIn("newest, web image only", message)
         # Planning reads; only --apply edits the checkout.
@@ -267,7 +267,7 @@ class CloudDeployTests(unittest.TestCase):
         code, _, err = self.plan("--apply", infra=infra)
         self.assertEqual(code, 0, err)
         self.assertIn(self.fake.digests[("web-entry", self.target)], (infra / WEB.manifest).read_text())
-        self.assertIn(self.fake.digests[("room-service", self.target)], (infra / ROOM.manifest).read_text())
+        self.assertIn(self.fake.digests[("relay", self.target)], (infra / RELAY.manifest).read_text())
         code, out, _ = self.plan(infra=infra)
         self.assertEqual(code, 0)
         self.assertIn("already runs", out)
@@ -275,17 +275,17 @@ class CloudDeployTests(unittest.TestCase):
     def test_receipts_must_agree_with_each_other_and_with_the_registry(self):
         infra = self.infra(self.deployed)
         code, _, err = self.plan("--receipt", self.receipt(WEB, self.target),
-                                 "--receipt", self.receipt(ROOM, self.target), infra=infra)
+                                 "--receipt", self.receipt(RELAY, self.target), infra=infra)
         self.assertEqual(code, 0, err)
         code, _, err = self.plan("--receipt", self.receipt(WEB, self.target),
-                                 "--receipt", self.receipt(ROOM, self.deployed), infra=infra)
+                                 "--receipt", self.receipt(RELAY, self.deployed), infra=infra)
         self.assertEqual(code, 1)
         self.assertIn("different revisions", err)
         # A receipt naming the deployed image under the new revision is caught by the release tag.
-        lying = self.receipt(ROOM, self.target, self.fake.digests[("room-service", self.deployed)], name="lying.json")
+        lying = self.receipt(RELAY, self.target, self.fake.digests[("relay", self.deployed)], name="lying.json")
         code, _, err = self.plan("--receipt", self.receipt(WEB, self.target), "--receipt", lying, infra=infra)
         self.assertEqual(code, 1)
-        self.assertIn(f"not the receipt's {self.fake.digests[('room-service', self.deployed)]}", err)
+        self.assertIn(f"not the receipt's {self.fake.digests[('relay', self.deployed)]}", err)
         code, _, err = self.plan("--receipt", self.receipt(WEB, self.target), infra=infra)
         self.assertEqual(code, 1)
         self.assertIn("every service", err)
@@ -293,23 +293,23 @@ class CloudDeployTests(unittest.TestCase):
         other = Path(self.temp.name) / "other.json"
         other.write_text(json.dumps({"repository": f"{REGISTRY}/tilo/other", "digest": "x"}))
         code, out, err = self.plan("--receipt", self.receipt(WEB, self.target), "--receipt",
-                                   self.receipt(ROOM, self.target), "--receipt", str(other), infra=infra)
+                                   self.receipt(RELAY, self.target), "--receipt", str(other), infra=infra)
         self.assertEqual(code, 0, err)
         self.assertIn("does not run; ignored", out)
         code, _, err = self.plan("--require-signed", "--receipt", self.receipt(WEB, self.target), "--receipt",
-                                 self.receipt(ROOM, self.target, name="unsigned.json", signed=False), infra=infra)
+                                 self.receipt(RELAY, self.target, name="unsigned.json", signed=False), infra=infra)
         self.assertEqual(code, 1)
-        self.assertIn("unsigned: room-service", err)
+        self.assertIn("unsigned: relay", err)
 
     def test_a_service_already_running_the_build_keeps_its_pin(self):
         """A release the web entry's build did not change in (carried, so a new digest) leaves it."""
         carried = self.fake.publish(WEB, self.target, label=self.deployed)
         out_dir = Path(self.temp.name) / "kept"
         code, _, err = self.plan("--out", str(out_dir), "--receipt", self.receipt(WEB, self.target, carried),
-                                 "--receipt", self.receipt(ROOM, self.target))
+                                 "--receipt", self.receipt(RELAY, self.target))
         self.assertEqual(code, 0, err)
         plan = json.loads((out_dir / "plan.json").read_text())
-        self.assertEqual(plan["moves"], ["room-service"])
+        self.assertEqual(plan["moves"], ["relay"])
         self.assertNotIn(WEB.manifest, (out_dir / "infra.diff").read_text())
         self.assertIn("Kept, already running this build: web-entry.", (out_dir / "message.txt").read_text())
 
@@ -330,11 +330,11 @@ class CloudDeployTests(unittest.TestCase):
         self.assertIn(self.fake.digests[("web-entry", self.deployed)], (ahead / WEB.manifest).read_text())
 
     def test_registry_content_is_checked_against_the_digest(self):
-        pinned = self.fake.digests[("room-service", self.target)]
-        url = f"https://{REGISTRY}/v2/{ROOM.repository}/manifests/{pinned}"
+        pinned = self.fake.digests[("relay", self.target)]
+        url = f"https://{REGISTRY}/v2/{RELAY.repository}/manifests/{pinned}"
         real = self.fake.routes[url]
         self.fake.routes[url] = deploy.Response(real.status, real.headers, real.body + b" ")
-        code, _, err = self.plan("--receipt", self.receipt(WEB, self.target), "--receipt", self.receipt(ROOM, self.target))
+        code, _, err = self.plan("--receipt", self.receipt(WEB, self.target), "--receipt", self.receipt(RELAY, self.target))
         self.assertEqual(code, 1)
         self.assertIn("served content hashing to", err)
 
@@ -342,7 +342,7 @@ class CloudDeployTests(unittest.TestCase):
         self.fake.token_required = True
         code, out, err = self.plan()
         self.assertEqual(code, 0, err)
-        self.assertIn(self.fake.digests[("room-service", self.target)], out)
+        self.assertIn(self.fake.digests[("relay", self.target)], out)
         token_requests = {url for _, url, _ in self.fake.calls if url.startswith(Fake.TOKEN_SERVICE)}
         self.assertEqual(token_requests, {
             f"{Fake.TOKEN_SERVICE}?scope=repository%3A{service.repository.replace('/', '%2F')}%3Apull"
@@ -358,7 +358,7 @@ class CloudDeployTests(unittest.TestCase):
             self.assertEqual(follow.has_header("Authorization"), kept, target)
 
     def test_an_image_for_another_platform_is_refused(self):
-        self.fake.publish(ROOM, self.newest, architecture="arm64")
+        self.fake.publish(RELAY, self.newest, architecture="arm64")
         code, _, err = self.plan("--revision", self.newest)
         self.assertEqual(code, 1)
         self.assertIn("linux/arm64", err)
@@ -366,8 +366,8 @@ class CloudDeployTests(unittest.TestCase):
     def test_the_target_is_validated(self):
         for text, why in (("rollout = true\n", "lists no [[service]]"),
                           (target_text().replace("rollout = true", "rollout = 1"), "`rollout`"),
-                          (target_text().replace("https://rooms", "http://rooms"), "not https"),
-                          (target_text().replace('/tilo/room-service"', '/tilo/web-entry"'), "own name and image"),
+                          (target_text().replace("https://relay", "http://relay"), "not https"),
+                          (target_text().replace('/tilo/relay"', '/tilo/web-entry"'), "own name and image"),
                           (target_text().replace("timeout_secs = 60", "timeout_secs = 5"), "timeout_secs")):
             with self.assertRaises(deploy.PromotionError) as raised:
                 deploy.load_target(text, "t")
@@ -384,7 +384,7 @@ class CloudDeployTests(unittest.TestCase):
         code, out, err = self.run_tool("deploy")
         self.assertEqual(code, 0, err)
         self.assertIn(f"Dry run (rollout = false in {CONFIG})", out)
-        self.assertIn(f"{ROOM.health} to report {self.target[:12]}", out)
+        self.assertIn(f"{RELAY.health} to report {self.target[:12]}", out)
         self.assertEqual(self.writes(), [])
         self.serve_infra(self.deployed, rollout=True)
         code, out, err = self.run_tool("deploy", "--dry-run")
@@ -413,7 +413,7 @@ class CloudDeployTests(unittest.TestCase):
         self.fake.conflicts = 1  # someone else pushed in between: planned again
         self.reconcile(after=30)
         code, out, err = self.run_tool("deploy", "--receipt", self.receipt(WEB, self.target),
-                                       "--receipt", self.receipt(ROOM, self.target), "--require-signed")
+                                       "--receipt", self.receipt(RELAY, self.target), "--require-signed")
         self.assertEqual(code, 0, err)
         self.assertIn("moved while this ran; planning again", out)
         self.assertIn(f"Deployed {self.target}", out)
@@ -422,7 +422,7 @@ class CloudDeployTests(unittest.TestCase):
         commit = commits[-1]
         self.assertEqual(commit["branch"], "main")
         self.assertNotIn("new_branch", commit)
-        self.assertTrue(commit["message"].startswith(f"rooms, web: deploy tilo/tilo {self.target[:12]}"))
+        self.assertTrue(commit["message"].startswith(f"relay, web: deploy tilo/tilo {self.target[:12]}"))
         self.assertEqual(sorted(each["path"] for each in commit["files"]), sorted(s.manifest for s in TARGET.services))
         for service in TARGET.services:
             self.assertIn(f"{service.image}@{self.fake.digests[(service.name, self.target)]}",
@@ -437,20 +437,20 @@ class CloudDeployTests(unittest.TestCase):
         self.assertEqual(self.writes(), [])
 
     def test_a_service_reporting_its_build_without_what_it_serves_is_rolled_back(self):
-        """A room service whose relay cannot start still answers with its revision."""
+        """A relay whose worker cannot start still answers with its revision."""
         self.serve_infra(self.deployed)
         self.relay_down_in = {self.target}
         self.reconcile()
         code, _, err = self.run_tool("deploy")
         self.assertEqual(code, 1)
-        self.assertIn(f"{ROOM.health} reports relay 'restarting', not 'up'", err)
+        self.assertIn(f"{RELAY.health} reports relay 'restarting', not 'up'", err)
         self.assertIn("Rolled back: the previous images are healthy again.", err)
         for service in TARGET.services:
             self.assertIn(f"{service.image}@{self.fake.digests[(service.name, self.deployed)]}",
                           self.fake.file(service.manifest)[0])
 
     def test_a_build_rolled_back_to_may_predate_an_expected_field(self):
-        older = deploy.Service("room-service", ROOM.image, ROOM.manifest, "https://old.example/mode",
+        older = deploy.Service("relay", RELAY.image, RELAY.manifest, "https://old.example/mode",
                                expect=(("relay", "up"),))
         self.fake.serve(older.health, {"mode": "normal", "revision": self.deployed})
         self.assertIn("relay None", deploy.probe(self.fake, older, self.deployed))
@@ -460,15 +460,15 @@ class CloudDeployTests(unittest.TestCase):
 
     def test_a_rollout_that_does_not_become_healthy_is_rolled_back(self):
         self.serve_infra(self.deployed)
-        # The web entry rolls out; the room service's new pod never answers.
-        self.reconcile(broken={ROOM.name})
+        # The web entry rolls out; the relay's new pod never answers.
+        self.reconcile(broken={RELAY.name})
         code, out, err = self.run_tool("deploy")
         self.assertEqual(code, 1)
-        self.assertIn(f"The rollout of {self.target[:12]} failed: {ROOM.health} reports {self.deployed}", err)
+        self.assertIn(f"The rollout of {self.target[:12]} failed: {RELAY.health} reports {self.deployed}", err)
         self.assertIn("Rolled back: the previous images are healthy again.", err)
         commits = [body for method, url, body in self.writes() if url == f"{API}/contents"]
         self.assertEqual(len(commits), 2)
-        self.assertTrue(commits[1]["message"].startswith(f"rooms, web: roll back tilo/tilo {self.target[:12]}"))
+        self.assertTrue(commits[1]["message"].startswith(f"relay, web: roll back tilo/tilo {self.target[:12]}"))
         for service in TARGET.services:
             self.assertIn(f"{service.image}@{self.fake.digests[(service.name, self.deployed)]}",
                           self.fake.file(service.manifest)[0])
@@ -478,8 +478,8 @@ class CloudDeployTests(unittest.TestCase):
         self.serve_infra(self.deployed)
 
         def moved(now):
-            if now >= 20 and self.fake.file(ROOM.manifest)[0].count(self.fake.digests[(ROOM.name, self.target)]):
-                self.fake.serve_file(ROOM.manifest, manifest_text(ROOM, self.fake.digests[(ROOM.name, self.side)]))
+            if now >= 20 and self.fake.file(RELAY.manifest)[0].count(self.fake.digests[(RELAY.name, self.target)]):
+                self.fake.serve_file(RELAY.manifest, manifest_text(RELAY, self.fake.digests[(RELAY.name, self.side)]))
         self.clock.on_sleep.append(moved)
         code, _, err = self.run_tool("deploy")
         self.assertEqual(code, 1)
@@ -506,7 +506,7 @@ class CloudDeployTests(unittest.TestCase):
                 "template": {"revision": revision},
                 "browserRuntime": {"version": "131.0.6778.85"},
             },
-            "services": services or {name: self.fake.digests[(name, revision)] for name in ("web-entry", "room-service")},
+            "services": services or {name: self.fake.digests[(name, revision)] for name in ("web-entry", "relay")},
             "limits": {"roomsPerHost": {"value": 8, "unit": "rooms"},
                        "bootSeconds": {"value": 45, "unit": "seconds"}},
         }
@@ -541,8 +541,8 @@ class CloudDeployTests(unittest.TestCase):
                 digest=self.guest_of(self.deployed))),
             ("guest source revision", lambda document: document["identities"]["guest"].update(
                 sourceRevision=self.deployed)),
-            ("room service digest", lambda document: document["services"].update(
-                {"room-service": self.fake.digests[("room-service", self.deployed)]})),
+            ("relay digest", lambda document: document["services"].update(
+                {"relay": self.fake.digests[("relay", self.deployed)]})),
         ):
             with self.subTest(label):
                 path = self.rewrite(self.qualification(self.target), edit)

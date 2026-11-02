@@ -1258,7 +1258,7 @@ pub(super) fn discord_bridge() -> installed::InstalledBot {
 
 /// The room's Chat categories by name, each with its channels' names.
 async fn chat_layout(rooms: &Rooms, room: &str) -> Vec<(String, Vec<String>)> {
-    let record = room_record(&AppCatalogue::native(), CHAT);
+    let record = workspace_record(&AppCatalogue::native(), CHAT);
     let saved = rooms
         .record_document(room, CHAT, &record)
         .await
@@ -1303,7 +1303,7 @@ async fn bridged_lounge(rooms: &Rooms, room: &str, cert: &DeviceCert) {
             cert,
             &catalogue,
             discord::APP,
-            &room_record(&catalogue, discord::APP),
+            &workspace_record(&catalogue, discord::APP),
             |doc| {
                 let current = ::discord::Guild::read_fields(doc, &automerge::ROOT)
                     .map_err(|error| error.to_string())?;
@@ -1371,7 +1371,7 @@ async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_
             &cert,
             &catalogue,
             CHAT,
-            &room_record(&catalogue, CHAT),
+            &workspace_record(&catalogue, CHAT),
             |doc| {
                 chat::demo::apply_as(
                     doc,

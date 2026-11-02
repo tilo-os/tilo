@@ -30,7 +30,7 @@ its names.
 
 In code today the arrangement is still the workspace's (`tilo_desktop_model`'s workspace; a
 strip is `layout::Strip`, a window a `layout::Tab` in a `layout::WindowGroup`), shared by the
-room's layout record. That is the default strips shell's state and moves to the person's own
+workspace's layout record. That is the default strips shell's state and moves to the person's own
 record when the shell becomes customizable (§10).
 
 ## 3. Apps
@@ -112,9 +112,9 @@ default view note_editor for Note
 - An app whose data is each person's own (mail) says so in its header:
   `app so.tilo.lang.mail "Mail" (records: .own)`. Each member then keeps the app's resources in
   their own record of the workspace (`member:<person>:<kind>`, `tilo_action_policy::member_record`),
-  which only their devices hold the key to and every door decides as theirs alone, the room's
-  owner included. Another member opening the app in the same workspace starts from their own,
-  empty record.
+  which only their devices hold the key to and every door decides as theirs alone, the
+  workspace's owner included. Another member opening the app in the same workspace starts from
+  their own, empty record.
 - `open(r)` is an action usable from views and flows.
 
 ## 9. The arrangement is a resource

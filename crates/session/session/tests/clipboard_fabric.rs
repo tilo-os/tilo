@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use tilo_compositor::clipboard_history::TEXT_MIME;
 use tilo_compositor::{OutputConfig, Selection};
-use tilo_desktop::desktop_actions::CHROME_RESOURCE;
+use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_device_fabric::speaker_group::SpeakerFabricState;
 use tilo_device_fabric::unlock::UnlockFabricState;
@@ -217,11 +217,7 @@ fn copy(session: &mut Session, text: &str) {
 fn open_clipboard(session: &mut Session) {
     if !session.quick_settings_open() {
         session
-            .invoke(
-                CHROME_RESOURCE,
-                "toggle-quick-settings",
-                &serde_json::Map::new(),
-            )
+            .invoke(CHROME_RESOURCE, "quick-settings", &serde_json::Map::new())
             .expect("open quick settings");
     }
     session

@@ -41,7 +41,7 @@ fn source() -> (DesktopTree, CommandSource) {
             .collect(),
     }];
     let source = CommandSource {
-        room: workspace.room().to_string(),
+        workspace: workspace.room().to_string(),
         heads: vec![[7; 32]],
     };
     (tree, source)
@@ -93,7 +93,7 @@ fn drag_binds_source_identity_and_post_removal_destination_before_async_dispatch
 }
 
 #[test]
-fn missing_targets_and_wrong_room_never_bind_to_active_fallback() {
+fn missing_targets_and_wrong_workspace_never_bind_to_active_fallback() {
     let (tree, mut source) = source();
     assert!(
         bind_intent(
@@ -115,7 +115,7 @@ fn missing_targets_and_wrong_room_never_bind_to_active_fallback() {
         )
         .is_err()
     );
-    source.room = RoomId::new().to_string();
+    source.workspace = RoomId::new().to_string();
     assert!(
         bind_intent(
             &tree,
@@ -202,9 +202,9 @@ impl DesktopCommandSink for Recorder {
     fn with_tree<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R {
         read(&self.tree)
     }
-    fn source(&mut self, room: RoomId) -> Result<CommandSource, String> {
+    fn source(&mut self, workspace: RoomId) -> Result<CommandSource, String> {
         Ok(CommandSource {
-            room: room.to_string(),
+            workspace: workspace.to_string(),
             heads: self.heads.clone(),
         })
     }
@@ -218,7 +218,7 @@ impl DesktopCommandSink for Recorder {
 }
 
 #[test]
-fn dispatch_keeps_view_changes_local_and_binds_session_changes_to_the_group_room() {
+fn dispatch_keeps_view_changes_local_and_binds_session_changes_to_the_group_workspace() {
     let (tree, source) = source();
     let mut sink = Recorder {
         tree,

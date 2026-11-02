@@ -1,6 +1,6 @@
 //! The wasm engine: compiles modules and runs calls into them, for the rest of the runtime.
 //!
-//! * One engine per process: every runtime (every room's host, the surface, a block)
+//! * One engine per process: every runtime (every workspace's host, the surface, a block)
 //!   compiles into it, and a module is compiled once per process, cached by the content hash of
 //!   its bytes. Each runtime keeps its own instances (and so its own stores and limits).
 //! * Each module normally has one instance. A call that arrives while the module's

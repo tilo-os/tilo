@@ -25,7 +25,7 @@ impl ActionHost for ChatHost {
             "retain certified Person, device and execution"
         );
         let page = if let Some(route) = query.canonical_route {
-            assert_eq!(route.room, self.owner.workspace);
+            assert_eq!(route.workspace, self.owner.workspace);
             assert_eq!(route.app_id, "so.tilo.chat");
             assert_eq!(route.record_id, "");
             CataloguePage {
@@ -33,10 +33,10 @@ impl ActionHost for ChatHost {
                 providers: vec![CatalogueProvider {
                     provider: "opaque-native-chat".into(),
                     app_id: "so.tilo.chat".into(),
-                    room: if self.wrong_workspace {
+                    workspace: if self.wrong_workspace {
                         "other".into()
                     } else {
-                        route.room
+                        route.workspace
                     },
                     record_id: String::new(),
                     browsable: true,

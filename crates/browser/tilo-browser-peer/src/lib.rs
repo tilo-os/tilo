@@ -3,15 +3,15 @@
 //! A paired page holds a device key. [`custody::certify`] asks the user's
 //! host for a root-signed `DeviceCert`, which a root-holding device issues
 //! through the host. An invited person instead uses [`invite`] to certify
-//! their device with their own root and obtain governed room access.
+//! their device with their own root and obtain governed workspace access.
 //! [`session::PeerHandle`] keeps one certified relay session to that host:
 //!
 //! - the **durable plane**: signed document envelopes ([`document`]) sent as
 //!   acknowledged commits from a persisted outbox and replayed after every
 //!   reconnect;
-//! - the **room's governance**: each joined room's replica, built from the
-//!   bootstrap the host sends ahead of the room's replay and admitting the
-//!   governance it relays, as a native device's does (`replica`);
+//! - the **workspace's governance**: each joined workspace's replica, built
+//!   from the bootstrap the host sends ahead of the workspace's replay and
+//!   admitting the governance it relays, as a native device's does (`replica`);
 //! - the **live plane** ([`live`]): ephemeral presence and previews relayed
 //!   by the host to live members;
 //! - **calls** ([`voice`]): the device's participation in the calls the host

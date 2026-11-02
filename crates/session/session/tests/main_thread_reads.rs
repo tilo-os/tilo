@@ -44,7 +44,7 @@ fn drive() {
     use std::time::Duration;
 
     use tilo_compositor::OutputConfig;
-    use tilo_desktop::desktop_actions::{DESK_RESOURCE, SEARCH_RESOURCE};
+    use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE};
     use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
     use tilo_session::{Lists, Options, SearchOptions, Session};
 
@@ -109,12 +109,7 @@ fn drive() {
 
     // Search opens over the desk and takes a query, its rows found in the
     // lists a worker keeps current.
-    invoke(
-        &mut session,
-        DESK_RESOURCE,
-        "open-search",
-        serde_json::json!({}),
-    );
+    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("a turn");
     }
@@ -122,7 +117,7 @@ fn drive() {
         invoke(
             &mut session,
             SEARCH_RESOURCE,
-            "search-for",
+            "search",
             serde_json::json!({"query": "probe"}),
         );
         for _ in 0..4 {

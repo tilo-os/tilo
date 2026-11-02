@@ -5,7 +5,7 @@
 
 use tilo_app::prelude::*;
 
-/// A queue in a shared room.
+/// A queue in a shared workspace.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Queue {
     pub items: Vec<String>,
@@ -62,7 +62,7 @@ fn ada() -> String {
 }
 
 /// The workspace the tests open the app in.
-const ROOM: &str = "00000000-0000-4000-8000-00000000000a";
+const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000a";
 
 /// The id of `person`'s own watch history in a workspace.
 fn watched_record_of(person: &str) -> String {
@@ -77,17 +77,17 @@ fn videos(record: &PersonRecord<Watched>) -> Vec<String> {
 
 #[test]
 fn a_record_of_a_kind_is_the_same_record_on_each_device_of_the_workspace() {
-    let mut laptop = TestApp::<QueueApp>::for_person_in(&ada(), ROOM).unwrap();
-    let mut phone = TestApp::<QueueApp>::for_person_in(&ada(), ROOM).unwrap();
+    let mut laptop = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
+    let mut phone = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
     let on_laptop = laptop.person::<Watched>().unwrap();
     let on_phone = phone.person::<Watched>().unwrap();
-    assert!(on_laptop.syncs(), "the workspace has a room id");
+    assert!(on_laptop.syncs(), "the workspace has a workspace id");
     let route = on_laptop.record().route().unwrap();
     assert_eq!(route, on_phone.record().route().unwrap());
     assert_eq!(route.app_id, QueueApp::ID);
     assert_eq!(
         route.cluster_id.to_string(),
-        ROOM,
+        WORKSPACE,
         "the record lives in the workspace the app is open in"
     );
     assert_eq!(
@@ -136,7 +136,7 @@ fn a_record_of_a_kind_is_the_same_record_on_each_device_of_the_workspace() {
 
 #[test]
 fn each_workspace_has_its_own_record_of_a_kind() {
-    let mut here = TestApp::<QueueApp>::for_person_in(&ada(), ROOM).unwrap();
+    let mut here = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
     let mut elsewhere =
         TestApp::<QueueApp>::for_person_in(&ada(), "00000000-0000-4000-8000-00000000000b").unwrap();
     let watched_here = here.person::<Watched>().unwrap();

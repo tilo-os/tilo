@@ -13,13 +13,13 @@ mod cases {
 
     const SOURCE: &str = include_str!("../../tilolang/tests/fixtures/richtext.tl");
 
-    struct Room {
+    struct Workspace {
         rt: Runtime,
         app: App,
         board: ResourceRef,
     }
 
-    impl Room {
+    impl Workspace {
         fn on(store: &AmStore, board: Option<&ResourceRef>) -> Self {
             // Every replica runs the same compiled package, as every device does.
             thread_local! {
@@ -77,7 +77,7 @@ mod cases {
 
     #[test]
     fn plain_text_is_paragraphs_and_the_excerpt_is_its_first_line_with_text() {
-        let b = Room::on(&AmStore::new(), None);
+        let b = Workspace::on(&AmStore::new(), None);
         let post = b.say("\nHello there\nsecond line");
         assert_eq!(b.body(&post).written_text(), "\nHello there\nsecond line");
         assert_eq!(
@@ -91,7 +91,7 @@ mod cases {
     fn a_store_that_cannot_tell_what_its_reader_holds_reads_no_title() {
         // The bare store does not know who reads: the excerpt names the person as written and
         // the task only as being there, never by the title the text was written with.
-        let b = Room::on(&AmStore::new(), None);
+        let b = Workspace::on(&AmStore::new(), None);
         let task = b.task("Fix the build");
         let post = returned_ref(b.call(
             "take",
@@ -105,7 +105,7 @@ mod cases {
 
     #[test]
     fn an_empty_message_is_not_posted() {
-        let b = Room::on(&AmStore::new(), None);
+        let b = Workspace::on(&AmStore::new(), None);
         let count = || match b.done("post_count", vec![Value::resource(&b.board)]) {
             Value::Int(i) => i,
             Value::Opt(Some(v)) => v.as_int().unwrap(),
@@ -128,7 +128,7 @@ mod cases {
 
     #[test]
     fn references_to_a_person_and_a_resource_are_marked_runs() {
-        let b = Room::on(&AmStore::new(), None);
+        let b = Workspace::on(&AmStore::new(), None);
         let task = b.task("Fix the build");
         let post = returned_ref(b.call(
             "take",
@@ -182,7 +182,7 @@ mod cases {
 
     #[test]
     fn text_stored_with_an_older_reference_form_still_refers_to_its_resource() {
-        let b = Room::on(&AmStore::new(), None);
+        let b = Workspace::on(&AmStore::new(), None);
         let task = b.task("Fix the build");
         let post = b.say("placeholder");
         // As the first rich text wrote a resource: its published id as the mark's value.
@@ -209,7 +209,7 @@ mod cases {
 
     #[test]
     fn a_time_in_rich_text_is_a_run_marked_with_the_moment() {
-        let b = Room::on(&AmStore::new(), None);
+        let b = Workspace::on(&AmStore::new(), None);
         let post = returned_ref(b.call(
             "schedule",
             vec![
@@ -238,11 +238,11 @@ mod cases {
     #[test]
     fn two_writers_edits_with_references_merge_as_splices_and_marks() {
         let (mut sa, mut sb) = (AmStore::new(), AmStore::new());
-        let a = Room::on(&sa, None);
+        let a = Workspace::on(&sa, None);
         let task = a.task("Ship it");
         let post = a.say("Plan for today");
         sa.sync_with(&mut sb).unwrap();
-        let b = Room::on(&sb, Some(&a.board));
+        let b = Workspace::on(&sb, Some(&a.board));
         let first_id = a.body(&post).blocks[0].id.clone();
         assert!(!first_id.is_empty());
         assert_eq!(b.body(&post).written_text(), "Plan for today");
@@ -272,11 +272,11 @@ mod cases {
     #[test]
     fn concurrent_typing_in_one_paragraph_keeps_both() {
         let (mut sa, mut sb) = (AmStore::new(), AmStore::new());
-        let a = Room::on(&sa, None);
+        let a = Workspace::on(&sa, None);
         let post = a.say("Hello");
         sa.sync_with(&mut sb).unwrap();
-        let b = Room::on(&sb, Some(&a.board));
-        let edit = |w: &Room, text: &str| {
+        let b = Workspace::on(&sb, Some(&a.board));
+        let edit = |w: &Workspace, text: &str| {
             w.call(
                 "edit",
                 vec![
@@ -294,7 +294,7 @@ mod cases {
 
     #[test]
     fn anchors_resolve_to_the_paragraphs_they_cite() {
-        let b = Room::on(&AmStore::new(), None);
+        let b = Workspace::on(&AmStore::new(), None);
         let post = b.say("Intro\nDetails\nOutro");
         let body = b.body(&post);
         assert_eq!(

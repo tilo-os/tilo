@@ -25,7 +25,7 @@ use uuid::Uuid;
 ///
 /// Without the app id in this key, every packaged app would publish
 /// deltas cluster-scoped — one app's changes delivered to every app in
-/// the room.
+/// the workspace.
 pub mod channel_key {
     /// Encode a route triple into one channel id.
     pub fn format(app_id: &str, cluster_id: &str, record_id: &str) -> String {
@@ -167,11 +167,11 @@ pub enum ChannelAccessState {
     WaitingForAccess,
     /// This device was removed from the channel.
     Removed,
-    /// This device cannot join the channel right now: the room's governor
-    /// is unknown here. Edits wait on the device.
+    /// This device cannot join the channel right now: the workspace's
+    /// governor is unknown here. Edits wait on the device.
     Unavailable,
     /// This device has no secret store open, so it cannot hold keys of a
-    /// room hosted elsewhere. Edits wait on the device.
+    /// workspace hosted elsewhere. Edits wait on the device.
     NoSecretStore,
 }
 

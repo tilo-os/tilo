@@ -1,4 +1,4 @@
-//! Inviting a different person to a room the host governs, page to page
+//! Inviting a different person to a workspace the host governs, page to page
 //! over HTTPS: the owner's page issues an invitation; the other person's
 //! page, with its own user root and a device it certified itself, redeems
 //! it and waits; the owner admits it; it then holds a session and
@@ -27,18 +27,18 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::rooms::{JoinReply, JoinStep, Room, RoomRole, RoomsReply, RoomsRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
-use support::{TestHost, enrol, start_room_host};
+use support::{TestHost, enrol, start_workspace_host};
 
-async fn rooms(link: &HttpsLink, request: RoomsRequest) -> RoomsReply {
+async fn workspaces(link: &HttpsLink, request: RoomsRequest) -> RoomsReply {
     carrier::rooms(link.client().as_ref(), link.session(), &request)
         .await
         .unwrap()
 }
 
-fn room(reply: RoomsReply) -> Room {
+fn workspace(reply: RoomsReply) -> Room {
     match reply {
-        RoomsReply::Room(room) => room,
-        other => panic!("expected a room, got {other:?}"),
+        RoomsReply::Room(workspace) => workspace,
+        other => panic!("expected a workspace, got {other:?}"),
     }
 }
 
@@ -101,7 +101,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let page = enrol(&alice, "alice-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
+    let TestHost { relay, web } = start_workspace_host(&alice, &host, state.path(), false).await;
     let https: Arc<dyn HttpClient> =
         support::https::DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
     let connect = |cert: DeviceCert, key: SigningKey| {
@@ -112,9 +112,9 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
 
     // Alice's page creates a governed workspace and enters it as its owner.
     let mut owner = connect(page.cert.clone(), page.key.clone()).await.unwrap();
-    assert!(owner.rooms(), "the host administers rooms for pages");
-    let created = room(
-        rooms(
+    assert!(owner.rooms(), "the host administers workspaces for pages");
+    let created = workspace(
+        workspaces(
             &owner,
             RoomsRequest::Create {
                 name: "Design review".into(),
@@ -122,8 +122,8 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         )
         .await,
     );
-    let entered = room(
-        rooms(
+    let entered = workspace(
+        workspaces(
             &owner,
             RoomsRequest::Enter {
                 room: created.room.clone(),
@@ -142,7 +142,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     // She invites; Bob, a different person, sees what it offers.
     let RoomsReply::Invitation {
         signed_invitation, ..
-    } = rooms(
+    } = workspaces(
         &owner,
         RoomsRequest::Invite {
             room: created.room.clone(),
@@ -179,7 +179,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     // Not admitted yet: the host opens no session for him.
     assert!(
         connect(bob.cert.clone(), bob.key.clone()).await.is_err(),
-        "a person not in the room has no session"
+        "a person not in the workspace has no session"
     );
 
     // A certificate without proof of this device's secret admits nothing.
@@ -209,7 +209,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         JoinReply::Refused(_)
     ));
     assert_eq!(
-        rooms(
+        workspaces(
             &owner,
             RoomsRequest::Requests {
                 room: created.room.clone()
@@ -238,7 +238,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         status(https.as_ref(), &bob, bob_request).await,
         JoinReply::Waiting
     );
-    let RoomsReply::Requests(waiting) = rooms(
+    let RoomsReply::Requests(waiting) = workspaces(
         &owner,
         RoomsRequest::Requests {
             room: created.room.clone(),
@@ -277,8 +277,8 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     ));
 
     // Alice admits him: he is a member by his own root, and subscribes.
-    let admitted = room(
-        rooms(
+    let admitted = workspace(
+        workspaces(
             &owner,
             RoomsRequest::Admit {
                 room: created.room.clone(),
@@ -289,8 +289,8 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     );
     // Losing the admission response must not require a second invitation.
     assert_eq!(
-        room(
-            rooms(
+        workspace(
+            workspaces(
                 &owner,
                 RoomsRequest::Admit {
                     room: created.room.clone(),
@@ -319,14 +319,15 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     let mut member = connect(bob.cert.clone(), bob.key.clone()).await.unwrap();
     subscribe(&mut member, created.workspace_id).await.unwrap();
 
-    // He administers nothing: the host's rooms are its user's.
+    // He administers nothing: the host's workspaces are its user's.
     assert!(matches!(
-        rooms(&member, RoomsRequest::List).await,
+        workspaces(&member, RoomsRequest::List).await,
         RoomsReply::Refused(_)
     ));
 
-    // An editor cannot change roles or remove a member. Both
-    // requests go through the production HTTPS administration endpoint.
+    // An editor changes no role and removes nobody else: the owner stays.
+    // Each request goes through the production HTTPS administration
+    // endpoint.
     for request in [
         RoomsRequest::SetRole {
             room: created.room.clone(),
@@ -337,7 +338,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         RoomsRequest::Remove {
             room: created.room.clone(),
             request_id: [11; 32],
-            user_public_key: bob.cert.user_public_key,
+            user_public_key: alice.verifying_key().to_bytes(),
         },
         RoomsRequest::Invite {
             room: created.room.clone(),
@@ -356,18 +357,105 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         },
     ] {
         assert!(matches!(
-            rooms(&member, request).await,
+            workspaces(&member, request).await,
             RoomsReply::Refused(_)
         ));
     }
 
+    // Removing himself he may: leaving is the one membership change no
+    // grant decides. The host answers with the workspace, which keeps his
+    // entry marked removed, and stops admitting him.
+    let left = workspace(
+        workspaces(
+            &member,
+            RoomsRequest::Remove {
+                room: created.room.clone(),
+                request_id: [13; 32],
+                user_public_key: bob.cert.user_public_key,
+            },
+        )
+        .await,
+    );
+    assert_eq!(left.room, created.room);
+    assert_eq!(left.workspace_id, created.workspace_id);
+    assert!(
+        left.members
+            .iter()
+            .any(|entry| entry.user_public_key == bob.cert.user_public_key && entry.removed),
+        "{left:?}"
+    );
+    assert!(
+        !left
+            .members
+            .iter()
+            .any(|entry| entry.user_public_key == bob.cert.user_public_key && !entry.removed)
+    );
+    assert_eq!(
+        status(https.as_ref(), &bob, bob_request).await,
+        JoinReply::Declined
+    );
+    assert!(
+        subscribe(&mut member, created.workspace_id).await.is_err(),
+        "a person who left is not admitted"
+    );
+    drop(member);
+
+    // Alice invites him back: a person who left has no way in left, so
+    // returning takes a new invitation and her admission.
+    let RoomsReply::Invitation {
+        signed_invitation: again,
+        ..
+    } = workspaces(
+        &owner,
+        RoomsRequest::Invite {
+            room: created.room.clone(),
+            request_id: [14; 32],
+            role: RoomRole::Editor,
+            expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+            inviter_name: None,
+            wait_list_entry: None,
+        },
+    )
+    .await
+    else {
+        panic!("no invitation");
+    };
+    let bob_again = [15; 32];
+    assert_eq!(
+        ask_to_join(
+            https.as_ref(),
+            &again,
+            &bob.cert,
+            &bob.key,
+            bob_again,
+            "Bob"
+        )
+        .await
+        .unwrap(),
+        JoinReply::Waiting
+    );
+    let readmitted = workspace(
+        workspaces(
+            &owner,
+            RoomsRequest::Admit {
+                room: created.room.clone(),
+                request_id: bob_again,
+            },
+        )
+        .await,
+    );
+    assert!(readmitted.members.iter().any(|entry| {
+        entry.user_public_key == bob.cert.user_public_key
+            && !entry.removed
+            && entry.role == RoomRole::Editor
+    }));
+
     // A page reload opens a new session with Bob's same certificate and
     // root, and rejoins the admitted workspace without owner certification.
-    drop(member);
     let mut member = connect(bob.cert.clone(), bob.key.clone()).await.unwrap();
     subscribe(&mut member, created.workspace_id).await.unwrap();
     assert!(matches!(
-        status(https.as_ref(), &bob, bob_request).await,
+        status(https.as_ref(), &bob, bob_again).await,
         JoinReply::Admitted {
             role: RoomRole::Editor,
             ..
@@ -378,7 +466,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     let RoomsReply::Invitation {
         signed_invitation: second,
         invite_id: second_id,
-    } = rooms(
+    } = workspaces(
         &owner,
         RoomsRequest::Invite {
             room: created.room.clone(),
@@ -393,7 +481,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     else {
         panic!("no invitation");
     };
-    let RoomsReply::Pending(pending) = rooms(
+    let RoomsReply::Pending(pending) = workspaces(
         &owner,
         RoomsRequest::Pending {
             room: created.room.clone(),
@@ -419,7 +507,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         JoinReply::Waiting
     );
     assert_eq!(
-        rooms(
+        workspaces(
             &owner,
             RoomsRequest::Decline {
                 room: created.room.clone(),
@@ -441,7 +529,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
 
     // Alice cancels the invitation: it offers nothing any more.
     assert_eq!(
-        rooms(
+        workspaces(
             &owner,
             RoomsRequest::Cancel {
                 room: created.room.clone(),
@@ -459,9 +547,9 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         JoinReply::Refused(reason) if reason.contains("cancelled")
     ));
 
-    // She makes Bob a viewer, then removes him: his session loses the room.
-    let viewer = room(
-        rooms(
+    // She makes Bob a viewer, then removes him: his session loses the workspace.
+    let viewer = workspace(
+        workspaces(
             &owner,
             RoomsRequest::SetRole {
                 room: created.room.clone(),
@@ -478,14 +566,14 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     // Status after a reload reports current governance, not the role in
     // the original admission receipt.
     assert!(matches!(
-        status(https.as_ref(), &bob, bob_request).await,
+        status(https.as_ref(), &bob, bob_again).await,
         JoinReply::Admitted {
             role: RoomRole::Viewer,
             ..
         }
     ));
     assert!(matches!(
-        rooms(
+        workspaces(
             &owner,
             RoomsRequest::Remove {
                 room: created.room.clone(),
@@ -496,8 +584,8 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         .await,
         RoomsReply::Refused(_)
     ));
-    let removed = room(
-        rooms(
+    let removed = workspace(
+        workspaces(
             &owner,
             RoomsRequest::Remove {
                 room: created.room.clone(),
@@ -514,7 +602,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
             .any(|member| { member.user_public_key == bob.cert.user_public_key && member.removed })
     );
     assert_eq!(
-        status(https.as_ref(), &bob, bob_request).await,
+        status(https.as_ref(), &bob, bob_again).await,
         JoinReply::Declined
     );
     assert!(
@@ -536,7 +624,10 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
     use support::{ready, start_peer_with_store, wait_for};
     use tilo_browser_peer::{Host, MemoryPeerStore, PeerStore};
 
-    async fn peer_rooms(peer: &tilo_browser_peer::PeerHandle, request: RoomsRequest) -> RoomsReply {
+    async fn peer_workspaces(
+        peer: &tilo_browser_peer::PeerHandle,
+        request: RoomsRequest,
+    ) -> RoomsReply {
         let (send, recv) = tokio::sync::oneshot::channel();
         peer.rooms_then(
             request,
@@ -545,7 +636,7 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
             }),
         )
         .unwrap();
-        tilo_test_env::within("the session answers the room request", recv)
+        tilo_test_env::within("the session answers the workspace request", recv)
             .await
             .unwrap()
             .unwrap()
@@ -563,7 +654,7 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
     let owner = enrol(&alice, "owner page", DeviceCapabilities::member());
     let bob = guest("Bob").await;
     let state = tempfile::tempdir().unwrap();
-    let running = start_room_host(&alice, &host, state.path(), true).await;
+    let running = start_workspace_host(&alice, &host, state.path(), true).await;
     let owner_peer = start_peer_with_store(
         Host::Https(running.https()),
         owner.cert.clone(),
@@ -572,8 +663,8 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
         Arc::new(MemoryPeerStore::default()),
     );
     ready(&[&owner_peer]).await;
-    let created = room(
-        peer_rooms(
+    let created = workspace(
+        peer_workspaces(
             &owner_peer,
             RoomsRequest::Create {
                 name: "Resume".into(),
@@ -581,7 +672,7 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
         )
         .await,
     );
-    peer_rooms(
+    peer_workspaces(
         &owner_peer,
         RoomsRequest::Enter {
             room: created.room.clone(),
@@ -590,7 +681,7 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
     .await;
     let RoomsReply::Invitation {
         signed_invitation, ..
-    } = peer_rooms(
+    } = peer_workspaces(
         &owner_peer,
         RoomsRequest::Invite {
             room: created.room.clone(),
@@ -638,7 +729,7 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
             }
         ),
     );
-    room(admission);
+    workspace(admission);
     assert!(matches!(decline, RoomsReply::Refused(_)), "{decline:?}");
 
     // A profile record belonging to another certified device/root is a
@@ -695,7 +786,7 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
 
     // Both the host's committed governance and the page's saved peer
     // record survive. No reissue, certification by Alice, or owner root.
-    let running = start_room_host(&alice, &host, state.path(), true).await;
+    let running = start_workspace_host(&alice, &host, state.path(), true).await;
     assert!(matches!(
         status(running.https().as_ref(), &bob, request).await,
         JoinReply::Admitted {
@@ -713,18 +804,48 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
     restored.join(created.workspace_id).unwrap();
     joined(&restored, created.workspace_id).await;
     assert_eq!(store.load().unwrap().cert.as_ref(), Some(&bob.cert));
-    assert!(matches!(
-        peer_rooms(
+    // He leaves: the host answers with the workspace, keeping his entry
+    // marked removed and admitting him no more.
+    let left = workspace(
+        peer_workspaces(
             &restored,
             RoomsRequest::Remove {
-                room: created.room,
+                room: created.room.clone(),
                 request_id: [22; 32],
                 user_public_key: bob.cert.user_public_key,
-            }
+            },
         )
         .await,
-        RoomsReply::Refused(_)
-    ));
+    );
+    assert_eq!(left.workspace_id, created.workspace_id);
+    assert!(
+        left.members
+            .iter()
+            .any(|entry| entry.user_public_key == bob.cert.user_public_key && entry.removed),
+        "{left:?}"
+    );
+    assert!(
+        !left
+            .members
+            .iter()
+            .any(|entry| entry.user_public_key == bob.cert.user_public_key && !entry.removed)
+    );
+    assert_eq!(
+        status(running.https().as_ref(), &bob, request).await,
+        JoinReply::Declined
+    );
+    assert!(
+        HttpsLink::connect(
+            running.https(),
+            &bob.cert,
+            host.cert.device_public_key,
+            &RevocationList::new(),
+            &bob.key,
+        )
+        .await
+        .is_err(),
+        "a person who left has no session to resume"
+    );
     restored.close();
     drop(running.web);
     running.relay.shutdown().await;

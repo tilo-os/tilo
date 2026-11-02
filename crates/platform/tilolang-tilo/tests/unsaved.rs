@@ -1,4 +1,4 @@
-//! What an origin derives is never saved to the room record: the clock, the desk, the device's
+//! What an origin derives is never saved to the workspace record: the clock, the desk, the device's
 //! state are written into the store's unsaved layer, read at once, and gone at the next start,
 //! when the origin writes them again. A change of one reaches the views and leaves no change
 //! behind to be committed, sent or replayed.
@@ -74,6 +74,8 @@ fn commit(host: &Host, doc: &mut AutoCommit) {
 
 fn apply(_host: &Host, doc: &mut AutoCommit, action: &DynAction) {
     let context = tilo_actions::ActionContext::for_resource(
+        // The workspace root's path, as the record service names it for an action that wrote
+        // no resource.
         action.resources().first().copied().unwrap_or("room"),
         &action.kind,
         &action.kind,

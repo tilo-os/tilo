@@ -19,7 +19,7 @@ use automerge::AutoCommit;
 use automerge::transaction::Transactable as _;
 use tilo_action_policy::share::{ShareAccess, share_grants};
 use tilo_desktop_model::projection::{
-    ROOM_LAYOUT_KEY, RoomLayout, project_room_policy, room_policy_of,
+    WORKSPACE_LAYOUT_KEY, WorkspaceLayout, project_workspace_policy, workspace_policy_of,
 };
 use tilo_desktop_model::window_share::{
     WindowShows, shows_node, window_node, window_share_id, window_shows_share_id,
@@ -34,7 +34,7 @@ const NOTEBOOK: &str = "notes.notebook";
 /// `app`, with what it shows, as the room's host writes the two resource
 /// shares the sharer asks for.
 fn share_app_window(governor: &mut AutoCommit, person: &str, tab: u64, shows: &WindowShows) {
-    let mut policy = room_policy_of(governor, ROOM);
+    let mut policy = workspace_policy_of(governor, ROOM);
     for (id, node) in [
         (
             window_shows_share_id(tab),
@@ -47,7 +47,7 @@ fn share_app_window(governor: &mut AutoCommit, person: &str, tab: u64, shows: &W
                 .expect("one resource of the room"),
         );
     }
-    project_room_policy(governor, &policy).expect("the room's authority");
+    project_workspace_policy(governor, &policy).expect("the room's authority");
     governor.commit();
 }
 
@@ -133,7 +133,11 @@ fn a_shared_tilo_app_window_opens_the_same_note_on_the_others_with_the_sharers_p
     let host_key = hex::encode(host);
     let mut governor = governed_room(ROOM, host, a_person, a_device);
     governor
-        .put(automerge::ROOT, ROOM_LAYOUT_KEY, RoomLayout::Personal.id())
+        .put(
+            automerge::ROOT,
+            WORKSPACE_LAYOUT_KEY,
+            WorkspaceLayout::Personal.id(),
+        )
         .expect("the governor makes the layout personal");
     governor.commit();
 
@@ -400,7 +404,7 @@ fn a_shared_tilo_app_window_opens_the_same_note_on_the_others_with_the_sharers_p
 /// `shows`, as the room's host writes a share made again under the same
 /// share id: over the one before.
 fn move_app_window(governor: &mut AutoCommit, person: &str, tab: u64, shows: &WindowShows) {
-    let mut policy = room_policy_of(governor, ROOM);
+    let mut policy = workspace_policy_of(governor, ROOM);
     let id = window_shows_share_id(tab);
     policy
         .grants
@@ -415,7 +419,7 @@ fn move_app_window(governor: &mut AutoCommit, person: &str, tab: u64, shows: &Wi
         )
         .expect("one resource of the room"),
     );
-    project_room_policy(governor, &policy).expect("the room's authority");
+    project_workspace_policy(governor, &policy).expect("the room's authority");
     governor.commit();
 }
 
@@ -450,7 +454,11 @@ fn a_shared_tilo_app_window_follows_its_sharers_note_reads_as_theirs_and_stays_u
     let host_key = hex::encode(host);
     let mut governor = governed_room(ROOM, host, a_person, a_device);
     governor
-        .put(automerge::ROOT, ROOM_LAYOUT_KEY, RoomLayout::Personal.id())
+        .put(
+            automerge::ROOT,
+            WORKSPACE_LAYOUT_KEY,
+            WorkspaceLayout::Personal.id(),
+        )
         .expect("the governor makes the layout personal");
     governor.commit();
     let mut net = FakeDocumentNet::new();

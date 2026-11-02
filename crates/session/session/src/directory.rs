@@ -10,7 +10,7 @@
 //!
 //! Joining one asks its door to admit this person
 //! ([`tilo_relay_protocol::directory::DoorAnswer`]) and verifies the
-//! invitation the door answers with for them: the room that invitation
+//! invitation the door answers with for them: the workspace that invitation
 //! grants, and nothing the directory claims, is the workspace joined
 //! ([`join`]).
 //!
@@ -144,7 +144,7 @@ pub(crate) struct Listed {
 }
 
 impl Listed {
-    /// The key it is joined and found again by: its room, else the site
+    /// The key it is joined and found again by: its workspace, else the site
     /// whose home it is, else the name it is listed under.
     pub(crate) fn key(&self) -> String {
         if self.entry.room.is_empty() {
@@ -290,7 +290,7 @@ struct Snapshot {
     failures: Vec<String>,
 }
 
-/// The person a join is made as: the key a door admits, and the name a room
+/// The person a join is made as: the key a door admits, and the name a workspace
 /// learns of them.
 pub(crate) struct Person {
     /// The person's root key, which this device is certified as.
@@ -315,8 +315,8 @@ impl Person {
     }
 }
 
-/// The name this person goes by in a room: the one they chose, else their
-/// login account's. A room, a public one above all, learns nothing of this
+/// The name this person goes by in a workspace: the one they chose, else their
+/// login account's. A workspace, a public one above all, learns nothing of this
 /// person's devices.
 pub(crate) fn own_person_name(chosen: Option<String>) -> String {
     chosen
@@ -329,12 +329,12 @@ pub(crate) fn own_person_name(chosen: Option<String>) -> String {
         .unwrap_or_else(tilo_identity_host::provisioning::login_account_display_name)
 }
 
-/// A workspace this person was let into: the room its door's invitation
+/// A workspace this person was let into: the workspace its door's invitation
 /// granted, the name it was listed under, and the invitation itself, which
-/// this device enrolls into the room's state with.
+/// this device enrolls into the workspace's state with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Joined {
-    pub(crate) room: String,
+    pub(crate) workspace_id: String,
     pub(crate) name: String,
     pub(crate) invitation: String,
 }
@@ -355,11 +355,11 @@ enum Ask {
     Take { text: String, person: Person },
 }
 
-/// An invitation that admits this person to a room: what a join is granted
-/// with, and what enrolls this device into the room.
+/// An invitation that admits this person to a workspace: what a join is granted
+/// with, and what enrolls this device into the workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Granted {
-    room: String,
+    workspace: String,
     invitation: String,
 }
 
@@ -398,8 +398,8 @@ pub(crate) struct Store {
     note: std::cell::RefCell<Option<String>>,
     /// One join at a time.
     joining: std::cell::RefCell<Option<String>>,
-    /// The join whose enrollment into its room is on its way, by the room's
-    /// key, while it is.
+    /// The join whose enrollment into its workspace is on its way, by the
+    /// workspace's key, while it is.
     settling: std::cell::RefCell<Option<String>>,
     /// Why joining a listing failed, by its key, until it is joined.
     failures: std::cell::RefCell<BTreeMap<String, String>>,
@@ -509,10 +509,10 @@ impl Store {
         Ok(())
     }
 
-    /// The join whose enrollment is on its way, by the room it is for, while
+    /// The join whose enrollment is on its way, by the workspace it is for, while
     /// it is: the sheet says so until it lands.
-    pub(crate) fn expect_enrollment(&self, room: &str) {
-        *self.settling.borrow_mut() = Some(room.to_owned());
+    pub(crate) fn expect_enrollment(&self, workspace: &str) {
+        *self.settling.borrow_mut() = Some(workspace.to_owned());
         *self.note.borrow_mut() = Some(tilo_sheets::word("directory-joining"));
     }
 
@@ -521,7 +521,7 @@ impl Store {
         self.settling.borrow().is_some()
     }
 
-    /// What became of the enrollment into the room of `key`: the join is
+    /// What became of the enrollment into the workspace of `key`: the join is
     /// settled, either way.
     ///
     /// A failure is said where the person pressed, and the row offers to
@@ -580,7 +580,7 @@ impl Store {
                         Ok(granted) => {
                             self.failures.borrow_mut().remove(&key);
                             self.joined.borrow_mut().push(Joined {
-                                room: granted.room,
+                                workspace_id: granted.workspace,
                                 name,
                                 invitation: granted.invitation,
                             });
@@ -600,7 +600,7 @@ impl Store {
                     *self.joining.borrow_mut() = None;
                     match granted {
                         Ok(granted) => self.joined.borrow_mut().push(Joined {
-                            room: granted.room,
+                            workspace_id: granted.workspace,
                             name: if name.is_empty() {
                                 tilo_sheets::word("directory-joined-name")
                             } else {
@@ -686,11 +686,11 @@ fn take(text: &str, person: &Person) -> Taken {
             name: entry.map_or_else(String::new, |entry| site_name(&entry)),
             granted: verify_invitation(&text, person),
         },
-        Pasted::Site { entry, room } => {
+        Pasted::Site { entry, workspace } => {
             let name = site_name(&entry);
             let granted = read_site_home(&entry).and_then(|door| join(&door, person)).and_then(
-                |granted| match room {
-                    Some(room) if room.to_string() != granted.room => Err(
+                |granted| match workspace {
+                    Some(workspace) if workspace.to_string() != granted.workspace => Err(
                         "that link is for another workspace on this site: ask whoever shared it for an invitation"
                             .to_owned(),
                     ),
@@ -702,8 +702,8 @@ fn take(text: &str, person: &Person) -> Taken {
     }
 }
 
-/// An invitation redeemed for this person: the room it grants, and the text
-/// the room's host admits this device by.
+/// An invitation redeemed for this person: the workspace it grants, and the text
+/// the workspace's host admits this device by.
 fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String> {
     let verified = tilo_workspace_join::decode_and_verify_invitation_text(
         text.trim(),
@@ -712,11 +712,11 @@ fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String> {
         tilo_clock::unix_now_ns(),
     )
     .map_err(|error| format!("that invitation is not for you: {error}"))?;
-    let room = verified.grant().room.clone();
-    tilo_desktop_model::RoomId::parse(&room)
-        .ok_or_else(|| "that invitation names an invalid room".to_owned())?;
+    let workspace = verified.grant().room.clone();
+    tilo_desktop_model::RoomId::parse(&workspace)
+        .ok_or_else(|| "that invitation names an invalid workspace".to_owned())?;
     Ok(Granted {
-        room,
+        workspace,
         invitation: text.trim().to_owned(),
     })
 }
@@ -729,11 +729,11 @@ enum Pasted {
         text: String,
         entry: Option<url::Url>,
     },
-    /// A site, whose home workspace its door admits people to; with the room
+    /// A site, whose home workspace its door admits people to; with the workspace
     /// a link named, which must be that workspace.
     Site {
         entry: url::Url,
-        room: Option<tilo_desktop_model::RoomId>,
+        workspace: Option<tilo_desktop_model::RoomId>,
     },
 }
 
@@ -767,9 +767,12 @@ fn classify(text: &str) -> Result<Pasted, String> {
                 return Err("that link pairs a device with a host, not a workspace".to_owned());
             }
             let tilo_reference::link::Scope::Room { room, .. } = link.target.scope else {
-                return Ok(Pasted::Site { entry, room: None });
+                return Ok(Pasted::Site {
+                    entry,
+                    workspace: None,
+                });
             };
-            let room = tilo_desktop_model::RoomId::from(room);
+            let workspace = tilo_desktop_model::RoomId::from(room);
             if let Some(invitation) = link.secrets.invite {
                 return Ok(Pasted::Invitation {
                     text: invitation.expose().to_owned(),
@@ -778,13 +781,13 @@ fn classify(text: &str) -> Result<Pasted, String> {
             }
             return Ok(Pasted::Site {
                 entry,
-                room: Some(room),
+                workspace: Some(workspace),
             });
         }
     }
     Ok(Pasted::Site {
         entry: site_entry(text)?,
-        room: None,
+        workspace: None,
     })
 }
 
@@ -839,7 +842,7 @@ fn read_site_home(entry: &url::Url) -> Result<url::Url, String> {
 }
 
 /// Ask `door` to admit this person, and verify the invitation it answers
-/// with for them. The room that invitation grants is the workspace joined:
+/// with for them. The workspace that invitation grants is the workspace joined:
 /// what a directory said about it is not what makes it so.
 ///
 /// Blocks on the door: run it off the frame loop.
@@ -888,11 +891,11 @@ fn join(door: &url::Url, person: &Person) -> Result<Granted, String> {
         tilo_clock::unix_now_ns(),
     )
     .map_err(|error| format!("the workspace did not let you in: {error}"))?;
-    let room = verified.grant().room.clone();
-    tilo_desktop_model::RoomId::parse(&room)
-        .ok_or_else(|| "the door named an invalid room".to_owned())?;
+    let workspace = verified.grant().room.clone();
+    tilo_desktop_model::RoomId::parse(&workspace)
+        .ok_or_else(|| "the door named an invalid workspace".to_owned())?;
     Ok(Granted {
-        room,
+        workspace,
         invitation: answer.invitation,
     })
 }
@@ -1105,7 +1108,7 @@ fn joins_as(listing: &Listed) -> String {
 /// sites' directories list.
 pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
     let now_ms = tilo_clock::unix_now_ms();
-    // The workspaces this computer holds, by room, and the rows for those a
+    // The workspaces this computer holds, by workspace, and the rows for those a
     // site does not list.
     let (held, desk_rows) = handle.read(|tree| {
         let held: BTreeMap<String, (String, String)> = tree
@@ -1200,13 +1203,13 @@ mod tests {
     use tilo_relay_protocol::directory::{Face, door_path};
 
     fn entry(name: &str) -> DirectoryEntry {
-        let room = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+        let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
         DirectoryEntry {
-            room: room.into(),
+            room: workspace.into(),
             name: name.into(),
             description: format!("All about {name}"),
             default_role: RoomRole::Commenter,
-            door: door_path(room),
+            door: door_path(workspace),
             here: Vec::new(),
             here_count: 0,
             members: 3,
@@ -1258,27 +1261,27 @@ mod tests {
     #[test]
     fn the_community_comes_first_then_the_liveliest_then_by_name() {
         let now = 10 * 24 * 60 * 60 * 1000;
-        let room = |listing: &mut DirectoryEntry, index: u8| {
+        let workspace = |listing: &mut DirectoryEntry, index: u8| {
             listing.room = format!("6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b{index:02}");
         };
         let mut quiet = entry("Bakery");
-        room(&mut quiet, 1);
+        workspace(&mut quiet, 1);
         quiet.last_active_ms = Some(now - 5 * 24 * 60 * 60 * 1000);
         let mut busy = entry("Garden");
-        room(&mut busy, 2);
+        workspace(&mut busy, 2);
         busy.here_count = 2;
         busy.here = vec![Face {
             user_public_key: hex::encode([1; 32]),
             name: "Ana".into(),
         }];
         let mut busier = entry("Zoo");
-        room(&mut busier, 3);
+        workspace(&mut busier, 3);
         busier.here_count = 9;
         let mut recent = entry("Atelier");
-        room(&mut recent, 4);
+        workspace(&mut recent, 4);
         recent.last_active_ms = Some(now - 60_000);
         let mut community = entry("tilo.coffee");
-        room(&mut community, 5);
+        workspace(&mut community, 5);
         community.community = true;
         let page = DirectoryPage {
             workspaces: vec![quiet, busy, busier, recent, community],

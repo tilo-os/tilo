@@ -4,7 +4,7 @@
 //! got a record of its own (`derived:default@tab:<window>`), so a new window
 //! showed an empty notebook and the pages written in another were reachable
 //! only by restoring that exact window. Notes now keeps one notebook per
-//! workspace ([`ResourceApp::ROOM_RECORD`](ui::framework::ResourceApp::ROOM_RECORD)).
+//! workspace ([`ResourceApp::WORKSPACE_RECORD`](ui::framework::ResourceApp::WORKSPACE_RECORD)).
 //! When a workspace's notebook is first created, its seed copies the notes, tags
 //! and pictures of every per-window notebook this device holds in the workspace
 //! into it ([`adoption`]).

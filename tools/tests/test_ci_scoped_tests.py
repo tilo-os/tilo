@@ -44,13 +44,53 @@ class ScopedTestsTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 scoped.entries(bad)
 
-    def test_command_runs_one_target_with_the_filter_and_without_goldens(self):
+    def test_command_runs_one_target_through_the_ci_wrapper(self):
+        """The wrapper a shard's own run goes through, which prepares its packages."""
         argv = scoped.command(ENTRY, " test(golden) ")
-        self.assertEqual(argv[:6], ["cargo", "nextest", "run", "--locked", "--profile", "ci"])
+        self.assertEqual(argv[:2], ["bash", str(scoped.ROOT / "tools/ci/nextest.sh")])
+        self.assertEqual(argv[2:8], ["cargo", "nextest", "run", "--locked", "--profile", "ci"])
         self.assertIn("--no-tests=fail", argv)
-        self.assertEqual(argv[-6:], ["-p", "tilo-ui", "--test", "it", "-E",
+        self.assertEqual(argv[-8:], ["-p", "tilo-ui", "--test", "it", "--features",
+                                     "tilo-ui/test-support", "-E",
                                      "(test(/^audit::/)) and not (test(golden))"])
         self.assertEqual(scoped.command(ENTRY, "")[-1], "(test(/^audit::/))")
+
+    def test_a_packages_test_features_reach_the_run_through_the_wrapper(self):
+        # Cargo leaves a target whose Cargo.toml needs a feature out of the
+        # build, and --test names it: without the wrapper's features (here the
+        # shell's, tools/ci/package_features.py) every run selecting such a
+        # test failed to build it.
+        shell = {"package": "shell", "test": "it", "filter": "binary(it) and test(desktop_smoke::)"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("run_scoped_tests.py", "nextest.sh", "package_features.py"):
+                source = MODULE_PATH.parent / name
+                (root / "tools/ci").mkdir(parents=True, exist_ok=True)
+                (root / "tools/ci" / name).write_bytes(source.read_bytes())
+            (root / "tools/test-env.sh").write_text("#!/bin/sh\nexec \"$@\"\n")
+            cargo = root / "bin/cargo"
+            cargo.parent.mkdir()
+            cargo.write_text(
+                "#!/bin/sh\n"
+                "python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' \"$@\"\n"
+                "mkdir -p target/nextest/ci\n"
+                "cat > target/nextest/ci/junit.xml <<'XML'\n"
+                + junit("it", 1) + "\nXML\n")
+            cargo.chmod(0o755)
+            env = {key: value for key, value in os.environ.items() if key != "CI"}
+            env.update({"PATH": f"{root / 'bin'}:{os.environ['PATH']}",
+                        "SCOPED_TESTS": json.dumps([shell])})
+            result = subprocess.run([sys.executable, str(root / "tools/ci/run_scoped_tests.py")],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            runs = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("[")]
+            nextest = [argv for argv in runs if argv[:2] == ["nextest", "run"]]
+            self.assertEqual(len(nextest), 1, result.stdout)
+            argv = nextest[0]
+            self.assertEqual(argv[argv.index("-p") + 1], "shell")
+            self.assertEqual(argv[argv.index("--test") + 1], "it")
+            features = argv[argv.index("--features") + 1]
+            self.assertIn("shell/hosted-test-control", features)
 
     def test_success_without_a_scoped_report_fails_even_with_an_affected_report(self):
         for existing in (False, True):

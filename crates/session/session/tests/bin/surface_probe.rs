@@ -27,6 +27,10 @@ const RESOURCE: &str = "SURFACE_PROBE_RESOURCE";
 /// The action it takes on it, with its arguments as JSON.
 const ACTION: &str = "SURFACE_PROBE_ACTION";
 const ARGUMENTS: &str = "SURFACE_PROBE_ARGUMENTS";
+/// Set when the probe stands in for a view that draws a part of the shell: it
+/// reports what it read and then stays up, as such a view does, until the
+/// session stops the process.
+const STAY: &str = "SURFACE_PROBE_STAY";
 
 /// How long the change may take to land: the session publishes the reading
 /// again when the device has taken it, and a device that never does is the
@@ -47,6 +51,13 @@ fn main() {
     let whole = format!("{report}.whole");
     std::fs::write(&whole, read_and_change()).expect("the report is written");
     std::fs::rename(&whole, &report).expect("the report is put in place");
+    if std::env::var_os(STAY).is_some() {
+        // A view drawing a part of the shell is up while that part is: it
+        // ends when the session stops the process, never on its own.
+        loop {
+            std::thread::park();
+        }
+    }
 }
 
 /// The reading the resource stands at, then the reading the action lands at,

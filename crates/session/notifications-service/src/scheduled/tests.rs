@@ -6,10 +6,10 @@ fn at(value: &str) -> DateTime<FixedOffset> {
     DateTime::parse_from_rfc3339(value).expect("valid test instant")
 }
 
-fn owner(room: &str, app: &str) -> Owner {
+fn owner(workspace: &str, app: &str) -> Owner {
     Owner {
         app: app.into(),
-        room: room.into(),
+        workspace: workspace.into(),
     }
 }
 
@@ -44,7 +44,7 @@ fn rung(due: DateTime<FixedOffset>, weekdays: u8, path: Option<PathBuf>) -> (Led
     let mut ledger = Ledger::open(path).expect("ledger");
     ledger
         .schedule(
-            &owner("room", "so.tilo.clocks"),
+            &owner("studio", "so.tilo.clocks"),
             alarm("alarm", due, weekdays),
         )
         .expect("handoff");
@@ -95,12 +95,40 @@ fn the_wire_arguments_make_a_request() {
 }
 
 #[test]
+fn a_ledger_written_under_the_room_key_still_delivers_its_deadline() {
+    let temp = tempfile::tempdir().expect("private fixture");
+    let path = temp.path().join("schedules.json");
+    std::fs::write(
+        &path,
+        r#"[{"room":"studio","app":"so.tilo.clocks","tag":"alarm","title":"Alarm",
+             "body":"Wake up","activation":"tilo-clocks:alarms","original_at_ms":1000,
+             "next_at_ms":1000,"calendar":null,"last_rung":null,
+             "token":"0123456789abcdef0123456789abcdef"}]"#,
+    )
+    .expect("an earlier session's ledger");
+    let ledger = Ledger::open(Some(path)).expect("ledger");
+    assert_eq!(
+        ledger.pending(&owner("studio", "so.tilo.clocks")),
+        [("alarm".to_owned(), 1000)]
+    );
+}
+
+#[test]
+fn a_ringing_occurrence_carries_its_workspace_as_room() {
+    let due = at("2026-04-14T12:00:00+00:00");
+    let (_ledger, occurrence) = rung(due, 127, None);
+    let written = serde_json::to_value(&occurrence).expect("its data");
+    assert_eq!(written["room"], "studio", "the key apps already read");
+    assert!(written.get("workspace").is_none());
+}
+
+#[test]
 fn a_snooze_survives_restart_and_rings_once() {
     let temp = tempfile::tempdir().expect("private fixture");
     let path = temp.path().join("schedules.json");
     let due = at("2026-04-14T12:00:00+00:00");
     let (mut ledger, occurrence) = rung(due, 127, Some(path.clone()));
-    let original = ledger.alarm_states(&owner("room", "so.tilo.clocks"));
+    let original = ledger.alarm_states(&owner("studio", "so.tilo.clocks"));
     ledger
         .act(
             "so.tilo.clocks",
@@ -126,7 +154,7 @@ fn a_snooze_survives_restart_and_rings_once() {
             .is_empty()
     );
     assert_eq!(
-        restarted.alarm_states(&owner("room", "so.tilo.clocks")),
+        restarted.alarm_states(&owner("studio", "so.tilo.clocks")),
         original,
         "a snooze does not rewrite the calendar's delivery history"
     );
@@ -225,7 +253,9 @@ fn cancelling_a_snoozed_alarm_survives_restart_and_a_stale_dismiss_cannot_rearm_
             due.timestamp_millis(),
         )
         .expect("snooze");
-    ledger.cancel(&owner("room", app), "alarm").expect("cancel");
+    ledger
+        .cancel(&owner("studio", app), "alarm")
+        .expect("cancel");
     drop(ledger);
     let mut restarted = Ledger::open(Some(path)).expect("restart");
     assert!(
@@ -252,20 +282,20 @@ fn cancelling_a_snoozed_alarm_survives_restart_and_a_stale_dismiss_cannot_rearm_
             .expect("past the cancelled deadline")
             .is_empty()
     );
-    assert!(restarted.pending(&owner("room", app)).is_empty());
+    assert!(restarted.pending(&owner("studio", app)).is_empty());
 }
 
 #[test]
-fn foreign_app_room_token_and_stale_occurrence_cannot_change_an_alarm() {
+fn foreign_app_workspace_token_and_stale_occurrence_cannot_change_an_alarm() {
     let due = at("2026-04-14T12:00:00+00:00");
     let (mut ledger, occurrence) = rung(due, 127, None);
-    let original = ledger.alarm_states(&owner("room", "so.tilo.clocks"));
+    let original = ledger.alarm_states(&owner("studio", "so.tilo.clocks"));
     for changed in 0..4 {
         let mut target = occurrence.clone();
         let mut app = "so.tilo.clocks";
         match changed {
             0 => app = "another.app",
-            1 => target.room = "another-room".into(),
+            1 => target.workspace = "another-workspace".into(),
             2 => target.token = "0123456789abcdef0123456789abcdef".into(),
             _ => target.occurrence_ms -= 1,
         }
@@ -276,7 +306,7 @@ fn foreign_app_room_token_and_stale_occurrence_cannot_change_an_alarm() {
         );
     }
     assert_eq!(
-        ledger.alarm_states(&owner("room", "so.tilo.clocks")),
+        ledger.alarm_states(&owner("studio", "so.tilo.clocks")),
         original
     );
 }
@@ -329,7 +359,7 @@ fn the_first_handoff_keeps_the_apps_already_delivered_local_date() {
     }
     .next_in(Some(now.date_naive()), &now)
     .expect("next unconsumed occurrence");
-    let caller = owner("room", "so.tilo.clocks");
+    let caller = owner("studio", "so.tilo.clocks");
     let mut ledger = Ledger::open(None).expect("ledger");
     let mut request = alarm("reopened", tomorrow, 0);
     if let Some(alarm) = request.alarm.as_mut() {
@@ -348,7 +378,7 @@ fn the_first_handoff_keeps_the_apps_already_delivered_local_date() {
 fn deadlines_survive_restart_and_do_not_repeat_once_delivered() {
     let temp = tempfile::tempdir().expect("private fixture");
     let path = temp.path().join("schedules.json");
-    let caller = owner("room", "so.tilo.clocks");
+    let caller = owner("studio", "so.tilo.clocks");
     let due = at("2026-04-14T12:00:00+00:00");
     let mut ledger = Ledger::open(Some(path.clone())).expect("new ledger");
     ledger
@@ -362,7 +392,7 @@ fn deadlines_survive_restart_and_do_not_repeat_once_delivered() {
         delivered.first().and_then(|n| n.caller.as_ref()),
         Some(&Caller {
             app_id: "so.tilo.clocks".into(),
-            workspace: Some("room".into())
+            workspace: Some("studio".into())
         })
     );
     // Reopening the app hands the same deadline over again: it is not rearmed.
@@ -409,7 +439,7 @@ fn cancellation_and_tags_are_scoped_to_the_workspace_and_app() {
 #[test]
 fn a_repeating_alarm_catches_up_once_and_follows_local_time() {
     let mut ledger = Ledger::open(None).expect("ledger");
-    let caller = owner("room", "so.tilo.clocks");
+    let caller = owner("studio", "so.tilo.clocks");
     ledger
         .schedule(
             &caller,
@@ -458,7 +488,7 @@ fn a_repeating_alarm_catches_up_once_and_follows_local_time() {
 fn a_failed_write_keeps_the_deadline_and_delivers_nothing() {
     let temp = tempfile::tempdir().expect("private fixture");
     let path = temp.path().join("schedules.json");
-    let caller = owner("room", "so.tilo.clocks");
+    let caller = owner("studio", "so.tilo.clocks");
     let due = at("2026-04-14T12:00:00+00:00");
     let mut ledger = Ledger::open(Some(path.clone())).expect("ledger");
     ledger
@@ -477,7 +507,7 @@ fn a_rung_alarms_actions_reach_its_deadline_through_the_handle() {
     let schedules = Schedules::in_memory();
     let due = at("2026-04-14T12:00:00+00:00");
     schedules
-        .schedule(&owner("room", "so.tilo.clocks"), alarm("alarm", due, 0))
+        .schedule(&owner("studio", "so.tilo.clocks"), alarm("alarm", due, 0))
         .expect("schedule");
     let rung = schedules.take_due(&due, ids()).expect("rung");
     let id = rung.first().expect("one").id;
@@ -505,7 +535,7 @@ fn an_unavailable_ledger_refuses_rather_than_losing_deadlines() {
     assert!(
         schedules
             .schedule(
-                &owner("room", "app"),
+                &owner("studio", "app"),
                 alarm("a", at("2026-04-14T12:00:00+00:00"), 0)
             )
             .is_err()

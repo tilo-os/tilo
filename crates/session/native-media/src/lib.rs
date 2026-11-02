@@ -16,5 +16,5 @@
 pub mod media;
 pub mod service;
 
-pub use media::{CallTarget, MediaFactory, MediaSession, Prepare, Rosters};
+pub use media::{CallTarget, MediaFactory, MediaSession, Prepare, Rosters, ScreenShare};
 pub use service::{Caller, NativeMediaService, OwnCall};

@@ -1062,7 +1062,7 @@ fn make_thumbnails_request(hashes: &[String]) -> OffloadRequest {
         .expect("Photos publishes make-thumbnails");
     let arguments = serde_json::json!({ "photos": hashes });
     OffloadRequest {
-        room: ROOM.into(),
+        workspace: ROOM.into(),
         app_id: PHOTOS.into(),
         address: ActionAddress::new("photos.library:main", "make-thumbnails"),
         offload: spec.contract.offload.clone().expect("declared offloadable"),
@@ -1252,7 +1252,7 @@ async fn the_door_runs_photos_make_thumbnails_on_the_placed_device_with_the_loca
 
     // A room this device places no compute for runs here.
     let mut unplaced = request;
-    unplaced.room = "a-room-without-compute".into();
+    unplaced.workspace = "a-room-without-compute".into();
     let Offloaded::RunHere { reason } = route.offload(unplaced).await else {
         panic!("no workspace, no offload");
     };
@@ -1380,7 +1380,7 @@ async fn a_session_route_started_from_its_home_relay_offloads_and_falls_back_tru
 
     // A room the relay does not place stays here.
     let mut unplaced = request.clone();
-    unplaced.room = "a-room-without-compute".into();
+    unplaced.workspace = "a-room-without-compute".into();
     let Offloaded::RunHere { reason } = route.offload(unplaced).await else {
         panic!("no workspace, no offload");
     };

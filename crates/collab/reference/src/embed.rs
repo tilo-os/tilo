@@ -5,7 +5,7 @@
 //! by their participant id; any other resource by the catalogue's resource reference
 //! ([`ResourceAt`]: the app that keeps it, its record when not the app's record of the
 //! workspace, its kind and its id), the same reference an action parameter that picks a
-//! resource takes ([`tilo_actions::Pick::Resource`]). It names no room: a reference is
+//! resource takes ([`tilo_actions::Pick::Resource`]). It names no workspace: a reference is
 //! resolved within the workspace whose document holds it. Its label is the run, so the mark
 //! carries none.
 //!

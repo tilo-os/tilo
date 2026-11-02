@@ -313,7 +313,7 @@ async fn an_action_reaches_the_device_it_names_and_is_answered() {
         "and the device that asked"
     );
     assert_eq!(
-        answered_as.room(),
+        answered_as.workspace(),
         Some(WORKSPACE),
         "confined to the workspace it named"
     );
@@ -755,7 +755,7 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
             message: RemoteActionMessage::RecordRequest {
                 correlation: 5,
                 query: tilo_actions::remote::RecordQuery {
-                    room: WORKSPACE.into(),
+                    workspace: WORKSPACE.into(),
                     app: "test.app".into(),
                     record: "tab:1".into(),
                     offset: 0,

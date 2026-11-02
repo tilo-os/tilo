@@ -1,7 +1,7 @@
 //! A process without the toolkit keeps a record's undo, history and save
 //! state with the code native apps keep them with: the record's own undo log
 //! over its document, the steps the document records with their authors, and
-//! the record's on-disk copy in the room's store.
+//! the record's on-disk copy in the workspace's store.
 
 use std::rc::Rc;
 
@@ -17,7 +17,7 @@ use collaboration::state::UndoLog;
 use durable_store::DurableStore;
 
 const PACKAGE: &str = "dev.tilo.undo-without-toolkit";
-const ROOM: &str = "room-1";
+const WORKSPACE: &str = "workspace-1";
 
 /// The host's words: a person by their principal, a step by its purpose.
 struct Words;
@@ -57,7 +57,7 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     let ada = UserId("ada".into());
 
     // The record, its undo log and the writer of its on-disk copy.
-    let mut store = record_document(&documents, PACKAGE, ROOM, &record).unwrap();
+    let mut store = record_document(&documents, PACKAGE, WORKSPACE, &record).unwrap();
     let mut doc = store.load_or_new();
     // Every change of the record is its original persistent writer's, as
     // the toolkit's record store sets it.
@@ -117,7 +117,7 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
 
     // Reloaded, the record holds its history: the same heads and authors,
     // and a new session's undo log takes the step back again.
-    let mut store = record_document(&documents, PACKAGE, ROOM, &record).unwrap();
+    let mut store = record_document(&documents, PACKAGE, WORKSPACE, &record).unwrap();
     let mut reloaded = store
         .load_complete()
         .unwrap()

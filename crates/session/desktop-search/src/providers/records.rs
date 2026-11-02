@@ -99,7 +99,7 @@ impl HeldRecord {
                 ),
                 // No workspace for this record (one this device stopped
                 // showing, or whose name it does not know): say so rather
-                // than print a room id.
+                // than print a workspace id.
                 None => crate::i18n::t("search-record-in-another-workspace"),
             }
         };
@@ -125,19 +125,19 @@ fn display_path(path: &std::path::Path) -> String {
     path.display().to_string()
 }
 
-/// The records the workspaces hold, offered in the workspace of `room`.
+/// The records the workspaces hold, offered in the workspace of `workspace`.
 pub struct Records {
     /// The workspace search was opened in: where a chosen row brings its
     /// record, and which rows say "in this workspace".
-    room: String,
+    workspace: String,
     held: Vec<HeldRecord>,
 }
 
 impl Records {
     #[must_use]
-    pub fn new(room: impl Into<String>, held: Vec<HeldRecord>) -> Self {
+    pub fn new(workspace: impl Into<String>, held: Vec<HeldRecord>) -> Self {
         Self {
-            room: room.into(),
+            workspace: workspace.into(),
             held,
         }
     }
@@ -146,10 +146,11 @@ impl Records {
         let score = crate::rank::record_match_score(needle, &record.title(), &record.id)?;
         let facts = record.facts();
         let checkout = record.checkout()?;
-        let target = InvokeTarget::action(DESKTOP_APP, &self.room, RECORDS_RESOURCE, BRING_HERE)
-            .with_argument(RECORD_PARAM, record.id.clone())
-            .with_argument(KIND_PARAM, checkout.kind.as_str())
-            .with_argument(PACKAGE_PARAM, record.package.clone());
+        let target =
+            InvokeTarget::action(DESKTOP_APP, &self.workspace, RECORDS_RESOURCE, BRING_HERE)
+                .with_argument(RECORD_PARAM, record.id.clone())
+                .with_argument(KIND_PARAM, checkout.kind.as_str())
+                .with_argument(PACKAGE_PARAM, record.package.clone());
         Some(Hit {
             faces: Vec::new(),
             outcome: None,
@@ -244,7 +245,10 @@ mod tests {
              a kind is the kind it names"
         );
         assert_eq!(target.arguments[PACKAGE_PARAM], "so.tilo.notes");
-        assert_eq!(target.room, "here", "and it is brought into this workspace");
+        assert_eq!(
+            target.workspace, "here",
+            "and it is brought into this workspace"
+        );
         assert!(records.query("zzz").is_empty());
         assert!(records.query("").is_empty());
     }

@@ -1,11 +1,15 @@
-/// An on-demand record the room's hosts have none of: the read says so
+/// An on-demand record the workspace's hosts have none of: the read says so
 /// once, as a session event the app shows, and then waits on the broker
 /// instead of opening again.
 #[test]
 #[cfg(unix)]
 fn an_absent_on_demand_record_is_said_once_and_waited_on() {
-    let room = Uuid::new_v4();
-    let part = RouteSpec::record("so.tilo.chat", room, "derived:part.3@derived:messages@room");
+    let workspace = Uuid::new_v4();
+    let part = RouteSpec::record(
+        "so.tilo.chat",
+        workspace,
+        "derived:part.3@derived:messages@workspace",
+    );
     let awaits = Arc::new(tokio::sync::Notify::new());
     let broker = FakeBroker {
         captures: Arc::new(std::sync::Mutex::new(Captures {
@@ -17,7 +21,7 @@ fn an_absent_on_demand_record_is_said_once_and_waited_on() {
         ..FakeBroker::default()
     };
     let (fd, captures, _thread) = stand_up_fake_broker(broker);
-    let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", room);
+    let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", workspace);
     manager.join_route(part.clone(), crate::record::RecordKind::new(""));
     let unavailable = |events: &[CollabEvent]| {
         events

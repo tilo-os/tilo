@@ -200,7 +200,7 @@ struct Offered<'m> {
 }
 
 /// The longest run of a conversation's unread messages a mention count reads: one page of
-/// them, so a room nobody has read is not read message by message for a badge.
+/// them, so a workspace nobody has read is not read message by message for a badge.
 const MENTION_SCAN: usize = 64;
 
 impl Core {
@@ -904,7 +904,7 @@ impl Core {
             .filter(|f| f.kind == crate::meta::FieldKind::RichText)
             .map(|f| f.id.clone())
             .collect();
-        // The longest run of unread messages read for a count: a room nobody has read counts
+        // The longest run of unread messages read for a count: a workspace nobody has read counts
         // mentions in its first page of new messages, not in every one.
         let upto = from.saturating_add(MENTION_SCAN).min(len);
         let mut found: usize = 0;

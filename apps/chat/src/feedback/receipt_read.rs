@@ -118,6 +118,8 @@ pub(super) fn snapshot(
 
 pub(super) fn schema() -> &'static serde_json::Value {
     static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
+    // A receipt's destination is sent under the key it was stored with:
+    // `room`, the field naming the workspace it goes to.
     SCHEMA.get_or_init(|| {
         ui::semantic_document_read::result_schema(
             serde_json::json!({

@@ -2,7 +2,7 @@
 # tilo-store-volume — the dedicated Btrfs volume the storage daemon serves its
 # native data plane from.
 #
-# fanotify filesystem marks are per superblock, so the room trees need a
+# fanotify filesystem marks are per superblock, so the workspace trees need a
 # filesystem of their own: never a subvolume of the root filesystem, whose
 # mark would put every file on the machine behind the daemon. The daemon
 # refuses a store on the same filesystem as /, /var or /home and serves FUSE
@@ -61,11 +61,11 @@ STORE_MIN_BYTES=$((8 * GIB))
 IMAGE_RESERVE_MIN_BYTES=$((16 * GIB))
 
 # Btrfs features every store gets: the block-group tree keeps mounting large
-# volumes fast, and simple quotas account each room's subvolume from its first
+# volumes fast, and simple quotas account each workspace's subvolume from its first
 # extent (enabling them later would leave earlier extents unaccounted).
 MKFS_FEATURES=block-group-tree,squota
 # noatime: reads never turn into metadata writes, which the change journal
-# would otherwise have to discard. context=: people reach the rooms through
+# would otherwise have to discard. context=: people reach the workspaces through
 # /var/workspace, whose files carried the FUSE mount's label (fusefs_t) until
 # now; labelling the whole store with it keeps every domain's existing access
 # to those files, from the session to sandboxed apps, exactly as it was.
@@ -392,19 +392,19 @@ serve_fuse() {
 }
 
 # Mode, label and ownership of a mounted store. The root is root-only: people
-# reach their room through the bind at /var/workspace, never through the
+# reach their workspace through the bind at /var/workspace, never through the
 # store, which also holds the capture snapshots.
 prepare_mounted() {
-  local owner="$1" room
+  local owner="$1" workspace
   chmod 0700 "$STORE_MOUNT"
   install -d -m 0700 "$STORE_MOUNT/live"
-  # A room the daemon created before it knew the local person belongs to
-  # root; hand it, and only root-owned entries in it, to that person.
-  for room in "$STORE_MOUNT"/live/*; do
-    [ -d "$room" ] && [ ! -L "$room" ] || continue
-    [ "$(stat -c %u "$room")" = 0 ] || continue
-    chown -R --from=0:0 "$owner" "$room"
-    log "gave room $(basename "$room") to $owner"
+  # A workspace the daemon created before it knew the local person belongs
+  # to root; hand it, and only root-owned entries in it, to that person.
+  for workspace in "$STORE_MOUNT"/live/*; do
+    [ -d "$workspace" ] && [ ! -L "$workspace" ] || continue
+    [ "$(stat -c %u "$workspace")" = 0 ] || continue
+    chown -R --from=0:0 "$owner" "$workspace"
+    log "gave workspace $(basename "$workspace") to $owner"
   done
 }
 
@@ -423,7 +423,7 @@ create_image() {
   fi
   if [ -f "$STORE_IMAGE" ]; then
     # An image whose configuration was never written (power lost in
-    # between): adopt it rather than replace what may already hold rooms.
+    # between): adopt it rather than replace what may already hold workspaces.
     fsu="$(blkid -s UUID -o value "$STORE_IMAGE" 2>/dev/null || true)"
     valid_uuid "$fsu" || { serve_fuse "$STORE_IMAGE exists but holds no filesystem; move it away to have a new one created."; return 1; }
     log "Adopting the existing store image $STORE_IMAGE."
@@ -503,7 +503,7 @@ cmd_ensure() {
           return 0
         }
         log "Files move to the native data plane on this start of fs.service. Nothing is copied:"
-        log "the daemon projects every room from its local content store, small files at"
+        log "the daemon projects every workspace from its local content store, small files at"
         log "once and large ones as placeholders that fill from the same store on first read."
         ;;
       *)

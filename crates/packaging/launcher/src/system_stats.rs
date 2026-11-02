@@ -6,14 +6,14 @@
 //! program's command line and environment to it. An app that declares
 //! `system-info` instead receives a connection to the session's service,
 //! opened here and authenticated before the sandbox starts: the launcher
-//! writes the app's id, its room and its grants as the first frame, so the
+//! writes the app's id, its workspace and its grants as the first frame, so the
 //! app cannot claim more than it was given.
 //!
 //! What it is given:
 //!
 //! - an app the image ships (its payload is in the image's read-only store)
 //!   is granted what it declares, `system-info` and `processes`, by default;
-//! - any other app is granted what the room's capabilities name
+//! - any other app is granted what the workspace's capabilities name
 //!   (`Scope::Device("system-info")`, `"processes"`, `"process-commands"`),
 //!   and asks the person through the permission prompt for the rest;
 //! - a command line beside the process list is never a default: it is its
@@ -49,7 +49,7 @@ pub fn ceiling(manifest: &ManifestView) -> Grants {
     }
 }
 
-/// What a launch of `manifest` is granted, given the room's capabilities
+/// What a launch of `manifest` is granted, given the workspace's capabilities
 /// (`plan`) and whether the image ships it.
 #[must_use]
 pub fn grants(manifest: &ManifestView, plan: &CapabilityPlan, image_shipped: bool) -> Grants {
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn the_image_grants_its_own_apps_and_others_get_what_the_room_names() {
+    fn the_image_grants_its_own_apps_and_others_get_what_the_workspace_names() {
         let monitor = manifest(&["system-info", "processes"]);
         assert_eq!(
             grants(&monitor, &plan(&[]), true),
@@ -176,7 +176,7 @@ mod tests {
                 system_info: true,
                 ..Grants::default()
             },
-            "what the room granted"
+            "what the workspace granted"
         );
         assert_eq!(
             grants(&monitor, &plan(&["process-commands"]), true),
@@ -218,7 +218,7 @@ mod tests {
         let handoff = Handoff {
             protocol: PROTOCOL,
             app_id: "so.tilo.monitor".into(),
-            workspace_id: Some("room".into()),
+            workspace_id: Some("workspace".into()),
             grants: Grants::IMAGE_DEFAULT,
             ceiling: Grants::ALL,
         };

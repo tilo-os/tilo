@@ -147,10 +147,10 @@ pub(crate) fn package_web(start: &Path, _request: &PackageRequest) -> Result<Pac
 pub struct WebDevOptions {
     /// The address the page is served on.
     pub bind: String,
-    /// Open the app in a room other people join from their own browser
+    /// Open the app in a workspace other people join from their own browser
     /// (`--share`).
     pub share: bool,
-    /// With `share`, start an empty room (`--fresh`).
+    /// With `share`, start an empty workspace (`--fresh`).
     pub fresh: bool,
 }
 

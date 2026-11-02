@@ -24,7 +24,7 @@ use std::time::Duration;
 use tilo_actions::DoorError;
 use tilo_actions::remote::{RemoteActionTarget, application_action_target};
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desktop_actions::CHROME_RESOURCE;
+use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
@@ -559,7 +559,25 @@ impl Harness {
         self.session.step(Duration::from_millis(1)).expect("step");
     }
 
+    /// Press a row of the person's devices, as the panel does: the session's
+    /// published verb, through the door every caller uses.
     fn press(&mut self, row: &str, part: RowPart) {
+        self.session
+            .invoke(
+                tilo_session::DEVICES_RESOURCE,
+                "press",
+                &serde_json::from_value(serde_json::json!({ "row": row, "part": part }))
+                    .expect("arguments"),
+            )
+            .expect("press the device's row");
+        for _ in 0..3 {
+            self.step();
+        }
+    }
+
+    /// Press a row of the panel itself: what the person's click in the panel
+    /// asks of the session.
+    fn press_in_panel(&mut self, row: &str, part: RowPart) {
         self.session
             .invoke(
                 tilo_session::QUICK_SETTINGS,
@@ -567,7 +585,7 @@ impl Harness {
                 &serde_json::from_value(serde_json::json!({ "row": row, "part": part }))
                     .expect("arguments"),
             )
-            .expect("press the device's row");
+            .expect("press the device's row in the panel");
         for _ in 0..3 {
             self.step();
         }
@@ -581,7 +599,7 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
     let mut harness = session(&link, Rc::new(Host::default()));
     harness
         .session
-        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
         .expect("open quick settings");
     harness.playing();
     for _ in 0..40 {
@@ -760,6 +778,35 @@ fn pressing_another_device_sends_it_what_plays_here() {
     assert!(!has_video);
 }
 
+/// A press in the panel is the session's published verb: the panel asks for
+/// the press and the session carries out the same hand-over it does when
+/// anyone else presses the row.
+#[test]
+fn a_press_in_the_panel_is_the_session_s_published_verb() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(true);
+    let mut harness = session(&link, Rc::new(Host::default()));
+    open_devices(&mut harness);
+    harness.playing();
+    for _ in 0..4 {
+        harness.step();
+    }
+    harness.press_in_panel("laptop", RowPart::Action);
+
+    let sent = link.sent();
+    assert_eq!(
+        sent.len(),
+        1,
+        "one hand-over, as a press on the verb: {sent:?}"
+    );
+    let (target, action) = sent.first().expect("the hand-over");
+    assert_eq!(target, &laptop(), "the device pressed");
+    assert!(
+        matches!(action, PersonalFabricAction::ResumeMedia { .. }),
+        "what plays here is sent to it: {action:?}"
+    );
+}
+
 #[test]
 fn pressing_a_device_with_nothing_playing_opens_its_settings() {
     let _settled = ui::motion::testing::settled();
@@ -768,7 +815,7 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
     let mut harness = session(&link, Rc::clone(&host));
     harness
         .session
-        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
         .expect("open quick settings");
     for _ in 0..4 {
         harness.step();
@@ -885,7 +932,7 @@ fn a_sleeping_device_is_woken_by_the_device_sharing_its_network() {
     );
     harness
         .session
-        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
         .expect("open quick settings");
     for _ in 0..40 {
         harness.step();
@@ -989,7 +1036,7 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
     );
     harness
         .session
-        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
         .expect("open quick settings");
     for _ in 0..40 {
         harness.step();
@@ -1028,7 +1075,7 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
 fn open_devices(harness: &mut Harness) {
     harness
         .session
-        .invoke(CHROME_RESOURCE, "toggle-quick-settings", &Arguments::new())
+        .invoke(CHROME_RESOURCE, "quick-settings", &Arguments::new())
         .expect("open quick settings");
     for _ in 0..40 {
         harness.step();
@@ -1260,4 +1307,47 @@ fn what_plays() -> tilo_audio_service::media::Media {
         outputs: Vec::new(),
         problem: None,
     }
+}
+
+/// What plays reaches the desk's own widget from the same reading the panel
+/// shows, with the panel never opened: the widget is a view of the audio
+/// service's players, not of the panel.
+#[test]
+fn what_plays_reaches_the_desk_with_the_panel_closed() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(true);
+    let mut harness = session(&link, Rc::new(Host::default()));
+    for _ in 0..4 {
+        harness.step();
+    }
+    assert!(
+        !harness.session.quick_settings_open(),
+        "the panel stays closed"
+    );
+    assert!(
+        !harness
+            .session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Open Music"),
+        "nothing plays: the desk shows no song"
+    );
+
+    harness.playing();
+    for _ in 0..6 {
+        harness.step();
+    }
+    assert!(
+        !harness.session.quick_settings_open(),
+        "the panel was never opened"
+    );
+    assert!(
+        harness
+            .session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Open Music"),
+        "the desk shows what plays: {:?}",
+        harness.session.accessible_labels()
+    );
 }

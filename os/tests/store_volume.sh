@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The room store volume: sizing policy, the configuration it writes, the boot
+# The store volume: sizing policy, the configuration it writes, the boot
 # decision it hands fs.service, and the unit wiring that orders the daemon
 # after it. Runs from a source tree:
 #
@@ -482,16 +482,16 @@ if run_root env TILO_STORE_ETC="$r/fs/etc" TILO_STORE_RUNTIME="$r/run" TILO_STOR
       bad "the store is labelled $(run_root stat -c %C "$r/fs/store"), not fusefs_t"
     fi
   fi
-  # A room the daemon created before it knew its owner is handed over.
-  run_root btrfs -q subvolume create "$r/fs/store/live/room-a" >/dev/null
-  run_root touch "$r/fs/store/live/room-a/file"
+  # A workspace the daemon created before it knew its owner is handed over.
+  run_root btrfs -q subvolume create "$r/fs/store/live/workspace-a" >/dev/null
+  run_root touch "$r/fs/store/live/workspace-a/file"
   run_root env TILO_STORE_ETC="$r/fs/etc" TILO_STORE_RUNTIME="$r/run" TILO_STORE_MOUNT="$r/fs/store" \
     TILO_STORE_IMAGE="$image" TILO_STORE_SYSTEMCTL=/bin/false "$helper" ensure > "$r/log2" 2>&1
-  if [ "$(run_root stat -c %u:%g "$r/fs/store/live/room-a/file")" = "$ids" ] \
+  if [ "$(run_root stat -c %u:%g "$r/fs/store/live/workspace-a/file")" = "$ids" ] \
      && [ "$(run_root ls "$r/fs/var-lib-tilo")" = store.img ]; then
-    ok "the next boot reuses the image and hands root-owned rooms to the local person"
+    ok "the next boot reuses the image and hands root-owned workspaces to the local person"
   else
-    bad "a second boot did not reuse the image or left a room with root:"$'\n'"$(run_root cat "$r/log2")"
+    bad "a second boot did not reuse the image or left a workspace with root:"$'\n'"$(run_root cat "$r/log2")"
   fi
 else
   bad "ensure failed on an install without a store:"$'\n'"$(run_root cat "$r/log")"

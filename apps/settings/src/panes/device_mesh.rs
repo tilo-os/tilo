@@ -440,8 +440,9 @@ pub enum DeviceMeshEffect {
     /// well, or no longer.
     #[effect(row, idempotent)]
     SetHomeRelayHosting {
-        #[param("The workspace's id")]
-        room: String,
+        // The workspace travels under the key the host's step already reads.
+        #[param("The workspace's id", name = "room")]
+        workspace: String,
         on: bool,
     },
     /// Ask, under a device's row, whether to remove it.
@@ -491,8 +492,8 @@ pub(crate) fn answer(
         return Ok(Effected::Pending);
     }
     // The host carries out a home relay choice; its caller hears how.
-    if let DeviceMeshEffect::SetHomeRelayHosting { room, on } = &effect {
-        model.choose_home_relay(room, *on, Some(cx.reply()))?;
+    if let DeviceMeshEffect::SetHomeRelayHosting { workspace, on } = &effect {
+        model.choose_home_relay(workspace, *on, Some(cx.reply()))?;
         model.changed = true;
         return Ok(Effected::Pending);
     }
@@ -1252,8 +1253,8 @@ impl DeviceMeshModel {
                 self.start_home_peer_removal(&peer);
                 false
             }
-            DeviceMeshEffect::SetHomeRelayHosting { room, on } => {
-                self.choose_home_relay(room, *on, None)?;
+            DeviceMeshEffect::SetHomeRelayHosting { workspace, on } => {
+                self.choose_home_relay(workspace, *on, None)?;
                 false
             }
             DeviceMeshEffect::ReviewRemoval { .. } | DeviceMeshEffect::CancelRemoval => false,
@@ -2991,8 +2992,8 @@ mod tests {
                 serde_json::json!({
                     "relay": "Home server",
                     "workspaces": [
-                        { "room": super::home_relay_tests::PERSONAL_ROOM, "name": "Personal", "on_relay": true },
-                        { "room": super::home_relay_tests::STUDIO_ROOM, "name": "Studio", "on_relay": studio_on },
+                        { "workspace": super::home_relay_tests::PERSONAL_WORKSPACE, "name": "Personal", "on_relay": true },
+                        { "workspace": super::home_relay_tests::STUDIO_WORKSPACE, "name": "Studio", "on_relay": studio_on },
                     ],
                 })
             } else if request.target.provider == identity_admin::PROVIDER {

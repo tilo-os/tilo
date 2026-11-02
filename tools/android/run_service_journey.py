@@ -68,13 +68,13 @@ def main():
                 first = journey.workspace()
                 frames = []
                 results = []
-                def private_file(room, name):
-                    paths = list((profile / 'data/tilo-rooms' / room / package).rglob(name))
+                def private_file(workspace, name):
+                    paths = list((profile / 'data/tilo-rooms' / workspace / package).rglob(name))
                     return paths[0] if len(paths) == 1 else None
-                def visit(room, number):
+                def visit(workspace, number):
                     frames.append(journey.launch())
                     def completed():
-                        path = private_file(room, 'services.txt')
+                        path = private_file(workspace, 'services.txt')
                         marker = 'journey-complete' if args.queued_starts else 'current-stop='
                         if path and path.read_text().count(marker) == number:
                             return path
@@ -104,13 +104,13 @@ def main():
                         raise RuntimeError('unexpected actual service results: ' + repr(current))
                     require_ok(journey.request('snapshot', path=str(output / ('visit-' + str(len(frames)) + '.png'))))
                     journey.close()
-                    lifecycle = wait_for(lambda: private_file(room, 'activity-lifecycle.txt'), 'activity lifecycle')
+                    lifecycle = wait_for(lambda: private_file(workspace, 'activity-lifecycle.txt'), 'activity lifecycle')
                     wait_for(lambda: lifecycle.read_text().splitlines() == ['pause', 'stop', 'destroy'] * number,
                         'actual ordered activity lifecycle')
-                    visits = private_file(room, 'visits.txt')
+                    visits = private_file(workspace, 'visits.txt')
                     if visits.read_text().splitlines() != ['visit=' + str(i) for i in range(1, number + 1)]:
                         raise RuntimeError('private user data was not preserved')
-                    results.append({'room': room, 'visit': number, 'service_results': current,
+                    results.append({'workspace': workspace, 'visit': number, 'service_results': current,
                         'lifecycle': lifecycle.read_text().splitlines()})
                     return path.read_bytes(), visits.read_bytes()
                 preserved = visit(first['room'], 1)

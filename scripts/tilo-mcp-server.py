@@ -309,6 +309,8 @@ def read_resource(comp: Compositor, uri: str) -> dict:
         descriptor = dict(action)
         descriptor.setdefault("operation", operation)
         objects.setdefault(object_key, []).append(descriptor)
+    # The action row and this payload keep the workspace under its stored
+    # `room` field: an agent reading either sees the same key.
     payload = {
         "type": "application",
         "application": application,

@@ -66,7 +66,7 @@ impl ContentPuts for Shelf {
         self.0
             .lock_recover()
             .begun
-            .push(caller.room().map(str::to_owned));
+            .push(caller.workspace().map(str::to_owned));
         Ok(Box::new(Put {
             log: Arc::clone(&self.0),
             size,

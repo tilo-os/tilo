@@ -1,7 +1,7 @@
 //! The desktop's search in the headless native session, driven only through
-//! what the session publishes: search opens by the desk's `open-search`,
-//! takes a query by its `search-for`, shows its rows as resources, and a
-//! chosen row runs by its address through the action host.
+//! what the session publishes: search opens and takes its query by the
+//! desk's `search`, shows its rows as resources, and a chosen row runs by
+//! its `choose-search-row` through the action host.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -24,9 +24,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{DoorError, ResourceSpec};
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desktop_actions::{
-    CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND,
-};
+use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
@@ -170,19 +168,14 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
             .expect("a workspace")
     });
 
-    invoke(
-        &mut session,
-        DESK_RESOURCE,
-        "open-search",
-        serde_json::json!({}),
-    );
+    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
     until(&mut session, |session| {
         find(&session.resources(), SEARCH_RESOURCE).is_some()
     });
     invoke(
         &mut session,
         SEARCH_RESOURCE,
-        "search-for",
+        "search",
         serde_json::json!({"query": "sheets"}),
     );
     until(&mut session, |session| row(session, "Sheets").is_some());
@@ -190,7 +183,7 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     invoke(
         &mut session,
         app.id.as_str(),
-        "choose",
+        "choose-search-row",
         serde_json::json!({}),
     );
     until(&mut session, |_| !host.invoked.borrow().is_empty());
@@ -206,7 +199,7 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     invoke(
         &mut session,
         DESK_RESOURCE,
-        "open-search",
+        "search",
         serde_json::json!({"query": "keyboard layout"}),
     );
     until(&mut session, |session| {
@@ -216,7 +209,7 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     invoke(
         &mut session,
         setting.id.as_str(),
-        "choose",
+        "choose-search-row",
         serde_json::json!({}),
     );
     until(&mut session, |_| host.invoked.borrow().len() == 2);
@@ -243,17 +236,17 @@ fn the_sessions_own_actions_are_found_and_run_on_its_published_surface() {
     invoke(
         &mut session,
         DESK_RESOURCE,
-        "open-search",
+        "search",
         serde_json::json!({"query": "overview"}),
     );
     until(&mut session, |session| {
-        row(session, "Show or hide the overview").is_some()
+        row(session, "Open or close the overview").is_some()
     });
-    let toggle = row(&session, "Show or hide the overview").unwrap();
+    let toggle = row(&session, "Open or close the overview").unwrap();
     invoke(
         &mut session,
         toggle.id.as_str(),
-        "choose",
+        "choose-search-row",
         serde_json::json!({}),
     );
     until(&mut session, |session| {
@@ -295,7 +288,7 @@ fn choose(session: &mut Session, query: &str, title: &str) {
     invoke(
         session,
         DESK_RESOURCE,
-        "open-search",
+        "search",
         serde_json::json!({ "query": query }),
     );
     for _ in 0..200 {
@@ -308,7 +301,12 @@ fn choose(session: &mut Session, query: &str, title: &str) {
         let labels: Vec<String> = rows(session).into_iter().map(|row| row.label).collect();
         panic!("no row {title:?} for {query:?} among {labels:?}");
     };
-    invoke(session, row.id.as_str(), "choose", serde_json::json!({}));
+    invoke(
+        session,
+        row.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
 }
 
 /// The field `field` of the settings section `kind` as stored.
@@ -372,7 +370,7 @@ fn search_for(session: &mut Session, query: &str) {
     invoke(
         session,
         DESK_RESOURCE,
-        "open-search",
+        "search",
         serde_json::json!({ "query": query }),
     );
     for _ in 0..40 {
@@ -571,7 +569,7 @@ fn find_row(session: &mut Session, query: &str, title: &str) -> ResourceSpec {
         invoke(
             session,
             DESK_RESOURCE,
-            "open-search",
+            "search",
             serde_json::json!({ "query": query }),
         );
         for _ in 0..10 {
@@ -635,7 +633,7 @@ fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
     invoke(
         &mut session,
         row.id.as_str(),
-        "choose",
+        "choose-search-row",
         serde_json::json!({}),
     );
     until(&mut session, |session| {
@@ -691,7 +689,7 @@ fn a_row_for_a_record_no_workspace_holds_any_more_brings_nothing_here() {
     invoke(
         &mut session,
         DESK_RESOURCE,
-        "open-search",
+        "search",
         serde_json::json!({ "query": "stale" }),
     );
     for _ in 0..10 {
@@ -708,7 +706,11 @@ fn a_row_for_a_record_no_workspace_holds_any_more_brings_nothing_here() {
     // as long as writing one takes. The refusal itself, for a row still shown
     // by an open search, is the session's own to make and is proven in
     // `search::tests::a_row_for_a_record_no_workspace_names_any_more_is_refused`.
-    let _ = session.invoke(stale.id.as_str(), "choose", &serde_json::Map::new());
+    let _ = session.invoke(
+        stale.id.as_str(),
+        "choose-search-row",
+        &serde_json::Map::new(),
+    );
     assert!(
         never(Duration::from_secs(1), || known_in(NOTES, &here)
             .iter()
@@ -783,7 +785,7 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
     invoke(
         &mut session,
         row.id.as_str(),
-        "choose",
+        "choose-search-row",
         serde_json::json!({}),
     );
     until(&mut session, |_| !host.invoked.borrow().is_empty());
@@ -865,7 +867,7 @@ fn a_downloaded_program_is_found_and_starts_and_one_whose_file_is_gone_says_so()
     invoke(
         &mut session,
         row.id.as_str(),
-        "choose",
+        "choose-search-row",
         serde_json::json!({}),
     );
     until(&mut session, |_| !host.started.borrow().is_empty());

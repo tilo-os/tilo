@@ -205,8 +205,8 @@ impl RamDirectory {
         let leaf = components.pop().ok_or(io::ErrorKind::InvalidInput)?;
         let mut directory = self.root.try_clone()?;
         for part in [
-            launcher::appdir::ROOMS_DIR,
-            launcher::appdir::PERSONAL_ROOM,
+            launcher::appdir::WORKSPACES_DIR,
+            launcher::appdir::PERSONAL_WORKSPACE,
             SERVICE_PACKAGE,
         ] {
             directory = child_directory(&directory, &component(OsStr::new(part))?)?;
@@ -497,7 +497,7 @@ pub(super) mod tests {
             .unwrap();
         let profile = launcher::appdir::host_app_dir(
             &ram.source(),
-            launcher::appdir::PERSONAL_ROOM,
+            launcher::appdir::PERSONAL_WORKSPACE,
             SERVICE_PACKAGE,
         );
         let file = profile.join("data/account.db");

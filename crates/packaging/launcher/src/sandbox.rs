@@ -123,7 +123,7 @@ pub const SANDBOX_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 
 /// The whole of what a sandboxed app inherits from the launching
 /// session. An allowlist, not a filter: nothing here names a socket,
-/// room, identity or path — those reach the app only via an explicit
+/// workspace, identity or path — those reach the app only via an explicit
 /// `--setenv` beside the bind that makes them reachable.
 pub const INHERITED_ENV: &[&str] = &[
     // `LANGUAGE` is the GNU fallback chain, `LC_ALL` overrides the rest.
@@ -975,7 +975,7 @@ fn push_private_store_masks(argv: &mut Vec<String>, capabilities: &CapabilityPla
 }
 
 /// Tell the app where the **user's** home is, when a capability binds
-/// it — inside the sandbox `HOME` is the app's own per-room directory,
+/// it — inside the sandbox `HOME` is the app's own per-workspace directory,
 /// wrong for an app whose job *is* the user's files. Only set when the
 /// capability plan has bound a path containing it, so the variable can
 /// never name a directory the app can't read.
@@ -1513,7 +1513,7 @@ mod tests {
                 "payload bind must stay non-try: {argv:?}"
             );
             // Nothing writable comes out of this builder. The app's one writable
-            // directory is spliced by `run`, from the room it was launched into.
+            // directory is spliced by `run`, from the workspace it was launched into.
             assert!(
                 !argv.iter().any(|a| a == "--bind" || a == "--bind-try"),
                 "the manifest layer must produce no writable bind: {argv:?}"
@@ -2153,13 +2153,13 @@ mod tests {
             let mut argv = Vec::new();
             push_trusted_identities_bind(
                 &mut argv,
-                Path::new("/run/user/1000/tilo/identity-projections/room/trusted.json"),
+                Path::new("/run/user/1000/tilo/identity-projections/workspace/trusted.json"),
             );
             assert_eq!(
                 argv,
                 vec![
                     "--ro-bind",
-                    "/run/user/1000/tilo/identity-projections/room",
+                    "/run/user/1000/tilo/identity-projections/workspace",
                     SANDBOX_TRUSTED_IDENTITIES_DIR,
                 ]
             );
@@ -2420,7 +2420,7 @@ mod tests {
             );
         }
         // Phase `drm_grant_detection_follows_the_gpu_capability_and_grants`.
-        // An app draws through its room's render service and has no GPU
+        // An app draws through its workspace's render service and has no GPU
         // node, unless it declares `gpu`; then its node is narrowed to the
         // compositor's. A user-granted node counts too.
         {
@@ -2611,7 +2611,7 @@ mod tests {
                 (*p).to_string(),
             ));
         }
-        // No GPU node: an app without `gpu` draws through its room's render
+        // No GPU node: an app without `gpu` draws through its workspace's render
         // service.
         expected
     }

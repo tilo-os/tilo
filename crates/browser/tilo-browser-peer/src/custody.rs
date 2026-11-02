@@ -75,13 +75,13 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
     fn save_channels(&self, _bytes: &[u8]) -> Result<(), String> {
         Ok(())
     }
-    /// The stored record of the rooms this device holds
+    /// The stored record of the workspaces this device holds
     /// ([`tilo_peer_state::owner::NativeWorkspaceOwner`]), if any. A store
     /// without it holds them for the session only.
     fn load_rooms(&self) -> Option<Vec<u8>> {
         None
     }
-    /// Replace the stored record of the rooms this device holds.
+    /// Replace the stored record of the workspaces this device holds.
     fn save_rooms(&self, _bytes: &[u8]) -> Result<(), String> {
         Ok(())
     }
@@ -241,7 +241,7 @@ pub enum IssuedRole {
     /// A browser: [`CertificationPolicy::browser`] (a member, 30 days).
     Browser,
     /// A native node that hosts and governs the person's workspaces: it
-    /// relays, pins and reads them and owns their rooms, but admits no
+    /// relays, pins and reads them and owns their workspaces, but admits no
     /// devices. One year.
     Node,
     /// The session beside a node that runs the person's apps and agents:

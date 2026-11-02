@@ -46,6 +46,20 @@ pub fn session_addresses() -> Result<std::collections::BTreeMap<String, String>,
     crate::catalogue::addresses(SESSION_DESCRIPTION)
 }
 
+/// The session's actions as its description declares them, by id: what a call's arguments
+/// are sent as ([`tilo_actions::surface::nest_arguments`]).
+///
+/// # Errors
+/// The description does not read.
+pub fn session_verbs()
+-> Result<std::collections::BTreeMap<String, tilo_actions::surface::VerbSurface>, String> {
+    Ok(crate::catalogue::parse_surfaces(SESSION_DESCRIPTION)?
+        .into_iter()
+        .flat_map(|surface| surface.verbs)
+        .map(|verb| (verb.id.clone(), verb))
+        .collect())
+}
+
 /// Settings' committed surface, the one its package ships.
 const SETTINGS_SURFACE: &str = include_str!("../../../../apps/settings/surface.toml");
 

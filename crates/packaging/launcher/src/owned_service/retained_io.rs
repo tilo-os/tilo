@@ -1018,9 +1018,9 @@ mod history_verifier_tests {
         let digest = claims.sha256().unwrap();
         assert!(check_history_verifier(Some(&file), Some(digest), Some([1; 32])).is_ok());
         assert!(check_history_verifier(Some(&file), Some(digest), Some([4; 32])).is_err());
-        let mut other_room = claims.clone();
-        other_room.personal_room = "a18ad342-9994-47dc-ac96-6b93f28e2b98".into();
-        let other = seal_bytes(&other_room.encode().unwrap()).unwrap();
+        let mut other_workspace = claims.clone();
+        other_workspace.personal_room = "a18ad342-9994-47dc-ac96-6b93f28e2b98".into();
+        let other = seal_bytes(&other_workspace.encode().unwrap()).unwrap();
         assert!(check_history_verifier(Some(&other), Some(digest), Some([1; 32])).is_err());
         let mut other_device = claims.clone();
         other_device.device = [5; 32];

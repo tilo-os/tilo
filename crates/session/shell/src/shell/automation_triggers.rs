@@ -2185,7 +2185,7 @@ mod tests {
         use collab_types::{Access, CapOverride, Scope, Subject};
 
         let owner = "person:owner".to_string();
-        let mut workspace = Workspace::in_room(WorkspaceId(1), personal_room(), "Scans");
+        let mut workspace = Workspace::in_workspace(WorkspaceId(1), personal_room(), "Scans");
         workspace.set_owner(owner.clone());
         workspace
             .govern_as_at(
@@ -2588,7 +2588,7 @@ mod tests {
         shortcuts: &[Shortcut],
         revocations: &tilo_user_identity::RevocationList,
     ) -> Vec<String> {
-        let mut workspace = crate::shell::state::Workspace::in_room(
+        let mut workspace = crate::shell::state::Workspace::in_workspace(
             crate::shell::state::WorkspaceId(1),
             personal_room(),
             "Personal",

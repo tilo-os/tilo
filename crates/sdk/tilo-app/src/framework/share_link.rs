@@ -1,8 +1,8 @@
 //! Answers `share-link` and `share-invite-link` ([`tilo_resource::share`]).
 //!
 //! A link is a rendering of the address the action model already uses, under
-//! the web entry the room's host announces. The host is asked for a fresh
-//! locator every time, so a link never names an entry or a room the host no
+//! the web entry the workspace's host announces. The host is asked for a fresh
+//! locator every time, so a link never names an entry or a workspace the host no
 //! longer serves, and is refused when the host serves no web page rather than
 //! guessing one.
 
@@ -124,7 +124,7 @@ impl ShareLinks {
             if !may_invite {
                 return Err("You may not invite people to this workspace".into());
             }
-            // Invitations are created through the room's membership door,
+            // Invitations are created through the workspace's membership door,
             // which only the shell reaches; an app cannot create one itself.
             return Err(
                 "Invitations are created from the workspace's members list, not from an app".into(),
@@ -339,7 +339,7 @@ fn render(minting: &Minting, page: &tilo_actions::remote::CataloguePage) -> Resu
 }
 
 /// The link to the resource `request` names in `app`'s `record`, for a
-/// room's host that answers `share-link` itself on the records it runs
+/// workspace's host that answers `share-link` itself on the records it runs
 /// headless: the link an app's root mints, under the host's own `locator`.
 ///
 /// # Errors
@@ -375,15 +375,15 @@ fn render_at(
     }
     let entry = locator.web_entry.as_deref().ok_or(NO_WEB_ENTRY)?;
     let entry = WebEntry::new(entry).map_err(|error| error.to_string())?;
-    let room = locator
-        .room
+    let workspace = locator
+        .workspace
         .parse()
-        .map_err(|_| "The workspace's host named no room a link can carry")?;
+        .map_err(|_| "The workspace's host named no workspace a link can carry")?;
     let host = HostOrigin::new(&locator.origin).map_err(|error| error.to_string())?;
     let target = LinkTarget {
         scope: Scope::Room {
             host,
-            room,
+            room: workspace,
             slug: None,
         },
         app: Some(minting.app.clone()),
@@ -407,7 +407,7 @@ mod tests {
     use tilo_actions::remote::{CataloguePage, ResourceViewLocator};
     use tilo_resource::share::SharedView;
 
-    const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
+    const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 
     fn request(args: &serde_json::Value) -> ShareRequest {
         ShareRequest {
@@ -434,7 +434,7 @@ mod tests {
         CataloguePage {
             locator: Some(ResourceViewLocator {
                 origin: "https://ada.tilo.cloud".into(),
-                room: ROOM.into(),
+                workspace: WORKSPACE.into(),
                 host_device: "ab".repeat(32),
                 provider: "record:so.tilo.chat:".into(),
                 web_entry: entry.map(str::to_owned),
@@ -461,13 +461,13 @@ mod tests {
         assert_eq!(
             url(&serde_json::json!({})).unwrap(),
             format!(
-                "https://tilo.so/app/#/@ada.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.message:01JA"
+                "https://tilo.so/app/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-/chat.message:01JA"
             )
         );
         assert_eq!(
             url(&serde_json::json!({"start": 6, "end": 9, "mode": "desktop"})).unwrap(),
             format!(
-                "https://tilo.so/#/@ada.tilo.cloud/w/{ROOM}/so.tilo.chat/-/chat.message:01JA?chars=6-9"
+                "https://tilo.so/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-/chat.message:01JA?chars=6-9"
             )
         );
         assert!(
@@ -498,7 +498,7 @@ mod tests {
         let minting = minting(&root, &CHAT).unwrap();
         assert_eq!(
             render(&minting, &page(Some("https://tilo.so/"))).unwrap(),
-            format!("https://tilo.so/app/#/@ada.tilo.cloud/w/{ROOM}/so.tilo.chat/-")
+            format!("https://tilo.so/app/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-")
         );
     }
 }

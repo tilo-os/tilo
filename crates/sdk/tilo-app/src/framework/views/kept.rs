@@ -1,7 +1,7 @@
 //! Query views a person kept: their own views beside the app's designed
 //! ones, such as a smart playlist or a saved filter.
 //!
-//! A kept view is the person's, not the room's: it follows them to their
+//! A kept view is the person's, not the workspace's: it follows them to their
 //! other devices and no collaborator sees it. It is a personal setting of the
 //! app ([`KeptViews`]), read with `settings::<KeptViews>()` from a view or
 //! surface context, so it survives a restart.

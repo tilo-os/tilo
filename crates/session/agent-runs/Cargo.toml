@@ -18,7 +18,7 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-service = { path = "../service" }
 # The run channel: what the broker delivers a run on and hears back from it.
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
-# The room's grants decide a run's child actions.
+# The workspace's grants decide a run's child actions.
 tilo-action-policy = { path = "../../collab/action-policy" }
 # What a run's agent reports of it, and the model turn it streams.
 runtime-collab = { path = "../../runtime/runtime-collab" }

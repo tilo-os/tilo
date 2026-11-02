@@ -38,13 +38,13 @@ use tilo_actions::remote::{
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
     SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_record,
-    pending, workspace_activity as wire, workspace_provider_room,
+    pending, provider_workspace, workspace_activity as wire,
 };
 
 use tilo_lock::MutexRecover as _;
 
 use crate::DesktopHandle;
-use crate::navigation::Command;
+use crate::navigation::ChromeEffect;
 
 /// What one admitted open answers to.
 type Answer = Completer<Result<InvocationReceipt, ActionHostError>>;
@@ -195,7 +195,7 @@ fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionHostError> {
 /// workspace `workspace`. It serves only what the desktop itself does: opening
 /// an app as a window of this desktop.
 pub struct DesktopSession {
-    room: String,
+    workspace: String,
     asked: Asked,
     nodes: Arc<std::sync::Mutex<Vec<NodeAsk>>>,
     activity: Arc<activity::Door>,
@@ -230,17 +230,20 @@ pub struct Reveal {
     pub arguments: serde_json::Map<String, serde_json::Value>,
 }
 
-/// The session for the workspace `room`, and the desktop's end of it.
+/// The session for the workspace `workspace`, and the desktop's end of it.
 /// `woken` is raised whenever a window asks, so the desktop's host draws a
 /// frame that takes the ask.
 #[must_use]
-pub fn serve(room: impl Into<String>, woken: Arc<AtomicBool>) -> (Arc<DesktopSession>, Openings) {
+pub fn serve(
+    workspace: impl Into<String>,
+    woken: Arc<AtomicBool>,
+) -> (Arc<DesktopSession>, Openings) {
     let asked = Asked::default();
     let nodes = Arc::<std::sync::Mutex<Vec<NodeAsk>>>::default();
     let activity = activity::Door::new(Arc::clone(&woken));
     (
         Arc::new(DesktopSession {
-            room: room.into(),
+            workspace: workspace.into(),
             asked: Arc::clone(&asked),
             nodes: Arc::clone(&nodes),
             activity: Arc::clone(&activity),
@@ -269,9 +272,9 @@ impl DesktopSession {
         request: &'a InvokeRequest,
     ) -> Result<(&'a str, Option<&'a str>, Option<&'a str>), ActionHostError> {
         let address = &request.target.address;
-        if let Some((room, app)) = application_provider(&request.target.provider) {
+        if let Some((workspace, app)) = application_provider(&request.target.provider) {
             return self
-                .record_to_open(caller, request, room)
+                .record_to_open(caller, request, workspace)
                 .map(|record| (app, record, None));
         }
         let app = address
@@ -281,10 +284,10 @@ impl DesktopSession {
             .ok_or(ActionHostError::UnknownAction)?;
         // As the broker: opening an app is something a workspace member
         // asks of their workspace.
-        if caller.room().is_none() {
+        if caller.workspace().is_none() {
             return Err(ActionHostError::UnknownAction);
         }
-        if workspace_provider_room(&request.target.provider) != Some(self.room.as_str()) {
+        if provider_workspace(&request.target.provider) != Some(self.workspace.as_str()) {
             return Err(ActionHostError::Unavailable {
                 reason: "That workspace isn't open here".into(),
             });
@@ -300,7 +303,7 @@ impl DesktopSession {
         }
     }
 
-    /// The record an action of a resource in `room` names, `None` for the
+    /// The record an action of a resource in `workspace` names, `None` for the
     /// app's own.
     ///
     /// # Errors
@@ -309,12 +312,12 @@ impl DesktopSession {
         &self,
         caller: &Caller,
         request: &'a InvokeRequest,
-        room: &str,
+        workspace: &str,
     ) -> Result<Option<&'a str>, ActionHostError> {
-        if request.target.address.action.is_empty() || caller.room().is_none() {
+        if request.target.address.action.is_empty() || caller.workspace().is_none() {
             return Err(ActionHostError::UnknownAction);
         }
-        if room != self.room {
+        if workspace != self.workspace {
             return Err(ActionHostError::Unavailable {
                 reason: "That workspace isn't open here".into(),
             });
@@ -344,7 +347,7 @@ impl ActionHost for DesktopSession {
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         if request.target.provider == wire::PROVIDER {
             // As the broker: a workspace's activity is its members' to read.
-            if caller.room().is_none() {
+            if caller.workspace().is_none() {
                 return Pending::ready(Err(ActionHostError::UnknownAction));
             }
             return self.activity.invoke(caller, request);
@@ -354,14 +357,14 @@ impl ActionHost for DesktopSession {
             .address
             .resource
             .strip_prefix(NODE_RESOURCE_PREFIX)
-            .filter(|_| workspace_provider_room(&request.target.provider).is_some())
+            .filter(|_| provider_workspace(&request.target.provider).is_some())
         {
             // As the broker: what a node grants is its workspace members'
             // business, in this workspace only.
-            if caller.room().is_none() {
+            if caller.workspace().is_none() {
                 return Pending::ready(Err(ActionHostError::UnknownAction));
             }
-            if workspace_provider_room(&request.target.provider) != Some(self.room.as_str()) {
+            if provider_workspace(&request.target.provider) != Some(self.workspace.as_str()) {
                 return Pending::ready(Err(ActionHostError::Unavailable {
                     reason: "That workspace isn't open here".into(),
                 }));
@@ -457,16 +460,15 @@ impl Openings {
         std::mem::take(&mut *self.reveals.borrow_mut())
     }
 
-    /// Open every app the windows asked for since this was last taken, as
-    /// launches of the desktop `handle` (navigation `generation`), each one
-    /// `may_open` admits (told whether the open shows something that
-    /// exists, a record or an item of one); one asked on a record opens on it
+    /// Open every app the windows asked for since this was last taken,
+    /// through the desktop `handle`'s open verb, each one `may_open` admits
+    /// (told whether the open shows something that exists, a record or an
+    /// item of one); one asked on a record opens on it
     /// ([`record_launch`]). Whether anything was asked, so the host lays out
     /// again.
     pub fn open(
         &self,
         handle: &DesktopHandle,
-        generation: &str,
         may_open: impl Fn(&str, bool) -> Result<(), ActionHostError>,
     ) -> bool {
         let asked = std::mem::take(&mut *self.asked.lock_recover());
@@ -499,13 +501,11 @@ impl Openings {
                     (None, None) => app,
                 };
                 handle
-                    .dispatch(
-                        &Command::Launch {
-                            generation: generation.to_owned(),
-                            app,
-                        },
-                        generation,
-                    )
+                    .dispatch(ChromeEffect::OpenApp {
+                        app,
+                        beside: None,
+                        background: None,
+                    })
                     .map_err(|reason| ActionHostError::Unavailable { reason })
             });
             answer.complete(opened.map(|()| InvocationReceipt {

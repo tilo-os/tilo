@@ -671,7 +671,7 @@ pub struct FrameBuilder {
     // Keep their addresses stable when the FrameBuilder itself is moved.
     host: Box<ShellOverlayHost>,
     chrome: Chrome,
-    /// The [`WorkspaceTree::room_epoch`] this builder has already reacted
+    /// The [`WorkspaceTree::workspace_epoch`] this builder has already reacted
     /// to; compared each frame by [`Self::pump_room_contents`].
     last_room_epoch: u64,
     /// The tree revisions at which [`Self::pump_room_contents`] last walked
@@ -892,12 +892,12 @@ struct FramePresentationInputs {
 }
 
 /// Every counter that moves when the desktop tree may have changed: a peer's
-/// round landing (`room_epoch`, from the network thread), a mutation outside
+/// round landing (`workspace_epoch`, from the network thread), a mutation outside
 /// retained chrome (`external_revision`), and the chrome's own revision. The
 /// overlay host's strip reconcile relies on the same three to see a new tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TreeRevisions {
-    room_epoch: u64,
+    workspace_epoch: u64,
     external: u64,
     chrome: u64,
 }
@@ -905,7 +905,7 @@ struct TreeRevisions {
 impl TreeRevisions {
     fn read(chrome: &ChromeState, tree: &WorkspaceTree) -> Self {
         Self {
-            room_epoch: tree.desktop.room_epoch(),
+            workspace_epoch: tree.desktop.workspace_epoch(),
             external: tree.desktop.external_revision,
             chrome: chrome.revision,
         }
@@ -2314,7 +2314,7 @@ impl FrameBuilder {
             (revisions, pending)
         };
         self.peer_windows_quiet_at = (!pending).then_some(revisions);
-        let epoch = revisions.room_epoch;
+        let epoch = revisions.workspace_epoch;
         let owed = pending
             || crate::shell::peer_windows::launch_refused()
             || crate::shell::peer_windows::retry_requested()
@@ -6655,7 +6655,7 @@ mod tests {
         let mut tree = chrome.tree_mut();
         tree.desktop.workspaces.push(workspace);
         // What peer sync does after a round lands, from the network thread.
-        tree.desktop.room_epoch = tree.desktop.room_epoch.wrapping_add(1);
+        tree.desktop.workspace_epoch = tree.desktop.workspace_epoch.wrapping_add(1);
         tab_id
     }
 

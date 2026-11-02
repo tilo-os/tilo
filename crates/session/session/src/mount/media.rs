@@ -17,8 +17,9 @@ use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_quick_settings::QsEffect;
 use tilo_quick_settings::device::SessionRequest;
+use tilo_quick_settings::hosted::DevicesReading;
 
-use crate::Shared;
+use crate::{Shared, devices};
 
 /// The media resource the audio service publishes.
 const MEDIA: &str = tilo_audio_service::media::MEDIA;
@@ -81,7 +82,14 @@ pub(crate) fn follow(shared: &Shared, request: &SessionRequest) -> bool {
     };
     let address = ActionAddress::new(MEDIA, action);
     match shared.doors.invoke(&address, &arguments) {
-        Ok(_) => true,
+        Ok(_) => {
+            // A hand-off continued here is taken: the reading the card shows
+            // stops offering it.
+            if matches!(effect, QsEffect::ResumePlayback { .. }) {
+                shared.handoff.borrow_mut().take();
+            }
+            true
+        }
         Err(error) => {
             // The service reads the players again after every control, so a
             // refusal is answered on screen by the reading, not by a
@@ -105,10 +113,9 @@ fn media_action(shared: &Shared, effect: &QsEffect) -> Option<(&'static str, Map
             "seek"
         }
         QsEffect::ResumePlayback { request } => {
-            // The session handed this offer over, so it is the session's to
-            // say what continuing it here names.
-            let held = shared.handoff.borrow();
-            let offer = held.as_ref().filter(|offer| offer.request_id == *request)?;
+            // The card names the hand-off the session publishes, so what
+            // continuing it here names is that reading's own.
+            let offer = published_offer(shared).filter(|offer| offer.request_id == *request)?;
             arguments.insert("request".into(), Value::from(offer.request_id.clone()));
             arguments.insert("app".into(), Value::from(offer.package_id.clone()));
             match &offer.source {
@@ -137,4 +144,14 @@ fn media_action(shared: &Shared, effect: &QsEffect) -> Option<(&'static str, Map
         _ => return None,
     };
     Some((action, arguments))
+}
+
+/// The hand-off another of the person's devices made this one, as the
+/// session publishes it beside their devices: what the card offers to
+/// continue here.
+fn published_offer(shared: &Shared) -> Option<tilo_quick_settings::MediaOffer> {
+    let published = shared.services.borrow().read(devices::RESOURCE)?;
+    serde_json::from_value::<DevicesReading>(published)
+        .ok()?
+        .offer
 }

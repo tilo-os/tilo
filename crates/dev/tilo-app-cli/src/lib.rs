@@ -6858,14 +6858,15 @@ type DevChooser = Vec<std::os::fd::OwnedFd>;
 #[cfg(not(target_os = "linux"))]
 type DevChooser = ();
 
-/// The room of the workspace in front of the Tilo session this command runs
-/// in, as its shell publishes it; `None` outside a session.
+/// The workspace in front of the Tilo session this command runs in, as its
+/// shell publishes it; `None` outside a session.
 #[cfg(target_os = "linux")]
-fn session_room() -> Option<String> {
+fn session_workspace() -> Option<String> {
     let session = tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))?;
-    let room = std::fs::read_to_string(session.join(tilo_paths::login::WORKSPACE_ID_FILE)).ok()?;
-    let room = room.trim();
-    (!room.is_empty()).then(|| room.to_owned())
+    let workspace =
+        std::fs::read_to_string(session.join(tilo_paths::login::WORKSPACE_ID_FILE)).ok()?;
+    let workspace = workspace.trim();
+    (!workspace.is_empty()).then(|| workspace.to_owned())
 }
 
 /// Hand the app the session's model gateway when its manifest declares it,
@@ -6930,7 +6931,7 @@ fn attach_model_gateway(
 
 /// Hand the app the session shell's file chooser, the way the launcher hands
 /// one to an app the shell starts: connected on the app's behalf and named
-/// for the app and the room it runs in before the app holds it. Inside a
+/// for the app and the workspace it runs in before the app holds it. Inside a
 /// Tilo session that runs no desktop portal this is how an app chooses
 /// files; elsewhere nothing is attached. The returned descriptor is this
 /// process's end, kept until the app has started.
@@ -6940,17 +6941,20 @@ fn attach_session_chooser(
     app_dir: &Path,
 ) -> Option<std::os::fd::OwnedFd> {
     use std::os::fd::AsRawFd as _;
-    let room = session_room()?;
+    let workspace = session_workspace()?;
     let source = std::fs::read_to_string(app_dir.join("tilo-app.toml")).ok()?;
     let manifest = tilo_app_package::Manifest::from_toml_str(&source).ok()?;
-    let chooser =
-        match launcher::services::resolve_chooser_bind(&manifest.package.id, Some(&room), false) {
-            Ok(chooser) => chooser?,
-            Err(error) => {
-                eprintln!("[tilo-app] the session's file chooser is unavailable: {error}");
-                return None;
-            }
-        };
+    let chooser = match launcher::services::resolve_chooser_bind(
+        &manifest.package.id,
+        Some(&workspace),
+        false,
+    ) {
+        Ok(chooser) => chooser?,
+        Err(error) => {
+            eprintln!("[tilo-app] the session's file chooser is unavailable: {error}");
+            return None;
+        }
+    };
     let fd = chooser.host;
     // The app inherits this descriptor; the launcher hands it at a fixed
     // slot inside its sandbox, an unsandboxed app takes it where it is.

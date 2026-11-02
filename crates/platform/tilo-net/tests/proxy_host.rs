@@ -466,7 +466,7 @@ async fn a_media_element_streams_through_the_query_form_a_piece_at_a_time() {
 }
 
 /// A proxy that relays `visitor_bytes` to each visitor and `room_bytes` to
-/// each room per `window`.
+/// each workspace per `window`.
 fn budgeted(visitor_bytes: Option<u64>, room_bytes: Option<u64>, window: Duration) -> FetchProxy {
     local(Config {
         budgets: Budgets {
@@ -513,21 +513,22 @@ async fn a_visitor_that_received_its_budget_is_refused_until_the_window_turns_ov
 }
 
 #[tokio::test]
-async fn everyone_in_a_room_shares_its_budget() {
+async fn everyone_in_a_workspace_shares_its_budget() {
     let target = Responder::handle(|_| Some(Reply::status(200).body(vec![b'r'; 1500])));
     let proxy = budgeted(None, Some(3000), Duration::from_secs(3600));
     let url = format!("{}/piece", target.url());
-    let lounge = [Room(1)];
+    let studio = [Room(1)];
     for device in 1..=2u8 {
         let response = proxy
-            .serve_in(Caller([device; 32]), &lounge, request("GET", &url, b""))
+            .serve_in(Caller([device; 32]), &studio, request("GET", &url, b""))
             .await;
         assert_eq!(response.status(), 200);
         body_of(response).await;
     }
-    // A third person in the room is refused, though they received nothing.
+    // A third person in the workspace is refused, though they received
+    // nothing.
     let refused = proxy
-        .serve_in(Caller([3; 32]), &lounge, request("GET", &url, b""))
+        .serve_in(Caller([3; 32]), &studio, request("GET", &url, b""))
         .await;
     assert_eq!(refused.status(), 429);
     assert_eq!(refused.headers()[ERROR_HEADER], "over-budget");
@@ -540,7 +541,8 @@ async fn everyone_in_a_room_shares_its_budget() {
         (3500..=3600).contains(&retry),
         "until the window turns over: {retry}"
     );
-    // So is one who is also in another room: every room they are in counts.
+    // So is one who is also in another workspace: every workspace they are
+    // in counts.
     let refused = proxy
         .serve_in(
             Caller([4; 32]),
@@ -549,7 +551,7 @@ async fn everyone_in_a_room_shares_its_budget() {
         )
         .await;
     assert_eq!(refused.headers()[ERROR_HEADER], "over-budget");
-    // Another room has its own.
+    // Another workspace has its own.
     let response = proxy
         .serve_in(Caller([3; 32]), &[Room(2)], request("GET", &url, b""))
         .await;

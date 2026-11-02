@@ -1,10 +1,10 @@
-//! Content puts: how a session client hands bytes to its room's content
+//! Content puts: how a session client hands bytes to its workspace's content
 //! store, chunk by chunk, and gets back a reference to them.
 //!
 //! Actions carry intent and references; bytes travel by session transport
 //! into the content store. A client (an AI agent through MCP, first) puts
 //! the bytes, receives `tilo.content:<hash>` ([`crate::content_resource`])
-//! and passes that reference to an action, which resolves it in the room.
+//! and passes that reference to an action, which resolves it in the workspace.
 //!
 //! A put is invisible to everyone until an action at its own node
 //! references it: storing content is never authority over any document.
@@ -25,11 +25,11 @@ pub const CONTENT_PUTS_UNAVAILABLE: &str = "content uploads are not available he
 /// A host's door for content puts.
 pub trait ContentPuts: Send + Sync {
     /// Open an upload of exactly `size` bytes into the content store of
-    /// `caller`'s room.
+    /// `caller`'s workspace.
     ///
     /// # Errors
     ///
-    /// Refuses a caller that may not add content to the room, a size the
+    /// Refuses a caller that may not add content to the workspace, a size the
     /// store does not take, or a store that cannot be reached.
     fn begin(&self, caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionHostError>;
 }
@@ -59,6 +59,6 @@ pub trait ContentPut: Send {
     /// # Errors
     ///
     /// Refuses an upload short of its size, a caller no longer allowed to
-    /// add content to the room, or a store failure. Nothing is stored then.
+    /// add content to the workspace, or a store failure. Nothing is stored then.
     fn finish(self: Box<Self>) -> Result<String, ActionHostError>;
 }

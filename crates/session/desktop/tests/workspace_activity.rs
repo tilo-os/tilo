@@ -40,7 +40,7 @@ fn workspace_activity_review_keeps_live_heads() {
 // left out of History, or any storage key shown as a row's words, must fail
 // this regression.
 #[test]
-fn workspace_activity_names_room_events_and_leaves_bookkeeping_out() {
+fn workspace_activity_names_workspace_events_and_leaves_bookkeeping_out() {
     use automerge::{ObjType, transaction::CommitOptions};
     let workspace = Workspace::new(WorkspaceId(3), "Reading group");
     let mut doc = AutoCommit::new();
@@ -401,7 +401,7 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
     doc.put(ROOT, "name", "Planning").unwrap();
     // Then a device lays the workspace out in its layout record, a window at
     // a time.
-    let mut layout = Workspace::in_room(workspace.id, workspace.room(), "Planning");
+    let mut layout = Workspace::in_workspace(workspace.id, workspace.room(), "Planning");
     let mut strip = Strip::new(StripId::from((1 << 48) | 3), "Planning");
     for (at, group, tab, title) in [
         (1, (1 << 48) | 1, (1 << 48) | 2, "Notes"),

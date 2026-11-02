@@ -24,7 +24,7 @@ use chrono::{Datelike as _, Timelike as _};
 
 use settings_store::hardware::{ActionChord, KeyChord};
 use tilo_actions::remote::{
-    Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget, workspace_provider_room,
+    Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget, provider_workspace,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use winit::event::Modifiers;
@@ -235,7 +235,7 @@ impl ShellOverlayHost {
                         .triggers
                         .observe(TriggerEvent::Focus(focus), &armed),
                 );
-                let rooms = watched_record_rooms(&tree.desktop.room_records_held, &armed);
+                let rooms = watched_record_rooms(&tree.desktop.workspace_records_held, &armed);
                 let events = self.shortcut_triggers.records.poll(&rooms, state.records());
                 if !events.is_empty() {
                     // A run's own first change is its claim: a firing another
@@ -453,7 +453,7 @@ impl ShellOverlayHost {
         let caller = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let workspace = match workspace_provider_room(&bound.target.provider) {
+            let workspace = match provider_workspace(&bound.target.provider) {
                 Some(room) => tree
                     .desktop
                     .workspaces

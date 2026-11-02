@@ -410,3 +410,145 @@ fn a_participant_that_does_not_host_the_workspace_admits_and_removes_members() {
         "the removed device's writes are refused"
     );
 }
+
+/// An invitation is the issuer's own link: the person who made it lists it
+/// while it is redeemable and cancels it from their own device, after which
+/// the link admits nobody, and another person's device cancels nothing.
+#[test]
+fn an_invitation_is_listed_and_cancelled_from_the_issuers_device() {
+    use tilo_peer_state::join::invitations::CancelInvitationRequest;
+
+    let directory = tempfile::tempdir().unwrap();
+    let (_root_a, key_a, cert_a) = device(61, 62, "A's desktop");
+    let (_root_b, key_b, cert_b) = device(63, 64, "B's desktop");
+    let workspace = RoomId::parse(WORKSPACE).unwrap();
+    let now = SystemTime::now();
+
+    // A's device made the workspace; B is a member of it on their own device.
+    let mut governor =
+        TestGovernor::empty_interactive(cert_a.clone(), key_a.clone(), WORKSPACE).unwrap();
+    governor.pin_clock(now);
+    let a = open_file(&directory.path().join("a.json")).unwrap();
+    enroll(
+        &a,
+        &key_a,
+        &cert_a,
+        &mut governor,
+        MemberRole::Moderator,
+        [11; 32],
+        now,
+    );
+    let b = open_file(&directory.path().join("b.json")).unwrap();
+    enroll(
+        &b,
+        &key_b,
+        &cert_b,
+        &mut governor,
+        MemberRole::Moderator,
+        [12; 32],
+        now,
+    );
+    for (bytes, _) in governor.outgoing() {
+        a.receive(
+            workspace,
+            TransportOrigin::RetainedRelayDelta(cert_a.device_public_key),
+            postcard::from_bytes(bytes).unwrap(),
+            now,
+        )
+        .unwrap();
+    }
+
+    // B invites someone from their own device.
+    let issued = b
+        .issue_invitation(
+            workspace,
+            &cert_b,
+            IssueInvitationRequest {
+                request_id: [13; 32],
+                role: MemberRole::Viewer,
+                recipient_user_public_key: None,
+                invitee_name: Some("Ada".into()),
+                expires_at_ns: testing::ns(now)
+                    .unwrap()
+                    .checked_add(60_000_000_000)
+                    .unwrap(),
+                inviter_name: None,
+            },
+            vec![hint(&cert_b, &key_b)],
+            &key_b,
+            now,
+        )
+        .unwrap();
+    let pending = b.pending_invitations(workspace, now).unwrap();
+    assert_eq!(pending.len(), 1, "B's one invitation is still open");
+    assert_eq!(pending[0].invite_id, issued.invite_id);
+    assert_eq!(pending[0].role, MemberRole::Viewer);
+    assert_eq!(pending[0].invitee_name.as_deref(), Some("Ada"));
+
+    // What B publishes reaches A; the invitation itself is B's own bookkeeping.
+    for message in outgoing(&b, workspace, now) {
+        a.receive(
+            workspace,
+            TransportOrigin::RelayDelta(cert_b.device_public_key),
+            message,
+            now,
+        )
+        .unwrap();
+    }
+    assert!(
+        a.pending_invitations(workspace, now).unwrap().is_empty(),
+        "the link is B's, listed and answered at B's device"
+    );
+
+    // Another person's device does not cancel B's link.
+    let cancel = CancelInvitationRequest {
+        request_id: [14; 32],
+        invite_id: issued.invite_id,
+    };
+    assert!(
+        a.cancel_invitation(workspace, &cancel, &key_a, now)
+            .is_err(),
+        "an invitation is cancelled by the person who issued it"
+    );
+
+    // B cancels it from their own device, and the link admits nobody.
+    assert!(
+        b.cancel_invitation(workspace, &cancel, &key_b, now)
+            .unwrap(),
+        "B's device cancels the link it made"
+    );
+    assert!(
+        b.pending_invitations(workspace, now).unwrap().is_empty(),
+        "the link is no longer redeemable where it was made"
+    );
+    assert!(
+        !b.cancel_invitation(workspace, &cancel, &key_b, now)
+            .unwrap(),
+        "asking again changes nothing"
+    );
+    let (_root_c, _key_c, cert_c) = device(65, 66, "C's desktop");
+    let joined = JoinAnswer(OwnerJoinWorkspaces::new(b.clone(), key_b.clone()));
+    let refused = answer(
+        &joined,
+        cert_c.device_public_key,
+        JoinTransportRequest::Challenge(JoinChallengeRequest {
+            signed_invitation: issued.signed_invitation,
+            device_cert: cert_c,
+            request_id: [15; 32],
+        }),
+        now,
+    );
+    assert!(
+        matches!(refused, JoinTransportResponse::Error { .. }),
+        "the cancelled link admits nobody: {refused:?}"
+    );
+    for message in outgoing(&b, workspace, now) {
+        a.receive(
+            workspace,
+            TransportOrigin::RelayDelta(cert_b.device_public_key),
+            message,
+            now,
+        )
+        .unwrap();
+    }
+}

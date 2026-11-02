@@ -278,7 +278,7 @@ view traditional_bar(d: Desk) {
     let room = if space.width_class == .wide { BarRoom.roomy } else if space.compact { BarRoom.one } else { BarRoom.menus }
     row(gap: if room == .one { .tight } else { .related }, align: .center, fill) {
         ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
-            on press: session.toggle_tilo_menu()
+            on press: session.tilo_menu()
         }
         action_bar(arrangement, room)
         spacer

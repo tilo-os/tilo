@@ -65,14 +65,14 @@ impl DeviceMeshModel {
     /// confirms it or puts it back, and is `reply`'s.
     pub(super) fn choose_home_relay(
         &mut self,
-        room: &str,
+        workspace: &str,
         on: bool,
         reply: Option<EffectReply>,
     ) -> Result<(), String> {
         if self.home_relay.choosing.is_some() {
             return Err("the home relay is still being changed".into());
         }
-        let workspace = self
+        let hosted = self
             .home_relay
             .hosting
             .as_mut()
@@ -80,12 +80,13 @@ impl DeviceMeshModel {
                 hosting
                     .workspaces
                     .iter_mut()
-                    .find(|workspace| workspace.room == room)
+                    .find(|hosted| hosted.workspace == workspace)
             })
             .ok_or("that workspace is not hosted on this device")?;
-        workspace.on_relay = on;
+        hosted.on_relay = on;
         let mut arguments = serde_json::Map::new();
-        arguments.insert("room".into(), room.into());
+        // The workspace under the key the host's step already reads.
+        arguments.insert("room".into(), workspace.into());
         arguments.insert("on".into(), on.into());
         let call = self.remote.invoke(
             home_relay_hosting::target(home_relay_hosting::SET),
@@ -165,15 +166,15 @@ impl Page<'_> {
             .workspaces
             .iter()
             .map(|workspace| {
-                let room = workspace.room.clone();
+                let workspace_id = workspace.workspace.clone();
                 self.switch_on_row(
                     workspace.name.clone(),
                     t_args("mesh-home-relay-also", &[("relay", relay.into())]),
-                    &format!("device_mesh.home_relay.{}", workspace.room),
+                    &format!("device_mesh.home_relay.{}", workspace.workspace),
                     workspace.on_relay,
                     &home_relay_row(workspace, relay).into_resource(),
                     effect(DeviceMeshEffect::SET_HOME_RELAY_HOSTING)
-                        .map(move |on: bool| (room.clone(), on)),
+                        .map(move |on: bool| (workspace_id.clone(), on)),
                 )
             })
             .collect();
@@ -189,24 +190,24 @@ impl Page<'_> {
 }
 
 /// The live row of a workspace the home relay may host.
-pub(super) fn home_relay_row_id(room: &str) -> String {
-    format!("settings.home-relay-workspace:{room}")
+pub(super) fn home_relay_row_id(workspace: &str) -> String {
+    format!("settings.home-relay-workspace:{workspace}")
 }
 
-/// `workspace`'s row, offering to have the home relay `relay` host it as
+/// `hosted`'s row, offering to have the home relay `relay` host it as
 /// well (`on`, which its caller gives), or no longer.
-fn home_relay_row(workspace: &HostedWorkspace, relay: &str) -> LiveRow {
+fn home_relay_row(hosted: &HostedWorkspace, relay: &str) -> LiveRow {
     let switch = SettingsEffect::from(DeviceMeshEffect::SetHomeRelayHosting {
-        room: workspace.room.clone(),
+        workspace: hosted.workspace.clone(),
         on: true,
     });
     let row = LiveRow::new(
-        home_relay_row_id(&workspace.room),
+        home_relay_row_id(&hosted.workspace),
         "settings.home-relay-workspace",
-        workspace.name.clone(),
+        hosted.name.clone(),
     )
     .operation(switch.bound_asking(&["on"]));
-    if workspace.on_relay {
+    if hosted.on_relay {
         row.presentation(ResourcePresentation {
             detail: Some(t_args("mesh-home-relay-also", &[("relay", relay.into())])),
             ..ResourcePresentation::default()

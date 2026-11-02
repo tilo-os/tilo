@@ -94,7 +94,7 @@ impl TopBarChrome {
 
     /// The width the strip's name takes after the workspace's pill at its
     /// natural length: the separator, its gaps and the name; zero when the
-    /// bar names no strip. The workspace name leaves it this room.
+    /// bar names no strip. The workspace name leaves only its own width.
     pub(super) fn strips_natural_width(
         &self,
         text_renderer: &mut TextRenderer,
@@ -467,7 +467,7 @@ mod tests {
     /// A workspace of three named strips, the first shown, with people on
     /// the other two.
     fn tree() -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+        let mut workspace = Workspace::new(WorkspaceId(1), "Home");
         let mut games = Strip::new(StripId(11), "Games");
         games.window_groups = vec![group(1)];
         let mut quiet = Strip::new(StripId(12), "Quiet");
@@ -606,7 +606,7 @@ mod tests {
         assert_eq!(
             chrome.intents.borrow().last(),
             Some(&ChromeIntent::RenameWorkspace {
-                name: "Room".into()
+                name: "Home".into()
             }),
             "an unchanged name commits as it was"
         );

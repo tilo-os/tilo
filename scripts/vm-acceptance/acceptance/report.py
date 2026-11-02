@@ -93,8 +93,8 @@ def failure_evidence(out: Path, results: list[Result]) -> str:
                  if Path(rel).suffix in TEXT_SUFFIXES and (out / rel).is_file()]
         for rel in sorted(files, key=lambda rel: _evidence_rank(r, rel)):
             header = f"==== {r.id}: {rel}"
-            room = min(EVIDENCE_FILE_BYTES, EVIDENCE_CHECK_BYTES - spent, EVIDENCE_TOTAL_BYTES - total)
-            if room <= 0:
+            spare = min(EVIDENCE_FILE_BYTES, EVIDENCE_CHECK_BYTES - spent, EVIDENCE_TOTAL_BYTES - total)
+            if spare <= 0:
                 why = (f"the run's printed evidence reached {EVIDENCE_TOTAL_BYTES} bytes"
                        if total >= EVIDENCE_TOTAL_BYTES else
                        f"{r.id}'s printed evidence reached {EVIDENCE_CHECK_BYTES} bytes")
@@ -107,7 +107,7 @@ def failure_evidence(out: Path, results: list[Result]) -> str:
                     data = json.dumps(json.loads(data), separators=(",", ":"), ensure_ascii=False).encode()
                 except ValueError:
                     pass
-            cut = data[:room] if path.suffix == ".json" else data[-room:]
+            cut = data[:spare] if path.suffix == ".json" else data[-spare:]
             if len(cut) < len(data):
                 header += f" ({'first' if path.suffix == '.json' else 'last'} {len(cut)} of {len(data)} bytes)"
             L += [header, cut.decode("utf-8", "replace").rstrip("\n")]

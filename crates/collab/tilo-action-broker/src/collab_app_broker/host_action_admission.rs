@@ -381,7 +381,7 @@ impl AppBrokerState {
         {
             return Ok(None);
         }
-        let workspace = caller.room().ok_or(ActionHostError::NotPermitted)?;
+        let workspace = caller.workspace().ok_or(ActionHostError::NotPermitted)?;
         let owner = self.host_action_owner(caller, Some(origin), workspace, request.invocation)?;
         let record = {
             let guard = self

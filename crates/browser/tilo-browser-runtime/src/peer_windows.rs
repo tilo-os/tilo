@@ -181,7 +181,7 @@ mod tests {
 
     /// A desktop whose one group holds `tabs`.
     fn tree(tabs: Vec<Tab>) -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceId::default(), "Room");
+        let mut workspace = Workspace::new(WorkspaceId::default(), "Workspace");
         let mut strip = Strip::new(StripId(5), "Main");
         strip.window_groups.push(WindowGroup {
             id: 7,

@@ -14,7 +14,7 @@ A store record whose key was never secured still fails the launch and names the
 Settings step that secures it.
 Application signatures come from the identity service (`tilo-identity-host`,
 file descriptor 31), which signs with this device's enrolled key and only under
-a grant naming the app, room and action. Read-only workspace participation gets
+a grant naming the app, workspace and action. Read-only workspace participation gets
 no broker descriptor; the identity-service connection is still attached when the
 launch names a workspace, and its signing refuses without that grant. Managed
 (enrolled-agent) launches get no broker. Closing the application closes its

@@ -33,13 +33,24 @@
 //! ([`audio::Microphone`], [`audio::heard`]) on the connections two devices
 //! open for one call ([`carrier`]): the endpoint those connections run on,
 //! and what a call does with a datagram it opens, are the caller's.
+//!
+//! Pictures travel the same connections' streams: one camera and one screen
+//! per device, encoded once per layer a device in the call shows
+//! ([`video::Video`]), each tilo-video/1 object sealed under its stream's
+//! key and read back into the app's [`video::Inbox`].
 
 pub mod audio;
 pub mod carrier;
 pub mod frame;
 pub mod roster;
+pub mod video;
 
 pub use audio::{Heard, Microphone, heard};
 pub use carrier::{ALPN, Calls, Failed, Hello, Peer};
 pub use frame::{Lane, OVERHEAD, Opener, Refusal, Sealer, Stream};
 pub use roster::Roster;
+pub use tilo_moq::video::{Layer, Source};
+pub use video::{
+    Asking, CAMERA_FPS, CAMERA_SIZE, Camera, Feed, Frame, Inbox, Picture, PicturePeer, SCREEN_FPS,
+    Sending, Sink, Video, even_rgba, fitted,
+};

@@ -9,7 +9,7 @@
 //! - [`gc`]        — reclaiming payloads and runtimes nothing needs.
 //! - [`shim`]      — the PATH shims a `[cli]` package publishes.
 //! - [`runtime_blobs`] — runtime payload bytes already on this device.
-//! - [`state`]     — the user's per-room app data: what uninstalling
+//! - [`state`]     — the user's per-workspace app data: what uninstalling
 //!   must ask about rather than assume.
 
 pub mod gc;

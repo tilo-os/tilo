@@ -115,7 +115,7 @@ where
     }
 }
 
-async fn rooms(peer: &PeerHandle, request: RoomsRequest) -> Result<RoomsReply, String> {
+async fn workspaces(peer: &PeerHandle, request: RoomsRequest) -> Result<RoomsReply, String> {
     let (reply, answer) = tokio::sync::oneshot::channel();
     peer.rooms_then(
         request,
@@ -262,12 +262,12 @@ async fn main() {
     // The company workspace (the one a rerun made before), and the page in
     // it.
     let acme = until("the workspace is there", deadline, || async {
-        if let Ok(RoomsReply::Rooms(existing)) = rooms(&peer, RoomsRequest::List).await
+        if let Ok(RoomsReply::Rooms(existing)) = workspaces(&peer, RoomsRequest::List).await
             && let Some(known) = existing.into_iter().find(|known| known.name == "Acme")
         {
             return Some(known);
         }
-        match rooms(
+        match workspaces(
             &peer,
             RoomsRequest::Create {
                 name: "Acme".into(),
@@ -280,7 +280,7 @@ async fn main() {
         }
     })
     .await;
-    let entered = rooms(
+    let entered = workspaces(
         &peer,
         RoomsRequest::Enter {
             room: acme.room.clone(),

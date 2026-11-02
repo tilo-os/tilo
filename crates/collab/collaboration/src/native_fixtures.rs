@@ -56,7 +56,7 @@ pub(super) fn native_history_invocation_fixture(
 
 pub(super) fn native_refresh_fixture(
     app: &str,
-    room: Uuid,
+    workspace: Uuid,
     history: Vec<u8>,
 ) -> (CollaborationManager, NativeRefreshProbe) {
     let broker = FakeBroker {
@@ -77,22 +77,22 @@ pub(super) fn native_refresh_fixture(
         }),
     };
     (
-        CollaborationManager::from_sdk_fd_for_test(fd, app, room),
+        CollaborationManager::from_sdk_fd_for_test(fd, app, workspace),
         probe,
     )
 }
 
 pub(super) fn native_initial_fixture(
     app: &str,
-    room: Uuid,
+    workspace: Uuid,
     history: Vec<u8>,
 ) -> (CollaborationManager, Box<dyn Fn() -> usize>) {
-    native_initial_fixture_gated(app, room, history, None)
+    native_initial_fixture_gated(app, workspace, history, None)
 }
 
 pub(super) fn native_initial_fixture_gated(
     app: &str,
-    room: Uuid,
+    workspace: Uuid,
     history: Vec<u8>,
     gate: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> (CollaborationManager, Box<dyn Fn() -> usize>) {
@@ -107,14 +107,14 @@ pub(super) fn native_initial_fixture_gated(
     };
     let (fd, captures, _thread) = stand_up_fake_broker(broker);
     (
-        CollaborationManager::from_sdk_fd_for_test(fd, app, room),
+        CollaborationManager::from_sdk_fd_for_test(fd, app, workspace),
         Box::new(move || captures.lock().unwrap().joined.len()),
     )
 }
 
 pub(super) fn native_initial_invocation_fixture(
     app: &str,
-    room: Uuid,
+    workspace: Uuid,
     history: Vec<u8>,
     refused_channels: Vec<String>,
 ) -> (
@@ -131,14 +131,14 @@ pub(super) fn native_initial_invocation_fixture(
     };
     let (fd, captures, _thread) = stand_up_fake_broker(broker);
     (
-        CollaborationManager::from_sdk_fd_for_test(fd, app, room),
+        CollaborationManager::from_sdk_fd_for_test(fd, app, workspace),
         Box::new(move || captures.lock().unwrap().own_invocations.clone()),
     )
 }
 
 pub(super) fn native_initial_parked_fixture(
     app: &str,
-    room: Uuid,
+    workspace: Uuid,
     history: Vec<u8>,
     gate: tokio::sync::oneshot::Receiver<()>,
 ) -> (CollaborationManager, Box<dyn Fn() -> usize>) {
@@ -152,7 +152,7 @@ pub(super) fn native_initial_parked_fixture(
     };
     let (fd, captures, _thread) = stand_up_fake_broker(broker);
     (
-        CollaborationManager::from_sdk_fd_for_test(fd, app, room),
+        CollaborationManager::from_sdk_fd_for_test(fd, app, workspace),
         Box::new(move || {
             captures
                 .lock()

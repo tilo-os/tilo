@@ -57,14 +57,14 @@ echo "== veth link up"
 # Compile before either timed role starts. Letting two `cargo test` processes
 # race the build lock can consume the viewer's entire four-second window
 # before the host has bound its socket.
-cargo test -p shell --test it --features netns-e2e --locked --no-run
+cargo test -p shell --test it --features netns-e2e,hosted-test-control --locked --no-run
 
 echo "== spawning viewer in $NS_B (background)"
 ip netns exec "$NS_B" env \
     TWO_NETNS_ROLE=viewer \
     TWO_NETNS_VIDEO_ADDR="$VETH_B_IP:$VIDEO_PORT" \
     TWO_NETNS_INPUT_ADDR="$VETH_A_IP:$INPUT_PORT" \
-    cargo test -p shell --test it --features netns-e2e --locked \
+    cargo test -p shell --test it --features netns-e2e,hosted-test-control --locked \
     -- --exact two_netns_share::netns_viewer_process --nocapture &
 VIEWER_PID=$!
 
@@ -76,7 +76,7 @@ ip netns exec "$NS_A" env \
     TWO_NETNS_ROLE=host \
     TWO_NETNS_VIDEO_ADDR="$VETH_B_IP:$VIDEO_PORT" \
     TWO_NETNS_INPUT_ADDR="$VETH_A_IP:$INPUT_PORT" \
-    cargo test -p shell --test it --features netns-e2e --locked \
+    cargo test -p shell --test it --features netns-e2e,hosted-test-control --locked \
     -- --exact two_netns_share::netns_host_process --nocapture
 
 wait $VIEWER_PID

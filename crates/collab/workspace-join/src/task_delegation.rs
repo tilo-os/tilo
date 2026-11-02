@@ -1,12 +1,12 @@
 //! Task delegations: a device's signed statement that a key it minted for
-//! one task acts for the device's person in one room, for that task only,
+//! one task acts for the device's person in one workspace, for that task only,
 //! until the task ends (at most a day).
 //!
 //! A task agent is made when a person asks (Super+C, the palette, a context
 //! menu): no prior admission, no membership row. Its authority is this
 //! statement, signed by the asking *device* rather than the person's root,
 //! so any device the person uses can make one. It verifies as a chain: the
-//! device's root-signed certificate is in the room's device list (the
+//! device's root-signed certificate is in the workspace's device list (the
 //! caller looks it up and checks it is neither revoked nor expired), and the
 //! device signed the delegation inside the certificate's window. A device
 //! already acts as its person in full, so a narrower agent it mints widens
@@ -28,13 +28,13 @@ pub const MAX_TASK_DELEGATION_NS: u64 = 24 * 3600 * 1_000_000_000;
 /// Longest work group, the task's address.
 pub const MAX_WORK_GROUP_BYTES: usize = 256;
 /// What every task agent's id starts with: a task agent is never a
-/// collaborator, whose ids the room's governance admits.
+/// collaborator, whose ids the workspace's governance admits.
 pub const TASK_AGENT_PREFIX: &str = "task-";
 
 const TASK_DELEGATION_DOMAIN: &[u8] = b"tilo-task-delegation-v1\0";
 
 /// A device-signed statement that `agent_public_key` acts for
-/// `user_public_key` in `room`, on the task `work_group`, as `agent_id`.
+/// `user_public_key` in `workspace`, on the task `work_group`, as `agent_id`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskDelegation {
     /// The person the agent acts for: the signing device's root.
@@ -48,7 +48,7 @@ pub struct TaskDelegation {
     pub agent_id: String,
     /// The task's work group: its issue's address.
     pub work_group: String,
-    /// The room uuid it may act in.
+    /// The workspace's id, a canonical lowercase UUID.
     pub room: String,
     /// Issue time, ns since the epoch.
     pub issued_at_ns: u64,
@@ -97,7 +97,7 @@ pub fn is_task_agent(agent_id: &str) -> bool {
 }
 
 impl TaskDelegation {
-    /// Sign a delegation of `agent_public_key` for `work_group` in `room`
+    /// Sign a delegation of `agent_public_key` for `work_group` in `workspace`
     /// with `device`, the asking device whose root is `user_public_key`.
     ///
     /// # Errors
@@ -107,7 +107,7 @@ impl TaskDelegation {
         user_public_key: [u8; 32],
         agent_public_key: [u8; 32],
         work_group: impl Into<String>,
-        room: impl Into<String>,
+        workspace: impl Into<String>,
         issued_at_ns: u64,
         expires_at_ns: u64,
     ) -> Result<Self, DelegationError> {
@@ -117,7 +117,7 @@ impl TaskDelegation {
             agent_public_key,
             agent_id: task_agent_id(&agent_public_key),
             work_group: work_group.into(),
-            room: room.into(),
+            room: workspace.into(),
             issued_at_ns,
             expires_at_ns,
             signature: [0; 64],
@@ -155,10 +155,10 @@ impl TaskDelegation {
         {
             return Err(DelegationError::Invalid("work group"));
         }
-        if uuid::Uuid::parse_str(&self.room)
-            .map_or(true, |room| room.hyphenated().to_string() != self.room)
-        {
-            return Err(DelegationError::Invalid("room"));
+        if uuid::Uuid::parse_str(&self.room).map_or(true, |workspace| {
+            workspace.hyphenated().to_string() != self.room
+        }) {
+            return Err(DelegationError::Invalid("workspace"));
         }
         if self.expires_at_ns <= self.issued_at_ns {
             return Err(DelegationError::Invalid("validity window"));
@@ -173,9 +173,9 @@ impl TaskDelegation {
 
     /// Check the chain at `now_ns`: `device` is the signing device's
     /// root-signed certificate, valid now, and it signed this delegation for
-    /// `room` inside the certificate's window and its own.
+    /// `workspace` inside the certificate's window and its own.
     ///
-    /// The caller has taken `device` from the room's device list and checked
+    /// The caller has taken `device` from the workspace's device list and checked
     /// it is not revoked; this checks everything the two signatures state.
     ///
     /// # Errors
@@ -183,11 +183,11 @@ impl TaskDelegation {
     /// or another person's, [`DelegationError::Uncertified`] when it does not
     /// verify now, [`DelegationError::Signature`] for a bad signature,
     /// [`DelegationError::Expired`] outside the window and
-    /// [`DelegationError::Invalid`] for another room or bad bounds.
+    /// [`DelegationError::Invalid`] for another workspace or bad bounds.
     pub fn verify(
         &self,
         device: &DeviceCert,
-        room: &str,
+        workspace: &str,
         now_ns: u64,
     ) -> Result<(), DelegationError> {
         if device.device_public_key != self.device_public_key
@@ -198,8 +198,8 @@ impl TaskDelegation {
         tilo_user_identity::verify_device_cert_at(device, now_ns)
             .map_err(|_| DelegationError::Uncertified)?;
         self.validate()?;
-        if self.room != room {
-            return Err(DelegationError::Invalid("room"));
+        if self.room != workspace {
+            return Err(DelegationError::Invalid("workspace"));
         }
         // Signed while the device was certified: never before its
         // certificate, never past its expiry.
@@ -287,8 +287,8 @@ mod tests {
 
     use super::*;
 
-    const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    const OTHER_ROOM: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const OTHER_WORKSPACE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const TASK: &str = "tasks.tracker/issues/7d3c";
     const HOUR_NS: u64 = 3600 * 1_000_000_000;
     const NOW: u64 = 1_800_000_000_000_000_000;
@@ -325,7 +325,7 @@ mod tests {
             root().verifying_key().to_bytes(),
             agent(),
             TASK,
-            ROOM,
+            WORKSPACE,
             NOW,
             expires,
         )
@@ -336,7 +336,7 @@ mod tests {
     fn a_device_signed_task_delegation_verifies_against_its_certificate() {
         let delegation = delegation(NOW + HOUR_NS);
         let cert = certificate(&root(), &device());
-        assert_eq!(delegation.verify(&cert, ROOM, NOW + 1), Ok(()));
+        assert_eq!(delegation.verify(&cert, WORKSPACE, NOW + 1), Ok(()));
         assert!(is_task_agent(&delegation.agent_id));
         let decoded = TaskDelegation::from_hex(&delegation.to_hex()).unwrap();
         assert_eq!(decoded, delegation);
@@ -347,11 +347,11 @@ mod tests {
         let delegation = delegation(NOW + HOUR_NS);
         let cert = certificate(&root(), &device());
         assert_eq!(
-            delegation.verify(&cert, ROOM, NOW + HOUR_NS),
+            delegation.verify(&cert, WORKSPACE, NOW + HOUR_NS),
             Err(DelegationError::Expired)
         );
         assert_eq!(
-            delegation.verify(&cert, ROOM, NOW - 1),
+            delegation.verify(&cert, WORKSPACE, NOW - 1),
             Err(DelegationError::Expired)
         );
     }
@@ -362,14 +362,14 @@ mod tests {
         // Certified by another person's root: not the device's person.
         let foreign = certificate(&SigningKey::from_bytes(&[9; 32]), &device());
         assert_eq!(
-            delegation.verify(&foreign, ROOM, NOW + 1),
+            delegation.verify(&foreign, WORKSPACE, NOW + 1),
             Err(DelegationError::WrongUser)
         );
         // A certificate whose signature does not verify.
         let mut forged = certificate(&root(), &device());
         forged.device_label = "Changed".into();
         assert_eq!(
-            delegation.verify(&forged, ROOM, NOW + 1),
+            delegation.verify(&forged, WORKSPACE, NOW + 1),
             Err(DelegationError::Uncertified)
         );
         // Signed before the device was certified.
@@ -377,7 +377,7 @@ mod tests {
         late.issued_at_ns = NOW + 1;
         tilo_user_identity::sign_device_cert(&mut late, &root()).unwrap();
         assert_eq!(
-            delegation.verify(&late, ROOM, NOW + 2),
+            delegation.verify(&late, WORKSPACE, NOW + 2),
             Err(DelegationError::Uncertified)
         );
         // Another device's signature over the same fields.
@@ -386,17 +386,17 @@ mod tests {
             .sign(&delegation.signing_bytes())
             .to_bytes();
         assert_eq!(
-            stolen.verify(&certificate(&root(), &device()), ROOM, NOW + 1),
+            stolen.verify(&certificate(&root(), &device()), WORKSPACE, NOW + 1),
             Err(DelegationError::Signature)
         );
     }
 
     #[test]
-    fn a_delegation_names_one_room_one_task_and_lasts_at_most_a_day() {
+    fn a_delegation_names_one_workspace_one_task_and_lasts_at_most_a_day() {
         let cert = certificate(&root(), &device());
         assert_eq!(
-            delegation(NOW + HOUR_NS).verify(&cert, OTHER_ROOM, NOW + 1),
-            Err(DelegationError::Invalid("room"))
+            delegation(NOW + HOUR_NS).verify(&cert, OTHER_WORKSPACE, NOW + 1),
+            Err(DelegationError::Invalid("workspace"))
         );
         assert_eq!(
             TaskDelegation::sign(
@@ -404,7 +404,7 @@ mod tests {
                 root().verifying_key().to_bytes(),
                 agent(),
                 TASK,
-                ROOM,
+                WORKSPACE,
                 NOW,
                 NOW + 25 * HOUR_NS,
             ),
@@ -415,7 +415,7 @@ mod tests {
         let mut renamed = delegation(NOW + HOUR_NS);
         renamed.agent_id = "scribe".into();
         assert_eq!(
-            renamed.verify(&cert, ROOM, NOW + 1),
+            renamed.verify(&cert, WORKSPACE, NOW + 1),
             Err(DelegationError::Invalid("agent id"))
         );
     }

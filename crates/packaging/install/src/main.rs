@@ -87,7 +87,7 @@ enum Cmd {
         payload_from: Option<String>,
     },
     /// Fetch a newer version of an installed package and swap it in,
-    /// keeping the user's per-room state.
+    /// keeping the user's per-workspace state.
     Update {
         /// Package id (as printed by `tilo-install list`); omit to update all.
         pkg_id: Option<String>,
@@ -489,7 +489,7 @@ fn store() -> Result<PackageStore, Error> {
     Ok(PackageStore::at(data_root()?))
 }
 
-/// The user's data home (parent of `tilo-rooms/`), distinct from
+/// The user's data home (parent of the `tilo-rooms/` state root), distinct from
 /// [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
 /// not `TILO_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
@@ -1783,7 +1783,7 @@ fn update_one(
     }
 
     let data_home = data_home_root()?;
-    let rooms = install::state::find(&data_home, &entry.id);
+    let workspaces = install::state::find(&data_home, &entry.id);
     if request.dry_run {
         println!(
             "plan: update {} {} -> {}",
@@ -1807,9 +1807,9 @@ fn update_one(
             Some((v, false)) => println!("  runtime   : tilo-runtime/{v} MISSING"),
         }
         println!(
-            "  state     : KEPT — {} room(s), {}",
-            rooms.len(),
-            install::state::human_bytes(install::state::total_bytes(&rooms))
+            "  state     : KEPT — {} workspace(s), {}",
+            workspaces.len(),
+            install::state::human_bytes(install::state::total_bytes(&workspaces))
         );
         println!("(nothing was written)");
         return Ok(UpdateOutcome::Planned);
@@ -1847,9 +1847,9 @@ fn update_one(
         installed.blobs, installed.blobs_already_stored
     );
     println!(
-        "  state    : kept ({} room(s), {})",
-        rooms.len(),
-        install::state::human_bytes(install::state::total_bytes(&rooms))
+        "  state    : kept ({} workspace(s), {})",
+        workspaces.len(),
+        install::state::human_bytes(install::state::total_bytes(&workspaces))
     );
     Ok(UpdateOutcome::Swapped)
 }
@@ -1949,7 +1949,7 @@ fn installed_from(entry: &InstalledPackage) -> &'static str {
 /// Uninstall a package, deciding about its user data separately.
 ///
 /// The payload is the publisher's (reproducible by reinstalling); the
-/// per-room state is the user's and does not come back — so the two
+/// per-workspace state is the user's and does not come back — so the two
 /// are separate decisions, and deleting state is never done silently.
 fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Result<(), Error> {
     // Only the user's copy can go; removing it puts the image's back.
@@ -1961,7 +1961,7 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
         });
     };
     let data_home = data_home_root()?;
-    let rooms = install::state::find(&data_home, pkg_id);
+    let workspaces = install::state::find(&data_home, pkg_id);
 
     if dry_run {
         println!("plan: uninstall {} {}", entry.id, entry.version);
@@ -1983,7 +1983,7 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
             "  content   : evict the blobs no other package uses from {}",
             store()?.layout().content().display()
         );
-        print_state_summary(&rooms);
+        print_state_summary(&workspaces);
         println!(
             "  state     : {}",
             if purge {
@@ -1999,7 +1999,7 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
     }
 
     // Ask about user data before removing the package, so "no" leaves things as they were.
-    let delete_state = decide_state(&rooms, purge, keep_state);
+    let delete_state = decide_state(&workspaces, purge, keep_state);
 
     let removed = store()?.remove(pkg_id, true).map_err(store_error)?;
     // Undo PATH shims, best-effort — a missing bin_dir just means none were installed.
@@ -2026,17 +2026,17 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
     );
 
     if delete_state {
-        let (removed, failures) = install::state::remove(&rooms);
-        println!("  state    : deleted in {removed} room(s)");
+        let (removed, failures) = install::state::remove(&workspaces);
+        println!("  state    : deleted in {removed} workspace(s)");
         for (path, e) in failures {
             eprintln!("tilo-install: could not remove {}: {e}", path.display());
         }
-    } else if !rooms.is_empty() {
+    } else if !workspaces.is_empty() {
         println!(
-            "  state    : kept — {} room(s), {} under {}",
-            rooms.len(),
-            install::state::human_bytes(install::state::total_bytes(&rooms)),
-            data_home.join(install::state::ROOMS_DIR).display()
+            "  state    : kept — {} workspace(s), {} under {}",
+            workspaces.len(),
+            install::state::human_bytes(install::state::total_bytes(&workspaces)),
+            data_home.join(install::state::WORKSPACES_DIR).display()
         );
         println!("             reinstalling picks it back up; `--purge` deletes it.");
     }
@@ -2252,17 +2252,21 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
             "no record — installed before integrity records, or the record was deleted"
         }
     );
-    let rooms = install::state::find(&data_home_root()?, pkg_id);
-    if rooms.is_empty() {
+    let workspaces = install::state::find(&data_home_root()?, pkg_id);
+    if workspaces.is_empty() {
         println!("saved data    : none");
     } else {
         println!(
-            "saved data    : {} room(s), {}",
-            rooms.len(),
-            install::state::human_bytes(install::state::total_bytes(&rooms))
+            "saved data    : {} workspace(s), {}",
+            workspaces.len(),
+            install::state::human_bytes(install::state::total_bytes(&workspaces))
         );
-        for room in &rooms {
-            println!("                {}  {}", room.room, room.path.display());
+        for saved in &workspaces {
+            println!(
+                "                {}  {}",
+                saved.workspace,
+                saved.path.display()
+            );
         }
     }
     Ok(())
@@ -2287,22 +2291,22 @@ fn runtime_bundle_present(version: &str) -> bool {
         .any(|p| p.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists())
 }
 
-fn print_state_summary(rooms: &[install::state::RoomState]) {
-    if rooms.is_empty() {
+fn print_state_summary(workspaces: &[install::state::WorkspaceState]) {
+    if workspaces.is_empty() {
         println!("  saved data: none");
         return;
     }
     println!(
-        "  saved data: {} room(s), {} total",
-        rooms.len(),
-        install::state::human_bytes(install::state::total_bytes(rooms))
+        "  saved data: {} workspace(s), {} total",
+        workspaces.len(),
+        install::state::human_bytes(install::state::total_bytes(workspaces))
     );
-    for room in rooms {
+    for saved in workspaces {
         println!(
             "              {:<24} {:>10}  {} file(s)",
-            room.room,
-            install::state::human_bytes(room.bytes),
-            room.files
+            saved.workspace,
+            install::state::human_bytes(saved.bytes),
+            saved.files
         );
     }
 }
@@ -2312,8 +2316,12 @@ fn print_state_summary(rooms: &[install::state::RoomState]) {
 /// Flags win; otherwise the user is asked, and with no terminal to ask
 /// on the answer defaults to *keep* — silent, unattended data deletion
 /// is the one failure mode that can't be undone.
-fn decide_state(rooms: &[install::state::RoomState], purge: bool, keep_state: bool) -> bool {
-    if rooms.is_empty() {
+fn decide_state(
+    workspaces: &[install::state::WorkspaceState],
+    purge: bool,
+    keep_state: bool,
+) -> bool {
+    if workspaces.is_empty() {
         return false;
     }
     if purge {
@@ -2322,7 +2330,7 @@ fn decide_state(rooms: &[install::state::RoomState], purge: bool, keep_state: bo
     if keep_state {
         return false;
     }
-    print_state_summary(rooms);
+    print_state_summary(workspaces);
     if !stdin_is_a_terminal() {
         println!(
             "  (no terminal to ask on — keeping it. Re-run with --purge to delete, \

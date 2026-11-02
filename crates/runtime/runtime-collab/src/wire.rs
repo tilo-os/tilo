@@ -139,7 +139,7 @@ pub enum Operation {
     /// The session's published resources: what its services read and the
     /// actions that change them, answered as [`Reply::Opened`] with the
     /// handle the other session calls name. The session is the device's,
-    /// not a room's, so no channel is joined for it.
+    /// not a workspace's, so no channel is joined for it.
     Services,
     /// `resource`'s reading now, answered as [`Reply::Snapshot`].
     Snapshot { services: Handle, resource: String },
@@ -160,7 +160,7 @@ pub enum Operation {
 /// Who joins which channel.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Join {
-    /// The channel key: the app, room and, for a record, the record.
+    /// The channel key: the app, workspace and, for a record, the record.
     pub channel: String,
     /// The join presentation as the endpoint encoded it: a device's
     /// certified presentation ([`CertifiedJoinIdentity`]), or a task agent's
@@ -366,11 +366,11 @@ pub enum Service {
 /// What an endpoint publishes into a channel.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Publication {
-    /// A keyed presence update, fanned out to the room's other endpoints
-    /// and replicated to its peers.
+    /// A keyed presence update, fanned out to the workspace's other
+    /// endpoints and replicated to its peers.
     Presence(PeerPresence),
     /// A signed change to the channel's document, answered once the host
-    /// admitted it (and the room's owner committed it, where one must).
+    /// admitted it (and the workspace's owner committed it, where one must).
     Document(Box<SignedOp>),
     /// Content the channel's record references, which the endpoint stored:
     /// the host keeps it where the record's readers are served from.
@@ -417,7 +417,8 @@ pub enum Report {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Read {
     /// Content the channel's record references and the endpoint lacks. It
-    /// arrives on [`Topic::Content`], from this device or the room's others.
+    /// arrives on [`Topic::Content`], from this device or the workspace's
+    /// others.
     Content { hash: String },
     /// The document's current state, which another endpoint holding the
     /// channel is asked to publish; it arrives on [`Topic::Ops`].
@@ -434,7 +435,7 @@ pub enum Read {
 /// What a subscription delivers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Topic {
-    /// The room's other participants' presence.
+    /// The workspace's other participants' presence.
     Presence,
     /// Every signed change to the channel's document from now on.
     Ops,
@@ -508,7 +509,7 @@ pub enum Reply {
     Admitted(PublishedInvocationObservation),
     /// A page of history, each change the postcard bytes of its
     /// [`SignedOp`]. Not `exhausted` while older changes remain here or
-    /// were asked of the room's other devices, whose answer a later read
+    /// were asked of the workspace's other devices, whose answer a later read
     /// finds.
     History {
         ops: Vec<Vec<u8>>,
@@ -601,7 +602,7 @@ pub enum ContextUpdate {
     /// The next step of a handoff addressed to this instance, as
     /// `collab_types::handoff::HandoffRequest` JSON.
     Handoff(Vec<u8>),
-    /// The room's delegated agents the session verified, for history.
+    /// The workspace's delegated agents the session verified, for history.
     HistoryAgents(Vec<RosterAgent>),
     /// Records of the application's trees a peer wrote and no window holds.
     RecordsArrived(Vec<String>),

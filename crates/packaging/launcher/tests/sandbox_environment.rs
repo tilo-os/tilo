@@ -31,7 +31,7 @@ use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
 use launcher::run::{RunOptions, run_with_captured};
 use tilo_test_env::ScopedEnv;
 
-use crate::support::{isolated_options, roomtest_payload};
+use crate::support::{isolated_options, workspacetest_payload};
 
 const PACKAGE: &str = "so.tilo.envtest";
 
@@ -64,7 +64,7 @@ fn manifest() -> ManifestView {
         runtime: None,
         required_runtimes: Vec::new(),
         entrypoint: Entrypoint {
-            bin: "bin/roomtest".to_string(),
+            bin: "bin/workspacetest".to_string(),
             r#type: launcher::manifest::EntrypointType::Gui,
             gui_bin: None,
             cli_bin: None,
@@ -126,12 +126,13 @@ fn run(argv: &[&str]) -> String {
         bwrap_bin: Some(bwrap()),
         landlock_enforce: false,
         mode: launcher::run::LaunchMode::Cli {
-            command: "roomtest".to_string(),
+            command: "workspacetest".to_string(),
             passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
         },
         ..isolated_options(data.path())
     };
-    let (status, out) = run_with_captured(&manifest(), roomtest_payload(), &opts).expect("launch");
+    let (status, out) =
+        run_with_captured(&manifest(), workspacetest_payload(), &opts).expect("launch");
     let text = String::from_utf8_lossy(&out).trim().to_string();
     assert!(
         status.success(),

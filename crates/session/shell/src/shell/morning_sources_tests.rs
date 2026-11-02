@@ -16,7 +16,7 @@ impl ActionHost for Host {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         self.queries.lock().unwrap().push(query.clone());
-        if caller.room() != Some(self.room.as_str()) {
+        if caller.workspace() != Some(self.room.as_str()) {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
         let page = if query.max_results == 0 {
@@ -24,7 +24,7 @@ impl ActionHost for Host {
                 providers: vec![CatalogueProvider {
                     provider: "synthetic".into(),
                     app_id: "so.tilo.fixture".into(),
-                    room: self.room.clone(),
+                    workspace: self.room.clone(),
                     record_id: String::new(),
                     browsable: true,
                 }],
@@ -65,7 +65,7 @@ impl ActionHost for Host {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        assert_eq!(caller.room(), Some(self.room.as_str()));
+        assert_eq!(caller.workspace(), Some(self.room.as_str()));
         let receipt = InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Completed {

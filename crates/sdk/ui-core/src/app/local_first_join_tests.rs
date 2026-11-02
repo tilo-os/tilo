@@ -160,13 +160,13 @@ fn the_connecting_line_follows_the_brokers_waiting_and_unreachable_events() {
     });
     assert!(matches!(
         probe.app.collaboration.manager.join_hold(),
-        Some(crate::collaboration::JoinHold::RoomWaiting { .. })
+        Some(crate::collaboration::JoinHold::WorkspaceWaiting { .. })
     ));
 
     // The workspace is ready: the join goes on, and the line says nothing.
     probe
         .broker
-        .set_room(runtime_collab::WorkspaceStatus::Ready);
+        .set_workspace_status(runtime_collab::WorkspaceStatus::Ready);
     probe.pump_until("the wait to end", |app| {
         app.document_sync_status().is_none()
     });
@@ -183,7 +183,7 @@ fn the_connecting_line_shows_while_the_broker_cannot_be_reached() {
     probe.pump_until("the workspace's wait", |app| {
         app.collaboration.manager.join_hold().is_some()
     });
-    probe.broker.room_unreachable("the broker went away");
+    probe.broker.workspace_unreachable("the broker went away");
     probe.pump_until("the broker unreachable", |app| {
         matches!(
             app.collaboration.manager.join_hold(),

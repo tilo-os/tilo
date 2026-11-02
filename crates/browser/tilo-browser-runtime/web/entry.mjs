@@ -12,7 +12,7 @@
  *    is the person's own desktop and takes no tickets; under a home, a bare
  *    desktop entry reopens the workspace the person last chose instead,
  *    `deps.chosenWorkspace`);
- * 3. gets into the room (`admission.mjs`);
+ * 3. gets into the workspace (`admission.mjs`);
  * 4. mounts the desktop or the one app, and shows the target through the
  *    view door (`open-target.mjs`);
  * 5. hands `location` and `history` to the router.
@@ -25,7 +25,7 @@ import {startRouter} from './router.mjs';
 import {listedAt, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const PRIMARY_RECORD = '@tilo:package-primary';
-/** The mount's record option: `-` is the app's room document, no record
+/** The mount's record option: `-` is the app's workspace document, no record
  * at all is the app's own default. */
 const recordOption = record => (record === undefined ? {} : {record: record || PRIMARY_RECORD});
 
@@ -45,13 +45,13 @@ function aboutLinks(about) {
   return Object.keys(links).length ? links : null;
 }
 
-/** Where a room scope is hosted (`rooms.example`), as the desktop says it
- * ("Hosted by …"); `null` on the person's own desktop. A room on the site the
+/** Where a workspace scope is hosted (`workspaces.example`), as the desktop says it
+ * ("Hosted by …"); `null` on the person's own desktop. A workspace on the site the
  * page was opened from, or on one of its machines (`eu1.tilo.coffee` behind
  * `tilo.coffee`), is hosted by that site: the name people reached it by, not
  * the machine's. Ports are how a machine splits its services, not a name
- * anyone knows a host by, so a room on another port of the page's machine
- * (a local copy's room service beside its web entry) is that site too. */
+ * anyone knows a host by, so a workspace on another port of the page's machine
+ * (a local copy's workspace service beside its web entry) is that site too. */
 export function scopeHost(scope, site = globalThis.location?.host) {
   if (scope.kind !== 'room') return null;
   let url;
@@ -109,35 +109,35 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
 }
 
 /** Send problem reports to the channel the entry's home workspace names,
- * from whichever room the page is in: through the room's own peer where it
+ * from whichever workspace the page is in: through the workspace's own peer where it
  * is the home workspace, else through a peer of the page's in the home
  * workspace (`homePeer()`, resolving to one or `null`), which carries the
  * desktop's reports there. A bridge may mirror that one channel elsewhere,
  * so reports from the person's own desktop or another workspace reach the
  * same people. The desktop does not wait for it: the owner's admission is
  * a round trip of its own, and the desktop takes reports up once it is in. */
-export function configureFeedback(peer, home, admittedRoom = null, {homePeer} = {}) {
+export function configureFeedback(peer, home, admittedWorkspace = null, {homePeer} = {}) {
   const channel = home?.feedback?.channel;
-  if (!peer?.room || typeof channel !== 'string') return;
-  const destination = room => ({room, provider: 'record:so.tilo.chat:', channel});
+  if (!peer?.workspace || typeof channel !== 'string') return;
+  const destination = workspace => ({room: workspace, provider: 'record:so.tilo.chat:', channel});
   const warn = error => console.warn('feedback:', error?.message ?? error);
-  if (listedAt([home], {kind: 'room', host: peer.origin, room: peer.room}, admittedRoom)) {
-    peer.configureFeedback?.(destination(peer.room))?.catch(warn);
+  if (listedAt([home], {kind: 'room', host: peer.origin, room: peer.workspace}, admittedWorkspace)) {
+    peer.configureFeedback?.(destination(peer.workspace))?.catch(warn);
     return;
   }
-  // Another room has no such channel: the home workspace's peer carries them.
+  // Another workspace has no such channel: the home workspace's peer carries them.
   if (typeof homePeer !== 'function' || typeof peer.sendFeedbackThrough !== 'function') return;
   (async () => {
     const carrier = await homePeer();
     if (!carrier) return;
-    if (!carrier.room || typeof carrier.configureFeedback !== 'function') {
+    if (!carrier.workspace || typeof carrier.configureFeedback !== 'function') {
       await carrier.dispose?.();
       return;
     }
     // Named first, so a desktop already waiting takes the startup up the
     // moment the home workspace's owner admits this page.
     peer.sendFeedbackThrough(carrier);
-    await carrier.configureFeedback(destination(carrier.room));
+    await carrier.configureFeedback(destination(carrier.workspace));
   })().catch(warn);
 }
 
@@ -176,15 +176,15 @@ export function homeRoute({location, mode, home = null}) {
 }
 
 /** A bare desktop entry under a web host's home workspace, when the person
- * last chose another of their workspaces (`chosen`, `{origin, room}`):
- * that room's route; `null` otherwise, and always in an embed. */
+ * last chose another of their workspaces (`chosen`, `{origin, workspace}`):
+ * that workspace's route; `null` otherwise, and always in an embed. */
 export function chosenRoute({location, mode, home = null, chosen = null}) {
   const bare = location.hash === '' || location.hash === '#';
   if (!bare || !home || mode !== 'desktop' || !chosen?.room) return null;
   return {mode, target: {scope: {kind: 'room', host: new URL(chosen.origin).origin, room: chosen.room}}};
 }
 
-/** Whether `a` and `b` name the same room (or both the person's own desktop). */
+/** Whether `a` and `b` name the same workspace (or both the person's own desktop). */
 function sameScope(a, b) {
   if (a?.kind !== b?.kind) return false;
   if (a.kind !== 'room') return true;
@@ -193,7 +193,7 @@ function sameScope(a, b) {
 }
 
 /** The route the page was opened with. A bare entry opens the web host's
- * home workspace (its room is learned on admission), or else, on the
+ * home workspace (its workspace is learned on admission), or else, on the
  * desktop, the person's own desktop. */
 export function initialRoute({link, location, mode, home = null}) {
   const toHome = homeRoute({location, mode, home});
@@ -279,7 +279,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     throw error;
   }
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
-  // The page hears which room it is getting into, under which entry, before admission.
+  // The page hears which workspace it is getting into, under which entry, before admission.
   deps.onScope?.({scope: route.target.scope, entry});
   const {peer} = await admit({
     scope: route.target.scope, secrets, tickets: entry.tickets,
@@ -293,10 +293,10 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     },
   });
   if (peer) deps.onAdmitted?.(peer);
-  // A link that names no room is let in through its host's door: the room
+  // A link that names no workspace is let in through its host's door: the workspace
   // the door admits to is that host's listed workspace.
-  const admittedRoom = peer && route.target.scope.kind === 'room' && !route.target.scope.room ? peer.room : null;
-  configureFeedback(peer, entry.home, admittedRoom, {
+  const admittedWorkspace = peer && route.target.scope.kind === 'room' && !route.target.scope.room ? peer.workspace : null;
+  configureFeedback(peer, entry.home, admittedWorkspace, {
     homePeer: entry.home && deps.homePeer
       ? () => deps.homePeer(workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home) : null,
   });
@@ -314,15 +314,15 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   onStep('open');
   const link = await linked;
   if (peer && route.target.scope.kind === 'room' && !route.target.scope.room) {
-    // The home workspace's room is known now: show its canonical link.
-    route = {...route, target: {...route.target, scope: {...route.target.scope, room: peer.room}}};
+    // The home workspace's workspace is known now: show its canonical link.
+    route = {...route, target: {...route.target, scope: {...route.target.scope, room: peer.workspace}}};
     window.history.replaceState(window.history.state, '', link.format(route));
   }
-  // A listed workspace is shown under its listed name, not its room id.
+  // A listed workspace is shown under its listed name, not its workspace id.
   const scope = route.target.scope;
-  const listed = listedAt(workspaces, scope, admittedRoom);
-  // The desktop offers Invite in a room the page can invite to.
-  const invite = peer?.room && deps.onInvite ? {onInvite: deps.onInvite} : {};
+  const listed = listedAt(workspaces, scope, admittedWorkspace);
+  // The desktop offers Invite in a workspace the page can invite to.
+  const invite = peer?.workspace && deps.onInvite ? {onInvite: deps.onInvite} : {};
   const host = scopeHost(scope, window.location?.host);
   // Asked beside the door, not before it (`deps.rendererUnavailable`): a
   // browser that cannot draw opens no window, and the page says what to
@@ -334,7 +334,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
       ...(linkOffer ? {linkOffer} : {}),
-      // The room service's spectator count, for the desktop's "watching".
+      // The workspace service's spectator count, for the desktop's "watching".
       ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
       ...invite, ...diagnostics},
     onStatus: titled(window, diagnostics.onStatus)});
@@ -347,9 +347,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   let router;
   router = startRouter({window, link, initial: route, navigation: shown.navigation,
     show: next => {
-      // Another room is another peer and another desktop (Back or Forward
+      // Another workspace is another peer and another desktop (Back or Forward
       // across a switch of workspace, a hand-edited fragment): load it anew,
-      // never inside the mount of the room in front.
+      // never inside the mount of the workspace in front.
       if (!sameScope(next.target.scope, route.target.scope)) {
         window.location.reload();
         return Promise.resolve();

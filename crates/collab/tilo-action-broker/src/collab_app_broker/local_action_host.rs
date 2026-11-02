@@ -93,7 +93,9 @@ impl AppBrokerState {
         let CallerPrincipal::Person(person) = caller.principal() else {
             return Err("native person required".into());
         };
-        let workspace = caller.room().ok_or("native personal cluster required")?;
+        let workspace = caller
+            .workspace()
+            .ok_or("native personal cluster required")?;
         let certificate = service.certificate(workspace, person)?;
         if super::principal_id_for_root(certificate.user_public_key) != *person {
             return Err("native person certificate mismatch".into());
@@ -133,7 +135,7 @@ impl AppBrokerState {
             let CallerPrincipal::Person(person) = caller.principal() else {
                 return Err(ActionHostError::NotPermitted);
             };
-            let workspace = caller.room().ok_or(ActionHostError::NotPermitted)?;
+            let workspace = caller.workspace().ok_or(ActionHostError::NotPermitted)?;
             let certificate = self
                 .services
                 .local_person
@@ -333,7 +335,7 @@ impl AppBrokerState {
         self.registered_policy_time()?
             .ok_or("original policy clock unavailable")?;
         let workspace = caller
-            .room()
+            .workspace()
             .ok_or("an exact admitted workspace is required")?;
         let admission = self.verify_action_caller(workspace, presentation)?;
         if admission.policy_time.is_none() {
@@ -808,7 +810,7 @@ fn certified_provider(provider: &str) -> bool {
     ) || provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
         || super::launchable::is_launchable_provider(provider)
-        || tilo_actions::remote::workspace_provider_room(provider).is_some()
+        || tilo_actions::remote::provider_workspace(provider).is_some()
 }
 
 #[cfg(test)]
@@ -900,7 +902,7 @@ mod tests {
             .map(|provider| CatalogueProvider {
                 provider: provider.into(),
                 app_id: "test-app".into(),
-                room: "workspace".into(),
+                workspace: "workspace".into(),
                 record_id: String::new(),
                 browsable: true,
             })

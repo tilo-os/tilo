@@ -20,7 +20,7 @@ impl TopBarChrome {
             .then(|| t_args("topbar-waved-at-you", &[("name", notice.from.into())]))
     }
 
-    /// The notice up at `now`, worded to fit `room` px of chip: the
+    /// The notice up at `now`, worded to fit `workspace` px of chip: the
     /// waver's name gives way first, cut short with an ellipsis, so the
     /// words saying what happened always stand whole. `None` when not
     /// even the name's first letter fits beside them.

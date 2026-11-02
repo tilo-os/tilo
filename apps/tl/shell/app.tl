@@ -139,6 +139,8 @@ type Win (origin: session.window) {
     origin_app: Text merge register
     icon: Text merge register
     strip: Text merge register
+    /// Its strip's id, as moving a window there names the strip.
+    strip_key: Text merge register
     workspace: Text merge register
     recency: Int
     focused: Bool
@@ -291,7 +293,7 @@ view bar_part(d: Desk, part: BarPart) {
         clock(d)
     } else if part.slot == .menu {
         ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
-            on press: session.toggle_tilo_menu()
+            on press: session.tilo_menu()
         }
     } else if part.slot == .workspace {
         workspace_menu(d)
@@ -352,7 +354,7 @@ view workspace_menu(d: Desk) {
             }
         }
         ui.MenuItem("New workspace", icon: .plus) {
-            on choose: session.new_workspace(room: .none, name: .none)
+            on choose: session.new_workspace(workspace: .none, name: .none)
         }
         ui.MenuItem("Join a workspace", icon: .users) {
             on choose: session.join_workspace()
@@ -361,7 +363,7 @@ view workspace_menu(d: Desk) {
             on choose: session.workspace_settings()
         }
         ui.MenuItem("Overview", icon: .layout_grid) {
-            on choose: session.toggle_overview()
+            on choose: session.overview()
         }
     }
 }
@@ -378,6 +380,6 @@ view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
     let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
     ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar, count: d.unread) {
-        on press: session.toggle_quick_settings()
+        on press: session.quick_settings()
     }
 }

@@ -408,12 +408,12 @@ async fn the_devices_a_round_asks_are_the_workspaces_own() {
     plane.hold(replica);
 
     assert_eq!(
-        plane.participants(WORKSPACE),
+        plane.participants(WORKSPACE).await,
         vec![other.1.device_public_key],
         "the device that asked and the revoked one are never asked"
     );
     assert!(
-        plane.participants(ELSEWHERE).is_empty(),
+        plane.participants(ELSEWHERE).await.is_empty(),
         "a workspace this device does not hold has nobody to ask"
     );
 }

@@ -82,7 +82,7 @@ impl NativeTaskActionRequirement {
         let doc = peer
             .admitted_workspace()
             .ok_or("tracker action policy unavailable")?;
-        let policy = tilo_desktop_model::projection::room_policy_of(doc, workspace);
+        let policy = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
         self.check_tracker_policy(&policy, workspace, run, now)
     }
 

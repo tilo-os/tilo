@@ -19,7 +19,7 @@ use collab_types::presence::{PointerSpace, PresenceKey};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use tilo_compositor::OutputConfig;
-use tilo_desktop::desktop_actions::CHROME_RESOURCE;
+use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_model::{
     DesktopTree, GroupId, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
     WindowWidth, Workspace, WorkspaceId,
@@ -49,7 +49,7 @@ fn room() -> RoomId {
 fn desk() -> DesktopTree {
     let room = room();
     let id = WorkspaceId::of_room(room);
-    let mut workspace = Workspace::in_room(id, room, "Desk");
+    let mut workspace = Workspace::in_workspace(id, room, "Desk");
     let tab = Tab {
         id: TabId::from(NOTES),
         title: "Notes".to_owned(),

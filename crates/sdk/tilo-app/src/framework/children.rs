@@ -13,12 +13,12 @@
 //! - **One door.** The container is published beside the app's resource
 //!   ([`ui_core::record::children_resource_id`]): every listed child with
 //!   its own actions, carried out on its record, checked against the
-//!   participant's roles in the room as the app's own actions are,
+//!   participant's roles in the workspace as the app's own actions are,
 //!   attributed to whoever invokes them and written into the child's
 //!   history.
 //! - **One lifecycle.** The container's `create` (a child with its first
 //!   fields, under a group, before a sibling), and on each child `delete`
-//!   (to the room's trash: its record and id kept, restorable), `restore`
+//!   (to the workspace's trash: its record and id kept, restorable), `restore`
 //!   and `move` (to another group or place: its reference moves, the child
 //!   and every reference to it stay). The app writes none of these verbs.
 //!
@@ -43,7 +43,7 @@ use ui_core::permissions::{PermissionScope, TreePath};
 use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordOpenError};
 use ui_core::widget::Edits;
 
-use super::chain::{CHAIN_ACTION_TYPE, RoomRecords};
+use super::chain::{CHAIN_ACTION_TYPE, WorkspaceRecords};
 use super::live::Live;
 use super::record::RecordDoor;
 
@@ -54,7 +54,7 @@ pub(crate) const CHILD_ACTION_TYPE: &str = "tilo.app.child-action";
 pub(crate) const LIFECYCLE_TYPE: &str = "tilo.app.child-lifecycle";
 
 /// A listed child: its id, its place in the container and its state as a
-/// read, pending while its record is on its way from the room.
+/// read, pending while its record is on its way from the workspace.
 pub type Listed<C> = (Id, ChildRef, Arriving<Rc<<C as Resource>::State>>);
 
 /// Why a listed child is not held.
@@ -77,10 +77,10 @@ pub trait ChildRecord: Resource<State: tilo_resource::Model + Default> {
     /// The resource whose record lists these children.
     type Parent: Resource;
 
-    /// The record that lists them: the app's own record in its room.
+    /// The record that lists them: the app's own record in its workspace.
     #[must_use]
     fn parent_record() -> RecordId {
-        RecordId::room_default()
+        RecordId::workspace_default()
     }
 
     /// The container of the parent that lists them.
@@ -235,13 +235,13 @@ type Parent<C> = Rc<dyn Fn() -> Rc<<<C as ChildRecord>::Parent as Resource>::Sta
 /// The children of one kind a container lists, held for a window. See the
 /// [module docs](self).
 pub(crate) struct ChildrenState<C: ChildRecord> {
-    room: RoomRecords,
+    workspace: WorkspaceRecords,
     parent: Parent<C>,
     id: String,
     kind: RecordKind,
     held: RefCell<BTreeMap<Id, Live<C>>>,
     /// Each listed child as a read: pending while its record is on its way
-    /// from the room, its state once it is here.
+    /// from the workspace, its state once it is here.
     arrivals: RefCell<BTreeMap<Id, Arriving<Rc<C::State>>>>,
     /// Why a listed child that is here does not read, by id.
     unreadable: RefCell<BTreeMap<Id, String>>,
@@ -257,7 +257,7 @@ pub(crate) struct ChildrenState<C: ChildRecord> {
 }
 
 impl<C: ChildRecord> ChildrenState<C> {
-    pub(crate) fn open(room: RoomRecords, parent: Parent<C>) -> Option<Self> {
+    pub(crate) fn open(workspace: WorkspaceRecords, parent: Parent<C>) -> Option<Self> {
         let mut doc = ui_core::automerge::AutoCommit::new();
         C::initialize(&mut doc)
             .map_err(|error| tracing::warn!(kind = C::KIND, %error, "child has no genesis"))
@@ -268,7 +268,7 @@ impl<C: ChildRecord> ChildrenState<C> {
             .state()
             .clone();
         let state = Self {
-            room,
+            workspace,
             parent,
             id: ui_core::record::children_resource_id(&C::parent_record(), C::KIND),
             kind: RecordKind::new(C::KIND),
@@ -317,7 +317,7 @@ impl<C: ChildRecord> ChildrenState<C> {
 
     /// Every child outside the trash with its state as a read, in the
     /// container's order: pending while its record is on its way from the
-    /// room.
+    /// workspace.
     pub(crate) fn children(&self) -> Vec<Listed<C>> {
         self.refresh();
         let arrivals = self.arrivals.borrow();
@@ -333,7 +333,7 @@ impl<C: ChildRecord> ChildrenState<C> {
 
     /// Bring each listed child's read to where its record stands: its
     /// state once it is here, why it does not read, or on its way from the
-    /// room. Children no longer listed are let go.
+    /// workspace. Children no longer listed are let go.
     fn settle(&self) {
         let listed = self.listed();
         let held = self.held.borrow();
@@ -390,7 +390,7 @@ impl<C: ChildRecord> ChildrenState<C> {
             let Ok(record) = Self::record(id) else {
                 continue;
             };
-            match self.room.store.read(&record, |doc| live.sync(doc)) {
+            match self.workspace.store.read(&record, |doc| live.sync(doc)) {
                 Some(Ok(true)) => moved = true,
                 Some(Err(error)) => {
                     tracing::warn!(kind = C::KIND, %id, %error, "child unreadable");
@@ -413,7 +413,7 @@ impl<C: ChildRecord> ChildrenState<C> {
                     self.unreadable.borrow_mut().remove(&id);
                     moved = true;
                 }
-                // Not here yet: it is on its way from the room.
+                // Not here yet: it is on its way from the workspace.
                 Err(Unheld::Missing) => {}
                 Err(Unheld::Unreadable(reason)) => {
                     self.unreadable.borrow_mut().insert(id, reason);
@@ -428,17 +428,17 @@ impl<C: ChildRecord> ChildrenState<C> {
     }
 
     /// Hold child `id`: read its record from this device, which asks the
-    /// room for it when it has not got it yet.
+    /// workspace for it when it has not got it yet.
     fn hold(&self, id: &Id) -> Result<(), Unheld> {
         if self.held.borrow().contains_key(id) {
             return Ok(());
         }
         let checkout = RecordCheckout::new(Self::record(id)?, self.kind.clone());
-        if !self.room.store.is_ready(&checkout.id) {
-            if !self.room.store.takes_writes() {
+        if !self.workspace.store.is_ready(&checkout.id) {
+            if !self.workspace.store.takes_writes() {
                 return Err(Unheld::Missing);
             }
-            match self.room.store.try_open_record(&checkout) {
+            match self.workspace.store.try_open_record(&checkout) {
                 Ok(_) => {}
                 Err(RecordOpenError::MissingRecord | RecordOpenError::Busy) => {
                     return Err(Unheld::Missing);
@@ -452,22 +452,22 @@ impl<C: ChildRecord> ChildrenState<C> {
     fn follow(&self, id: &Id) -> Result<(), String> {
         let record = Self::record(id)?;
         let older = self
-            .room
+            .workspace
             .store
             .read(&record, tilo_resource::evolution::needs_migrate::<C>)
             .ok_or("the child is not open here")?;
         if older {
-            if !self.room.store.takes_writes() {
+            if !self.workspace.store.takes_writes() {
                 return Err("migrated once the store takes writes".into());
             }
-            self.room
+            self.workspace
                 .store
                 .with(&record, tilo_resource::evolution::migrate::<C>)
                 .ok_or("the child is not open here")?
                 .map_err(|error| error.to_string())?;
         }
         let reader = self
-            .room
+            .workspace
             .store
             .read(&record, Reader::<C>::read)
             .ok_or("the child is not open here")?
@@ -480,22 +480,22 @@ impl<C: ChildRecord> ChildrenState<C> {
     /// Make child `id`'s record with the child type's genesis.
     fn start(&self, id: &Id) -> Result<(), String> {
         let checkout = RecordCheckout::new(Self::record(id)?, self.kind.clone());
-        if !self.room.store.is_ready(&checkout.id) {
+        if !self.workspace.store.is_ready(&checkout.id) {
             let initialize = |doc: &mut ui_core::automerge::AutoCommit| {
                 C::initialize(doc).map_err(|error| error.to_string())
             };
-            match self.room.store.reserve_record(&checkout) {
+            match self.workspace.store.reserve_record(&checkout) {
                 Ok(mut reservation) => reservation
                     .initialize(initialize)
                     .map_err(|error| error.to_string())?,
                 // A store that keeps no canonical records (a test's)
                 // creates it the way it creates every record.
                 Err(RecordOpenError::IdentityMismatch) => {
-                    self.room
+                    self.workspace
                         .store
                         .create_record(&checkout)
                         .map_err(|error| error.to_string())?;
-                    self.room
+                    self.workspace
                         .store
                         .with(&checkout.id, |doc| {
                             initialize(doc)?;
@@ -511,21 +511,24 @@ impl<C: ChildRecord> ChildrenState<C> {
     }
 
     /// Whether `invoker` may take a step `kind` on `verb` of this
-    /// container, as the room's roles say.
+    /// container, as the workspace's roles say.
     fn may(&self, verb: &str, kind: tilo_actions::ActionKind) -> bool {
-        self.room.permissions.as_ref().is_none_or(|permissions| {
-            permissions.check(&PermissionScope::Action {
-                node: tilo_actions::action_node(
-                    &TreePath::root(),
-                    self.room.app_id,
-                    C::KIND,
-                    &self.id,
-                    None,
-                    verb,
-                ),
-                kind,
+        self.workspace
+            .permissions
+            .as_ref()
+            .is_none_or(|permissions| {
+                permissions.check(&PermissionScope::Action {
+                    node: tilo_actions::action_node(
+                        &TreePath::root(),
+                        self.workspace.app_id,
+                        C::KIND,
+                        &self.id,
+                        None,
+                        verb,
+                    ),
+                    kind,
+                })
             })
-        })
     }
 
     /// Write `edits` into the parent, as `invoker`, recorded in its
@@ -553,10 +556,10 @@ impl<C: ChildRecord> ChildrenState<C> {
             }
             let encoded = tilo_resource::encode::<C::Parent>(&action)?;
             let context = ActionContext::for_resource(&self.id, C::KIND, C::LABEL)
-                .with_app(self.room.app_id, self.room.app_title)
+                .with_app(self.workspace.app_id, self.workspace.app_title)
                 .with_invoker(invoker.clone())
                 .with_change(tilo_actions::Action::change_kind(&action));
-            self.room
+            self.workspace
                 .store
                 .with_history(&record, |doc, history| {
                     let writer = ui_core::bound_dispatch::document_writer(&invoker.actor, doc);
@@ -575,7 +578,7 @@ impl<C: ChildRecord> ChildrenState<C> {
                 .ok_or_else(|| {
                     ActionError::Refused(format!("the record listing {verb} is not open here"))
                 })??;
-            if let Err(error) = self.room.store.schedule_committed_history(&record) {
+            if let Err(error) = self.workspace.store.schedule_committed_history(&record) {
                 tracing::error!(%error, "an edited child record could not be saved");
             }
         }
@@ -800,7 +803,7 @@ impl<C: ChildRecord> ChildrenState<C> {
     }
 
     /// Apply `action`, one of child `child`'s own, for `invoker`: checked
-    /// against what they may do in the room, attributed to them and
+    /// against what they may do in the workspace, attributed to them and
     /// written into the child's history.
     ///
     /// # Errors
@@ -812,9 +815,9 @@ impl<C: ChildRecord> ChildrenState<C> {
         invoker: &ActionInvoker,
     ) -> Result<Vec<String>, ActionError> {
         let need = tilo_resource::need_of::<C>(action);
-        if let Some(permissions) = &self.room.permissions {
+        if let Some(permissions) = &self.workspace.permissions {
             let node = TreePath::root()
-                .app(self.room.app_id)
+                .app(self.workspace.app_id)
                 .kind(C::KIND)
                 .resource(self.id.clone())
                 .field(need.field.as_deref().unwrap_or_default());
@@ -845,12 +848,12 @@ impl<C: ChildRecord> ChildrenState<C> {
     ) -> Result<Vec<String>, ActionError> {
         let encoded = tilo_resource::encode::<C>(action)?;
         let context = ActionContext::for_resource(child_resource_id::<C>(child), C::KIND, C::LABEL)
-            .with_app(self.room.app_id, self.room.app_title)
+            .with_app(self.workspace.app_id, self.workspace.app_title)
             .with_invoker(invoker.clone())
             .with_change(tilo_actions::Action::change_kind(action));
         let record = Self::record(child).map_err(ActionError::Refused)?;
         let created = self
-            .room
+            .workspace
             .store
             .with_history(&record, |doc, history| {
                 let before = doc.get_heads();
@@ -870,7 +873,7 @@ impl<C: ChildRecord> ChildrenState<C> {
                 applied
             })
             .ok_or_else(|| ActionError::Refused("the child is not open here".into()))??;
-        if let Err(error) = self.room.store.schedule_committed_history(&record) {
+        if let Err(error) = self.workspace.store.schedule_committed_history(&record) {
             tracing::error!(%error, "a created child record could not be saved");
         }
         self.refresh();
@@ -1239,7 +1242,7 @@ impl<C: ChildRecord> Children<C> {
     }
 
     /// Every child outside the trash, with its place and its state as a
-    /// read, in order: a child whose record is on its way from the room is
+    /// read, in order: a child whose record is on its way from the workspace is
     /// pending. Show it with [`ViewCx::arriving`](super::ViewCx::arriving).
     #[must_use]
     pub fn children(&self) -> Vec<Listed<C>> {
@@ -1277,7 +1280,7 @@ impl<C: ChildRecord> Children<C> {
         })
     }
 
-    /// Put child `id` in the room's trash, as the window's person.
+    /// Put child `id` in the workspace's trash, as the window's person.
     ///
     /// # Errors
     /// As the door refuses `delete`.
@@ -1380,14 +1383,14 @@ impl<C: ChildRecord> Children<C> {
         me: &str,
         parent: impl Fn() -> Rc<<C::Parent as Resource>::State> + 'static,
     ) -> Option<Self> {
-        let room = RoomRecords {
+        let workspace = WorkspaceRecords {
             store,
             me: me.to_owned(),
             permissions: None,
             app_id,
             app_title: app_id,
         };
-        let state = Rc::new(ChildrenState::<C>::open(room, Rc::new(parent))?);
+        let state = Rc::new(ChildrenState::<C>::open(workspace, Rc::new(parent))?);
         Some(Self::new(state, me.to_owned()))
     }
 }
@@ -1406,12 +1409,12 @@ mod tests {
     use ui_core::record::RecordStore;
 
     #[derive(Model, Default, Debug, Clone, PartialEq)]
-    pub struct Room {
+    pub struct Workspace {
         pub entries: Container,
     }
 
-    #[resource(kind = "test.room", label = "Room")]
-    impl Room {
+    #[resource(kind = "test.workspace", label = "Workspace")]
+    impl Workspace {
         /// Rename nothing.
         #[action]
         #[expect(
@@ -1439,8 +1442,8 @@ mod tests {
     }
 
     impl ChildRecord for Topic {
-        type Parent = Room;
-        fn container(parent: &Room) -> &Container {
+        type Parent = Workspace;
+        fn container(parent: &Workspace) -> &Container {
             &parent.entries
         }
         fn container_path() -> Vec<Segment> {
@@ -1448,22 +1451,25 @@ mod tests {
         }
     }
 
-    /// A room's record in a store of its own, and its topics held over it.
-    fn room() -> (RecordStore, Children<Topic>) {
+    /// A workspace's record in a store of its own, and its topics held over it.
+    fn workspace() -> (RecordStore, Children<Topic>) {
         let store = RecordStore::in_memory();
-        let parent = RecordCheckout::new(RecordId::room_default(), RecordKind::new(Room::KIND));
+        let parent = RecordCheckout::new(
+            RecordId::workspace_default(),
+            RecordKind::new(Workspace::KIND),
+        );
         store.create_record(&parent).unwrap();
         store
             .with(&parent.id, |doc| {
-                Room::initialize(doc).unwrap();
+                Workspace::initialize(doc).unwrap();
                 doc.commit();
             })
             .unwrap();
         let read = store.clone();
         let children =
             Children::<Topic>::detached_in(store.clone(), "so.tilo.test", "ana", move || {
-                read.read(&RecordId::room_default(), |doc| {
-                    Reader::<Room>::read(doc).unwrap().state().clone()
+                read.read(&RecordId::workspace_default(), |doc| {
+                    Reader::<Workspace>::read(doc).unwrap().state().clone()
                 })
                 .unwrap()
             })
@@ -1489,7 +1495,7 @@ mod tests {
 
     #[test]
     fn a_child_is_a_record_of_its_own_and_moving_it_keeps_its_identity() {
-        let (store, children) = room();
+        let (store, children) = workspace();
         let design = children
             .create(serde_json::json!({ "name": "design" }), None, None)
             .unwrap();
@@ -1499,7 +1505,7 @@ mod tests {
         let general = children
             .create(serde_json::json!({ "name": "general" }), None, None)
             .unwrap();
-        let record = RecordId::room_default().child(ui.as_str()).unwrap();
+        let record = RecordId::workspace_default().child(ui.as_str()).unwrap();
         assert_eq!(
             store.read(&record, |doc| Reader::<Topic>::read(doc)
                 .unwrap()
@@ -1545,7 +1551,7 @@ mod tests {
 
     #[test]
     fn delete_puts_a_child_in_the_trash_whole_and_restore_brings_it_back() {
-        let (store, children) = room();
+        let (store, children) = workspace();
         let design = children
             .create(
                 serde_json::json!({ "name": "design", "note": "kept" }),
@@ -1561,7 +1567,9 @@ mod tests {
             order(&children),
             [("ui".to_owned(), Some("design".to_owned()))]
         );
-        let record = RecordId::room_default().child(design.as_str()).unwrap();
+        let record = RecordId::workspace_default()
+            .child(design.as_str())
+            .unwrap();
         assert_eq!(
             store.read(&record, |doc| Reader::<Topic>::read(doc)
                 .unwrap()
@@ -1594,7 +1602,7 @@ mod tests {
 
     #[test]
     fn the_door_offers_one_lifecycle_on_every_child_and_carries_each_childs_own_actions() {
-        let (_, children) = room();
+        let (_, children) = workspace();
         let agent = ActionInvoker::actor("agent-1");
         let invoke =
             |resource: &tilo_actions::ResourceSpec, action: &str, args: serde_json::Value| {
@@ -1660,7 +1668,7 @@ mod tests {
         .unwrap();
     }
 
-    /// A device's store of room `lounge`'s records, kept as it keeps them:
+    /// A device's store of workspace `lounge`'s records, kept as it keeps them:
     /// a record it has not got reads as missing, not as an error.
     fn device() -> RecordStore {
         crate::record::RecordOwners::with_store(Rc::new(crate::feedback::MemoryStore::new()))
@@ -1668,12 +1676,12 @@ mod tests {
             .unwrap()
     }
 
-    /// The children of the room `store` holds, as `author` sees them.
+    /// The children of the workspace `store` holds, as `author` sees them.
     fn children_of(store: &RecordStore) -> Children<Topic> {
         let read = store.clone();
         Children::<Topic>::detached_in(store.clone(), "so.tilo.test", "ana", move || {
-            read.read(&RecordId::room_default(), |doc| {
-                Reader::<Room>::read(doc).unwrap().state().clone()
+            read.read(&RecordId::workspace_default(), |doc| {
+                Reader::<Workspace>::read(doc).unwrap().state().clone()
             })
             .unwrap()
         })
@@ -1683,19 +1691,27 @@ mod tests {
     #[test]
     fn a_child_whose_record_is_on_its_way_reads_pending_until_it_arrives() {
         let here = device();
-        let parent = RecordCheckout::new(RecordId::room_default(), RecordKind::new(Room::KIND));
+        let parent = RecordCheckout::new(
+            RecordId::workspace_default(),
+            RecordKind::new(Workspace::KIND),
+        );
         here.create_record(&parent).unwrap();
         here.with(&parent.id, |doc| {
-            Room::initialize(doc).unwrap();
+            Workspace::initialize(doc).unwrap();
             doc.commit();
         })
         .unwrap();
         let design = children_of(&here)
             .create(serde_json::json!({ "name": "design" }), None, None)
             .unwrap();
-        // Another device has the room's listing, not yet the child's record.
+        // Another device has the workspace's listing, not yet the child's record.
         let there = device();
-        copy(&here, &there, &RecordId::room_default(), Room::KIND);
+        copy(
+            &here,
+            &there,
+            &RecordId::workspace_default(),
+            Workspace::KIND,
+        );
         let theirs = children_of(&there);
         let listed = theirs.children();
         let [(id, _, arriving)] = listed.as_slice() else {
@@ -1712,7 +1728,9 @@ mod tests {
         copy(
             &here,
             &there,
-            &RecordId::room_default().child(design.as_str()).unwrap(),
+            &RecordId::workspace_default()
+                .child(design.as_str())
+                .unwrap(),
             Topic::KIND,
         );
         let _ = theirs.revision();

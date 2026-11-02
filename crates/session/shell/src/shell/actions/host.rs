@@ -306,7 +306,7 @@ impl ShellActionsHost {
                 &DEFINITION,
                 room,
                 0,
-                ui::record::RecordId::room_default(),
+                ui::record::RecordId::workspace_default(),
                 |context| context.lend(lent),
             )
             .map_err(|error| match error {

@@ -1,5 +1,5 @@
 //! An app's view of one record, attached and never drawn: how a host
-//! without a screen — an agent host, a relay, a room service — performs
+//! without a screen — an agent host, a relay, a workspace service — performs
 //! actions.
 //!
 //! Nothing is drawn if no one is looking, but no action is performed out of
@@ -94,17 +94,17 @@ pub struct AttachedView {
     /// Each record the view holds beside its own (the parts of a chain), by
     /// id: what was taken or merged of it so far.
     beside: std::collections::HashMap<ui_core::record::RecordId, Beside>,
-    /// Where the view keeps its records, and the room: what a record
+    /// Where the view keeps its records, and the workspace: what a record
     /// beside its own that a peer started is kept in before it opens.
     cache: PortableStorage,
-    room: String,
+    workspace: String,
 }
 
 /// An [`AttachedView`] about to open ([`AttachedView::opening`]): whom it
 /// is for, what they may do, and what the host lends the view.
 pub struct OpenView<'a> {
     definition: &'static ApplicationDefinition,
-    room: &'a str,
+    workspace: &'a str,
     checkout: RecordCheckout,
     document: Vec<u8>,
     invoker: tilo_actions::ActionInvoker,
@@ -136,7 +136,7 @@ impl OpenView<'_> {
         self
     }
 
-    /// Lend the view the room's content store, as a host lends a window
+    /// Lend the view the workspace's content store, as a host lends a window
     /// its: the bytes a content hash names (an image another app made).
     #[must_use]
     pub fn lending(mut self, store: tilo_content::ContentStore) -> Self {
@@ -155,7 +155,7 @@ impl OpenView<'_> {
 
 impl AttachedView {
     /// Mount `definition`'s view over the record `document` holds in
-    /// `room`, for `me` with `permissions`. `created` when `me` just created
+    /// `workspace`, for `me` with `permissions`. `created` when `me` just created
     /// the record, so the first [`Self::take_changes`] sends it whole.
     ///
     /// # Errors
@@ -163,7 +163,7 @@ impl AttachedView {
     /// over it.
     pub fn open(
         definition: &'static ApplicationDefinition,
-        room: &str,
+        workspace: &str,
         checkout: RecordCheckout,
         document: Vec<u8>,
         me: &str,
@@ -172,7 +172,7 @@ impl AttachedView {
     ) -> Result<Self, String> {
         Self::open_for(
             definition,
-            room,
+            workspace,
             checkout,
             document,
             &tilo_actions::ActionInvoker::actor(me),
@@ -189,33 +189,33 @@ impl AttachedView {
     /// As [`Self::open`].
     pub fn open_for(
         definition: &'static ApplicationDefinition,
-        room: &str,
+        workspace: &str,
         checkout: RecordCheckout,
         document: Vec<u8>,
         invoker: &tilo_actions::ActionInvoker,
         permissions: PermissionContext,
         created: bool,
     ) -> Result<Self, String> {
-        Self::opening(definition, room, checkout, document)
+        Self::opening(definition, workspace, checkout, document)
             .for_invoker(invoker)
             .with_permissions(permissions)
             .created(created)
             .open()
     }
 
-    /// The view of `definition` over the record `document` holds in `room`,
+    /// The view of `definition` over the record `document` holds in `workspace`,
     /// to open once said for whom, with what and what the host lends it
     /// ([`OpenView`]).
     #[must_use]
     pub fn opening<'a>(
         definition: &'static ApplicationDefinition,
-        room: &'a str,
+        workspace: &'a str,
         checkout: RecordCheckout,
         document: Vec<u8>,
     ) -> OpenView<'a> {
         OpenView {
             definition,
-            room,
+            workspace,
             checkout,
             document,
             invoker: tilo_actions::ActionInvoker::actor("owner"),
@@ -228,7 +228,7 @@ impl AttachedView {
     fn open_view(view: OpenView<'_>) -> Result<Self, String> {
         let OpenView {
             definition,
-            room,
+            workspace,
             checkout,
             document,
             invoker,
@@ -243,22 +243,23 @@ impl AttachedView {
         let key = if checkout.id.is_package_primary() {
             StorageKey::Primary {
                 package: definition.app_id().into(),
-                workspace: room.to_owned(),
+                workspace: workspace.to_owned(),
             }
         } else {
             StorageKey::Record {
                 package: definition.app_id().into(),
-                workspace: room.to_owned(),
+                workspace: workspace.to_owned(),
                 record: checkout.id.as_str().into(),
             }
         };
         cache.hydrate(key, document, Some(me.as_bytes().to_vec()))?;
         let cache_kept = cache.clone();
         let records = RecordOwners::portable(cache.clone())
-            .open(definition.app_id(), room)
+            .open(definition.app_id(), workspace)
             .map_err(|error| error.to_string())?;
-        let views =
-            Rc::new(InstanceViewStore::portable(cache, room).map_err(|error| error.to_string())?);
+        let views = Rc::new(
+            InstanceViewStore::portable(cache, workspace).map_err(|error| error.to_string())?,
+        );
         let permissions = SharedPermissions::new(permissions);
         let target = LaunchTarget::Record {
             checkout: checkout.clone(),
@@ -303,7 +304,7 @@ impl AttachedView {
         // A record joined starts where it was handed over: the only write
         // its view may make on open is a storage migration, which is sent
         // with the participant's first changes, as a window's is, so the
-        // room and its other holders take it rather than diverge.
+        // workspace and its other holders take it rather than diverge.
         let mut frontier = DocumentFrontier::default();
         let start = joined_at
             .or_else(|| records.with(&checkout.id, ui_core::automerge::AutoCommit::get_heads));
@@ -325,7 +326,7 @@ impl AttachedView {
             unsent: Vec::new(),
             beside: std::collections::HashMap::new(),
             cache: cache_kept,
-            room: room.to_owned(),
+            workspace: workspace.to_owned(),
         })
     }
 
@@ -826,7 +827,7 @@ impl AttachedView {
             self.cache.hydrate(
                 StorageKey::Record {
                     package: self.definition.app_id().into(),
-                    workspace: self.room.clone(),
+                    workspace: self.workspace.clone(),
                     record: record.as_str().into(),
                 },
                 bytes.clone(),

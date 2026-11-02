@@ -144,7 +144,7 @@ if cat "$root/usr/lib/systemd/system/fs.service" "$root"/usr/lib/systemd/system/
     | grep -Eq '^(PrivateIPC|PrivateTmp|PrivateDevices|PrivateMounts|PrivateUsers|ProtectSystem|ProtectHome|ProtectKernelTunables|ProtectKernelModules|ProtectKernelLogs|ProtectControlGroups|ProtectProc|ReadOnlyPaths|ReadWritePaths|InaccessiblePaths|TemporaryFileSystem|BindPaths|BindReadOnlyPaths|MountFlags)='; then
   die "fs.service gets a private mount namespace, so /var/workspace would never reach the host"
 fi
-# The room store volume: prepared before the daemon, which serves FUSE unless
+# The store volume: prepared before the daemon, which serves FUSE unless
 # the preparation announced a mounted store.
 require_exec /usr/libexec/tilo-store-volume
 require_file /usr/lib/systemd/system/tilo-store-volume.service

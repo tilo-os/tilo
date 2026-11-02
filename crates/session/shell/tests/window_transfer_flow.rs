@@ -76,7 +76,7 @@ impl TransferLauncher for FakeLauncher {
 
 fn profile_root(data: &Path, room: RoomId) -> PathBuf {
     let room = room.to_string();
-    launcher::appdir::host_app_dir(data, &launcher::appdir::room_slug(Some(&room)), APP)
+    launcher::appdir::host_app_dir(data, &launcher::appdir::workspace_slug(Some(&room)), APP)
         .join(".local/share")
 }
 

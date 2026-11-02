@@ -1610,8 +1610,8 @@ impl crate::TileSource for PeerTiles {
         self.inner.window_record(tab)
     }
 
-    fn workspace_room(&self) -> Option<String> {
-        self.inner.workspace_room()
+    fn workspace_id(&self) -> Option<String> {
+        self.inner.workspace_id()
     }
 
     fn draws_embeds(&self) -> bool {

@@ -175,7 +175,7 @@ COPY os/containers/tilo-agent-host/tilo-agent-mcp /usr/bin/tilo-agent-mcp
 RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-agent-mcp \
     && /usr/bin/busybox ln -s ../libexec/tilo/tilo-enroll /usr/bin/tilo-enroll
 
-# Runtime profile (identity, sockets, joined rooms) and MCP token dir.
+# Runtime profile (identity, sockets, joined workspaces) and MCP token dir.
 VOLUME ["/var/lib/tilo-runtime", "/run/tilo"]
 
 # Loopback MCP HTTP (Streamable). Token required on every listen address.

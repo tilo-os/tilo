@@ -22,8 +22,8 @@ for the infra repository) applies what its main branch pins.
           says `rollout = false`, or with --dry-run, it stops before the
           commit and prints what it would do.
 
-All services move together, from one commit: the web client and the room
-protocol change together, so they are never pinned from different revisions.
+All services a target names move together, from one commit, so none of them is
+ever pinned from a revision the others did not run.
 A service whose build is the one it runs already keeps its pin. A revision
 that cannot be observed is a failure, not a skip.
 
@@ -101,8 +101,8 @@ class Service:
     manifest: str
     health: str
     platform: str = DEFAULT_PLATFORM
-    # Fields its health URL must answer with besides the revision (a room service's
-    # `relay = "up"`): a service can answer while what it serves is down.
+    # Fields its health URL must answer with besides the revision (`relay = "up"`):
+    # a service can answer while what it serves is down.
     expect: tuple[tuple[str, str], ...] = ()
 
     @property

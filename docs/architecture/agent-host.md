@@ -10,7 +10,7 @@ OS image.
 |---|---|---|
 | **Relay / headless store-and-forward** | Authenticated Iroh workspace host under the user's identity | `tilo-relay` (`os/containers/tilo-relay/`) |
 | **Home server / full always-on peer** | Same image + Compose: device cert with host capability, full file replica, LAN pair from Settings | `tilo-relay` + `fs replica` |
-| **Agent on an existing OS** | Process on a foreign host that acts in rooms via resources/actions (MCP), using a certified device | `tilo-runtime` MCP beside a local enrolled relay |
+| **Agent on an existing OS** | Process on a foreign host that acts in workspaces via resources/actions (MCP), using a certified device | `tilo-runtime` MCP beside a local enrolled relay |
 
 The agent is **not** a separate cloud Tilo API and **never** receives the human
 root private key (`user-identity/privkey.bin`). Enrollment mints a device key
@@ -61,7 +61,7 @@ Summary:
    }
    ```
 
-6. Join a room invite when needed:
+6. Join a workspace invite when needed:
    `tilo-runtime --profile /absolute/path/to/agent-profile --join '<invitation>'`
 
 ## What this is not

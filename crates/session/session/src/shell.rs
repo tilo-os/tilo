@@ -571,6 +571,19 @@ fn typed(value: &str, ty: Option<tilo_actions::params::ParamType>) -> Value {
     }
 }
 
+/// `host`, the desktop's bar, as the desk stands under `layer`: the shell's whole screen draws
+/// its own bar, so the desktop's steps aside ([`Aside`]), and still answers its chords.
+pub(crate) fn bar_under(
+    layer: Option<ShellLayer>,
+    host: impl SurfaceHost + 'static,
+) -> Box<dyn SurfaceHost> {
+    if layer == Some(ShellLayer::Screen) {
+        Box::new(Aside(host))
+    } else {
+        Box::new(host)
+    }
+}
+
 /// A surface of the session's own the shell's whole screen stands in for: the desktop's bar,
 /// whose band the screen's bar takes. It draws nothing and takes no pointer, and still answers
 /// the chords it answers anywhere, so a key the person presses does what it did.

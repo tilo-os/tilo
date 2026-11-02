@@ -1,4 +1,4 @@
-//! Which records a device is sent when it joins a room, and which it asks
+//! Which records a device is sent when it joins a workspace, and which it asks
 //! for when it needs them.
 //!
 //! Most records are *eager*: a joining device is replayed them and follows
@@ -23,7 +23,7 @@ const PART_ROLE: &str = "part.";
 /// Role of a record declared on-demand, in `derived:on-demand@<base>`.
 const ON_DEMAND_ROLE: &str = "on-demand";
 
-/// How a record reaches the devices of a room.
+/// How a record reaches the devices of a workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordSync<'a> {
     /// Replayed to every joining device and followed live.

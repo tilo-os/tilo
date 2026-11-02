@@ -42,7 +42,7 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   every app publishes. Invoking "New note", "New
   chat" and "New item" each adds an entry to that app's history.
 - **hosted-here**: one PNG of the session per app as first opened, with that
-  app in front (`first-*.png`). The session's own workspace is a room this
+  app in front (`first-*.png`). The session's own workspace is one this
   device governs and hosts itself, so its apps wait on no other host
   (`workspace_sync` in `state-dump` is `null`, or `synced` with this device's own
   workspace host): each shows its own state at once, as native Notes does.
@@ -53,7 +53,7 @@ Today. The session installs them (`--install-tapp`) beside native Notes
 - **activation**: "Show this window" answers for tilolang Notes exactly as it
   does for native Notes.
 - **read**: the door's `read` of tilolang Notes (what `tilo_read` calls) lists
-  the room's records with their ids and kinds; a read of the notebook lists the
+  the workspace's records with their ids and kinds; a read of the notebook lists the
   note "New note" made, by the id a read takes.
 - **idle**: each app left untouched for 10 s, native Notes among them. An app
   that commits no frame is settled, and every thread of it sleeps: the check

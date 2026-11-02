@@ -39,7 +39,7 @@ use tilo_relay_protocol::voice::{
 use tilo_user_identity::DeviceCert;
 use tokio::sync::{broadcast, mpsc, watch};
 
-use super::{discord, room_record};
+use super::{discord, workspace_record};
 use crate::rooms::Rooms;
 
 /// The service a bridged participant is reached through.
@@ -551,7 +551,7 @@ impl<C: CallLane> VoiceBridge<C> {
 
     /// The guild record as the room holds it now.
     async fn guild(&self) -> Option<::discord::Guild> {
-        let record = room_record(&self.catalogue, discord::APP);
+        let record = workspace_record(&self.catalogue, discord::APP);
         let saved = self
             .rooms
             .record_document(&self.room, discord::APP, &record)
@@ -643,7 +643,7 @@ impl<C: CallLane> VoiceBridge<C> {
 
     /// The room's Chat as the room holds it now.
     async fn chat(&self) -> Option<<::chat::Chat as tilo_resource::Resource>::State> {
-        let record = room_record(&self.catalogue, CHAT);
+        let record = workspace_record(&self.catalogue, CHAT);
         let saved = self
             .rooms
             .record_document(&self.room, CHAT, &record)
@@ -698,7 +698,7 @@ impl<C: CallLane> VoiceBridge<C> {
         let owner = hex::encode(self.host.user_public_key);
         let invoke =
             ::discord::Guild::REPORT_VOICE.with(::discord::record::guild::ReportVoice { problem });
-        let record = room_record(&self.catalogue, discord::APP);
+        let record = workspace_record(&self.catalogue, discord::APP);
         if let Err(error) = self
             .rooms
             .author_application(
@@ -734,7 +734,7 @@ impl<C: CallLane> VoiceBridge<C> {
         }
         let open = CallOperation::Open {
             app_id: CHAT.to_owned(),
-            record_id: room_record(&self.catalogue, CHAT),
+            record_id: workspace_record(&self.catalogue, CHAT),
             channel_id: pair.tilo.clone(),
         };
         match self.rooms.voice_call_as(&self.room, &self.bot, &open).await {

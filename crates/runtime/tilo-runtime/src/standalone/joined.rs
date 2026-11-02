@@ -251,7 +251,7 @@ impl Joined {
                 .person;
             let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
             let mut workspace =
-                Workspace::in_room(WorkspaceId(view.workspace_id()), workspace, String::new());
+                Workspace::in_workspace(WorkspaceId(view.workspace_id()), workspace, String::new());
             tilo_peer_state::workspace::adopt_workspace(&mut workspace, document, &[]);
             workspace.sandbox = view.peer().governance().governed_sandbox()?;
             Ok((workspace, principal))

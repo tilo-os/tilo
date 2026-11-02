@@ -1254,7 +1254,7 @@ mod audience_tests {
         let declarations = ChatEffect::declarations();
         let for_people: Vec<&str> = declarations
             .iter()
-            .filter(|decl| decl.spec(ChatEffect::OPERATION).reaches_people())
+            .filter(|decl| decl.spec_of::<ChatEffect>().reaches_people())
             .map(|decl| decl.id)
             .collect();
         for agent_only in [
@@ -1271,7 +1271,7 @@ mod audience_tests {
         assert!(
             declarations
                 .iter()
-                .all(|decl| decl.spec(ChatEffect::OPERATION).reaches_agents()),
+                .all(|decl| decl.spec_of::<ChatEffect>().reaches_agents()),
             "every Chat effect stays offered to agents"
         );
     }

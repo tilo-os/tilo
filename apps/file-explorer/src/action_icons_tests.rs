@@ -1,6 +1,6 @@
 //! Files' actions wear pictures of their own in every list of actions.
 
-use ui::tilo_resource::{Effect as _, Resource as _, declaration_spec};
+use ui::tilo_resource::{Effect as _, EffectDecl, Resource as _, declaration_spec};
 
 fn actions() -> Vec<ui::tilo_actions::ActionSpec> {
     let mut actions: Vec<ui::tilo_actions::ActionSpec> = Vec::new();
@@ -12,7 +12,7 @@ fn actions() -> Vec<ui::tilo_actions::ActionSpec> {
     actions.extend(
         <crate::effects::FilesEffect>::declarations()
             .iter()
-            .map(|effect| effect.spec(<crate::effects::FilesEffect>::OPERATION)),
+            .map(EffectDecl::spec_of::<crate::effects::FilesEffect>),
     );
     actions
 }

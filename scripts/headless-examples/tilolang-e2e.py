@@ -22,7 +22,7 @@ app gets on a real system:
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
   activation "Show this window" answers for tilolang Notes as for native Notes
-  read       the door's `read` of tilolang Notes lists the room's records, and
+  read       the door's `read` of tilolang Notes lists the workspace's records, and
              the notebook's read lists its notes by the ids a read takes
   idle       each app untouched for 10 s, native Notes included: one that commits no
              frame wakes no thread at all; one that animates commits one frame per
@@ -402,15 +402,15 @@ def check_activation(session: Session) -> dict:
 
 def check_read(session: Session) -> dict:
     """An agent or a script reads what a tilolang app holds through the door's `read`, as it
-    reads a native app's content: the room's records, then one of them by its id."""
+    reads a native app's content: the workspace's records, then one of them by its id."""
     action = until("tilolang Notes' 'Read the content'",
                    lambda: app_action(session, app_id("notes"), "Read the content"))
-    room = value_of(session.invoke("app-actions", action["id"]))
+    answer = value_of(session.invoke("app-actions", action["id"]))
     # Notes' root record, whatever its type is called: the one record of the app's own kinds.
     prefix = f"tl.{app_id('notes')}."
-    notebook = next((r for r in room.get("records", []) if r.get("kind", "").startswith(prefix)), None)
+    notebook = next((r for r in answer.get("records", []) if r.get("kind", "").startswith(prefix)), None)
     if notebook is None:
-        raise Failed(f"the room's read lists no record of Notes: {json.dumps(room)[:2000]}")
+        raise Failed(f"the workspace's read lists no record of Notes: {json.dumps(answer)[:2000]}")
     kind = notebook["kind"]
     read = value_of(session.invoke("app-actions", action["id"], {"item": notebook["item"]}))
     # The collection of notes, whatever the root calls it: its field listing Notes' notes.
@@ -420,7 +420,7 @@ def check_read(session: Session) -> dict:
         raise Failed(f"Notes' root record's read holds no notes: {json.dumps(read)[:2000]}")
     native = until("native Notes' 'Read the content'", lambda: app_action(session, NATIVE, "Read the content"))
     return {
-        "records": len(room["records"]),
+        "records": len(answer["records"]),
         "notebook": {"label": read.get("label"), "notes": notes.get("count")},
         "native": sorted(value_of(session.invoke("app-actions", native["id"]))),
     }
@@ -447,9 +447,9 @@ def native_pid(session_pid: int) -> int | None:
 def check_idle(session: Session, processes: dict, session_pid: int, seconds: float = 10.0) -> dict:
     """Every app, native Notes among them, left untouched for 10 s. An app that commits no frame
     is settled, and every thread of it sleeps: zero context switches. An app that commits frames
-    is animating, which in this session is only the connecting spinner of an app whose room never
-    syncs and that holds nothing to show (Today; native Notes): one frame per pose of the spinner
-    and no more, with its context switches per frame recorded."""
+    is animating, which in this session is only the connecting spinner of an app whose
+    workspace never syncs and that holds nothing to show (Today; native Notes): one frame per
+    pose of the spinner and no more, with its context switches per frame recorded."""
     time.sleep(3)
     pids = {app: info["pid"] for app, info in processes["apps"].items()}
     native = native_pid(session_pid)

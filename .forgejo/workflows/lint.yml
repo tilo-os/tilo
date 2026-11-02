@@ -4,6 +4,10 @@ name: CI / fast quality
 # (ci-weekly-quality.yml) or in t; this cheap path runs on every main commit so
 # the format, dependency and policy gates of the commit being promoted have a
 # result. Main is not gated, so a red result here blocks only the promotion.
+#
+# The gates run as two jobs: a push waits for a verdict in about the longer half
+# instead of the sum of every step, and a slow inventory scan no longer delays
+# the compile-heavy lints that developers wait for.
 on:
   push:
     branches: ["main"]
@@ -18,17 +22,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  quality:
+  policy:
     runs-on: runner-quality
     timeout-minutes: 30
     container:
       image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
-    env:
-      # The policy suite's Cargo metadata and cargo deny resolve every locked
-      # crate; read them from the shared download cache, not crates.io.
-      # The app lints build ~950 crates on the 20 GiB quality store.
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Disable automatic Git maintenance in the disposable job container
         # Git 2.54 maintenance can rewrite shallow history between fetches.
@@ -49,18 +47,12 @@ jobs:
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
 
-      - name: Verify native fast-quality toolchain
+      - name: Verify fast-quality toolchain
         run: |
           test "$(uname -m)" = x86_64
-          cargo --version
-          rustc --version
           rustfmt --version
           cargo deny --version
           cargo machete --version
-          cargo hakari --version
-          # ci-fast ships gcc as /usr/bin/cc (os/Containerfile.ci-fast); the
-          # Tilo app lints below compile tilo-app-cli and need that linker.
-          command -v cc
 
       - name: Check formatting of changed Rust files
         shell: bash
@@ -68,19 +60,6 @@ jobs:
           bash tools/ci/check-changed-rustfmt.sh
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
-
-      # crates/workspace-hack unifies third-party features across members; a
-      # dependency change that is not regenerated splits the shared builds again.
-      # Fail before the slower policy and dependency scans when it is stale.
-      - name: Workspace-hack matches the dependency graph
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then
-            echo "crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result." >&2
-            exit 1
-          fi
-          cargo hakari verify
 
       - name: Verify commit messages and exact new blob contents
         env:
@@ -120,12 +99,6 @@ jobs:
           base='${{ steps.merge.outputs.main }}'
           python3 tools/perf/runtime_size_ratchet.py check-budget --base "${base:-HEAD~1}"
 
-      # The lint app developers run locally: an app that adds platform code
-      # without moving it into a platform crate or declaring itself native
-      # fails here. ci-fast already provides /usr/bin/cc (pinned digest).
-      - name: Tilo app lints
-        run: bash tools/ci/measure.sh "app lint check" -- cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
-
       - name: cargo deny
         run: bash tools/ci/measure.sh "dependency policy check" -- cargo deny --workspace check --hide-inclusion-graph
 
@@ -135,3 +108,60 @@ jobs:
           bash tools/ci/check-unused-dependencies.sh --changed
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
+
+  lints:
+    runs-on: runner-quality
+    timeout-minutes: 30
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
+    env:
+      # The app lints build ~950 crates on the 20 GiB quality store.
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - name: Disable automatic Git maintenance in the disposable job container
+        # Git 2.54 maintenance can rewrite shallow history between fetches.
+        # Checkout copies this global config before its first fetch.
+        run: git config --global maintenance.auto false
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2
+          fetch-tags: false
+
+      # Pull requests are checked merged onto main's current tip.
+      - name: Merge onto main
+        uses: ./.forgejo/actions/merge-main
+
+      - name: Restore Cargo downloads
+        uses: ./.forgejo/actions/restore-cargo-downloads
+
+      - name: Verify native fast-quality toolchain
+        run: |
+          test "$(uname -m)" = x86_64
+          cargo --version
+          rustc --version
+          cargo hakari --version
+          # ci-fast ships gcc as /usr/bin/cc (os/Containerfile.ci-fast); the
+          # Tilo app lints below compile tilo-app-cli and need that linker.
+          command -v cc
+
+      # crates/workspace-hack unifies third-party features across members; a
+      # dependency change that is not regenerated splits the shared builds again.
+      # Fail before the app lints that build from it.
+      - name: Workspace-hack matches the dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then
+            echo "crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result." >&2
+            exit 1
+          fi
+          cargo hakari verify
+
+      # The lint app developers run locally: an app that adds platform code
+      # without moving it into a platform crate or declaring itself native
+      # fails here. ci-fast already provides /usr/bin/cc (pinned digest).
+      - name: Tilo app lints
+        run: bash tools/ci/measure.sh "app lint check" -- cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all

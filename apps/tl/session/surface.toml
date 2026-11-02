@@ -9,121 +9,159 @@ version = 0
 fields = []
 
 [[resources.verbs]]
-id = "toggle-overview"
-kind = "undoable"
-params = []
-
-[[resources.verbs]]
-id = "reveal-top-bar"
-kind = "undoable"
-params = []
-
-[[resources.verbs]]
-id = "show-overview"
-kind = "undoable"
-params = []
-
-[[resources.verbs]]
-id = "hide-overview"
-kind = "undoable"
-params = []
-
-[[resources.verbs]]
-id = "toggle-quick-settings"
-kind = "undoable"
-params = []
-
-[[resources.verbs]]
-id = "toggle-tilo-menu"
-kind = "undoable"
-params = []
-
-[[resources.verbs]]
-id = "toggle-workspace-menu"
-kind = "undoable"
-params = []
-
-[[resources.verbs]]
-id = "step-strip"
-kind = "undoable"
+id = "open-app"
+kind = "outside"
 
 [[resources.verbs.params]]
-name = "steps"
+name = "app"
 required = true
-type = "int"
-
-[[resources.verbs]]
-id = "new-workspace"
-kind = "undoable"
+type = "text"
 
 [[resources.verbs.params]]
-name = "room"
+name = "beside"
 required = false
 type = "text"
 
 [[resources.verbs.params]]
-name = "name"
+name = "background"
 required = false
-type = "text"
+type = "bool"
 
 [[resources.verbs]]
-id = "shortcut"
-kind = "undoable"
+id = "show-app"
+kind = "outside"
 
 [[resources.verbs.params]]
-name = "action"
-required = true
-type = "text"
-
-[[resources.verbs]]
-id = "toggle-collaborators"
-kind = "undoable"
-params = []
-
-[[resources.verbs]]
-id = "show-person"
-kind = "undoable"
-
-[[resources.verbs.params]]
-name = "person"
+name = "app"
 required = true
 type = "text"
 
 [[resources.verbs]]
 id = "move-tab"
-kind = "undoable"
+kind = "outside"
 
 [[resources.verbs.params]]
 name = "tab"
 required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "strip"
+required = false
+type = "text"
+within = "to"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+within = "to"
+
+[[resources.verbs.params]]
+name = "display"
+required = false
+type = "text"
+within = "to"
+
+[[resources.verbs]]
+id = "close-window"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "group"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "split-right"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "new-group"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "set-width"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "group"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "permille"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "preset"
+required = false
+
+[[resources.verbs]]
+id = "equalize"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "strip"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "maximize"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "group"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "on"
+required = true
+type = "bool"
+
+[[resources.verbs]]
+id = "fullscreen"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "group"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "on"
+required = true
+type = "bool"
+
+[[resources.verbs]]
+id = "rename"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "group"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "strip"
+required = false
 type = "text"
 
 [[resources.verbs.params]]
 name = "workspace"
-required = true
-type = "text"
-
-[[resources.verbs]]
-id = "move-tab-to-strip"
-kind = "undoable"
-
-[[resources.verbs.params]]
-name = "tab"
-required = true
-type = "text"
-
-[[resources.verbs.params]]
-name = "strip"
-required = true
-type = "text"
-
-[[resources.verbs]]
-id = "rename-strip"
-kind = "undoable"
-
-[[resources.verbs.params]]
-name = "strip"
-required = true
+required = false
 type = "text"
 
 [[resources.verbs.params]]
@@ -132,8 +170,17 @@ required = true
 type = "text"
 
 [[resources.verbs]]
+id = "new-strip"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+type = "text"
+
+[[resources.verbs]]
 id = "move-strip"
-kind = "undoable"
+kind = "outside"
 
 [[resources.verbs.params]]
 name = "strip"
@@ -146,13 +193,160 @@ required = false
 type = "text"
 
 [[resources.verbs]]
+id = "reopen-closed"
+kind = "outside"
+params = []
+
+[[resources.verbs]]
+id = "share-window"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "group"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "on"
+required = true
+type = "bool"
+
+[[resources.verbs]]
+id = "stop-desktop-control"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "group"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "step-strip"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "steps"
+required = true
+type = "int"
+
+[[resources.verbs]]
+id = "show-strip"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "strip"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "show-strips"
+kind = "read"
+params = []
+
+[[resources.verbs]]
+id = "pan"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "strip"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "offset"
+required = true
+type = "float"
+
+[[resources.verbs]]
+id = "scroll"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "region"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "action"
+required = true
+
+[[resources.verbs]]
+id = "history"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "target"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "activity"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "view"
+required = true
+
+[[resources.verbs.params]]
+name = "author"
+required = false
+type = "text"
+
+[[resources.verbs]]
+id = "close-activity"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "notifications"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "open"
+required = true
+type = "bool"
+
+[[resources.verbs]]
+id = "new-workspace"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+type = "text"
+
+[[resources.verbs]]
 id = "join-workspace"
-kind = "undoable"
+kind = "read"
 params = []
 
 [[resources.verbs]]
 id = "leave-workspace"
-kind = "undoable"
+kind = "outside"
 
 [[resources.verbs.params]]
 name = "workspace"
@@ -161,7 +355,63 @@ type = "text"
 
 [[resources.verbs]]
 id = "workspace-settings"
-kind = "undoable"
+kind = "read"
+params = []
+
+[[resources.verbs]]
+id = "shortcut"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "action"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "toggle-collaborators"
+kind = "read"
+params = []
+
+[[resources.verbs]]
+id = "show-person"
+kind = "read"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "overview"
+kind = "read"
+
+[[resources.verbs.params]]
+name = "open"
+required = false
+type = "bool"
+
+[[resources.verbs]]
+id = "reveal-top-bar"
+kind = "read"
+params = []
+
+[[resources.verbs]]
+id = "quick-settings"
+kind = "read"
+params = []
+
+[[resources.verbs]]
+id = "tilo-menu"
+kind = "read"
+
+[[resources.verbs.params]]
+name = "open"
+required = false
+type = "bool"
+
+[[resources.verbs]]
+id = "workspace-menu"
+kind = "read"
 params = []
 
 [[resources]]
@@ -172,8 +422,35 @@ version = 0
 fields = []
 
 [[resources.verbs]]
-id = "open-search"
-kind = "undoable"
+id = "step-focus"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "steps"
+required = true
+type = "int"
+
+[[resources.verbs]]
+id = "focus-display"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "display"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "move-to-display"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "steps"
+required = true
+type = "int"
+
+[[resources.verbs]]
+id = "search"
+kind = "outside"
 
 [[resources.verbs.params]]
 name = "query"
@@ -181,22 +458,27 @@ required = false
 type = "text"
 
 [[resources.verbs]]
-id = "step-focus"
-kind = "undoable"
+id = "choose-search-row"
+kind = "outside"
 
 [[resources.verbs.params]]
-name = "steps"
+name = "row"
 required = true
 type = "int"
+
+[[resources.verbs.params]]
+name = "argument"
+required = false
+type = "text"
 
 [[resources.verbs]]
-id = "move-to-display"
-kind = "undoable"
+id = "launchpad"
+kind = "outside"
 
 [[resources.verbs.params]]
-name = "steps"
+name = "card"
 required = true
-type = "int"
+type = "text"
 
 [[resources]]
 id = "shell:arrangement"
@@ -436,12 +718,12 @@ fields = []
 
 [[resources.verbs]]
 id = "focus"
-kind = "undoable"
+kind = "outside"
 params = []
 
 [[resources.verbs]]
-id = "close"
-kind = "undoable"
+id = "close-tab"
+kind = "outside"
 params = []
 
 [[resources]]

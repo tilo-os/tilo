@@ -55,7 +55,7 @@ use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
-use support::{ROOM as WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
+use support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
 
 const ATTEMPTS: usize = 40;
 

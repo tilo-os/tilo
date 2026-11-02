@@ -68,7 +68,7 @@ impl AppBrokerState {
         if !is_person_here(caller, origin) {
             return Err(abandon(ActionHostError::NotPermitted));
         }
-        let Some(workspace) = caller.room() else {
+        let Some(workspace) = caller.workspace() else {
             return Err(abandon(ActionHostError::NotPermitted));
         };
         let Some(()) = self.decide_for(caller, workspace, |_, _, _| ()) else {

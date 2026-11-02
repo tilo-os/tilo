@@ -962,9 +962,9 @@ impl QueryEngine {
                 .find(|held| held.kind == group.kind)
             {
                 Some(held) => {
-                    let room = GROUP_LIMIT.saturating_sub(held.items.len());
-                    let extra = group.items.len().saturating_sub(room);
-                    held.items.extend(group.items.into_iter().take(room));
+                    let workspace = GROUP_LIMIT.saturating_sub(held.items.len());
+                    let extra = group.items.len().saturating_sub(workspace);
+                    held.items.extend(group.items.into_iter().take(workspace));
                     held.more = held.more.saturating_add(group.more).saturating_add(extra);
                 }
                 None => self.results.local.push(group),

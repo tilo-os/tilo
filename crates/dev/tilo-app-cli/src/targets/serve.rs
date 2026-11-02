@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 
-use super::room::SharedRoom;
+use super::workspace::SharedWorkspace;
 use super::{Project, TargetRequest, web};
 use tilo_lock::MutexRecover as _;
 
@@ -28,10 +28,10 @@ pub struct ServeOptions {
     /// Rebuild and reload on source changes.
     pub watch: bool,
     pub debounce: Duration,
-    /// Open the app in a room others join from their own browser
-    /// ([`super::room`]).
+    /// Open the app in a workspace others join from their own browser
+    /// ([`super::workspace`]).
     pub share: bool,
-    /// With `share`, start an empty room instead of the last one.
+    /// With `share`, start an empty workspace instead of the last one.
     pub fresh: bool,
 }
 
@@ -53,15 +53,15 @@ const RELOAD_SCRIPT: &str = "<script type=\"module\">\n  // Injected by `tilo-ap
 struct Server {
     root: PathBuf,
     clients: Mutex<Vec<TcpStream>>,
-    room: Option<SharedRoom>,
+    workspace: Option<SharedWorkspace>,
 }
 
-/// Where the shared room's page and door are served.
+/// Where the shared workspace's page and door are served.
 const ROOM_PATH: &str = "/__tilo/room";
-/// The largest request body the room's door reads.
+/// The largest request body the workspace's door reads.
 const MAX_BODY: usize = 64 * 1024;
-/// The join page: a name, then the app in the room.
-const ROOM_PAGE: &str = include_str!("room.html");
+/// The join page: a name, then the app in the workspace.
+const JOIN_PAGE: &str = include_str!("workspace.html");
 
 impl Server {
     fn broadcast(&self, event: &str, data: &str) {
@@ -91,16 +91,16 @@ pub(super) fn run(
             options.address
         )
     })?;
-    let room = if options.share {
+    let workspace = if options.share {
         let pages = format!("http://{}", options.address);
-        Some(SharedRoom::start(project, &pages, options.fresh)?)
+        Some(SharedWorkspace::start(project, &pages, options.fresh)?)
     } else {
         None
     };
     let server = Arc::new(Server {
         root: first.artifact.clone(),
         clients: Mutex::new(Vec::new()),
-        room,
+        workspace,
     });
     let accepting = Arc::clone(&server);
     std::thread::Builder::new()
@@ -118,7 +118,7 @@ pub(super) fn run(
             }
         })
         .context("starting the web server")?;
-    if server.room.is_some() {
+    if server.workspace.is_some() {
         eprintln!(
             "[tilo-app] {} is shared: open http://{}{ROOM_PATH}/play in one browser window per person",
             project.display_name(),
@@ -169,7 +169,7 @@ fn watch(
                 }
                 crate::drain_until_quiet(&event_rx, &roots, options.debounce);
                 eprintln!("[tilo-app] change detected; rebuilding the web bundle");
-                let built = if server.room.is_some() {
+                let built = if server.workspace.is_some() {
                     refresh_surface(project).and_then(|()| web::build(project, request))
                 } else {
                     web::build(project, request)
@@ -216,7 +216,7 @@ fn handle(server: &Server, mut stream: TcpStream) -> Result<()> {
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let target = parts.next().unwrap_or("/");
-    if let Some(room) = &server.room
+    if let Some(workspace) = &server.workspace
         && let Some(rest) = target.strip_prefix(ROOM_PATH)
     {
         if length > MAX_BODY {
@@ -230,7 +230,7 @@ fn handle(server: &Server, mut stream: TcpStream) -> Result<()> {
         }
         let mut body = vec![0_u8; length];
         std::io::Read::read_exact(&mut reader, &mut body)?;
-        let (status, content_type, answer) = room_route(room, method, rest, &body);
+        let (status, content_type, answer) = shared_route(workspace, method, rest, &body);
         return respond(&mut stream, status, content_type, &answer, method == "HEAD");
     }
     if method != "GET" && method != "HEAD" {
@@ -276,11 +276,11 @@ fn handle(server: &Server, mut stream: TcpStream) -> Result<()> {
     respond(&mut stream, "200 OK", content_type, &body, method == "HEAD")
 }
 
-/// Write the app's `surface.toml` from its code. The room's devices decide
-/// every change a participant sends against the surface the change names,
-/// so with a surface from before the last edit of the resource the others
-/// refuse moves the code makes. `tilo-app check` fails on a stale file; a
-/// shared room keeps it current instead.
+/// Write the app's `surface.toml` from its code. The workspace's devices
+/// decide every change a participant sends against the surface the change
+/// names, so with a surface from before the last edit of the resource the
+/// others refuse moves the code makes. `tilo-app check` fails on a stale
+/// file; a shared workspace keeps it current instead.
 fn refresh_surface(project: &Project) -> Result<()> {
     if !crate::surface::is_framework_app(&project.app_dir) {
         return Ok(());
@@ -289,19 +289,19 @@ fn refresh_surface(project: &Project) -> Result<()> {
     let (path, _) = crate::surface::write_app(&project.app_dir, None)?;
     if std::fs::read(&path).ok() != before {
         eprintln!(
-            "[tilo-app] updated {}: the room decides changes against it",
+            "[tilo-app] updated {}: the workspace decides changes against it",
             path.display()
         );
     }
     Ok(())
 }
 
-/// The shared room's page and door: `GET /` (what the page opens), `GET
+/// The shared workspace's page and door: `GET /` (what the page opens), `GET
 /// /play` (the join page), `POST /join` (admit a person), `GET /people`
 /// (everyone admitted, by name) and `/record` (which record of the app
 /// everyone opens).
-fn room_route(
-    room: &SharedRoom,
+fn shared_route(
+    workspace: &SharedWorkspace,
     method: &str,
     target: &str,
     body: &[u8],
@@ -321,13 +321,17 @@ fn room_route(
     match (method, path) {
         ("GET", "" | "/") => json(
             "200 OK",
-            serde_json::json!({"app": room.app_id, "room": room.room, "name": room.name}),
+            serde_json::json!({
+                "app": workspace.app_id,
+                "room": workspace.relay_room,
+                "name": workspace.name,
+            }),
         ),
-        ("GET", "/people") => json("200 OK", room.people()),
+        ("GET", "/people") => json("200 OK", workspace.people()),
         ("GET", "/play" | "/play/") => (
             "200 OK",
             "text/html; charset=utf-8",
-            ROOM_PAGE.as_bytes().to_vec(),
+            JOIN_PAGE.as_bytes().to_vec(),
         ),
         ("POST", "/join") => {
             let name: String = text("name").trim().chars().take(32).collect();
@@ -336,7 +340,7 @@ fn room_route(
             } else {
                 name
             };
-            match room.admit(&text("userPublicKey"), &name) {
+            match workspace.admit(&text("userPublicKey"), &name) {
                 Ok(admission) => {
                     eprintln!("[tilo-app] {name} joined");
                     json(
@@ -344,7 +348,7 @@ fn room_route(
                         serde_json::json!({
                             "invitation": admission.invitation,
                             "admissionToken": admission.admission_token,
-                            "origin": room.origin,
+                            "origin": workspace.origin,
                         }),
                     )
                 }
@@ -364,13 +368,13 @@ fn room_route(
             } else {
                 text("app")
             };
-            let claim = room.claim(&app, method == "POST");
+            let claim = workspace.claim(&app, method == "POST");
             json(
                 "200 OK",
                 serde_json::json!({"record": claim.record, "open": claim.open}),
             )
         }
-        ("PUT", "/record") => match room.opened(&text("app"), &text("record")) {
+        ("PUT", "/record") => match workspace.opened(&text("app"), &text("record")) {
             Ok(()) => json("200 OK", serde_json::json!({})),
             Err(error) => json(
                 "500 Internal Server Error",
@@ -513,7 +517,7 @@ mod tests {
         let server = Arc::new(Server {
             root: dir.path().to_path_buf(),
             clients: Mutex::new(Vec::new()),
-            room: None,
+            workspace: None,
         });
         let accepting = Arc::clone(&server);
         std::thread::spawn(move || {

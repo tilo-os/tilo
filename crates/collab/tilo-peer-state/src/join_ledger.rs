@@ -535,6 +535,16 @@ impl JoinLedger {
         Ok(true)
     }
 
+    /// The person who issued the invitation `invite_id`, as the ledger
+    /// recorded them.
+    #[must_use]
+    pub fn issuer_of(&self, invite_id: [u8; 32]) -> Option<[u8; 32]> {
+        self.invitations
+            .iter()
+            .find(|record| record.issued.invite_id == invite_id)
+            .map(|record| record.grant.issuer.user_public_key)
+    }
+
     /// The invitations still redeemable at `now`, by invite id.
     #[must_use]
     pub fn pending(&self, now: u64) -> Vec<PendingInvitation> {

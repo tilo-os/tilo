@@ -26,7 +26,7 @@ use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope, TreePat
 enum Asked {
     Need(ActionNeed),
     Govern,
-    /// Whether what the room holds has arrived, so a choice made from the
+    /// Whether what the workspace holds has arrived, so a choice made from the
     /// record (a free seat) is made from what everyone sees.
     Arrived,
 }
@@ -202,8 +202,8 @@ impl std::ops::DerefMut for DispatchCore {
 pub(crate) struct DispatchState {
     app_id: &'static str,
     resource_id: Rc<str>,
-    /// The route of the record the resource is, as the room names its node
-    /// (empty for the app's own record of the room): an action on an item
+    /// The route of the record the resource is, as the workspace names its node
+    /// (empty for the app's own record of the workspace): an action on an item
     /// of it is decided at that item's node.
     record: Rc<str>,
     /// [`Resource::KIND`] and [`Resource::LABEL`] of the resource.
@@ -248,9 +248,9 @@ pub(crate) struct DispatchState {
     /// The last submission of this view the door applied.
     landed: LocalState<Option<Landed>>,
     /// What the views said they did ([`Dispatcher::say_when_kept`]), not yet
-    /// handed to the record to hold for the room.
+    /// handed to the record to hold for the workspace.
     notices: Rc<RefCell<Vec<String>>>,
-    /// The last of them the room kept, to say now ([`Dispatcher::said`]).
+    /// The last of them the workspace kept, to say now ([`Dispatcher::said`]).
     pub(crate) said: LocalState<Option<String>>,
     /// What the effects that queued submissions here wait on: how many are
     /// still to land, per effect invocation.
@@ -562,10 +562,10 @@ impl DispatchCore {
         })
     }
 
-    /// The node below the room where the room decides this resource's
+    /// The node below the workspace where the workspace decides this resource's
     /// changes, as far as a decision here can name it: an item of the
     /// record for a resource nested in one at `<kind>/<field>/<item>` (a
-    /// note's body), so what the room grants on that item alone (an item
+    /// note's body), so what the workspace grants on that item alone (an item
     /// shared to edit) lets it be changed here too; else the app's.
     fn node(&self) -> TreePath {
         let app = TreePath::root().app(self.app_id);
@@ -590,13 +590,13 @@ impl DispatchCore {
     }
 
     /// Whether the participant may react here: never in a past version,
-    /// else as the room grants reactions, which the Commenter role does as
+    /// else as the workspace grants reactions, which the Commenter role does as
     /// it grants comments.
     pub(crate) fn may_react(&self) -> bool {
         !self.past && self.may(&reaction_need())
     }
 
-    /// Whether the room this record is in has anyone besides this window's
+    /// Whether the workspace this record is in has anyone besides this window's
     /// participant, its owner or a member, here now or not: what it holds is
     /// shared with them.
     pub(crate) fn workspace_has_others(&self) -> bool {
@@ -639,7 +639,7 @@ impl DispatchCore {
         ))
     }
 
-    /// Whether the participant may invite people to the room.
+    /// Whether the participant may invite people to the workspace.
     pub(crate) fn may_invite(&self) -> bool {
         self.may_scope(&PermissionScope::governance(
             policy::roles::governance::INVITE,
@@ -702,29 +702,29 @@ impl DispatchCore {
             action: action.to_owned(),
             item: None,
             reason,
-            by_room: false,
+            by_workspace: false,
         }));
     }
 
     /// What the views said they did since last asked, for the record to
-    /// hold until the room keeps it.
+    /// hold until the workspace keeps it.
     pub(crate) fn take_notices(&self) -> Vec<String> {
         std::mem::take(&mut *self.notices.borrow_mut())
     }
 
-    /// The room kept what `text` says was done.
+    /// The workspace kept what `text` says was done.
     pub(crate) fn kept(&self, text: &str) {
         self.said.set(Some(text.to_owned()));
     }
 
-    /// The room refused what `refusal` names after this device applied it;
+    /// The workspace refused what `refusal` names after this device applied it;
     /// the record withdrew it.
-    pub(crate) fn refuse_by_room(&self, refusal: &ui_core::record::RecordRefusal) {
+    pub(crate) fn refuse_by_workspace(&self, refusal: &ui_core::record::RecordRefusal) {
         self.refused.set(Some(Refused {
             action: refusal.action.clone(),
             item: refusal.item.clone(),
             reason: refusal.reason.clone(),
-            by_room: true,
+            by_workspace: true,
         }));
     }
 
@@ -1011,8 +1011,8 @@ impl<R: Resource> Dispatcher<R> {
         self
     }
 
-    /// The dispatcher of the record the room names by `route` (empty for
-    /// the app's own record of the room).
+    /// The dispatcher of the record the workspace names by `route` (empty for
+    /// the app's own record of the workspace).
     pub(crate) fn on_record(mut self, route: &str) -> Self {
         self.core.record = Rc::from(route);
         self
@@ -1047,8 +1047,8 @@ impl<R: Resource> Dispatcher<R> {
         self.core.asked_state(Asked::Need(need))
     }
 
-    /// The participant's standing in the room as the host keeps it when
-    /// called: who they are, the room's policy and what bounds them. For a
+    /// The participant's standing in the workspace as the host keeps it when
+    /// called: who they are, the workspace's policy and what bounds them. For a
     /// runtime that decides its own invocations (a tilolang program's) by
     /// the policy the door decides by. `None` outside a host.
     pub fn standing_source(&self) -> impl Fn() -> Option<policy::Standing> + 'static {
@@ -1061,18 +1061,18 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
-    /// Whether the participant may govern the room (invite, grant, change
+    /// Whether the participant may govern the workspace (invite, grant, change
     /// its settings), as observable view state: for an owner's pane.
     pub fn govern_state(&self) -> LocalState<bool> {
         self.core.asked_state(Asked::Govern)
     }
 
-    /// Whether what the room holds has arrived, as observable view state:
-    /// false while the window's room has not finished its first sync with
+    /// Whether what the workspace holds has arrived, as observable view state:
+    /// false while the window's workspace has not finished its first sync with
     /// its host ([`ui_core::workspace_sync`]), when a record joined from it may
-    /// still be missing the content its creator wrote. True outside a room
+    /// still be missing the content its creator wrote. True outside a workspace
     /// that syncs with a host, and for a host's own view of a record, which
-    /// holds what the room holds.
+    /// holds what the workspace holds.
     pub fn arrived_state(&self) -> LocalState<bool> {
         self.core.asked_state(Asked::Arrived)
     }
@@ -1093,12 +1093,12 @@ impl<R: Resource> Dispatcher<R> {
         self.core.may(need)
     }
 
-    /// Whether the participant may, as of now, change the room's settings.
+    /// Whether the participant may, as of now, change the workspace's settings.
     pub fn may_govern(&self) -> bool {
         self.core.may_govern()
     }
 
-    /// Whether the record is shared: someone else belongs to its room, or
+    /// Whether the record is shared: someone else belongs to its workspace, or
     /// is in it with `people` now. Where it is, reactions are offered.
     pub fn is_shared(&self, people: &super::People) -> bool {
         self.core.workspace_has_others() || people.others_here()
@@ -1125,8 +1125,8 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// Say `text` of what was just submitted here ("Added Buy milk") once
-    /// it is kept: at once in a record nobody else decides, once the room
-    /// accepts the change in a shared one, and never when the room refuses
+    /// it is kept: at once in a record nobody else decides, once the workspace
+    /// accepts the change in a shared one, and never when the workspace refuses
     /// it ([`Self::refused`] says why instead). The text shows through
     /// [`Self::said`].
     pub fn say_when_kept(&self, text: impl Into<String>) {
@@ -1269,7 +1269,7 @@ impl<R: Resource> Dispatcher<R> {
     /// that only feeds a write (an index it would keep with a row), so a
     /// participant who may not make the write is not sent it.
     pub fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
-        // A reaction is decided where the room places it, below the
+        // A reaction is decided where the workspace places it, below the
         // reactions field, as the door decides it: someone who may only
         // comment may react too.
         if invoke.id == tilo_resource::FIELD_EDIT && reacts(&invoke.arguments) {
@@ -1740,7 +1740,7 @@ impl<R: Resource> Dispatcher<R> {
     /// The dispatcher of another record than this resource's — the
     /// person's own record, a settings section — published at `id`: its
     /// queued invocations go through the same door as this resource's, and
-    /// what it applies now `apply` applies to that record. The room's roles
+    /// what it applies now `apply` applies to that record. The workspace's roles
     /// do not reach it; only its person changes it.
     pub(crate) fn for_record<C: Resource>(
         &self,
@@ -1758,12 +1758,12 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
-    /// The dispatcher of a record the app keeps beside its own in the room,
+    /// The dispatcher of a record the app keeps beside its own in the workspace,
     /// published at `id` (the parts of a chain): its queued invocations are
     /// addressed to `id`, `apply` applies one now, and what an action needs
     /// is its own declared need, checked against the participant's roles in
-    /// the room as this resource's actions are.
-    pub(crate) fn for_room_record<C: Resource>(
+    /// the workspace as this resource's actions are.
+    pub(crate) fn for_workspace_record<C: Resource>(
         &self,
         id: &str,
         read_only: bool,
@@ -1887,19 +1887,19 @@ fn may_declared(
 }
 
 /// An edit or effect the door refused ([`Dispatcher::refused`]), or one the
-/// room refused after this device applied it.
+/// workspace refused after this device applied it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refused {
-    /// The id of the refused action or effect: for one the room refused,
+    /// The id of the refused action or effect: for one the workspace refused,
     /// the verb's key or the edited field's path.
     pub action: String,
-    /// The item it acted on, when the room refused it and it named one.
+    /// The item it acted on, when the workspace refused it and it named one.
     pub item: Option<String>,
     /// Why, for a person.
     pub reason: String,
-    /// The room refused it: it was applied here, never reached anyone
+    /// The workspace refused it: it was applied here, never reached anyone
     /// else, and was withdrawn again. Submitting it again is a new action.
-    pub by_room: bool,
+    pub by_workspace: bool,
 }
 
 /// A submission the door applied ([`Dispatcher::landed`]).

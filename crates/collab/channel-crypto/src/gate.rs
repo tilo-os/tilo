@@ -33,7 +33,7 @@ impl ChannelGate {
 
     /// [`Self::accepts`] for history a workspace host replays in its own
     /// order: content sealed under an older epoch was current when the host
-    /// admitted it (the host admits only the room's members), so only
+    /// admitted it (the host admits only the workspace's members), so only
     /// plaintext on an encrypted channel and ciphertext bound to another
     /// channel are refused.
     pub fn accepts_history(

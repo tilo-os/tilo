@@ -27,12 +27,12 @@ class OwnerVm(TiloVm):
         return first_json(self.run("slot", "exec", "--", *command, timeout=timeout))
 
 
-def workspace(vm, expected_room):
+def workspace(vm, expected_workspace_id):
     state = vm.state()
     tree = state.get("workspace_tree", {})
     current = [w for w in tree.get("workspaces", []) if w.get("id") == tree.get("active")]
     require(state.get("chrome", {}).get("session_locked") is False and len(current) == 1
-            and current[0].get("room") == expected_room, "unlocked expected owner workspace unavailable")
+            and current[0].get("room") == expected_workspace_id, "unlocked expected owner workspace unavailable")
 
 
 def picker_rows(vm):
@@ -64,13 +64,13 @@ def component(name):
 
 
 class Chooser:
-    def __init__(self, vm, identity, room, out, original):
-        self.vm, self.identity, self.room, self.out, self.original = vm, identity, room, out, original
+    def __init__(self, vm, identity, workspace_id, out, original):
+        self.vm, self.identity, self.workspace_id, self.out, self.original = vm, identity, workspace_id, out, original
         self.sequence = 0
 
     def call(self, operation, args=None):
         self.original.pending()
-        workspace(self.vm, self.room)
+        workspace(self.vm, self.workspace_id)
         rows = picker_rows(self.vm)
         require(request(rows) == self.identity, "chooser request replaced")
         found = [r for r in rows if r["id"] == f"{operation}@{self.identity}"]

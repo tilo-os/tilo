@@ -301,6 +301,9 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
     installed(&mut environment, "so.tilo.probe-two", &probe);
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
+    // The probe is the view that draws the slot here: it stays up while the
+    // menu is, as a view does, so the session keeps it as the slot's.
+    environment.set("SURFACE_PROBE_STAY", "1");
     let mut session = session_with(&socket, desk_tree());
     session
         .invoke(

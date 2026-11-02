@@ -1855,7 +1855,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     /// What the shortcut's grant answers for the step: a refusal, or an
     /// answer the step may proceed under.
     /// A field edit is decided where its path (in `supplied`) acts, as
-    /// the room decides it.
+    /// the workspace decides it.
     fn granted(
         &self,
         app_id: &str,
@@ -1872,14 +1872,14 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             .flatten();
         let node = match &at {
             Some(at) => step_node_at(
-                self.caller.room(),
+                self.caller.workspace(),
                 app_id,
                 &descriptor.resource_kind,
                 &descriptor.address,
                 at,
             ),
             None => step_node(
-                self.caller.room(),
+                self.caller.workspace(),
                 app_id,
                 &descriptor.resource_kind,
                 &descriptor.address,

@@ -95,7 +95,7 @@ use collab_types::caps::{
 pub enum Participation {
     /// No workspace-scoped capability names this app either way, so nothing
     /// is inferred — the default, deliberately: guessing here would decide
-    /// who may author in a room, not this module's call.
+    /// who may author in a workspace, not this module's call.
     #[default]
     Unscoped,
     /// May see the space; may not change it. The identity is withheld, so
@@ -285,7 +285,7 @@ impl CapabilityPlan {
                         net_hosts.push(host.clone());
                     }
                 }
-                // A collaborative-file record is reached through the room's
+                // A collaborative-file record is reached through the workspace's
                 // documents, not the kernel — inert here, never permissive.
                 Scope::FsRecord(_) => {}
             }
@@ -1159,7 +1159,7 @@ mod tests {
         }
     }
 
-    /// A launch file names which apps author the room; an app reads its
+    /// A launch file names which apps author the workspace; an app reads its
     /// own entry and nothing of another app's.
     #[test]
     fn a_launch_file_tells_each_app_whether_it_authors() {

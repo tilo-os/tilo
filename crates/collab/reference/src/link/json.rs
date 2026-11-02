@@ -20,9 +20,13 @@ pub enum ModeJson {
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 pub enum ScopeJson {
     Own,
-    Room {
+    /// The workspace scope. Its tag and its id key stay `room`: that is the
+    /// grammar the page reads and writes and `tests/links.json` holds.
+    #[serde(rename = "room")]
+    Workspace {
         host: String,
-        room: String,
+        #[serde(rename = "room")]
+        workspace: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         slug: Option<String>,
     },
@@ -80,9 +84,9 @@ impl From<&LinkTarget> for TargetJson {
         Self {
             scope: match &target.scope {
                 Scope::Own => ScopeJson::Own,
-                Scope::Room { host, room, slug } => ScopeJson::Room {
+                Scope::Room { host, room, slug } => ScopeJson::Workspace {
                     host: host.as_str().to_owned(),
-                    room: room.hyphenated().to_string(),
+                    workspace: room.hyphenated().to_string(),
                     slug: slug.as_ref().map(|slug| slug.as_str().to_owned()),
                 },
             },
@@ -118,10 +122,15 @@ impl TryFrom<TargetJson> for LinkTarget {
     fn try_from(json: TargetJson) -> Result<Self, LinkError> {
         let scope = match json.scope {
             ScopeJson::Own => Scope::Own,
-            ScopeJson::Room { host, room, slug } => {
-                let parsed = uuid::Uuid::try_parse(&room).map_err(|_| LinkError::BadRoom)?;
-                if parsed.hyphenated().to_string() != room {
-                    return Err(LinkError::BadRoom);
+            ScopeJson::Workspace {
+                host,
+                workspace,
+                slug,
+            } => {
+                let parsed =
+                    uuid::Uuid::try_parse(&workspace).map_err(|_| LinkError::BadWorkspace)?;
+                if parsed.hyphenated().to_string() != workspace {
+                    return Err(LinkError::BadWorkspace);
                 }
                 Scope::Room {
                     host: HostOrigin::new(&host)?,
