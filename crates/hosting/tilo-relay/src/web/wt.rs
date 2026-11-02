@@ -23,37 +23,11 @@ use std::sync::{Arc, Mutex};
 use tilo_live::live::Namespace;
 use tilo_live::relay::{Denied, Direction, Relay, RelayAuthority, SessionAuthorization};
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::web::LiveInfo;
+use tilo_relay_protocol::web::{LiveGrant, LiveInfo};
 use tokio::sync::watch;
 
 use super::{Sessions, WebConfig, tls};
 use crate::auth::AuthenticatedPeer;
-
-/// The versioned page grant's first byte: the workspace (little-endian `u64`)
-/// and the page's session token follow it.
-const PAGE_GRANT: u8 = 2;
-/// The one granted length of a page grant.
-const PAGE_GRANT_BYTES: usize = 1 + 8 + 32;
-
-/// The page's session token and workspace, as the carrier's grant names them.
-struct Claim {
-    workspace: u64,
-    token: [u8; 32],
-}
-
-impl Claim {
-    /// The claim `proof` carries, or `None` for any other grant.
-    fn parse(proof: &[u8]) -> Option<Self> {
-        let bytes = <[u8; PAGE_GRANT_BYTES]>::try_from(proof).ok()?;
-        if bytes[0] != PAGE_GRANT {
-            return None;
-        }
-        Some(Self {
-            workspace: u64::from_le_bytes(bytes.get(1..9)?.try_into().ok()?),
-            token: bytes.get(9..41)?.try_into().ok()?,
-        })
-    }
-}
 
 /// One page's live session: whose it is, the scope it publishes in, and
 /// whether the workspace still admits it.
@@ -73,11 +47,11 @@ struct Grant {
 }
 
 impl Grant {
-    fn new(claim: &Claim, workspace_name: &str, peer: AuthenticatedPeer) -> Self {
+    fn new(grant: LiveGrant, workspace_name: &str, peer: AuthenticatedPeer) -> Self {
         let namespace = Namespace::workspace(workspace_name, peer.device_public_key);
         Self {
-            token: claim.token,
-            workspace: claim.workspace,
+            token: grant.token,
+            workspace: grant.workspace_id,
             peer,
             scope: namespace.scope_path(),
             namespace: namespace.path(),
@@ -130,32 +104,44 @@ impl SessionAuthorization for Grant {
     }
 }
 
+/// Who a grant is for: the page's session token, in one workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct GrantKey {
+    token: [u8; 32],
+    workspace: u64,
+}
+
+impl From<LiveGrant> for GrantKey {
+    fn from(grant: LiveGrant) -> Self {
+        Self {
+            token: grant.token,
+            workspace: grant.workspace_id,
+        }
+    }
+}
+
+/// Every grant a page asked for, by the page and workspace it belongs to.
+type Grants = HashMap<GrantKey, Arc<Grant>>;
+
 /// Every page the live plane may admit: the grants asked for over HTTPS, and
 /// the workspace's answer to each.
 pub(crate) struct Pages {
     sessions: Arc<Sessions>,
-    grants: Mutex<HashMap<([u8; 32], u64), Arc<Grant>>>,
+    grants: Mutex<Grants>,
 }
 
 impl Pages {
-    /// Record that the page holding `claim`'s token is admitted to its
-    /// workspace now, creating its grant on the page's first ask and
-    /// re-admitting it on a later one.
-    pub(crate) fn issue(
-        &self,
-        token: [u8; 32],
-        workspace: u64,
-        workspace_name: &str,
-        peer: &AuthenticatedPeer,
-    ) {
-        let claim = Claim { workspace, token };
+    /// Record that the page `grant` names is admitted to its workspace now,
+    /// creating its grant on the page's first ask and re-admitting it on a
+    /// later one.
+    pub(crate) fn issue(&self, grant: LiveGrant, workspace_name: &str, peer: &AuthenticatedPeer) {
         let mut grants = self.grants.lock_recover();
-        match grants.get(&(token, workspace)) {
-            Some(grant) => grant.set(true),
+        match grants.get(&GrantKey::from(grant)) {
+            Some(issued) => issued.set(true),
             None => {
                 grants.insert(
-                    (token, workspace),
-                    Arc::new(Grant::new(&claim, workspace_name, peer.clone())),
+                    GrantKey::from(grant),
+                    Arc::new(Grant::new(grant, workspace_name, peer.clone())),
                 );
             }
         }
@@ -165,7 +151,7 @@ impl Pages {
     /// now, and is its HTTPS session still open? Called on each relay-wide
     /// authority change, never on a timer.
     async fn refresh(&self) {
-        let granted: Vec<(([u8; 32], u64), Arc<Grant>)> = self
+        let granted: Vec<(GrantKey, Arc<Grant>)> = self
             .grants
             .lock_recover()
             .iter()
@@ -191,14 +177,14 @@ impl Pages {
 
 impl RelayAuthority for Pages {
     fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
-        let claim = Claim::parse(proof).ok_or(Denied)?;
+        let claim = LiveGrant::decode(proof).ok_or(Denied)?;
         let grant = self
             .grants
             .lock_recover()
-            .get(&(claim.token, claim.workspace))
+            .get(&GrantKey::from(claim))
             .filter(|grant| {
                 grant.admitted()
-                    && self.sessions.get(&claim.token).is_ok_and(|session| {
+                    && self.sessions.get(&grant.token).is_ok_and(|session| {
                         session.peer.device_public_key == grant.peer.device_public_key
                     })
             })
@@ -303,17 +289,6 @@ fn webtransport_origin(origin: &str, port: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_page_grant_names_its_workspace_and_token() {
-        let claim =
-            Claim::parse(&[&[PAGE_GRANT][..], &7_u64.to_le_bytes(), &[9; 32]].concat()).unwrap();
-        assert_eq!(claim.workspace, 7);
-        assert_eq!(claim.token, [9; 32]);
-        assert!(Claim::parse(&[]).is_none());
-        assert!(Claim::parse(&[1; PAGE_GRANT_BYTES]).is_none());
-        assert!(Claim::parse(&[PAGE_GRANT; PAGE_GRANT_BYTES.saturating_add(1)]).is_none());
-    }
 
     #[test]
     fn the_live_origin_is_the_relays_host_on_the_live_port() {

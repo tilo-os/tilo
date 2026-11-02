@@ -30,6 +30,7 @@ use tilo_live::admit::{self, AdmissionError, Connected, OriginTask, origin_confi
 use tilo_live::live::{self, Namespace, Track};
 use tilo_live::scope::Scope;
 use tilo_live::voice::{self, VoiceObject};
+use tilo_relay_protocol::web::LiveGrant;
 
 use crate::ChannelContentKeys;
 
@@ -190,7 +191,7 @@ impl LiveSession {
     /// [`LiveInfo::webtransport_origin`](tilo_relay_protocol::web::LiveInfo)
     /// that `/live` answered), accepting exactly the certificate whose SHA-256
     /// is `certificate_sha256` (base64, as that route reports it), and join
-    /// `scope` with `grant`.
+    /// `scope` with `grant` (the page's session token and workspace).
     ///
     /// # Errors
     ///
@@ -199,7 +200,7 @@ impl LiveSession {
     pub async fn open(
         origin: &str,
         certificate_sha256: &str,
-        grant: &[u8],
+        grant: LiveGrant,
         scope: Scope,
         device: [u8; 32],
         keys: ChannelContentKeys,
@@ -231,7 +232,7 @@ impl LiveSession {
     /// this device's streams.
     pub async fn connect<S>(
         transport: S,
-        grant: &[u8],
+        grant: LiveGrant,
         scope: Scope,
         device: [u8; 32],
         keys: ChannelContentKeys,
@@ -248,7 +249,8 @@ impl LiveSession {
         let (published, publish) = publishing(&namespace)?;
         let (subscribing, subscribe_task, subscribe) = reading(&namespace)?;
         let hang_up = disconnect(&transport);
-        let connected = admit::start(transport, grant, Some(publish), Some(subscribing.clone()))
+        let proof = grant.encode();
+        let connected = admit::start(transport, &proof, Some(publish), Some(subscribing.clone()))
             .await
             .map_err(|error| match error {
                 AdmissionError::Denied => LiveError::Denied,

@@ -926,8 +926,10 @@ async fn route(
                 ));
             }
             live.pages.issue(
-                session.token(),
-                request.workspace_id,
+                tilo_relay_protocol::web::LiveGrant {
+                    workspace_id: request.workspace_id,
+                    token: session.token(),
+                },
                 &request.workspace,
                 &session.peer,
             );

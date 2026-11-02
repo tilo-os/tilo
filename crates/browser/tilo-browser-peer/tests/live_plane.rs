@@ -9,6 +9,10 @@
     clippy::panic,
     clippy::too_many_lines,
     clippy::items_after_statements,
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::string_slice,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -27,6 +31,7 @@ use tilo_live::live::{Namespace, Track};
 use tilo_live::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
 use tilo_live::scope::Scope;
 use tilo_live::voice::VoiceObject;
+use tilo_relay_protocol::web::LiveGrant;
 
 /// The workspace the participants share.
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
@@ -114,11 +119,9 @@ struct Admits {
 
 impl RelayAuthority for Admits {
     fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
-        let device = match proof {
-            [2, _, _, _, _, _, _, _, _, rest @ ..] if rest.len() == 32 => {
-                <[u8; 32]>::try_from(rest).unwrap()
-            }
-            proof => <[u8; 32]>::try_from(proof).map_err(|_| Denied)?,
+        let device = match LiveGrant::decode(proof) {
+            Some(grant) => grant.token,
+            None => <[u8; 32]>::try_from(proof).map_err(|_| Denied)?,
         };
         if !self.roster.admits(device) {
             return Err(Denied);
@@ -131,13 +134,13 @@ impl RelayAuthority for Admits {
     }
 }
 
-/// The page's grant: the carrier's versioned form, which the relay's page
-/// authority reads.
-fn page_grant(token: [u8; 32]) -> Vec<u8> {
-    let mut grant = vec![2];
-    grant.extend_from_slice(&7_u64.to_le_bytes());
-    grant.extend_from_slice(&token);
-    grant
+/// The page's grant: its own device's session token in the workspace the
+/// relay's page authority numbers 7, as `/live` issued it.
+fn page_grant(token: [u8; 32]) -> LiveGrant {
+    LiveGrant {
+        workspace_id: 7,
+        token,
+    }
 }
 
 /// The pinned certificate of a loopback listener, base64 as `/live` reports it.
@@ -156,7 +159,7 @@ async fn page(relay: &LoopbackRelay, keys: ChannelContentKeys, roster: Roster) -
     LiveSession::open(
         &relay.endpoint,
         &certificate(relay),
-        &page_grant(PAGE),
+        page_grant(PAGE),
         Scope::workspace(WORKSPACE),
         PAGE,
         keys,
@@ -517,7 +520,7 @@ async fn a_browser_without_webtransport_is_told_so_and_offers_no_fallback() {
     let refused = LiveSession::open(
         "not-a-webtransport-origin",
         &certificate_of(&[7; 32]),
-        &page_grant(PAGE),
+        page_grant(PAGE),
         Scope::workspace(WORKSPACE),
         PAGE,
         keys(),
