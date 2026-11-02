@@ -302,6 +302,7 @@ members = [
     # Platform
     "crates/platform/pc-keyboard-geometry",
     "crates/platform/tilo-appearance",
+    "crates/platform/tilo-app-module",
     "crates/platform/tilo-capture",
     "crates/platform/tilo-clipboard",
     "crates/platform/tilo-input-context",

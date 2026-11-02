@@ -1,0 +1,15 @@
+[package]
+name = "tilo-app-module"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Later builds of a running app whose payload is its module: the directory each generation is published into, and the file that names the current one."
+
+[dependencies]
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -155,7 +155,7 @@ fn wait_for_file(
     sender: &mpsc::Sender<Wake>,
 ) -> Result<(), String> {
     let dir = path.parent().ok_or("a ready file has a directory")?;
-    let _watch = watch_into(Watcher::entries(dir).presence(), sender.clone())
+    let _watch = watch_into(Watcher::entries(dir).presence(), sender.clone(), None)
         .map_err(|error| format!("{}: {error}", dir.display()))?;
     loop {
         if path.exists() {
@@ -206,7 +206,7 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         version: "0.1.0".to_owned(),
     };
     let identity = crate::identity_at(&crate::state_dir().join("publisher.json"))?;
-    let mut dev = Dev::new(build, identity, peers, build_dir.join("bin"));
+    let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"));
     // The sessions install them as they start.
     let apps = dev.build_for_start()?;
 
@@ -233,12 +233,14 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
     });
     wait_for_file(&ready, &wakes, &sender)?;
     dev.open()?;
-    for peer in &dev.peers {
-        eprintln!(
-            "    drive it: TILO_TEST_CONTROL={} {} windows",
-            peer.control.display(),
-            dev.bin.join("tilo-control").display()
-        );
+    if let Some(bin) = dev.bin() {
+        for peer in dev.peers() {
+            eprintln!(
+                "    drive it: TILO_TEST_CONTROL={} {} windows",
+                peer.control.display(),
+                bin.join("tilo-control").display()
+            );
+        }
     }
     eprintln!(
         "==> {} is open; a saved .tl file reaches it, with its state",
