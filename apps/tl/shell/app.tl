@@ -247,7 +247,7 @@ view bar(d: Desk) {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
             if part.shown and (space.wide or not part_gives_way(part, roomy)) and not (part.slot == .people and nobody) {
-                ui.DragItem(part, title: part.title, group: if part.slot == .clock { .center } else if part.slot == .people or part.slot == .status or part.slot == .power { .trailing } else if part.slot == .space { .space } else { .leading }) {
+                ui.DragItem(part, title: part.title, group: if part.slot == .clock { .center } else if part.slot == .people or part.slot == .status { .trailing } else if part.slot == .space { .space } else { .leading }) {
                     bar_part(d, part)
                 }
             }
@@ -259,9 +259,10 @@ view bar(d: Desk) {
 /// focused window's menu below an expanded bar (a phone, a tablet, or large text), and the
 /// tasks and the agents, which run longest, below a wide one. The menu, the workspace, the clock,
 /// the status and a question put to the person always keep their room; of the people part, the
-/// others here and, on a phone, the person's own avatar give way (`bar_part`). The bar decides by its width, so a part that gives way
-/// leaves no room behind; the bar's parts must never press into each other (the overview shows
-/// what gave way).
+/// faces of who is here and, on a phone, the person's own avatar give way, the chip that names
+/// them and opens the roster staying (`bar_part`). The bar decides by its width, so a part that
+/// gives way leaves no room behind; the bar's parts must never press into each other (the
+/// overview shows what gave way).
 fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
     if part.slot == .tasks or part.slot == .agent {
         return true
@@ -273,8 +274,9 @@ fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
 /// to them: their answer or their putting it off, never a banner over their windows, so the
 /// question stands on every bar; with no question the avatar gives way on a phone, as the
 /// traditional bar's does, where the time and the notifications keep the room. Who else is here
-/// runs longest and shows on a wide bar alone. The status
-/// part leads with the running applications' tray items, each under the app's own words for it.
+/// shows as their faces on a wide bar, the chip beside them naming them and opening the roster.
+/// The status part leads with the running applications' tray items, each under the app's own
+/// words for it, then the device's own status (`status_icons`), the notifications last.
 view bar_part(d: Desk, part: BarPart) {
     if part.slot == .space {
         spacer
@@ -302,9 +304,10 @@ view bar_part(d: Desk, part: BarPart) {
         row(gap: .tight, align: .center) {
             if space.wide {
                 for p in d.people {
-                    person_chip(d, p)
+                    ui.Avatar(name: .some(p.name))
                 }
             }
+            people_button(d)
             if d.ask != "" {
                 ui.Button(d.ask, role: .bar)
                 if d.ask_answer != "" {
@@ -314,8 +317,6 @@ view bar_part(d: Desk, part: BarPart) {
                 ui.Avatar(name: .some(d.person))
             }
         }
-    } else if part.slot == .power {
-        ui.Button("Power", icon: .battery, icon_only: true, role: .bar)
     } else if part.slot == .agent {
         for a in d.agents {
             agent_chip(d, a)
@@ -325,10 +326,8 @@ view bar_part(d: Desk, part: BarPart) {
             for item in d.tray {
                 ui.Button(item.title, role: .bar)
             }
+            status_icons()
             bell(d)
-            ui.Button("Quick settings", icon: .settings, icon_only: true, role: .bar, toggled: .some(d.here == "quick-settings")) {
-                on press: device.show_surface(device.desk, "quick-settings")
-            }
         }
     }
 }
@@ -358,7 +357,65 @@ view workspace_menu(d: Desk) {
     }
 }
 
-/// The device's status: an icon button named with what it shows — "Notifications", how many
+/// The device's status as the session publishes it: the sound's level, the connection the
+/// machine's traffic leaves on, and the pack's charge. Each reads the resource the session
+/// publishes — the sound, the network and the battery `quick.tl` reads and changes too, so the
+/// bar and the panel show one fact, never a copy — and each press opens the quick settings,
+/// the one place a person changes them. A device that publishes none of them shows none.
+view status_icons() {
+    row(gap: .tight, align: .center) {
+        // A phone's bar keeps the connection and the charge, what a glance looks for; the sound
+        // is a key away and a press on the others opens it (`volume_status`).
+        if not space.compact {
+            volume_status()
+        }
+        network_status()
+        battery_status()
+    }
+}
+
+/// The sound's level, and that it is muted; nothing on a device whose sound reads no level.
+view volume_status() {
+    let sound = device.sound
+    if let volume = sound.volume {
+        // Rounded, not cut: a level of 0.65 is 65%.
+        let percent = (volume * 100.0 + 0.5).to_int()
+        ui.Button(if sound.muted { "Volume, muted" } else { "Volume, {percent}%" }, icon: if sound.muted { .volume_x } else { .volume_2 }, icon_only: true, role: .bar) {
+            on press: device.show_surface(device.desk, surface: "quick-settings")
+        }
+    }
+}
+
+/// The connection the machine's traffic leaves on: Wi-Fi under its network's name, a cable, or
+/// offline; nothing on a device that publishes no connection at all.
+view network_status() {
+    let link = device.network.link
+    if let joined = link {
+        let label = if joined.kind == .wifi {
+            if let called = joined.name { "Wi-Fi, {called}" } else { "Wi-Fi" }
+        } else if joined.kind == .wired {
+            if let called = joined.name { "Wired, {called}" } else { "Wired" }
+        } else {
+            "Offline"
+        }
+        ui.Button(label, icon: if joined.kind == .wifi { .wifi } else if joined.kind == .wired { .ethernet_port } else { .wifi_off }, icon_only: true, role: .bar) {
+            on press: device.show_surface(device.desk, surface: "quick-settings")
+        }
+    }
+}
+
+/// The pack's charge as a percentage beside the battery, its glyph saying whether it charges;
+/// nothing on a machine with no battery.
+view battery_status() {
+    let b = device.battery
+    if b.present {
+        ui.Button("{b.percentage}%", icon: if b.on_battery { .battery } else { .battery_charging }, role: .bar) {
+            on press: device.show_surface(device.desk, surface: "quick-settings")
+        }
+    }
+}
+
+/// The notifications: an icon button named with what it shows — "Notifications", how many
 /// are unread, or that they are silenced — with the count on the bell's corner, so the name
 /// assistive technology reads is the whole fact and the number is for the eye. Pressing it
 /// opens or closes the device's status: the quick settings, or the notifications.
@@ -370,6 +427,6 @@ view bell(d: Desk) {
     let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
     let label = if d.unread == 0 { name } else if d.unread == 1 { "{name}, 1 unread" } else { "{name}, {d.unread} unread" }
     ui.Button(label, icon: if d.quiet { .bell_off } else { .bell }, icon_only: true, role: .bar, count: d.unread) {
-        on press: session.quick_settings()
+        on press: device.show_surface(device.desk, surface: "quick-settings")
     }
 }

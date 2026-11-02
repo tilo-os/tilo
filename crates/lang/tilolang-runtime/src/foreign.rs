@@ -437,9 +437,12 @@ impl Decoder<'_> {
             Ty::Record(key) => self.record(json, key),
             Ty::Union(keys) => one_of(json, keys, self.author),
             Ty::Enum(key) => match json {
-                Json::String(variant) => Ok(Value::Enum(EnumValue {
+                // A reading names the case as its service writes it (the enum's kebab-case
+                // name); the value holds the declared case's id, as every enum value here
+                // does, so a view's `== .wifi` asks the same thing of both.
+                Json::String(case) => Ok(Value::Enum(EnumValue {
                     ty: format!("{}#{}", key.app, key.name),
-                    variant: variant.clone(),
+                    variant: self.registry.enum_case(key, case)?,
                     fields: BTreeMap::new(),
                 })),
                 encoded => crate::value::from_json(encoded),

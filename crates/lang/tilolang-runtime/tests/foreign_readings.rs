@@ -72,9 +72,34 @@ view menu(m: desktop.WindowMenu) {
                     {"id": "WindowMenuRow.enabled", "name": "enabled", "type": "Bool"},
                     {"id": "WindowMenuRow.reason", "name": "reason", "type": "Option<Text>"},
                 ]},
+                {"id": "MenuState", "name": "MenuState", "fields": [
+                    {"id": "MenuState.state", "name": "state", "type": "enum PanelState"},
+                ]},
+            ],
+            "enums": [
+                {"id": "desktop#PanelState", "name": "PanelState", "doc": "", "variants": [
+                    {"id": "PanelState.open", "name": "open", "doc": "", "fields": []},
+                    {"id": "PanelState.closed", "name": "closed", "doc": "", "fields": []},
+                ]},
             ],
         }))
     }
+
+    /// A view over the desk's menu state: which case the desk published for it.
+    const STATE_VIEW: &str = r#"app test.state "State"
+
+use desktop as desktop
+
+view state(m: desktop.MenuState) {
+  column {
+    if m.state == .open {
+      text("open")
+    } else {
+      text("closed")
+    }
+  }
+}
+"#;
 
     /// The desk's window menu, as a view of ours names it.
     fn menu() -> ResourceRef {
@@ -169,6 +194,29 @@ view menu(m: desktop.WindowMenu) {
             panic!("a row is a record");
         };
         assert_eq!(rt.read(&chosen.target, "reason").unwrap(), Value::none());
+    }
+
+    /// The case a reading names is the case its app declares, so a view's `== .open` asks the
+    /// same of the reading as of a value of its own.
+    #[test]
+    fn a_case_in_a_reading_reads_as_the_case_its_app_declares() {
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let desk = desktop();
+        rt.load_foreign(desk.clone()).unwrap();
+        let view = App::compile(STATE_VIEW, std::slice::from_ref(&desk));
+        view.load(&rt);
+        let state =
+            ResourceRef::parse_id("menu-state", "desktop#MenuState").expect("a resource id");
+        rt.set_reading(&state, r#"{"state": "open"}"#)
+            .expect("a reading of the menu's state");
+        let opened = rt
+            .open_view(&me(), &view.view("state"), vec![Value::resource(&state)])
+            .unwrap_or_else(|why| panic!("{why}"));
+        assert_eq!(
+            drawn(&opened),
+            ["open"],
+            "the reading's case is the one the desk declares"
+        );
     }
 
     #[test]

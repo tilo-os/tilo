@@ -3,6 +3,14 @@
 use super::*;
 use tilo_compositor::KeyModifiers;
 
+/// The readings the session publishes every turn, empty for each resource no service of this
+/// device serves: a view reads an absent sound, battery or connection as none.
+pub(super) fn publish_platform_roots(link: &SessionLink) {
+    for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
+        link.publish_reading(resource, &ty, serde_json::json!({}));
+    }
+}
+
 /// A desk at rest with two windows and two workspaces.
 pub(super) fn reading_with_windows() -> DeskReading {
     DeskReading {
@@ -68,6 +76,7 @@ fn part_at(
         .app
         .clone();
     let link = Rc::new(SessionLink::default());
+    publish_platform_roots(&link);
     link.publish(reading);
     let mut part = ShellPart::new(
         ShellIdentity {

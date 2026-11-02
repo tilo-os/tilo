@@ -395,6 +395,27 @@ impl Registry {
             .find_map(|p| p.meta.enums.iter().find(|e| e.id == id).cloned())
     }
 
+    /// The id of `key`'s case `case`, named by its name or its id: what a value of the enum
+    /// holds (`LinkKind.wifi`), as the enum's package declares it.
+    ///
+    /// # Errors
+    ///
+    /// A message when no loaded package declares the enum, or it has no such plain case.
+    pub fn enum_case(&self, key: &TypeKey, case: &str) -> Result<String, String> {
+        let id = format!("{}#{}", key.app, key.name);
+        let declared = self
+            .enum_meta(&id)
+            .ok_or_else(|| format!("`{id}` is not declared by any loaded package"))?;
+        declared
+            .variants
+            .iter()
+            .find(|variant| {
+                variant.fields.is_empty() && (variant.name == case || variant.id == case)
+            })
+            .map(|variant| variant.id.clone())
+            .ok_or_else(|| format!("`{case}` is not a case of `{}`", key.name))
+    }
+
     /// The id of the view a window of type `ty` (an id) shows unless another is asked for: the
     /// default view the type's package declares.
     pub fn default_view(&self, ty: &str) -> Option<ViewId> {

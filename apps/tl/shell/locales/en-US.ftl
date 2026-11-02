@@ -638,14 +638,14 @@ d-tqo2gugp = The tasks running for the person
 d-j2kj3zvb = The time
     .doc = The time.
 
-d-ntj3ee4g = Who else is here, and the person
-    .doc = Who else is here, and the person.
+d-ntj3ee4g = Who else is here, the person, and the roster of everyone
+    .doc = Who else is here, the person, and the roster of everyone.
 
-d-bd6dyvh6 = Notifications, and the device's status
-    .doc = Notifications, and the device's status.
+d-bd6dyvh6 = The device's status (the sound, the connection and the battery) and the notifications
+    .doc = The device's status (the sound, the connection and the battery) and the notifications.
 
-d-z4jepckl = The device's battery, charge or power
-    .doc = The device's battery, charge or power.
+d-z4jepckl = The battery on its own, retired: the status part shows it now
+    .doc = The battery on its own, retired: the status part shows it now.
 
 d-ezboaery = The agent's own indicator: a task working for the person
     .doc = The agent's own indicator: a task working for the person.
@@ -692,6 +692,9 @@ d-dkylvhw4 = In front
 
 d-zoqbhs7o = Seed
     .doc = A shell that has never been arranged: the bar's parts and the dock's, in the order the
+
+d-vglzmkiy = Drop the power part
+    .doc = A shell that kept the retired `power` part beside the status loses it.
 
 d-eanbdi6l = Use this layout
     .doc = Uses the preset `to`: every setting it names at once. The result is exactly that preset,
@@ -796,8 +799,20 @@ d-pvl6wwx6 = Bar part
 d-vidcax4k = Workspace menu
     .doc = The workspace in front, opening the workspaces to switch between and the actions on this
 
+d-k7lksxkj = Status icons
+    .doc = The device's status as the session publishes it: the sound's level, the connection the
+
+d-hac3p23j = Volume status
+    .doc = The sound's level, and that it is muted; nothing on a device whose sound reads no level.
+
+d-iwv7cd5i = Network status
+    .doc = The connection the machine's traffic leaves on: Wi-Fi under its network's name, a cable, or
+
+d-agni63m4 = Battery status
+    .doc = The pack's charge as a percentage beside the battery, its glyph saying whether it charges;
+
 d-moh3hzne = Bell
-    .doc = The device's status: an icon button named with what it shows — "Notifications", how many
+    .doc = The notifications: an icon button named with what it shows — "Notifications", how many
 
 d-fniigjed = Viewing settings
     .doc = The shell's own settings: the preset the desk shows, and where to pick another (§6, §8).
@@ -970,8 +985,8 @@ d-luuijvwf = Key hints launcher
 d-z4hw2mcw = Key hints switcher
     .doc = The keys of the switcher: hold the modifier, Tab walks, letting go goes there. The walk that
 
-d-x4rcfcyw = Person chip
-    .doc = Who is here, and their menus. Clicking a person's presence anywhere (the bar, a frame, the
+d-uhzjvuan = People button
+    .doc = Who is here, and their menus. A person's presence on the bar (their face, and the chip that
 
 d-uvwnwa4d = Agent chip
     .doc = An agent here, as its presence: a chip that opens its menu.
@@ -1082,7 +1097,9 @@ d-3ezewqgy~row0 = Bar for part
 
 d-pvl6wwx6~row0 = Bar part for t
 
-d-pvl6wwx6~row1 = Bar part for item
+d-pvl6wwx6~row1 = Bar part for p
+
+d-pvl6wwx6~row2 = Bar part for item
 
 d-vidcax4k~row0 = Workspace menu for w
 

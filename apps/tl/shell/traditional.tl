@@ -295,6 +295,7 @@ view traditional_bar(d: Desk) {
         if d.person != "" and room != .one {
             ui.Avatar(name: .some(d.person))
         }
+        status_icons()
         bell(d)
     }
 }

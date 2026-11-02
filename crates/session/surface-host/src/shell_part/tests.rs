@@ -6,6 +6,7 @@
 )]
 
 use super::*;
+use crate::door::Published;
 
 fn reading() -> DeskReading {
     DeskReading {
@@ -211,9 +212,112 @@ fn a_press_on_the_bar_hands_its_effect_to_the_session() {
         part.work(),
         part.refusals()
     );
+    let opening = link.asked.borrow().front().cloned();
     assert_eq!(
-        link.asked.borrow().front().map(|ask| ask.action.clone()),
-        Some("quick-settings".to_owned())
+        opening.as_ref().map(|ask| ask.action.clone()),
+        Some("show-surface".to_owned())
+    );
+    assert_eq!(
+        opening.map(|ask| ask.arguments.get("surface").cloned()),
+        Some(Some("quick-settings".to_owned())),
+        "the bell opens the quick settings"
+    );
+}
+
+/// The device's status on the bar reads the resources the session publishes — the sound, the
+/// connection and the battery, the same ones the quick settings read — and each press opens
+/// the quick settings.
+#[test]
+fn the_bars_status_reads_the_devices_published_resources() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, link) = part();
+    link.publish_reading(
+        "sound",
+        "so.tilo.device#Sound",
+        serde_json::json!({"output": 40, "volume": 0.42, "muted": false}),
+    );
+    link.publish_reading(
+        "network",
+        "so.tilo.device#Network",
+        serde_json::json!({
+            "wifi": {"available": true, "on": true, "networks": []},
+            "link": {"kind": "wifi", "name": "Station", "signal": 3},
+        }),
+    );
+    link.publish_reading(
+        "power:battery",
+        "so.tilo.device#Battery",
+        serde_json::json!({"present": true, "percentage": 71, "state": "discharging", "on-battery": true}),
+    );
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+    for said in ["Volume, 42%", "Wi-Fi, Station", "71%"] {
+        assert!(
+            part.says(said),
+            "the bar says {said}: {:?}",
+            part.accessible_labels()
+        );
+    }
+    // The battery's glyph says it charges: the same reading, its other fact.
+    link.publish_reading(
+        "power:battery",
+        "so.tilo.device#Battery",
+        serde_json::json!({"present": true, "percentage": 71, "state": "charging", "on-battery": false}),
+    );
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+    assert!(part.says("71%"), "the charge stays as it charges");
+    for name in ["Volume, 42%", "Wi-Fi, Station", "71%"] {
+        click(&mut part, name);
+        assert_eq!(
+            link.asked.borrow_mut().pop_front().map(|ask| ask.action),
+            Some("show-surface".to_owned()),
+            "a press on {name} opens the quick settings: refusals {:?}",
+            part.refusals()
+        );
+    }
+}
+
+/// Who else is here shows as their faces, read from the session's presence, and the people
+/// button opens the session's roster.
+#[test]
+fn the_bars_faces_are_who_is_here_and_the_button_opens_the_roster() {
+    let _settled = ui::motion::testing::settled();
+    let (mut part, link) = part_with(DeskReading {
+        people: vec![
+            PersonReading {
+                key: "mia".to_owned(),
+                name: "Mia Clayton".to_owned(),
+            },
+            PersonReading {
+                key: "sam".to_owned(),
+                name: "Sam Okafor".to_owned(),
+            },
+        ],
+        ..reading()
+    });
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+    for said in [
+        "Mia Clayton",
+        "Sam Okafor",
+        "Mia Clayton and Sam Okafor are here",
+    ] {
+        assert!(
+            part.says(said),
+            "the bar says {said}: {:?}",
+            part.accessible_labels()
+        );
+    }
+    click(&mut part, "Mia Clayton and Sam Okafor are here");
+    assert_eq!(
+        link.asked.borrow_mut().pop_front().map(|ask| ask.action),
+        Some("toggle-collaborators".to_owned()),
+        "refusals {:?}",
+        part.refusals()
     );
 }
 
@@ -811,6 +915,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
     let packages = crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
     let app = packages.last().unwrap().meta.app.clone();
     let link = Rc::new(SessionLink::default());
+    crate::shell_part::tests_support::publish_platform_roots(&link);
     link.publish(reading());
     let mut part = ShellPart::new(
         ShellIdentity {

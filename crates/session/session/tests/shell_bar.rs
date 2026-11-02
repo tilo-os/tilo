@@ -996,8 +996,11 @@ fn alt_backtick_walks_only_the_front_apps_windows() {
     assert_eq!(lifted(&session), crossed.key);
 }
 
+/// Who else is here stands on the bar as their face and as the chip that names them, both read
+/// from the session's presence; the chip calls the session's own `toggle-collaborators`: the
+/// roster opens and lists them.
 #[test]
-fn a_persons_presence_opens_their_menu() {
+fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     until(&mut session, |session| says(session, &desk(session).clock));
@@ -1014,7 +1017,7 @@ fn a_persons_presence_opens_their_menu() {
         .here()
         .borrow_mut()
         .set_members(None, Some(vec![member]));
-    until(&mut session, |session| says(session, "Mia Clayton"));
+    until(&mut session, |session| says(session, "Mia Clayton is here"));
     let shown = |session: &Session| {
         session
             .accessible_labels()
@@ -1022,12 +1025,15 @@ fn a_persons_presence_opens_their_menu() {
             .filter(|label| label.as_str() == "Mia Clayton")
             .count()
     };
+    assert!(
+        shown(&session) > 0,
+        "their face is on the bar, named for assistive technology: {:?}",
+        session.accessible_labels()
+    );
     let before = shown(&session);
-    // Their presence calls the session's own `show-person`: the roster opens at them, and
-    // names them there too.
-    press(&mut session, "Mia Clayton");
+    press(&mut session, "Mia Clayton is here");
     until(&mut session, |session| shown(session) > before);
-    keep(&mut session, "shell-person-menu");
+    keep(&mut session, "shell-people-roster");
 }
 
 /// An action host that keeps what it was asked to run: where the session starts an app.
@@ -1252,15 +1258,44 @@ fn appearance_mode(session: &Session) -> serde_json::Value {
         .unwrap_or_default()
 }
 
-/// The bar's quick settings open the panel over the desk, and its Dark mode tile runs the
-/// appearance settings' own published action: the published mode turns from what it was to the
-/// other, as Settings and an agent turn it.
+/// The bar's status is the device's own reading: the sound's level, from the same `sound`
+/// resource the quick settings read and change — a change of the resource moves the bar's
+/// number, never a copy of it.
+#[test]
+fn the_bars_status_shows_the_sounds_published_level() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_devices(WIDTH, HEIGHT);
+    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    until_settled(&mut session, |session| says(session, "Volume, 40%"));
+    keep(&mut session, "shell-bar-status");
+    session
+        .invoke(
+            "sound",
+            "set-volume",
+            &serde_json::Map::from_iter([("level".to_owned(), serde_json::json!(0.65))]),
+        )
+        .expect("the sound takes its own volume");
+    until_settled(&mut session, |session| says(session, "Volume, 65%"));
+    keep(&mut session, "shell-bar-status-louder");
+}
+
+/// The bar's status opens the quick settings over the desk, and the panel's Dark mode tile runs
+/// the appearance settings' own published action: the published mode turns from what it was to
+/// the other, as Settings and an agent turn it.
 fn dark_mode_from_quick_settings_at(width: i32, height: i32) {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
     let mut session = session_with_devices(width, height);
     until_settled(&mut session, |session| says(session, &desk(session).clock));
-    press_at_rest(&mut session, "Quick settings");
+    // A phone's bar keeps the connection and the charge, the sound's control giving way
+    // (`status_icons`): there the bell is the door to the device's settings.
+    let opener = if width < 480 {
+        "Notifications"
+    } else {
+        "Volume, 40%"
+    };
+    press_at_rest(&mut session, opener);
     until_settled(&mut session, |session| here(session) == "quick-settings");
     until_settled(&mut session, |session| says(session, "Dark mode"));
     until_settled(&mut session, |session| says(session, "Volume"));
@@ -1317,7 +1352,7 @@ fn quick_settings_volume_slider_sets_the_published_volume() {
         (volume(&session) - 0.4).abs() < 0.01,
         "the card starts at 40%"
     );
-    press_at_rest(&mut session, "Quick settings");
+    press_at_rest(&mut session, "Volume, 40%");
     until_settled(&mut session, |session| {
         session.shell_control("Volume").is_some()
     });

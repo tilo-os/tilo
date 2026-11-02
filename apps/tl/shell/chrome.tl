@@ -61,11 +61,11 @@ enum Slot {
     tasks (icon: .bot)
     /// The time.
     clock (icon: .clock)
-    /// Who else is here, and the person.
+    /// Who else is here, the person, and the roster of everyone.
     people (icon: .users)
-    /// Notifications, and the device's status.
+    /// The device's status (the sound, the connection and the battery) and the notifications.
     status (icon: .bell)
-    /// The device's battery, charge or power.
+    /// The battery on its own, retired: the status part shows it now.
     power (icon: .battery)
     /// The agent's own indicator: a task working for the person.
     agent (icon: .sparkles)
@@ -173,12 +173,16 @@ migration action seed(s: Shell) {
         s.bar_parts.insert(BarPart(slot: .clock, title: "Clock"))
         s.bar_parts.insert(BarPart(slot: .space, title: "Gap"))
         s.bar_parts.insert(BarPart(slot: .people, title: "People"))
-        s.bar_parts.insert(BarPart(slot: .power, title: "Power", shown: false))
         s.bar_parts.insert(BarPart(slot: .status, title: "Status"))
     }
     if s.dock_items.is_empty() and s.dock_launcher {
         s.dock_items.insert(DockItem(key: "launcher", title: "Launcher", icon: "layout-grid"))
     }
+}
+
+/// A shell that kept the retired `power` part beside the status loses it.
+migration action drop_the_power_part(s: Shell) {
+    s.bar_parts.remove_where(p -> p.slot == Slot.power)
 }
 
 /// Uses the preset `to`: every setting it names at once. The result is exactly that preset,

@@ -289,6 +289,24 @@ scenario "a banner" {
     d.notice_actions.insert(NoticeAction(notice: "n4", key: "retry", label: "Retry"))
 }
 
+/// The bar's status and who is here: the faces of the two people working alongside Ada and the
+/// chip that names them, the device's sound, connection and charge, the person's own avatar and
+/// the notifications with what waits in them.
+scenario "the bar's status" {
+    let d = root Desk
+    d.person = "Ada Lovelace"
+    d.clock = "4:28 PM"
+    d.weekday = "Thursday"
+    d.date = "October 30"
+    d.workspace = "Studio"
+    d.strip = "Drafts"
+    d.here = "none"
+    d.unread = 3
+    d.people.insert(Person(key: "mia", name: "Mia Clayton"))
+    d.people.insert(Person(key: "sam", name: "Sam Okafor"))
+    seed(shell)
+}
+
 /// Who is here, and the menu a person's presence opens.
 scenario "a person's menu" {
     let d = root Desk
