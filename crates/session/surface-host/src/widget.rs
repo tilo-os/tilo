@@ -61,6 +61,10 @@ pub struct WidgetHost {
     /// with the window policy placing the windows they stand for
     /// ([`crate::WellPolicy`]).
     wells: Option<ui::widget::Wells>,
+    /// The previews the tree's views report to as it lays them out: shared
+    /// with the closures that name the windows it pictures
+    /// ([`SurfaceHost::window_pictures`]).
+    previews: Option<ui::widget::Previews>,
 }
 
 impl WidgetHost {
@@ -103,6 +107,7 @@ impl WidgetHost {
             owed: true,
             revision: 0,
             wells: None,
+            previews: None,
         }
     }
 
@@ -113,14 +118,23 @@ impl WidgetHost {
         self.wells = wells;
     }
 
-    /// Lay the tree out with the wells in effect, as `work` runs it: a
-    /// placement made then reports to them, so a policy reading them in the
-    /// same frame sees the windows where the tree just laid them out.
-    fn with_wells<T>(&mut self, work: impl FnOnce(&mut FrameHarness) -> T) -> T {
-        let Some(wells) = self.wells.clone() else {
-            return work(&mut self.host);
-        };
-        let _installed = ui::widget::window_well::install(wells);
+    /// Report the previews of a tree's windows ([`ui::widget::WindowPreview`])
+    /// to `previews` as it lays them out: the same handle the pictures the
+    /// host hands the compositor are read from.
+    pub fn install_previews(&mut self, previews: Option<ui::widget::Previews>) {
+        self.previews = previews;
+    }
+
+    /// Lay the tree out with the wells and the previews in effect, as `work`
+    /// runs it: a placement made then reports to them, so a policy reading
+    /// them in the same frame sees the windows where the tree just laid them
+    /// out.
+    fn with_reports<T>(&mut self, work: impl FnOnce(&mut FrameHarness) -> T) -> T {
+        let _wells = self.wells.clone().map(ui::widget::window_well::install);
+        let _previews = self
+            .previews
+            .clone()
+            .map(ui::widget::window_preview::install);
         work(&mut self.host)
     }
 
@@ -221,7 +235,7 @@ impl WidgetHost {
     /// Lay the tree out and draw it now, whether or not a frame is due:
     /// what a caller reading its layout needs first.
     pub fn relayout(&mut self) {
-        self.with_wells(ui::headless::FrameHarness::relayout);
+        self.with_reports(ui::headless::FrameHarness::relayout);
         self.owed = true;
     }
 
@@ -456,7 +470,7 @@ impl SurfaceHost for WidgetHost {
         // What was owed is consumed by this frame whether or not the tree drew anything of
         // its own.
         let owed = std::mem::take(&mut self.owed);
-        let drew = self.with_wells(|host| host.poll_frame().unwrap_or(false));
+        let drew = self.with_reports(|host| host.poll_frame().unwrap_or(false));
         if !(drew || owed) {
             return false;
         }

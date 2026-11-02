@@ -4883,6 +4883,24 @@
       }
     },
     {
+      "name": "WindowPreview",
+      "doc": "A window's live picture, at the rectangle the preview stands at: the compositor draws the window's own pixels there, so the preview draws nothing and takes no input.",
+      "props": [
+        {
+          "name": "window",
+          "doc": "The window whose picture shows here: its key in the desk's reading (`Win.key`).",
+          "type": "text",
+          "required": true,
+          "positional": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "window",
+        "not_in_gallery": "a preview draws nothing: the compositor draws the window's own pixels there, and a gallery entry has no window to show"
+      }
+    },
+    {
       "name": "WindowWell",
       "doc": "A place's window, at the rectangle the well stands at: the app's own window shows there, so the well draws nothing and takes no input.",
       "props": [

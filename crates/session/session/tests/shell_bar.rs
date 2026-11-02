@@ -123,6 +123,26 @@ fn keep(session: &mut Session, name: &str) -> tilo_compositor::Screenshot {
     shot
 }
 
+/// How many pixels of `after` differ from `before` by more than a shade: what a person sees
+/// change on the screen.
+fn changed(before: &tilo_compositor::Screenshot, after: &tilo_compositor::Screenshot) -> usize {
+    assert_eq!(
+        (before.width, before.height),
+        (after.width, after.height),
+        "the two frames are of one screen"
+    );
+    before
+        .rgba
+        .chunks_exact(4)
+        .zip(after.rgba.chunks_exact(4))
+        .filter(|(a, b)| {
+            a.iter()
+                .zip(b.iter())
+                .any(|(a, b)| u8::abs_diff(*a, *b) > 8)
+        })
+        .count()
+}
+
 /// Press the bar's control named `name` with the pointer.
 fn press(session: &mut Session, name: &str) {
     let (x, y, w, h) = session
@@ -725,6 +745,7 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
         .key
         .clone();
     let key = |keycode: u32, pressed: bool| InputEvent::Key { keycode, pressed };
+    let plain = keep(&mut session, "shell-before-switcher");
     session.compositor().input(key(56, true)).unwrap();
     session.step(Duration::from_millis(1)).unwrap();
     session.compositor().input(key(15, true)).unwrap();
@@ -736,12 +757,54 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
             .iter()
             .any(|window| window.key == next && window.focused)
     });
-    keep(&mut session, "shell-switcher");
+    let held = keep(&mut session, "shell-switcher");
+    // The switcher names every window it walks, each with the app it shows, and the keys stand
+    // under them rather than over their titles.
+    let labels = session.accessible_labels();
+    let walked = desk(&session);
+    let mut titles = Vec::new();
+    for window in &walked.windows {
+        let named = labels.iter().filter(|l| l.as_str() == window.title).count();
+        assert!(
+            named > 0,
+            "the switcher names {:?}: {labels:?}",
+            window.title
+        );
+        let bounds = session
+            .shell_control(&window.title)
+            .unwrap_or_else(|| panic!("{:?} stands in the switcher", window.title));
+        titles.push(bounds);
+    }
+    let keys = labels
+        .iter()
+        .find(|label| label.contains("Alt + Tab"))
+        .unwrap_or_else(|| panic!("the switcher names its keys: {labels:?}"));
+    let keys = session
+        .shell_control(keys)
+        .unwrap_or_else(|| panic!("the keys stand in the switcher"));
+    for title in &titles {
+        assert!(
+            keys.1 >= title.1 + title.3,
+            "the keys under the windows stand below every title, not over it: keys {keys:?} \
+             titles {titles:?}"
+        );
+    }
+    // Holding Alt shows the switcher: the screen is not the desk's own.
+    let drawn = changed(&plain, &held);
+    assert!(
+        drawn > plain.rgba.len() / 4 / 100,
+        "holding Alt+Tab draws the switcher: {drawn} pixels differ from the desk"
+    );
     // Letting Alt go goes to it, and the desk is at rest again.
     session.compositor().input(key(15, false)).unwrap();
     session.step(Duration::from_millis(1)).unwrap();
     session.compositor().input(key(56, false)).unwrap();
     until(&mut session, |session| here(session) == "none");
+    let rested = keep(&mut session, "shell-after-switcher");
+    assert!(
+        changed(&held, &rested) > drawn / 2,
+        "letting Alt go takes the switcher down again"
+    );
     assert_eq!(
         desk(&session)
             .windows

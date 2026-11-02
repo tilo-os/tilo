@@ -333,7 +333,8 @@ pub struct WindowReading {
     /// Its strip's id, as moving a window there names the strip.
     pub strip_key: String,
     pub workspace: String,
-    /// How recently it was in front: lower is more recent.
+    /// Where it stands in the walk Alt+Tab takes: 1 is the window in front, then the ones it
+    /// was in front of, then the rest along their strips.
     pub recency: i64,
     pub focused: bool,
     /// Whether it may be pictured: `live`, `withheld` (it holds secrets) or `none`.
@@ -1962,7 +1963,15 @@ pub struct ShellPart {
     /// What the part stands as: the bar's band over the windows, or the whole display under
     /// them.
     layer: ShellLayer,
+    /// The previews the part's views name ([`ui::widget::WindowPreview`]), and which of the
+    /// compositor's windows each is: the part hands the compositor every window's live picture
+    /// where its view would draw it, and none for a window `windows` leaves out (one that may
+    /// not be pictured).
+    previews: Option<(ui::widget::Previews, WindowLookup)>,
 }
+
+/// Which of the compositor's windows a view's window key names, if it may be pictured.
+type WindowLookup = Rc<dyn Fn(&str) -> Option<u64>>;
 
 /// A shell part's identity: the package it runs, the person it is for, and the record the
 /// shell's parts share.
@@ -2077,6 +2086,7 @@ impl ShellPart {
             },
             seen_heads: Vec::new(),
             layer,
+            previews: None,
         };
         if seed {
             part.seed();
@@ -2261,6 +2271,16 @@ impl ShellPart {
     pub fn set_theme(&mut self, theme: ui::Theme) {
         self.widgets.set_theme(theme);
         self.again = true;
+    }
+
+    /// Show the live pictures of the windows the part's views name
+    /// ([`ui::widget::WindowPreview`]): each preview's rectangle is where the window it names
+    /// stands on this display, and `windows` says which of the compositor's windows that key
+    /// is — `None` for a window that may not be pictured, which shows its view's own mark
+    /// instead.
+    pub fn show_pictures(&mut self, previews: ui::widget::Previews, windows: WindowLookup) {
+        self.widgets.install_previews(Some(previews.clone()));
+        self.previews = Some((previews, windows));
     }
 
     /// The edges the shell's chrome stands on, as the session read them from the shell's
@@ -2636,6 +2656,47 @@ impl SurfaceHost for ShellPart {
     /// them.
     fn below_windows(&self) -> bool {
         self.widgets.below_windows()
+    }
+
+    /// The live pictures the part's views name: each window's own pixels, where the view would
+    /// draw it, for the compositor to draw over the part. A part that draws nothing pictures
+    /// nothing, and a picture never reaches past the part's own display.
+    fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
+        let Some((previews, windows)) = self.previews.as_ref() else {
+            return Vec::new();
+        };
+        if self.hidden() {
+            return Vec::new();
+        }
+        let placement = self.widgets.placement();
+        let (ox, oy) = placement.origin;
+        let display = (
+            f64::from(ox),
+            f64::from(oy),
+            f64::from(placement.size.0),
+            f64::from(placement.size.1),
+        );
+        previews
+            .pictures()
+            .into_iter()
+            .filter_map(|(key, rect)| {
+                let window = windows(&key)?;
+                let at = (
+                    f64::from(ox) + rect.x0,
+                    f64::from(oy) + rect.y0,
+                    rect.width(),
+                    rect.height(),
+                );
+                (rect.width() > 0.0 && rect.height() > 0.0).then_some(
+                    tilo_compositor::WindowPicture {
+                        window,
+                        rect: at,
+                        opacity: 1.0,
+                        clip: Some(display),
+                    },
+                )
+            })
+            .collect()
     }
 
     fn claim_key(&mut self, key: &HostKey, locked: bool, _inhibited: bool) -> KeyClaim {
