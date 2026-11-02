@@ -4,6 +4,10 @@
 //! window menus, the questions an app asks, and search's rows. A surface
 //! never shows an app id and never falls back to one: an id with no name
 //! anywhere is written as words.
+//!
+//! The naming itself is [`tilo_desktop_search::names`]'s, which every
+//! desktop carries; this adds what only a session knows: the name the
+//! device's app lists last read for an installed app or desktop entry.
 
 /// What the app `app_id` is called: the installed package's own name, else
 /// the machine's desktop entry for it, else the registry's name, else its
@@ -16,10 +20,7 @@ pub(crate) fn app_name(app_id: &str) -> String {
     if let Some(name) = listed_name(id) {
         return name;
     }
-    if let Some(name) = tilo_desktop_search::availability::name_for(id) {
-        return name.to_owned();
-    }
-    humanized(id)
+    tilo_desktop_search::names::app_name(id)
 }
 
 /// What the window showing `app_id` and calling itself `title` is called:
@@ -27,15 +28,7 @@ pub(crate) fn app_name(app_id: &str) -> String {
 /// window with no title of its own is the app alone, and a title that is
 /// already the app's name is not said twice.
 pub(crate) fn window_name(app_id: &str, title: &str) -> String {
-    let app = app_name(app_id);
-    let title = title.trim();
-    if title.is_empty() || title == app {
-        app
-    } else if app.is_empty() {
-        title.to_owned()
-    } else {
-        format!("{title} — {app}")
-    }
+    tilo_desktop_search::names::named_window(&app_name(app_id), title)
 }
 
 /// The app's name as this device's app lists last read it: the installed
@@ -64,43 +57,6 @@ pub(crate) fn listed_name(app_id: &str) -> Option<String> {
 /// claimant, and never a name made up for one the device does not know.
 pub(crate) fn claimant(app_id: &str) -> String {
     listed_name(app_id).unwrap_or_else(|| app_id.to_owned())
-}
-
-/// An id written as words for a person: its last dotted part without a
-/// `.desktop` suffix, its `-`/`_` breaks made spaces, and a camel-case hump
-/// a space too — "org.gnome.TextEditor" → "Text Editor",
-/// "so.tilo.file-explorer" → "File Explorer".
-fn humanized(app_id: &str) -> String {
-    let id = app_id.strip_suffix(".desktop").unwrap_or(app_id);
-    let last = id.rsplit('.').find(|part| !part.is_empty()).unwrap_or(id);
-    let spread = last.replace(['-', '_'], " ");
-    let mut broken = String::new();
-    let mut before: Option<char> = None;
-    for ch in spread.chars() {
-        if before.is_some_and(|prev| prev.is_lowercase() || prev.is_ascii_digit())
-            && ch.is_uppercase()
-        {
-            broken.push(' ');
-        }
-        before = Some(ch);
-        broken.push(ch);
-    }
-    let said = broken
-        .split_whitespace()
-        .map(|word| {
-            let mut letters = word.chars();
-            let Some(first) = letters.next() else {
-                return String::new();
-            };
-            first.to_uppercase().collect::<String>() + letters.as_str()
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    if said.trim().is_empty() {
-        app_id.to_owned()
-    } else {
-        said
-    }
 }
 
 #[cfg(test)]

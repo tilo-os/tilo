@@ -398,8 +398,18 @@ impl ActionPalette {
     /// for, so the first screen is full.
     #[must_use]
     pub fn entry_row_capacity(&self) -> usize {
+        self.entry_row_capacity_with(0)
+    }
+
+    /// How many result rows a full list holds under the headers of `groups`
+    /// groups: a header takes room a row would have held, so a list with
+    /// four groups holds fewer rows than one with two.
+    #[must_use]
+    pub fn entry_row_capacity_with(&self, groups: usize) -> usize {
         let row = self.row_height().max(1.0);
-        crate::num::usize_of_f64((self.list_cap() / row).floor()).max(1)
+        let headers = crate::num::f64_of_usize(groups) * self.results.header_band();
+        let room = (self.list_cap() - headers).max(row);
+        crate::num::usize_of_f64((room / row).floor()).max(1)
     }
 
     /// The result list's rect (the card under its field and band, with the

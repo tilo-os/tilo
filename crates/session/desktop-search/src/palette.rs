@@ -136,7 +136,12 @@ impl Sources {
     /// Ask the applications whose answers were still coming.
     fn poll(&self) -> bool {
         let window = self.window.as_ref().is_some_and(WindowSearch::poll);
-        self.content.poll() || window
+        let host = self
+            .host
+            .iter()
+            .map(|source| source.poll())
+            .fold(false, |any, one| any | one);
+        self.content.poll() || window || host
     }
 
     fn waiting(&self) -> bool {
@@ -480,9 +485,11 @@ impl DesktopSearch {
         let groups = self.arranged(query, stream.groups());
         let pending = stream.pending();
         // Each group shares what the palette shows without scrolling; a
-        // group cut short offers the rest in place.
+        // group cut short offers the rest in place. The groups' own headers
+        // take room the rows would have held.
         let capacity = self.palette.entry_row_capacity();
-        let groups = ui::search::system::trim_groups(groups, capacity, &self.expanded);
+        let row_budget = self.palette.entry_row_capacity_with(groups.len());
+        let groups = ui::search::system::trim_groups(groups, row_budget, &self.expanded);
         // A source answering late re-ranks the rows of the same query: the
         // row the person moved to stays chosen, so Enter does not open
         // whatever slid under the cursor. A selection they never moved

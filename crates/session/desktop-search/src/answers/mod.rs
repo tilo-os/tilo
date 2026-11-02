@@ -3,12 +3,14 @@
 //! the rates the host last fetched ([`currency`]), an address
 //! ("example.com") and the web searches a query can be ([`web`]). Every
 //! desktop offers them as [`crate::providers::Answers`] and
-//! [`crate::providers::WebSearch`].
+//! [`crate::providers::WebSearch`]; whether a query asks a question is
+//! [`question::asks`], which the host's answer row is offered for.
 //!
 //! Nothing here is fetched, and nothing typed leaves the machine before a
 //! person chooses a row.
 
 pub mod currency;
+pub mod question;
 pub mod units;
 pub mod web;
 

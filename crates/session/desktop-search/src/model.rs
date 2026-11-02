@@ -365,6 +365,12 @@ pub trait Source {
     fn verbatim(&self) -> bool {
         false
     }
+    /// Take in what arrived since the rows were built that changes them (an
+    /// answer still being written), and say whether it did: the palette
+    /// builds the rows again when one says it did.
+    fn poll(&self) -> bool {
+        false
+    }
 }
 
 /// A source a host keeps between searches (its index built once) is
@@ -390,6 +396,9 @@ impl<S: Source + ?Sized> Source for std::rc::Rc<S> {
     }
     fn verbatim(&self) -> bool {
         (**self).verbatim()
+    }
+    fn poll(&self) -> bool {
+        (**self).poll()
     }
 }
 

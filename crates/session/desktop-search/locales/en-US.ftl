@@ -4,6 +4,14 @@ search-placeholder = Search apps, windows, documents and actions…
 search-kind-answers = Answers
 search-kind-web = Web
 search-kind-websites = Websites
+search-kind-ask = Answer
+search-ask-for = Ask { $provider }: { $query }
+search-ask-answering = Answering…
+search-ask-copy = Copy the answer
+search-ask-failed = { $provider } could not answer: { $reason }
+search-ask-setup = Set up an AI provider
+search-ask-setup-detail = Ask questions here, without leaving the search
+search-ask-no-gateway = No model service is running
 search-answer-sum = { $expression } =
 search-answer-money-stale = { $amount } at rates from { $age }
 search-answer-open-address = Open { $address }

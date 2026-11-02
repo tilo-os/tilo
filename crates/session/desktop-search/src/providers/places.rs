@@ -170,7 +170,9 @@ impl Continue {
     /// list "Notes" instead of the notes.
     fn names_a_place(&self, place: &Place) -> bool {
         let label = ui::search::fold_search_text(place.label.trim());
-        !label.is_empty() && label != ui::search::fold_search_text(&(self.app_name)(&place.app))
+        !label.is_empty()
+            && label != ui::search::fold_search_text(&(self.app_name)(&place.app))
+            && !crate::names::is_apps_own_name(&place.app, &place.label)
     }
 
     fn hit(&self, place: &Place, score: i32) -> Hit {
@@ -325,6 +327,11 @@ mod tests {
     fn a_window_that_only_names_its_app_is_no_place_to_continue() {
         let mut recent = RecentPlaces::default();
         recent.record(place("Notes", None, 3));
+        // An app run without its list says its id's words in its empty
+        // window: "File Explorer" is the app the lists call "Files".
+        let mut files = place("File Explorer", None, 4);
+        files.app = "so.tilo.file-explorer".into();
+        recent.record(files);
         recent.record(place("Groceries", Some("n1"), 2));
         let shown = Continue::new(&recent, "workspace", vec![4], 10, |_| "Notes".into());
         let listed = shown.query("");
@@ -333,6 +340,13 @@ mod tests {
         assert!(
             shown.query("notes").iter().all(|hit| hit.title != "Notes"),
             "and typing the app's name does not bring it back"
+        );
+        assert!(
+            shown
+                .query("file")
+                .iter()
+                .all(|hit| hit.title != "File Explorer"),
+            "nor does the app's empty window"
         );
     }
 

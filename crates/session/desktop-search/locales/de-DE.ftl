@@ -4,6 +4,14 @@ search-placeholder = Apps, Fenster, Dokumente und Aktionen durchsuchen…
 search-kind-answers = Antworten
 search-kind-web = Web
 search-kind-websites = Websites
+search-kind-ask = Antwort
+search-ask-for = { $provider } fragen: { $query }
+search-ask-answering = Antwortet…
+search-ask-copy = Antwort kopieren
+search-ask-failed = { $provider } konnte nicht antworten: { $reason }
+search-ask-setup = KI-Anbieter einrichten
+search-ask-setup-detail = Fragen hier stellen, ohne die Suche zu verlassen
+search-ask-no-gateway = Es läuft kein Modelldienst
 search-answer-sum = { $expression } =
 search-answer-money-stale = { $amount } zu Kursen von { $age }
 search-answer-open-address = { $address } öffnen

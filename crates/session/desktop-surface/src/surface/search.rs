@@ -526,10 +526,10 @@ pub fn is_escape(event: &WindowEvent) -> bool {
     key.state == ElementState::Pressed && matches!(&key.logical_key, Key::Named(NamedKey::Escape))
 }
 
-/// Every open window as search lists it: the app it shows (for its glyph),
-/// and where it is. Windows titled alike say what tells them apart: who
-/// holds the window, or else which of them it is, counted left to right.
-/// The name of the app window `group` shows, as the desktop labels it.
+/// Every open window as search lists it: called by what it shows and the app
+/// it shows it in (`Groceries — Notes`), with the app for its glyph. Only
+/// windows called alike say more: where each of them is, or which of them it
+/// is, counted left to right.
 fn window_app(tree: &DesktopTree, group: GroupId) -> Option<String> {
     let window = tree
         .workspaces
@@ -553,20 +553,33 @@ fn windows(
         for strip in &workspace.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
+                    let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile);
                     let app_title = match &tab.tile {
                         TileContent::LocalApp { label, .. } => label.clone(),
-                        _ => String::new(),
+                        _ => app.as_ref().map_or_else(String::new, |app| {
+                            tilo_desktop_search::names::app_name(&app)
+                        }),
                     };
-                    let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile);
                     let place = holders
                         .get(&tab.id)
                         .map(|holder| holder.name.clone())
                         .into_iter()
                         .chain([workspace.name.clone(), strip.name.clone()])
                         .collect();
+                    // A window bar that only says what the app is called
+                    // names no place: the row is the app, so the bar's words
+                    // for it are dropped rather than repeated as a title.
+                    let named = app.as_deref().is_some_and(|app| {
+                        tilo_desktop_search::names::is_apps_own_name(app, &tab.title)
+                    });
+                    let title = if named {
+                        app_title.clone()
+                    } else {
+                        tilo_desktop_search::names::named_window(&app_title, &tab.title)
+                    };
                     out.push(WindowEntry {
                         tab: tab.id,
-                        title: tab.title.clone(),
+                        title,
                         app_title,
                         app,
                         place,
@@ -596,6 +609,10 @@ fn windows(
                 "search-window-nth",
                 &[("nth", nth.into()), ("count", all.into())],
             ));
+        } else {
+            // Where a window is needs saying only when another is called
+            // the same: a lone window's name is enough to find it by.
+            entry.place.clear();
         }
     }
     out

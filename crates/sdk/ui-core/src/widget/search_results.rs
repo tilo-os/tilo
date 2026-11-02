@@ -287,6 +287,11 @@ impl SearchResultsView {
         self.bands = RowBands::resolve(theme);
     }
 
+    /// A group header's band: the room a group costs above its rows.
+    pub(crate) fn header_band(&self) -> f64 {
+        self.bands.header
+    }
+
     /// A one- or two-line row's band.
     pub(crate) fn row_band(&self, two_line: bool) -> f64 {
         if two_line {

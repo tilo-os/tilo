@@ -102,6 +102,7 @@ mod records;
 mod rotation;
 pub mod run;
 mod search;
+mod search_ask;
 pub mod seeded_apps;
 pub mod session_package;
 mod setup;

@@ -948,6 +948,13 @@ pub fn websites_kind() -> ResourceKind {
     ResourceKind::Custom(crate::i18n::t("search-kind-websites"))
 }
 
+/// The kind the answer to a question is grouped under, in the desktop's
+/// language.
+#[must_use]
+pub fn ask_kind() -> ResourceKind {
+    ResourceKind::Custom(crate::i18n::t("search-kind-ask"))
+}
+
 /// A service row's score when the query names the service alone: below an
 /// exact name's, so an app named the same way still leads.
 const SERVICE_SCORE: i32 = 60;

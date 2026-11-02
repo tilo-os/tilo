@@ -458,7 +458,13 @@ impl ui::resources::PublishesResources for DeskLayer {
                 .flat_map(|workspace| &workspace.strips)
                 .flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs)
-                .map(|tab| (tab.id, tab.title.clone()))
+                .map(|tab| {
+                    let title = tilo_desktop_model::apps::canonical_app_id(&tab.tile).map_or_else(
+                        || tab.title.clone(),
+                        |app| tilo_desktop_search::names::window_name(&app, &tab.title),
+                    );
+                    (tab.id, title)
+                })
                 .collect()
         });
         let (query, rows) = self.handle.search_rows();

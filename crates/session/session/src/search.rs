@@ -161,6 +161,10 @@ pub(crate) struct SessionSearch {
     here: RefCell<Vec<WorkspaceHere>>,
     /// The downloaded programs, as of the last reading of the registry.
     downloaded: RefCell<DownloadedRows>,
+    /// The question search answered, and the answer as it is being written:
+    /// kept across the builds of the rows so what arrives stays where the
+    /// person asked it.
+    ask: crate::search_ask::Shared,
 }
 
 /// The resource of the section keeping search's history.
@@ -210,6 +214,7 @@ impl SessionSearch {
             workspaces: RefCell::default(),
             here: RefCell::default(),
             downloaded: RefCell::default(),
+            ask: crate::search_ask::Shared::default(),
         }
     }
 
@@ -663,6 +668,10 @@ impl SearchHost for SessionSearch {
                 records.held(workspace),
             )));
         }
+        sources.push(Box::new(crate::search_ask::Ask::new(
+            std::sync::Arc::clone(&self.ask),
+            workspace,
+        )));
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
             workspace: workspace.to_owned(),
