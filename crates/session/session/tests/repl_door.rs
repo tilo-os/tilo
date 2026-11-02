@@ -570,8 +570,9 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
 }
 
 /// What the seeded apps keep, placed through the door, is drawn on the canvas by its own app's
-/// view, its content and not its title alone: a note found by its title shows its text, and
-/// "my mails" finds the inbox, which shows its threads.
+/// view, its content and not its title alone: a note found by its title shows its text. And a
+/// text finds the resource it names even where many actions name it too: "Inbox" places the
+/// inbox.
 #[test]
 fn a_placed_record_is_drawn_through_its_own_apps_view() {
     let _settled = ui::motion::testing::settled();
@@ -617,13 +618,36 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         session.shell_says("Oat milk, eggs, sourdough")
     });
 
+    // A text naming a resource that many actions name too finds the resource: "Inbox" is the
+    // mailbox, under every conversation's "Move to inbox".
     let (answer, failed) = repl.call(
         &mut session,
         "tilo",
-        json!({"program": "session.place_found(text: \"my mails\", view: .none, x: .some(640), y: .some(60))"}),
+        json!({"program": "session.place_found(text: \"Inbox\", view: .none, x: .some(640), y: .some(60))"}),
     );
     assert!(!failed, "the program ran: {answer}");
-    until(&mut session, "an inbox thread on the canvas", |session| {
-        session.shell_says("Launch plan for the autumn release")
+    let mailbox = |session: &Session| {
+        let resources = session.resources();
+        session
+            .arrangement()
+            .borrow()
+            .strips()
+            .places()
+            .filter_map(|place| {
+                tilo_actions::door::locate(
+                    &resources,
+                    &tilo_actions::ActionAddress::new(&place.record, "open"),
+                )
+                .map(|(resource, _)| (resource.kind.clone(), resource.label.clone()))
+            })
+            .find(|(kind, _)| kind == "tl.so.tilo.lang.mail.Mailbox")
+    };
+    until(&mut session, "the inbox placed", |session| {
+        mailbox(session).is_some()
     });
+    assert_eq!(
+        mailbox(&session).map(|(_, label)| label).as_deref(),
+        Some("Inbox"),
+        "the mailbox placed is the inbox"
+    );
 }
