@@ -1,0 +1,521 @@
+//! What the headless-session tests share: a private home for a session's sockets, the frames a
+//! test runs until the desk has done what it asked, the shell's laid-out tree read as assistive
+//! technology hears it, a press on one of its controls, the REPL's end of the agent door, and the
+//! test-control socket `tilo-control` drives a session over.
+//!
+//! Included by each test binary with `mod common;`, as a directory is not a test target of its
+//! own: the same helpers serve the REPL's test, the shell screen's, the test-control socket's and
+//! the acceptance path's.
+
+#![allow(
+    dead_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::significant_drop_tightening,
+    reason = "test fixtures shared by the session's test binaries: a helper a binary does not use is not an error, and a failed step is the assertion"
+)]
+
+use std::io::{BufRead as _, BufReader, Write as _};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::Duration;
+
+use serde_json::{Map, Value, json};
+use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_service::{Questions, Service as _, Started};
+use tilo_session::{ActionPlane, Options, Session};
+use tilo_surface_host::shell_part::ShellLayer;
+use tilolang_tilo::host::Host;
+use tilolang_tilo::records_service::RecordService;
+use tilolang_tilo::runtime::Principal;
+
+/// The display every headless session here draws on.
+pub const WIDTH: i32 = 1280;
+/// See [`WIDTH`].
+pub const HEIGHT: i32 = 800;
+/// The person at the session.
+pub const PERSON: &str = "Pat";
+/// The notes app, as a package names it.
+pub const NOTES: &str = "so.tilo.lang.notes";
+/// The mail app, as a package names it.
+pub const MAIL: &str = "so.tilo.lang.mail";
+/// A seeded conversation in the inbox, as its subject reads.
+pub const SUBJECT: &str = "Launch plan for the autumn release";
+/// The left button of a two-and-more button pointer.
+pub const BTN_LEFT: u32 = 0x110;
+/// The note the shell's own screen tests place: a seeded one, the first the notes app holds.
+pub const NOTE_TITLE: &str = "Groceries";
+/// The titles the shell's screen tests keep, [`NOTE_TITLE`] first: one strip each.
+pub const TITLES: [&str; 12] = [
+    NOTE_TITLE,
+    "Packing list",
+    "Recipes",
+    "Reading",
+    "Garden",
+    "Errands",
+    "Budget",
+    "Birthday ideas",
+    "Books to read",
+    "Trip plan",
+    "Paint colours",
+    "Plumber quotes",
+];
+
+/// A directory only this user reaches, for the door, the plane and the test-control socket.
+pub fn private_home() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().expect("a directory to serve the session in");
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the session's directory is this user's");
+    root
+}
+
+/// Run frames until `done` holds; `false` when it never did.
+pub fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) -> bool {
+    for _ in 0..600 {
+        session.step(Duration::from_millis(1)).expect("step");
+        if done(session) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Run frames until `done` holds.
+#[track_caller]
+pub fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -> bool) {
+    assert!(
+        reached(session, done),
+        "{what}: not reached; the shell's refusals: {:?}; the session says: {:?}",
+        session.shell_refusals(),
+        session.accessible_labels()
+    );
+}
+
+/// Where the shell's control or region named `name` stands on the standard display, when it
+/// does.
+pub fn on_screen(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
+    on_screen_at(session, name, WIDTH, HEIGHT)
+}
+
+/// Where the shell's control or region named `name` stands on a display `width` by `height`,
+/// when it does.
+pub fn on_screen_at(
+    session: &Session,
+    name: &str,
+    width: i32,
+    height: i32,
+) -> Option<(f64, f64, f64, f64)> {
+    session.shell_control(name).filter(|&(x, y, w, h)| {
+        w > 0.0
+            && h > 0.0
+            && x + w > 0.0
+            && y + h > 0.0
+            && x < f64::from(width)
+            && y < f64::from(height)
+    })
+}
+
+/// Press the shell's control named `name` on the standard display with the pointer, as the
+/// person does.
+pub fn press(session: &mut Session, name: &str) {
+    press_at(session, name, WIDTH, HEIGHT);
+}
+
+/// Press the shell's control named `name` on a display `width` by `height` with the pointer, as
+/// the person does.
+pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
+    let (x, y, w, h) = on_screen_at(session, name, width, height)
+        .unwrap_or_else(|| panic!("the shell shows {name}: {:?}", session.accessible_labels()));
+    let (x, y) = (x + w / 2.0, y + h / 2.0);
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x, y })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed,
+            })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+}
+
+/// A notebook kept by the notes app, published as the session publishes a workspace's records,
+/// and a note in it for each of `titles`, made through the app's own actions: their ids, in
+/// order.
+pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
+    let mut record = tilo_resource::Doc::new();
+    let host = Host::new(&record, Principal::new(PERSON), || None).unwrap();
+    let notes = host
+        .load_builtin(
+            include_str!("../../../../../apps/tl/notes/app.tl"),
+            include_str!("../../../../../apps/tl/notes/app.ids"),
+        )
+        .unwrap();
+    host.root_of(NOTES).unwrap();
+    for committed in host.take_committed() {
+        let action = &committed.action;
+        let context =
+            ui::tilo_actions::ActionContext::for_resource("workspace", &action.kind, &action.kind)
+                .with_invoker(ui::tilo_actions::ActionInvoker::actor(PERSON));
+        host.with_schemas(|| {
+            ui::tilo_actions::apply_local_with_context(
+                &mut record,
+                action,
+                action.encode().unwrap(),
+                Some(PERSON.as_bytes()),
+                context,
+            )
+        })
+        .unwrap();
+        record.commit();
+        host.sync_from(&record);
+    }
+    let action = |name: &str| {
+        notes
+            .meta
+            .actions
+            .iter()
+            .find(|action| action.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let mut service = RecordService::new(record, host, PERSON);
+    let book = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.kind == format!("tl.{NOTES}.Notes"))
+        .unwrap();
+    let mut made = Vec::new();
+    for title in titles {
+        let Started::Done(note) = service
+            .invoke(book.id.as_str(), &action("new_note"), &Map::new())
+            .unwrap()
+        else {
+            panic!("a tilolang action is done once committed");
+        };
+        let id = note.resources.first().cloned().unwrap();
+        service
+            .invoke(
+                &id,
+                &action("retitle"),
+                json!({ "title": title }).as_object().unwrap(),
+            )
+            .unwrap();
+        made.push(id);
+    }
+    service.settle();
+    (service, made)
+}
+
+/// The headless session with the shell as the whole screen and the seeded apps published (notes,
+/// tasks, chat and mail), its agent door and test-control socket at `root`, admitting this
+/// test's program to act as the person, and the framed canvas in front.
+pub fn seeded_session(root: &Path) -> Session {
+    seeded_session_with(root, None)
+}
+
+/// [`seeded_session`], with the runs of what the person asks the session's agents played by
+/// `runs` when a test brings them (the agent's side of the run channel); the session keeps its
+/// own otherwise.
+pub fn seeded_session_with(
+    root: &Path,
+    runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
+) -> Session {
+    let program = std::env::current_exe().expect("this test's program");
+    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: Some(ShellLayer::Screen),
+            collab: false,
+            services: vec![Box::new(apps)],
+            questions: Some(Questions::new()),
+            action_plane: ActionPlane::At(root.join("plane.sock")),
+            agent_door: Some(root.join("agent.sock")),
+            admit_repl: vec![program],
+            test_control: Some(root.join("test-control.sock")),
+            agent_runs: runs,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, "the preset switch", |session| {
+        on_screen(session, "Frames").is_some()
+    });
+    press(&mut session, "Frames");
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, "Typed").is_some()
+    });
+    session
+}
+
+/// A headless session with the shell as the whole screen, the notes [`notebook`] published, its
+/// agent door and action plane at `root`, the questions the door's admission is asked through,
+/// and the programs named as admitted to act as the person ahead of time.
+pub fn repl_session(
+    root: &Path,
+    questions: &Questions,
+    admit_repl: Vec<std::path::PathBuf>,
+    notes: RecordService,
+) -> Session {
+    Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: Some(ShellLayer::Screen),
+            collab: false,
+            services: vec![Box::new(notes)],
+            questions: Some(questions.clone()),
+            action_plane: ActionPlane::At(root.join("plane.sock")),
+            agent_door: Some(root.join("agent.sock")),
+            admit_repl,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session")
+}
+
+/// The places of the arrangement that show `resource`.
+pub fn placed(session: &Session, resource: &str) -> usize {
+    session
+        .arrangement()
+        .borrow()
+        .strips()
+        .places()
+        .filter(|place| place.record == resource)
+        .count()
+}
+
+/// What each place of the arrangement shows, by the kind and label of the resource its `open`
+/// resolves to: what the shell draws there.
+pub fn placed_resources(session: &Session) -> Vec<(String, String)> {
+    let resources = session.resources();
+    session
+        .arrangement()
+        .borrow()
+        .strips()
+        .places()
+        .filter_map(|place| {
+            tilo_actions::door::locate(
+                &resources,
+                &tilo_actions::ActionAddress::new(&place.record, "open"),
+            )
+            .map(|(resource, _)| (resource.kind.clone(), resource.label.clone()))
+        })
+        .collect()
+}
+
+/// The REPL's end of the agent door, on a thread of its own so the session runs while it waits:
+/// it sends each request it is handed and hands back the answer to it.
+pub struct Repl {
+    asks: Sender<Value>,
+    answers: Receiver<Value>,
+    next: u64,
+}
+
+impl Repl {
+    /// Connect to the door at `socket` as `tilolang repl` does: asking to act as the person.
+    pub fn connect(socket: &Path) -> Self {
+        Self::asking(socket, true)
+    }
+
+    /// Connect to the door at `socket`, asking to act as the person (`as_person`) or as an agent
+    /// of theirs.
+    pub fn asking(socket: &Path, as_person: bool) -> Self {
+        let socket = socket.to_path_buf();
+        let (asks, asked) = std::sync::mpsc::channel::<Value>();
+        let (answer, answers) = std::sync::mpsc::channel::<Value>();
+        std::thread::spawn(move || {
+            let stream = UnixStream::connect(&socket).expect("the agent door's socket");
+            let mut writer = stream.try_clone().expect("a second handle on the door");
+            let mut reader = BufReader::new(stream);
+            for request in asked {
+                writer
+                    .write_all(format!("{request}\n").as_bytes())
+                    .expect("the door reads");
+                let Some(id) = request.get("id").cloned() else {
+                    continue;
+                };
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let reply: Value = serde_json::from_str(&line).expect("a JSON reply");
+                    if reply.get("id") == Some(&id) {
+                        answer.send(reply).expect("the test waits");
+                        break;
+                    }
+                }
+            }
+        });
+        let repl = Self {
+            asks,
+            answers,
+            next: 1,
+        };
+        let capabilities = if as_person {
+            json!({"experimental": {"so.tilo": {"actsAs": "person"}}})
+        } else {
+            json!({})
+        };
+        repl.asks
+            .send(json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": capabilities,
+                    "clientInfo": {"name": "tilolang repl", "version": "test"}
+                }
+            }))
+            .unwrap();
+        repl
+    }
+
+    /// The answer to the last request, running the session until it is in.
+    pub fn answer(&self, session: &mut Session) -> Value {
+        for _ in 0..30_000 {
+            if let Ok(answer) = self.answers.try_recv() {
+                return answer;
+            }
+            session.step(Duration::from_millis(1)).expect("step");
+        }
+        panic!("the door never answered");
+    }
+
+    /// Send `method` with `params` and wait for its answer.
+    pub fn ask(&mut self, session: &mut Session, method: &str, params: &Value) -> Value {
+        self.next = self.next.saturating_add(1);
+        self.asks
+            .send(json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params}))
+            .unwrap();
+        self.answer(session)
+    }
+
+    /// Call the door's tool `name`: its text, and whether it is an error.
+    pub fn call(&mut self, session: &mut Session, name: &str, arguments: &Value) -> (String, bool) {
+        let reply = self.ask(
+            session,
+            "tools/call",
+            &json!({"name": name, "arguments": arguments}),
+        );
+        let result = reply
+            .get("result")
+            .unwrap_or_else(|| panic!("{name} answered: {reply}"));
+        let text = result["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<String>();
+        (text, result["isError"] == true)
+    }
+
+    /// Admitted, it says it is initialized and lists its tools, as the REPL does.
+    pub fn opened(&mut self, session: &mut Session) -> Vec<String> {
+        let initialized = self.answer(session);
+        assert!(
+            initialized.pointer("/result/serverInfo").is_some(),
+            "the REPL is admitted: {initialized}"
+        );
+        self.asks
+            .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .unwrap();
+        let listed = self.ask(session, "tools/list", &json!({}));
+        listed["result"]["tools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// Run the program `program` through the door's `tilo` tool: its answer, and whether it is
+    /// an error.
+    pub fn run(&mut self, session: &mut Session, program: &str) -> (String, bool) {
+        self.call(session, "tilo", &json!({"program": program}))
+    }
+}
+
+/// Press the portal sheet's `effect`, as its control does.
+pub fn press_sheet(session: &mut Session, effect: &str, args: &Value) {
+    fn publisher(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            if resource.actions.iter().any(|offered| offered.id == action) {
+                Some(resource.id.as_str().to_owned())
+            } else {
+                publisher(&resource.children, action)
+            }
+        })
+    }
+    let mut args = args.as_object().cloned().unwrap_or_default();
+    if let Some(handle) = session
+        .portal()
+        .and_then(tilo_sheets::portal::PortalSeat::dialog)
+        .map(|dialog| dialog.handle)
+    {
+        args.insert("handle".to_owned(), handle.into());
+    }
+    let sheet = publisher(&session.resources(), effect).expect("the sheet publishes that");
+    session.invoke(&sheet, effect, &args).expect("press");
+    session.step(Duration::from_millis(1)).expect("step");
+}
+
+/// Send `request` on the test-control socket at `socket` as `tilo-control` does, running the
+/// session until it answers.
+pub fn control(session: &mut Session, socket: &Path, request: &Value) -> Value {
+    let socket = socket.to_path_buf();
+    let request = request.to_string();
+    let (answer, answered) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut stream = UnixStream::connect(&socket).expect("the test-control socket");
+        stream
+            .write_all(format!("{request}\n").as_bytes())
+            .expect("the socket reads");
+        let mut line = String::new();
+        BufReader::new(stream)
+            .read_line(&mut line)
+            .expect("an answer");
+        answer
+            .send(serde_json::from_str::<Value>(&line).expect("a JSON answer"))
+            .unwrap();
+    });
+    for _ in 0..30_000 {
+        if let Ok(answer) = answered.try_recv() {
+            return answer;
+        }
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    panic!("the test-control socket never answered");
+}
+
+/// Place what "Inbox" finds on the canvas through the door, as the REPL's program does, and
+/// wait until the place shows the seeded conversation.
+pub fn place_the_inbox(session: &mut Session, root: &Path) {
+    let mut repl = Repl::connect(&root.join("agent.sock"));
+    repl.opened(session);
+    let (answer, failed) = repl.call(
+        session,
+        "tilo",
+        &json!({"program": "session.place_found(text: \"Inbox\", view: .none, x: .some(80), y: .some(60))"}),
+    );
+    assert!(!failed, "the program ran: {answer}");
+    until(
+        session,
+        "the inbox's conversation on the canvas",
+        |session| session.shell_says(SUBJECT),
+    );
+}

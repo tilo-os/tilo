@@ -1393,8 +1393,9 @@ package = "tilo-session"
 # each binary is installed; the shell package it compiles from source.
 inputs = [
   "apps/tl/shell/",
-  # The shell screen test loads Notes from its sources beside the shell, the
-  # session package test checks the session's committed description, and a
+  # The tests' shared fixtures load Notes from its sources beside the shell
+  # (the shell's own screen tests and the acceptance path), the session
+  # package test checks the session's committed description, and a
   # development session seeds the notebook the shell's tests place.
   "apps/tl/notes/",
   "apps/tl/session/",
@@ -1410,10 +1411,9 @@ inputs = [
 readers = [
   "crates/session/session/src/channels/vault.rs",
   "crates/session/session/src/seeded_apps.rs",
+  "crates/session/session/tests/common/mod.rs",
   "crates/session/session/tests/firstboot.rs",
-  "crates/session/session/tests/repl_door.rs",
   "crates/session/session/tests/session_package.rs",
-  "crates/session/session/tests/shell_screen.rs",
 ]
 
 [[cargo]]

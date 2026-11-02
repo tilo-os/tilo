@@ -17,6 +17,8 @@
     reason = "a rectangle the test measured in the output it drew is within that output"
 )]
 
+mod common;
+
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -34,57 +36,7 @@ use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::ShellLayer;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
-const PERSON: &str = "Pat";
-
-/// A directory only this user reaches, for the sockets.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the session in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the session's directory is this user's");
-    root
-}
-
-/// Run frames until `done` holds; `false` when it never did.
-fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) -> bool {
-    for _ in 0..600 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Send `request` on the control socket at `socket` as `tilo-control` does, running the session
-/// until it answers.
-fn ask(session: &mut Session, socket: &Path, request: &Value) -> Value {
-    let socket = socket.to_path_buf();
-    let request = request.to_string();
-    let (answer, answered) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut stream = UnixStream::connect(&socket).expect("the test-control socket");
-        stream
-            .write_all(format!("{request}\n").as_bytes())
-            .expect("the socket reads");
-        let mut line = String::new();
-        BufReader::new(stream)
-            .read_line(&mut line)
-            .expect("an answer");
-        answer
-            .send(serde_json::from_str::<Value>(&line).expect("a JSON answer"))
-            .unwrap();
-    });
-    for _ in 0..30_000 {
-        if let Ok(answer) = answered.try_recv() {
-            return answer;
-        }
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    panic!("the test-control socket never answered");
-}
+use common::{HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
 
 /// A headless session with the shell as the whole screen writes a PNG of it through
 /// `tilo-control snapshot`'s request, and the bar stands in it.
