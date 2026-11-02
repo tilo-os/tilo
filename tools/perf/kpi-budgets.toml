@@ -1512,12 +1512,12 @@ source = "frames an idle desktop of the demo windows presents per second (headle
 # Measured: 0.27 ms first frame after a 2.6 ms build.
 first_frame_us = 2000
 build_us = 20000
-# Measured: 0.09 ms a steady frame, 0.08 ms of it draw, 500 allocations.
+# Measured: 0.09 ms a steady frame, 0.08 ms of it draw, 638 allocations.
 steady.p95_us = 1500
 steady.draw_p95_us = 1200
 steady.allocs_per_frame = 800
 # A settled desk finds no work in the frames it is offered: a frame that
-# draws nothing is a frame nobody asked for. Measured 5 µs a frame.
+# draws nothing is a frame nobody asked for. Measured 16 µs a frame.
 idle_working_frames = 0
 idle_us_per_frame = 100
 
@@ -1526,7 +1526,7 @@ idle_us_per_frame = 100
 # Measured: 2.0 ms first frame after a 9.3 ms build.
 first_frame_us = 6000
 build_us = 40000
-# Measured: 1.1 ms a steady frame, 0.8 ms of it draw, 9 100 allocations
+# Measured: 1.1 ms a steady frame, 0.8 ms of it draw, 9 144 allocations
 # (5 600 with one tab a window): every steady frame appends the apps' paint.
 steady.p95_us = 5000
 steady.draw_p95_us = 4000
@@ -1534,7 +1534,7 @@ steady.allocs_per_frame = 12000
 # Measured: 1.1 ms for the frame a keystroke takes.
 typing.p95_us = 5000
 # A settled desk finds no work in the frames it is offered here either: an
-# app at rest repaints nothing. Measured 6 µs a frame.
+# app at rest repaints nothing. Measured 24 µs a frame.
 idle_working_frames = 0
 idle_us_per_frame = 100
 
