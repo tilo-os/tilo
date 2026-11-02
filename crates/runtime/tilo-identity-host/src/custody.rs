@@ -1,19 +1,10 @@
 //! The device custody a host authenticates with to Tilo workspace hosts,
 //! and the certificate it presents for each workspace it takes part in.
 use std::collections::HashMap;
-use tilo_desktop_model::RoomId;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// A workspace's transport topic: the workspace id its hosts shard it by.
 pub type WorkspaceId = u64;
-
-/// The transport topic of `workspace`, as the desktop session's network routes it.
-fn workspace_topic(workspace: RoomId) -> WorkspaceId {
-    if workspace.is_nil() {
-        return 0;
-    }
-    tilo_relay_protocol::room_workspace_id(&workspace.to_string()).unwrap_or(0)
-}
 
 /// Device certificate chain used to authenticate to a Tilo workspace host.
 #[derive(Clone)]
@@ -33,13 +24,14 @@ pub struct HostIdentity {
 }
 
 impl HostIdentity {
-    /// Read current selected custody for enrolled operations. Configured disk failures
-    /// never fall back to an old in-memory certificate or revocation snapshot.
+    /// Read this device's current custody for enrolled operations.
+    /// Configured disk failures never fall back to an old in-memory
+    /// certificate or revocation snapshot.
     ///
     /// # Errors
     /// The stored device key or certificate changed, cannot be read or does
-    /// not verify, the workspace's identity selection is missing or ambiguous, or
-    /// the selected device is revoked.
+    /// not verify, this login holds no record of the person the device signs
+    /// as, or the device is revoked.
     pub fn current_native_material(
         &self,
         ws: WorkspaceId,
@@ -47,9 +39,8 @@ impl HostIdentity {
         self.current_material(Some(ws))
     }
 
-    /// [`Self::current_native_material`] as the person this device is when
-    /// no workspace selects another identity: what its own host is opened
-    /// with and what it asks its person's hosts with.
+    /// [`Self::current_native_material`] as the person this device is: what
+    /// its own host is opened with and what it asks its person's hosts with.
     ///
     /// # Errors
     /// As [`Self::current_native_material`].
@@ -72,34 +63,19 @@ impl HostIdentity {
             let store =
                 crate::registry::IdentityRegistryStore::from_env().map_err(|e| e.to_string())?;
             let registry = store.load_reconciled_cached().map_err(|e| e.to_string())?;
-            let mut selected = registry
-                .workspace_identities
-                .iter()
-                .filter_map(|(held, id)| {
-                    let workspace = RoomId::parse(held)?;
-                    (Some(workspace_topic(workspace)) == ws).then_some(id)
-                });
-            let selected_id = selected
-                .next()
-                .or(registry.default_identity.as_ref())
-                .ok_or("native identity selection missing")?;
-            if selected.next().is_some() {
-                return Err("ambiguous native identity topic".into());
-            }
             let profile = registry
-                .identities
-                .get(selected_id)
-                .ok_or("selected native identity is absent")?;
+                .person_identity()
+                .ok_or("this device has no identity to sign in with")?;
             let cert = tilo_user_identity::persist::read_device_cert(
                 &paths.device_cert_for_user(&profile.user_public_key),
             )
             .map_err(|e| e.to_string())?;
             if cert.user_public_key != profile.user_public_key {
-                return Err("native certificate root differs from selection".into());
+                return Err("native certificate root differs from the person it names".into());
             }
             let fleet =
                 crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), paths.clone())
-                    .load(selected_id)
+                    .load(&profile.id)
                     .map_err(|e| e.to_string())?;
             (cert, fleet.revocations)
         } else {
@@ -140,7 +116,7 @@ impl HostIdentity {
             .get(&ws)
             .cloned()
             .unwrap_or_default();
-        let Some((cert, fleet)) = self.selected(ws) else {
+        let Some((cert, fleet)) = self.selected() else {
             return (fallback_cert, fallback_revocations);
         };
         (
@@ -178,24 +154,14 @@ impl HostIdentity {
         directories
     }
 
-    /// This device's certificate for the identity selected for `ws`, and that
-    /// identity's fleet when it loads; `None` when no stored selection names
-    /// a certificate of this device.
-    fn selected(
-        &self,
-        ws: WorkspaceId,
-    ) -> Option<(DeviceCert, Option<crate::device_fleet::DeviceFleet>)> {
+    /// This device's certificate for the person it signs as, and that
+    /// person's fleet when it loads; `None` when no record of the person is
+    /// at hand.
+    fn selected(&self) -> Option<(DeviceCert, Option<crate::device_fleet::DeviceFleet>)> {
         let paths = self.identity_paths.as_ref()?;
         let registry_store = crate::registry::IdentityRegistryStore::from_env().ok()?;
         let registry = registry_store.load_reconciled_cached().ok()?;
-        let selected = registry.workspace_identities.iter().find_map(|(held, id)| {
-            let workspace = RoomId::parse(held)?;
-            (workspace_topic(workspace) == ws).then_some(id)
-        });
-        let identity_id = selected
-            .cloned()
-            .or_else(|| registry.default_identity.clone())?;
-        let profile = registry.identities.get(&identity_id)?;
+        let profile = registry.person_identity()?;
         let cert = tilo_user_identity::persist::read_device_cert(
             &paths.device_cert_for_user(&profile.user_public_key),
         )
@@ -208,7 +174,7 @@ impl HostIdentity {
         }
         let fleet =
             crate::device_fleet::DeviceFleetStore::at(registry_store.identity_dir(), paths.clone())
-                .load(&identity_id)
+                .load(&profile.id)
                 .ok();
         Some((cert, fleet))
     }

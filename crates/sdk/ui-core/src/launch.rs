@@ -904,41 +904,21 @@ fn run_parsed(
     if args.first_frame {
         return first_frame(spec, &args);
     }
-    // A live window opens until it is closed: at once on what this device
-    // holds, joining its workspace in the background.
-    let dispatched = {
-        // The app opens at once on what this device holds and joins its
-        // workspace in the background. A record not on this device yet
-        // arrives with the join: the window shows its loading state until it
-        // is told the join is over.
-        #[cfg(any(windows, target_os = "linux"))]
-        let dispatched = dispatch_live(spec, &args, |window| {
-            window.with_startup_renderer(renderer.take())
-        });
-        #[cfg(not(any(windows, target_os = "linux")))]
-        let dispatched = dispatch_live(spec, &args, |window| window);
-        let Some(dispatched) = dispatched else {
-            return Ok(());
-        };
-        match dispatched {
-            Ok(DefinitionDispatch::Native(app)) => {
-                #[cfg(any(windows, target_os = "linux"))]
-                let app = Box::new((*app).with_startup_renderer(renderer.take()));
-                // Later windows of this app in its workspace open here
-                // (`crate::window_door`), built as the first was.
-                let mut open = |pending| crate::window_door::open_window(spec, &args, pending);
-                let open: &mut dyn FnMut(_) -> Option<App> = &mut open;
-                (*app).run_windows(|_| {}, Some(open));
-                Ok(DefinitionDispatch::Native(app))
-            }
-            other => other,
-        }
+    // The app opens at once on what this device holds and joins its
+    // workspace in the background. A record not on this device yet arrives
+    // with the join: the window shows its loading state until it is told the
+    // join is over.
+    #[cfg(any(windows, target_os = "linux"))]
+    let dispatched = dispatch_live(spec, &args, |window| {
+        window.with_startup_renderer(renderer.take())
+    });
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let dispatched = dispatch_live(spec, &args, |window| window);
+    let Some(dispatched) = dispatched else {
+        return Ok(());
     };
-    match dispatched {
-        DefinitionDispatch::Native(app) => {
-            // Opened and run by the loop above; a dispatch answers it there.
-            drop(app);
-        }
+    let app = match dispatched? {
+        DefinitionDispatch::Native(app) => app,
         DefinitionDispatch::Headless(status) => {
             // process::exit skips the ScopedDumper in run().
             tilo_startup_metrics::mark("headless-exit");
@@ -962,11 +942,20 @@ fn run_parsed(
                 }
             }
             close_component_capture(&mut driver)?;
+            return Ok(());
         }
         DefinitionDispatch::Audit(mut driver) => {
             finish_component_audit(&mut driver, spec.app_id)?;
+            return Ok(());
         }
-    }
+    };
+    #[cfg(any(windows, target_os = "linux"))]
+    let app = Box::new((*app).with_startup_renderer(renderer.take()));
+    // Later windows of this app in its workspace open here
+    // (`crate::window_door`), built as the first was.
+    let mut open = |pending| crate::window_door::open_window(spec, &args, pending);
+    let open: &mut dyn FnMut(_) -> Option<App> = &mut open;
+    (*app).run_windows(|_| {}, Some(open));
     Ok(())
 }
 

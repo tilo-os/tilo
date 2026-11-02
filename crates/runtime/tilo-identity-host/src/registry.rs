@@ -1,9 +1,9 @@
 //! Local registry of identities available to this login session.
 //!
-//! Private identity selection is deliberately not replicated. The registry
-//! maps a durable workspace id to the local identity record this device
-//! presents there; workspace ownership remains a shared cryptographic
-//! principal.
+//! Identities are private to the login that holds them and are deliberately
+//! not replicated. The registry indexes their records; the device's
+//! certificate names the person they belong to, and workspace ownership
+//! remains a shared cryptographic principal.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -48,15 +48,18 @@ impl IdentityProfile {
     }
 }
 
-/// Versioned local identity index plus per-workspace selections.
+/// Versioned local identity index.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityRegistry {
     pub schema_version: u32,
-    /// Identity used for new and unbound workspaces.
+    /// Identity this login marked active; the person a device without a
+    /// certificate of its own presents.
     pub default_identity: Option<String>,
     pub identities: BTreeMap<String, IdentityProfile>,
-    /// Durable workspace-id string to [`IdentityProfile::id`].
+    /// Durable workspace-id string to [`IdentityProfile::id`], as builds that
+    /// let a workspace pick an identity stored it. Read for those files,
+    /// never written.
     pub workspace_identities: BTreeMap<String, String>,
 }
 
@@ -153,9 +156,15 @@ impl IdentityRegistry {
     /// device with no certificate of its own presents the identity this
     /// login marked active.
     pub fn for_workspace(&self, workspace: &str) -> Option<IdentityProfile> {
-        if let Some(profile) = self.personal_cluster_identity(workspace) {
-            return Some(profile);
-        }
+        self.personal_cluster_identity(workspace)
+            .or_else(|| self.person_identity())
+    }
+
+    /// The identity this device presents wherever it goes: the person its own
+    /// certificate was issued by, or, without one, the identity this login
+    /// marked active.
+    #[must_use]
+    pub fn person_identity(&self) -> Option<IdentityProfile> {
         self.certified_identity().or_else(|| {
             self.default_identity
                 .as_ref()
@@ -863,25 +872,18 @@ mod tests {
         };
         let alice = person("Alice");
         let workspace = collab_types::personal_cluster(&alice.user_public_key).to_string();
+        let resolving = registry.for_workspace(&workspace).expect("Alice's cluster");
         assert_eq!(
-            registry
-                .for_workspace(&workspace)
-                .map(|profile| profile.display_name.as_str()),
-            Some("Alice"),
+            resolving.display_name, "Alice",
             "the personal cluster maps to the identity it derives from"
         );
         // A workspace no identity derives is answered by the identity this
         // login marked active.
         let other = collab_types::personal_cluster(&[0x5a; 32]).to_string();
+        let resolving = registry.for_workspace(&other).expect("the active identity");
         assert_eq!(
-            registry
-                .for_workspace(&other)
-                .map(|profile| profile.display_name.as_str()),
-            registry
-                .default_identity
-                .as_ref()
-                .and_then(|id| registry.identities.get(id))
-                .map(|profile| profile.display_name.as_str())
+            registry.default_identity.as_deref(),
+            Some(resolving.id.as_str())
         );
         fs::remove_dir_all(dir).expect("cleanup");
     }

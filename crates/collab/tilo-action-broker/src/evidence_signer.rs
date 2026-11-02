@@ -2,7 +2,7 @@
 //! signing service: callers supply the receipt's domain-separated bytes.
 //!
 //! Keep the device key in memory only for an unchanged, settled trust stamp.
-//! The stamp covers selection, key, certificate, enrollment and revocation;
+//! The stamp covers the identity, key, certificate, enrollment and revocation;
 //! certificate time validity is checked separately on every signature.
 
 use std::collections::HashMap;
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_identity_selection_invalidates_cached_key() {
+    fn removing_the_identity_record_invalidates_cached_key() {
         let fixture = Fixture::new();
         let mut cache = SignerCache::default();
         cache
@@ -324,15 +324,14 @@ mod tests {
         let store = IdentityRegistryStore::at(&fixture.identity_dir);
         let mut registry = store.load().expect("registry");
         registry.default_identity = None;
-        registry.workspace_identities.clear();
         registry.identities.clear();
-        // Reconciliation restores selection from records still on disk, so
-        // removing only the explicit selection leaves a legitimate fallback.
+        // Reconciliation restores identities from records still on disk, so
+        // removing only the registry entry leaves a legitimate fallback.
         std::fs::remove_file(&fixture.profile.record_path).expect("remove identity record");
         store.save(&registry).expect("remove identity");
         assert!(
             tilo_identity_host::registry::identity_for_workspace(&fixture.workspace)
-                .expect("selection")
+                .expect("a read")
                 .is_none()
         );
         assert!(

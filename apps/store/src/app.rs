@@ -2943,7 +2943,6 @@ mod tests {
 
     #[test]
     fn a_report_or_an_appeal_is_signed_as_the_person_without_asking() {
-        use ui::framework::ResourceApp as _;
         let mut app = seeded_app();
         app.directory
             .set_registries(vec![moderation_test_registry()]);
@@ -2964,7 +2963,6 @@ mod tests {
             app.admit(report).is_ok(),
             "a signed report goes out as the person working here"
         );
-        let _ = <crate::resource::StoreShell as ResourceApp>::ID;
     }
 
     #[test]

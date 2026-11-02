@@ -138,7 +138,7 @@ fn identity_in(
     }
     let principal = profile.principal_id();
     match read_workspace(tree, workspace, |workspace| {
-        workspace.policy.members.contains_key(&principal)
+        workspace.policy.is_member(&principal)
     }) {
         Some(true) => Ok(profile),
         Some(false) => Err(Response::Error(format!(
@@ -1887,6 +1887,80 @@ params = []
         );
         fixture.settle();
         assert!(matches!(ask(), Response::Denied(_)), "nor once it settles");
+    }
+
+    #[test]
+    fn the_service_signs_where_the_person_is_in_the_workspace_and_reports_where_they_are_not() {
+        let temp = tempfile::tempdir().expect("temp");
+        let xdg = temp.path().join("config");
+        let system_root = temp.path().join("system");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg)
+            .set("TILO_IDENTITY_ROOT", &system_root)
+            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+        let identity_dir = xdg.join("tilo/identity");
+        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+        ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+
+        let workspace = RoomId::new();
+        let workspace_id = workspace.to_string();
+        let app_id = "so.tilo.notes";
+        let record_id = "meeting-notes";
+        let profile = crate::registry::identity_for_workspace(&workspace_id)
+            .expect("registry")
+            .expect("profile");
+        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            .expect("device key");
+        let op = SignedOp::new_unsigned(
+            DocumentMutation::Snapshot(b"automerge document".to_vec())
+                .encode()
+                .expect("typed mutation"),
+            document_artifact_id(app_id, &workspace_id, record_id),
+            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            document_attestation_id(app_id, &workspace_id, record_id),
+            collab_types::OpKind::Change,
+            std::time::SystemTime::now(),
+            1,
+        );
+        let unsigned = postcard::to_stdvec(&op).expect("unsigned envelope");
+        let sign = |tree: &SharedTree| {
+            sign_collaboration_op(
+                tree,
+                &bound(&workspace, app_id),
+                &workspace_id,
+                app_id,
+                record_id,
+                &unsigned,
+            )
+        };
+
+        // The person this device signs as belongs to the workspace: the
+        // operation is signed with the device's key, no identity picked.
+        let mut committed = Workspace::in_workspace(WorkspaceId(1), workspace, "Workspace");
+        committed.set_owner(profile.principal_id());
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(committed);
+        let tree = tree.shared();
+        assert!(matches!(sign(&tree), Response::Signature(_)));
+
+        // The same workspace in other people's hands: this device would sign
+        // as someone its roster does not hold. That is a membership fault to
+        // report, never a question to put to the app.
+        let mut elsewhere = Workspace::in_workspace(WorkspaceId(2), workspace, "Workspace");
+        let other_person = match collab_types::caps::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes([9; 32]),
+        ) {
+            collab_types::caps::Principal::Person(id) => id,
+            other => panic!("a person id, not {other:?}"),
+        };
+        elsewhere.set_owner(other_person);
+        tree.write().desktop.workspaces = vec![elsewhere];
+        match sign(&tree) {
+            Response::Error(message) => {
+                assert!(message.contains("not a member"), "{message}");
+            }
+            other => panic!("a person the roster lacks is answered as a fault: {other:?}"),
+        }
     }
 
     #[cfg(target_os = "linux")]

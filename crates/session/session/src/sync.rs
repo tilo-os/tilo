@@ -2195,22 +2195,9 @@ async fn redeem(
     link: Option<&ChannelLink>,
 ) -> Result<(), String> {
     let topic = workspace_topic_id(request.workspace_id);
-    // The workspace is joined as this person, under the identity they keep for
-    // it: a workspace they select another of their identities for shows that one.
-    let (selected, _) = identity.current_native_material(topic)?;
-    if identity.identity_paths.is_some() {
-        let registry = tilo_identity_host::registry::IdentityRegistryStore::from_env()
-            .map_err(|error| format!("this computer's identities cannot be read: {error}"))?;
-        registry
-            .bind_workspace(
-                &request.workspace_id.to_string(),
-                &hex::encode(selected.user_public_key),
-            )
-            .map_err(|error| format!("the workspace is not kept as this person's: {error}"))?;
-        if identity.current_native_material(topic)?.0 != selected {
-            return Err("this computer's identity for the workspace changed while joining".into());
-        }
-    }
+    // The workspace is joined as this computer's person: the device's own
+    // certificate signs the enrollment, so there is nothing to pick here.
+    identity.current_native_material(topic)?;
     let owner = engine.owner().clone();
     let client = tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint);
     let enrollment = tokio::time::timeout(
