@@ -118,13 +118,6 @@ impl Widget for SearchOverlay {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Search's code is asked for as the desktop first lays out, so it is
-        // in by the time someone searches; search asked for before then opens
-        // now, and the desk publishes it on its next pass.
-        let adopted = self.handle.search_palette().borrow_mut().adopt();
-        if adopted {
-            self.handle.note_search_activity();
-        }
         let mut kids = Vec::new();
         if self.is_open() && self.rect.width() > 0.0 {
             // What the search covers is what it stands over: the window it was
