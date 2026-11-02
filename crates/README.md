@@ -31,7 +31,6 @@ service.
 - `dev/nested-session-bus`: the build environment's dbus-daemon in a cargo-built executable, the
   private session bus of a nested session on hosts without one.
 - `dev/click-test-client`: the minimal Wayland client the shell's sandbox and desktop tests drive.
-- `dev/ux-bench`: runs the `scripts/ux-bench` journeys against the native shell tree (macOS).
 - `dev/collab-probe`: sandboxed collaboration test app, driven by
   `scripts/sandboxed-app-collab.py`.
 - `dev/tilo-app-template-smoke`: compiles generated app code to validate the SDK templates.
