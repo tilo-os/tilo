@@ -389,7 +389,7 @@ fn a_screen_reader_meets_a_modal_dialog_naming_the_stage() {
     assert!(
         dialog
             .description()
-            .is_some_and(|text| text.contains("Tilo will listen through the microphone once")),
+            .is_some_and(|text| text.contains("The microphone listens once, only until you stop")),
         "{:?}",
         dialog.description()
     );
