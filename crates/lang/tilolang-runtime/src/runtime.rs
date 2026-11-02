@@ -256,6 +256,23 @@ impl Runtime {
         Ok(hash)
     }
 
+    /// Unload the app `app` this runtime does not run, which nothing here shows any more: its
+    /// package (description or code) is declared here no more, and the readings of its
+    /// resources are forgotten. Whether it was loaded.
+    pub fn unload_foreign(&self, app: &str) -> bool {
+        let removed = self.core.registry.borrow_mut().remove_foreign(app);
+        self.core.foreign.borrow_mut().forget_app(app);
+        removed
+    }
+
+    /// The resources of apps whose code runs here (`Runtime::load_foreign_package`) that a
+    /// view read before their readings came in, each its id and its type (`<app>#<Type>`):
+    /// what the host asks the session to publish ([`Runtime::set_reading`]). Each is handed
+    /// out once; until its reading comes, it reads as it would start.
+    pub fn take_wanted(&self) -> Vec<(String, String)> {
+        self.core.foreign.borrow_mut().take_wanted()
+    }
+
     /// The reading of `target`, a resource of an app this runtime does not run, as the
     /// session's watch last saw it: the JSON its service read. Views that read a field of it
     /// run again at the next poll. Whether it differs from the reading held before: `false`

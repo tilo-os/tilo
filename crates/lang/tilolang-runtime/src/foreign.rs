@@ -19,6 +19,7 @@ use serde_json::Value as Json;
 use crate::ids::ModuleHash;
 use crate::meta::{Ty, TypeKey};
 use crate::registry::Registry;
+use crate::store::Lit;
 use crate::value::{EnumValue, RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
 
@@ -61,6 +62,11 @@ pub struct Foreign {
     readings: BTreeMap<String, Reading>,
     /// Moves with every reading that changed.
     clock: u64,
+    /// The resources of apps whose code runs here that a view read before their reading came
+    /// in, by key: each its id and type, asked of the host once ([`Foreign::take_wanted`]).
+    wanted: BTreeMap<String, (String, String)>,
+    /// Every resource asked for, by key: asked again only once forgotten.
+    asked: std::collections::BTreeSet<String>,
 }
 
 impl Foreign {
@@ -96,6 +102,22 @@ impl Foreign {
     /// How many resources of other apps have a reading here.
     pub(crate) fn known(&self) -> usize {
         self.readings.len()
+    }
+
+    /// The resources a view read before their readings came in, each its id and type, since
+    /// the last call: what the host asks the session to publish. Each is asked for once.
+    pub(crate) fn take_wanted(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.wanted).into_values().collect()
+    }
+
+    /// Forget every reading of the app `app`'s resources, and what was asked of them: nothing
+    /// here shows that app any more.
+    pub(crate) fn forget_app(&mut self, app: &str) {
+        let prefix = format!("{app}#");
+        self.readings.retain(|key, _| !key.starts_with(&prefix));
+        self.by_key.retain(|key, _| !key.starts_with(&prefix));
+        self.wanted.retain(|key, _| !key.starts_with(&prefix));
+        self.asked.retain(|key| !key.starts_with(&prefix));
     }
 
     /// Take `json` as `target`'s reading. Whether it is not the one held.
@@ -184,6 +206,23 @@ impl Foreign {
             // A record the reading leaves out stands where the reading would hold it: it has
             // no fields of its own there.
             None if matches!(self.readings.get(&at), Some(Reading::Inside(_))) => None,
+            // A record of an app whose code runs here is a resource of its own, published by
+            // its id (an item of a collection the reading lists): the host is asked for its
+            // reading, and until it comes the record reads as it would start. The view that
+            // read it runs again when it does.
+            None if runs_here(target, registry) => {
+                if self.asked.insert(at.clone()) {
+                    self.wanted
+                        .insert(at, (target.id_string(), target.ty.clone()));
+                }
+                return pending(&field.ty, field.default.as_ref()).map_err(|why| {
+                    format!(
+                        "`{}` of `{}` before its reading came in: {why}",
+                        field.name,
+                        target.id_string()
+                    )
+                });
+            }
             None => {
                 return Err(format!(
                     "no reading of `{}` arrived yet: its app publishes it through the session",
@@ -235,6 +274,51 @@ impl Foreign {
 #[must_use]
 pub fn is_foreign(target: &ResourceRef) -> bool {
     target.ty.contains('#')
+}
+
+/// Whether `target`'s app is one whose code runs here (`Runtime::load_foreign_package`): a
+/// tilolang app, each of whose records the session publishes as a resource of its own. A
+/// description's records (a menu's rows) stand only inside the readings that hold them.
+fn runs_here(target: &ResourceRef, registry: &Registry) -> bool {
+    foreign_type(&target.ty)
+        .and_then(|key| registry.type_for(&key))
+        .and_then(|ty| registry.type_info(&ty))
+        .is_some_and(|(package, _)| package.code)
+}
+
+/// What a field of a record whose reading has not come in reads as: its declared value, or
+/// what its type starts as, a time at the epoch.
+fn pending(ty: &Ty, default: Option<&Json>) -> Result<Value, String> {
+    match (ty, default) {
+        (Ty::Time, None) => Ok(Value::text("1970-01-01T00:00:00Z")),
+        (Ty::Date, None) => Ok(Value::text("1970-01-01")),
+        (Ty::Identifier, None) => Ok(Value::text("")),
+        _ => crate::host_res::declared_default(ty, default),
+    }
+}
+
+/// The value a field of a record of another app holds, as a filter compares it: what
+/// `items.matching(q)` over a list of that app's resources reads, as the store's filters read
+/// a field the store holds. A set is its members, a list how many it holds.
+pub(crate) fn lit_of_value(kind: crate::meta::FieldKind, value: &Value) -> Option<Lit> {
+    Some(match value {
+        Value::Bool(b) => Lit::Bool(*b),
+        Value::Int(i) => Lit::Int(*i),
+        Value::Float(f) => Lit::Float(tilolang::pred::Float(*f)),
+        Value::Text(t) => Lit::Text(t.clone()),
+        Value::Opt(None) | Value::Unit => Lit::Absent,
+        Value::Opt(Some(inner)) => return lit_of_value(kind, inner),
+        Value::Enum(e) => Lit::Variant(e.variant.clone()),
+        Value::Ref(r) => Lit::Ref(r.target.id_string()),
+        Value::List(items) if kind == crate::meta::FieldKind::Set => Lit::Set(
+            items
+                .iter()
+                .map(|item| lit_of_value(kind, item))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        Value::List(items) => Lit::Int(i64::try_from(items.len()).unwrap_or(i64::MAX)),
+        _ => return None,
+    })
 }
 
 /// The type of a foreign resource as its description names it: the app and the type's name.

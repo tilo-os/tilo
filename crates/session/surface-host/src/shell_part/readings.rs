@@ -22,8 +22,53 @@ impl SessionLink {
             return false;
         }
         self.readings.borrow_mut().insert(id.to_owned(), fresh);
-        self.readings_fresh.set(true);
+        self.readings_fresh.borrow_mut().insert(id.to_owned());
         true
+    }
+
+    /// The packages of the apps whose resources the places show, by app id, each its compiled
+    /// module: the shell's runtime loads each it has not, so the places draw those resources
+    /// through their app's own views, and unloads every other app's, with the readings of its
+    /// resources. Whether they differ from the last.
+    pub fn publish_packages(&self, packages: BTreeMap<String, std::sync::Arc<[u8]>>) -> bool {
+        let same = {
+            let held = self.packages.borrow();
+            held.len() == packages.len()
+                && held
+                    .iter()
+                    .zip(&packages)
+                    .all(|((a, x), (b, y))| a == b && std::sync::Arc::ptr_eq(x, y))
+        };
+        if same {
+            return false;
+        }
+        *self.packages.borrow_mut() = packages;
+        self.packages_fresh.set(true);
+        true
+    }
+
+    /// The apps whose packages the shell's runtime loads now, by id.
+    #[must_use]
+    pub fn package_apps(&self) -> Vec<String> {
+        self.packages.borrow().keys().cloned().collect()
+    }
+
+    /// The resources the shell's views read before their readings came in, by id, each with
+    /// its type (`<app>#<Type>`): what the session publishes next. Each is handed out once.
+    #[must_use]
+    pub fn take_wanted(&self) -> BTreeMap<String, String> {
+        std::mem::take(&mut *self.wanted.borrow_mut())
+    }
+
+    /// Whether the shell's views wait on readings the session has not been asked for yet.
+    #[must_use]
+    pub fn wants(&self) -> bool {
+        !self.wanted.borrow().is_empty()
+    }
+
+    /// The shell's views read `wanted` (each an id and its type) before their readings came.
+    pub(super) fn want(&self, wanted: Vec<(String, String)>) {
+        self.wanted.borrow_mut().extend(wanted);
     }
 
     /// Publish the reading of every resource a place of `arrangement` names, from what the
@@ -37,21 +82,39 @@ impl SessionLink {
         read: impl Fn(&str) -> Option<serde_json::Value>,
     ) -> bool {
         let mut changed = false;
-        for place in &arrangement.places {
-            if place.record.is_empty() {
-                continue;
-            }
-            let Some(ty) = find_resource(resources, &place.record)
-                .and_then(|spec| tilolang_tilo::records_service::reading_type(&spec.kind))
-            else {
-                continue;
-            };
-            if let Some(reading) = read(&place.record) {
-                changed |= self.publish_reading(&place.record, &ty, reading);
+        for (id, ty) in placed_records(arrangement, resources) {
+            if let Some(reading) = read(&id) {
+                changed |= self.publish_reading(&id, &ty, reading);
             }
         }
         changed
     }
+}
+
+/// Each resource a place of `arrangement` names that `resources`, the session's catalogue,
+/// holds as a tilolang record: its id, and its type as the shell's runtime names another
+/// app's (`<app>#<Type>`).
+#[must_use]
+pub fn placed_records(
+    arrangement: &ArrangementReading,
+    resources: &[ui::tilo_actions::ResourceSpec],
+) -> BTreeMap<String, String> {
+    arrangement
+        .places
+        .iter()
+        .filter(|place| !place.record.is_empty())
+        .filter_map(|place| {
+            let ty = find_resource(resources, &place.record)
+                .and_then(|spec| tilolang_tilo::records_service::reading_type(&spec.kind))?;
+            Some((place.record.clone(), ty))
+        })
+        .collect()
+}
+
+/// The app of a resource whose type the shell's runtime names `<app>#<Type>`.
+#[must_use]
+pub fn app_of(ty: &str) -> Option<&str> {
+    ty.split_once('#').map(|(app, _)| app)
 }
 
 /// The resource `id` in `resources` or among their children.
@@ -72,18 +135,68 @@ impl SessionOrigin {
     /// Hand the runtime the readings the session published since the last poll: the views
     /// composed over those resources run again. Whether any reading was new.
     pub(super) fn poll_readings(&self, cx: &OriginCx<'_>) -> bool {
-        if !self.link.readings_fresh.replace(false) {
-            return false;
-        }
+        let fresh = std::mem::take(&mut *self.link.readings_fresh.borrow_mut());
         let mut moved = false;
-        for (id, (ty, reading)) in self.link.readings.borrow().iter() {
-            let Some(target) = ResourceRef::parse_id(id, ty.clone()) else {
+        let readings = self.link.readings.borrow();
+        for id in fresh {
+            let Some((ty, reading)) = readings.get(&id) else {
+                continue;
+            };
+            let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
                 tracing::error!(id, "a place names no resource id");
                 continue;
             };
             match cx.host.runtime().set_reading(&target, &reading.to_string()) {
                 Ok(changed) => moved |= changed,
                 Err(error) => tracing::error!(id, %error, "a place's reading was refused"),
+            }
+        }
+        moved
+    }
+
+    /// Load the package of each app the places show that the runtime has not loaded, and
+    /// unload every other app's, with the readings of its resources: an app nothing shows
+    /// costs the shell nothing. Whether a package came or went.
+    pub(super) fn poll_packages(&mut self, cx: &OriginCx<'_>) -> bool {
+        if !self.link.packages_fresh.replace(false) {
+            return false;
+        }
+        let wanted = self.link.packages.borrow().clone();
+        let mut moved = false;
+        let gone: Vec<String> = self
+            .loaded
+            .iter()
+            .filter(|(app, held)| {
+                !wanted
+                    .get(*app)
+                    .is_some_and(|now| std::sync::Arc::ptr_eq(now, held))
+            })
+            .map(|(app, _)| app.clone())
+            .collect();
+        for app in gone {
+            self.loaded.remove(&app);
+            moved |= cx.host.unload_foreign(&app);
+            self.link
+                .readings
+                .borrow_mut()
+                .retain(|_, (ty, _)| app_of(ty) != Some(app.as_str()));
+        }
+        for (app, wasm) in wanted {
+            if self.loaded.contains_key(&app) {
+                continue;
+            }
+            let Some(meta) = tilolang_tilo::runtime::Meta::from_wasm(&wasm) else {
+                tracing::error!(app, "a package the places show carries no description");
+                continue;
+            };
+            match cx.host.load_foreign_package(&wasm, &meta) {
+                Ok(()) => {
+                    self.loaded.insert(app, wasm);
+                    moved = true;
+                }
+                Err(error) => {
+                    tracing::error!(app, %error, "a package the places show did not load");
+                }
             }
         }
         moved

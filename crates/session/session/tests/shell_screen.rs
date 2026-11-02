@@ -40,10 +40,25 @@ const BTN_LEFT: u32 = 0x110;
 /// The framed canvas's entry, named for what it holds: the text typed to find what to place.
 const CANVAS_ENTRY: &str = "Typed";
 
-/// A notebook kept by the notes app, published as the session publishes a
-/// workspace's records, and one note in it titled [`NOTE_TITLE`], made
-/// through the app's own actions.
-fn notebook() -> (RecordService, String) {
+/// The titles of the notes [`notebook`] keeps, [`NOTE_TITLE`] first: one strip each.
+const TITLES: [&str; 12] = [
+    NOTE_TITLE,
+    "Packing list",
+    "Recipes",
+    "Reading",
+    "Garden",
+    "Errands",
+    "Budget",
+    "Birthday ideas",
+    "Books to read",
+    "Trip plan",
+    "Paint colours",
+    "Plumber quotes",
+];
+
+/// A notebook kept by the notes app, published as the session publishes a workspace's records,
+/// and the notes in it titled [`TITLES`], made through the app's own actions: their ids, in order.
+fn notebook() -> (RecordService, Vec<String>) {
     let mut record = tilo_resource::Doc::new();
     let host = Host::new(&record, Principal::new(PERSON), || None).unwrap();
     let notes = host
@@ -87,26 +102,37 @@ fn notebook() -> (RecordService, String) {
         .into_iter()
         .find(|resource| resource.kind == format!("tl.{NOTES}.Notes"))
         .unwrap();
-    let Started::Done(made) = service
-        .invoke(book.id.as_str(), &action("new_note"), &Map::new())
-        .unwrap()
-    else {
-        panic!("a tilolang action is done once committed");
-    };
-    let note = made.resources.first().cloned().unwrap();
-    service
-        .invoke(
-            &note,
-            &action("retitle"),
-            json!({ "title": NOTE_TITLE }).as_object().unwrap(),
-        )
-        .unwrap();
+    let mut notes = Vec::new();
+    for title in TITLES {
+        let Started::Done(made) = service
+            .invoke(book.id.as_str(), &action("new_note"), &Map::new())
+            .unwrap()
+        else {
+            panic!("a tilolang action is done once committed");
+        };
+        let note = made.resources.first().cloned().unwrap();
+        service
+            .invoke(
+                &note,
+                &action("retitle"),
+                json!({ "title": title }).as_object().unwrap(),
+            )
+            .unwrap();
+        notes.push(note);
+    }
     service.settle();
-    (service, note)
+    (service, notes)
 }
 
 fn session(layer: ShellLayer) -> (Session, String) {
-    let (notebook, note) = notebook();
+    let (session, notes) = session_at(layer, WIDTH, HEIGHT);
+    (session, notes.into_iter().next().unwrap())
+}
+
+/// The session with the shell as `layer`, on one display `width` by `height`, and the notes
+/// [`notebook`] keeps.
+fn session_at(layer: ShellLayer, width: i32, height: i32) -> (Session, Vec<String>) {
+    let (notebook, notes) = notebook();
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -116,10 +142,10 @@ fn session(layer: ShellLayer) -> (Session, String) {
             services: vec![Box::new(notebook)],
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        &[OutputConfig::new("HEADLESS-1", width, height)],
     )
     .expect("session");
-    (session, note)
+    (session, notes)
 }
 
 /// Run frames until `done` holds; `false` when it never did.
@@ -279,4 +305,122 @@ fn as_a_bar_the_shell_shows_none_of_the_arrangement() {
         }),
         "a bar shows none of the arrangement"
     );
+}
+
+/// The overview, run as the touchpad's pinch, the overview's key and an agent run it (the
+/// chrome's published `overview`, through the door), is the shell's own on the shell's screen:
+/// its view stands in what the shell lays out, and the same action closes it again.
+#[test]
+fn the_overview_through_the_door_is_the_shells_own_on_its_screen() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _) = session(ShellLayer::Screen);
+    until(&mut session, "the preset switch", |session| {
+        on_screen(session, "Strips").is_some()
+    });
+    assert!(
+        on_screen(&session, OVERVIEW).is_none(),
+        "the desk is at rest"
+    );
+
+    session
+        .invoke(CHROME, "overview", &Map::new())
+        .unwrap_or_else(|error| panic!("the overview opens: {error:?}"));
+    until(&mut session, "the shell's overview", |session| {
+        on_screen(session, OVERVIEW).is_some()
+    });
+    assert!(
+        on_screen(&session, "Strips").is_none(),
+        "the overview stands where the strips stood"
+    );
+
+    session
+        .invoke(
+            CHROME,
+            "overview",
+            json!({"open": false}).as_object().unwrap(),
+        )
+        .unwrap_or_else(|error| panic!("the overview closes: {error:?}"));
+    until(&mut session, "the strips again", |session| {
+        on_screen(session, OVERVIEW).is_none() && on_screen(session, "Strips").is_some()
+    });
+}
+
+/// On a laptop's display and a phone's, the switch between the presets and the strips under
+/// it stand apart, and every note placed on the desk, one strip each, stands on the display
+/// once placed: the desk shows what just arrived on it.
+#[test]
+fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_screen() {
+    for (width, height) in [(WIDTH, HEIGHT), (390, 844)] {
+        let _settled = ui::motion::testing::settled();
+        let (mut session, notes) = session_at(ShellLayer::Screen, width, height);
+        until(&mut session, "the preset switch", |session| {
+            within(session, "Strips", width, height).is_some()
+        });
+        for (index, (note, title)) in notes.iter().zip(TITLES).enumerate() {
+            place(&mut session, note);
+            until(
+                &mut session,
+                &format!("{title} on screen at {width}x{height}"),
+                |session| within(session, title, width, height).is_some(),
+            );
+            if index > 0 {
+                continue;
+            }
+            // The switch and the first strip under it.
+            let first = within(&session, title, width, height).unwrap();
+            let switch = preset_switch(&session);
+            assert!(
+                !intersects(switch, first),
+                "at {width}x{height} the preset switch {switch:?} and the first strip {first:?} stand apart"
+            );
+        }
+        // The framed canvas: the switch and the canvas's entry stand apart too.
+        press(&mut session, "Frames");
+        until(&mut session, "the canvas's entry", |session| {
+            within(session, CANVAS_ENTRY, width, height).is_some()
+        });
+        let entry = within(&session, CANVAS_ENTRY, width, height).unwrap();
+        let switch = preset_switch(&session);
+        assert!(
+            !intersects(switch, entry),
+            "at {width}x{height} the preset switch {switch:?} and the canvas's entry {entry:?} stand apart"
+        );
+    }
+}
+
+/// Where the switch between the presets stands: around its three chips.
+fn preset_switch(session: &Session) -> (f64, f64, f64, f64) {
+    ["Strips", "Frames", "Spaces"]
+        .into_iter()
+        .filter_map(|chip| session.shell_control(chip))
+        .reduce(|(x, y, w, h), (cx, cy, cw, ch)| {
+            let (left, top) = (x.min(cx), y.min(cy));
+            let (right, bottom) = ((x + w).max(cx + cw), (y + h).max(cy + ch));
+            (left, top, right - left, bottom - top)
+        })
+        .expect("the preset switch stands")
+}
+
+/// The chrome's published resource.
+const CHROME: &str = "desktop:chrome";
+
+/// The overview's heading: the overview's own, which no other view of the desk shows.
+const OVERVIEW: &str = "Overview";
+
+/// Where the shell's control named `name` stands, when the whole of it is on a display `width`
+/// by `height`.
+fn within(session: &Session, name: &str, width: i32, height: i32) -> Option<(f64, f64, f64, f64)> {
+    session.shell_control(name).filter(|&(x, y, w, h)| {
+        w > 0.0
+            && h > 0.0
+            && x >= 0.0
+            && y >= 0.0
+            && x + w <= f64::from(width)
+            && y + h <= f64::from(height)
+    })
+}
+
+/// Whether two rectangles `(x, y, w, h)` share any area.
+fn intersects(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
+    a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
 }
