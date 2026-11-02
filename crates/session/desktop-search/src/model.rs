@@ -676,13 +676,10 @@ pub fn search_stream(
 
 /// Fan `needle` out to `sources`, merge their hits on the shared ranking
 /// and group them by kind under a shared `row_budget` (zero keeps all).
-pub fn search(needle: &str, sources: &[&dyn Source], row_budget: usize) -> Vec<KindGroup<Hit>> {
-    search_with(needle, sources, row_budget, &|_| 0.0)
-}
-
-/// [`search`], each hit's strength raised by `used`: what the person's
-/// earlier choices add to it ([`crate::usage::Usage::strength`]).
-pub fn search_with(
+///
+/// Each hit's strength is raised by `used`: what the person's earlier
+/// choices add to it ([`crate::usage::Usage::strength`]).
+pub fn search(
     needle: &str,
     sources: &[&dyn Source],
     row_budget: usize,
@@ -994,7 +991,7 @@ mod tests {
     #[test]
     fn a_document_is_one_row_and_not_one_per_source() {
         let world = world();
-        let groups = search("", &world.all(), 0);
+        let groups = search("", &world.all(), 0, &|_| 0.0);
         let listed = rows(&groups);
         assert_eq!(
             listed
@@ -1028,7 +1025,7 @@ mod tests {
         let mut world = world();
         let shared = world.actions.hits[0].clone();
         world.commands.hits.push(shared);
-        let groups = search("share", &world.all(), 0);
+        let groups = search("share", &world.all(), 0, &|_| 0.0);
         assert_eq!(rows(&groups), ["window-actions:Share"]);
     }
 
@@ -1038,7 +1035,7 @@ mod tests {
     fn what_the_person_chose_before_leads_equal_matches() {
         let world = world();
         let used = |hit: &Hit| if hit.title == "Trip plan" { 0.6 } else { 0.0 };
-        let groups = search_with("", &world.all(), 0, &used);
+        let groups = search("", &world.all(), 0, &used);
         let listed = rows(&groups);
         let tabs: Vec<&str> = listed.iter().take(3).map(String::as_str).collect();
         assert_eq!(
@@ -1078,7 +1075,7 @@ mod tests {
         ];
         for (query, expected) in table {
             assert_eq!(
-                rows(&search(query, &world.all(), 0)),
+                rows(&search(query, &world.all(), 0, &|_| 0.0)),
                 *expected,
                 "query {query:?}"
             );
@@ -1089,15 +1086,15 @@ mod tests {
     fn a_query_is_ranked_by_its_match() {
         let world = world();
         assert_eq!(
-            rows(&search("grocer", &world.all(), 0)),
+            rows(&search("grocer", &world.all(), 0, &|_| 0.0)),
             ["continue:Groceries"]
         );
         assert_eq!(
-            rows(&search("sheet", &world.all(), 0)),
+            rows(&search("sheet", &world.all(), 0, &|_| 0.0)),
             ["desktop-applications:Sheets"]
         );
         assert_eq!(
-            rows(&search("budge", &world.all(), 0)),
+            rows(&search("budge", &world.all(), 0, &|_| 0.0)),
             ["desktop-windows:Budget"]
         );
     }
@@ -1105,7 +1102,7 @@ mod tests {
     #[test]
     fn an_empty_query_keeps_the_browse_order_of_the_palette() {
         let world = world();
-        let groups = search("", &world.all(), 0);
+        let groups = search("", &world.all(), 0, &|_| 0.0);
         let kinds: Vec<String> = groups
             .iter()
             .map(|group| group.kind.label().to_owned())

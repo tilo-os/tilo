@@ -353,12 +353,10 @@ impl SessionSearch {
         // documents, apps and actions in the same order.
         let now = ui::time::unix_now();
         let usage = self.usage.borrow();
-        let groups = match usage.as_ref() {
-            Some(usage) => tilo_desktop_search::search_with(needle, &refs, 0, &|hit| {
-                usage.strength(needle, hit, now)
-            }),
-            None => tilo_desktop_search::search(needle, &refs, 0),
-        };
+        let groups = tilo_desktop_search::search(needle, &refs, 0, &|hit| match usage.as_ref() {
+            Some(usage) => usage.strength(needle, hit, now),
+            None => 0.0,
+        });
         groups.into_iter().flat_map(|group| group.results).collect()
     }
 

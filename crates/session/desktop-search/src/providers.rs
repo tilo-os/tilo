@@ -530,7 +530,13 @@ impl Source for Published {
                 provider: self.id().into(),
                 id: Self::row_id(published, &action.address),
                 title: action.action_label.clone(),
-                subtitle: action.description.clone(),
+                // An action whose description only repeats its name says it
+                // once: the row's line under the name is for what the name
+                // does not already say.
+                subtitle: action.description.clone().filter(|description| {
+                    ui::search::fold_search_text(description)
+                        != ui::search::fold_search_text(&action.action_label)
+                }),
                 facts: Vec::new(),
                 score,
                 icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
@@ -1412,7 +1418,7 @@ mod tests {
     }
 
     fn ranked_ids(apps: &Applications, query: &str) -> Vec<String> {
-        search(query, &[apps], 0)
+        search(query, &[apps], 0, &|_| 0.0)
             .into_iter()
             .flat_map(|group| group.results)
             .map(|hit| hit.id)
@@ -1491,7 +1497,7 @@ mod tests {
             app: None,
             place: vec!["Workspace".into(), "Main".into()],
         }]);
-        let groups = search("sheets", &[&apps(), &windows], 10);
+        let groups = search("sheets", &[&apps(), &windows], 10, &|_| 0.0);
         let first = &groups[0].results[0];
         assert_eq!(first.title, "Sheets");
         assert_eq!(
@@ -1523,7 +1529,7 @@ mod tests {
             title: "Leave this workspace on this computer".into(),
             subtitle: None,
         }]);
-        let groups = search("", &[&apps(), &windows, &actions, &commands], 0);
+        let groups = search("", &[&apps(), &windows, &actions, &commands], 0, &|_| 0.0);
         let kinds: Vec<&str> = groups.iter().map(|g| g.kind.label()).collect();
         assert!(kinds.contains(&"Apps"));
         assert!(kinds.contains(&WINDOWS_KIND));
@@ -1800,7 +1806,7 @@ mod tests {
         recents.record(&launch);
         recents.record(&notes);
         recents.record(&launch);
-        let groups = search("", &[&apps(), &recents], 0);
+        let groups = search("", &[&apps(), &recents], 0, &|_| 0.0);
         assert_eq!(groups[0].kind.label(), RECENT_KIND);
         let titles: Vec<&str> = groups[0].results.iter().map(|h| h.title.as_str()).collect();
         assert_eq!(titles, ["Sheets", "Notes"]);
@@ -1839,7 +1845,7 @@ mod tests {
     }
 
     fn first_app(apps: &Applications, query: &str) -> Option<String> {
-        let groups = search(query, &[apps], 0);
+        let groups = search(query, &[apps], 0, &|_| 0.0);
         let hit = groups.first()?.results.first()?;
         Some(hit.id.clone())
     }
@@ -1895,7 +1901,7 @@ mod tests {
             }
         }
         let apps = registry_apps();
-        let groups = search("youtube", &[&Notes, &apps], 0);
+        let groups = search("youtube", &[&Notes, &apps], 0, &|_| 0.0);
         assert_eq!(groups[0].results[0].id, "so.tilo.tube");
     }
 
@@ -1906,7 +1912,7 @@ mod tests {
         let apps = apps();
         let mut recents = Recents::default();
         recents.record(&apps.query("notes").remove(0));
-        let groups = search("", &[&apps, &recents], 0);
+        let groups = search("", &[&apps, &recents], 0, &|_| 0.0);
         assert_eq!(groups[0].kind.label(), RECENT_KIND);
     }
 
@@ -1924,7 +1930,7 @@ mod tests {
             "wp",
             "rechner neu",
         ] {
-            let _ = search(query, &[&apps], 12);
+            let _ = search(query, &[&apps], 12, &|_| 0.0);
         }
         assert_eq!(
             crate::rank::FIELD_BUILDS.with(std::cell::Cell::get),
@@ -1943,7 +1949,7 @@ mod tests {
             let best = (0..25)
                 .map(|_| {
                     let started = std::time::Instant::now();
-                    let _ = search(query, &[&apps], 12);
+                    let _ = search(query, &[&apps], 12, &|_| 0.0);
                     started.elapsed()
                 })
                 .min()
@@ -1967,6 +1973,7 @@ mod tests {
             needle,
             &[&apps(), &Answers::default(), &WebSearch::default()],
             0,
+            &|_| 0.0,
         )
         .into_iter()
         .flat_map(|group| group.results)
@@ -2178,7 +2185,7 @@ mod tests {
     /// canvas reads them: what each `open` hit names.
     fn opened(needle: &str, resources: &[ResourceSpec]) -> Vec<String> {
         let published = Published(vec![PublishedActions::of("session", "", resources)]);
-        search(needle, &[&published], 0)
+        search(needle, &[&published], 0, &|_| 0.0)
             .into_iter()
             .flat_map(|group| group.results)
             .filter_map(|hit| match hit.target {
@@ -2276,6 +2283,34 @@ mod tests {
             found.get(..2),
             Some(&["notebook/groceries".to_owned(), "shop".to_owned()][..]),
             "the note called Groceries, then the list of groceries: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_row_never_says_the_same_thing_twice() {
+        let resources = [typed(
+            "inbox",
+            "Inbox",
+            ("mailbox", "mailboxes"),
+            ("Mail", "mails"),
+            true,
+            &[],
+        )];
+        let published = Published(vec![PublishedActions::of("session", "", &resources)]);
+        let rows: Vec<Hit> = search("inbox", &[&published], 0, &|_| 0.0)
+            .into_iter()
+            .flat_map(|group| group.results)
+            .collect();
+        let row = rows
+            .iter()
+            .find(|hit| match &hit.target {
+                Target::Invoke(invoke) => invoke.address.resource.as_str() == "inbox",
+                _ => false,
+            })
+            .expect("the inbox's row");
+        assert_eq!(
+            row.subtitle, None,
+            "a description that only repeats the name is dropped"
         );
     }
 

@@ -47,7 +47,7 @@ pub use lazy::{
 pub use model::{
     ALL_APPS_COMMAND, ActionTarget, CHROME_RESOURCE, DESKTOP_APP, FRAME_BUDGET, Hit, InvokeTarget,
     OPEN_ACTION, OPEN_ANCHOR, SHOW_COLLABORATORS, SearchStream, Source, SourceCosts, Target, Thing,
-    WORKSPACE_COMMAND_PREFIX, search, search_stream, search_with,
+    WORKSPACE_COMMAND_PREFIX, search, search_stream,
 };
 pub use palette::{DesktopSearch, SearchData};
 pub use preferences::SearchPreferences;
