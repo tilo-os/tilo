@@ -174,7 +174,7 @@ impl Described for PageSlide {
             page,
         } = props;
         let mut slide = Self::new(depth_of(level), page.unwrap_or_else(Self::no_page));
-        slide.kept_as = key.to_owned();
+        key.clone_into(&mut slide.kept_as);
         slide
     }
 
