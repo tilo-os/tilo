@@ -1075,19 +1075,20 @@ impl Checker<'_> {
             Ty::Unit,
         )));
         // A control bound to the field marked `(title)` or `(body)` edits the resource's title
-        // or its body: a document draws them as its large title and its running text. Only a
-        // text field draws it so; any other control is given the value it binds alone. Whether
-        // it draws a title is the control's own to say (`titled`, its component declaring
-        // `title`): one that does not is never sent a prop it does not declare.
+        // or its body: a document draws them as its large title and its running text. A
+        // document is a text field or a rich text one; a title is text. Any other control is
+        // given the value it binds alone. Whether it draws a title is the control's own to say
+        // (`titled`, its component declaring `title`): one that does not is never sent a prop it
+        // does not declare.
         if let Some(role) = &f.role
-            && f.ty == Ty::Text
+            && (f.ty == Ty::Text || f.ty == Ty::RichText)
         {
             self.emit(Stmt::Eval(Ex::host(
                 Imp::UiPropH,
                 vec![node.clone(), Ex::str("field_role"), Ex::str(role)],
                 Ty::Unit,
             )));
-            if role == "title" && titled {
+            if role == "title" && titled && f.ty == Ty::Text {
                 self.emit(Stmt::Eval(Ex::host(
                     Imp::UiPropI,
                     vec![node.clone(), Ex::str("title"), Ex::int(1)],

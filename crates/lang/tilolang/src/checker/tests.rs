@@ -508,6 +508,37 @@ fn only_a_control_that_draws_a_title_is_told_it_binds_one() {
 }
 
 #[test]
+fn a_body_held_as_rich_text_is_told_it_binds_the_documents_body() {
+    // A body is a text field or a rich text one: bound by an input, either is the document's
+    // running text, and the window draws it as the block editor.
+    let (m, _) = lower(
+        "type Note {\n    title: Text (title)\n    body: RichText (body)\n}\nroot Note\ndefault view note for Note\nview note(n: Note) {\n    std.document(n) {\n        ui.TextInput(value: n.title)\n        rich_input(bind: n.body, placeholder: \"Write\")\n    }\n}",
+    );
+    let calls = ui_calls(func(&m, "note"));
+    let at = |want: &str| {
+        calls
+            .iter()
+            .position(|call| call == want)
+            .unwrap_or_else(|| panic!("{want} in {calls:#?}"))
+    };
+    let roles: Vec<usize> = calls
+        .iter()
+        .enumerate()
+        .filter(|(_, call)| *call == "prop field_role")
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(roles.len(), 2, "the title's and the body's: {calls:#?}");
+    assert!(
+        at("node ui.TextInput") < roles[0] && roles[0] < at("node ui.RichInput"),
+        "the title field is told it is the title: {calls:#?}"
+    );
+    assert!(
+        at("node ui.RichInput") < roles[1],
+        "the rich field is told it is the body: {calls:#?}"
+    );
+}
+
+#[test]
 fn a_document_page_and_transcript_are_shells_of_the_library() {
     let (m, _) = lower(
         "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    lens tab: Tab = .about\n    let who = p.name\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts {\n                \"Name\": who\n                \"VIP\": p.vip\n            }\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            card(p) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",

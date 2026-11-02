@@ -1,11 +1,11 @@
-//! Between tilo-doc's paragraphs and the block editor's blocks, in the direction the editor
-//! reads them.
+//! Between tilo-doc's paragraphs and the block editor's blocks, both ways.
 //!
 //! tilo-doc names paragraph kinds and inline marks the way its codecs do (`heading` with a
 //! `level`, `list_item` with `ordered`/`checked`, `strong`, `em`), and counts offsets in
 //! characters. The block editor has its own kinds and marks and counts bytes. Everything the
-//! editor shows passes through [`content_of`]; what it writes back is the rich-text SDK's
-//! (`tilo_rich_text`).
+//! editor shows passes through [`content_of`]; everything it writes back, as a whole document,
+//! goes through [`view_of_content`] and [`block_of_view`] (the rich-text SDK writes an edit of
+//! one block as an action instead, `tilo_rich_text`).
 
 use tilo_doc::document::MarkValue;
 use tilo_doc::snapshot::BlockView;
@@ -22,6 +22,11 @@ pub fn byte_of_char(text: &str, chars: usize) -> usize {
     text.char_indices()
         .nth(chars)
         .map_or(text.len(), |(byte, _)| byte)
+}
+
+/// The character offset of byte `byte` in `text`: [`byte_of_char`]'s inverse.
+pub fn char_of_byte(text: &str, byte: usize) -> usize {
+    text.char_indices().take_while(|(at, _)| *at < byte).count()
 }
 
 /// The integer attribute `key` of a paragraph.
@@ -214,6 +219,200 @@ pub fn view_of(block: &tilo_ui_graph::rich::Block, id: String) -> BlockView {
             })
             .collect(),
         children: Vec::new(),
+    }
+}
+
+/// The stored name and value the editor mark `mark` is written as: [`editor_mark`]'s inverse.
+fn stored_mark(mark: &Mark) -> Option<(&'static str, MarkValue)> {
+    Some(match mark {
+        Mark::Bold => ("strong", MarkValue::Bool(true)),
+        Mark::Italic => ("em", MarkValue::Bool(true)),
+        Mark::Underline => ("underline", MarkValue::Bool(true)),
+        Mark::Strikethrough => ("strike", MarkValue::Bool(true)),
+        Mark::Code => ("fontFamily", MarkValue::Str("mono".to_owned())),
+        Mark::Link(page) => ("link", MarkValue::Str(format!("{PAGE_LINK_PREFIX}{page}"))),
+        Mark::Transclusion(page) => ("transclusion", MarkValue::Str(page.to_string())),
+        Mark::ExternalLink(target) | Mark::ResourceLink(target) => {
+            ("link", MarkValue::Str(target.clone()))
+        }
+        Mark::Mention(id) if !id.is_empty() => ("mention", MarkValue::Str(id.clone())),
+        Mark::Mention(_) => return None,
+    })
+}
+
+/// The paragraph the editor block `content` is stored as: [`content_of`]'s inverse, in
+/// tilo-doc's names, a list's depth in `level`, and offsets counted in characters.
+#[must_use]
+pub fn view_of_content(content: &BlockContent) -> BlockView {
+    let mut attrs: std::collections::BTreeMap<String, tilo_doc::AttrVal> = Default::default();
+    let mut level = |depth: u8| {
+        attrs.insert("level".to_owned(), tilo_doc::AttrVal::Int(i64::from(depth)));
+    };
+    let kind = match &content.kind {
+        BlockKind::Paragraph => "paragraph",
+        BlockKind::Quote => "quote",
+        BlockKind::Callout(callout) => {
+            attrs.insert(
+                CALLOUT.to_owned(),
+                tilo_doc::AttrVal::Str(callout.name().to_owned()),
+            );
+            "quote"
+        }
+        BlockKind::Heading(depth) => {
+            level((*depth).clamp(1, 6));
+            "heading"
+        }
+        BlockKind::Bullet { indent } => {
+            level(*indent);
+            attrs.insert("ordered".to_owned(), tilo_doc::AttrVal::Bool(false));
+            "list_item"
+        }
+        BlockKind::Numbered { indent } => {
+            level(*indent);
+            attrs.insert("ordered".to_owned(), tilo_doc::AttrVal::Bool(true));
+            "list_item"
+        }
+        BlockKind::Checklist { indent, done } => {
+            level(*indent);
+            attrs.insert("ordered".to_owned(), tilo_doc::AttrVal::Bool(false));
+            attrs.insert("checked".to_owned(), tilo_doc::AttrVal::Bool(*done));
+            "list_item"
+        }
+        BlockKind::Divider => "divider",
+        BlockKind::CodeBlock { lang } => {
+            attrs.insert("code".to_owned(), tilo_doc::AttrVal::Bool(true));
+            if let Some(lang) = lang {
+                attrs.insert("lang".to_owned(), tilo_doc::AttrVal::Str(lang.clone()));
+            }
+            if let Some(group) = &content.code_group {
+                attrs.insert(
+                    "code_group".to_owned(),
+                    tilo_doc::AttrVal::Str(group.clone()),
+                );
+            }
+            "paragraph"
+        }
+        BlockKind::Table { visual } => {
+            attrs.insert(TABLE_SOURCE.to_owned(), tilo_doc::AttrVal::Bool(*visual));
+            "paragraph"
+        }
+    };
+    if content.nesting > 0 && !content.kind.supports_indent() {
+        attrs.insert(
+            "nesting".to_owned(),
+            tilo_doc::AttrVal::Int(i64::from(content.nesting)),
+        );
+    }
+    let marks = content
+        .marks
+        .iter()
+        .filter_map(|span| {
+            let (name, value) = stored_mark(&span.mark)?;
+            let start = char_of_byte(&content.text, span.range.start);
+            let end = char_of_byte(&content.text, span.range.end);
+            (start < end).then(|| tilo_doc::document::MarkSpan {
+                start,
+                end,
+                name: name.to_owned(),
+                value,
+            })
+        })
+        .collect();
+    BlockView {
+        id: content.id.clone(),
+        kind: kind.to_owned(),
+        text: content.text.clone(),
+        marks,
+        attrs,
+        children: Vec::new(),
+    }
+}
+
+/// The paragraph a component is given for `view`: [`view_of`]'s inverse, its marks and
+/// attributes in the one form a window reads.
+#[must_use]
+pub fn block_of_view(view: &BlockView) -> tilo_ui_graph::rich::Block {
+    use tilo_ui_graph::rich::Attr;
+    let value = |value: &MarkValue| match value {
+        MarkValue::Bool(flag) => Attr::Bool(*flag),
+        MarkValue::Int(number) => Attr::Int(*number),
+        MarkValue::Str(text) => Attr::Text(text.clone()),
+    };
+    tilo_ui_graph::rich::Block {
+        kind: view.kind.clone(),
+        text: view.text.clone(),
+        marks: view
+            .marks
+            .iter()
+            .map(|mark| tilo_ui_graph::rich::Mark {
+                start: mark.start,
+                end: mark.end,
+                name: mark.name.clone(),
+                value: value(&mark.value),
+            })
+            .collect(),
+        attrs: view
+            .attrs
+            .iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    tilo_doc::AttrVal::Bool(flag) => Attr::Bool(*flag),
+                    tilo_doc::AttrVal::Int(number) => Attr::Int(*number),
+                    tilo_doc::AttrVal::Float(number) => Attr::Float(*number),
+                    tilo_doc::AttrVal::Str(text) => Attr::Text(text.clone()),
+                };
+                (key.clone(), value)
+            })
+            .collect(),
+    }
+}
+
+/// The blocks of `rich` as the editor that edits it holds them: each paragraph as its writer
+/// wrote it, every reference as its run (never as what a reader reads for it), and a block id
+/// that stands for its place, so the editor keeps a block's widget from one presentation to the
+/// next.
+#[must_use]
+pub fn blocks_as_written(rich: &tilo_ui_graph::rich::RichText) -> Vec<BlockContent> {
+    rich.blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| content_of(&view_of(block, format!("p{index}"))))
+        .collect()
+}
+
+/// `rich` with the paragraphs `blocks` are: everything an editor's document writes back
+/// ([`blocks_as_written`]'s inverse). A paragraph the person did not touch is kept as `rich`
+/// wrote it, marks the editor cannot draw included: it is found again among `rich`'s blocks by
+/// what it now reads as, so all it holds beyond that reads on. One they changed is written from
+/// what the editor shows. How each reference reads inline stays as `rich` said it, since that is
+/// the reader's, not the text's.
+#[must_use]
+pub fn rich_of_blocks(
+    blocks: &[BlockContent],
+    rich: &tilo_ui_graph::rich::RichText,
+) -> tilo_ui_graph::rich::RichText {
+    // Each of `rich`'s blocks until an editor block reads as it does: an editor's block ids
+    // stand for its widget, not for a paragraph of the document, so what a block holds now is
+    // the only name the two share.
+    let mut taken = vec![false; rich.blocks.len()];
+    let mut written = Vec::with_capacity(blocks.len());
+    for content in blocks {
+        let kept = (0..rich.blocks.len())
+            .find(|index| {
+                let block = &rich.blocks[*index];
+                !taken[*index]
+                    && block.text == content.text
+                    && content_of(&view_of(block, content.id.clone())) == *content
+            })
+            .map(|index| {
+                taken[index] = true;
+                rich.blocks[index].clone()
+            });
+        written.push(kept.unwrap_or_else(|| block_of_view(&view_of_content(content))));
+    }
+    tilo_ui_graph::rich::RichText {
+        blocks: written,
+        embeds: rich.embeds.clone(),
     }
 }
 
@@ -581,6 +780,167 @@ mod tests {
         let german = blocks_at(&rich, &reading(chrono::Utc))[0].text.clone();
         I18nManager::set_locale("en-US");
         assert!(german.contains("in 2 Std."), "{german}");
+    }
+
+    #[test]
+    fn a_document_round_trips_through_the_editor() {
+        let attrs = |pairs: &[(&str, Attr)]| {
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), value.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let written = RichText {
+            blocks: vec![
+                Block {
+                    kind: "heading".into(),
+                    text: "Title".into(),
+                    attrs: attrs(&[("level", Attr::Int(3))]),
+                    ..Block::default()
+                },
+                Block {
+                    kind: "list_item".into(),
+                    text: "one".into(),
+                    ..Block::default()
+                },
+                Block {
+                    kind: "list_item".into(),
+                    text: "two".into(),
+                    attrs: attrs(&[("level", Attr::Int(2)), ("checked", Attr::Bool(true))]),
+                    ..Block::default()
+                },
+                Block {
+                    kind: "quote".into(),
+                    text: "careful".into(),
+                    attrs: attrs(&[(CALLOUT, Attr::Text("warning".into()))]),
+                    ..Block::default()
+                },
+                Block {
+                    kind: "paragraph".into(),
+                    text: "fn main() {}".into(),
+                    attrs: attrs(&[
+                        ("code", Attr::Bool(true)),
+                        ("lang", Attr::Text("rust".into())),
+                    ]),
+                    ..Block::default()
+                },
+                Block {
+                    kind: "divider".into(),
+                    ..Block::default()
+                },
+                Block {
+                    kind: "paragraph".into(),
+                    text: "Héllo wörld".into(),
+                    marks: vec![
+                        RichMark {
+                            start: 0,
+                            end: 5,
+                            name: "strong".into(),
+                            value: Attr::Bool(true),
+                        },
+                        RichMark {
+                            start: 6,
+                            end: 11,
+                            name: "em".into(),
+                            value: Attr::Bool(true),
+                        },
+                    ],
+                    ..Block::default()
+                },
+            ],
+            embeds: Vec::new(),
+        };
+        let blocks = blocks_as_written(&written);
+        assert_eq!(
+            blocks[0].kind,
+            BlockKind::Heading(3),
+            "the stored form as the editor holds it"
+        );
+        assert_eq!(
+            blocks[2].kind,
+            BlockKind::Checklist {
+                indent: 2,
+                done: true
+            }
+        );
+        assert_eq!(blocks[3].kind, BlockKind::Callout(CalloutKind::Warning));
+        assert_eq!(
+            blocks[4].kind,
+            BlockKind::CodeBlock {
+                lang: Some("rust".into())
+            }
+        );
+        assert_eq!(
+            blocks[6].marks,
+            vec![
+                MarkSpan::new(0..6, Mark::Bold),
+                MarkSpan::new(7..13, Mark::Italic),
+            ],
+            "offsets count characters, the editor counts bytes"
+        );
+
+        // What the editor writes back is the document again, and reading it again finds the
+        // same paragraphs.
+        let back = rich_of_blocks(&blocks, &written);
+        assert_eq!(blocks_as_written(&back), blocks);
+        let stored = view_of_content(&blocks[6]);
+        let spans: Vec<(usize, usize, &str)> = stored
+            .marks
+            .iter()
+            .map(|mark| (mark.start, mark.end, mark.name.as_str()))
+            .collect();
+        assert_eq!(
+            spans,
+            [(0, 5, "strong"), (6, 11, "em")],
+            "the stored marks are the ones written, counted in characters again"
+        );
+        assert_eq!(stored.text, "Héllo wörld");
+        assert_eq!(view_of_content(&blocks[2]).kind, "list_item");
+        assert_eq!(
+            view_of_content(&blocks[2]).attrs.get("checked"),
+            Some(&tilo_doc::AttrVal::Bool(true))
+        );
+        assert_eq!(view_of_content(&blocks[0]).kind, "heading");
+        assert_eq!(
+            view_of_content(&blocks[0]).attrs.get("level"),
+            Some(&tilo_doc::AttrVal::Int(3))
+        );
+        assert_eq!(view_of_content(&blocks[5]).kind, "divider");
+        assert_eq!(block_of_view(&stored).text, "Héllo wörld");
+
+        // A mark the editor cannot draw is the document's, not the editor's: a paragraph the
+        // person did not touch keeps it, and one they changed writes what the editor shows.
+        let mut timed = written.clone();
+        timed.blocks[6].marks.push(RichMark {
+            start: 0,
+            end: 5,
+            name: "time".into(),
+            value: Attr::Text("2026-11-02T09:00:00Z".into()),
+        });
+        let untouched = blocks_as_written(&timed);
+        let back = rich_of_blocks(&untouched, &timed);
+        assert_eq!(
+            back.blocks[6], timed.blocks[6],
+            "the paragraph is kept as it was written"
+        );
+        let mut edited = untouched.clone();
+        edited[6].text = "Héllo again".into();
+        let back = rich_of_blocks(&edited, &timed);
+        assert_eq!(back.blocks[6].text, "Héllo again");
+        assert!(
+            back.blocks[6].marks.iter().all(|mark| mark.name != "time"),
+            "what the editor shows is what a changed paragraph is written as"
+        );
+        // An editor's block ids are its own, minted as it splits and joins: a paragraph is
+        // found again by reading as it does, however many edits moved it.
+        let mut renamed = untouched.clone();
+        renamed[6].id = "split-3".into();
+        renamed.insert(6, BlockContent::paragraph("made room for it", ""));
+        let back = rich_of_blocks(&renamed, &timed);
+        assert_eq!(
+            back.blocks[7], timed.blocks[6],
+            "the paragraph still reads as it was written, its mark with it"
+        );
     }
 
     #[test]
