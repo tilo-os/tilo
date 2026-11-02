@@ -37,6 +37,12 @@ qcms.workspace = true
 tracing.workspace = true
 # Percentiles of the frame pacing it logs.
 tilo-frame-metrics = { path = "../frame-metrics" }
+# Where the session says which GPU it renders on: the record
+# `tilo system health --gpu` reads.
+serde.workspace = true
+serde_json.workspace = true
+tilo-paths.workspace = true
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # How long a risky display change waits for the person: read through the
 # clock a test can hold, so the wait ends when the person answers and not
 # when the machine was slow.

@@ -38,6 +38,7 @@ mod dnd;
 pub mod effects;
 pub mod gamma;
 pub mod gestures;
+mod gpu_health;
 mod hdr;
 pub mod host;
 pub mod idle;
