@@ -224,6 +224,7 @@ fn fixture(
         catalog.register(definition).unwrap();
     }
     let mut retained = vec![];
+    let mut created = std::collections::HashSet::new();
     let mut workspaces = vec![];
     let mut next_tab: u64 = 10;
     for (w, name) in ["Work", "Design", "Reading"].into_iter().enumerate() {
@@ -243,12 +244,17 @@ fn fixture(
                             id,
                             definition.record_kind.clone(),
                         );
-                        store.create_record(&checkout).unwrap();
-                        store.with(&checkout.id, |doc| match which {
-                            0 => word_processor::initialize_empty_document(doc).unwrap(),
-                            1 => chat::demo::start(doc, "author", "Author", "AU").unwrap(),
-                            _ => notes::read::initialize(doc),
-                        });
+                        // Chat's tabs of one workspace share the package's
+                        // record, so a tab that is not the first opens what
+                        // one before it made.
+                        if created.insert((definition.app_id().to_string(), checkout.id.clone())) {
+                            store.create_record(&checkout).unwrap();
+                            store.with(&checkout.id, |doc| match which {
+                                0 => word_processor::initialize_empty_document(doc).unwrap(),
+                                1 => chat::demo::start(doc, "author", "Author", "AU").unwrap(),
+                                _ => notes::read::initialize(doc),
+                            });
+                        }
                         retained.push(store);
                     }
                     tabs.push(Tab {
