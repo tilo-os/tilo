@@ -1167,7 +1167,11 @@ impl ActionHost for Host {
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         if request.target.provider != SESSION_PROVIDER {
             return match &self.state {
-                Some(state) => state.action_invoke(caller, None, None, &request),
+                // A person at their own seat: the broker retains the seat's
+                // certificate custody for the call, as it does for the
+                // palette's, so what the person may do here is what the
+                // person may do anywhere.
+                Some(state) => state.action_invoke_local_person(caller, &request),
                 None => Pending::ready(Err(ActionHostError::Unavailable {
                     reason: "this desktop's apps are not running here".to_owned(),
                 })),
