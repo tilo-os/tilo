@@ -26,14 +26,6 @@
 
 use std::collections::HashMap;
 
-use taffy::style_helpers::{auto, length, percent};
-use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill, ImageData};
-use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
-
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::chrome::{RowJoin, SelectionState, paint_row_selection_joined, row_bleed};
 use crate::icons::Icon;
@@ -44,6 +36,12 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::{PresenceHue, SMALL_TEXT_MIN_CONTRAST};
 use crate::widget::activation::{Activation, Interaction};
+use taffy::style_helpers::{auto, length, percent};
+use taffy::{NodeId, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{Color, Fill, ImageData};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 /// The operation type of a row's leading checkbox turned.
 const CHECK_ROW: &str = "tilo.ui.row.check";
@@ -2052,6 +2050,10 @@ pub struct ListRow {
     /// A press on one of the row's own controls (a hover action, the
     /// leading checkbox); a press on the row itself is the activation's.
     pressed_part: crate::pointer_replay::HeldPress<RowPart>,
+    /// The commands the row's menu offers with a declared shortcut
+    /// (`key: "Ctrl+Enter"`), and the keys each answers: pressed where the
+    /// row has the keyboard, they run it as choosing it in the menu does.
+    shortcuts: Vec<(crate::platform::Shortcut, std::rc::Rc<dyn Fn()>)>,
     swipe: Option<OwnedSwipe>,
     swipe_origin: Option<(u64, f64)>,
     swipe_offset: f64,
@@ -2121,6 +2123,7 @@ impl ListRow {
             hovered_action: None,
             armed_action: None,
             pressed_part: crate::pointer_replay::HeldPress::default(),
+            shortcuts: Vec::new(),
             swipe: None,
             swipe_origin: None,
             swipe_offset: 0.0,
@@ -2133,6 +2136,17 @@ impl ListRow {
             rect: Rect::ZERO,
             dirty: true,
         }
+    }
+
+    /// The commands the row's menu offers with the keys they declare: pressing one while the
+    /// row has the keyboard runs it, as choosing it in the menu does.
+    #[must_use]
+    pub fn shortcuts(
+        mut self,
+        shortcuts: Vec<(crate::platform::Shortcut, std::rc::Rc<dyn Fn()>)>,
+    ) -> Self {
+        self.shortcuts = shortcuts;
+        self
     }
 
     /// See [`ListRowFace::two_line_title`].
@@ -3143,53 +3157,6 @@ impl ListRow {
             TouchPhase::Started => {}
         }
     }
-
-    /// Arrow keys step through the actions of a focused row; Enter or Space
-    /// runs the armed one, Escape disarms. Space toggles a leading checkbox.
-    fn handle_key(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
-        let WindowEvent::KeyboardInput { event, .. } = event else {
-            return false;
-        };
-        if !self.activation.state.focused
-            || self.activation.state.disabled
-            || event.state != ElementState::Pressed
-        {
-            return false;
-        }
-        let count = self.shown_actions().len();
-        let handled = match &event.logical_key {
-            Key::Named(NamedKey::ArrowRight) if count > 0 => {
-                self.armed_action = Some(
-                    self.armed_action
-                        .map_or(0, |i| i.saturating_add(1).min(count.saturating_sub(1))),
-                );
-                true
-            }
-            Key::Named(NamedKey::ArrowLeft) if self.armed_action.is_some() => {
-                self.armed_action = self.armed_action.and_then(|i| i.checked_sub(1));
-                true
-            }
-            Key::Named(NamedKey::Escape) if self.armed_action.is_some() => {
-                self.armed_action = None;
-                true
-            }
-            Key::Named(NamedKey::Enter | NamedKey::Space) if self.armed_action.is_some() => {
-                let armed = self.armed_action.unwrap_or_default();
-                self.run_action(armed)
-            }
-            Key::Named(NamedKey::Space)
-                if matches!(self.leading, Some(Leading::Checkbox { .. })) =>
-            {
-                self.toggle_checkbox()
-            }
-            _ => false,
-        };
-        if handled {
-            self.dirty = true;
-            *ctx.handled = true;
-        }
-        handled
-    }
 }
 
 impl crate::widget::ReservedShape for ListRow {
@@ -3965,6 +3932,9 @@ impl crate::widget::controls::ActionControls for ListRow {
         }
     }
 }
+
+#[path = "list_row_keys.rs"]
+mod keys;
 
 #[path = "list_row_shape.rs"]
 mod shape;

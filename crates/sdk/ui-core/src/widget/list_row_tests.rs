@@ -979,3 +979,68 @@ fn a_pressed_row_is_a_fingers_target_tall_on_touch() {
         }
     }
 }
+
+#[test]
+fn delete_runs_the_destructive_action_the_row_swipes_to() {
+    let removed = Rc::new(Cell::new(0));
+    let removed_too = Rc::clone(&removed);
+    let mut row = ListRow::new("milk", "Buy milk")
+        .on_activate(|| {})
+        .swipe_action(Icon::Trash, "Delete", true, move || {
+            removed_too.set(removed_too.get() + 1)
+        });
+    row.set_focus(true);
+    let mut harness = FrameHarness::for_root(crate::State::new(), row, (420, 80), Theme::dark());
+    harness.key("Delete");
+    assert_eq!(
+        removed.get(),
+        1,
+        "Delete takes the row away as its destructive swipe does"
+    );
+
+    // A swipe action the app did not mark destructive is not Delete's: the
+    // key keeps its own meaning.
+    let ran = Rc::new(Cell::new(0));
+    let ran_too = Rc::clone(&ran);
+    let mut kept = ListRow::new("milk", "Buy milk")
+        .on_activate(|| {})
+        .swipe_action(Icon::Star, "Pin", false, move || {
+            ran_too.set(ran_too.get() + 1)
+        });
+    kept.set_focus(true);
+    let mut harness = FrameHarness::for_root(crate::State::new(), kept, (420, 80), Theme::dark());
+    harness.key("Delete");
+    assert_eq!(ran.get(), 0, "a plain row action is not destructive");
+}
+
+#[test]
+fn a_menu_shortcut_runs_where_the_row_has_the_keyboard() {
+    let checked = Rc::new(Cell::new(0));
+    let checked_too = Rc::clone(&checked);
+    let mut row = ListRow::new("milk", "Buy milk")
+        .on_activate(|| {})
+        .shortcuts(vec![(
+            crate::platform::Shortcut::from("Ctrl+Enter"),
+            Rc::new(move || checked_too.set(checked_too.get() + 1)) as Rc<dyn Fn()>,
+        )]);
+    row.set_focus(true);
+    let mut harness = FrameHarness::for_root(crate::State::new(), row, (420, 80), Theme::dark());
+    harness.key("Enter");
+    assert_eq!(checked.get(), 0, "the key on its own is not the chord");
+    harness.set_modifiers(&["command".to_owned()]);
+    harness.key("Enter");
+    harness.set_modifiers(&[]);
+    assert_eq!(
+        checked.get(),
+        1,
+        "the declared chord runs the command its menu offers"
+    );
+    harness.set_modifiers(&["command".to_owned(), "shift".to_owned()]);
+    harness.key("Enter");
+    harness.set_modifiers(&[]);
+    assert_eq!(
+        checked.get(),
+        1,
+        "a modifier the shortcut does not name is another press"
+    );
+}

@@ -343,7 +343,15 @@ impl CommandEntry {
     /// Show what an action's row shows of the state it acts on.
     fn show_state(&mut self, state: &ActionState) {
         self.badge.clone_from(&state.badge);
-        self.keybinding.clone_from(&state.shortcut);
+        // A declared shortcut is a chord, shown the way every other shortcut is: with the
+        // platform's command modifier and in the keyboard's legends. Text that is no chord
+        // stays the free-text keybinding it is.
+        let chord = state
+            .shortcut
+            .as_deref()
+            .filter(|text| tilo_ui_graph::keys::Chord::parse(text).is_ok());
+        self.shortcut = chord.map(Shortcut::from);
+        self.keybinding = chord.is_none().then(|| state.shortcut.clone()).flatten();
     }
 
     #[must_use]
@@ -443,4 +451,52 @@ impl CommandEntry {
 pub struct CommandOutcome {
     pub id: String,
     pub argument: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::Platform;
+
+    /// A row showing the first shortcut of an action's published state.
+    fn row_with(shortcut: &str) -> CommandEntry {
+        let mut entry = CommandEntry::new("check", "Complete");
+        entry.show_state(&ActionState {
+            shortcut: Some(shortcut.to_owned()),
+            ..ActionState::default()
+        });
+        entry
+    }
+
+    #[test]
+    fn a_declared_shortcut_shows_in_the_palette_as_the_platforms_keys() {
+        let entry = row_with("Ctrl+Enter");
+        let linux = PlatformConventions::new(Platform::Linux);
+        assert_eq!(
+            entry.keycap_labels(linux),
+            Some(vec!["Ctrl".to_owned(), "Enter".to_owned()]),
+            "the declared chord, key in its legend"
+        );
+        assert_eq!(entry.keybinding_label(linux).as_deref(), Some("Ctrl+Enter"));
+        assert_eq!(
+            entry
+                .keybinding_label(PlatformConventions::new(Platform::MacOs))
+                .as_deref(),
+            Some("⌘↩"),
+            "the command modifier a Mac presses, as a Mac paints it"
+        );
+        assert!(entry.keybinding.is_none(), "shown as a shortcut, not text");
+    }
+
+    #[test]
+    fn a_bare_key_is_a_shortcut_and_other_text_stays_a_keybinding() {
+        let key = row_with("e");
+        assert_eq!(
+            key.keycap_labels(PlatformConventions::new(Platform::Linux)),
+            Some(vec!["E".to_owned()])
+        );
+        let text = row_with("Double click");
+        assert_eq!(text.keybinding.as_deref(), Some("Double click"));
+        assert!(text.shortcut.is_none());
+    }
 }
