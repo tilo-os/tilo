@@ -33,8 +33,7 @@ use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::time::{Duration, Instant};
 use ui::vello::Scene;
 use ui::widget::{
-    GroupRow, OutputSpan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, TaffyTreeExt as _,
-    TileHost, Widget, WindowGroup,
+    GroupRow, OutputSpan, STRIP_EDGE_GUTTER_PX, TaffyTreeExt as _, TileHost, Widget, WindowGroup,
 };
 use ui::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use ui::{TextRenderer, Theme};
@@ -47,6 +46,7 @@ use crate::navigation::{
 use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
 use paging::{can_pan, pan_row, panned_to, sideways, vertical};
+use strip::{strip_row, strip_style};
 
 mod arrivals;
 mod artwork;
@@ -66,6 +66,7 @@ mod search;
 mod seed;
 mod shown;
 mod splice;
+mod strip;
 mod tab_beside;
 #[cfg(test)]
 mod tab_beside_tests;
@@ -2253,20 +2254,6 @@ impl DesktopSurface {
     }
 }
 
-/// The shown strip's node style over the row's `own`: tiled windows keep
-/// wallpaper under them, so their bottom border and corners show; a window
-/// filling the strip or taken across the display takes that band instead.
-fn strip_style(row: &GroupRow, own: Style) -> Style {
-    let bottom = if row.is_fullscreen() || row.groups.iter().any(|group| group.maximized) {
-        0.0
-    } else {
-        STRIP_BOTTOM_GUTTER_PX
-    };
-    let mut style = own;
-    style.margin.bottom = ui::taffy::LengthPercentageAuto::length(ui::num::f32_of_f64(bottom));
-    style
-}
-
 fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
     for workspace in &tree.workspaces {
         minter.observe(workspace.id.0);
@@ -2325,12 +2312,6 @@ fn build_row_lazily(
     deferred.compact_sort_by_key(|&(inactive, distance, _)| (inactive, distance));
     let order = deferred.into_iter().map(|(_, _, tab)| tab).collect();
     (strip_row(groups), order)
-}
-
-/// A strip's row with the wallpaper gutter before its first window, as the
-/// native desktop keeps it.
-fn strip_row(groups: Vec<WindowGroup>) -> GroupRow {
-    GroupRow::new(groups).with_leading_inset(STRIP_EDGE_GUTTER_PX)
 }
 
 fn find_tab(tree: &DesktopTree, strip: StripId, tab: TabId) -> Option<(&Workspace, &Tab)> {

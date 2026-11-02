@@ -2295,6 +2295,8 @@ fn settle(session: &mut Session, frames: u32) {
 
 #[path = "session/desk.rs"]
 mod desk;
+#[path = "session/strip.rs"]
+mod strip;
 
 /// The id of the tab the desk holds for `app`.
 fn tab_of(session: &Session, app: &str) -> u64 {

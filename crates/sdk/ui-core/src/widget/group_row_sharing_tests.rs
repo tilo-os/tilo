@@ -43,19 +43,23 @@ fn a_lone_window_takes_the_strip_until_another_opens_beside_it() {
         let mut opened = make_group(200, &[2]);
         opened.start_spawn_animation();
         row.insert_group(opened, 1);
-        let _ = row.share_with_neighbour(200);
+        assert!(row.share_with_neighbour(200), "the two share the strip");
         relayout_strip(&mut row, 1440.0);
         relayout_strip(&mut row, 1440.0);
         assert!(
-            (span_width(&row, 0) - WindowWidth::Normal.resolve(1376.0)).abs() < 0.5,
-            "beside another, it is two thirds again: {:?}",
+            (span_width(&row, 0) - (1376.0 - 8.0) / 2.0).abs() < 1.0,
+            "beside another, it takes half the strip: {:?}",
             row.group_canvas_spans()
         );
-        assert_eq!(row.groups[0].width(), WindowWidth::Normal);
         let spans = row.group_canvas_spans();
         assert!(
-            spans[1].2 - spans[0].1 <= 1440.0,
-            "the two are on screen together: {spans:?}"
+            (spans[1].2 - spans[0].1 - 1376.0).abs() < 1.0,
+            "the two tile the strip's usable width: {spans:?}"
+        );
+        assert!(
+            spans[0].1 >= STRIP_EDGE_GUTTER_PX - 0.5
+                && spans[1].2 <= 1440.0 - STRIP_EDGE_GUTTER_PX + 0.5,
+            "the leading gutter and the strip's own stay: {spans:?}"
         );
         assert!(row.remove_group_by_id(200));
         relayout_strip(&mut row, 1440.0);

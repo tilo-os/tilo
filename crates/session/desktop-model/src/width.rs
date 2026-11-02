@@ -75,15 +75,17 @@ pub const ALONE_MAX_PX: f64 = 1920.0;
 pub const SIDE_BY_SIDE_MIN_PX: f64 = 480.0;
 
 /// Widths that put a window just opened beside `neighbour` on screen
-/// together with it. `screen_px` is how wide a run of windows can be and
-/// still be seen whole (the strip pans past its leading gutter, so this can
-/// exceed `strip_usable_px`, which widths are fractions of); the two are
-/// `gap_px` apart. `None` when they already fit, or when no share leaves
-/// both at least [`SIDE_BY_SIDE_MIN_PX`]: the strip scrolls then, framing
-/// the new window whole on its own.
+/// together with it: both within `strip_usable_px`, the strip's width less
+/// the edge gutters every window stays clear of, the two `gap_px` apart.
+/// `screen_px` is the display the strip stands on, edge gutters included,
+/// and only decides whether that display is wide enough to split: the
+/// widths are fractions of the usable width either way. `None` when the two
+/// already fit, or when the screen has no room for two windows of
+/// [`SIDE_BY_SIDE_MIN_PX`]: the strip scrolls then, framing the new window
+/// whole on its own.
 ///
 /// The window the person was in keeps its width when the space beside it
-/// is enough for the new one; otherwise the two share the screen equally.
+/// is enough for the new one; otherwise the two share the strip equally.
 /// Returns `(neighbour, opened)`.
 pub fn share_beside(
     neighbour: WindowWidth,
@@ -94,7 +96,7 @@ pub fn share_beside(
 ) -> Option<(WindowWidth, WindowWidth)> {
     let usable = strip_usable_px.max(1.0);
     let beside = neighbour.resolve(usable);
-    let room = screen_px - gap_px - beside;
+    let room = usable - gap_px - beside;
     if room >= opened.resolve(usable) {
         return None;
     }
@@ -103,8 +105,14 @@ pub fn share_beside(
     if room >= SIDE_BY_SIDE_MIN_PX {
         return Some((neighbour, fitting(room)));
     }
-    let half = (screen_px - gap_px) / 2.0;
-    (half >= SIDE_BY_SIDE_MIN_PX).then(|| (fitting(half), fitting(half)))
+    let half = (usable - gap_px) / 2.0;
+    // Whether the screen is worth splitting is a question about the screen,
+    // whose edge gutters are chrome outside the windows: a display a gutter
+    // short of two full windows shows both of them smaller rather than
+    // scrolling one out of sight. The widths themselves stay fractions of
+    // the strip's usable width, so the pair tiles it and both gutters stand.
+    let screen_half = (screen_px.max(usable) - gap_px) / 2.0;
+    (screen_half >= SIDE_BY_SIDE_MIN_PX).then(|| (fitting(half), fitting(half)))
 }
 
 /// The largest per-mille of `usable` that resolves to no more than `px`.
@@ -257,44 +265,46 @@ mod tests {
     fn a_window_opened_beside_another_shares_the_screen_with_it() {
         // Phase `two_windows_on_a_1280_screen_both_fit_on_it`.
         {
-            // A 1280 px display whose strip starts past the 251 px wheel
-            // gutter and ends 32 px short of the edge: two-thirds of what
-            // is left is 665 px, and two of those overflow the screen.
-            let (usable, screen) = (997.0, 1248.0);
+            // A 1280 px display whose strip keeps a 32 px gutter at each end:
+            // two-thirds of what is left is 811 px, and two of those overflow
+            // the usable width.
+            let (usable, screen, gap) = (1216.0, 1280.0, 8.0);
             let pair = share_beside(
                 WindowWidth::Normal,
                 WindowWidth::Normal,
                 usable,
                 screen,
-                8.0,
+                gap,
             )
-            .expect("two two-thirds windows overflow one screen");
-            assert_eq!(
-                pair.0,
-                WindowWidth::Normal,
-                "the window in use keeps its width"
+            .expect("two two-thirds windows overflow one strip");
+            assert_eq!(pair.0, pair.1, "neither keeps more than its half");
+            assert!(pair_px(pair, usable, gap) <= usable, "{pair:?}");
+            assert!(pair.0.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
+            assert!(
+                usable - pair_px(pair, usable, gap) < 4.0,
+                "the pair tiles the strip to within a per-mille's rounding, \
+                 both gutters stay: {pair:?}"
             );
-            assert!(pair_px(pair, usable, 8.0) <= screen, "{pair:?}");
-            assert!(pair.1.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
         }
         {
-            let (usable, screen) = (997.0, 1248.0);
-            let pair = share_beside(WindowWidth::Wide, WindowWidth::Normal, usable, screen, 8.0)
+            let (usable, screen, gap) = (1216.0, 1280.0, 8.0);
+            let pair = share_beside(WindowWidth::Wide, WindowWidth::Normal, usable, screen, gap)
                 .expect("a full-width window leaves no room beside it");
             assert_eq!(pair.0, pair.1, "neither keeps more than its half");
-            assert!(pair_px(pair, usable, 8.0) <= screen, "{pair:?}");
+            assert!(pair_px(pair, usable, gap) <= usable, "{pair:?}");
             assert!(
-                pair.0.resolve(usable) >= 615.0,
-                "the pair uses the whole screen, not just the usable width: {pair:?}"
+                pair.0.resolve(usable) >= 603.0,
+                "the pair uses the usable width: {pair:?}"
             );
         }
         {
             let usable = 1904.0;
+            let screen = usable + 2.0 * 32.0;
             let pair = share_beside(
                 WindowWidth::Normal,
                 WindowWidth::Normal,
                 usable,
-                usable,
+                screen,
                 8.0,
             )
             .expect("two two-thirds windows overflow a wide screen too");
@@ -312,7 +322,7 @@ mod tests {
                     WindowWidth::Narrow,
                     WindowWidth::Narrow,
                     1904.0,
-                    1904.0,
+                    1904.0 + 64.0,
                     8.0
                 ),
                 None
@@ -320,10 +330,37 @@ mod tests {
         }
         {
             assert_eq!(
-                share_beside(WindowWidth::Normal, WindowWidth::Normal, 800.0, 800.0, 8.0),
+                share_beside(
+                    WindowWidth::Normal,
+                    WindowWidth::Normal,
+                    800.0,
+                    800.0 + 64.0,
+                    8.0
+                ),
                 None,
                 "two windows under the side-by-side minimum would both be unusable"
             );
+        }
+        {
+            // A 1024 px display: each window's share of the strip is 476 px,
+            // four short of the minimum, and the pair still shares it rather
+            // than scrolling one window out of sight — the strip's 32 px
+            // gutters are chrome, not window.
+            let (usable, screen, gap) = (960.0, 1024.0, 8.0);
+            let pair = share_beside(
+                WindowWidth::Normal,
+                WindowWidth::Normal,
+                usable,
+                screen,
+                gap,
+            )
+            .expect("a 1024 px display shows two windows");
+            assert_eq!(pair.0, pair.1, "{pair:?}");
+            assert!(
+                (pair.0.resolve(usable) - 476.0).abs() <= 1.0,
+                "each takes half the strip's usable width: {pair:?}"
+            );
+            assert!(pair_px(pair, usable, gap) <= usable, "{pair:?}");
         }
     }
 

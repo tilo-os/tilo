@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::navigation::{ChromeEffect, DeskEffect, Route};
-use ui::widget::TileContent;
+use ui::widget::{STRIP_BOTTOM_GUTTER_PX, STRIP_TOP_GAP_PX, TileContent};
 use ui::winit::dpi::PhysicalPosition;
 
 struct Notices;
@@ -2231,4 +2231,147 @@ fn a_windows_own_icon_is_on_its_tab() {
     assert!(handle.set_window_artwork(91, None));
     frame.relayout();
     assert_eq!(magenta(&frame), 0, "and gone when the window's icon is");
+}
+
+/// Opening a window beside another tiles the strip's usable width: the
+/// row is wider than a window has room for, and still both of its gutters
+/// stand — the first window's leading edge past the leading gutter, the
+/// last window's trailing edge short of the screen's — with nothing left
+/// to scroll.
+#[test]
+fn a_strip_that_overflows_keeps_its_gutter_at_both_ends() {
+    let (width, height) = (1280_u32, 800_u32);
+    let (surface, handle) = desktop(1);
+    handle.set_viewport_width(f64::from(width));
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (width, height),
+        Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    // A second window opens beside the first, as a launch does.
+    let mut minter = IdMinter::new(99);
+    let tab = Tab {
+        id: minter.mint(),
+        title: "App9".to_owned(),
+        tile: tilo_desktop_model::TileContent::LocalApp {
+            app_id: "so.tilo.app9".to_owned(),
+            label: "App9".to_owned(),
+            note: String::new(),
+        },
+        app_title: None,
+    };
+    let group = minter.mint();
+    let strip_id = frame.root::<DesktopSurface>().shown.unwrap();
+    let mut surface = frame.root_mut::<DesktopSurface>();
+    {
+        let mut built = ui::widget::WindowGroup::new(
+            group,
+            vec![(descriptor(&tab), placeholder())],
+            tab.id,
+            WindowWidth::Normal,
+        );
+        if let Some(host) = built.host_for_tab_mut(tab.id) {
+            *host = TileHost::new(TileContent::Notice {
+                title: tab.title,
+                detail: String::new(),
+            });
+        }
+        let row = surface.rows.get_mut(&strip_id).unwrap();
+        row.insert_group(built, 1);
+        assert!(row.share_with_neighbour(group), "the two share the strip");
+    }
+    drop(surface);
+    // Forty frames of a 60 Hz display, on the clock the widths animate by.
+    let mut at = ui::time::now();
+    for _ in 0..40 {
+        at = at.checked_add(Duration::from_millis(16)).unwrap();
+        tilo_clock::testing::with_monotonic_time(at, || frame.relayout());
+    }
+    let row = frame.root::<DesktopSurface>().shown_row_ref().unwrap();
+    let viewport = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+    let (first, last) = (row.groups[0].get_rect(), row.groups[1].get_rect());
+    assert_eq!(row.scroll_x(), 0.0, "the pair fits, so the strip is home");
+    assert!(
+        first.x0 - viewport.x0 >= STRIP_EDGE_GUTTER_PX - 0.5,
+        "the leading gutter stands: the first window starts at {}",
+        first.x0
+    );
+    assert!(
+        viewport.x1 - last.x1 >= STRIP_EDGE_GUTTER_PX - 0.5,
+        "the trailing gutter stands: the last window ends at {}",
+        last.x1
+    );
+    for (id, rect) in [(row.groups[0].id, first), (row.groups[1].id, last)] {
+        assert!(
+            rect.width() >= tilo_desktop_model::width::SIDE_BY_SIDE_MIN_PX,
+            "window {id} is usable wide: {rect:?}"
+        );
+    }
+    assert!(
+        (first.width() - last.width()).abs() < 0.5,
+        "the two take the same share: {first:?} and {last:?}"
+    );
+}
+
+/// The strip stands a step below the bar's band: a window's own top edge
+/// and corners are on wallpaper, not pressed against the bar. A maximized
+/// window has both bands instead, from the bar down to the screen's bottom
+/// edge, as a window taken across the display does.
+#[test]
+fn the_strip_stands_a_step_below_the_bars_band() {
+    let (width, height) = (1280_u32, 800_u32);
+    let (surface, handle) = desktop(1);
+    handle.set_viewport_width(f64::from(width));
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (width, height),
+        Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let tops = |frame: &ui::headless::FrameHarness| {
+        let rect = frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .unwrap()
+            .groups
+            .first()
+            .unwrap()
+            .get_rect();
+        (rect.y0, rect.y1)
+    };
+    let (top, bottom) = tops(&frame);
+    assert!(
+        (top - STRIP_TOP_GAP_PX).abs() < 0.5,
+        "the window starts one step below the bar's band: it starts at {top}"
+    );
+    assert!(
+        (f64::from(height) - bottom - STRIP_BOTTOM_GUTTER_PX).abs() < 0.5,
+        "and keeps the band under it: it ends at {bottom}"
+    );
+    let route = handle.snapshot("g", vec![]).entries[0].route.clone();
+    handle
+        .dispatch(ChromeEffect::Maximize {
+            group: route.group,
+            on: true,
+        })
+        .unwrap();
+    for _ in 0..40 {
+        frame.relayout();
+    }
+    let (top, bottom) = tops(&frame);
+    assert!(
+        top.abs() < 0.5,
+        "maximized, the strip starts where the bar's band ends: it starts at {top}"
+    );
+    assert!(
+        (f64::from(height) - bottom).abs() < 0.5,
+        "and it ends at the screen's bottom edge: it ends at {bottom}"
+    );
 }

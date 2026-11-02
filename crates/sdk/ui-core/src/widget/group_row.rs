@@ -106,13 +106,18 @@ pub const STRIP_EDGE_GUTTER_PX: f64 = crate::tokens::Spacing::BASE.s8 as f64;
 /// border and rounded corners stand clear of the screen's bottom edge. A
 /// maximized or fullscreen window takes the band.
 pub const STRIP_BOTTOM_GUTTER_PX: f64 = crate::tokens::Spacing::BASE.s3 as f64;
+/// Wallpaper between the bar's band and the top of a strip: a small step
+/// between the desktop's bar and the windows' own bars, enough that the two
+/// read as two bars rather than one cramped stack, without leaving an empty
+/// band under the bar.
+pub const STRIP_TOP_GAP_PX: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 /// Maximum *additional* visual give while a three-finger pan pulls beyond a
 /// legal end. The shared rubber-band curve approaches this asymptotically.
 const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
 /// How far a group's shadow sprites paint past its rect: `bloom_pad`
 /// (120 px) in `TileHost::draw_steady_state`, with the clip's margin.
-/// Not a Theme spacing token: it must match the compositor shadow draw,
-/// not layout padding a theme can resize.
+/// Not a Theme spacing token: it must hold the whole of the shadow the desk
+/// draws, not layout padding a theme can resize.
 const GROUP_SPRITE_REACH_PX: f64 = crate::tokens::motion::GROUP_SPRITE_REACH;
 
 /// Press displacement (px) before a tab-bar-background press becomes a
@@ -2225,9 +2230,10 @@ impl GroupRow {
         } else {
             HANDLE_SLOT_PX
         };
-        // The run pans past its leading gutter, so a pair can be seen whole
-        // across that too.
-        let screen = usable + self.pan_of_lane(lane.unwrap_or(0)).inset;
+        // The screen the strip sits on: the gutters either side are chrome
+        // the windows stay clear of, but they are what decides whether the
+        // screen has room for two windows rather than for one.
+        let screen = usable + 2.0 * self.leading_inset;
         let Some((neighbour_width, opened_width)) = tilo_desktop_model::width::share_beside(
             next_to.width(),
             opened.width(),
