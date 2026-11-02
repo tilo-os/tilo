@@ -17,7 +17,7 @@ use std::time::Instant;
 use serde_json::{Map, Value};
 use settings_store::personal_dictionary::{Reader, Vocabulary};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
-use tilo_service::{Service, Started, decode, offer, Wake};
+use tilo_service::{Service, Started, Wake, decode, offer};
 use zeroize::Zeroizing;
 
 use crate::effects::DictationAction;
@@ -116,10 +116,7 @@ impl DictationLink {
     /// # Errors
     /// [`DictationError::Busy`] while another dictation or its transcript owns
     /// the seat.
-    pub fn begin(
-        &self,
-        now: Instant,
-    ) -> Result<SessionId, DictationError> {
+    pub fn begin(&self, now: Instant) -> Result<SessionId, DictationError> {
         self.dictation.borrow_mut().begin(now)
     }
 
@@ -252,10 +249,13 @@ impl DictationService {
     pub fn start(wake: Wake) -> (Self, DictationLink) {
         let link = DictationLink::default();
         let vocabulary = VocabularyBinding::new(wake);
-        (Self {
-            link: link.clone(),
-            vocabulary,
-        }, link)
+        (
+            Self {
+                link: link.clone(),
+                vocabulary,
+            },
+            link,
+        )
     }
 
     /// The handle this service publishes for.
@@ -316,8 +316,8 @@ struct VocabularyBinding {
 
 impl VocabularyBinding {
     fn new(wake: Wake) -> Self {
-        let service = settings_store::installed_source()
-            .and_then(|source| source.dictionary_service());
+        let service =
+            settings_store::installed_source().and_then(|source| source.dictionary_service());
         let changed = Arc::new(AtomicBool::new(true));
         let pending = Arc::clone(&changed);
         let listener: Arc<settings_store::Listener> = Arc::new(move || {

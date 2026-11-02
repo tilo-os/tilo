@@ -311,6 +311,14 @@ impl DesktopSearch {
         &mut self.palette
     }
 
+    /// The room the card has where it stands: how wide it is, and the
+    /// tallest its result list may grow, as the display or window it shows
+    /// over gives them.
+    pub fn set_room(&mut self, width: f64, list_height: f64) {
+        self.palette.set_max_width(Some(width));
+        self.palette.set_max_list_height(list_height);
+    }
+
     /// Run the query again when the palette's text changed since the rows
     /// were built, the index's code arrived since, or an application's
     /// answer that was still coming arrived. Returns whether the rows
@@ -967,11 +975,7 @@ mod tests {
             action("projection.close", "Stop projecting")
                 .unavailable("nothing_to_act_on", "Nothing is projected"),
         );
-        vec![PublishedActions {
-            app: "shell".into(),
-            workspace: "workspace".into(),
-            actions: tilo_actions::door::survey(&[resource]),
-        }]
+        vec![PublishedActions::of("shell", "workspace", &[resource])]
     }
 
     #[test]

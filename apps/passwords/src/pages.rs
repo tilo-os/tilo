@@ -42,12 +42,7 @@ fn ask(requests: &Requests, request: Request) -> impl FnMut() + 'static {
 /// `property` with its button running `effect`: the control asks the vault
 /// what the palette or an agent asking for the same effect asks. Without a
 /// published effect for it the property stays readable, with no button.
-fn bound_action(
-    property: Property,
-    icon: Icon,
-    label: &str,
-    effect: &PasswordsEffect,
-) -> Property {
+fn bound_action(property: Property, icon: Icon, label: &str, effect: &PasswordsEffect) -> Property {
     match crate::bindings::effect(effect) {
         Some(binding) => property.action_binding(icon, label, binding),
         None => property,

@@ -92,5 +92,6 @@ mod tests {
         }
         assert!(place("fav:/home/u/Pictures").is_ok(), "a favorite's row");
         assert!(place("loc:/").is_ok(), "a location's row");
-        assert!(place("files.entry:42").is_err(), "an entry names no folder");    }
+        assert!(place("files.entry:42").is_err(), "an entry names no folder");
+    }
 }

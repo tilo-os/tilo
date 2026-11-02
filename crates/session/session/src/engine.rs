@@ -476,17 +476,17 @@ impl Engine {
     }
 }
 
-/// What the broker's owner commits ask of this device's rooms: the engine's
-/// owner is the canonical copy of every room it holds, and what it commits
-/// leaves on the plane's session with the room's host.
+/// What the broker's owner commits ask of this device's workspaces: the
+/// engine's owner is the canonical copy of every workspace it holds, and
+/// what it commits leaves on the plane's session with the workspace's host.
 impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
-    /// A held room whose host takes part in no channels: its records are
+    /// A held workspace whose host takes part in no channels: its records are
     /// documents the owner commits, never sealed channels.
-    fn commits_documents(&self, room: RoomId) -> bool {
-        self.holds(room)
+    fn commits_documents(&self, workspace_id: RoomId) -> bool {
+        self.holds(workspace_id)
             && self
                 .owner
-                .with_current(room, |view| {
+                .with_current(workspace_id, |view| {
                     Ok(!view
                         .workspace_host()
                         .capabilities
@@ -495,8 +495,8 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
                 .unwrap_or(false)
     }
 
-    fn projects_room(&self, room: RoomId) -> bool {
-        self.holds(room)
+    fn projects_room(&self, workspace_id: RoomId) -> bool {
+        self.holds(workspace_id)
     }
 
     /// The engine opened its owner before the session started.
@@ -508,8 +508,12 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
         Ok(self.owner.clone())
     }
 
-    fn check_custody(&self, owner: &NativeWorkspaceOwner, room: RoomId) -> Result<(), String> {
-        tilo_network_actor::native_ingress::Connect::new(owner.clone(), room)?
+    fn check_custody(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        workspace_id: RoomId,
+    ) -> Result<(), String> {
+        tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
             .material(&self.identity)
             .map(drop)
     }
@@ -517,17 +521,17 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
     fn signing_key(
         &self,
         owner: &NativeWorkspaceOwner,
-        room: RoomId,
+        workspace_id: RoomId,
     ) -> Result<ed25519_dalek::SigningKey, String> {
-        self.check_custody(owner, room)?;
+        self.check_custody(owner, workspace_id)?;
         Ok(self.identity.device_signing_key.clone())
     }
 
     /// Without a plane, what the owner committed stays in its custody until
-    /// a plane runs and the room's session publishes it.
-    fn schedule_publication(&self, room: RoomId) {
+    /// a plane runs and the workspace's session publishes it.
+    fn schedule_publication(&self, workspace_id: RoomId) {
         if let Some(link) = self.link() {
-            link.publish_custody(room);
+            link.publish_custody(workspace_id);
         }
     }
 }

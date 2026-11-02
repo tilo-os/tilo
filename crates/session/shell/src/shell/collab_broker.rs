@@ -173,22 +173,6 @@ pub fn spawn_native(
     peer_sync: &Option<Arc<ShellNetwork>>,
     membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> std::io::Result<BrokerHandle> {
-    spawn_native_offloading(app_socket_path, peer_sync, membership, None)
-}
-
-/// [`spawn_native`] whose action door asks `action_offload` where an
-/// admitted offloadable invocation runs (`HostServices::action_offload`);
-/// `None` runs each through its app's own handler, as [`spawn_native`] does.
-///
-/// # Errors
-///
-/// As [`spawn_native`].
-pub fn spawn_native_offloading(
-    app_socket_path: PathBuf,
-    peer_sync: &Option<Arc<ShellNetwork>>,
-    membership: crate::shell::state::WorkspaceTreeHandle,
-    action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
-) -> std::io::Result<BrokerHandle> {
     // Records this device lacks are brought from the room's other devices
     // over the same network this broker answers their requests on.
     if let Some(network) = peer_sync {
@@ -212,7 +196,6 @@ pub fn spawn_native_offloading(
         Some(membership),
         CertificateProvisioning::Production,
         None,
-        action_offload,
         None,
     )
 }
@@ -235,7 +218,6 @@ pub fn spawn_native_harness(
         &publisher,
         Some(membership),
         CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), None),
-        None,
         None,
         None,
     )
@@ -289,7 +271,6 @@ pub(crate) fn spawn_device_harness(
         Some(membership),
         CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), reads),
         None,
-        None,
         channel_store,
     )
 }
@@ -321,7 +302,6 @@ pub fn spawn_native_peer(
         Some(membership),
         CertificateProvisioning::Production,
         Some(config),
-        None,
         None,
     )
 }
@@ -841,7 +821,6 @@ fn spawn_inner(
     membership: Option<crate::shell::state::WorkspaceTreeHandle>,
     certificate_provisioning: CertificateProvisioning,
     config: Option<&tilo_action_broker::NativePeerBrokerConfig>,
-    action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
     channel_store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
@@ -874,6 +853,19 @@ fn spawn_inner(
     if let Some(content) = &record_content {
         crate::shell::room_app_versions::fetch_through(content);
     }
+    // Where this profile's offloadable actions may run instead of here: the
+    // other devices of the invoking workspace answer an offer round over the
+    // network this broker already answers their requests on, and the content
+    // an offloaded run reads and answers with is the content this broker
+    // routes. A harness broker places nothing: its devices are synthetic.
+    let action_offload = match (peer_sync, &record_content) {
+        (Some(network), Some(content))
+            if config.is_none() && !certificate_provisioning.uses_harness_devices() =>
+        {
+            crate::shell::device_plane::door(network, Arc::clone(content))
+        }
+        _ => None,
+    };
     let drain_thread = peer_sync.and_then(|net| {
         let queues = DrainQueues {
             presence_inbound: net.inbound_app_presence_handle(),

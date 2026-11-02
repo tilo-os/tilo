@@ -274,10 +274,11 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
 
     // The edit went to the note's door, as the session's turn runs what the shell asked.
     serve(&link, &mut service);
+    let reading = service.read(&note).unwrap();
     assert_eq!(
-        service.read(&note).unwrap()[&title_field],
-        json!("Groceries and lemons"),
-        "the note the notes app reads changed"
+        reading.get(&title_field),
+        Some(&json!("Groceries and lemons")),
+        "the note the notes app reads changed: {reading:#}"
     );
 
     // And the place draws the note as it is now.
@@ -336,9 +337,9 @@ fn the_notes_body_written_in_a_place_is_the_body_the_notes_app_reads() {
 
     let reading = service.read(&note).unwrap();
     assert!(
-        reading[&body_field]
-            .to_string()
-            .contains("Lemons, two of them"),
+        reading
+            .get(&body_field)
+            .is_some_and(|body| body.to_string().contains("Lemons, two of them")),
         "the note the notes app reads has the body written in the place: {reading:#}"
     );
 }
@@ -354,7 +355,12 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     let (mut part, link) =
         super::tests_support::part_as(ShellLayer::Screen, reading_with_windows(), None);
     let mut arrangement = arrangement(&note);
-    arrangement.places[0].shown_as = String::new();
+    // The one place names no view: it falls back to its type's default view.
+    let placed = arrangement
+        .places
+        .first_mut()
+        .expect("the arrangement places the note");
+    placed.shown_as = String::new();
     link.publish_arrangement(arrangement.clone());
     assert!(follow(&link, &arrangement, &service));
     for _ in 0..6 {

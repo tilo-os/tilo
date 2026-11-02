@@ -120,11 +120,16 @@ fn note(id: &str, title: &str) -> ResourceAt {
 /// The run's agent side: it takes the run up, says what it will do, runs a program that prints
 /// two notes, and answers.
 fn the_agent_finds_the_launch_notes(runs: &AgentRuns, run: &str) {
-    let room = runs.front();
+    let workspace = runs.front();
     let issue = wire::issue(run);
-    runs.absorb_report(&room, &issue, 1, &runtime_collab::TaskRunUpdate::Accepted);
     runs.absorb_report(
-        &room,
+        &workspace,
+        &issue,
+        1,
+        &runtime_collab::TaskRunUpdate::Accepted,
+    );
+    runs.absorb_report(
+        &workspace,
         &issue,
         1,
         &runtime_collab::TaskRunUpdate::Progress {
@@ -144,7 +149,7 @@ fn the_agent_finds_the_launch_notes(runs: &AgentRuns, run: &str) {
     )
     .expect("the agent records its step");
     runs.absorb_report(
-        &room,
+        &workspace,
         &issue,
         1,
         &runtime_collab::TaskRunUpdate::Succeeded {
@@ -237,7 +242,7 @@ fn the_conversation_draws_the_runs_words_and_steps_in_order() {
     let _settled = ui::motion::testing::settled();
     let runs = Arc::new(AgentRuns::new(None));
     let mut session = session(&runs);
-    // The session tells the runs who sits here and the room in front.
+    // The session tells the runs who sits here and the workspace in front.
     until(&mut session, |_| !runs.front().is_empty());
     let run = ask(&mut session, "Tidy the launch notes");
     the_agent_finds_the_launch_notes(&runs, &run);

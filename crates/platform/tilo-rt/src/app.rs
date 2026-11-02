@@ -154,12 +154,14 @@ impl AppRuntime {
     /// that thread is meant to run.
     ///
     /// A thread inside another runtime's context (a library's or a test's
-    /// own runtime, which this crate cannot tell from that runtime's blocking
-    /// pool) waits as any synchronous call there does: tokio's own
-    /// `block_on` would panic there, so the caller parks while this runtime's
-    /// thread drives the sockets and timers.
+    /// own runtime) also polls `future` here, while this runtime's thread
+    /// drives the sockets and timers: tokio's own `block_on` would panic
+    /// there, and this never hands the thread to a second runtime. Such a
+    /// caller starts no second runtime and cannot await: it keeps its own
+    /// runtime's tasks from running for the length of the wait, so the future
+    /// it waits on must need nothing but this runtime.
     pub fn block_on<F: Future>(&self, future: F) -> Result<F::Output, Error> {
-        crate::check_may_block()?;
+        crate::check_not_a_driver()?;
         let _driving = crate::Driving::enter();
         if Handle::try_current().is_ok() {
             let _app = self.handle.enter();
@@ -286,22 +288,96 @@ mod tests {
         }
     }
 
-    /// A synchronous call made inside another runtime's context, as a test
-    /// on its own runtime builds a desktop that reads the machine's radios,
-    /// waits for its answer with the app runtime's drivers, and tokio's
-    /// "runtime within a runtime" refusal never reaches it.
+    /// A synchronous call made inside another runtime's context — a test on
+    /// its own runtime, or a crate's runtime driving a synchronous library
+    /// entry point — waits with the app runtime's drivers, so tokio's
+    /// "runtime within a runtime" panic never reaches it.
     #[test]
     fn a_caller_inside_another_runtime_waits_with_the_app_drivers() {
-        let foreign = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let seen = foreign.block_on(async {
-            app().block_on(async {
-                tokio::time::sleep(Duration::from_millis(2)).await;
-                7
-            })
-        });
-        assert_eq!(seen.unwrap(), 7);
+        // phase: a_call_inside_another_runtimes_block_on_waits_on_the_app_drivers
+        {
+            let foreign = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let seen = foreign.block_on(async {
+                app().block_on(async {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    7
+                })
+            });
+            assert_eq!(seen.unwrap(), 7);
+        }
+        // phase: async_code_that_calls_synchronous_code_which_waits_still_answers
+        {
+            // The shape of a test that drives a session control loop on its
+            // own runtime and reaches code that waits on one answer.
+            fn radios() -> u32 {
+                app()
+                    .block_on(async {
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                        11
+                    })
+                    .unwrap()
+            }
+            let foreign = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let seen = tokio::task::LocalSet::new().block_on(&foreign, async { radios() });
+            assert_eq!(seen, 11);
+        }
+        // phase: the_waited_future_may_await_tasks_of_the_app_runtime
+        {
+            let foreign = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let seen = foreign.block_on(async {
+                app().block_on(async {
+                    let task = app().spawn(async {
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                        5
+                    });
+                    task.await.unwrap()
+                })
+            });
+            assert_eq!(seen.unwrap(), 5);
+        }
+        // phase: a_caller_that_entered_the_app_handle_itself_still_answers
+        {
+            let entered = app().handle().enter();
+            let seen = app().block_on(async { 13 }).unwrap();
+            drop(entered);
+            assert_eq!(seen, 13);
+        }
+        // phase: a_second_wait_inside_the_wait_is_refused
+        {
+            let foreign = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let nested = foreign
+                .block_on(async { app().block_on(async { app().block_on(async {}) }) })
+                .unwrap();
+            assert!(matches!(nested, Err(Error::InsideRuntime)));
+        }
+    }
+
+    /// The UI thread is refused even when it is also inside a runtime.
+    #[test]
+    fn a_ui_thread_inside_another_runtime_is_refused() {
+        let result = crate::spawn_thread("ui-app-block-on", || {
+            crate::mark_ui_thread();
+            let foreign = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            foreign.block_on(async { app().block_on(async { 1 }) })
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+        assert!(matches!(result, Err(Error::UiThread)));
     }
 }

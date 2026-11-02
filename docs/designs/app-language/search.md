@@ -69,7 +69,72 @@ and three rules cover everything:
 
 `none` and `any` work on every optional field and set: `invoice:none`, `played:none`.
 
-## 4. Results
+## 4. What a query names
+
+A query names what something is as often as what it is called: "my mails", "notes", "youtube
+videos of <channel>". Every published type has a noun and its plural, and its app has a name, so
+search matches those too, with no domain knowledge:
+
+```
+type Mailbox (origin: imap.mailbox) {
+    name: Text (title)
+    role: Text merge register
+
+    search {
+        primary role == "inbox"
+    }
+}
+
+type TeamMember {
+    name: Text (title)
+
+    search {
+        noun "person" "people"
+    }
+}
+```
+
+- **Nouns.** A type's noun is its name in words (`TodoList`: "todo list"), its plural derived
+  ("todo lists", "mailboxes", "entries"). `noun "conversation"` names it otherwise, and a second
+  word gives a plural English does not derive. The app's name ("Mail") and its plural ("mails")
+  name every type of the app. `meta(r).noun` and `.plural` say the same words.
+- **Type words.** A word of the query (or several together, for a noun of several words) that is
+  a type's noun or plural, or its app's name or plural, matches every resource of that type
+  whatever it is called; the rest of the query must match the resource's text as usual. "mail
+  archive" is the Archive mailbox: "mail" names the app, "archive" its title. A word naming
+  another type of the same app is about that app's things and need not match a resource's text
+  either, but it narrows: "youtube videos" are the client's videos, not its channels. A type
+  called as its app is ("Mail" in Mail) names the app.
+- **Primary.** `primary <test>` names the one of its type a query naming the type means: a
+  test over the resource's own fields, as a named filter is. A root is the app's one resource of
+  its type, and stands first when the app declares no primary. When a query matches a type rather
+  than a title, the declared primary leads, then the root, then the rest. "my mails" places the
+  Inbox; "notes" places the notebook.
+- **Filler.** "my", "mine", "our", "the", "all" and "of" are never required to match. What a
+  person searches is theirs to read already, so "my" narrows nothing further and is dropped with
+  the rest; a title is still compared with the query as typed, so "The Beatles" keeps its exact
+  match. A query of filler alone is asked as typed. A sum or a web search is asked word for word.
+- **A title beats a type.** A query matching a type ranks its resources above a loose match (a
+  typo, words spread over fields) and below any real match of a title: "Groceries" finds the note
+  called that before the grocery lists.
+- **One path.** A published resource carries what it is (`ResourceSpec::resource_type`), and
+  the one search the palette, text typed on the canvas and an agent's `find` all run ranks what
+  the session publishes by it (`type_match_score`). No app or type is a special case.
+
+"youtube videos of <channel>" works on this model through the YouTube client, with nothing
+built for it. "of" is filler; "youtube" names the client's app; "videos" is the plural of its
+`Video` type, another type of the app than `Channel`. So for the client's channel, both words are
+type words and the channel's name is all that must match its text: the channel ranks by its
+title, with the type bonus, and so does a video whose text names the channel. A video that does
+not name it is not found, and "youtube videos" alone lists the videos, not the channels. The
+channels are the client's from its origin (§7, "Resources with an outside origin"): its provider
+is asked the query without the filler, and what it answers is cached and published like the
+rest, so its channels carry their type and are ranked as above. The ranking only adds matches and
+never requires a type word to be in a title, so a hit the provider returns keeps its own match.
+The client must be named so: a type's `app` is the app's title, and the other words an app is
+known by (the registry's keywords: "youtube" for an app called Tube) are not part of it yet (§9).
+
+## 5. Results
 
 - **A type's row view is its result, everywhere:** in lists, the palette, agent answers, embeds.
   There's no separate search row.
@@ -86,7 +151,7 @@ and three rules cover everything:
 - **A saved query is a resource:** a smart folder, a "due this week" list, an agent's standing
   "watch for mail from the school". Synced and shareable like anything else.
 
-## 5. Where search appears
+## 6. Where search appears
 
 - **The palette:** typed filters work across types; picking a type shows its filter chips with
   counts, and its sort.
@@ -98,7 +163,7 @@ and three rules cover everything:
   their filter values and a match anchor the agent can cite. Agents only see what their task
   may read.
 
-## 6. Who indexes
+## 7. Who indexes
 
 - **Text search is the system's.** The shell keeps one persistent index of what the workspace
   holds (`tilo_desktop_search::content_index`), published into by whatever holds the resources, and it answers
@@ -135,7 +200,7 @@ and three rules cover everything:
 Budgets: first page of a query over 100k resources in 8 ms at p95, facet counts included; one
 changed field updates the index in under 0.2 ms; about 200 bytes per resource plus text.
 
-## 7. Acceptance cases
+## 8. Acceptance cases
 
 Each must work with only the rules in §3, no domain knowledge:
 
@@ -147,8 +212,12 @@ Each must work with only the rules in §3, no domain knowledge:
 | `Payment amount:>500EUR invoice:none` | a money literal, a missing reference |
 | `Contact phone:tel:+49* email:none` | identifier pattern, missing values |
 
-## 8. Open
+## 9. Open
 
 - Reverse links ("everything from Jane"): which reverse paths a type has indexed.
 - Personal ranking signals stay on the person's devices; how they sync between them.
 - Search across several workspaces.
+- A resource's type carries its app's title alone; the other words its app is known by (the
+  registry's keywords) should name its resources too.
+- "my" is dropped: published resources carry no owner yet. Once they do, it narrows to the
+  person's own.

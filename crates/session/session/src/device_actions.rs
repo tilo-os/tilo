@@ -4,8 +4,8 @@
 //! The session's collaboration endpoint serves
 //! [`ActionPlane`](tilo_peer_state::actions::ActionPlane): a request another
 //! device of one of this person's workspaces sends is checked against that
-//! room's roster as it stands, and the action it names runs here through the
-//! broker's door as any other caller's would. The other way round, an
+//! workspace's roster as it stands, and the action it names runs here through
+//! the broker's door as any other caller's would. The other way round, an
 //! application names another of the person's devices and one of its own
 //! actions; [`OwnDeviceActions`] sends it there as an ordinary invocation of
 //! that action and follows it until that device answers, so the app observes
@@ -13,7 +13,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_action_broker::services::{OwnDeviceActions, OwnDeviceOutcome};
@@ -28,19 +27,12 @@ use tilo_desktop_model::RoomId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{
-    ActionPlane, FOLLOW_DEADLINE, OFFER_DEADLINE, Offering, ReadFuture, RemoteDevice, Workspaces,
+    ActionPlane, FOLLOW_DEADLINE, Offering, ReadFuture, RemoteDevice, Workspaces,
 };
-use tilo_peer_state::offload::{OffloadPeers, RanAway};
-use tilo_peer_state::placement::Choice;
-use tilo_runtime::offload::offer_offload;
+use tilo_runtime::offload::{PlanePeers, offer_offload, own_offering};
 
 use crate::engine::Engine;
-use neighbour_wire::offer::{Answer, Power, Route, State, Work};
-
-/// How long the content a device that ran an invocation produced has to reach
-/// this device: it was produced for this workspace's app, which the invoking
-/// device is a member of.
-const CONTENT_WAIT: Duration = Duration::from_secs(10);
+use neighbour_wire::offer::{Answer, Route, Work};
 
 /// This device's action plane, as the session serves it and reaches the
 /// person's other devices through it.
@@ -66,8 +58,9 @@ struct Inner {
 
 impl DeviceActions {
     /// This device's plane on the session's `endpoint`, authorizing against
-    /// the rooms `engine` holds, answering through the dispatcher the session
-    /// installs once its broker serves, and offering work with what it keeps.
+    /// the workspaces `engine` holds, answering through the dispatcher the
+    /// session installs once its broker serves, and offering work with what it
+    /// keeps.
     pub(crate) fn start(
         identity: &tilo_network_actor::HostIdentity,
         endpoint: Endpoint,
@@ -77,7 +70,7 @@ impl DeviceActions {
         let plane = ActionPlane::over(
             identity.device_signing_key.clone(),
             Arc::new(dispatch.clone()),
-            Arc::new(Rooms(engine)),
+            Arc::new(HeldWorkspaces(engine)),
         );
         // Another of the person's devices may ask which of them would run a
         // piece of work: this one answers with what it knows of itself.
@@ -125,13 +118,17 @@ impl DeviceActions {
         &self,
         content: Arc<crate::content::Plane>,
     ) -> Option<Arc<dyn ActionOffload>> {
-        offer_offload(
-            content.media(),
-            Arc::new(WorkspaceDevices {
-                actions: self.clone(),
-                content,
-            }),
-        )
+        let actions = self.clone();
+        let media = content.media();
+        let outputs: Arc<dyn tilo_runtime::offload::OutputContent> = content;
+        let peers = PlanePeers::new(
+            self.0.plane.clone(),
+            self.0.endpoint.clone(),
+            move |id| actions.addr(id),
+            outputs,
+            self.0.runtime.clone(),
+        );
+        offer_offload(media, Arc::new(peers))
     }
 
     /// Where `id` of the person's devices is reached: the address this
@@ -143,19 +140,6 @@ impl DeviceActions {
             .get(&id)
             .cloned()
             .unwrap_or_else(|| EndpointAddr::new(id))
-    }
-
-    /// Where this session reaches each device of `workspace` that may be
-    /// offered work, as this device's own plane resolves them.
-    async fn reach(&self, workspace: &str) -> Vec<EndpointAddr> {
-        self.0
-            .plane
-            .participants(workspace)
-            .await
-            .into_iter()
-            .filter_map(|key| EndpointId::from_bytes(&key).ok())
-            .map(|id| self.addr(id))
-            .collect()
     }
 
     /// The device an app's action is for, with where it is reached.
@@ -241,123 +225,6 @@ fn outcome_of(answer: Option<Result<InvocationUpdate, ActionHostError>>) -> OwnD
     }
 }
 
-/// The devices of one of the person's workspaces, as an offload route asks
-/// them: this session's plane resolves who may be offered work and runs the
-/// invocation on the device that wins, and this workspace's content hands over
-/// what that device produced.
-struct WorkspaceDevices {
-    actions: DeviceActions,
-    content: Arc<crate::content::Plane>,
-}
-
-impl OffloadPeers for WorkspaceDevices {
-    fn ask(&self, workspace: &str, route: &Route, work: &Work) -> Pending<Choice> {
-        let (complete, answer) = pending();
-        let actions = self.actions.clone();
-        let run = self.actions.0.runtime.clone();
-        let workspace = workspace.to_owned();
-        let (route, work) = (route.clone(), work.clone());
-        run.spawn(async move {
-            let targets = actions.reach(&workspace).await;
-            let chosen = actions
-                .0
-                .plane
-                .offers(
-                    &actions.0.endpoint,
-                    targets,
-                    &workspace,
-                    &route,
-                    &work,
-                    OFFER_DEADLINE,
-                )
-                .await;
-            // A round the device that asked stopped waiting for is not
-            // chosen on: nothing would run there.
-            if let Some(chosen) = chosen {
-                complete.complete(chosen);
-            }
-        });
-        answer
-    }
-
-    fn run(
-        &self,
-        workspace: &str,
-        device: [u8; 32],
-        invocation: InvokeRequest,
-    ) -> Pending<Result<RanAway, String>> {
-        let (complete, answer) = pending();
-        let Ok(id) = EndpointId::from_bytes(&device) else {
-            complete.complete(Err("that is not a device key".into()));
-            return answer;
-        };
-        let remote = Arc::new(self.actions.0.plane.remote(
-            &self.actions.0.endpoint,
-            &self.actions.addr(id),
-            workspace,
-        ));
-        let content = Arc::clone(&self.content);
-        let run = self.actions.0.runtime.clone();
-        let workspace = workspace.to_owned();
-        run.spawn(async move {
-            let ran = run_away(&content, &workspace, device, remote, invocation).await;
-            complete.complete(ran);
-        });
-        answer
-    }
-}
-
-/// Run the person's `invocation` on `remote` and follow it until it settles,
-/// with the bytes of the content it produced in `workspace`.
-async fn run_away(
-    content: &crate::content::Plane,
-    workspace: &str,
-    device: [u8; 32],
-    remote: Arc<RemoteDevice>,
-    invocation: InvokeRequest,
-) -> Result<RanAway, String> {
-    // The app whose content the output is: the one whose action was invoked,
-    // as the device that ran it kept what it produced.
-    let Some((_, app)) = tilo_actions::remote::application_provider(&invocation.target.provider)
-    else {
-        return Err("the invocation names no app, so its output content cannot be read".into());
-    };
-    let app = app.to_owned();
-    let output = match remote
-        .invoke_until_settled(invocation, FOLLOW_DEADLINE)
-        .await
-    {
-        Some(Ok(InvocationUpdate::Succeeded { output, .. })) => output,
-        Some(Ok(InvocationUpdate::Failed { error, .. })) => return Err(error.message),
-        Some(Ok(InvocationUpdate::Cancelled { message, .. })) => {
-            return Err(message.unwrap_or_else(|| "the action was cancelled there".into()));
-        }
-        Some(Ok(update)) => {
-            return Err(format!("the action there did not settle: {update:?}"));
-        }
-        Some(Err(error)) => return Err(error.to_string()),
-        None => return Err("the device stopped following the invocation".into()),
-    };
-    let mut outputs = Vec::new();
-    for address in &output.resources {
-        let Some(named) = tilo_actions::content_hash(address) else {
-            continue;
-        };
-        let mut digest = [0; 32];
-        hex::decode_to_slice(named, &mut digest)
-            .map_err(|_| "the output names a malformed content address".to_owned())?;
-        let Some(bytes) = content.fetch(workspace, &app, digest, CONTENT_WAIT).await else {
-            return Err("the content it produced did not reach this device".into());
-        };
-        outputs.push(bytes);
-    }
-    Ok(RanAway {
-        device,
-        output,
-        outputs,
-    })
-}
-
 /// The one place a request that arrived on this device is handed to: the
 /// broker's door, once it serves. Until then a request is answered as
 /// unavailable rather than left waiting, and so after the broker retires.
@@ -429,18 +296,18 @@ impl ActionHost for DeviceDispatch {
     }
 }
 
-/// The rooms this device holds, as the plane reads them: this session's own
-/// store, asked when a request names a workspace, so who may act there is
-/// what holds at that moment rather than as it was when the session started.
-struct Rooms(Option<Arc<Engine>>);
+/// The workspaces this device holds, as the plane reads them: this session's
+/// own store, asked when a request names one, so who may act there is what
+/// holds at that moment rather than as it was when the session started.
+struct HeldWorkspaces(Option<Arc<Engine>>);
 
-impl Workspaces for Rooms {
+impl Workspaces for HeldWorkspaces {
     fn read<'a>(
         &'a self,
         workspace: &'a str,
         read: &'a mut (dyn FnMut(&StatePeer) + Send),
     ) -> ReadFuture<'a> {
-        let (Some(engine), Some(room)) = (&self.0, RoomId::parse(workspace)) else {
+        let (Some(engine), Some(workspace_id)) = (&self.0, RoomId::parse(workspace)) else {
             return Box::pin(std::future::ready(false));
         };
         // This session's workspace is its own store: the read takes the
@@ -448,7 +315,7 @@ impl Workspaces for Rooms {
         Box::pin(async move {
             engine
                 .owner()
-                .with_current(room, |view| {
+                .with_current(workspace_id, |view| {
                     read(view.peer());
                     Ok(())
                 })
@@ -477,103 +344,25 @@ impl SessionOffering {
 
 impl Offering for SessionOffering {
     fn report(&self, workspace: &str, route: &Route, work: &Work) -> Answer {
-        let (critical_battery, power) = power();
         let content = self.content.lock_recover().clone();
-        Answer {
-            state: State {
-                requester: false,
-                online: true,
-                holds_workspace: true,
-                app_installed: installed(&route.app),
-                store_role: false,
-                // Nothing here asks a device to keep off its discretionary
-                // work; a person's own settings do not reach this far yet.
-                data_saving: false,
-                critical_battery,
-                priority: 0,
-                power,
-                load_permille: load_permille(),
-                latency_ms: 0,
-            },
-            holds: content.map_or_else(Vec::new, |content| {
-                work.inputs
-                    .iter()
-                    .map(|(digest, _)| *digest)
-                    .filter(|digest| content.holds(workspace, &route.app, *digest))
-                    .collect()
-            }),
-        }
+        let holds = content.map_or_else(Vec::new, |content| {
+            work.inputs
+                .iter()
+                .map(|(digest, _)| *digest)
+                .filter(|digest| content.holds(workspace, &route.app, *digest))
+                .collect()
+        });
+        own_offering(&route.app, holds)
     }
-}
-
-/// Whether this device runs `app`: its stores hold the signed package.
-fn installed(app: &str) -> bool {
-    tilo_installed_apps::read_one_from_env(app).is_ok_and(|row| row.is_some())
-}
-
-/// Battery share at or below which a device takes on nobody else's work
-/// while it drains.
-const CRITICAL_BATTERY_PERCENT: u8 = 10;
-
-/// How this device is powered, and whether its battery is too low to take
-/// on anyone else's work.
-fn power() -> (bool, Power) {
-    let snapshot = tilo_power_mgmt::sysfs::battery_snapshot();
-    if !snapshot.present {
-        return (false, Power::External);
-    }
-    let draining = matches!(
-        snapshot.state,
-        tilo_power_mgmt::BatteryState::Discharging
-            | tilo_power_mgmt::BatteryState::PendingDischarge
-    );
-    let critical = draining && snapshot.percent <= CRITICAL_BATTERY_PERCENT;
-    let power = match snapshot.state {
-        tilo_power_mgmt::BatteryState::Charging | tilo_power_mgmt::BatteryState::PendingCharge => {
-            Power::Charging
-        }
-        tilo_power_mgmt::BatteryState::Full => Power::External,
-        tilo_power_mgmt::BatteryState::Discharging
-        | tilo_power_mgmt::BatteryState::PendingDischarge => Power::Battery,
-        tilo_power_mgmt::BatteryState::Empty | tilo_power_mgmt::BatteryState::Unknown => {
-            Power::Unknown
-        }
-    };
-    (critical, power)
-}
-
-/// What share of this device is already busy, per thousand, from the load
-/// the machine reports against the processors it has.
-fn load_permille() -> u32 {
-    let cores =
-        u32::try_from(std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get))
-            .unwrap_or(u32::MAX);
-    let Some(load) = std::fs::read_to_string("/proc/loadavg").ok() else {
-        return 0;
-    };
-    let Some(one) = load.split_whitespace().next() else {
-        return 0;
-    };
-    // The kernel reports the one-minute load in hundredths; read it as
-    // thousandths so that dividing by the processors stays whole numbers.
-    let (whole, fraction) = one.split_once('.').unwrap_or((one, ""));
-    let whole: u32 = whole.parse().unwrap_or(0);
-    let mut fraction = fraction.chars().take(3).collect::<String>();
-    while fraction.len() < 3 {
-        fraction.push('0');
-    }
-    let fraction: u32 = fraction.parse().unwrap_or(0);
-    let thousandths = whole.saturating_mul(1_000).saturating_add(fraction);
-    thousandths.checked_div(cores.max(1)).unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     //! Two of the person's devices on this machine's loopback: an action an
     //! app invokes for the other device runs there through the session's own
-    //! plane and answers here, a device the room does not hold is refused, a
-    //! piece of work runs on the device that offers and holds its inputs, and
-    //! one nobody offers for runs here.
+    //! plane and answers here, a device the workspace does not hold is
+    //! refused, a piece of work runs on the device that offers and holds its
+    //! inputs, and one nobody offers for runs here.
 
     tilo_automerge_isolate::test_worker!();
 
@@ -585,7 +374,7 @@ mod tests {
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
     use iroh::{Endpoint, RelayMode, SecretKey};
-    use neighbour_wire::offer::Decline;
+    use neighbour_wire::offer::{Decline, Power};
     use tilo_action_broker::record_content::ContentState;
     use tilo_action_broker::route::CrdtRoute;
     use tilo_actions::offload::{OffloadRequest, Offloaded};
@@ -601,7 +390,7 @@ mod tests {
     use super::*;
     use crate::sync::Outgoing;
 
-    const ROOM: &str = testing::WORKSPACE;
+    const WORKSPACE: &str = testing::WORKSPACE;
     /// How long the device asked has to answer before the test fails.
     const PATIENCE: Duration = Duration::from_secs(20);
     const APP: &str = "so.tilo.notes";
@@ -653,7 +442,7 @@ mod tests {
     }
 
     /// The session of the device `key` that answers requests, holding the
-    /// room the person's device `asking` is in too, and answering through
+    /// workspace the person's device `asking` is in too, and answering through
     /// `host`.
     async fn answering(
         key: &SigningKey,
@@ -667,35 +456,36 @@ mod tests {
             Engine::open(id.clone(), Some(directory.path()), std::iter::empty())
                 .expect("this device's engine opens"),
         );
-        // This device makes the room, and the other device of the person
-        // joins it: the device certified in the room is the one that acts.
-        let governor = TestGovernor::empty_interactive(cert.clone(), key.clone(), ROOM)
-            .expect("this device governs its room");
+        // This device makes the workspace, and the other device of the person
+        // joins it: the device certified in the workspace is the one that
+        // acts.
+        let governor = TestGovernor::empty_interactive(cert.clone(), key.clone(), WORKSPACE)
+            .expect("this device governs its workspace");
         let governor = testing::enroll_into(governor, engine.owner(), key, cert)
-            .expect("this device's room is its own");
+            .expect("this device's workspace is its own");
         if let Some(asking) = asking {
             let joining = tempfile::TempDir::new().expect("the other device's directory");
             let other = tilo_peer_state::owner::open_file(&joining.path().join("owner.json"))
                 .expect("the other device's owner opens");
             let governor = testing::enroll_into(governor, &other, &asking.0, &asking.1)
-                .expect("the room admits the other device");
-            // What the room's admission of the other device changed reaches
-            // this device's own copy of the room, as it would over the
-            // person's devices.
-            let room = RoomId::parse(ROOM).expect("a room");
+                .expect("the workspace admits the other device");
+            // What the workspace's admission of the other device changed
+            // reaches this device's own copy of the workspace, as it would
+            // over the person's devices.
+            let workspace_id = RoomId::parse(WORKSPACE).expect("a workspace");
             let now = std::time::SystemTime::now();
             for (bytes, _) in governor.outgoing() {
                 engine
                     .owner()
                     .receive(
-                        room,
+                        workspace_id,
                         tilo_peer_state::TransportOrigin::RetainedRelayDelta(
                             cert.device_public_key,
                         ),
-                        postcard::from_bytes(bytes).expect("a room change"),
+                        postcard::from_bytes(bytes).expect("a workspace change"),
                         now,
                     )
-                    .expect("this device takes the room as its governor has it");
+                    .expect("this device takes the workspace as its governor has it");
             }
         }
         let endpoint = endpoint(key).await;
@@ -721,7 +511,7 @@ mod tests {
     }
 
     /// What an app on this device asks: `action` of its own on `device`, in
-    /// `ROOM`.
+    /// `WORKSPACE`.
     fn invocation(device: [u8; 32], action: &str) -> (own_device::Checked, InvokeRequest) {
         let argument = own_device::Invocation {
             device: hex::encode(device),
@@ -775,7 +565,7 @@ mod tests {
         let (here_endpoint, actions) = asking(&here.0, &here.1, addr(&there_endpoint)).await;
         let caller =
             Caller::authenticated(root.verifying_key().to_bytes(), here.1.device_public_key)
-                .in_workspace(ROOM);
+                .in_workspace(WORKSPACE);
         let (checked, request) = invocation(there.1.device_public_key, "insert");
 
         // The other device runs the app's action and this one hears its
@@ -787,15 +577,15 @@ mod tests {
             "the other device ran the action: {outcome:?}"
         );
 
-        // It ran there, as this device, in the room both are in.
+        // It ran there, as this device, in the workspace both are in.
         let asked = host.asked();
         assert_eq!(asked.len(), 1, "one request reached the other device");
         assert_eq!(asked[0].invocation, request.invocation, "under its own id");
         assert_eq!(asked[0].target.address.action, "insert");
         assert_eq!(
             tilo_actions::remote::application_provider(&asked[0].target.provider),
-            Some((ROOM, APP)),
-            "the app's action, in the room the two devices share"
+            Some((WORKSPACE, APP)),
+            "the app's action, in the workspace the two devices share"
         );
         let seen = host.callers();
         assert_eq!(seen.len(), 1);
@@ -808,7 +598,7 @@ mod tests {
             Some(&here.1.device_public_key),
             "the device that asked, not the one that answered"
         );
-        assert_eq!(seen[0].workspace(), Some(ROOM));
+        assert_eq!(seen[0].workspace(), Some(WORKSPACE));
 
         router.shutdown().await.expect("the router stops");
         here_endpoint.close().await;
@@ -833,7 +623,7 @@ mod tests {
             actions.plane().offers(
                 &here_endpoint,
                 [addr(&there_endpoint)],
-                ROOM,
+                WORKSPACE,
                 &route,
                 &work,
                 PATIENCE,
@@ -861,7 +651,11 @@ mod tests {
     async fn a_device_the_room_does_not_hold_is_refused() {
         let root = SigningKey::from_bytes(&[0x41; 32]);
         let there = device(&root, 0x42, "The other device");
-        let stranger = device(&root, 0x43, "A device of the same person, not in the room");
+        let stranger = device(
+            &root,
+            0x43,
+            "A device of the same person, not in the workspace",
+        );
         let host = Arc::new(TestHost::new());
         let (there_endpoint, router, _) = answering(&there.0, &there.1, None, host.clone()).await;
         let (stranger_endpoint, actions) =
@@ -870,14 +664,14 @@ mod tests {
             root.verifying_key().to_bytes(),
             stranger.1.device_public_key,
         )
-        .in_workspace(ROOM);
+        .in_workspace(WORKSPACE);
         let (checked, request) = invocation(there.1.device_public_key, "insert");
 
         let refused = answered(&actions, &caller, &checked, &request)
             .expect("the other device answers within the patience");
         assert!(
             refused.is_err(),
-            "a device the room has no part for acts nowhere in it: {refused:?}"
+            "a device the workspace has no part for acts nowhere in it: {refused:?}"
         );
         assert!(
             host.asked().is_empty(),
@@ -911,12 +705,12 @@ mod tests {
             }
         }
 
-        /// The bytes an app keeps as `app`'s content in `ROOM`.
+        /// The bytes an app keeps as `app`'s content in `WORKSPACE`.
         fn keep(&self, app: &str, bytes: &[u8]) -> String {
             let hash = hash_bytes(bytes);
             self.plane
                 .route()
-                .offer(&CrdtRoute::app(app, ROOM), &hash, bytes)
+                .offer(&CrdtRoute::app(app, WORKSPACE), &hash, bytes)
                 .expect("the app's content is kept");
             hash
         }
@@ -933,10 +727,10 @@ mod tests {
         while let Ok(outgoing) = said.try_recv() {
             match outgoing {
                 Outgoing::Publish { ws, msg } => {
-                    to.heard(ws, ROOM, from, &msg);
+                    to.heard(ws, WORKSPACE, from, &msg);
                 }
                 Outgoing::Content(RecordContentDelivery { ws, msg, .. }) => {
-                    to.heard(ws, ROOM, from, &msg);
+                    to.heard(ws, WORKSPACE, from, &msg);
                 }
                 _ => {}
             }
@@ -962,7 +756,7 @@ mod tests {
     /// request the door weighs, and the invocation the app made.
     fn offloadable(inputs: Vec<String>) -> (OffloadRequest, InvokeRequest) {
         let request = OffloadRequest {
-            workspace: ROOM.into(),
+            workspace: WORKSPACE.into(),
             app_id: APP.into(),
             address: ActionAddress::new("photos", "thumbnail"),
             offload: Offload {
@@ -978,7 +772,7 @@ mod tests {
         let sent = InvokeRequest {
             on_behalf_of: None,
             invocation: InvocationId::new(),
-            target: application_action_target(ROOM, APP, "photos", "thumbnail"),
+            target: application_action_target(WORKSPACE, APP, "photos", "thumbnail"),
             argument: InvokeArgument::None,
             context: None,
             confirmation: None,
@@ -1046,7 +840,7 @@ mod tests {
             let (bytes, hash) = (produced.clone(), made.clone());
             move |_: &InvokeRequest| {
                 kept.route()
-                    .offer(&CrdtRoute::app(APP, ROOM), &hash, &bytes)
+                    .offer(&CrdtRoute::app(APP, WORKSPACE), &hash, &bytes)
                     .expect("the device that ran it keeps its output");
                 ActionOutput {
                     value: None,
@@ -1117,7 +911,7 @@ mod tests {
         );
         assert_eq!(
             application_provider(&asked[0].target.provider),
-            Some((ROOM, APP)),
+            Some((WORKSPACE, APP)),
             "the app's action, in the workspace the two devices share"
         );
         let seen = host.callers();
@@ -1133,7 +927,7 @@ mod tests {
             output.resources,
             vec![format!("{CONTENT_RESOURCE_KIND}:{made}")]
         );
-        let route = CrdtRoute::app(APP, ROOM);
+        let route = CrdtRoute::app(APP, WORKSPACE);
         let mut news = here_plane.route().subscribe(&route);
         here_plane.route().want(&route, &made);
         let arrived = news
@@ -1165,7 +959,7 @@ mod tests {
         let input = hash_bytes(&photograph);
         content
             .route()
-            .offer(&CrdtRoute::app(APP, ROOM), &input, &photograph)
+            .offer(&CrdtRoute::app(APP, WORKSPACE), &input, &photograph)
             .expect("the app's photograph is kept here");
         let door = actions.offload_route(content).expect("offload is on");
 

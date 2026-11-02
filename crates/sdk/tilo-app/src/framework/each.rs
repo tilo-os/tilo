@@ -993,7 +993,7 @@ impl<R: Resource> Widget for Each<R> {
             self.rows
                 .get(index)
                 .and_then(Row::widget)
-                .is_some_and(|widget| ui_core::widget::holds_pointer(widget))
+                .is_some_and(ui_core::widget::holds_pointer)
         });
         if let Some(index) = capturing {
             if let Some(view) = self.rows.get_mut(index).and_then(|row| row.view.as_mut())

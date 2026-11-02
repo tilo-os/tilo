@@ -85,11 +85,14 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     );
 }
 
+/// Whether the bar says `words`: a control's label carries what it shows and
+/// what it opens ("Show strips, now on Main", "Pat (you): your profile"), so
+/// naming the words is what the bar does.
 fn says(session: &Session, words: &str) -> bool {
     session
         .accessible_labels()
         .iter()
-        .any(|label| label == words)
+        .any(|label| label.contains(words))
 }
 
 /// Keep the screen as `name.png` where `TL_SHELL_SHOTS` names, and its
@@ -1181,7 +1184,7 @@ fn second_strip(session: &mut Session, first: &str, second: &str, app: &str) -> 
         .iter_mut()
         .find(|workspace| workspace.id == tree.active)
         .expect("a workspace is in front");
-    workspace.strips[0].name = first.to_owned();
+    first.clone_into(&mut workspace.strips[0].name);
     let mut added = tilo_desktop_model::Strip::new(strip, second);
     added.window_groups.push(tilo_desktop_model::WindowGroup {
         id: group,

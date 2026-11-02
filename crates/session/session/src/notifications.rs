@@ -45,6 +45,7 @@ pub(crate) fn mount_banners(
     compositor: &mut tilo_compositor::Compositor,
     doors: &mut tilo_surface_host::Doors,
     notices: &DesktopNotifications,
+    desk: &tilo_desktop_surface::DesktopHandle,
     options: &crate::Options,
 ) -> Link {
     let banners = Link::new();
@@ -55,6 +56,7 @@ pub(crate) fn mount_banners(
             let surface = Rc::new(RefCell::new(crate::panels::Banners::new(
                 app,
                 banners.clone(),
+                desk.clone(),
                 options.scale,
             )));
             compositor.add_host(Box::new(crate::panels::Held(Rc::clone(&surface))));
@@ -278,7 +280,7 @@ impl Callers for AppCallers {
     }
 }
 
-/// Where a chosen scheduled notification opens, as `(room, uri)`.
+/// Where a chosen scheduled notification opens, as `(workspace, uri)`.
 type Opened = Rc<RefCell<Vec<(String, String)>>>;
 
 /// The senders whose notification the person chose, as `(sender, action)`.
@@ -316,6 +318,9 @@ pub(crate) struct SessionNotifications {
     by_sender: BTreeMap<u32, u64>,
     /// The daemon notifications whose banner was up at the last look.
     up: BTreeSet<u32>,
+    /// The desk's banners that were up at the last look: a new one is
+    /// something the person was told since then.
+    banners_up: BTreeSet<u64>,
     /// Desktop notifications kept out of the centre once their banner left.
     transient: BTreeSet<u64>,
     /// The log revision the banners were last handed.
@@ -378,6 +383,7 @@ impl SessionNotifications {
             chosen,
             by_sender: BTreeMap::new(),
             up: BTreeSet::new(),
+            banners_up: BTreeSet::new(),
             transient: BTreeSet::new(),
             published: None,
             generation: 0,
@@ -463,7 +469,7 @@ impl SessionNotifications {
     }
 
     /// The targets of scheduled notifications the person chose since the
-    /// last look, as `(room, uri)`, for the session to open.
+    /// last look, as `(workspace, uri)`, for the session to open.
     pub(crate) fn take_opened(&self) -> Vec<(String, String)> {
         std::mem::take(&mut *self.opened.borrow_mut())
     }
@@ -565,9 +571,6 @@ impl SessionNotifications {
         self.desktop.undo_clear();
     }
 
-    /// Take in what arrived and what the banners asked, and hand the
-    /// banners what they show now. `token` mints an activation token for
-    /// each notification the person chose, so its app may raise its window.
     /// Tell the person `notice`, which the session itself raised rather than
     /// one of their apps.
     pub(crate) fn tell(&self, notice: crate::notices::Notice) {
@@ -576,7 +579,14 @@ impl SessionNotifications {
         }
     }
 
-    pub(crate) fn step(&mut self, token: &mut dyn FnMut() -> Option<String>) {
+    /// Take in what arrived and what the banners asked, and hand the
+    /// banners what they show now. `token` mints an activation token for
+    /// each notification the person chose, so its app may raise its window.
+    ///
+    /// Answers whether a banner the person was not shown before is up now:
+    /// the loop flashes the screen for it when they asked for a visual
+    /// alert.
+    pub(crate) fn step(&mut self, token: &mut dyn FnMut() -> Option<String>) -> bool {
         // Banners whose time on screen ran out leave first.
         self.desktop.expire(ui::time::now());
         self.settle(CloseReason::Expired);
@@ -596,12 +606,25 @@ impl SessionNotifications {
         }
         self.answer_chosen(token);
         self.settle(CloseReason::Dismissed);
+        // Every banner the desk puts up passes through its log, whether an
+        // app sent it or the session raised it: a new one there is what the
+        // person was just told.
+        let banners: BTreeSet<u64> = self
+            .desktop
+            .log()
+            .active()
+            .iter()
+            .map(|notification| notification.id)
+            .collect();
+        let appeared = banners.difference(&self.banners_up).next().is_some();
+        self.banners_up = banners;
         let revision = self.desktop.revision();
         if self.published != Some(revision) {
             self.published = Some(revision);
             self.banners.publish(self.desktop.feed());
         }
         self.publish_signals();
+        appeared
     }
 
     fn arrive(&mut self, arrival: Arrival) {
@@ -895,7 +918,7 @@ impl Service for Served {
     }
 
     /// What the centre keeps, newest first: what people said to this person,
-    /// so only a grant the room gives reads it.
+    /// so only a grant the workspace gives reads it.
     fn read(&self, resource: &str) -> Option<Value> {
         (resource == RESOURCE).then(|| {
             let published = self.published.borrow().clone();
@@ -958,9 +981,9 @@ impl crate::Shared {
     /// workspace that scheduled it, and the centre's kept ones in the app
     /// that sent them: the app that takes its scheme.
     pub(crate) fn open_notifications(&self) {
-        for (room, uri) in self.notifications.borrow().take_opened() {
+        for (workspace, uri) in self.notifications.borrow().take_opened() {
             self.search.perform(
-                &room,
+                &workspace,
                 tilo_desktop_search::Target::Open {
                     uri,
                     fallback: None,
@@ -969,11 +992,11 @@ impl crate::Shared {
             );
         }
         for id in self.notifications.borrow().take_opening() {
-            let room = self.active_room();
+            let workspace = self.active_workspace_id();
             let activation = self.notifications.borrow().open(id);
             match activation {
                 notifications::HistoryActivation::OpenApp { app_id, .. } => self.search.perform(
-                    &room,
+                    &workspace,
                     tilo_desktop_search::Target::Launch { app: app_id },
                     &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
                 ),

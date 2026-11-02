@@ -372,8 +372,8 @@ impl SessionLink {
                             else {
                                 continue;
                             };
-                            // A workspace is named to the portal by its
-                            // room: the same workspace on every device.
+                            // A workspace is named to the portal by its id:
+                            // the same workspace on every device.
                             workspaces.insert(app_id.clone(), workspace.room().to_string());
                         }
                     }

@@ -179,7 +179,7 @@ pub(crate) struct BarFeeds {
     /// The monitors of the displays a fullscreen window owns, as the loop
     /// found them this pass.
     pub(crate) fullscreen: Rc<RefCell<Vec<String>>>,
-    /// The windows this session shares with its rooms, which the bar says
+    /// The windows this session shares with its workspaces, which the bar says
     /// are being shared while anyone views one.
     pub(crate) shares: Rc<RefCell<crate::window_share::WindowShares>>,
     /// Whether each display's bar shows over the window covering it, which
@@ -353,8 +353,9 @@ impl DesktopChromeSource for SessionChrome {
             own: Some(OwnChip {
                 // The name they go by, and the root key the picture they
                 // chose hangs on: the id is never shown as their name.
-                name: crate::directory::own_person_name(
+                name: crate::directory::desk_person_name(
                     ui::local_identity::load().map(|it| it.display_name),
+                    &self.person,
                 ),
                 rgb: ui::presence::user_color(&self.person),
                 identity: self.person.clone(),
@@ -461,7 +462,7 @@ fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
 }
 
 /// The person at this device owns its desktop: the desktop's one policy
-/// answers what they may change, as it answers a room's owner.
+/// answers what they may change, as it answers a workspace's owner.
 pub(crate) struct SessionRules {
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,

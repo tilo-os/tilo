@@ -113,7 +113,8 @@ impl Dictation {
                 copy_failed: recovery.copy_failed,
             };
         }
-        self.last_failure.map_or(DictationStatus::Idle, DictationStatus::Unavailable)
+        self.last_failure
+            .map_or(DictationStatus::Idle, DictationStatus::Unavailable)
     }
 
     /// The last dictation asked for: the one a failure card is about.
@@ -224,7 +225,8 @@ impl Dictation {
             .session
             .as_ref()
             .is_some_and(|session| session.target.multiline);
-        let language = tilo_accessibility_settings::AccessibilitySettings::load().dictation_language;
+        let language =
+            tilo_accessibility_settings::AccessibilitySettings::load().dictation_language;
         let actor =
             runtime::Runtime::start_for_field(language.code(), self.vocabulary.clone(), multiline)
                 .map_err(DictationError::RecognizerUnavailable)?;
@@ -341,11 +343,7 @@ impl Dictation {
 
     /// Note what became of copying the kept transcript.
     pub fn note_copied(&mut self, id: SessionId, copied: bool) {
-        let Some(recovery) = self
-            .recovery
-            .as_mut()
-            .filter(|recovery| recovery.id == id)
-        else {
+        let Some(recovery) = self.recovery.as_mut().filter(|recovery| recovery.id == id) else {
             return;
         };
         recovery.copied |= copied;
@@ -388,7 +386,13 @@ impl Dictation {
         Ok(id)
     }
 
-    fn keep(&mut self, reason: RecoveryReason, id: SessionId, text: Zeroizing<String>, now: Instant) {
+    fn keep(
+        &mut self,
+        reason: RecoveryReason,
+        id: SessionId,
+        text: Zeroizing<String>,
+        now: Instant,
+    ) {
         if text.is_empty() {
             return;
         }
@@ -464,14 +468,14 @@ impl Dictation {
         }
         while let Some(event) = recognition.actor.poll() {
             let result = match event {
-                RuntimeEvent::Ready if recognition.phase == DictationStatus::Loading => self
-                    .validate(recognition.id, target, now)
-                    .and_then(|()| {
+                RuntimeEvent::Ready if recognition.phase == DictationStatus::Loading => {
+                    self.validate(recognition.id, target, now).and_then(|()| {
                         recognition
                             .actor
                             .capture()
                             .map_err(DictationError::RecognizerUnavailable)
-                    }),
+                    })
+                }
                 RuntimeEvent::Listening if recognition.phase == DictationStatus::Loading => {
                     recognition.phase = DictationStatus::Listening;
                     Ok(())
@@ -754,7 +758,10 @@ mod tests {
             dictation.finish(SessionId::new(1), &mut moved, now),
             Err(DictationError::TargetChanged)
         );
-        assert!(moved.inserted.is_empty(), "nothing is written into the new field");
+        assert!(
+            moved.inserted.is_empty(),
+            "nothing is written into the new field"
+        );
         assert_eq!(
             dictation.status(),
             DictationStatus::Unavailable(DictationError::TargetChanged)
@@ -805,7 +812,10 @@ mod tests {
         dictation
             .finish(SessionId::new(1), &mut target, now)
             .unwrap();
-        assert!(target.inserted.is_empty(), "a field never takes half a text");
+        assert!(
+            target.inserted.is_empty(),
+            "a field never takes half a text"
+        );
         assert_eq!(
             dictation.recovery(SessionId::new(1)).map(str::len),
             Some(long.len())
@@ -878,10 +888,7 @@ mod tests {
         dictation.begin(now).unwrap();
         dictation.advance(&mut target, now);
         assert_eq!(dictation.status(), DictationStatus::Preparing);
-        dictation.advance(
-            &mut target,
-            now.checked_add(DELIVERY_WINDOW).unwrap(),
-        );
+        dictation.advance(&mut target, now.checked_add(DELIVERY_WINDOW).unwrap());
         assert_eq!(
             dictation.status(),
             DictationStatus::Unavailable(DictationError::NoEditableField)

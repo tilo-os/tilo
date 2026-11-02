@@ -137,6 +137,85 @@ pub trait Workspaces: Send + Sync {
 /// before it can read it.
 pub type ReadFuture<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
 
+/// The workspaces a device's own native enrollment holds, as the plane reads
+/// them: the store a session opens its workspaces in is asked when a request
+/// names one, so who may act there is what holds at that moment rather than as
+/// it was when the plane started.
+impl Workspaces for crate::owner::NativeWorkspaceOwner {
+    fn read<'a>(
+        &'a self,
+        workspace: &'a str,
+        read: &'a mut (dyn FnMut(&crate::StatePeer) + Send),
+    ) -> ReadFuture<'a> {
+        let Some(room) = tilo_desktop_model::RoomId::parse(workspace) else {
+            return Box::pin(std::future::ready(false));
+        };
+        // The owner's own store: the read takes its lock for as long as it
+        // runs, never across an await.
+        Box::pin(async move {
+            self.with_current(room, |view| {
+                read(view.peer());
+                Ok(())
+            })
+            .is_ok()
+        })
+    }
+}
+
+/// A device that answers no app actions on its plane: one built to ask its
+/// workspaces' devices where work runs, which serves the plane for the asks it
+/// makes and the offers it answers. An app's action reaches a device through
+/// the dispatcher it serves; a request that arrives on such a plane anyway is
+/// refused as one this device does not serve, so its caller learns at once
+/// instead of waiting.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoActions;
+
+/// What [`NoActions`] answers every request with.
+fn not_served() -> tilo_actions::remote::ActionHostError {
+    tilo_actions::remote::ActionHostError::Unavailable {
+        reason: "this device answers no app actions on the devices' plane".into(),
+    }
+}
+
+impl ActionHost for NoActions {
+    fn query(
+        &self,
+        _caller: &Caller,
+        _query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+    > {
+        tilo_actions::remote::Pending::ready(Err(not_served()))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &Caller,
+        _request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+    > {
+        tilo_actions::remote::Pending::ready(Err(not_served()))
+    }
+
+    fn observe(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(not_served()))
+    }
+}
+
 /// What a device knows of itself when another device of its workspace offers
 /// it work ([`ActionPlane::offers`]).
 ///

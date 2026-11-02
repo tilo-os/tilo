@@ -51,10 +51,10 @@
 //! An effect whose whole scope is the invoking person's own device —
 //! copy to their clipboard, apply their own appearance, measure their own
 //! connection — and that touches nothing shared and no one else is
-//! `own_device`: a room's grants have nothing to consent to, so a guest
-//! invokes it as the room's owner does, and it runs only for the person at
-//! the device it acts on ([`tilo_actions::OWN_DEVICE_SCOPE`]). An effect
-//! that reaches other people (a direct message, a call) is not.
+//! `own_device`: a workspace's grants have nothing to consent to, so a
+//! guest invokes it as the workspace's owner does, and it runs only for the
+//! person at the device it acts on ([`tilo_actions::OWN_DEVICE_SCOPE`]). An
+//! effect that reaches other people (a direct message, a call) is not.
 //!
 //! An effect that needs its person attending — it opens a chooser for
 //! them, asks them for a credential or a sign-in, or shows something only
@@ -98,8 +98,9 @@
 //! those types),
 //! `participant` (a view that moves only the invoking participant's own
 //! view, such as an agent's caret, so a remote participant may invoke it),
-//! `member` (any member of a room may ask the room's host to run it for
-//! themselves on the room's record, as linking their own account elsewhere),
+//! `member` (any member of a workspace may ask the workspace's host to run it
+//! for themselves on the workspace's record, as linking their own account
+//! elsewhere),
 //! `host_render` (a host answers it in a render service of its own, never in
 //! the record's confined app worker: [`tilo_actions::HOST_RENDER_TAG`]),
 //! `tag = EXPR` (repeatable: a further contract tag, a `&'static str`
@@ -698,7 +699,7 @@ pub struct EffectDecl {
     /// a view or an effect declared `kind = "read"`.
     pub action_kind: ActionKind,
     /// Its whole scope is the invoking person's own device: it touches
-    /// nothing shared and no one else, so a room's grants have nothing to
+    /// nothing shared and no one else, so a workspace's grants have nothing to
     /// consent to ([`tilo_actions::OWN_DEVICE_SCOPE`]).
     pub own_device: bool,
     /// Needs its person attending: it opens a chooser, asks for a credential
@@ -728,8 +729,8 @@ pub struct EffectDecl {
     /// at the invoker's caret): its kind is Undoable, offered to whoever may
     /// edit, and the edits it submits are checked like any other.
     pub edits: bool,
-    /// Any member of a room may ask the room's host to run it for
-    /// themselves on the room's record (`#[effect(member)]`,
+    /// Any member of a workspace may ask the workspace's host to run it for
+    /// themselves on the workspace's record (`#[effect(member)]`,
     /// [`tilo_actions::MEMBER_OWN_TAG`]): it runs there as that member.
     pub member: bool,
     /// The collection field whose items the effect is offered on

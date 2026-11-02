@@ -110,7 +110,7 @@ table) under `--out` and stops everything it started.
 
 ```sh
 cargo build --release -p tilo-relay --features web,agents
-cargo build -p shell --bin tilo-runtime-mcp -p notes -p sheets -p scratchpad
+cargo build -p tilo-runtime --bin tilo-runtime-mcp -p notes -p sheets -p scratchpad
 crates/browser/tilo-browser-runtime/scripts/build.sh /abs/bundle --bundle desktop
 node crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs --bundle /abs/bundle \
   --apps notes,sheets,scratchpad --out /abs/e2e

@@ -959,11 +959,11 @@ impl WindowShares {
             match msg {
                 NeighbourMsg::SurfaceViewRequest {
                     peer,
-                    room,
+                    room: workspace,
                     views,
                     decode,
                 } => {
-                    changed |= self.note_views(sync, ws, peer, &room, &views, &decode);
+                    changed |= self.note_views(sync, ws, peer, &workspace, &views, &decode);
                 }
                 NeighbourMsg::RemoteInput {
                     peer,

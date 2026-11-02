@@ -150,7 +150,7 @@ impl Restore {
             desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
             return false;
         };
-        let Some(room) = room_of(desktop, saved.tab) else {
+        let Some(workspace) = workspace_of(desktop, saved.tab) else {
             // The tab went with the workspace it was in.
             return false;
         };
@@ -163,7 +163,7 @@ impl Restore {
         if !desktop.with_policy(|policy| policy.adopt(&saved.app, saved.tab)) {
             return false;
         }
-        match apps.start_beside(&launch, &apps.workspace_named(&room)) {
+        match apps.start_beside(&launch, &apps.workspace_named(&workspace)) {
             Ok(()) => {
                 self.opening = Some(Opening {
                     tab: saved.tab,
@@ -191,10 +191,10 @@ impl Restore {
     }
 }
 
-/// The workspace room of the tab `tab` stands in, which its app is started
+/// The workspace the tab `tab` stands in, which its app is started
 /// into: the app runs where the person opened it, with that workspace's
 /// grants.
-fn room_of(desktop: &DesktopHost, tab: TabId) -> Option<String> {
+fn workspace_of(desktop: &DesktopHost, tab: TabId) -> Option<String> {
     desktop.with_policy(|policy| {
         policy.handle().read(|tree| {
             tree.workspaces

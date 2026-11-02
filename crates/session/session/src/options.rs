@@ -12,8 +12,7 @@ use ui::application::ComponentRunnerInputs;
 use crate::displays::Backlights;
 use crate::rotation::Accelerometer;
 use crate::{
-    AppActions, KillSwitch, Launches, OnboardingView, SearchOptions, Service, SessionAction,
-    SessionConfig,
+    AppActions, Launches, OnboardingView, SearchOptions, Service, SessionAction, SessionConfig, Vpn,
 };
 use crate::{
     capture, controllers, desktop_services, engine, fabric, mount, portal_link, surfaces, sync,
@@ -72,9 +71,9 @@ pub struct Options {
     /// what a search row or a file opens.
     pub launch: Option<Rc<mount::apps::Apps>>,
     /// The apps this session started, which its broker admits a connection
-    /// for: the app, room and process it launched itself. The apps it starts
-    /// record their launch here; a session whose apps run in its own process
-    /// (a test) records one itself.
+    /// for: the app, workspace and process it launched itself. The apps it
+    /// starts record their launch here; a session whose apps run in its own
+    /// process (a test) records one itself.
     pub launches: std::sync::Arc<Launches>,
     /// The drives the person plugs in, which this session announces and acts
     /// on when they open or eject one.
@@ -130,11 +129,11 @@ pub struct Options {
     /// fresh desk and keeps nothing (tests and screenshots).
     pub state: Option<std::path::PathBuf>,
     /// Whether the session takes part in the collaboration plane: who is
-    /// here in each workspace's room, over Iroh. Off, this desktop has no
+    /// here in each workspace, over Iroh. Off, this desktop has no
     /// collaborators but its own person.
     pub collab: bool,
     /// A collaboration plane to take part in instead of starting one: a
-    /// session a test hands the presence a room would have carried
+    /// session a test hands the presence a workspace would have carried
     /// ([`sync::Client::untethered`]), which says nothing on a network.
     pub sync: Option<Rc<sync::Client>>,
     /// The person's device fabric, when this session runs on one: what was
@@ -142,10 +141,11 @@ pub struct Options {
     /// they copied there joins the clipboard here.
     pub fabric: Option<tilo_device_fabric::link::SharedLink>,
     pub wake_seams: mount::wake::Seams,
-    /// The person's VPN profile kill switches, when this session runs on a
-    /// machine with the helper: a profile set to connect and not connected
-    /// blocks traffic while its switch is on. Without one, nothing does.
-    pub kill_switch: Option<KillSwitch>,
+    /// The device VPN, when this session runs on a machine with the helper:
+    /// a VPN profile set to connect and not connected blocks traffic while
+    /// its kill switch is on, and this device routes through another of the
+    /// person's devices while they choose one. Without one, nothing does.
+    pub vpn: Option<Vpn>,
     /// Whether the apps this session runs read and invoke what its services
     /// publish, and on which socket. Off, the apps it starts reach no
     /// service at all.
@@ -234,7 +234,7 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
     Ok(())
 }
 
-/// Who is here: this session's membership of each workspace's room, over the
+/// Who is here: this session's membership of each workspace, over the
 /// collaboration plane. `None` when the session takes no part in it, or the
 /// device's endpoint did not bind: a desktop with no one else on it.
 pub(crate) fn start_collaboration(
@@ -272,8 +272,8 @@ pub(crate) fn start_collaboration(
     }
 }
 
-/// This device's rooms, holding what every workspace of the desk shows and
-/// what a join takes in, kept beside the desk. `None` when this computer has
+/// This device's workspaces, holding what the desk shows of them and what a
+/// join takes in, kept beside the desk. `None` when this computer has
 /// no identity to hold them with, or keeps no state to keep them in.
 pub(crate) fn open_engine(
     options: &Options,
@@ -289,7 +289,7 @@ pub(crate) fn open_engine(
     match engine::Engine::for_this_device(options.state.as_deref(), workspaces) {
         Ok(engine) => Some(std::sync::Arc::new(engine)),
         Err(error) => {
-            tracing::debug!(%error, "this session holds no rooms");
+            tracing::debug!(%error, "this session holds no workspaces");
             None
         }
     }
@@ -332,7 +332,7 @@ impl Default for Options {
             collab: true,
             fabric: None,
             wake_seams: mount::wake::Seams::default(),
-            kill_switch: None,
+            vpn: None,
             action_plane: ActionPlane::default(),
             agent_door: None,
             admit_repl: Vec::new(),

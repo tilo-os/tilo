@@ -42,10 +42,10 @@ struct Window {
 
 impl Window {
     /// The connection of a window of `app`, run by the launch `pid`.
-    fn open(launches: &Arc<tilo_session::Launches>, app: &str, room: &str, pid: u32) -> Self {
+    fn open(launches: &Arc<tilo_session::Launches>, app: &str, workspace: &str, pid: u32) -> Self {
         let stream: UnixStream =
             tilo_session::mount::app_tabs::ServiceLinks::new(Arc::clone(launches))
-                .window(app, room, 7, Some(pid))
+                .window(app, workspace, 7, Some(pid))
                 .shell_ui
                 .expect("the app's shell-ui connection")
                 .into();
@@ -123,9 +123,9 @@ fn appearance(message: &FloatingSurfaceHostMessage) -> WindowAppearance {
 
 /// A window opens to the temperature of the workspace it stands in and the
 /// colour of the person at this machine, takes another temperature when the
-/// room's changes, and is told nothing while neither does.
+/// workspace's changes, and is told nothing while neither does.
 #[test]
-fn a_window_takes_the_temperature_of_its_room_and_the_person_s_colour() {
+fn a_window_takes_the_temperature_of_its_workspace_and_the_person_s_colour() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
     let launches = Arc::new(tilo_session::Launches::default());
@@ -141,8 +141,8 @@ fn a_window_takes_the_temperature_of_its_room_and_the_person_s_colour() {
     .expect("session");
     session.step(Duration::from_millis(1)).expect("a frame");
 
-    // The app runs in its own room, and its window stands in the workspace
-    // in front.
+    // The app runs in its own workspace, and its window stands in the one in
+    // front.
     let mut app_process = std::process::Command::new("sleep")
         .arg("120")
         .spawn_locked()
@@ -151,7 +151,7 @@ fn a_window_takes_the_temperature_of_its_room_and_the_person_s_colour() {
     launches.started(app_process.id(), app, "private", false);
     let _client = mapped(&mut session, app);
     let workspace = session.handle().read(|tree| tree.active);
-    // The person gives the room a warm light, and goes to another workspace,
+    // The person gives the workspace a warm light, and goes to another one,
     // where every workspace's temperature is looked at again.
     warmed(workspace, 40.0);
     invoke(&mut session, CHROME_RESOURCE, "new-workspace");
@@ -179,8 +179,8 @@ fn a_window_takes_the_temperature_of_its_room_and_the_person_s_colour() {
         opened.corner_radius
     );
 
-    // The room is given another light: the window is told, on the pass that
-    // looks at the temperatures again.
+    // The workspace is given another light: the window is told, on the pass
+    // that looks at the temperatures again.
     warmed(workspace, 200.0);
     invoke_with(
         &mut session,
@@ -189,14 +189,15 @@ fn a_window_takes_the_temperature_of_its_room_and_the_person_s_colour() {
         &serde_json::json!({"delta": -1}),
     );
     let changed = appearance(
-        &told(&mut window, &mut session, 200).expect("the window hears the room's new temperature"),
+        &told(&mut window, &mut session, 200)
+            .expect("the window hears the workspace's new temperature"),
     );
     let cool = changed
         .workspace_hue
         .expect("the window wears a temperature");
     assert!(
         (cool - 200.0).abs() < 0.01,
-        "the window takes the room's temperature when it changes: {cool}"
+        "the window takes the workspace's temperature when it changes: {cool}"
     );
     assert_eq!(
         changed.your_colour, opened.your_colour,

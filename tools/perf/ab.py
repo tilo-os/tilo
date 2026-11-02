@@ -476,7 +476,8 @@ def run_search(ctx: RunContext) -> list[record.Record]:
 RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "shell", "--bin", "shell",
                  "--features", "dev-overrides")
 # The agent task's client and seeded desktop, as perf-scheduled.sh builds them.
-AGENT_TASK_BUILD = (*RELEASE_SHELL, "--bin", "tilo-runtime-mcp", "--example", "agent_task_desktop")
+AGENT_TASK_BUILD = (*RELEASE_SHELL, "-p", "tilo-runtime", "--bin", "tilo-runtime-mcp",
+                    "--example", "agent_task_desktop")
 AGENT_TASK_SEEDER = "crates/session/shell/examples/agent_task_desktop.rs"
 
 

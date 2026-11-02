@@ -1,17 +1,17 @@
-//! Window warmth: what the desk tells every app window about the room it
-//! stands in.
+//! Window warmth: what the desk tells every app window about the workspace
+//! it stands in.
 //!
 //! A window takes the temperature of the workspace it is shown in, the
 //! colour of the person at this machine, the desk's theme, and where its
-//! room stands with its peers. The desk works that out
+//! workspace stands with its peers. The desk works that out
 //! ([`tilo_desktop_surface::warmth::WindowWarmth`]), this follows the
 //! settings it comes from, and [`AppTabs::publish_window_warmth`] sends it
 //! to each open window when it differs from what that window was told.
 //!
 //! The temperatures are looked at again every few seconds even while the
 //! person stays in one workspace, so a wallpaper that arrives late or is
-//! changed retints its room. The settings are read when they change, never
-//! per frame.
+//! changed retints its workspace. The settings are read when they change,
+//! never per frame.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -107,8 +107,8 @@ impl Windows {
                         .or_else(|| wallpapers.hue(&id))
                 });
             }
-            // Each room's person is looked up once per pass, not once per
-            // window: the lookup reads this device's identity registry.
+            // Each workspace's person is looked up once per pass, not once
+            // per window: the lookup reads this device's identity registry.
             let persons = RefCell::new(HashMap::new());
             tabs.publish_window_warmth(
                 |app| self.warmth.appearance_of(tree, app, &self.theme),
@@ -120,8 +120,8 @@ impl Windows {
     }
 }
 
-/// Where the room `app`'s window stands with its peers, and whether that
-/// window may write it: the same answer that opened the app writable.
+/// Where the workspace `app`'s window stands with its peers, and whether
+/// that window may write it: the same answer that opened the app writable.
 fn workspace_sync(
     tree: &DesktopTree,
     app: &str,
@@ -129,14 +129,14 @@ fn workspace_sync(
     persons: &RefCell<HashMap<RoomId, String>>,
 ) -> Option<WorkspaceSync> {
     let workspace = tree.workspace_holding_app(app)?;
-    let room = workspace.room();
+    let workspace_id = workspace.room();
     let person = persons
         .borrow_mut()
-        .entry(room)
-        .or_insert_with(|| crate::identity::person_in(&room.to_string(), person))
+        .entry(workspace_id)
+        .or_insert_with(|| crate::identity::person_in(&workspace_id.to_string(), person))
         .clone();
     tilo_network_actor::workspace_sync::told(
-        tilo_network_actor::workspace_topic_id(room),
+        tilo_network_actor::workspace_topic_id(workspace_id),
         &workspace.name,
         workspace.app_writes_at(&person, app, tilo_clock::unix_now()),
     )
@@ -177,5 +177,35 @@ pub(crate) fn network_status(readings: &crate::status::Shared) -> HostNetworkSta
     HostNetworkStatus {
         available: Some(link.kind != tilo_desktop::chrome::LinkKind::Offline),
         metered: None,
+    }
+}
+
+impl crate::Session {
+    /// Tell every open app window the temperature of the workspace it is in
+    /// and the colour of the person at this machine, whenever that differs
+    /// from what that window was told: when it opens, when it moves to
+    /// another workspace, when that workspace's picture or temperature
+    /// changes, and when the person chooses another colour.
+    pub(crate) fn follow_window_warmth(&mut self) {
+        // A theme the person's settings changed to is what the desk and the shell draw in
+        // from this frame, as every window is told it below.
+        if let Some(theme) = self.warmth.follow_settings(&self.shared.person) {
+            self.shared.desktop.set_theme(theme.clone());
+            if let Some(shell) = self.shell.as_mut() {
+                shell.set_theme(&theme);
+            }
+        }
+        let Some(tabs) = &mut self.tabs else {
+            return;
+        };
+        let network = network_status(&self.shared.readings);
+        self.warmth.follow(
+            tabs,
+            &self.shared.handle,
+            &self.shared.wallpapers,
+            &self.shared.person,
+            network,
+            ui::time::now(),
+        );
     }
 }

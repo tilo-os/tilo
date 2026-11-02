@@ -12,8 +12,8 @@ use std::sync::Arc;
 use serde_json::Value as Json;
 use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
-    ActionArgs, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus, ParamType,
-    ResourceSpec, ResourceViewSpec, Target,
+    ActionArgs, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus, Noun,
+    ParamType, ResourceSpec, ResourceType, ResourceViewSpec, Target,
 };
 
 use crate::action::DynAction;
@@ -232,6 +232,9 @@ struct TypeActions {
     /// The views that show a resource of the type, each with the action that opens it through
     /// that view, when that is not the resource's own `open` ([`views_of`]).
     views: Vec<(ResourceViewSpec, Option<Arc<ActionType>>)>,
+    /// What its resources are, as people name them: its noun, its app's name, and whether
+    /// it is a root (each resource published with it says so, [`ResourceType`]).
+    named: ResourceType,
 }
 
 impl ActionTypes {
@@ -261,6 +264,15 @@ impl ActionTypes {
                     edits: edit_types(meta, &declared.name),
                     actions,
                     views: views_of(meta, &declared.name),
+                    named: ResourceType {
+                        noun: Noun::new(declared.noun(), declared.plural()),
+                        app: Noun::new(
+                            meta.title.clone(),
+                            tilolang::meta::plural(&meta.title.to_lowercase()),
+                        ),
+                        // A root is the app's one resource of its type.
+                        root: meta.roots.contains(&declared.id),
+                    },
                 },
             );
         }
@@ -297,6 +309,7 @@ impl ActionTypes {
         let Some(of_type) = self.on_type.get(type_name) else {
             return resource;
         };
+        resource = resource.with_type(of_type.named.clone());
         for (view, opens) in &of_type.views {
             if let Some(opens) = opens {
                 resource = resource.with_action(open_with_spec(opens, id, &view.id));

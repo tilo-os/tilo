@@ -493,7 +493,7 @@ impl Widget for Panel {
         // Where everyone else's pointer is now, from the plane: it names the
         // tabs their tiles hold it over.
         let over: Vec<(u64, String, f64, f64)> = self.sync.as_ref().map_or_else(Vec::new, |sync| {
-            let Some((room, tabs)) = self.handle.read(|tree| {
+            let Some((workspace_id, tabs)) = self.handle.read(|tree| {
                 let workspace = tree.active_workspace()?;
                 let tabs: Vec<u64> = workspace
                     .strips
@@ -508,7 +508,7 @@ impl Widget for Panel {
             };
             let mut over = Vec::new();
             for tab in tabs {
-                for (publisher, x, y) in sync.pointers(&room, tab) {
+                for (publisher, x, y) in sync.pointers(&workspace_id, tab) {
                     over.push((tab, publisher, x, y));
                 }
             }

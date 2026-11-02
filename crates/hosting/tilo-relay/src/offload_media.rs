@@ -182,7 +182,7 @@ impl SessionConnection {
         };
         drop(session);
         let result = client
-            .scope(scope.room(), scope.app())
+            .scope(scope.workspace(), scope.app())
             .and_then(|scoped| call(&scoped));
         if matches!(result, Err(BlobError::Disconnected(_))) {
             // Reconnect on the next call rather than keep a dead session.

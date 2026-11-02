@@ -13,8 +13,9 @@
 //!   [`daemon()`]: a bounded worker count, a bounded blocking pool, named
 //!   threads.
 //! - **Synchronous entry points** — a CLI's `main`, a test — use
-//!   [`block_on`]. It refuses to run inside a runtime or on the UI thread,
-//!   where it would deadlock or freeze a frame.
+//!   [`block_on`]. It refuses to run inside a runtime, this crate's or
+//!   another's, or on the UI thread, where it would deadlock or freeze a
+//!   frame.
 //! - **CPU-bound bulk work** — hashing, chunking, decoding, indexing — goes to
 //!   [`cpu()`], a dedicated pool, never onto an async worker.
 //! - **Bulk file I/O** goes through [`io`], std I/O on dedicated threads
@@ -74,8 +75,9 @@ pub enum Error {
     /// The operating system refused a thread or the runtime's drivers.
     #[error("could not start the async runtime: {0}")]
     Start(#[from] std::io::Error),
-    /// A synchronous wait was requested from a thread that is already
-    /// driving async work; blocking there deadlocks or starves the runtime.
+    /// A synchronous wait was requested from a thread that is already driving
+    /// async work: blocking there deadlocks or starves the runtime, and
+    /// handing the thread to a second runtime panics.
     #[error("cannot block on a future from inside an async runtime; await it instead")]
     InsideRuntime,
     /// A synchronous wait was requested on the UI thread, where it freezes
@@ -145,16 +147,36 @@ pub fn in_runtime() -> bool {
 
 /// Whether the calling thread drives async tasks of a runtime from this
 /// crate: a worker, the app runtime thread, or a thread inside one of its
-/// `block_on`s. Blocking-pool threads do not count; they exist to block.
+/// `block_on`s. Blocking-pool threads do not count; their thread exists to
+/// block, though they are inside a runtime all the same ([`in_runtime`]).
 pub fn in_async_context() -> bool {
     DRIVING.with(Cell::get)
 }
 
-fn check_may_block() -> Result<(), Error> {
+/// Refuse a wait on a thread that must not wait at all: the UI thread, which
+/// would freeze the frame, and a thread driving this crate's runtimes, which
+/// would stall the tasks queued behind it.
+///
+/// For callers that poll the future on their own thread instead of handing
+/// the thread to tokio, so that a thread inside another runtime's context —
+/// where tokio panics — still waits: [`AppRuntime::block_on`].
+pub(crate) fn check_not_a_driver() -> Result<(), Error> {
     if is_ui_thread() {
         return Err(Error::UiThread);
     }
     if in_async_context() {
+        return Err(Error::InsideRuntime);
+    }
+    Ok(())
+}
+
+/// Refuse a wait that hands the calling thread to a runtime: on a UI thread,
+/// on a thread driving this crate's runtimes, or in any runtime context at
+/// all — another crate's runtime, or a test's own — where tokio refuses to
+/// start or block a runtime and panics.
+fn check_may_block() -> Result<(), Error> {
+    check_not_a_driver()?;
+    if in_runtime() {
         return Err(Error::InsideRuntime);
     }
     Ok(())
@@ -167,9 +189,15 @@ fn check_may_block() -> Result<(), Error> {
 /// process that waits on async work repeatedly should keep a runtime (the
 /// [`app()`] runtime, or one built with [`daemon()`]) and use its handle.
 ///
+/// A thread already inside a runtime context — a worker, a `block_on`, a
+/// blocking-pool thread, or code that entered a handle — is refused: it
+/// cannot hand this thread to a second runtime, and tokio panics when it
+/// tries. Await the future there instead, or [`AppRuntime::block_on`], which
+/// polls on the calling thread.
+///
 /// # Errors
 ///
-/// [`Error::UiThread`] on a UI thread, [`Error::InsideRuntime`] inside a
+/// [`Error::UiThread`] on a UI thread, [`Error::InsideRuntime`] inside any
 /// runtime context, [`Error::Start`] when the runtime cannot be built.
 pub fn block_on<F: Future>(future: F) -> Result<F::Output, Error> {
     check_may_block()?;
@@ -194,12 +222,12 @@ pub fn block_on<F: Future>(future: F) -> Result<F::Output, Error> {
 /// future runs as a task of `runtime`, and the caller waits on a plain
 /// channel, outside any runtime. Unlike `Runtime::block_on` on a shared
 /// handle, the caller's thread never enters `runtime`, so it may be any
-/// thread that may block. Async code awaits the future instead.
+/// thread that owns no runtime. Async code awaits the future instead.
 ///
 /// # Errors
 ///
-/// [`Error::UiThread`] on a UI thread, [`Error::InsideRuntime`] on a thread
-/// that drives async tasks (a worker of any runtime from this crate,
+/// [`Error::UiThread`] on a UI thread, [`Error::InsideRuntime`] in any
+/// runtime context (a worker of this crate's runtime or of another one,
 /// `runtime`'s own included, where waiting would stall the tasks queued
 /// behind the caller, or deadlock a runtime with one worker), and
 /// [`Error::TaskFailed`] when the task panicked or `runtime` shut down
@@ -415,8 +443,11 @@ mod tests {
                 wait_on(other.handle(), async move { wait_on(&handle, async { 5 }) }).unwrap();
             assert!(matches!(nested, Err(Error::InsideRuntime)));
         }
-        // phase: a_blocking_pool_thread_may_wait
+        // phase: a_blocking_pool_thread_is_inside_a_runtime_and_waits_there
         {
+            // A blocking-pool thread is a thread of its runtime, not a thread
+            // that owns none: it asks that runtime instead of building a
+            // second one, which tokio refuses and this guard names.
             let handle = runtime.handle().clone();
             let inner = wait_on(runtime.handle(), async move {
                 tokio::task::spawn_blocking(move || wait_on(&handle, async { 6 }))
@@ -424,7 +455,7 @@ mod tests {
                     .unwrap()
             })
             .unwrap();
-            assert_eq!(inner.unwrap(), 6);
+            assert!(matches!(inner, Err(Error::InsideRuntime)));
         }
         // phase: a_ui_thread_is_refused
         {
@@ -465,7 +496,16 @@ mod tests {
             let nested = block_on(async { block_on(async {}) }).unwrap();
             assert!(matches!(nested, Err(Error::InsideRuntime)));
         }
-        // phase: blocking_pool_threads_may_block
+        // phase: block_on_refuses_inside_another_crates_runtime
+        {
+            let foreign = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let nested = foreign.block_on(async { block_on(async {}) });
+            assert!(matches!(nested, Err(Error::InsideRuntime)));
+        }
+        // phase: a_blocking_pool_thread_waits_with_the_app_runtime
         {
             let inner = block_on(async {
                 tokio::task::spawn_blocking(|| app().block_on(async { 9 }))

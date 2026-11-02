@@ -153,7 +153,7 @@ const cargo = args => {
 };
 if (flag('--build')) {
   cargo(['build', '-p', 'tilo-relay', '--bin', 'tilo-relay', '--features', 'web,agents']);
-  cargo(['build', '-p', 'shell', '--bin', 'tilo-runtime-mcp', ...appNames.flatMap(a => ['-p', APPS[a].bin, '--bin', APPS[a].bin])]);
+  cargo(['build', '-p', 'tilo-runtime', '--bin', 'tilo-runtime-mcp', ...appNames.flatMap(a => ['-p', APPS[a].bin, '--bin', APPS[a].bin])]);
 }
 let bundle = option('--bundle');
 if (!bundle && flag('--build')) {

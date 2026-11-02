@@ -3,9 +3,9 @@
 //!
 //! An app is a process of its own, and the socket it speaks to its session on
 //! is the launcher's: [`tilo_action_broker`] serves it, admits the peer by
-//! the handoff the launcher stamped on the connection, and keeps the rooms
-//! the apps share. What this session adds to that broker is one provider:
-//! what its services publish ([`Link`], as the broker's
+//! the handoff the launcher stamped on the connection, and keeps the
+//! workspaces the apps share. What this session adds to that broker is one
+//! provider: what its services publish ([`Link`], as the broker's
 //! [`PublishedResources`]). Nothing of the wire itself is served here.
 //!
 //! The two sides run on two threads. The broker has a runtime of its own; the
@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
+use tilo_action_broker::NativePeerBrokerConfig;
 use tilo_action_broker::channel_encryption::ChannelKeyProvider;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
 use tilo_action_broker::collab_outbound::PeerPublisher;
@@ -28,6 +29,7 @@ use tilo_action_broker::services::{
     Caller, ContentStoreServices, Granted, HostServices, HostStepServices, PublishedResources,
     Reading, ResourceWatch, SearchIndexServices, ShortcutLibraryRequest, ShortcutLibraryServices,
     ShortcutStore, SpeakerChange, SpeakerServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
+    WorkspaceMemberships,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
@@ -141,7 +143,7 @@ impl Link {
     ///
     /// The session reads it once its services are all mounted, before the
     /// broker answers anyone: an app that connects as the session starts is
-    /// decided by the room's grants, not by a declaration not yet read.
+    /// decided by the workspace's grants, not by a declaration not yet read.
     pub fn declare(&self, services: &Services) {
         let revision = services.revision();
         let mut declared = self.declared.lock_recover();
@@ -154,7 +156,8 @@ impl Link {
             .filter(|resource| resource.readers == tilo_actions::Readers::Granted)
             .map(|resource| {
                 // The session's own resources name the session's app, as its
-                // actions do: that is whose grants the room says may read them.
+                // actions do: that is whose grants the workspace says may read
+                // them.
                 let publisher = resource
                     .app_id
                     .unwrap_or_else(|| tilo_action_policy::roles::SESSION_APP.to_owned());
@@ -289,11 +292,11 @@ impl SearchIndexServices for ContentIndex {
     }
 }
 
-/// The rooms' sealed records as this session serves them: the broker the
-/// channel service gates, and where an endpoint follows a route's keys.
+/// The workspaces' sealed records as this session serves them: the broker
+/// the channel service gates, and where an endpoint follows a route's keys.
 pub struct Sealed {
-    /// The broker's side of the rooms' sealed records: the channel service
-    /// gates a sealed record crossing it.
+    /// The broker's side of the workspaces' sealed records: the channel
+    /// service gates a sealed record crossing it.
     pub broker: std::sync::Arc<Mutex<BrokerChannels>>,
     /// Where an endpoint follows when a route's keys change, when this
     /// session's channel service runs.
@@ -302,9 +305,9 @@ pub struct Sealed {
 
 /// What this session hands the broker besides the link and the launcher: the
 /// board every app's live activity shows on, the index its publications land
-/// in, the desk it decides a room against, the shortcuts it saves and runs,
-/// the workspace's activity it serves, and the runs of what people ask its
-/// agents.
+/// in, the desk it decides a workspace against, the shortcuts it saves and
+/// runs, the workspace's activity it serves, and the runs of what people ask
+/// its agents.
 pub struct Hosted {
     pub live_activities: std::sync::Arc<runtime_collab::LiveActivities>,
     /// The calls this session's apps join: the service an app's
@@ -315,16 +318,18 @@ pub struct Hosted {
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
     pub agent_runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
-    /// The rooms' sealed records: what the broker gates, and where an
+    /// The workspaces' sealed records: what the broker gates, and where an
     /// endpoint follows a route's keys.
     pub sealed: Sealed,
     /// How an app on this device runs one of its actions on another of the
     /// person's devices: what the collaboration plane reaches them through.
     pub own_device: Option<std::sync::Arc<dyn tilo_action_broker::services::OwnDeviceActions>>,
-    /// This device's rooms, whose owner is the canonical copy of what the
-    /// apps record in them: an app's write in a room the owner commits is
-    /// committed there before anyone hears of it, and leaves for the room's
-    /// peers from there. `None` when the session holds no rooms.
+    /// This device's workspaces, whose owner is the canonical copy of what
+    /// the apps record in them: an app's write in a workspace the owner
+    /// commits is committed there before anyone hears of it, and leaves for
+    /// the workspace's peers from there. A change to a workspace's people is
+    /// written through it too, and its person is who the broker admits them
+    /// as. `None` when the session holds no workspaces.
     pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
@@ -334,18 +339,28 @@ pub struct Hosted {
     /// the workspace's other devices, when it holds a workspace to ask them
     /// in.
     pub action_offload: Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>>,
+    /// Where the broker keeps what it admits, under this session's state: a
+    /// change is recorded before it runs, and answered from its record when it
+    /// is asked again.
+    pub journal_root: Option<PathBuf>,
+}
+
+/// Where a session keeping its state at `state` keeps what its broker admits.
+#[must_use]
+pub fn journal_root(state: &std::path::Path) -> PathBuf {
+    state.join("tilo").join("invocations")
 }
 
 /// Serve the session's published resources to the apps on `socket`: the
 /// broker admits each connection by the launch `launches` recorded, asks
 /// `link` for what the services publish, hands Settings the speaker groups
 /// of `fabric` when this session runs on one, and decides what an app may do
-/// in a room against `desk`. What apps publish of their own content lands in
-/// `content`, the index search reads.
+/// in a workspace against `desk`. What apps publish of their own content lands
+/// in `content`, the index search reads.
 ///
-/// `sealed` is the broker's side of the rooms' sealed records: the channel
-/// service gates a sealed record crossing it, and its keys are what an
-/// endpoint follows to hear when a route's keys change.
+/// `sealed` is the broker's side of the workspaces' sealed records: the
+/// channel service gates a sealed record crossing it, and its keys are what
+/// an endpoint follows to hear when a route's keys change.
 ///
 /// # Errors
 ///
@@ -360,13 +375,36 @@ pub fn serve(
 ) -> std::io::Result<BrokerHandle> {
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
-    let publisher = owner_publisher(hosted.engine.clone());
-    let services = host_services(link, launches, fabric, hosted);
+    // The identity store's device-certificate checks, on this session's one
+    // policy origin: the broker decides a join and a retained action against
+    // them, and the services answer an app's question about a device with them.
+    let certificates = std::sync::Arc::new(tilo_identity_authority::NativeCertificates::default());
+    let memberships: Option<std::sync::Arc<dyn WorkspaceMemberships>> = hosted
+        .engine
+        .clone()
+        .map(|engine| std::sync::Arc::new(SessionMemberships { engine }) as _);
+    // A session with an identity and a state to keep its workspaces in is the
+    // person's device itself: what its broker admits is recorded before it runs
+    // and answered from that record, so a change survives the session stopping
+    // mid-run. A session with neither keeps the doors that need no identity.
+    let config =
+        hosted
+            .engine
+            .as_ref()
+            .zip(hosted.journal_root.clone())
+            .map(|(_, journal_root)| NativePeerBrokerConfig {
+                journal_root,
+                certificate_authority: std::sync::Arc::clone(&certificates) as _,
+            });
+    let engine = hosted.engine.clone();
+    let mut services = host_services(link, launches, fabric, hosted, Some(certificates));
+    services.workspace_memberships = memberships;
+    let publisher = owner_publisher(engine);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
         Some(membership),
         publisher,
-        None,
+        config.as_ref(),
         services,
         channels,
         std::sync::Arc::new(FanoutState::new()),
@@ -374,8 +412,9 @@ pub fn serve(
 }
 
 /// Where the broker's writes go beyond this device's own apps: into the
-/// engine's owner, which publishes what it committed to each room's peers.
-/// A session that holds no rooms keeps its apps' writes among them.
+/// engine's owner, which publishes what it committed to each workspace's
+/// peers. A session that holds no workspaces keeps its apps' writes among
+/// them.
 pub(crate) fn owner_publisher(
     engine: Option<std::sync::Arc<crate::engine::Engine>>,
 ) -> std::sync::Arc<PeerPublisher> {
@@ -393,7 +432,7 @@ pub(crate) fn owner_publisher(
 /// loop applied it: the desk belongs to the loop, and the broker asks from its
 /// own thread.
 pub struct StoreRequest {
-    pub room: String,
+    pub workspace: String,
     /// The person the broker admitted the change for.
     pub actor: String,
     pub change: tilo_automation::ShortcutChange,
@@ -431,7 +470,7 @@ impl ShortcutLibraryServices for ShortcutLibrary {
             let (done, applied) = tokio::sync::oneshot::channel();
             changes
                 .send(StoreRequest {
-                    room: request.workspace,
+                    workspace: request.workspace,
                     actor: request.actor,
                     change: request.change,
                     done,
@@ -452,9 +491,9 @@ impl ShortcutLibraryServices for ShortcutLibrary {
 /// their shortcuts, as the session's loop last published them.
 ///
 /// The desk itself belongs to the loop ([`tilo_desktop_surface::DesktopHandle`]
-/// hands it out on this thread only), while the broker asks about a room from
-/// its own thread. The loop publishes a copy when the desk it shows moved, and
-/// the broker reads the copy.
+/// hands it out on this thread only), while the broker asks about a workspace
+/// from its own thread. The loop publishes a copy when the desk it shows
+/// moved, and the broker reads the copy.
 pub struct DeskAuthority {
     tree: Mutex<tilo_desktop_model::DesktopTree>,
     revocations: crate::engine::Revocations,
@@ -463,7 +502,7 @@ pub struct DeskAuthority {
 
 impl DeskAuthority {
     /// The authority over `tree`, as the loop sees it now, deciding what each
-    /// of its rooms revokes from `revocations`, and journalling what the
+    /// of its workspaces revokes from `revocations`, and journalling what the
     /// broker admits on the person's behalf under `journal` (`None` for a
     /// session that keeps no state).
     #[must_use]
@@ -495,15 +534,15 @@ impl WorkspaceAuthority for DeskAuthority {
     }
 
     /// A workspace this desk shows is one this device was let into, so its
-    /// shortcuts are proven against the revocations its room records. A room
-    /// whose document this device does not hold — a desk kept from before it
-    /// joined, or one it left — revokes nothing here: the shortcuts it shows
-    /// are proven by what it does hold, and a call it can no longer make is
-    /// refused elsewhere.
-    fn workspace_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
+    /// shortcuts are proven against the revocations its workspace records. A
+    /// workspace whose document this device does not hold — a desk kept from
+    /// before it joined, or one it left — revokes nothing here: the shortcuts
+    /// it shows are proven by what it does hold, and a call it can no longer
+    /// make is refused elsewhere.
+    fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
         let tree = self.tree.lock_recover();
-        tilo_action_broker::services::workspace_in(&tree, room)?;
-        Some((self.revocations)(room).unwrap_or_default())
+        tilo_action_broker::services::workspace_in(&tree, workspace)?;
+        Some((self.revocations)(workspace).unwrap_or_default())
     }
 
     /// Where the broker keeps what it admitted on this device's behalf: a
@@ -517,6 +556,46 @@ impl WorkspaceAuthority for DeskAuthority {
     }
 }
 
+/// A workspace's people as this session's engine writes them: the change goes
+/// into the workspace's own record, signed with this device's key, and every
+/// device of the workspace admits it as it admits every member's change.
+struct SessionMemberships {
+    engine: std::sync::Arc<crate::engine::Engine>,
+}
+
+impl WorkspaceMemberships for SessionMemberships {
+    /// A workspace this session's engine holds is one whose people change
+    /// here.
+    fn requires_workspace(&self, workspace: &str) -> bool {
+        tilo_desktop_model::RoomId::parse(workspace).is_some_and(|room| self.engine.holds(room))
+    }
+
+    /// The engine keeps no checkpoints of a workspace's records: its owner
+    /// commits them, and a member's changes travel as the changes they are.
+    fn keeps_checkpoints(&self, _workspace: &str) -> bool {
+        false
+    }
+
+    fn health(&self) -> Result<(), String> {
+        self.engine.owner().health()
+    }
+
+    fn execute(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        let engine = std::sync::Arc::clone(&self.engine);
+        Box::pin(async move {
+            let identity = engine.identity();
+            engine.owner().commit_workspace_membership_command(
+                request,
+                &identity.device_signing_key,
+                std::time::SystemTime::now(),
+            )
+        })
+    }
+}
+
 /// What the apps this session runs reach of it: the resources its services
 /// publish, the launcher that started them, and — when this session runs on a
 /// device fabric — the speaker groups Settings asks that fabric for.
@@ -525,6 +604,7 @@ fn host_services(
     launches: std::sync::Arc<Launches>,
     fabric: Option<tilo_device_fabric::link::SharedLink>,
     hosted: Hosted,
+    certificates: Option<std::sync::Arc<tilo_identity_authority::NativeCertificates>>,
 ) -> HostServices {
     let Hosted {
         live_activities,
@@ -539,6 +619,7 @@ fn host_services(
         engine: _,
         record_content,
         action_offload,
+        journal_root: _,
     } = hosted;
     let speakers: Option<std::sync::Arc<dyn SpeakerServices>> = fabric.map(|fabric| {
         std::sync::Arc::new(FabricSpeakers(fabric)) as std::sync::Arc<dyn SpeakerServices>
@@ -547,6 +628,12 @@ fn host_services(
         std::sync::Arc::new(ContentIndex(content)) as std::sync::Arc<dyn SearchIndexServices>
     });
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
+    // The certificate checks this session's broker decides a join and a
+    // retained action against: the session's own, or one of the tests'.
+    let certificates: std::sync::Arc<dyn tilo_action_broker::CertificateAuthority> = certificates
+        .unwrap_or_else(|| {
+            std::sync::Arc::new(tilo_identity_authority::NativeCertificates::default())
+        });
     HostServices {
         published: Some(link),
         launcher: Some(launches),
@@ -575,7 +662,7 @@ fn host_services(
             std::sync::Arc::new(media)
                 as std::sync::Arc<dyn tilo_action_broker::services::NativeMediaServices>
         }),
-        // This session's channel keys, when it holds rooms: a route's keys
+        // This session's channel keys, when it holds workspaces: a route's keys
         // reach its apps through them, and an endpoint follows their changes
         // here instead of asking again every second.
         channel_keys: sealed.keys,
@@ -588,9 +675,7 @@ fn host_services(
         record_content: record_content.map(|content| content.route()),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
-        native_certificates: Some(std::sync::Arc::new(
-            tilo_identity_authority::NativeCertificates::default(),
-        )),
+        native_certificates: Some(certificates),
         // The certificate this device acts under when the person starts
         // something here themselves — a shortcut's press, a schedule's fire
         // time — rather than an app or a peer asking for it. The broker takes
@@ -656,7 +741,7 @@ pub(crate) struct Plane {
     /// Held so the broker's thread ends and its socket is unlinked with the
     /// session.
     pub(crate) broker: tilo_action_broker::collab_broker::BrokerHandle,
-    /// The calls of the rooms this session takes part in, as the loop
+    /// The calls of the workspaces this session takes part in, as the loop
     /// heard them: what a voice channel shows.
     pub(crate) calls: std::sync::Arc<crate::calls::Calls>,
     /// The service apps join a call through, when this session carries
@@ -665,7 +750,7 @@ pub(crate) struct Plane {
 }
 
 impl Plane {
-    /// Say this device's call where everyone in the room reads it, and take
+    /// Say this device's call where everyone in the workspace reads it, and take
     /// in what they say of theirs: the channel a person is in and who is in
     /// each channel's call, which is what this session's apps show of calls.
     pub(crate) fn follow_calls(&self, sync: &crate::sync::Client) {
@@ -674,7 +759,7 @@ impl Plane {
             .as_ref()
             .and_then(tilo_native_media::NativeMediaService::own_call);
         let name = own.as_ref().map_or_else(String::new, |call| {
-            // What the app calls the channel, so the room reads a name and
+            // What the app calls the channel, so the workspace reads a name and
             // not an id; what the people in it said is the fallback.
             self.action_broker()
                 .and_then(|broker| {
@@ -825,6 +910,7 @@ mod tests {
             std::sync::Arc::new(Launches::default()),
             fabric,
             hosted(None),
+            None,
         )
     }
 
@@ -851,6 +937,7 @@ mod tests {
             engine: None,
             record_content: None,
             action_offload: None,
+            journal_root: None,
         }
     }
 
@@ -882,11 +969,12 @@ mod tests {
             std::sync::Arc::new(Launches::default()),
             None,
             hosted(Some(std::sync::Arc::clone(&content))),
+            None,
         );
         let search_index = services
             .search_index
             .expect("a session with an index offers apps its search index");
-        let room = tilo_desktop_model::RoomId::new();
+        let workspace_id = tilo_desktop_model::RoomId::new();
         let delta = IndexDelta {
             reset: true,
             upsert: vec![IndexEntry {
@@ -906,14 +994,14 @@ mod tests {
         };
         search_index
             .publish(
-                room,
+                workspace_id,
                 "so.tilo.notes",
                 "tab:0001",
                 &delta.encode().expect("a delta"),
             )
             .expect("the index takes the publication");
         assert_eq!(
-            content.title(&room.to_string(), "n1").as_deref(),
+            content.title(&workspace_id.to_string(), "n1").as_deref(),
             Some("Groceries"),
             "what the app published is in the index search reads"
         );
@@ -935,6 +1023,7 @@ mod tests {
                 record_content: Some(kept),
                 ..hosted(None)
             },
+            None,
         );
         assert!(
             with.record_content.is_some(),

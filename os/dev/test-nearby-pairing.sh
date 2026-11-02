@@ -557,7 +557,7 @@ vm_b test native-atspi-smoke.sh post-identity
 vm_b shot relogin >/dev/null && cp -f "$run_b/relogin.png" "$out/"
 # The read-only gate the graphical session wrapper runs at login, in the
 # person's own session so their secret store answers.
-vm_b ssh 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus /usr/bin/shell --verify-collaboration-identity' \
+vm_b ssh 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus /usr/bin/tilo-session --verify-collaboration-identity' \
   > "$out/b-verify-identity.txt" 2>&1 || {
     cat "$out/b-verify-identity.txt" >&2
     die "B's joined identity does not verify at login"

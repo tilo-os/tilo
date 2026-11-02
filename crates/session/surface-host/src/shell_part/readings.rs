@@ -248,7 +248,10 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
             Invocation::Action {
                 app, action, args, ..
             } if app == super::SESSION_APP && self.session.contains_key(action) => Ask {
-                resource: self.session[action].clone(),
+                // The guard says this action's resource is here; read it
+                // without indexing so a later change to the guard cannot
+                // panic a press.
+                resource: self.session.get(action).cloned().unwrap_or_default(),
                 action: action.clone(),
                 arguments: session_arguments(self.verbs.get(action), args),
             },

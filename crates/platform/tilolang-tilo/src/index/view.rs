@@ -231,6 +231,29 @@ impl View<'_> {
         })
     }
 
+    /// Whether `pred`, a test over the fields of `schema` by id (a type's `primary`), holds of
+    /// the resource at `path` as this view reads its fields, as a named filter's column holds.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn passes(
+        &self,
+        path: &str,
+        schema: &TypeSchema,
+        pred: &tilolang::pred::Pred<String>,
+    ) -> Result<bool, IndexError> {
+        let column = crate::schema::ColumnSchema {
+            name: String::new(),
+            field: None,
+            kind: crate::schema::ColumnKind::Bool,
+            many: false,
+            pred: Some(pred.clone()),
+            filter: false,
+            cases: Vec::new(),
+        };
+        Ok(self.column_values(path, schema, &column)? == ["1"])
+    }
+
     /// The listing of the collection `field` of `resource`, read page by page.
     ///
     /// # Errors

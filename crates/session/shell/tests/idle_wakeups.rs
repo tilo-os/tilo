@@ -52,13 +52,7 @@ impl Desktop {
         Self::start_with_apps(notes_desktop(), &[first_party_apps::NOTES])
     }
 
-    /// The same with `tree` as the saved session (`idle_memory` starts an
-    /// empty desktop).
-    pub(crate) fn start_with(tree: shell::shell::state::WorkspaceTree) -> Self {
-        Self::start_configured(tree, false, &[], &[])
-    }
-
-    /// [`Self::start_with`], with `apps` installed for the session to run.
+    /// The same, with `apps` installed for the session to run.
     pub(crate) fn start_with_apps(
         tree: shell::shell::state::WorkspaceTree,
         apps: &[FirstPartyApp],
@@ -66,7 +60,8 @@ impl Desktop {
         Self::start_configured(tree, false, &[], apps)
     }
 
-    /// [`Self::start_with`], with `env` added to the compositor's environment.
+    /// [`Self::start_with_apps`], with `env` added to the compositor's
+    /// environment.
     pub(crate) fn start_with_env(
         tree: shell::shell::state::WorkspaceTree,
         env: &[(&str, &str)],

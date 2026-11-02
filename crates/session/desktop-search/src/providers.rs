@@ -362,13 +362,48 @@ impl Source for Actions {
 }
 
 /// What one app publishes in one workspace, as the session's action host lists
-/// it: inert descriptors.
+/// it: inert descriptors, and what each resource they act on is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PublishedActions {
     pub app: String,
     /// The workspace it publishes them in.
     pub workspace: String,
     pub actions: Vec<tilo_actions::ActionDescriptor>,
+    /// What the resources the actions act on are, by resource id, for those
+    /// whose type says ([`types_of`]): what a query naming a type matches.
+    pub types: BTreeMap<String, tilo_actions::ResourceType>,
+}
+
+impl PublishedActions {
+    /// Everything `resources` publish, as `app` publishes it in `workspace`.
+    #[must_use]
+    pub fn of(app: &str, workspace: &str, resources: &[ResourceSpec]) -> Self {
+        Self {
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            actions: tilo_actions::door::survey(resources),
+            types: types_of(resources),
+        }
+    }
+}
+
+/// What each resource of `resources` and their children is, by resource id,
+/// for those whose type says ([`ResourceSpec::resource_type`]).
+#[must_use]
+pub fn types_of(resources: &[ResourceSpec]) -> BTreeMap<String, tilo_actions::ResourceType> {
+    fn walk(resource: &ResourceSpec, out: &mut BTreeMap<String, tilo_actions::ResourceType>) {
+        if let Some(named) = &resource.resource_type {
+            out.insert(resource.id.as_str().to_owned(), named.clone());
+        }
+        for child in &resource.children {
+            walk(child, out);
+        }
+    }
+    let mut out = BTreeMap::new();
+    for resource in resources {
+        walk(resource, &mut out);
+    }
+    out
 }
 
 /// Whether a person may pick `action` for `needle`: it reaches people, and
@@ -431,9 +466,40 @@ impl Source for Published {
                 )
             }),
         );
+        // The nouns of every type each app publishes, by app: a word naming
+        // one is about that app's things.
+        let mut kin: BTreeMap<&str, Vec<&tilo_actions::Noun>> = BTreeMap::new();
+        for named in self.0.iter().flat_map(|published| published.types.values()) {
+            let nouns = kin.entry(named.app.one.as_str()).or_default();
+            if !nouns.contains(&&named.noun) {
+                nouns.push(&named.noun);
+            }
+        }
         let mut hits = Vec::new();
         for ((published, action), score) in offered.into_iter().zip(scores) {
-            let Some(score) = score else {
+            // A resource is found by what it is as well as by what it is
+            // called: "my mails" opens mail's Inbox, which no word of it
+            // names.
+            let by_type = (action.address.action == crate::model::OPEN_ACTION)
+                .then(|| published.types.get(action.address.resource.as_str()))
+                .flatten()
+                .and_then(|named| {
+                    let kin = kin
+                        .get(named.app.one.as_str())
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .filter(|noun| **noun != named.noun);
+                    ui::search::system::type_match_score(needle, named, kin, |rest| {
+                        rank::action_match_score(
+                            rest,
+                            &action.action_label,
+                            &action.keywords,
+                            &action.resource_label,
+                        )
+                    })
+                });
+            let Some(score) = score.max(by_type) else {
                 continue;
             };
             hits.push(Hit {
@@ -783,6 +849,11 @@ impl Source for Answers {
         crate::i18n::t("search-kind-answers")
     }
 
+    /// Asked what was typed, word for word.
+    fn verbatim(&self) -> bool {
+        true
+    }
+
     fn query(&self, needle: &str) -> Vec<Hit> {
         self.answers(needle)
     }
@@ -959,6 +1030,11 @@ impl Source for WebSearch {
 
     fn name(&self) -> String {
         crate::i18n::t("search-kind-web")
+    }
+
+    /// Asked what was typed, word for word.
+    fn verbatim(&self) -> bool {
+        true
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
@@ -1962,5 +2038,184 @@ mod tests {
                 .as_deref(),
             Some("4")
         );
+    }
+
+    /// A resource of `app`'s type `noun` (plural `nouns`) labelled `label`, opened by its
+    /// `open`, the app's `root` or not, with the actions `more` on it.
+    fn typed(
+        id: &str,
+        label: &str,
+        (noun, nouns): (&str, &str),
+        (app, apps): (&str, &str),
+        root: bool,
+        more: &[(&str, &str)],
+    ) -> ResourceSpec {
+        let action = |id: &str, label: &str| {
+            tilo_actions::ActionSpec::immediate_encoded(
+                id,
+                label,
+                tilo_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction {
+                    type_id: "test.action".into(),
+                    payload: Vec::new(),
+                },
+            )
+        };
+        let mut resource = ResourceSpec::new(id, format!("tl.{app}.{noun}"), label)
+            .with_action(action(crate::model::OPEN_ACTION, "Open"))
+            .with_type(tilo_actions::ResourceType {
+                noun: tilo_actions::Noun::new(noun, nouns),
+                app: tilo_actions::Noun::new(app, apps),
+                root,
+            });
+        for (id, label) in more {
+            resource = resource.with_action(action(id, label));
+        }
+        resource
+    }
+
+    /// The resources the hits for `needle` open, in the search's order, as text typed on the
+    /// canvas reads them: what each `open` hit names.
+    fn opened(needle: &str, resources: &[ResourceSpec]) -> Vec<String> {
+        let published = Published(vec![PublishedActions::of("session", "", resources)]);
+        search(needle, &[&published], 0)
+            .into_iter()
+            .flat_map(|group| group.results)
+            .filter_map(|hit| match hit.target {
+                Target::Invoke(invoke) if invoke.address.action == crate::model::OPEN_ACTION => {
+                    Some(invoke.address.resource.as_str().to_owned())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Mail as a workspace holds it: the app's root (which Mail draws as the inbox), its
+    /// mailboxes and conversations, each conversation offering to move it to the inbox.
+    fn mail() -> Vec<ResourceSpec> {
+        let app = ("Mail", "mails");
+        let mailbox =
+            |id: &str, label: &str| typed(id, label, ("mailbox", "mailboxes"), app, false, &[]);
+        let thread = |id: &str, label: &str| {
+            typed(
+                id,
+                label,
+                ("thread", "threads"),
+                app,
+                false,
+                &[("to_inbox", "Move to inbox")],
+            )
+        };
+        vec![
+            typed("mail", "Mail", ("mail", "mails"), app, true, &[])
+                .with_child(mailbox("mail/archive", "Archive"))
+                .with_child(mailbox("mail/inbox", "Inbox"))
+                .with_child(mailbox("mail/sent", "Sent"))
+                .with_child(thread("mail/launch", "Launch plan for the autumn release"))
+                .with_child(thread("mail/lease", "Your lease renewal")),
+        ]
+    }
+
+    /// Notes as a workspace holds it: the app's root, the notebook its person renamed, and
+    /// its notes.
+    fn notes() -> Vec<ResourceSpec> {
+        let app = ("Notes", "notes");
+        let note = |id: &str, label: &str| typed(id, label, ("note", "notes"), app, false, &[]);
+        vec![
+            typed("notebook", "Journal", ("notes", "noteses"), app, true, &[])
+                .with_child(note("notebook/groceries", "Groceries"))
+                .with_child(note("notebook/trip", "Trip plan")),
+        ]
+    }
+
+    /// "my mails" means Mail's root, which Mail draws as its inbox: what an app shows of
+    /// itself first is its root's default view, which the app decides.
+    #[test]
+    fn my_mails_opens_mails_root() {
+        for asked in ["my mails", "mails", "mail", "Mail"] {
+            let found = opened(asked, &mail());
+            assert_eq!(
+                found.first().map(String::as_str),
+                Some("mail"),
+                "{asked:?} names Mail, its root first: {found:?}"
+            );
+            assert_eq!(
+                found.len(),
+                6,
+                "{asked:?} names every resource of mail: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn notes_opens_the_default_notebook() {
+        let found = opened("notes", &[notes(), mail()].concat());
+        assert_eq!(
+            found.first().map(String::as_str),
+            Some("notebook"),
+            "the notes app's root leads its notes: {found:?}"
+        );
+        assert!(
+            found.iter().all(|resource| !resource.starts_with("mail")),
+            "nothing of mail is a note: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_title_beats_a_type_named_like_it() {
+        let shopping = typed(
+            "shop",
+            "Weekly shop",
+            ("grocery", "groceries"),
+            ("Shopping", "shoppings"),
+            true,
+            &[],
+        );
+        let found = opened("Groceries", &[notes(), vec![shopping]].concat());
+        assert_eq!(
+            found.get(..2),
+            Some(&["notebook/groceries".to_owned(), "shop".to_owned()][..]),
+            "the note called Groceries, then the list of groceries: {found:?}"
+        );
+    }
+
+    /// "youtube videos of <channel>": "of" is filler, "youtube" names the client and "videos"
+    /// a type of it, so the channel's name is what must match. The channel the client
+    /// publishes is found by it, and the video that names it; a video that does not is not.
+    #[test]
+    fn a_query_naming_an_apps_things_finds_the_channel_by_its_name() {
+        let app = ("YouTube", "youtubes");
+        let resources = [
+            typed("channel", "MKBHD", ("channel", "channels"), app, false, &[]),
+            typed(
+                "tour",
+                "Studio tour with MKBHD",
+                ("video", "videos"),
+                app,
+                false,
+                &[],
+            ),
+            typed(
+                "other",
+                "Bread at home",
+                ("video", "videos"),
+                app,
+                false,
+                &[],
+            ),
+        ];
+        let found = opened("youtube videos of mkbhd", &resources);
+        assert_eq!(found, ["channel", "tour"], "{found:?}");
+        assert_eq!(
+            opened("youtube videos", &resources).len(),
+            2,
+            "the videos, not the channel"
+        );
+    }
+
+    #[test]
+    fn a_type_and_a_title_together_find_the_one_they_both_name() {
+        let found = opened("mail archive", &mail());
+        assert_eq!(found.first().map(String::as_str), Some("mail/archive"));
     }
 }

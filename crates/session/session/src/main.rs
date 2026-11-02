@@ -1,6 +1,7 @@
 //! The native session: `tilo-session [--backend drm|headless|nested]
 //! [--size WxH] [--shell bar|screen] [--host-desktop]
-//! [--firstboot|--firstboot-only] [--no-x11]
+//! [--firstboot|--firstboot-only]
+//! [--provision-identity|--verify-collaboration-identity] [--no-x11]
 //! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
 //! [--admit-repl PATH]... [--test-control PATH] [--seed-apps]
 //! [-- command args...]`. Listens on a fresh `wayland-N` socket, starts
@@ -16,7 +17,10 @@
 //! serves no bus unless a flag names one and exports nothing to that
 //! desktop's systemd user manager and D-Bus activation. A command started in
 //! the session is given the session bus a flag named, so the portal and the
-//! notifications it reaches are the session's own. `--test-control PATH`
+//! notifications it reaches are the session's own. The two identity commands
+//! open no display: they establish the machine's identity or prove that the
+//! one it holds verifies, and the process stops with their answer.
+//! `--test-control PATH`
 //! opens the development test-control socket there (`tilo-control
 //! snapshot`), in development builds only, and prints it
 //! (`TILO_TEST_CONTROL=`); `--seed-apps` publishes the tilolang notes,
@@ -44,6 +48,27 @@ static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1"
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (ours, command) = split_command(&args);
+    // `--firstboot` is the host package's wrapper hook, which goes on to the
+    // session it was starting.
+    let host_desktop = ours.iter().any(|arg| arg == "--host-desktop");
+    if host_desktop {
+        // A session installed on another distribution keeps its device
+        // identity where that login can write, and every child it starts —
+        // the launcher, the brokers — reads the same tree. This runs before
+        // anything here starts a thread, as it requires.
+        match tilo_onboarding_host::identity_provisioning::configure_host_identity_root() {
+            Ok(root) => eprintln!(
+                "Tilo host session: device identity will be stored under {}",
+                root.display()
+            ),
+            Err(error) => {
+                eprintln!("tilo-session: cannot resolve host-session identity storage: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     // The desktop's tilolang surfaces start compiled once Cranelift compiled them in an
     // earlier session.
     if let Some(cache) = tilo_paths::xdg::cache_home()
@@ -53,13 +78,29 @@ fn main() -> std::process::ExitCode {
     {
         eprintln!("tilo-session: compiled tilolang modules are not kept: {error}");
     }
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let (ours, command) = split_command(&args);
-    // `--firstboot` is the host package's wrapper hook, which goes on to the
-    // session it was starting.
-    let host_desktop = ours.iter().any(|arg| arg == "--host-desktop");
     if let Some(done) = first_boot(ours, host_desktop) {
         return done;
+    }
+    match tilo_session::startup::command(ours) {
+        Err(said) => {
+            eprintln!("tilo-session: {said}");
+            return ExitCode::from(2);
+        }
+        Ok(Some(command)) => return tilo_session::startup::run(command, host_desktop),
+        Ok(None) => {}
+    }
+    match tilo_session::startup::identity() {
+        tilo_session::startup::Identity::Desk => {}
+        tilo_session::startup::Identity::Recovery(problem) => {
+            eprintln!(
+                "tilo-session: this device's Tilo identity needs its owner: {}",
+                problem.as_str()
+            );
+        }
+        tilo_session::startup::Identity::Refused(said) => {
+            eprintln!("tilo-session: this device's identity did not verify: {said}");
+            return ExitCode::FAILURE;
+        }
     }
     let Some(line) = command_line(ours) else {
         return ExitCode::FAILURE;
@@ -542,7 +583,7 @@ fn desktop_services(
 #[cfg(target_os = "linux")]
 fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
     use tilo_session::{
-        ActionPlane, DeviceHost, KillSwitch, Options, QuickSettings, SessionConfig,
+        ActionPlane, DeviceHost, Options, QuickSettings, SessionConfig, Vpn,
         displays::{Backlights, Screens},
     };
     let owned = machine.is_owned();
@@ -584,7 +625,7 @@ fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
         state: tilo_paths::state_dir(),
         // A session in a window of another desktop leaves the machine's
         // traffic to the session that owns it.
-        kill_switch: owned.then(KillSwitch::machine),
+        vpn: owned.then(Vpn::machine),
         ..Options::default()
     }
 }

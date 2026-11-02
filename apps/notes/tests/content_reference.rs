@@ -75,7 +75,7 @@ fn a_reference_to_content_the_room_does_not_hold_is_refused() {
         .expect_err("a reference the workspace cannot read is refused");
     let said = format!("{refused:?}");
     assert!(
-        said.contains("is not readable in this room"),
+        said.contains("is not readable in this workspace"),
         "the refusal says why: {said}"
     );
     assert!(kept(&app).is_empty(), "nothing is kept");

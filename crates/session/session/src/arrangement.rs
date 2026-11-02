@@ -783,7 +783,7 @@ impl Arrangement {
         });
         let strips = own_arrangement::read(&self.doc);
         let mut tree = strips.to_tree(|id| held.get(&id.0).map(|workspace| workspace.name.clone()));
-        // A workspace the desk holds stays the desk's: its room, who may do
+        // A workspace the desk holds stays the desk's: its id, who may do
         // what in it, its shortcuts and the rest are never the arrangement's.
         // Only its rows, strips and places are the record's.
         for workspace in &mut tree.workspaces {
@@ -1171,7 +1171,7 @@ fn placing_actions() -> Vec<ActionSpec> {
             "place",
             "Put a resource on the canvas as one of its views",
             vec![
-                // A workspace's id is its room's, across all of u64: text, as
+                // A workspace's id is its own, across all of u64: text, as
                 // the arrangement record names it, where an integer stops at
                 // i64. Each left out is the surface in front's: its workspace
                 // and row, and a strip and place id of its own.

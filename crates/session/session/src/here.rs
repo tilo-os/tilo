@@ -1,6 +1,6 @@
 //! Who is here, and where: the people a workspace's collaborators name, the
-//! window each is in, and the calls in progress in its room. This is what the
-//! empty launcher lists first.
+//! window each is in, and the calls in progress in its workspace. This is
+//! what the empty launcher lists first.
 
 use tilo_desktop_search::providers::happening::{CallHere, PersonHere, WindowHere, WorkspaceHere};
 
@@ -24,7 +24,7 @@ impl Shared {
                 .workspaces
                 .iter()
                 .map(|workspace| {
-                    let room = workspace.room().to_string();
+                    let workspace_id = workspace.room().to_string();
                     let here_person = |person: &tilo_desktop_model::Collaborator| PersonHere {
                         id: person.id.clone(),
                         name: person.name.clone(),
@@ -68,7 +68,7 @@ impl Shared {
                     }
                     let calls = calls
                         .iter()
-                        .filter(|call| call.workspace == room)
+                        .filter(|call| call.workspace == workspace_id)
                         .map(|call| CallHere {
                             channel: call.channel.clone(),
                             name: call.name.clone(),
@@ -99,7 +99,7 @@ impl Shared {
                         .collect();
                     WorkspaceHere {
                         id: workspace.id.0,
-                        workspace: room,
+                        workspace: workspace_id,
                         name: workspace.name.clone(),
                         active: workspace.id == tree.active,
                         people,

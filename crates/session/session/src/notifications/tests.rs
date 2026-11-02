@@ -414,8 +414,8 @@ fn the_centre_lists_what_arrived_named_after_its_app() {
 
 /// The centre's own resource is what the panel reads and invokes: the rows
 /// it keeps, and the verbs that dismiss, run, clear and bring back. What
-/// people said to this person is personal, so only a caller the room grants
-/// reads it.
+/// people said to this person is personal, so only a caller the workspace
+/// grants reads it.
 #[test]
 fn the_centre_publishes_what_it_keeps_and_the_verbs_that_change_it() {
     let rig = rig();

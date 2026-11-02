@@ -3,11 +3,12 @@
 //!
 //! A child that can need its own permissions, sharing or history (a chat's
 //! channel, a category) is its own record, with a minted id that never
-//! changes, living in its parent's room. The parent keeps only what places
-//! it: a [`ChildRef`] per child in a [`Children`] field, in order, naming its
-//! kind, the sibling it is grouped under (a channel's category) and whether
-//! it is in the room's trash. Moving a child moves its reference; the child
-//! keeps its identity, so every reference to it keeps working.
+//! changes, living in its parent's workspace. The parent keeps only what
+//! places it: a [`ChildRef`] per child in a [`Children`] field, in order,
+//! naming its kind, the sibling it is grouped under (a channel's category)
+//! and whether it is in the workspace's trash. Moving a child moves its
+//! reference; the child keeps its identity, so every reference to it keeps
+//! working.
 //!
 //! Every container has the same lifecycle (the framework publishes it, the
 //! app writes no verbs for it): `create` a child of a kind at a place with
@@ -25,7 +26,7 @@ pub const RESTORE: &str = "restore";
 /// The id of the generated action that moves a child.
 pub const MOVE: &str = "move";
 
-/// When a child went to the room's trash: in milliseconds since the epoch.
+/// When a child went to the workspace's trash: in milliseconds since the epoch.
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Trashed {
     /// When.
@@ -41,7 +42,7 @@ pub struct ChildRef {
     pub kind: Atom,
     /// The sibling it is listed under (a channel's category), if any.
     pub group: Option<Id>,
-    /// In the room's trash since then: listed nowhere, kept whole.
+    /// In the workspace's trash since then: listed nowhere, kept whole.
     pub trashed: Option<Trashed>,
 }
 

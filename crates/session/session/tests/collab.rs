@@ -30,7 +30,7 @@ use tilo_session::{Options, Session};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
-const ROOM: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
+const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 /// The tab the person at the other device has their pointer over.
 const NOTES: u64 = 7;
 const WIDTH: i32 = 1280;
@@ -40,16 +40,16 @@ fn device(seed: u8) -> EndpointId {
     iroh::SecretKey::from_bytes(&[seed; 32]).public()
 }
 
-fn room() -> RoomId {
-    RoomId::parse(ROOM).expect("a room id")
+fn workspace_id() -> RoomId {
+    RoomId::parse(WORKSPACE).expect("a workspace id")
 }
 
-/// A desk showing one workspace, in the room, with one window called Notes:
-/// where the other person is working.
+/// A desk showing one workspace it takes part in, with one window called
+/// Notes: where the other person is working.
 fn desk() -> DesktopTree {
-    let room = room();
-    let id = WorkspaceId::of_room(room);
-    let mut workspace = Workspace::in_workspace(id, room, "Desk");
+    let workspace = workspace_id();
+    let id = WorkspaceId::of_room(workspace);
+    let mut workspace = Workspace::in_workspace(id, workspace, "Desk");
     let tab = Tab {
         id: TabId::from(NOTES),
         title: "Notes".to_owned(),
@@ -77,10 +77,10 @@ fn desk() -> DesktopTree {
     }
 }
 
-/// One thing the other device said in the room.
+/// One thing the other device said in the workspace.
 fn said(from: u8, msg: NeighbourMsg) -> NetEvent {
     NetEvent::Msg {
-        ws: workspace_topic_id(room()),
+        ws: workspace_topic_id(workspace_id()),
         peer: device(from),
         membership_epoch: None,
         replayed: false,
@@ -129,10 +129,10 @@ fn presence(from: u8, payload: collab_types::PeerPresencePayload) -> NetEvent {
         NeighbourMsg::AppPresenceV2 {
             peer: neighbour_wire::peer_handle(device_key.as_bytes()),
             app_id: DESKTOP_PRESENCE_APP.to_owned(),
-            cluster_id: ROOM.to_owned(),
+            cluster_id: WORKSPACE.to_owned(),
             presence: PeerPresence {
                 key: postcard::to_stdvec(&PresenceKey::Workspace {
-                    id: ROOM.to_owned(),
+                    id: WORKSPACE.to_owned(),
                 })
                 .expect("a key"),
                 payload,
@@ -151,7 +151,7 @@ fn pointer(from: u8, x: f64, y: f64) -> NetEvent {
             user: String::new(),
             key: serde_json::to_string(&PresenceKey::Pointer {
                 space: PointerSpace::Tile {
-                    room: ROOM.to_owned(),
+                    room: WORKSPACE.to_owned(),
                     tab: NOTES,
                 },
             })
@@ -163,7 +163,7 @@ fn pointer(from: u8, x: f64, y: f64) -> NetEvent {
     )
 }
 
-/// A session taking part in the room through `sync`, showing `desk`.
+/// A session taking part in the workspace through `sync`, showing `desk`.
 fn session(sync: &Rc<Client>) -> Session {
     let mut session = Session::headless(
         Options {
@@ -203,7 +203,7 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     let sync = Rc::new(Client::untethered(device(0xf0), own));
     let mut session = session(&sync);
 
-    // Another person, at their own device, in the same room: here, heads
+    // Another person, at their own device, in the same workspace: here, heads
     // down, with their pointer over Notes.
     sync.hear(hello(0xaa, "Framework 16"));
     sync.hear(presence(0xaa, collab_types::PeerPresencePayload::Arrived));
@@ -231,7 +231,7 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     );
     assert!(listed("Away"), "how they said they are: {labels:?}");
     assert_eq!(
-        sync.pointers(ROOM, NOTES),
+        sync.pointers(WORKSPACE, NOTES),
         [(device(0xaa).to_string(), 12.0, 34.0)],
         "their pointer is over Notes, where the desk draws it"
     );
