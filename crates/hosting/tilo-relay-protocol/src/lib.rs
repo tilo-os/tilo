@@ -13,7 +13,6 @@
 //! - [`compaction`] — a member device's coverage statement for a sealed
 //!   route the host cannot read;
 //! - [`live`] — the ephemeral presence and preview frames of the live plane;
-//!   members, and the legacy launches they route to KVM workers;
 //! - [`legacy_window`] — legacy windows a session streams, as the live plane
 //!   carries them to browsers, and the input members send back;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
