@@ -247,6 +247,10 @@ fn holds_receipt(device: &Device, workspace_id: RoomId, invocation: uuid::Uuid) 
 /// and the owner's custody leaves for the workspace's other session, which
 /// then holds it too.
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the host is both sessions' host: it outlives every join made on it"
+)]
 fn a_receipt_the_owner_commits_reaches_the_workspaces_other_session() {
     let host = Host::start();
     let writer = Device::start(0x51, "The writing device");
